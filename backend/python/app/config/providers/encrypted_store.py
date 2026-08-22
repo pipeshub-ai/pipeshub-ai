@@ -35,8 +35,8 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     Configurable encrypted key-value store that supports multiple backends (Redis, etcd).
 
     The backend is determined by the KV_STORE_TYPE environment variable:
-    - 'redis': Uses Redis as the backend
-    - 'etcd': Uses etcd as the backend (default)
+    - 'redis': Uses Redis as the backend (default)
+    - 'etcd': Uses etcd as the backend
     """
 
     def __init__(
@@ -63,7 +63,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         self.logger.debug("Initialized EncryptionService")
 
         # Determine store type from environment
-        store_type_str = os.getenv("KV_STORE_TYPE", "etcd").lower()
+        store_type_str = os.getenv("KV_STORE_TYPE", "redis").lower()
         self.logger.debug("KV_STORE_TYPE: %s", store_type_str)
 
         self.logger.debug("Creating key-value store...")
@@ -378,7 +378,9 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             return decrypted_keys
 
         except Exception as e:
-            self.logger.error(f"Failed to list keys in directory {directory}: {e}")
+            self.logger.error(
+                "Failed to list keys in directory (%s)", type(e).__name__
+            )
             raise
 
     async def cancel_watch(self, key: str, watch_id: str) -> None:

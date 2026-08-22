@@ -156,9 +156,20 @@ interface KnowledgeBaseState {
         statusFilters?: string[];
         indexingStatus?: string | null;
         hasChildren?: boolean;
+        connector?: string;
+        subType?: string;
       }
     | { type: 'create-collection' }
     | null;
+
+  // Collection stats panel
+  collectionStatsPanel: {
+    open: boolean;
+    collectionId: string | null;
+    collectionName: string | null;
+  };
+  collectionStats: Record<string, import('@/app/(main)/workspace/connectors/types').ConnectorStatsResponse['data']>;
+  collectionStatsLoading: boolean;
 
 }
 
@@ -289,7 +300,7 @@ interface KnowledgeBaseActions {
   // Delete actions
   deleteNode: (
     nodeId: string,
-    nodeType: 'kb' | 'folder' | 'record',
+    nodeType?: NodeType | 'kb' | 'folder' | 'record',
     kbId?: string,
     refreshData?: (deletedIds?: string[]) => Promise<void>
   ) => Promise<void>;
@@ -307,19 +318,27 @@ interface KnowledgeBaseActions {
           statusFilters?: string[];
           indexingStatus?: string | null;
           hasChildren?: boolean;
+          connector?: string;
+          subType?: string;
         }
       | { type: 'create-collection' }
       | null
   ) => void;
   clearPendingSidebarAction: () => void;
 
+  // Collection stats panel actions
+  openCollectionStatsPanel: (collectionId: string, collectionName: string) => void;
+  closeCollectionStatsPanel: () => void;
+  setCollectionStats: (collectionId: string, stats: import('@/app/(main)/workspace/connectors/types').ConnectorStatsResponse['data']) => void;
+  setCollectionStatsLoading: (loading: boolean) => void;
+
   // Bulk actions
   bulkReindexSelected: (
-    items: Array<{ id: string; name: string; nodeType?: string }>,
+    items: Array<{ id: string; name: string; nodeType?: string; connector?: string; subType?: string }>,
     refreshData?: () => Promise<void>
   ) => Promise<void>;
   bulkDeleteSelected: (
-    items: Array<{ id: string; name: string; nodeType: 'kb' | 'folder' | 'record'; kbId?: string }>,
+    items: Array<{ id: string; name: string; nodeType: 'kb' | 'app' | 'folder' | 'record'; kbId?: string }>,
     refreshData?: (deletedIds?: string[]) => Promise<void>
   ) => Promise<void>;
 
@@ -407,6 +426,15 @@ const initialState: KnowledgeBaseState = {
 
   // Sidebar → Page action bridge
   pendingSidebarAction: null,
+
+  // Collection stats panel
+  collectionStatsPanel: {
+    open: false,
+    collectionId: null,
+    collectionName: null,
+  },
+  collectionStats: {},
+  collectionStatsLoading: false,
 };
 
 export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
@@ -1007,14 +1035,12 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
         });
 
         try {
-          // Call appropriate delete API based on node type
-          if (nodeType === 'kb') {
-            await KnowledgeBaseApi.deleteKnowledgeBase(nodeId);
-          } else if (nodeType === 'folder' && kbId) {
-            await KnowledgeBaseApi.deleteFolder(kbId, nodeId);
-          } else if (nodeType === 'record') {
-            await KnowledgeBaseApi.deleteRecord(nodeId);
-          }
+          // Delegate to centralized deleteNode API method
+          await KnowledgeBaseApi.deleteNode({
+            nodeId,
+            nodeType,
+            rootKbId: kbId,
+          });
 
           // Remove the node from state
           set((state) => {
@@ -1047,7 +1073,7 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
 
           // Show success toast immediately
           toast.success('Deleted successfully', {
-            description: `The ${nodeType === 'kb' ? 'knowledge base' : nodeType === 'folder' ? 'collection' : 'file'} has been deleted.`,
+            description: `The ${nodeType === 'kb' || nodeType === 'app' ? 'knowledge base' : nodeType === 'folder' ? 'collection' : 'file'} has been deleted.`,
           });
 
           // Orchestrate refresh: Re-fetch sidebar and content data
@@ -1089,6 +1115,35 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
           state.pendingSidebarAction = null;
         }),
 
+      // Collection stats panel actions
+      openCollectionStatsPanel: (collectionId, collectionName) =>
+        set((state) => {
+          state.collectionStatsPanel = {
+            open: true,
+            collectionId,
+            collectionName,
+          };
+        }),
+
+      closeCollectionStatsPanel: () =>
+        set((state) => {
+          state.collectionStatsPanel = {
+            open: false,
+            collectionId: null,
+            collectionName: null,
+          };
+        }),
+
+      setCollectionStats: (collectionId, stats) =>
+        set((state) => {
+          state.collectionStats[collectionId] = stats;
+        }),
+
+      setCollectionStatsLoading: (loading) =>
+        set((state) => {
+          state.collectionStatsLoading = loading;
+        }),
+
       bulkReindexSelected: async (items, refreshData) => {
         const { KnowledgeBaseApi } = await import('./api');
         const { toast } = await import('@/lib/store/toast-store');
@@ -1098,7 +1153,9 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
         });
 
         try {
-          const results = await KnowledgeBaseApi.bulkReindex(items.map(i => ({ id: i.id, nodeType: i.nodeType })));
+          const results = await KnowledgeBaseApi.bulkReindex(
+            items.map(i => ({ id: i.id, nodeType: i.nodeType, connector: i.connector, subType: i.subType }))
+          );
           const successCount = results.filter(r => r.status === 'fulfilled').length;
           const failCount = results.filter(r => r.status === 'rejected').length;
 

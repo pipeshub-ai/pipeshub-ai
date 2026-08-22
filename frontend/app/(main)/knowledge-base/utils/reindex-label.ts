@@ -8,6 +8,7 @@
 // Leaf record (table): single option, depth 0, no modal.
 
 import { FOLDER_REINDEX_DEPTH, REINDEX_SELF_DEPTH } from '../constants';
+import { isKbCollectionsHubApp } from './all-records-transformer';
 
 export type ReindexAction =
   | 'force-reindex'
@@ -20,6 +21,8 @@ export interface ReindexNode {
   nodeType?: string;
   indexingStatus?: string | null;
   hasChildren?: boolean;
+  connector?: string;
+  subType?: string;
 }
 
 export type ReindexMenuLabelKey =
@@ -62,12 +65,23 @@ export function getReindexNodeFromHubItem(item: {
   nodeType?: string;
   indexingStatus?: string | null;
   hasChildren?: boolean;
+  connector?: string;
+  subType?: string;
 }): ReindexNode {
   return {
     nodeType: item.nodeType,
     indexingStatus: item.indexingStatus,
     hasChildren: item.hasChildren,
+    connector: item.connector,
+    subType: item.subType,
   };
+}
+
+/** KB collection node — 'kb' (legacy sidebar) or 'app' with KB connector/subType. */
+export function isKbCollectionNode(node: ReindexNode): boolean {
+  if (node.nodeType === 'kb') return true;
+  if (node.nodeType === 'app') return isKbCollectionsHubApp(node);
+  return false;
 }
 
 export function getReindexMenuState(
@@ -158,6 +172,14 @@ function getContainerBulkReindexMenuOptions(node: ReindexNode): ReindexMenuOptio
     { icon: 'refresh', labelKey: nonIndexableContainerPrimaryLabelKey(node) },
     REINDEX_FAILED_OPTION,
     START_INDEXING_AUTO_INDEX_OFF_OPTION,
+  ];
+}
+
+/** KB collection — only Index/Reindex all and Reindex failed (no Start indexing). */
+function getKbCollectionReindexMenuOptions(node: ReindexNode): ReindexMenuOption[] {
+  return [
+    { icon: 'refresh', labelKey: nonIndexableContainerPrimaryLabelKey(node) },
+    REINDEX_FAILED_OPTION,
   ];
 }
 
@@ -311,7 +333,7 @@ export function isReindexDisabled(node: ReindexNode): boolean {
 
 /** Whether reindex menu items should be shown (connector app nodes and empty containers excluded). */
 export function canShowReindexMenu(node: ReindexNode): boolean {
-  if (node.nodeType === 'app') return false;
+  if (node.nodeType === 'app' && !isKbCollectionNode(node)) return false;
   if (node.indexingStatus === 'IN_PROGRESS') return false;
   if (isQueuedLeaf(node)) return false;
   const isEmptyContainer =
@@ -339,6 +361,10 @@ function leafReindexLabelKey(action: ReindexAction): ReindexMenuLabelKey {
 /** Status-aware reindex menu options for a table row or sidebar node. */
 export function getReindexMenuOptions(node: ReindexNode): ReindexMenuOption[] {
   if (!canShowReindexMenu(node)) return [];
+
+  if (isKbCollectionNode(node)) {
+    return getKbCollectionReindexMenuOptions(node);
+  }
 
   if (!supportsBulkReindex(node)) {
     const action = leafActionFromStatus(node.indexingStatus);

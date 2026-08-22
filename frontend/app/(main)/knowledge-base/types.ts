@@ -44,6 +44,7 @@ export interface FolderTreeNode {
   isExpanded: boolean;
   depth: number;
   parentId: string | null;
+  hasChildren?: boolean;
 }
 
 // Size range options for filtering
@@ -56,7 +57,7 @@ export interface KnowledgeBaseFilter {
   origins?: NodeOrigin[];         // Aligned with API: was 'sources'
   connectorIds?: string[];        // NEW: for filtering by connector
   kbIds?: string[];              // NEW: for filtering by KB
-  sizeRanges?: SizeRange[];      // Keep as-is (converted to size param)
+  sizeRange?: SizeRange;         // Single size range (radio select)
   createdAfter?: string;         // Keep as-is
   createdBefore?: string;        // Keep as-is
   createdDateType?: DateFilterType; // Date filter type for created date
@@ -117,7 +118,7 @@ export type SidebarReindexHandler = (
 
 export type NodeOrigin = 'COLLECTION' | 'CONNECTOR';
 export type PermissionRole = 'OWNER' | 'READER' | 'WRITER';
-export type RecordType = 'FILE' | 'WEBPAGE' | 'MESSAGE' | 'EMAIL' | 'TICKET';
+export type RecordType = 'FILE' | 'WEBPAGE' | 'MESSAGE' | 'EMAIL' | 'TICKET' | 'ARTIFACT';
 export type IndexingStatus =
   | 'COMPLETED'
   | 'IN_PROGRESS'
@@ -160,7 +161,11 @@ export interface KnowledgeHubQueryParams {
   
   // Container filter (sidebar use)
   onlyContainers?: boolean;   // Return only folders/groups with children
-  
+
+  // Force flattened/recursive search (true) or direct listing (false).
+  // When omitted, the backend computes it from which filters are present.
+  flattened?: boolean;
+
   // Sorting
   sortBy?: string;            // 'name', 'createdAt', 'updatedAt', 'size', 'type'
   sortOrder?: 'asc' | 'desc'; // Sort direction
@@ -201,6 +206,7 @@ export interface KnowledgeHubNode {
   updatedAt?: number;
   webUrl?: string;
   recordType?: RecordType | null;
+  recordGroupType?: string | null;
   indexingStatus?: IndexingStatus | null;
   reason?: string | null;
   sizeInBytes?: number | null;
@@ -209,6 +215,7 @@ export interface KnowledgeHubNode {
   subType?: string;
   sourceType?: string;
   isInternal?: boolean;
+  isPlaceholder?: boolean;
 }
 
 /**
@@ -406,7 +413,7 @@ export interface AllRecordsFilter {
   connectorIds?: string[];
 
   // Size filter
-  sizeRanges?: SizeRange[];
+  sizeRange?: SizeRange;
 
   // Date filters
   createdAfter?: string;
@@ -471,7 +478,7 @@ export interface RecordDetailsResponse {
     orgId: string;
     recordName: string;
     externalRecordId: string;
-    recordType: 'FILE' | 'WEBPAGE' | 'MESSAGE' | 'EMAIL' | 'TICKET';
+    recordType: RecordType;
     origin: 'UPLOAD' | 'CONNECTOR';
     createdAtTimestamp: number;
     updatedAtTimestamp: number;

@@ -336,12 +336,13 @@ class TestProcessEntry:
 
     async def test_entry_with_content_value(self):
         conn = _make_connector()
+        conn.fetch_full_content = False
         entry = _make_entry(content=[{"value": "<p>Full content</p>"}])
         result = await conn._process_entry(entry, "https://feed.com/rss")
         assert result is not None
         record, perms = result
         assert record.record_name == "Article"
-        assert record.mime_type == MimeTypes.HTML.value
+        assert record.mime_type == MimeTypes.PLAIN_TEXT.value
         assert len(perms) == 1
 
     async def test_entry_with_html_summary(self):
@@ -366,6 +367,7 @@ class TestProcessEntry:
 
     async def test_entry_with_published_parsed(self):
         conn = _make_connector()
+        conn.fetch_full_content = False
         ts = time.strptime("2025-06-15", "%Y-%m-%d")
         entry = _make_entry(published_parsed=ts, content=[{"value": "Content"}])
         result = await conn._process_entry(entry, "https://feed.com/rss")

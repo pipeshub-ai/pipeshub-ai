@@ -8,8 +8,8 @@
 #     docker compose -p pipeshub-ai up -d                                        # full/arango/etcd/kafka
 #
 # Profile catalogue
-#   graph-neo4j   — start Neo4j (set DATA_STORE=neo4j, GRAPH_DB_TYPE=neo4j in .env)
-#   graph-arango  — start ArangoDB (set DATA_STORE=arangodb, GRAPH_DB_TYPE=arangodb in .env)
+#   graph-neo4j   — start Neo4j (set DATA_STORE=neo4j in .env)
+#   graph-arango  — start ArangoDB (set DATA_STORE=arangodb in .env)
 #   kv-etcd       — start etcd (set KV_STORE_TYPE=etcd in .env; default is redis)
 #   broker-kafka  — start Zookeeper + Kafka (set MESSAGE_BROKER=kafka in .env; default is redis)
 #
@@ -45,8 +45,26 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${APP_MEMORY_LIMIT:-10G}
+          # OOM cap only (not reserved). Lower via APP_MEMORY_LIMIT on smaller hosts.
+          memory: ${APP_MEMORY_LIMIT:-12G}
+    # Lets the kernel page out memory that a co-located idle service (e.g.
+    # Docling's model weights between documents) is holding but not
+    # actively using, instead of counting it against the hard OOM cap above
+    # forever. memswap_limit is the combined memory+swap ceiling (not a
+    # separate swap allowance), so the 12G/16G defaults give 4G of swap on
+    # top of APP_MEMORY_LIMIT. Keep APP_MEMSWAP_LIMIT >= APP_MEMORY_LIMIT and
+    # raise/lower both together to change the swap budget.
+    # mem_swappiness (per-container swap aggressiveness) is a cgroup v1-only
+    # knob and is silently discarded with a warning on cgroup v2 hosts
+    # (Docker Desktop, modern Linux distros) -- intentionally omitted here.
+    memswap_limit: ${APP_MEMSWAP_LIMIT:-16G}
     shm_size: 2gb
+    # 7 services (node, frontend, 5 python) share one container's fd budget;
+    # docker's 1024 default hits EMFILE on accept() during startup.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     init: true
     logging:
       driver: local
@@ -76,9 +94,7 @@ services:
 
       # Graph database selection — set by install.sh
       # DATA_STORE accepted values: "arangodb" (default) | "neo4j"
-      # GRAPH_DB_TYPE accepted values: "arangodb" (default) | "neo4j"
       - DATA_STORE=${DATA_STORE:-arangodb}
-      - GRAPH_DB_TYPE=${GRAPH_DB_TYPE:-arangodb}
 
       # ArangoDB (active when DATA_STORE=arangodb)
       - ARANGO_URL=http://arango:8529
@@ -102,7 +118,7 @@ services:
 
       # Message broker: "redis" (default, uses Redis Streams) | "kafka"
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
-      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
 
       # Kafka (active when MESSAGE_BROKER=kafka)
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
@@ -147,7 +163,7 @@ services:
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-true}
 
       # Auth / tokens
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read,agent:read,agent:execute,connector:read}
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
 
@@ -163,18 +179,51 @@ services:
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
       - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-1}
 
-      # Indexing concurrency
-      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
-      - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-7}
-      - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-40}
+      # Indexing concurrency — upper caps on the CPU-derived slot counts
+      # (heavy parse: 1 slot/CPU, light parse: 3 slots/CPU, indexing: 2x the
+      # wider parse tier, as one budget for heavy and light records
+      # together). Leave unset (empty) to use the derived numbers as is.
+      # The parse numbers are ceilings, not starting points: parsing ramps
+      # up from its floor as samples prove the headroom, and heavy parsing
+      # is held further back whenever free memory can't hold that many at
+      # once. The indexing budget is fixed at startup.
+      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-}
+      - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-}
+      # Slots-per-CPU and the indexing multiplier above, for a workload whose
+      # documents are unusually cheap or expensive. Leave unset for 1 / 3 / 2.
+      - GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU=${GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU:-}
+      - GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU=${GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU:-}
+      - GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT=${GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT:-}
+      # Memory assumed resident per in-flight heavy parse (GiB); sizes the
+      # memory gate that holds heavy parsing below its CPU-derived ceiling.
+      - GOVERNOR_HEAVY_PARSE_WORKING_SET_GB=${GOVERNOR_HEAVY_PARSE_WORKING_SET_GB:-}
+      # Memory the governor should credit to co-located idle services (all 7
+      # run in this one container) rather than to parse/index workload, so a
+      # large resident footprint doesn't hold every pool at its floor. Leave
+      # unset to auto-calibrate from the lowest working set observed; set an
+      # explicit MiB figure when the idle footprint is known. Growth-side
+      # only — the shrink brake always reads true cgroup occupancy.
+      - GOVERNOR_BASELINE_MEMORY_MB=${GOVERNOR_BASELINE_MEMORY_MB:-}
+      - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
+      - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
+      # Raising this above 1 gives /stream/record requests more headroom
+      # during a large connector sync, but sync/reindex dedup
+      # (sync_task_manager/reindex_task_manager) is in-memory per worker
+      # process — only raise if concurrent duplicate syncs are acceptable.
+      - CONNECTOR_UVICORN_WORKERS=${CONNECTOR_UVICORN_WORKERS:-1}
       - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
       - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
       - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
+      # Leave unset to default to max(2, cpu_count) at startup; set an
+      # explicit integer to pin a hard ceiling on concurrent model.encode()
+      # calls (embedding_main.py).
+      - EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-}
+      - EMBEDDING_BATCH_CONCURRENCY=${EMBEDDING_BATCH_CONCURRENCY:-}
 
       # Slack bot (optional)
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
@@ -188,6 +237,14 @@ services:
       # Code sandbox
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+
+      # Standalone parsing / extraction services (opt-in)
+      - PARSING_SERVICE_URL=http://localhost:8092
+      - EXTRACTION_SERVICE_URL=http://localhost:8093
+      # Set to "true" to route indexing through the standalone parsing/extraction services
+      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-false}
+      # Set to "true" to defer graph enrichment until after vectordb indexing completes
+      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
     depends_on:
       qdrant:
@@ -247,16 +304,30 @@ services:
   # ---------------------------------------------------------------------------
 
   mongodb:
-    image: mongo:8.0.17
+    # Pin via MONGO_IMAGE_TAG to recover from host-specific MongoDB 8.x crashes.
+    image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
     container_name: mongodb
     restart: always
+    # Shared ~16 GB hosts: WiredTiger otherwise grabs ~half of RAM. Cap cache at
+    # 1 GB / container at 2 GB. Sibling deploy.limits (app/graph/vector) are OOM
+    # caps, not concurrent reservations — they need not sum to host RAM.
+    command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-}
+      # Keep the official image's rseq=0 default for TCMalloc performance; set
+      # MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1 if MongoDB exits 139 on newer kernels.
+      - GLIBC_TUNABLES=${MONGO_GLIBC_TUNABLES:-glibc.pthread.rseq=0}
     volumes:
       - mongodb_data:/data/db
     networks:
       - pipeshub
+    deploy:
+      resources:
+        limits:
+          memory: ${MONGO_MEMORY_LIMIT:-2G}
+        reservations:
+          memory: 512M
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 5s
@@ -335,7 +406,7 @@ services:
       - pipeshub
 
   # ---------------------------------------------------------------------------
-  # Graph DB — profile: graph-arango  (set DATA_STORE=arangodb, GRAPH_DB_TYPE=arangodb)
+  # Graph DB — profile: graph-arango  (set DATA_STORE=arangodb)
   # ---------------------------------------------------------------------------
   arango:
     profiles: ["graph-arango"]
@@ -355,7 +426,7 @@ services:
       retries: 5
 
   # ---------------------------------------------------------------------------
-  # Graph DB — profile: graph-neo4j  (set DATA_STORE=neo4j, GRAPH_DB_TYPE=neo4j)
+  # Graph DB — profile: graph-neo4j  (set DATA_STORE=neo4j)
   # ---------------------------------------------------------------------------
   neo4j:
     profiles: ["graph-neo4j"]
@@ -429,6 +500,9 @@ services:
     environment:
       - ZOOKEEPER_CLIENT_PORT=2181
       - ZOOKEEPER_TICK_TIME=2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
     networks:
       - pipeshub
     healthcheck:
@@ -460,6 +534,8 @@ services:
       - KAFKA_LOG_RETENTION_HOURS=24
       - KAFKA_NUM_NETWORK_THREADS=3
       - KAFKA_NUM_IO_THREADS=8
+    volumes:
+      - kafka_data:/var/lib/kafka/data
     networks:
       - pipeshub
     healthcheck:
@@ -491,6 +567,13 @@ volumes:
     driver: local
   # KV store volume (only populated when kv-etcd profile is active)
   etcd_data:
+    driver: local
+  # Broker volumes (only populated when broker-kafka profile is active)
+  zookeeper_data:
+    driver: local
+  zookeeper_log:
+    driver: local
+  kafka_data:
     driver: local
 
 networks:

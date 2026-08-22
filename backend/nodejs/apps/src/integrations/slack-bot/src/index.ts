@@ -15,6 +15,21 @@ import receiver from "./receiver";
 import { ConfigService } from "../../../modules/tokens_manager/services/cm.service";
 import { slackJwtGenerator } from "../../../libs/utils/createJwt";
 import { markdownToSlackMrkdwn, markdownToText } from "./utils/md_to_mrkdwn";
+import { createSlackAGUIEventHandler } from "./utils/agui-stream";
+import {
+  SlackActivityBuilder,
+  stripSlackActivityTimeline,
+} from "./utils/activity-ui";
+import {
+  formatAskUserQuestionMrkdwn,
+  type AskUserQuestionEvent,
+} from "./utils/ask-user-format";
+import {
+  toolActivityLabel,
+  toolStatusLabel,
+} from "./utils/tool-display";
+import { parseArtifactMarkers } from "./utils/parse-artifact-markers";
+import { rewriteCitationsForSlack, stripTinyRefCitationLinks } from "./utils/citations";
 
 import {
   type SlackBotConfig,
@@ -60,7 +75,12 @@ interface StreamEvent {
 }
 
 const FAILED_RESPONSE_GENERATION_MESSAGE = 'Something went wrong while generating the response. Please try again later.';
-const STREAM_UPDATE_THROTTLE_MS = 900;
+/** Batch answer tokens briefly, then flush — long gaps feel like a stuck stream. */
+const STREAM_UPDATE_THROTTLE_MS = 400;
+/** Flush immediately once this much answer text is buffered (avoid huge appends). */
+const STREAM_UPDATE_MAX_CHARS = 400;
+/** Activity message updates can be slower; they must not block answer appends. */
+const ACTIVITY_UPDATE_THROTTLE_MS = 900;
 const SLACK_MAX_TEXT_LENGTH = 39000;
 const SLACK_STREAM_MARKDOWN_LIMIT = 11500;
 const SLACK_STREAM_MESSAGE_CHAR_LIMIT = 11500;
@@ -88,8 +108,9 @@ const STREAM_FAILURE_MESSAGE =
 const BACKEND_STREAM_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const TABLE_STREAMING_PAUSED_HINT =
   "\n\n:hourglass_flowing_sand:";
+/** Mid-stream: hide normalized record citation links (final message rewrites them). */
 const INLINE_RECORD_CITATION_LINK_PATTERN =
-  /\[(\d+)\]\(([^)]*?\/record\/[^)]*?preview[^)]*?blockIndex=\d+[^)]*?)\)/g;
+  /\[(\d+)\]\(([^)]*?\/record\/[^)]*?)\)/g;
 
 // User info cache to avoid redundant API calls
 interface CachedUserInfo {
@@ -359,21 +380,6 @@ function parseSSEEvents(buffer: string): { events: StreamEvent[]; remainder: str
   }
 
   return { events, remainder };
-}
-
-function extractStreamChunk(data: unknown): string {
-  if (typeof data === "string") {
-    return data;
-  }
-  if (data && typeof data === "object") {
-    if ("chunk" in data && typeof data.chunk === "string") {
-      return data.chunk;
-    }
-    if ("content" in data && typeof data.content === "string") {
-      return data.content;
-    }
-  }
-  return "";
 }
 
 function readMessageFromObject(value: unknown): string | null {
@@ -1602,7 +1608,11 @@ async function buildThreadContextualQuery(
 ): Promise<string> {
   const contextLines = await Promise.all(
     priorMessages.map(async (message) => {
-      const normalizedText = await resolveMentionsInText(message.text, typedClient);
+      const withoutActivity = stripSlackActivityTimeline(message.text || "");
+      const normalizedText = await resolveMentionsInText(
+        withoutActivity,
+        typedClient,
+      );
       if (!normalizedText) {
         return null;
       }
@@ -1637,6 +1647,42 @@ async function buildQueryWithThreadContext(
   }
 }
 
+function getFrontendBaseUrl(): string {
+  return (process.env.FRONTEND_PUBLIC_URL || "http://localhost:3000").replace(
+    /\/$/,
+    "",
+  );
+}
+
+function buildFrontendRecordUrl(recordId: string): string {
+  return `${getFrontendBaseUrl()}/record/${encodeURIComponent(recordId)}`;
+}
+
+/**
+ * Prefer the frontend record page (same as Sources / frontend Artifacts panel).
+ * Fall back to an absolute download URL when no recordId is available.
+ */
+function resolveSlackArtifactLink(artifact: {
+  recordId?: string;
+  downloadUrl?: string;
+}): string | null {
+  const recordId = artifact.recordId?.trim();
+  if (recordId) {
+    return buildFrontendRecordUrl(recordId);
+  }
+  const downloadUrl = artifact.downloadUrl?.trim() || "";
+  if (!downloadUrl || downloadUrl.startsWith("record:")) {
+    return null;
+  }
+  if (/^https?:\/\//i.test(downloadUrl)) {
+    return downloadUrl;
+  }
+  if (downloadUrl.startsWith("/")) {
+    return `${getFrontendBaseUrl()}${downloadUrl}`;
+  }
+  return null;
+}
+
 function getCitationWebUrl(webUrl?: string): string {
   if (!webUrl) {
     return "";
@@ -1644,78 +1690,17 @@ function getCitationWebUrl(webUrl?: string): string {
   if (/^https?:\/\//i.test(webUrl)) {
     return webUrl;
   }
-  return `${process.env.FRONTEND_PUBLIC_URL || ""}${webUrl}`;
-}
-
-function parseCitationNumber(rawValue: unknown): number | null {
-  if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue > 0) {
-    return rawValue;
-  }
-
-  if (typeof rawValue !== "string") {
-    return null;
-  }
-
-  const parsed = Number.parseInt(rawValue, 10);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    return null;
-  }
-  return parsed;
+  return `${getFrontendBaseUrl()}${webUrl}`;
 }
 
 function rewriteInlineRecordCitationsForSlack(
   answerBody: string,
   citations?: CitationData[],
 ): string {
-  if (!answerBody) {
-    return "";
-  }
-
-  const citationNumberToFragmentWebUrl = new Map<number, string>();
-  for (const citation of citations || []) {
-    const citationNumber =
-      parseCitationNumber(citation.citationData.chunkIndex);
-    if (!citationNumber || citationNumberToFragmentWebUrl.has(citationNumber)) {
-      continue;
-    }
-
-    let citationWebUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
-    const recordType = citation.citationData.metadata.recordType;
-    const connector = citation.citationData.metadata.connector;
-    if (recordType === "FILE" && connector !== "WEB") {
-      citationWebUrl = (process.env.FRONTEND_PUBLIC_URL || "http://localhost:3000") + "/record/" + citation.citationData.metadata.recordId;
-    }
-    if (!citationWebUrl) {
-      continue;
-    }
-
-    citationNumberToFragmentWebUrl.set(citationNumber, citationWebUrl);
-  }
-  let citationCount = 1;
-  let webUrlToCitationNumber = new Map<string, number>();
-  
-  return answerBody.replace(
-    INLINE_RECORD_CITATION_LINK_PATTERN,
-    (_matchedCitationLink, citationNumberText: string) => {
-      const citationNumber = Number.parseInt(citationNumberText, 10);
-      if (!Number.isInteger(citationNumber) || citationNumber <= 0) {
-        return "";
-      }
-      const citationWebUrl = citationNumberToFragmentWebUrl.get(citationNumber);
-      let res = "";
-      if (citationWebUrl) {
-        let citationNumber = citationCount;
-        if (webUrlToCitationNumber.has(citationWebUrl)) {
-          citationNumber = webUrlToCitationNumber.get(citationWebUrl)!;
-        }
-        else {
-          webUrlToCitationNumber.set(citationWebUrl, citationCount);
-          citationCount++;
-        }
-        res = `[${citationNumber}](${citationWebUrl})`;
-      }
-      return res;
-    },
+  return rewriteCitationsForSlack(
+    answerBody,
+    citations,
+    getFrontendBaseUrl(),
   );
 }
 
@@ -1731,13 +1716,7 @@ function buildCitationSources(citations?: CitationData[]): any[]  {
 
     let webUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
     if (!webUrl) {
-        const frontend_url = process.env.FRONTEND_PUBLIC_URL ;
-        if (frontend_url) {
-          webUrl = frontend_url + "/record/" + recordId;
-        }
-        else {
-          continue;
-        }
+      webUrl = buildFrontendRecordUrl(recordId);
     }
 
     if (seenRecordIds.has(recordId)) continue;
@@ -2110,7 +2089,7 @@ async function processSlackMessage(
       url,
       {
         query,
-        chatMode: "auto",
+        chatMode: currentAgentId? "quick" : "agent",
         currentTime: new Date().toISOString(),
         ...(userTimezone ? { timezone: userTimezone } : {}),
         ...(callerDisplayName ? { callerDisplayName } : {}),
@@ -2122,6 +2101,8 @@ async function processSlackMessage(
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
           Accept: "text/event-stream",
+          // Gates Python has_ui_client so CUSTOM ask_user_question SSE is emitted.
+          "client-name": "slack",
         },
         responseType: "stream",
         timeout: BACKEND_STREAM_TIMEOUT_MS,
@@ -2131,13 +2112,375 @@ async function processSlackMessage(
     const responseStream = response.data as NodeJS.ReadableStream;
     let sseBuffer = "";
     let pendingAppendText = "";
-    let lastAppendAt = 0;
+    let lastActivityAt = 0;
     let streamErrorMessage: string | null = null;
     let completionConversation: ConversationData["conversation"] | null = null;
+    // Answer appends and activity updates use separate queues so chat.update
+    // latency cannot stall chat.appendStream mid-answer.
     let queuedStreamAppend: Promise<void> = Promise.resolve();
+    let queuedActivityUpdate: Promise<void> = Promise.resolve();
     let tableStreamingDisabled = false;
     let streamTableProbeText = "";
     let tablePauseHintSent = false;
+    let streamedAnswerLength = 0;
+    let ignoreAnswerChunks = false;
+    let askUserShown = false;
+    let conversationPersisted = Boolean(conversation);
+    let conversationPersistPromise: Promise<void> = Promise.resolve();
+    const activityBuilder = new SlackActivityBuilder();
+    let pendingActivityUpdate = false;
+    let answerFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    let activityFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    const postedArtifactKeys = new Set<string>();
+
+    const updateActivityMessage = async (
+      text: string,
+      options?: { allowAfterAskUser?: boolean },
+    ): Promise<void> => {
+      if (!waitingMessageTs || !text) {
+        return;
+      }
+      // Drop stale activity flushes once ask-user questions own this message.
+      if (askUserShown && !options?.allowAfterAskUser) {
+        return;
+      }
+      try {
+        await typedClient.chat.update({
+          channel: typedMessage.channel!,
+          ts: waitingMessageTs,
+          text: truncateForSlack(text),
+          ...NO_UNFURL_OPTIONS,
+        });
+      } catch (error) {
+        console.error("Error updating Slack activity message:", error);
+      }
+    };
+
+    const flushActivityUpdate = (): void => {
+      if (!pendingActivityUpdate || askUserShown) {
+        pendingActivityUpdate = false;
+        return;
+      }
+      pendingActivityUpdate = false;
+      // Format at write time so a later setStatus("") isn't overwritten by a
+      // stale snapshot captured when the flush was queued.
+      queuedActivityUpdate = queuedActivityUpdate
+        .then(async () => updateActivityMessage(activityBuilder.format()))
+        .catch((error) => {
+          console.error("Error flushing Slack activity update:", error);
+        });
+    };
+
+    const scheduleActivityUpdate = (): void => {
+      // Ask-user replaces the activity message with questions; don't overwrite it.
+      if (askUserShown) {
+        return;
+      }
+      pendingActivityUpdate = true;
+      const now = Date.now();
+      if (now - lastActivityAt >= ACTIVITY_UPDATE_THROTTLE_MS) {
+        lastActivityAt = now;
+        if (activityFlushTimer) {
+          clearTimeout(activityFlushTimer);
+          activityFlushTimer = null;
+        }
+        flushActivityUpdate();
+        return;
+      }
+      if (!activityFlushTimer) {
+        const waitMs = Math.max(
+          0,
+          ACTIVITY_UPDATE_THROTTLE_MS - (now - lastActivityAt),
+        );
+        activityFlushTimer = setTimeout(() => {
+          activityFlushTimer = null;
+          lastActivityAt = Date.now();
+          flushActivityUpdate();
+        }, waitMs);
+      }
+    };
+
+    const deleteStreamMessages = async (): Promise<void> => {
+      if (streamTs) {
+        try {
+          await stopSlackStream();
+        } catch (error) {
+          console.error("Error stopping Slack stream before reset:", error);
+        }
+        try {
+          await typedClient.apiCall("chat.delete", {
+            channel: typedMessage.channel!,
+            ts: streamTs,
+          });
+        } catch (deleteError) {
+          const code = (deleteError as { data?: { error?: string } }).data?.error;
+          if (code !== "message_not_found") {
+            console.error("Error deleting Slack stream message:", deleteError);
+          }
+        }
+        streamTs = null;
+        streamStopped = false;
+        streamCharCount = 0;
+      }
+      for (const oldTs of rolledOverStreamTs) {
+        try {
+          await typedClient.apiCall("chat.delete", {
+            channel: typedMessage.channel!,
+            ts: oldTs,
+          });
+        } catch (deleteError) {
+          const code = (deleteError as { data?: { error?: string } }).data?.error;
+          if (code !== "message_not_found") {
+            console.error("Error deleting rolled-over stream message:", deleteError);
+          }
+        }
+      }
+      rolledOverStreamTs = [];
+    };
+
+    const persistConversationId = async (conversationId: string): Promise<void> => {
+      if (conversationPersisted || !conversationId) {
+        return;
+      }
+      try {
+        await saveToDatabase({
+          threadId: threadId,
+          conversationId,
+          botId: currentBotId,
+          email: email,
+        });
+        conversationPersisted = true;
+      } catch (error) {
+        console.error("Error persisting Slack conversation mapping:", error);
+      }
+    };
+
+    const clearAnswerFlushTimer = (): void => {
+      if (answerFlushTimer) {
+        clearTimeout(answerFlushTimer);
+        answerFlushTimer = null;
+      }
+    };
+
+    const enqueueAnswerDelta = (nextChunk: string): void => {
+      if (ignoreAnswerChunks || nextChunk.length === 0) {
+        return;
+      }
+      if (tableStreamingDisabled) {
+        return;
+      }
+
+      streamTableProbeText += nextChunk;
+      if (hasMarkdownTableStartOutsideCodeFences(streamTableProbeText)) {
+        tableStreamingDisabled = true;
+        pendingAppendText = "";
+        clearAnswerFlushTimer();
+        queuedStreamAppend = queuedStreamAppend
+          .then(async () => sendTableStreamingPausedHint())
+          .catch((error) => {
+            console.error("Error sending Slack table formatting hint:", error);
+          });
+        return;
+      }
+
+      pendingAppendText += nextChunk;
+      // Large buffer → flush now. Otherwise arm a short idle timer so a pause
+      // in token arrival still pushes what's buffered (avoids multi-second stalls).
+      if (pendingAppendText.length >= STREAM_UPDATE_MAX_CHARS) {
+        clearAnswerFlushTimer();
+        flushPendingAppend();
+        return;
+      }
+      if (!answerFlushTimer) {
+        answerFlushTimer = setTimeout(() => {
+          answerFlushTimer = null;
+          flushPendingAppend();
+        }, STREAM_UPDATE_THROTTLE_MS);
+      }
+    };
+
+    const handleAnswerAccumulated = (accumulated: string): void => {
+      if (ignoreAnswerChunks) {
+        return;
+      }
+      if (accumulated.length < streamedAnswerLength) {
+        // Preamble cleared — reset stream before applying the new buffer.
+        clearAnswerFlushTimer();
+        pendingAppendText = "";
+        streamedAnswerLength = 0;
+        queuedStreamAppend = queuedStreamAppend
+          .then(async () => deleteStreamMessages())
+          .catch((error) => {
+            console.error("Error clearing Slack answer preamble:", error);
+          });
+      }
+      if (accumulated.length <= streamedAnswerLength) {
+        streamedAnswerLength = accumulated.length;
+        return;
+      }
+      const nextChunk = accumulated.slice(streamedAnswerLength);
+      streamedAnswerLength = accumulated.length;
+      enqueueAnswerDelta(nextChunk);
+    };
+
+    const handleAskUserQuestion = (payload: AskUserQuestionEvent): void => {
+      // TOOL_CALL_ARGS + CUSTOM + TOOL_CALL_RESULT may all try to surface this.
+      if (askUserShown) {
+        return;
+      }
+      const questionText = formatAskUserQuestionMrkdwn(payload);
+      if (!questionText) {
+        console.error(
+          "Slack ask-user payload had no questions:",
+          JSON.stringify(payload).slice(0, 500),
+        );
+        return;
+      }
+
+      ignoreAnswerChunks = true;
+      askUserShown = true;
+      clearAnswerFlushTimer();
+      pendingAppendText = "";
+      streamedAnswerLength = 0;
+      pendingActivityUpdate = false;
+      if (activityFlushTimer) {
+        clearTimeout(activityFlushTimer);
+        activityFlushTimer = null;
+      }
+
+      // Replace the Thinking/activity placeholder with the questions so
+      // "_Thinking..._" is not left sitting above the clarification.
+      queuedStreamAppend = queuedStreamAppend
+        .then(async () => {
+          await deleteStreamMessages();
+          await queuedActivityUpdate.catch(() => undefined);
+          if (waitingMessageTs) {
+            await updateActivityMessage(questionText, { allowAfterAskUser: true });
+          } else {
+            await typedClient.chat.postMessage({
+              channel: typedMessage.channel!,
+              thread_ts: threadId,
+              text: truncateForSlack(questionText),
+              ...NO_UNFURL_OPTIONS,
+            });
+          }
+        })
+        .catch((error) => {
+          console.error("Error posting Slack ask-user question:", error);
+        });
+    };
+
+    const handleArtifact = (artifact: {
+      fileName?: string;
+      downloadUrl?: string;
+      recordId?: string;
+      visibility?: string;
+    }): void => {
+      if (artifact.visibility === "STAGING") {
+        return;
+      }
+      const fileName =
+        typeof artifact.fileName === "string" && artifact.fileName.trim()
+          ? artifact.fileName.trim()
+          : "artifact";
+      const recordId =
+        typeof artifact.recordId === "string" ? artifact.recordId.trim() : "";
+      const link = resolveSlackArtifactLink({
+        recordId,
+        downloadUrl:
+          typeof artifact.downloadUrl === "string"
+            ? artifact.downloadUrl
+            : undefined,
+      });
+      if (!link) {
+        return;
+      }
+      const dedupeKey = recordId || link;
+      if (postedArtifactKeys.has(dedupeKey) || postedArtifactKeys.has(link)) {
+        return;
+      }
+      postedArtifactKeys.add(dedupeKey);
+      postedArtifactKeys.add(link);
+      const text = `*Artifact:* <${link}|${fileName}>`;
+      queuedStreamAppend = queuedStreamAppend
+        .then(async () => {
+          await typedClient.chat.postMessage({
+            channel: typedMessage.channel!,
+            thread_ts: threadId,
+            text: truncateForSlack(text),
+            ...NO_UNFURL_OPTIONS,
+          });
+        })
+        .catch((error) => {
+          console.error("Error posting Slack artifact link:", error);
+        });
+    };
+
+    const aguiHandler = createSlackAGUIEventHandler({
+      onStatus: (message) => {
+        activityBuilder.setStatus(message);
+        scheduleActivityUpdate();
+      },
+      onReasoning: (delta, done) => {
+        if (delta) {
+          activityBuilder.appendReasoning(delta);
+          scheduleActivityUpdate();
+        }
+        if (done) {
+          activityBuilder.finishReasoning();
+          scheduleActivityUpdate();
+        }
+      },
+      onNarration: (text) => {
+        activityBuilder.appendNarration(text);
+        scheduleActivityUpdate();
+      },
+      onToolStart: (toolName, displayName) => {
+        activityBuilder.startTool(
+          toolName,
+          toolStatusLabel(toolName, displayName),
+        );
+        scheduleActivityUpdate();
+      },
+      onToolResult: (toolName, displayName, status) => {
+        activityBuilder.finishTool(
+          toolName,
+          toolActivityLabel(toolName, displayName),
+          status === "failed" || status === "blocked",
+        );
+        scheduleActivityUpdate();
+      },
+      onSubAgent: (role, phase) => {
+        if (phase === "started") {
+          activityBuilder.startSubAgent(role);
+        } else {
+          activityBuilder.finishSubAgent(role, phase);
+        }
+        scheduleActivityUpdate();
+      },
+      onAnswerAccumulated: handleAnswerAccumulated,
+      onClearAnswerPreamble: () => {
+        clearAnswerFlushTimer();
+        pendingAppendText = "";
+        streamedAnswerLength = 0;
+        queuedStreamAppend = queuedStreamAppend
+          .then(async () => deleteStreamMessages())
+          .catch((error) => {
+            console.error("Error clearing Slack answer preamble:", error);
+          });
+      },
+      onAskUserQuestion: handleAskUserQuestion,
+      onArtifact: handleArtifact,
+      onConversationCreated: (conversationId) => {
+        conversationPersistPromise = persistConversationId(conversationId);
+      },
+      onComplete: (conv) => {
+        completionConversation = conv as ConversationData["conversation"];
+      },
+      onError: (message) => {
+        streamErrorMessage = resolveSlackErrorMessage(message);
+      },
+    });
 
     const pushTextToSlackStream = async (text: string): Promise<void> => {
       // Bail out early if the stream is already stopped or an error was recorded —
@@ -2150,7 +2493,10 @@ async function processSlackMessage(
         return;
       }
 
-      text = text.replace(INLINE_RECORD_CITATION_LINK_PATTERN, '');
+      // Raw `[source](refN)` becomes broken `<refN|source>` in Slack mrkdwn.
+      text = stripTinyRefCitationLinks(text);
+      text = text.replace(INLINE_RECORD_CITATION_LINK_PATTERN, "");
+      text = parseArtifactMarkers(text).text;
       if (text.length === 0) {
         return;
       }
@@ -2220,19 +2566,7 @@ async function processSlackMessage(
             }
             streamTs = startStreamResult.ts;
             streamCharCount = chunk.length;
-
-            if (waitingMessageTs) {
-              try {
-                await typedClient.apiCall("chat.delete", {
-                  channel: typedMessage.channel!,
-                  ts: waitingMessageTs,
-                });
-              } catch (error) {
-                console.error("Error deleting Slack waiting message:", error);
-              } finally {
-                waitingMessageTs = null;
-              }
-            }
+            // Keep the activity message above the answer stream.
           } else {
             await typedClient.apiCall("chat.appendStream", {
               channel: typedMessage.channel!,
@@ -2247,6 +2581,7 @@ async function processSlackMessage(
     };
 
     const flushPendingAppend = (): void => {
+      clearAnswerFlushTimer();
       const textToAppend = pendingAppendText;
       if (!textToAppend) {
         return;
@@ -2343,44 +2678,13 @@ async function processSlackMessage(
         sseBuffer = remainder;
 
         for (const evt of events) {
-          if (evt.event === "answer_chunk" || evt.event === "chunk") {
-            const nextChunk = extractStreamChunk(evt.data);
-            if (nextChunk.length === 0) {
-              continue;
-            }
-
-            if (tableStreamingDisabled) {
-              continue;
-            }
-
-            streamTableProbeText += nextChunk;
-            if (hasMarkdownTableStartOutsideCodeFences(streamTableProbeText)) {
-              tableStreamingDisabled = true;
-              pendingAppendText = "";
-              queuedStreamAppend = queuedStreamAppend
-                .then(async () => sendTableStreamingPausedHint())
-                .catch((error) => {
-                  console.error("Error sending Slack table formatting hint:", error);
-                });
-              continue;
-            }
-
-            pendingAppendText += nextChunk;
-            const now = Date.now();
-            if (now - lastAppendAt >= STREAM_UPDATE_THROTTLE_MS) {
-              lastAppendAt = now;
-              flushPendingAppend();
-            }
-          } else if (evt.event === "complete") {
-            if (
-              evt.data &&
-              typeof evt.data === "object" &&
-              "conversation" in evt.data
-            ) {
-              completionConversation = (evt.data as ConversationData).conversation;
-            }
-          } else if (evt.event === "error") {
-            streamErrorMessage = resolveSlackErrorMessage(evt.data);
+          try {
+            aguiHandler(evt);
+          } catch (error) {
+            console.error("Error handling AG-UI stream event:", error);
+            continue;
+          }
+          if (streamErrorMessage) {
             resolveOnce();
             return;
           }
@@ -2400,8 +2704,19 @@ async function processSlackMessage(
       responseStream.on("error", onError);
     });
 
+    clearAnswerFlushTimer();
+    if (activityFlushTimer) {
+      clearTimeout(activityFlushTimer);
+      activityFlushTimer = null;
+    }
     flushPendingAppend();
-    await queuedStreamAppend;
+    // Never flush activity after ask-user — that would wipe the questions text.
+    if (!askUserShown) {
+      flushActivityUpdate();
+    } else {
+      pendingActivityUpdate = false;
+    }
+    await Promise.all([queuedStreamAppend, queuedActivityUpdate]);
 
     if (streamErrorMessage) {
       if (streamTs) {
@@ -2417,6 +2732,28 @@ async function processSlackMessage(
 
     const conversationData =
       completionConversation as ConversationData["conversation"] | null;
+
+    if (conversationData?._id) {
+      await persistConversationId(conversationData._id);
+    }
+
+    // Ask-user parks the turn on clarification — no bot_response required.
+    // Only live SSE ask-user events count (TOOL_CALL_ARGS / CUSTOM). Do not
+    // re-read historical ask_user tool_calls from conversation.messages — that
+    // re-posts old questions on the next turn instead of the real answer.
+    if (askUserShown) {
+      if (streamTs) {
+        await deleteStreamMessages();
+      }
+      await conversationPersistPromise;
+      if (!conversationData && !conversationPersisted) {
+        await sendOrUpdateNonStreamMessage(
+          "Received an incomplete response from the backend. Please try again later.",
+        );
+      }
+      return;
+    }
+
     if (!conversationData) {
       const incompleteResponseMessage =
         "Received an incomplete response from the backend. Please try again later.";
@@ -2431,19 +2768,11 @@ async function processSlackMessage(
       return;
     }
 
-    if (!conversation) {
-      const conversationId = conversationData._id;
-      await saveToDatabase({
-        threadId: threadId,
-        conversationId,
-        botId: currentBotId,
-        email: email,
-      });
-    }
-
     const botResponses = conversationData.messages;
-    const botResponse = botResponses.length > 0 ? botResponses[botResponses.length - 1] : null;
-    if (!botResponse || botResponse.messageType !== "bot_response") {
+    const botResponse =
+      [...botResponses].reverse().find((msg) => msg.messageType === "bot_response") ??
+      null;
+    if (!botResponse) {
       const invalidResponseMessage =
         "Received an unexpected response format from the backend. Please try again later.";
       if (streamTs) {
@@ -2457,20 +2786,44 @@ async function processSlackMessage(
       return;
     }
 
+    // Keep tools/thinking timeline above the answer; remove a bare Thinking placeholder.
+    if (activityBuilder.hasTimeline()) {
+      activityBuilder.setStatus("");
+      await updateActivityMessage(activityBuilder.format());
+    } else if (waitingMessageTs) {
+      try {
+        await typedClient.apiCall("chat.delete", {
+          channel: typedMessage.channel!,
+          ts: waitingMessageTs,
+        });
+      } catch (error) {
+        const code = (error as { data?: { error?: string } }).data?.error;
+        if (code !== "message_not_found") {
+          console.error("Error deleting Slack activity placeholder:", error);
+        }
+      } finally {
+        waitingMessageTs = null;
+      }
+    }
+
     if (!streamTs && !tableStreamingDisabled && botResponse.content) {
       await pushTextToSlackStream(botResponse.content);
     }
 
     const citationBlocks = buildCitationSources(botResponse.citations);
     const citationBlockChunks = splitSlackBlocksByLimit(citationBlocks);
+    // Frontend strips ::artifact markers into an Artifacts panel; Slack must
+    // not show the raw wire syntax in the final answer body.
+    const { text: contentWithoutArtifacts, artifacts: contentArtifacts } =
+      parseArtifactMarkers(botResponse.content || "");
     let answerBody = rewriteInlineRecordCitationsForSlack(
-      botResponse.content || "",
+      contentWithoutArtifacts,
       botResponse.citations,
     );
     answerBody = removeContinuousDuplicateMarkdownLinks(answerBody);
     answerBody = addSpaceBetweenMarkdownLinks(answerBody);
     const finalChunks = await buildFinalSlackChunks(answerBody);
-    
+
     const [firstFinalChunk, ...remainingFinalChunks] = finalChunks;
     
     if (firstFinalChunk) {
@@ -2536,13 +2889,23 @@ async function processSlackMessage(
               "Error replacing failed streamed Slack message, sending fallback error message:",
               replacementError,
             );
-            await sendOrUpdateNonStreamMessage(
-              FAILED_RESPONSE_GENERATION_MESSAGE,
-            );
+            await typedClient.chat.postMessage({
+              channel: typedMessage.channel!,
+              thread_ts: threadId,
+              text: FAILED_RESPONSE_GENERATION_MESSAGE,
+              ...NO_UNFURL_OPTIONS,
+            });
           }
         }
       } else {
-        await sendOrUpdateNonStreamMessage("", firstFinalChunk);
+        // Post answer as a new message so the activity timeline stays above it.
+        await typedClient.chat.postMessage({
+          channel: typedMessage.channel!,
+          thread_ts: threadId,
+          text: "",
+          blocks: firstFinalChunk,
+          ...NO_UNFURL_OPTIONS,
+        });
         firstChunkSent = true;
       }
 
@@ -2554,6 +2917,27 @@ async function processSlackMessage(
           await postThreadChunkMessage(citationChunk);
         }
       }
+    }
+
+    // Post artifact record links after the answer (mirrors frontend Artifacts panel).
+    // Markers often use `record:<id>` placeholders rather than signed download URLs.
+    for (const artifact of contentArtifacts) {
+      const link = resolveSlackArtifactLink(artifact);
+      if (!link) {
+        continue;
+      }
+      const dedupeKey = artifact.recordId || link;
+      if (postedArtifactKeys.has(dedupeKey) || postedArtifactKeys.has(link)) {
+        continue;
+      }
+      postedArtifactKeys.add(dedupeKey);
+      postedArtifactKeys.add(link);
+      await typedClient.chat.postMessage({
+        channel: typedMessage.channel!,
+        thread_ts: threadId,
+        text: truncateForSlack(`*Artifact:* <${link}|${artifact.fileName}>`),
+        ...NO_UNFURL_OPTIONS,
+      });
     }
   } catch (error) {
     try {

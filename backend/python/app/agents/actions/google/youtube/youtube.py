@@ -3,9 +3,8 @@ import json
 import logging
 from typing import Optional
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.youtube.youtube import YouTubeDataSource
@@ -38,8 +37,9 @@ class YouTube:
             return asyncio.run(coro)
 
     @tool(
-        app_name="youtube",
-        tool_name="search_videos",
+        path="/tools/youtube/search_videos",
+        short_description="Search for YouTube videos",
+        description="Search for YouTube videos by query with optional filters for order, duration, and definition.",
         parameters=[
             ToolParameter(
                 name="query",
@@ -71,7 +71,8 @@ class YouTube:
                 description="Video definition filter (high, standard)",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="video"), Tag(key="type", value="read")],
     )
     def search_videos(
         self,
@@ -110,8 +111,9 @@ class YouTube:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="youtube",
-        tool_name="get_video_details",
+        path="/tools/youtube/get_video_details",
+        short_description="Get details of a YouTube video",
+        description="Get detailed information about a specific YouTube video including snippet, statistics, and content details.",
         parameters=[
             ToolParameter(
                 name="video_id",
@@ -125,7 +127,8 @@ class YouTube:
                 description="Parts to retrieve (snippet, statistics, contentDetails, etc.)",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="video"), Tag(key="type", value="read")],
     )
     def get_video_details(
         self,
@@ -156,8 +159,9 @@ class YouTube:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="youtube",
-        tool_name="get_channel_info",
+        path="/tools/youtube/get_channel_info",
+        short_description="Get YouTube channel information",
+        description="Get information about a YouTube channel by ID, username, or the authenticated user's channel.",
         parameters=[
             ToolParameter(
                 name="channel_id",
@@ -177,7 +181,8 @@ class YouTube:
                 description="Whether to get current user's channel",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="video"), Tag(key="type", value="read")],
     )
     def get_channel_info(
         self,
@@ -209,8 +214,9 @@ class YouTube:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="youtube",
-        tool_name="get_playlist_videos",
+        path="/tools/youtube/get_playlist_videos",
+        short_description="Get videos from a playlist",
+        description="Get videos from a YouTube playlist with pagination support.",
         parameters=[
             ToolParameter(
                 name="playlist_id",
@@ -230,7 +236,8 @@ class YouTube:
                 description="Page token for pagination",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="video"), Tag(key="type", value="read")],
     )
     def get_playlist_videos(
         self,
@@ -262,8 +269,9 @@ class YouTube:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="youtube",
-        tool_name="get_user_playlists",
+        path="/tools/youtube/get_user_playlists",
+        short_description="Get playlists from a channel",
+        description="Get playlists from a YouTube channel or the authenticated user's playlists.",
         parameters=[
             ToolParameter(
                 name="channel_id",
@@ -283,7 +291,8 @@ class YouTube:
                 description="Maximum number of playlists to return",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="video"), Tag(key="type", value="read")],
     )
     def get_user_playlists(
         self,
@@ -315,8 +324,9 @@ class YouTube:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="youtube",
-        tool_name="get_video_comments",
+        path="/tools/youtube/get_video_comments",
+        short_description="Get comments for a video",
+        description="Get comment threads for a YouTube video with optional sorting.",
         parameters=[
             ToolParameter(
                 name="video_id",
@@ -336,7 +346,8 @@ class YouTube:
                 description="Sort order (time, relevance)",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="video"), Tag(key="type", value="read")],
     )
     def get_video_comments(
         self,
@@ -368,8 +379,9 @@ class YouTube:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="youtube",
-        tool_name="get_trending_videos",
+        path="/tools/youtube/get_trending_videos",
+        short_description="Get trending YouTube videos",
+        description="Get trending YouTube videos with optional region and category filters.",
         parameters=[
             ToolParameter(
                 name="region_code",
@@ -389,7 +401,8 @@ class YouTube:
                 description="Maximum number of videos to return",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="video"), Tag(key="type", value="read")],
     )
     def get_trending_videos(
         self,

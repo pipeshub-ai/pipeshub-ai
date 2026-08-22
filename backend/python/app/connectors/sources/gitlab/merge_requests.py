@@ -37,6 +37,8 @@ from app.models.blocks import (
 )
 from app.utils.time_conversion import parse_timestamp, string_to_datetime
 
+from app.models.blocks import wire_block_group_parent_children
+
 from .common.utils import parse_item_id_from_url
 from .models import GitlabLiterals, RecordUpdate
 
@@ -105,7 +107,6 @@ class MergeRequestsSync:
         record_updates_batch: list[RecordUpdate] = []
         attachments_count = 0
         mrs_enabled = self._merge_requests_indexing_enabled()
-        comments_enabled = self._comments_indexing_enabled()
 
         for pr in prs_batch:
             record_update = await self._process_mr_to_pull_request(pr)
@@ -129,12 +130,12 @@ class MergeRequestsSync:
                     record_updates_batch.extend(file_record_updates)
                     attachments_count += len(file_record_updates)
 
-            # Note attachments
+            # Note attachments follow the parent MR's indexing flag
             attachment_records = await c.attachments.make_files_records_from_notes_mr(
                 pr, record_update.record
             )
             if attachment_records:
-                if not mrs_enabled or not comments_enabled:
+                if not mrs_enabled:
                     for ru in attachment_records:
                         ru.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                 record_updates_batch.extend(attachment_records)
@@ -264,13 +265,12 @@ class MergeRequestsSync:
         block_groups.append(bg_0)
         block_group_number += 1
 
-        if self._comments_indexing_enabled():
-            comments_bg, remaining_attachments = await c.comments.build_merge_request_comment_blocks(
-                mr_url=record.weburl, parent_index=bg_0.index, record=record
-            )
-            block_groups.extend(comments_bg)
-            block_group_number += len(comments_bg)
-            list_remaining_attachments.extend(remaining_attachments)
+        comments_bg, remaining_attachments = await c.comments.build_merge_request_comment_blocks(
+            mr_url=record.weburl, parent_index=bg_0.index, record=record
+        )
+        block_groups.extend(comments_bg)
+        block_group_number += len(comments_bg)
+        list_remaining_attachments.extend(remaining_attachments)
 
         mr_commits_res = await c.runtime.ds_call(
             c.data_source.list_merge_requests_commits, project_id=project_id, mr_iid=mr_number, get_all=True,
@@ -311,6 +311,7 @@ class MergeRequestsSync:
             ) if blocks else None,
         )
         block_groups.append(bg_new)
+        wire_block_group_parent_children(block_groups)
         blocks_container = BlocksContainer(blocks=blocks, block_groups=block_groups)
         await c.issues.process_new_records(list_remaining_attachments)
         return blocks_container.model_dump_json(indent=2).encode(GitlabLiterals.UTF_8.value)
@@ -355,9 +356,17 @@ class MergeRequestsSync:
     ) -> tuple[Record, list[Any]] | None:
         """Fetch TICKET or PULL_REQUEST from GitLab; return updated data if source revision changed."""
         c = self.c
+        # Only issues/MRs need a source refresh; CODE_FILE etc. re-queue as-is.
+        if record.record_type not in (RecordType.TICKET, RecordType.PULL_REQUEST):
+            return None
+
         parsed = self.gitlab_project_id_and_iid_from_record(record)
         if not parsed:
-            self.logger.warning("Cannot reindex-check GitLab record %s: missing weburl or external_record_group_id", record.id)
+            self.logger.warning(
+                "Cannot reindex-check GitLab %s %s: could not parse project/iid from weburl or external_record_group_id",
+                record.record_type,
+                record.id,
+            )
             return None
         project_id, iid = parsed
 
@@ -421,9 +430,3 @@ class MergeRequestsSync:
         from app.connectors.core.registry.filters import IndexingFilterKey
         return c.indexing_filters.is_enabled(IndexingFilterKey.MERGE_REQUESTS)
 
-    def _comments_indexing_enabled(self) -> bool:
-        c = self.c
-        if not c.indexing_filters:
-            return True
-        from app.connectors.core.registry.filters import IndexingFilterKey
-        return c.indexing_filters.is_enabled(IndexingFilterKey.COMMENTS)

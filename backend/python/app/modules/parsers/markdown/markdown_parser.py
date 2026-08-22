@@ -1,6 +1,6 @@
 """Environment-driven Markdown parser backend.
 
-``MARKDOWN_PARSER_BACKEND`` selects which parser implementation is exported as
+``PARSER_BACKEND`` selects which parser implementation is exported as
 ``MarkdownParser``:
 
 - ``markdownit`` (default): Fast markdown-it-py parser, no ML models.
@@ -24,18 +24,18 @@ class MarkdownParserProtocol(Protocol):
         """Extract images and normalise alt-text to sequential ``Image_N`` labels."""
         ...
 
-    async def parse(
+    async def parse_to_blocks(
         self,
         md_content: str,
         caption_map: Dict[str, str] | None = None,
         name: str | None = None,
         page_number: int | None = None,
     ) -> BlocksContainer:
-        """Parse Markdown content into a ``BlocksContainer``."""
+        """Parse preprocessed Markdown content into a ``BlocksContainer``."""
         ...
 
 
-_BACKEND = os.getenv("MARKDOWN_PARSER_BACKEND", "markdownit").lower()
+_BACKEND = os.getenv("PARSER_BACKEND", "markdownit").lower()
 
 if _BACKEND == "docling":
     from app.modules.parsers.markdown.docling_markdown_parser import (

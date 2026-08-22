@@ -35,10 +35,16 @@ export const configPaths = {
     microsoft: '/services/auth/microsoft',
     sso: '/services/auth/sso',
     oauth: '/services/auth/oauth',
+    github: '/services/auth/github',
   },
   aiModels: '/services/aiModels',
+  aiModelsEmbedding: '/services/aiModels/embedding',
   connectorSyncScheduledJobsMigration:
     '/migrations/connector_sync_scheduled_jobs',
+  chatKbFiltersMigration: '/migrations/chat_kb_filters_v1',
+  adminRoleMigration: '/migrations/admin_role_v1',
+  // Python-owned flag (backend/python/app/migrations/kb_apps_migration.py) — read-only from Node.
+  kbAppsMigrationDone: '/migrations/kb_apps_v1',
   webSearch: '/services/webSearch',
   slackBot: '/services/slackBot',
   db: {
@@ -73,4 +79,5 @@ export const configPaths = {
     settings: '/services/platform/settings',
   },
   deployment: '/services/deployment',
+  inheritance: '/services/inheritance',
 };

@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
-import { Flex, Box, Text } from '@radix-ui/themes';
+import React, { useMemo, useState, useRef, useEffect } from 'react';
+import { Flex, Box, Text, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import {
@@ -147,6 +147,8 @@ export function AppSection({
 
   const showChevron = app.hasChildren === true;
   const [headerHovered, setHeaderHovered] = useState(false);
+  const [isNameTruncated, setIsNameTruncated] = useState(false);
+  const nameRef = useRef<HTMLSpanElement>(null);
   const hasChildContent =
     (hierarchicalTree != null && hierarchicalTree.length > 0) || children.length > 0;
 
@@ -155,6 +157,16 @@ export function AppSection({
     const sliced = maxVisible ? hierarchicalTree.slice(0, maxVisible) : hierarchicalTree;
     return indentAppSectionTreeRoots(sliced);
   }, [hierarchicalTree, maxVisible]);
+
+  useEffect(() => {
+    const el = nameRef.current;
+    if (!el) return;
+    const check = () => setIsNameTruncated(el.scrollWidth > el.clientWidth + 1);
+    check();
+    const observer = new ResizeObserver(check);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [app.name]);
 
   return (
     <Box style={{ marginBottom: isExpanded ? 'var(--space-2)' : 0 }}>
@@ -243,13 +255,30 @@ export function AppSection({
           ) : (
             <ConnectorIcon type={connectorType} size={16} color="var(--slate-11)" style={{ flexShrink: 0 }} />
           )}
-          <Text
-            size="2"
-            weight="medium"
-            style={{ color: 'var(--slate-11)', flex: 1 }}
-          >
-            {app.name}
-          </Text>
+          <Box style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+            <Tooltip
+              content={app.name}
+              delayDuration={200}
+              open={isNameTruncated ? undefined : false}
+            >
+              <Text
+                ref={nameRef}
+                size="2"
+                weight="medium"
+                style={{
+                  display: 'block',
+                  color: 'var(--slate-11)',
+                  whiteSpace: 'nowrap',
+                  textAlign: 'left',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  maxWidth: '100%',
+                }}
+              >
+                {app.name}
+              </Text>
+            </Tooltip>
+          </Box>
         </Flex>
       </Flex>
 

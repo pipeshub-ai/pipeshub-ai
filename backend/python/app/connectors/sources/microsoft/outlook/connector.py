@@ -90,6 +90,7 @@ from app.connectors.sources.microsoft.common.outlook_constants import (
     OutlookSyncConfig,
     OutlookSyncPointKeys,
     OutlookThreadDetection,
+    normalize_conversation_index,
 )
 from app.models.entities import (
     AppUser,
@@ -336,6 +337,45 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Failed to initialize Outlook connector: {e}")
             return False
 
+    async def _reinitialize_client_if_needed(self) -> None:
+        """Rebuild the Graph client if its idle HTTP transport has been closed.
+
+        The connector instance is cached and reused across scheduled runs that can be
+        hours/days apart (see EventService._ensure_connector). azure-identity closes the
+        credential's HTTP session when idle, but the wrapper objects stay non-None, so the
+        first Graph call of a later run fails with "HTTP transport has already been closed".
+        Probe the credential and rebuild the client on failure.
+        """
+        try:
+            await self.external_client.get_client().credential.get_token(
+                "https://graph.microsoft.com/.default"
+            )
+            return
+        except Exception as e:
+            self.logger.warning(f"Graph credential needs reinitialization: {e}")
+
+        try:
+            await self.external_client.get_client().close()
+        except Exception:
+            pass
+
+        self.external_client = ExternalMSGraphClient.build_with_config(
+            MSGraphClientWithClientIdSecretConfig(
+                self.credentials.client_id,
+                self.credentials.client_secret,
+                self.credentials.tenant_id
+            ),
+            mode=GraphMode.APP
+        )
+        self.external_outlook_client = OutlookCalendarContactsDataSource(self.external_client)
+        self.external_users_client = UsersGroupsDataSource(self.external_client)
+
+        # Fail loudly if the rebuilt credential still can't get a token (e.g. expired secret).
+        await self.external_client.get_client().credential.get_token(
+            "https://graph.microsoft.com/.default"
+        )
+        self.logger.info("✅ Outlook Graph credential reinitialized")
+
     async def test_connection_and_access(self) -> bool:
         """Test connection and access to external APIs."""
         try:
@@ -443,6 +483,9 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client or not self.external_users_client:
                 raise Exception("External API clients not initialized. Call init() first.")
 
+            # Recover from an idle-closed HTTP transport before the first Graph call.
+            await self._reinitialize_client_if_needed()
+
             # Sync users and get list of users to process
             users_to_sync = await self._sync_users()
 
@@ -533,18 +576,35 @@ class OutlookConnector(BaseConnector):
             page_num = 1
 
             while True:
-                response: UsersGroupsResponse = await self.external_users_client.users_user_list_user(
-                    next_url=next_url
-                )
+                if next_url:
+                    response: UsersGroupsResponse = await self.external_users_client.users_user_list_user(
+                        next_url=next_url
+                    )
+                else:
+                    response: UsersGroupsResponse = await self.external_users_client.users_user_list_user(
+                        select=OutlookAPIFields.USER_SYNC_SELECT_FIELDS,
+                    )
 
                 if not response.success or not response.data:
                     self.logger.error(f"Failed to get users page {page_num}: {response.error}")
+                    # A page-1 failure means the whole user list is empty — do not let it
+                    # masquerade as a successful zero-user sync; fail so the run is retried.
+                    if page_num == 1 and not response.success:
+                        raise Exception(f"Failed to fetch users (page 1): {response.error}")
                     break
 
                 # response.data is UserCollectionResponse with .value containing list[User]
                 user_data = response.data.value if response.data.value else []
 
                 for user in user_data:
+                    # Azure AD guest users have no mailbox in this tenant; never sync them.
+                    if user.user_type == "Guest":
+                        self.logger.info(
+                            "Skipping guest user %s (userType=Guest): no mailbox in this tenant",
+                            user.mail or user.user_principal_name,
+                        )
+                        continue
+
                     display_name = user.display_name or ''
                     given_name = user.given_name or ''
                     surname = user.surname or ''
@@ -577,8 +637,10 @@ class OutlookConnector(BaseConnector):
             return all_users
 
         except Exception as e:
+            # Propagate instead of returning [] — a swallowed failure here makes a dead
+            # transport or auth error look like a legitimately empty tenant.
             self.logger.error(f"Error getting users from external API: {e}")
-            return []
+            raise
 
     async def _sync_user_groups(self) -> list[AppUserGroup]:
         """Sync Microsoft 365 groups and their memberships (full sync)."""
@@ -1367,6 +1429,23 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error getting group post attachments: {e}")
             return []
 
+    @staticmethod
+    def _decode_content_bytes(content_bytes: bytes | str) -> bytes:
+        """Decode Graph API content_bytes handling both old and new Kiota behavior.
+
+        Kiota ≤1.11.6 returned base64 text as UTF-8 bytes; ≥1.11.7 returns
+        properly decoded raw bytes. Detect by checking for non-ASCII content.
+        """
+        raw = content_bytes if isinstance(content_bytes, bytes) else content_bytes.encode("utf-8")
+        try:
+            raw.decode("ascii")
+        except UnicodeDecodeError:
+            return raw
+        try:
+            return base64.b64decode(raw, validate=False)
+        except Exception:
+            return raw
+
     async def _download_group_post_attachment(
         self, group_id: str, thread_id: str, post_id: str, attachment_id: str
     ) -> bytes:
@@ -1394,7 +1473,7 @@ class OutlookConnector(BaseConnector):
             if not content_bytes:
                 return b''
 
-            return base64.b64decode(content_bytes)
+            return self._decode_content_bytes(content_bytes)
 
         except Exception as e:
             self.logger.error(f"Error downloading group post attachment: {e}")
@@ -2171,7 +2250,7 @@ class OutlookConnector(BaseConnector):
                 thread_id=message.conversation_id or '',
                 is_parent=False,
                 internet_message_id=message.internet_message_id or '',
-                conversation_index=message.conversation_index or '',
+                conversation_index=normalize_conversation_index(message.conversation_index),
             )
 
             # Apply indexing filter for mail records
@@ -2504,6 +2583,9 @@ class OutlookConnector(BaseConnector):
                     detail=OutlookHTTPDetails.CLIENT_NOT_INITIALIZED,
                 )
 
+            # Recover from an idle-closed HTTP transport before the first Graph call.
+            await self._reinitialize_client_if_needed()
+
             # Handle group posts (don't need user_id)
             if record.record_type == RecordType.GROUP_MAIL:
                 group_id = record.external_record_group_id
@@ -2698,7 +2780,7 @@ class OutlookConnector(BaseConnector):
             if not content_bytes:
                 return b''
 
-            return base64.b64decode(content_bytes)
+            return self._decode_content_bytes(content_bytes)
 
         except Exception as e:
             self.logger.error(f"Error downloading attachment {attachment_id} for message {message_id}: {e}")
@@ -2770,6 +2852,9 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client or not self.external_users_client:
                 self.logger.error("External API clients not initialized. Call init() first.")
                 raise Exception("External API clients not initialized. Call init() first.")
+
+            # Recover from an idle-closed HTTP transport before the first Graph call.
+            await self._reinitialize_client_if_needed()
 
             # Populate user cache for better performance
             await self._populate_user_cache()

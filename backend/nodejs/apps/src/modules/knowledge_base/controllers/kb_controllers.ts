@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import * as crypto from 'crypto';
 import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
 import { NextFunction, Response } from 'express';
@@ -103,6 +103,12 @@ export const getKnowledgeHubNodes =
 
       if (req.query.onlyContainers !== undefined) {
         queryParams.append('only_containers', String(req.query.onlyContainers));
+      }
+
+      // Tri-state flag (true/false/omitted) — must be forwarded even when
+      // explicitly `false`, so `!== undefined` rather than a truthy check.
+      if (req.query.flattened !== undefined) {
+        queryParams.append('flattened', String(req.query.flattened));
       }
 
       const { parentType, parentId } = req.params;
@@ -428,7 +434,7 @@ export const updateKnowledgeBase =
         HttpMethod.PUT,
         req.headers as Record<string, string>,
         {
-          groupName: kbName,
+          name: kbName,
         },
       );
 
@@ -702,6 +708,7 @@ const streamKbUpload = async (opts: {
   fileBuffers: FileBufferInfo[];
   rejectedFiles: RejectedFileInfo[];
   orgId: string;
+  kbId: string;
   isVersioned: boolean;
   keyValueStoreService: KeyValueStoreService;
   appConfig: AppConfig;
@@ -713,6 +720,7 @@ const streamKbUpload = async (opts: {
     fileBuffers,
     rejectedFiles,
     orgId,
+    kbId,
     isVersioned,
     keyValueStoreService,
     appConfig,
@@ -799,7 +807,7 @@ const streamKbUpload = async (opts: {
           : filePath;
         const extension = getFileExtension(fileName);
         const correctMimeType = (extension && getMimeType(extension)) || mimetype;
-        const key: string = uuidv4();
+        const key: string = randomUUID();
         const webUrl = `/record/${key}`;
         const validLastModified =
           lastModified && !isNaN(lastModified) && lastModified > 0
@@ -858,6 +866,7 @@ const streamKbUpload = async (opts: {
       const counts = await processUploadsInBackground(
         placeholderResults,
         orgId,
+        kbId,
         currentTime,
         pythonServiceUrl,
         req.headers as Record<string, string>,
@@ -1014,6 +1023,7 @@ export const uploadRecords =
         fileBuffers,
         rejectedFiles,
         orgId,
+        kbId,
         isVersioned,
         keyValueStoreService,
         appConfig,
@@ -1730,7 +1740,10 @@ export const getRecordBuffer =
     try {
       const { recordId } = req.params as { recordId: string };
       const { userId, orgId } = req.user || {};
-      const { convertTo } = req.query as { convertTo: string };
+      const { convertTo, version } = req.query as {
+        convertTo: string;
+        version?: string;
+      };
       if (!userId || !orgId) {
         throw new BadRequestError('User authentication is required');
       }
@@ -1739,6 +1752,10 @@ export const getRecordBuffer =
       if (convertTo) {
         logger.info('Converting file to ', { convertTo });
         queryParams.append('convertTo', convertTo);
+      }
+      if (version !== undefined) {
+        // Already validated as `^\d+$` by getRecordByIdSchema.
+        queryParams.append('version', version);
       }
       const headers: Record<string, string> = {
         Authorization: req.headers.authorization as string,

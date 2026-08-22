@@ -4,9 +4,13 @@ from typing import List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import (
+    args_template,
+    entity_summary,
+    list_summary,
+)
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -23,6 +27,58 @@ from app.sources.client.github.github import GitHubClient, GitHubResponse
 from app.sources.external.github.github_ import GitHubDataSource
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Agent-activity summary labels — see `jira.py`'s equivalent block. GitHub's
+# `_handle_response` puts list endpoints' items directly at `data` (a bare
+# list, not `data.<key>`), so `list_summary` below is called with the
+# explicit path `("data",)` rather than the string shorthand.
+# ---------------------------------------------------------------------------
+
+
+def _github_repo_label(repo: dict) -> str:
+    return repo.get("full_name") or repo.get("name") or "?"
+
+
+def _github_issue_label(issue: dict) -> str:
+    number = issue.get("number")
+    title = issue.get("title") or ""
+    return f"#{number}: {title}" if number is not None else (title or "?")
+
+
+# PRs come back from the GitHub API as issue-shaped objects (number + title),
+# so the label is identical — kept as a separate name for readability at call sites.
+_github_pr_label = _github_issue_label
+
+
+def _github_comment_label(comment: dict) -> str:
+    user = comment.get("user")
+    login = user.get("login") if isinstance(user, dict) else None
+    body = (comment.get("body") or "").strip().splitlines()[0][:60] if comment.get("body") else ""
+    if login and body:
+        return f"{login}: {body}"
+    return login or body or "?"
+
+
+def _github_review_label(review: dict) -> str:
+    user = review.get("user")
+    login = user.get("login") if isinstance(user, dict) else "?"
+    return f"{login}: {review.get('state') or '?'}"
+
+
+def _github_owner_label(owner: dict) -> str:
+    return owner.get("login") or "?"
+
+
+def _github_commit_label(commit: dict) -> str:
+    sha = (commit.get("sha") or "")[:7] or "?"
+    message = ((commit.get("commit") or {}).get("message") or "").splitlines()[0][:60]
+    return f"{sha}: {message}" if message else sha
+
+
+def _github_file_change_label(entry: dict) -> str:
+    return f"{entry.get('filename', '?')} ({entry.get('status', '?')})"
 
 
 # ---------------------------------------------------------------------------
@@ -411,23 +467,25 @@ class GitHub:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="github",
-        tool_name="create_repository",
-        description="Create a new repository on GitHub.",
-        llm_description="Creates a repo under the authenticated user. Only name is required (from user query). Do NOT call get_owner first. For private, description, auto_init: use defaults (private=True, description=omit, auto_init=True) if the user did not specify; never ask the user for these.",
-        args_schema=CreateRepositoryInput,
-        returns="JSON with the created repository details",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to create a new GitHub repository",
-            "User asks to set up a new repo on GitHub",
+        path="/tools/github/create_repository",
+        short_description="Create a new repository on GitHub",
+        description=(
+            "Creates a repo under the authenticated user. Only name is required (from user query). "
+            "Do NOT call get_owner first. For private, description, auto_init: use defaults "
+            "(private=True, description=omit, auto_init=True) if the user did not specify; never ask "
+            "the user for these. Use when the user wants to create or set up a new GitHub repository. "
+            "Do not use when the user wants to list or search repositories (use list_repositories or "
+            "search_repositories instead)."
+        ),
+        parameters=[
+            ToolParameter(name="name", type=ParameterType.STRING, description="Repository name from the user query. Only required field.", required=True),
+            ToolParameter(name="private", type=ParameterType.BOOLEAN, description="Whether the repository should be private. Default True. Do not ask the user if not specified.", required=False),
+            ToolParameter(name="description", type=ParameterType.STRING, description="Short description of the repository. Optional. Omit if user did not provide; do not ask.", required=False),
+            ToolParameter(name="auto_init", type=ParameterType.BOOLEAN, description="Initialize with a README. Default True. Do not ask the user if not specified.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to list or search repositories (use list_repositories or search_repositories)",
-            "No GitHub context",
-        ],
-        typical_queries=["Create a GitHub repo", "Create repo X", "Make a new repository on GitHub"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        args_summary=args_template('Creating GitHub repository "{name}"', "name"),
+        result_summary=entity_summary(lambda e: f"Created repository: {_github_repo_label(e)}"),
     )
     async def create_repository(
         self,
@@ -451,24 +509,22 @@ class GitHub:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="github",
-        tool_name="get_repository",
-        description="Get details of a specific GitHub repository.",
-        llm_description="Returns repo info (description, stars, forks, default_branch, etc.). For the current user's repo, get login from get_owner(owner='me') and use it as owner.",
-        args_schema=GetRepositoryInput,
-        returns="JSON with repository details including description, stars, forks, etc.",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User asks for information about a specific GitHub repository",
-            "User wants to inspect a repo's details",
+        path="/tools/github/get_repository",
+        short_description="Get details of a specific GitHub repository",
+        description=(
+            "Returns repo info (description, stars, forks, default_branch, etc.). For the current "
+            "user's repo, get login from get_owner(owner='me') and use it as owner. Use when the user "
+            "asks for information about a specific GitHub repository or wants to inspect a repo's "
+            "details. Do not use for owner/user/org profile (use get_owner), listing multiple repos "
+            "(use list_repositories), or searching repos by keyword (use search_repositories)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
         ],
-        when_not_to_use=[
-            "User wants owner/user/org profile or details (use get_owner)",
-            "User wants to list multiple repos (use list_repositories)",
-            "User wants to search repos by keyword (use search_repositories)",
-        ],
-        typical_queries=["Get info about the repo owner/repo", "Show me the GitHub repository details"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching GitHub repository {owner}/{repo}", "owner", "repo"),
+        result_summary=entity_summary(lambda e: f"Fetched repository: {_github_repo_label(e)}"),
     )
     async def get_repository(self, owner: str, repo: str) -> Tuple[bool, str]:
         """Get details of a specific GitHub repository."""
@@ -481,23 +537,23 @@ class GitHub:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="github",
-        tool_name="get_owner",
-        description="Get details of a GitHub user or organization.",
-        llm_description="Returns profile info (login, name, avatar_url, bio, public_repos). Use owner='me' to get the authenticated user's profile; use the returned 'login' as owner/user in other tools (list_repositories, get_repository, create_issue, etc.). owner_type: 'user' or 'organization'.",
-        args_schema=GetOwnerInput,
-        returns="JSON with owner details (login, name, avatar_url, html_url, bio, public_repos, etc.)",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants details or profile of a GitHub user or organization (the owner)",
-            "User asks who is X, info about user/org X, profile for the owner, or details of the owner of a repo",
+        path="/tools/github/get_owner",
+        short_description="Get details of a GitHub user or organization",
+        description=(
+            "Returns profile info (login, name, avatar_url, bio, public_repos). Use owner='me' to "
+            "get the authenticated user's profile; use the returned 'login' as owner/user in other "
+            "tools (list_repositories, get_repository, create_issue, etc.). owner_type: 'user' or "
+            "'organization'. Use when the user wants details or profile of a GitHub user or "
+            "organization. Do not use for listing repos (use list_repositories) or getting a specific "
+            "repository's details (use get_repository)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="GitHub username or organization login. Use 'me' only here to get the authenticated user's profile (returns login for use in other tools).", required=True),
+            ToolParameter(name="owner_type", type=ParameterType.STRING, description="Type of owner: 'user' for a user account, 'organization' for an org", required=False),
         ],
-        when_not_to_use=[
-            "User wants repos list (use list_repositories)",
-            "User wants a specific repository's details (use get_repository)",
-        ],
-        typical_queries=["Who is X on GitHub?", "Get details for org Y", "Profile for user X", "Info about the owner"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching GitHub profile for {owner}", "owner"),
+        result_summary=entity_summary(lambda e: f"Fetched profile: {_github_owner_label(e)}"),
     )
     async def get_owner(
         self,
@@ -517,24 +573,25 @@ class GitHub:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="github",
-        tool_name="list_repositories",
-        description="List repositories for a GitHub user.",
-        llm_description="Lists repos for a user. For the authenticated user's repos, call get_owner(owner='me') first and use the returned login as user. Optional: type (owner/all/member), per_page (max 50), page.",
-        args_schema=ListRepositoriesInput,
-        returns="JSON array of repositories owned by the user",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to see all repositories for a GitHub user",
-            "User asks to list repos for a given username",
+        path="/tools/github/list_repositories",
+        short_description="List repositories for a GitHub user",
+        description=(
+            "Lists repos for a user. For the authenticated user's repos, call get_owner(owner='me') "
+            "first and use the returned login as user. Optional: type (owner/all/member), per_page "
+            "(max 50), page. Use when the user wants to see all repositories for a GitHub user or "
+            "list repos for a given username. Do not use for owner/user/org profile (use get_owner), "
+            "details of a single repo (use get_repository), or searching repos by keyword (use "
+            "search_repositories)."
+        ),
+        parameters=[
+            ToolParameter(name="user", type=ParameterType.STRING, description="GitHub username whose repositories to list. For the authenticated user, call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="type", type=ParameterType.STRING, description="Filter: 'all', 'owner', or 'member'", required=False),
+            ToolParameter(name="per_page", type=ParameterType.INTEGER, description="Number of repos per page. Default 10 when omitted; max 50.", required=False),
+            ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number (1-based). Default 1 when omitted.", required=False),
         ],
-        when_not_to_use=[
-            "User wants owner/user/org profile or details (use get_owner)",
-            "User wants details of a single specific repo (use get_repository)",
-            "User wants to search repos by keyword (use search_repositories)",
-        ],
-        typical_queries=["List my GitHub repos", "Show repositories for user X"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        args_summary=args_template("Listing GitHub repositories for {user}", "user"),
+        result_summary=list_summary(("data",), _github_repo_label, "repository"),
     )
     async def list_repositories(
         self,
@@ -563,24 +620,26 @@ class GitHub:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="github",
-        tool_name="create_issue",
-        description="Create a new issue in a repository.",
-        llm_description="Creates an issue. Need owner, repo, title. Optional: body, assignees (list of GitHub usernames), labels. For current user's repo use get_owner(owner='me') to get owner.",
-        args_schema=CreateIssueInput,
-        returns="JSON with the created issue details including number and URL",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to open a GitHub issue",
-            "User asks to report a bug or feature request on GitHub",
+        path="/tools/github/create_issue",
+        short_description="Create a new issue in a GitHub repository",
+        description=(
+            "Creates an issue. Need owner, repo, title. Optional: body, assignees (list of GitHub "
+            "usernames), labels. For current user's repo use get_owner(owner='me') to get owner. "
+            "Use when the user wants to open a GitHub issue or report a bug/feature request. "
+            "Do not use for owner/user/org profile (use get_owner) or looking up an existing issue "
+            "(use get_issue)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="title", type=ParameterType.STRING, description="Issue title", required=True),
+            ToolParameter(name="body", type=ParameterType.STRING, description="Issue body/description", required=False),
+            ToolParameter(name="assignees", type=ParameterType.ARRAY, description="GitHub usernames to assign", required=False),
+            ToolParameter(name="labels", type=ParameterType.ARRAY, description="Label names to apply", required=False),
         ],
-        when_not_to_use=[
-            "User wants owner/user/org profile (use get_owner)",
-            "User wants to look up an existing issue (use get_issue)",
-            "No GitHub context",
-        ],
-        typical_queries=["Create a GitHub issue", "Open a bug report", "File a feature request on GitHub"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        args_summary=args_template("Creating GitHub issue in {owner}/{repo}", "owner", "repo"),
+        result_summary=entity_summary(lambda e: f"Created issue: {_github_issue_label(e)}"),
     )
     async def create_issue(
         self,
@@ -608,24 +667,22 @@ class GitHub:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="github",
-        tool_name="get_issue",
-        description="Get details of a specific issue by number.",
-        llm_description="Returns a single issue by owner, repo, and issue number. Use for 'show issue #N', 'status of issue X', or when you need full issue details (title, body, state, assignees, labels).",
-        args_schema=GetIssueInput,
-        returns="JSON with issue details including title, body, state, assignees, and labels",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to look up a specific GitHub issue by number",
-            "User asks about the status or details of an issue",
+        path="/tools/github/get_issue",
+        short_description="Get details of a specific GitHub issue by number",
+        description=(
+            "Returns a single issue by owner, repo, and issue number. Use for 'show issue #N', "
+            "'status of issue X', or when you need full issue details (title, body, state, assignees, "
+            "labels). Do not use for owner/user/org profile (use get_owner), creating an issue (use "
+            "create_issue), or closing an issue (use close_issue)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="number", type=ParameterType.INTEGER, description="Issue number", required=True),
         ],
-        when_not_to_use=[
-            "User wants owner/user/org profile (use get_owner)",
-            "User wants to create an issue (use create_issue)",
-            "User wants to close an issue (use close_issue)",
-        ],
-        typical_queries=["Show me issue #42", "What is the status of GitHub issue 10?"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching GitHub issue {owner}/{repo}#{number}", "owner", "repo", "number"),
+        result_summary=entity_summary(lambda e: f"Fetched issue: {_github_issue_label(e)}"),
     )
     async def get_issue(self, owner: str, repo: str, number: int) -> Tuple[bool, str]:
         """Get details of a specific issue from a GitHub repository."""
@@ -638,24 +695,27 @@ class GitHub:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="github",
-        tool_name="list_issues",
-        description="List issues in a repository with optional filters.",
-        llm_description="Lists issues in a repo. Always returns one page (default 10 per page, max 50). Params: owner, repo; optional state ('open'/'closed'/'all'), labels, assignee, per_page (default 10), page (default 1).",
-        args_schema=ListIssuesInput,
-        returns="JSON array of issues in the repository",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to list or see all issues in a repo",
-            "User asks for open/closed issues, or issues by label/assignee",
+        path="/tools/github/list_issues",
+        short_description="List issues in a GitHub repository",
+        description=(
+            "Lists issues in a repo. Always returns one page (default 10 per page, max 50). "
+            "Params: owner, repo; optional state ('open'/'closed'/'all'), labels, assignee, per_page "
+            "(default 10), page (default 1). Use when the user wants to list or see all issues in a "
+            "repo, or filter by state/label/assignee. Do not use for owner/user/org profile (use "
+            "get_owner), a single issue by number (use get_issue), or creating an issue (use create_issue)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="state", type=ParameterType.STRING, description="Filter: 'open', 'closed', or 'all'", required=False),
+            ToolParameter(name="labels", type=ParameterType.ARRAY, description="Filter by label names", required=False),
+            ToolParameter(name="assignee", type=ParameterType.STRING, description="Filter by assignee username", required=False),
+            ToolParameter(name="per_page", type=ParameterType.INTEGER, description="Issues per page (default 10, max 50).", required=False),
+            ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number (1-based).", required=False),
         ],
-        when_not_to_use=[
-            "User wants owner/user/org profile (use get_owner)",
-            "User wants a single issue by number (use get_issue)",
-            "User wants to create an issue (use create_issue)",
-        ],
-        typical_queries=["List issues in repo X", "Show open issues", "All issues in my repo"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        args_summary=args_template("Listing issues in {owner}/{repo}", "owner", "repo"),
+        result_summary=list_summary(("data",), _github_issue_label, "issue"),
     )
     async def list_issues(
         self,
@@ -690,24 +750,21 @@ class GitHub:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="github",
-        tool_name="close_issue",
-        description="Close an issue in a repository.",
-        llm_description="Marks an issue as closed. Requires owner, repo, and issue number. Use when user wants to close or resolve an issue (for reopening use update_issue with state='open').",
-        args_schema=CloseIssueInput,
-        returns="JSON with the updated issue confirming its closed state",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to close a GitHub issue",
-            "User asks to mark an issue as resolved",
+        path="/tools/github/close_issue",
+        short_description="Close an issue in a GitHub repository",
+        description=(
+            "Marks an issue as closed. Requires owner, repo, and issue number. Use when user wants "
+            "to close or resolve an issue. For reopening, use update_issue with state='open' instead. "
+            "Do not use for viewing an issue (use get_issue) or creating an issue (use create_issue)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="number", type=ParameterType.INTEGER, description="Issue number to close", required=True),
         ],
-        when_not_to_use=[
-            "User wants owner/user/org profile (use get_owner)",
-            "User wants to view an issue (use get_issue)",
-            "User wants to create an issue (use create_issue)",
-        ],
-        typical_queries=["Close issue #5", "Mark GitHub issue 10 as closed"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        args_summary=args_template("Closing GitHub issue {owner}/{repo}#{number}", "owner", "repo", "number"),
+        result_summary=entity_summary(lambda e: f"Closed issue: {_github_issue_label(e)}"),
     )
     async def close_issue(self, owner: str, repo: str, number: int) -> Tuple[bool, str]:
         """Close an issue in a GitHub repository."""
@@ -720,25 +777,28 @@ class GitHub:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="github",
-        tool_name="update_issue",
-        description="Update an issue (title, body, state, assignees, or labels).",
-        llm_description="Updates an issue. Pass only the fields to change; omit others. Can set state to 'open' or 'closed' (reopen/close). assignees and labels replace existing.",
-        args_schema=UpdateIssueInput,
-        returns="JSON with the updated issue details",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to edit or update a GitHub issue",
-            "User asks to change issue title, body, state, assignees, or labels",
+        path="/tools/github/update_issue",
+        short_description="Update a GitHub issue's fields",
+        description=(
+            "Updates an issue. Pass only the fields to change; omit others. Can set state to 'open' "
+            "or 'closed' (reopen/close). assignees and labels replace existing values. Use when the "
+            "user wants to edit or update a GitHub issue (title, body, state, assignees, or labels). "
+            "Do not use for viewing an issue (use get_issue), creating an issue (use create_issue), "
+            "or simply closing an issue (use close_issue)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="number", type=ParameterType.INTEGER, description="Issue number to update", required=True),
+            ToolParameter(name="title", type=ParameterType.STRING, description="New title (omit to leave unchanged)", required=False),
+            ToolParameter(name="body", type=ParameterType.STRING, description="New body/description (omit to leave unchanged)", required=False),
+            ToolParameter(name="state", type=ParameterType.STRING, description="'open' or 'closed' (omit to leave unchanged)", required=False),
+            ToolParameter(name="assignees", type=ParameterType.ARRAY, description="Replace assignees with these usernames (omit to leave unchanged)", required=False),
+            ToolParameter(name="labels", type=ParameterType.ARRAY, description="Replace labels with these names (omit to leave unchanged)", required=False),
         ],
-        when_not_to_use=[
-            "User wants owner/user/org profile (use get_owner)",
-            "User wants to view an issue (use get_issue)",
-            "User wants to create an issue (use create_issue)",
-            "User wants only to close an issue (use close_issue)",
-        ],
-        typical_queries=["Update issue #5", "Edit issue title", "Change issue body", "Reopen issue #3"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        args_summary=args_template("Updating GitHub issue {owner}/{repo}#{number}", "owner", "repo", "number"),
+        result_summary=entity_summary(lambda e: f"Updated issue: {_github_issue_label(e)}"),
     )
     async def update_issue(
         self,
@@ -774,23 +834,22 @@ class GitHub:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="github",
-        tool_name="list_issue_comments",
-        description="List all comments on an issue.",
-        llm_description="Returns all comments on an issue (owner, repo, issue number). Use for 'show comments on issue #N', 'discussion on this issue'. Comment ids from here can be used with get_issue_comment.",
-        args_schema=ListIssueCommentsInput,
-        returns="JSON with list of comments (id, body, user, created_at, updated_at)",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to see comments on an issue",
-            "User asks for discussion or thread on an issue",
+        path="/tools/github/list_issue_comments",
+        short_description="List all comments on a GitHub issue",
+        description=(
+            "Returns all comments on an issue (owner, repo, issue number). Use for 'show comments on "
+            "issue #N', 'discussion on this issue'. Comment ids from here can be used with "
+            "get_issue_comment. Do not use for adding a comment (use create_issue_comment) or "
+            "getting a single comment by ID (use get_issue_comment)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="number", type=ParameterType.INTEGER, description="Issue number", required=True),
         ],
-        when_not_to_use=[
-            "User wants to add a comment (use create_issue_comment)",
-            "User wants a single comment by ID (use get_issue_comment)",
-        ],
-        typical_queries=["List comments on issue #5", "Show discussion on issue #12"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        args_summary=args_template("Listing comments on {owner}/{repo}#{number}", "owner", "repo", "number"),
+        result_summary=list_summary(("data",), _github_comment_label, "comment"),
     )
     async def list_issue_comments(self, owner: str, repo: str, number: int) -> Tuple[bool, str]:
         """List all comments on an issue."""
@@ -803,17 +862,24 @@ class GitHub:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="github",
-        tool_name="get_issue_comment",
-        description="Get a single issue comment by ID.",
-        llm_description="Returns one comment by comment_id. Get comment_id from list_issue_comments. Params: owner, repo, number (issue number), comment_id.",
-        args_schema=GetIssueCommentInput,
-        returns="JSON with comment details (id, body, user, created_at, updated_at)",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=["User wants one specific comment by ID"],
-        when_not_to_use=["User wants all comments (use list_issue_comments)"],
-        typical_queries=["Get comment 123 on issue #5"],
+        path="/tools/github/get_issue_comment",
+        short_description="Get a single issue comment by ID",
+        description=(
+            "Returns one comment by comment_id. Get comment_id from list_issue_comments. "
+            "Use when the user wants one specific comment by ID. Do not use when the user wants all "
+            "comments (use list_issue_comments instead)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="number", type=ParameterType.INTEGER, description="Issue number", required=True),
+            ToolParameter(name="comment_id", type=ParameterType.INTEGER, description="Comment ID (from list_issue_comments)", required=True),
+        ],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        args_summary=args_template(
+            "Fetching comment {comment_id} on {owner}/{repo}#{number}", "owner", "repo", "number", "comment_id"
+        ),
+        result_summary=entity_summary(lambda e: f"Fetched comment: {_github_comment_label(e)}"),
     )
     async def get_issue_comment(self, owner: str, repo: str, number: int, comment_id: int) -> Tuple[bool, str]:
         """Get a single issue comment by ID."""
@@ -826,23 +892,23 @@ class GitHub:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="github",
-        tool_name="create_issue_comment",
-        description="Add a comment to an issue.",
-        llm_description="Posts a comment on an issue. Params: owner, repo, number (issue number), body (comment text; Markdown supported). Use for 'comment on issue #N', 'reply to this issue'. For PRs use the PR's issue number.",
-        args_schema=CreateIssueCommentInput,
-        returns="JSON with the created comment details",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to post a comment on an issue",
-            "User asks to reply or respond on an issue",
+        path="/tools/github/create_issue_comment",
+        short_description="Add a comment to a GitHub issue",
+        description=(
+            "Posts a comment on an issue. Markdown supported. Use for 'comment on issue #N', 'reply "
+            "to this issue'. For PRs use the PR's issue number. Do not use for listing or reading "
+            "comments (use list_issue_comments or get_issue_comment) or adding a line-level review "
+            "comment on a PR (use create_pull_request_review_comment)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="number", type=ParameterType.INTEGER, description="Issue number", required=True),
+            ToolParameter(name="body", type=ParameterType.STRING, description="Comment text (Markdown supported)", required=True),
         ],
-        when_not_to_use=[
-            "User wants to list or read comments (use list_issue_comments or get_issue_comment)",
-            "User wants to add a line-level review comment on a PR (use create_pull_request_review_comment)",
-        ],
-        typical_queries=["Comment on issue #5", "Add a reply to issue #12"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        args_summary=args_template("Commenting on {owner}/{repo}#{number}", "owner", "repo", "number"),
+        result_summary=entity_summary(lambda e: f"Comment added: {_github_comment_label(e)}"),
     )
     async def create_issue_comment(self, owner: str, repo: str, number: int, body: str) -> Tuple[bool, str]:
         """Add a comment to an issue."""
@@ -859,24 +925,26 @@ class GitHub:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="github",
-        tool_name="create_pull_request",
-        description="Create a new pull request.",
-        llm_description="Creates a PR: owner, repo, title, head (source branch), base (target branch). Optional: body, draft (default False).",
-        args_schema=CreatePullRequestInput,
-        returns="JSON with the created pull request details including number and URL",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to open a pull request on GitHub",
-            "User asks to create a PR to merge one branch into another",
+        path="/tools/github/create_pull_request",
+        short_description="Create a new pull request on GitHub",
+        description=(
+            "Creates a PR: owner, repo, title, head (source branch), base (target branch). Optional: "
+            "body, draft (default False). Use when the user wants to open a pull request or create a "
+            "PR to merge one branch into another. Do not use for viewing a PR (use get_pull_request) "
+            "or merging a PR (use merge_pull_request)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="title", type=ParameterType.STRING, description="Pull request title", required=True),
+            ToolParameter(name="head", type=ParameterType.STRING, description="Source branch to merge from", required=True),
+            ToolParameter(name="base", type=ParameterType.STRING, description="Target branch to merge into", required=True),
+            ToolParameter(name="body", type=ParameterType.STRING, description="Pull request description", required=False),
+            ToolParameter(name="draft", type=ParameterType.BOOLEAN, description="Whether to create as a draft PR", required=False),
         ],
-        when_not_to_use=[
-            "User wants owner/user/org profile (use get_owner)",
-            "User wants to view a PR (use get_pull_request)",
-            "User wants to merge a PR (use merge_pull_request)",
-        ],
-        typical_queries=["Create a pull request", "Open a PR from feature-branch to main"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        args_summary=args_template("Creating pull request in {owner}/{repo}", "owner", "repo"),
+        result_summary=entity_summary(lambda e: f"Created PR: {_github_pr_label(e)}"),
     )
     async def create_pull_request(
         self,
@@ -906,24 +974,24 @@ class GitHub:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="github",
-        tool_name="get_pull_request",
-        description="Get details of a specific pull request and its conversation comments.",
-        llm_description="Returns a single PR by owner, repo, and PR number, plus conversation comments (issue-level discussion). Use for 'show PR #N', 'status of this PR', 'PR with comments'. Response has data.pr (title, state, head/base branches, reviewers, etc.) and data.conversation_comments (list of discussion comments). Not for listing PRs (use list_pull_requests) or file changes (use get_pull_request_file_changes).",
-        args_schema=GetPullRequestInput,
-        returns="JSON with data.pr (pull request details) and data.conversation_comments (list of discussion comments)",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to look up a specific pull request by number",
-            "User asks about the status or details of a PR",
+        path="/tools/github/get_pull_request",
+        short_description="Get details of a specific pull request with comments",
+        description=(
+            "Returns a single PR by owner, repo, and PR number, plus conversation comments "
+            "(issue-level discussion). Use for 'show PR #N', 'status of this PR', 'PR with comments'. "
+            "Response has data.pr (title, state, head/base branches, reviewers, etc.) and "
+            "data.conversation_comments (list of discussion comments). Do not use for listing PRs "
+            "(use list_pull_requests), file changes (use get_pull_request_file_changes), creating a "
+            "PR (use create_pull_request), or merging a PR (use merge_pull_request)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="number", type=ParameterType.INTEGER, description="Pull request number", required=True),
         ],
-        when_not_to_use=[
-            "User wants owner/user/org profile (use get_owner)",
-            "User wants to create a PR (use create_pull_request)",
-            "User wants to merge a PR (use merge_pull_request)",
-        ],
-        typical_queries=["Show me PR #7", "What is the status of pull request 3?", "PR #5 with comments", "Show PR and discussion"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching pull request {owner}/{repo}#{number}", "owner", "repo", "number"),
+        result_summary=entity_summary(lambda e: f"Fetched PR: {_github_pr_label(e)}", path=("data", "pr")),
     )
     async def get_pull_request(self, owner: str, repo: str, number: int) -> Tuple[bool, str]:
         """Get details of a specific pull request and its conversation comments (issue comments)."""
@@ -954,23 +1022,23 @@ class GitHub:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="github",
-        tool_name="get_pull_request_commits",
-        description="Get the list of commits in a pull request.",
-        llm_description="Returns commits in the PR. Response includes last_commit_sha — use that as commit_id when calling create_pull_request_review_comment (or use placeholder {{github.get_pull_request_commits.last_commit_sha}}). Call this before adding a line-level review comment.",
-        args_schema=GetPullRequestCommitsInput,
-        returns="JSON with data (array of commits), length, and last_commit_sha.",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to comment on a PR or add a review comment (get commit_id from commits first)",
-            "User asks about commits in a PR",
+        path="/tools/github/get_pull_request_commits",
+        short_description="Get commits in a pull request",
+        description=(
+            "Returns commits in the PR. Response includes last_commit_sha — use that as commit_id "
+            "when calling create_pull_request_review_comment (or use placeholder "
+            "{{github.get_pull_request_commits.last_commit_sha}}). Call this before adding a "
+            "line-level review comment. Do not use for PR details only (use get_pull_request) or "
+            "merging/listing PRs (use merge_pull_request or list_pull_requests)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="number", type=ParameterType.INTEGER, description="Pull request number", required=True),
         ],
-        when_not_to_use=[
-            "User wants PR details only (use get_pull_request)",
-            "User wants to merge or list PRs (use merge_pull_request or list_pull_requests)",
-        ],
-        typical_queries=["Comment on this PR", "Add a review comment on PR #7", "What commits are in PR #5?"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching commits for {owner}/{repo}#{number}", "owner", "repo", "number"),
+        result_summary=list_summary(("data",), _github_commit_label, "commit"),
     )
     async def get_pull_request_commits(self, owner: str, repo: str, number: int) -> Tuple[bool, str]:
         """Get commits of a pull request. Use the last commit's sha as commit_id for create_pull_request_review_comment."""
@@ -996,35 +1064,28 @@ class GitHub:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="github",
-        tool_name="get_pull_request_file_changes",
-        description="Get files changed in a pull request with complete diffs.",
-        llm_description=(
+        path="/tools/github/get_pull_request_file_changes",
+        short_description="Get files changed in a pull request with diffs",
+        description=(
             "Returns list of changed files in a PR with diffs. By default fetches FULL CONTENT "
             "for large files with truncated patches, generating complete diffs locally. "
             "Use for 'review this PR', 'see what changed', 'what files in this PR', 'diff for PR #N'. "
-            "Set fetch_full_content=False for quick overview without expanding truncated files."
+            "Set fetch_full_content=False for quick overview without expanding truncated files. "
+            "Do not use for PR metadata only (use get_pull_request), commits list (use "
+            "get_pull_request_commits), or review comments (use list_pull_request_comments)."
         ),
-        args_schema=GetPullRequestFileChangesInput,
-        returns="JSON array of changed files with filename, status, additions, deletions, and complete patch/diff",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to review a PR or review this PR",
-            "User asks what changes in this PR / what files changed / what's in this PR",
-            "User asks for the diff or file changes of a pull request",
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="number", type=ParameterType.INTEGER, description="Pull request number", required=True),
+            ToolParameter(name="fetch_full_content", type=ParameterType.BOOLEAN, description="Fetch full content for large files with truncated patches. Default True.", required=False),
+            ToolParameter(name="max_changes_per_file", type=ParameterType.INTEGER, description="Skip files with more than this many changes to prevent context overflow", required=False),
+            ToolParameter(name="max_diff_lines", type=ParameterType.INTEGER, description="Truncate diffs longer than this to prevent context overflow", required=False),
+            ToolParameter(name="context_lines", type=ParameterType.INTEGER, description="Number of context lines around changes (1=minimal, 3=standard, 10=verbose)", required=False),
         ],
-        when_not_to_use=[
-            "User wants PR metadata only (use get_pull_request)",
-            "User wants commits list (use get_pull_request_commits)",
-            "User wants review comments (use list_pull_request_comments)",
-        ],
-        typical_queries=[
-            "Review this PR",
-            "What changes in PR #5?",
-            "What files changed in this PR?",
-            "Show me the diff for PR #7"
-        ],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching file changes for {owner}/{repo}#{number}", "owner", "repo", "number"),
+        result_summary=list_summary(("data",), _github_file_change_label, "file"),
     )
     async def get_pull_request_file_changes(
         self,
@@ -1057,24 +1118,27 @@ class GitHub:
             logger.error(f"Error getting pull request file changes: {e}")
             return False, json.dumps({"error": str(e)})
     @tool(
-        app_name="github",
-        tool_name="list_pull_requests",
-        description="List pull requests in a repository with optional filters.",
-        llm_description="Lists PRs in a repo. Always returns one page (default 10 per page, max 50). Params: owner, repo; optional state ('open'/'closed'/'all'), head, base, per_page (default 10), page (default 1).",
-        args_schema=ListPullRequestsInput,
-        returns="JSON array of pull requests in the repository",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to list or see all pull requests in a repo",
-            "User asks for open/closed PRs, or PRs by branch",
+        path="/tools/github/list_pull_requests",
+        short_description="List pull requests in a GitHub repository",
+        description=(
+            "Lists PRs in a repo. Always returns one page (default 10 per page, max 50). "
+            "Params: owner, repo; optional state ('open'/'closed'/'all'), head, base, per_page "
+            "(default 10), page (default 1). Use when the user wants to list or see all pull "
+            "requests in a repo or filter by state/branch. Do not use for a single PR by number "
+            "(use get_pull_request) or creating a PR (use create_pull_request)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="state", type=ParameterType.STRING, description="Filter: 'open', 'closed', or 'all'", required=False),
+            ToolParameter(name="head", type=ParameterType.STRING, description="Filter by head branch name", required=False),
+            ToolParameter(name="base", type=ParameterType.STRING, description="Filter by base branch name", required=False),
+            ToolParameter(name="per_page", type=ParameterType.INTEGER, description="PRs per page (default 10, max 50).", required=False),
+            ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number (1-based).", required=False),
         ],
-        when_not_to_use=[
-            "User wants owner/user/org profile (use get_owner)",
-            "User wants a single PR by number (use get_pull_request)",
-            "User wants to create a PR (use create_pull_request)",
-        ],
-        typical_queries=["List PRs in repo X", "Show open pull requests", "All PRs in my repo"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        args_summary=args_template("Listing pull requests in {owner}/{repo}", "owner", "repo"),
+        result_summary=list_summary(("data",), _github_pr_label, "pull request"),
     )
     async def list_pull_requests(
         self,
@@ -1109,24 +1173,26 @@ class GitHub:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="github",
-        tool_name="merge_pull_request",
-        description="Merge a pull request.",
-        llm_description="Merges a PR. Optional: commit_message, merge_method ('merge', 'squash', or 'rebase'; default 'merge').",
-        args_schema=MergePullRequestInput,
-        returns="JSON with merge status confirming the PR was merged",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to merge a GitHub pull request",
-            "User asks to accept and merge a PR",
+        path="/tools/github/merge_pull_request",
+        short_description="Merge a GitHub pull request",
+        description=(
+            "Merges a PR. Optional: commit_message, merge_method ('merge', 'squash', or 'rebase'; "
+            "default 'merge'). Use when the user wants to merge or accept a GitHub pull request. "
+            "Do not use for viewing a PR (use get_pull_request) or creating a PR (use "
+            "create_pull_request)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="number", type=ParameterType.INTEGER, description="Pull request number to merge", required=True),
+            ToolParameter(name="commit_message", type=ParameterType.STRING, description="Custom commit message for the merge", required=False),
+            ToolParameter(name="merge_method", type=ParameterType.STRING, description="Merge method: 'merge', 'squash', or 'rebase'", required=False),
         ],
-        when_not_to_use=[
-            "User wants owner/user/org profile (use get_owner)",
-            "User wants to view a PR (use get_pull_request)",
-            "User wants to create a PR (use create_pull_request)",
-        ],
-        typical_queries=["Merge pull request #4", "Accept and merge PR 12"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        args_summary=args_template("Merging pull request {owner}/{repo}#{number}", "owner", "repo", "number"),
+        result_summary=entity_summary(
+            lambda e: "Pull request merged" if e.get("merged") else f"Merge result: {e.get('message', 'unknown')}"
+        ),
     )
     async def merge_pull_request(
         self,
@@ -1156,23 +1222,22 @@ class GitHub:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="github",
-        tool_name="get_pull_request_reviews",
-        description="Get reviews on a pull request (approvals, change requests, comments).",
-        llm_description="Returns review summary (who approved, requested changes, or commented) with state (APPROVED, CHANGES_REQUESTED, COMMENT), user, body. Use for 'who approved', 'reviews on this PR'. For line-level review comments use list_pull_request_comments.",
-        args_schema=GetPullRequestInput,
-        returns="JSON array of reviews with state (APPROVED, CHANGES_REQUESTED, COMMENT), user, body, submitted_at",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to see reviews on a PR (who approved, who requested changes)",
-            "User asks who reviewed this PR or what are the reviews",
+        path="/tools/github/get_pull_request_reviews",
+        short_description="Get reviews on a pull request",
+        description=(
+            "Returns review summary (who approved, requested changes, or commented) with state "
+            "(APPROVED, CHANGES_REQUESTED, COMMENT), user, body. Use for 'who approved', 'reviews "
+            "on this PR'. For line-level review comments use list_pull_request_comments instead. "
+            "Do not use for PR metadata (use get_pull_request)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="number", type=ParameterType.INTEGER, description="Pull request number", required=True),
         ],
-        when_not_to_use=[
-            "User wants line-level review comments (use list_pull_request_comments)",
-            "User wants PR metadata (use get_pull_request)",
-        ],
-        typical_queries=["Reviews on PR #7", "Who approved this PR?", "Get reviews for pull request #5"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching reviews on {owner}/{repo}#{number}", "owner", "repo", "number"),
+        result_summary=list_summary(("data",), _github_review_label, "review"),
     )
     async def get_pull_request_reviews(self, owner: str, repo: str, number: int) -> Tuple[bool, str]:
         """Get reviews (approve / request changes / comment) on a pull request."""
@@ -1185,24 +1250,25 @@ class GitHub:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="github",
-        tool_name="create_pull_request_review",
-        description="Submit a PR review: approve, request changes, or comment.",
-        llm_description="Submits an overall review on a PR. event defaults to COMMENT (omit for general comment); use APPROVE to approve, REQUEST_CHANGES to request changes.",
-        args_schema=CreatePullRequestReviewInput,
-        returns="JSON with the created review details",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to approve a pull request",
-            "User wants to request changes on a PR",
-            "User wants to submit a review or leave a general review comment on a PR",
+        path="/tools/github/create_pull_request_review",
+        short_description="Submit a PR review (approve, request changes, or comment)",
+        description=(
+            "Submits an overall review on a PR. event defaults to COMMENT (omit for general comment); "
+            "use APPROVE to approve, REQUEST_CHANGES to request changes. Use when the user wants to "
+            "approve a PR, request changes, or submit a general review comment. Do not use for "
+            "line-level or file-level comments (use create_pull_request_review_comment) or seeing "
+            "existing reviews (use get_pull_request_reviews)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="number", type=ParameterType.INTEGER, description="Pull request number", required=True),
+            ToolParameter(name="event", type=ParameterType.STRING, description="Review outcome: APPROVE, REQUEST_CHANGES, or COMMENT (general comment without approve/changes). Default COMMENT.", required=False),
+            ToolParameter(name="body", type=ParameterType.STRING, description="Review summary text (optional for APPROVE; recommended for REQUEST_CHANGES or COMMENT)", required=False),
         ],
-        when_not_to_use=[
-            "User wants to add a line-level or file-level comment (use create_pull_request_review_comment)",
-            "User wants to see existing reviews (use get_pull_request_reviews)",
-        ],
-        typical_queries=["Approve PR #5", "Request changes on this PR", "Submit a review on PR #7"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        args_summary=args_template("Submitting review on {owner}/{repo}#{number}", "owner", "repo", "number"),
+        result_summary=entity_summary(lambda e: f"Review submitted: {e.get('state') or '?'}"),
     )
     async def create_pull_request_review(
         self,
@@ -1224,23 +1290,22 @@ class GitHub:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="github",
-        tool_name="list_pull_request_comments",
-        description="List review comments on a pull request.",
-        llm_description="Returns line-level and file-level review comments on a PR (id, body, path, line, user). Use for 'review comments on PR #N', 'code review discussion'. Distinct from issue/PR discussion comments (list_issue_comments). Comment ids here used by edit_pull_request_review_comment.",
-        args_schema=ListPullRequestCommentsInput,
-        returns="JSON with list of review comments (id, body, path, line, user, created_at)",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to see review comments on a PR",
-            "User asks for code review discussion on a PR",
+        path="/tools/github/list_pull_request_comments",
+        short_description="List review comments on a pull request",
+        description=(
+            "Returns line-level and file-level review comments on a PR (id, body, path, line, user). "
+            "Use for 'review comments on PR #N', 'code review discussion'. Distinct from issue/PR "
+            "discussion comments (list_issue_comments). Do not use for issue comments (use "
+            "list_issue_comments) or adding a review comment (use create_pull_request_review_comment)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="number", type=ParameterType.INTEGER, description="Pull request number", required=True),
         ],
-        when_not_to_use=[
-            "User wants issue comments (use list_issue_comments on the issue number)",
-            "User wants to add a review comment (use create_pull_request_review_comment)",
-        ],
-        typical_queries=["List comments on PR #7", "Show review comments on pull request #12"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        args_summary=args_template("Listing review comments on {owner}/{repo}#{number}", "owner", "repo", "number"),
+        result_summary=list_summary(("data",), _github_comment_label, "comment"),
     )
     async def list_pull_request_comments(self, owner: str, repo: str, number: int) -> Tuple[bool, str]:
         """List review comments on a pull request."""
@@ -1253,22 +1318,29 @@ class GitHub:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="github",
-        tool_name="create_pull_request_review_comment",
-        description="Add a line-level or file-level review comment on a pull request.",
-        llm_description="Adds a review comment on a specific file/line in a PR. You must call get_pull_request_commits first and use the returned last_commit_sha as commit_id (or placeholder {{github.get_pull_request_commits.last_commit_sha}}). Provide path (file path in repo) and body (comment text). Optional: line (line number), side ('LEFT' or 'RIGHT').",
-        args_schema=CreatePullRequestReviewCommentInput,
-        returns="JSON with the created comment details",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to add a review comment on a specific line or file in a PR",
+        path="/tools/github/create_pull_request_review_comment",
+        short_description="Add a line-level review comment on a pull request",
+        description=(
+            "Adds a review comment on a specific file/line in a PR. You must call "
+            "get_pull_request_commits first and use the returned last_commit_sha as commit_id (or "
+            "placeholder {{github.get_pull_request_commits.last_commit_sha}}). Provide path (file "
+            "path in repo) and body (comment text). Optional: line (line number), side ('LEFT' or "
+            "'RIGHT'). Do not use for PR overall discussion comments (use create_issue_comment with "
+            "the PR issue number)."
+        ),
+        parameters=[
+            ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
+            ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
+            ToolParameter(name="number", type=ParameterType.INTEGER, description="Pull request number", required=True),
+            ToolParameter(name="body", type=ParameterType.STRING, description="Comment text", required=True),
+            ToolParameter(name="commit_id", type=ParameterType.STRING, description="Commit SHA. Call get_pull_request_commits first, then use placeholder: {{github.get_pull_request_commits.last_commit_sha}}. Do NOT use data[-1].sha.", required=True),
+            ToolParameter(name="path", type=ParameterType.STRING, description="File path (e.g. 'src/main.py')", required=True),
+            ToolParameter(name="line", type=ParameterType.INTEGER, description="Line number in the file", required=False),
+            ToolParameter(name="side", type=ParameterType.STRING, description="'LEFT' or 'RIGHT' for diff side", required=False),
         ],
-        when_not_to_use=[
-            "User wants to comment on the PR overall discussion (use create_issue_comment with the PR issue number)",
-            "User wants to reply to an existing review comment; add a new comment with create_pull_request_review_comment)",
-        ],
-        typical_queries=["Comment on line 10 of src/main.py in PR #7", "Add review comment on projects.html line 18 in PR #5"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        args_summary=args_template("Adding review comment on {owner}/{repo}#{number}", "owner", "repo", "number"),
+        result_summary=entity_summary(lambda e: f"Review comment added: {_github_comment_label(e)}"),
     )
     async def create_pull_request_review_comment(
         self,
@@ -1304,24 +1376,24 @@ class GitHub:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="github",
-        tool_name="search_repositories",
-        description="Search for repositories on GitHub by keyword, language, or criteria.",
-        llm_description="Searches GitHub repos. Query can include keywords; use 'in:name' for repo name, 'in:description', 'language:python', 'stars:>100', etc. Returns same trimmed fields as list_repositories.",
-        args_schema=SearchRepositoriesInput,
-        returns="JSON array of matching repositories (trimmed fields).",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.CODE_MANAGEMENT,
-        when_to_use=[
-            "User wants to find GitHub repositories by keyword, language, or other criteria",
-            "User asks to search for repos on GitHub",
+        path="/tools/github/search_repositories",
+        short_description="Search for repositories on GitHub",
+        description=(
+            "Searches GitHub repos by keyword, language, or criteria. Query can include keywords; "
+            "use 'in:name' for repo name, 'in:description', 'language:python', 'stars:>100', etc. "
+            "Returns same trimmed fields as list_repositories. Use when the user wants to find "
+            "GitHub repositories by keyword, language, or other criteria. Do not use for owner/"
+            "user/org profile (use get_owner), repos for a specific user (use list_repositories), "
+            "or details of a known repo (use get_repository)."
+        ),
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="GitHub search query. Use 'X in:name' to search repo name, 'X in:description' for description, 'language:python', 'stars:>100', etc.", required=True),
+            ToolParameter(name="per_page", type=ParameterType.INTEGER, description="Results per page. Default 10 when omitted; max 50.", required=False),
+            ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number (1-based). Default 1 when omitted.", required=False),
         ],
-        when_not_to_use=[
-            "User wants owner/user/org profile (use get_owner)",
-            "User wants repos for a specific user (use list_repositories)",
-            "User wants details of a known repo (use get_repository)",
-        ],
-        typical_queries=["Search GitHub for Python web frameworks", "Find repos with 'machine learning' in the name"],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="search")],
+        args_summary=args_template('Searching GitHub repositories: "{query}"', "query"),
+        result_summary=list_summary(("data",), _github_repo_label, "repository"),
     )
     async def search_repositories(
         self,

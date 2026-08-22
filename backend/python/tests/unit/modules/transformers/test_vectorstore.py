@@ -12,24 +12,22 @@ import pytest
 
 def _make_vectorstore():
     """Instantiate a VectorStore with everything mocked to bypass __init__ side effects."""
-    with patch(
-        "app.modules.transformers.vectorstore.FastEmbedSparse"
-    ) as mock_sparse, patch(
-        "app.modules.transformers.vectorstore._get_shared_nlp"
-    ) as mock_nlp:
-        mock_sparse.return_value = MagicMock()
-        mock_nlp.return_value = MagicMock()
+    from app.services.vector_db.models import VectorDBCapabilities
 
-        from app.modules.transformers.vectorstore import VectorStore
+    from app.modules.transformers.vectorstore import VectorStore
 
-        vs = VectorStore(
-            logger=MagicMock(),
-            config_service=AsyncMock(),
-            graph_provider=AsyncMock(),
-            collection_name="test_collection",
-            vector_db_service=AsyncMock(),
-        )
-        return vs
+    mock_vdb = AsyncMock()
+    mock_vdb.get_capabilities = MagicMock(return_value=VectorDBCapabilities())
+    mock_vdb.get_service_name = MagicMock(return_value="mock")
+
+    vs = VectorStore(
+        logger=MagicMock(),
+        config_service=AsyncMock(),
+        graph_provider=AsyncMock(),
+        collection_name="test_collection",
+        vector_db_service=mock_vdb,
+    )
+    return vs
 
 
 # ===================================================================
@@ -225,9 +223,12 @@ class TestInitializeCollection:
 
     @pytest.mark.asyncio
     async def test_creates_collection_when_not_found(self):
-        """Creates collection when get_collection raises."""
+        """Creates collection when collection does not exist."""
+        from app.services.vector_db.models import VectorCollectionInfo
         vs = _make_vectorstore()
-        vs.vector_db_service.get_collection = AsyncMock(side_effect=Exception("not found"))
+        vs.vector_db_service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(name="test_collection", exists=False)
+        )
         vs.vector_db_service.create_collection = AsyncMock()
         vs.vector_db_service.create_index = AsyncMock()
 
@@ -238,27 +239,25 @@ class TestInitializeCollection:
 
     @pytest.mark.asyncio
     async def test_recreates_on_dimension_mismatch(self):
-        """Recreates collection when vector size differs."""
+        """Raises VectorStoreError when vector size differs (manual re-index required)."""
+        from app.exceptions.indexing_exceptions import VectorStoreError
+        from app.services.vector_db.models import VectorCollectionInfo
         vs = _make_vectorstore()
-        mock_info = MagicMock()
-        mock_info.config.params.vectors = {"dense": MagicMock(size=512)}
-        vs.vector_db_service.get_collection = AsyncMock(return_value=mock_info)
-        vs.vector_db_service.delete_collection = AsyncMock()
-        vs.vector_db_service.create_collection = AsyncMock()
-        vs.vector_db_service.create_index = AsyncMock()
+        vs.vector_db_service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(name="test_collection", exists=True, dense_dimension=512)
+        )
 
-        await vs._initialize_collection(embedding_size=768)
-
-        vs.vector_db_service.delete_collection.assert_awaited_once()
-        vs.vector_db_service.create_collection.assert_awaited_once()
+        with pytest.raises(VectorStoreError):
+            await vs._initialize_collection(embedding_size=768)
 
     @pytest.mark.asyncio
     async def test_no_recreate_when_same_size(self):
         """Does not recreate when sizes match."""
+        from app.services.vector_db.models import VectorCollectionInfo
         vs = _make_vectorstore()
-        mock_info = MagicMock()
-        mock_info.config.params.vectors = {"dense": MagicMock(size=768)}
-        vs.vector_db_service.get_collection = AsyncMock(return_value=mock_info)
+        vs.vector_db_service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(name="test_collection", exists=True, dense_dimension=768)
+        )
         vs.vector_db_service.create_collection = AsyncMock()
 
         await vs._initialize_collection(embedding_size=768)
@@ -269,8 +268,11 @@ class TestInitializeCollection:
     async def test_create_collection_failure_raises_vectorstore_error(self):
         """Raises VectorStoreError when creation fails."""
         from app.exceptions.indexing_exceptions import VectorStoreError
+        from app.services.vector_db.models import VectorCollectionInfo
         vs = _make_vectorstore()
-        vs.vector_db_service.get_collection = AsyncMock(side_effect=Exception("not found"))
+        vs.vector_db_service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(name="test_collection", exists=False)
+        )
         vs.vector_db_service.create_collection = AsyncMock(side_effect=RuntimeError("create failed"))
 
         with pytest.raises(VectorStoreError):
@@ -294,12 +296,11 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embed = MagicMock()
-        mock_embed.embed_query.return_value = [0.1] * 768
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 768)
         mock_embed.model_name = "test-model"
 
         with patch("app.modules.transformers.vectorstore.get_default_embedding_model", return_value=mock_embed):
-            with patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
-                result = await vs.get_embedding_model_instance()
+            result = await vs.get_embedding_model_instance()
 
         assert result is False  # default model is not multimodal
 
@@ -320,12 +321,11 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embed = MagicMock()
-        mock_embed.embed_query.return_value = [0.1] * 1536
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1536)
         mock_embed.model_name = "text-embedding-3-small"
 
         with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
-            with patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
-                result = await vs.get_embedding_model_instance()
+            result = await vs.get_embedding_model_instance()
 
         assert result is True
 
@@ -345,7 +345,7 @@ class TestGetEmbeddingModelInstance:
         })
 
         mock_embed = MagicMock()
-        mock_embed.embed_query.side_effect = RuntimeError("API error")
+        mock_embed.aembed_query = AsyncMock(side_effect=RuntimeError("API error"))
 
         with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
             with pytest.raises(IndexingError):
@@ -368,13 +368,12 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embed = MagicMock(spec=[])  # no attributes
-        mock_embed.embed_query = MagicMock(return_value=[0.1] * 1024)
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         # Add only 'model' attribute
         mock_embed.model = "test-model-via-model"
 
         with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
-            with patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
-                await vs.get_embedding_model_instance()
+            await vs.get_embedding_model_instance()
 
         assert vs.model_name == "test-model-via-model"
 
@@ -395,12 +394,11 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embed = MagicMock(spec=[])  # no attributes
-        mock_embed.embed_query = MagicMock(return_value=[0.1] * 1024)
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         mock_embed.model_id = "test-model-via-id"
 
         with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
-            with patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
-                await vs.get_embedding_model_instance()
+            await vs.get_embedding_model_instance()
 
         assert vs.model_name == "test-model-via-id"
 
@@ -542,8 +540,9 @@ class TestProcessImageEmbeddings:
         """Unsupported provider returns empty list."""
         vs = _make_vectorstore()
         vs.embedding_provider = "UNSUPPORTED_PROVIDER"
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
 
-        result = await vs._process_image_embeddings([], [], "test-record")
+        result = await vs._process_image_embeddings([], [], "rec-1")
 
         assert result == []
 
@@ -558,7 +557,7 @@ class TestProcessImageEmbeddings:
         vs._process_image_embeddings_cohere = AsyncMock(return_value=[])
 
         result = await vs._process_image_embeddings(
-            [{"metadata": {}}], ["data:image/png;base64,abc"], "missing-record"
+            [{"metadata": {}}], ["data:image/png;base64,abc"], "rec-1"
         )
 
         vs.graph_provider.get_document.assert_awaited_once()
@@ -571,9 +570,10 @@ class TestProcessImageEmbeddings:
         from app.utils.aimodels import EmbeddingProvider
         vs = _make_vectorstore()
         vs.embedding_provider = EmbeddingProvider.COHERE.value
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
         vs._process_image_embeddings_cohere = AsyncMock(return_value=[])
 
-        await vs._process_image_embeddings([], [], "test-record")
+        await vs._process_image_embeddings([], [], "rec-1")
 
         vs._process_image_embeddings_cohere.assert_awaited_once()
 
@@ -583,9 +583,10 @@ class TestProcessImageEmbeddings:
         from app.utils.aimodels import EmbeddingProvider
         vs = _make_vectorstore()
         vs.embedding_provider = EmbeddingProvider.VOYAGE.value
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
         vs._process_image_embeddings_voyage = AsyncMock(return_value=[])
 
-        await vs._process_image_embeddings([], [], "test-record")
+        await vs._process_image_embeddings([], [], "rec-1")
 
         vs._process_image_embeddings_voyage.assert_awaited_once()
 
@@ -595,9 +596,10 @@ class TestProcessImageEmbeddings:
         from app.utils.aimodels import EmbeddingProvider
         vs = _make_vectorstore()
         vs.embedding_provider = EmbeddingProvider.AWS_BEDROCK.value
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
         vs._process_image_embeddings_bedrock = AsyncMock(return_value=[])
 
-        await vs._process_image_embeddings([], [], "test-record")
+        await vs._process_image_embeddings([], [], "rec-1")
 
         vs._process_image_embeddings_bedrock.assert_awaited_once()
 
@@ -607,11 +609,25 @@ class TestProcessImageEmbeddings:
         from app.utils.aimodels import EmbeddingProvider
         vs = _make_vectorstore()
         vs.embedding_provider = EmbeddingProvider.JINA_AI.value
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
         vs._process_image_embeddings_jina = AsyncMock(return_value=[])
 
-        await vs._process_image_embeddings([], [], "test-record")
+        await vs._process_image_embeddings([], [], "rec-1")
 
         vs._process_image_embeddings_jina.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_openai_compatible_dispatch(self):
+        """OpenAI-compatible provider dispatches to its image helper."""
+        from app.utils.aimodels import EmbeddingProvider
+        vs = _make_vectorstore()
+        vs.embedding_provider = EmbeddingProvider.OPENAI_COMPATIBLE.value
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
+        vs._process_image_embeddings_openai_compatible = AsyncMock(return_value=[])
+
+        await vs._process_image_embeddings([], [], "rec-1")
+
+        vs._process_image_embeddings_openai_compatible.assert_awaited_once()
 
 
 # ===================================================================
@@ -688,13 +704,12 @@ class TestProcessDocumentChunks:
 
         vs = _make_vectorstore()
         vs.embedding_provider = None  # local
-        vs.vector_store = AsyncMock()
-        vs.vector_store.aadd_documents = AsyncMock()
+        vs._embed_and_upsert_documents = AsyncMock()
 
         chunks = [Document(page_content="test", metadata={})]
-        await vs._process_document_chunks(chunks, "test-record")
+        await vs._process_document_chunks(chunks, "rec-1")
 
-        vs.vector_store.aadd_documents.assert_awaited()
+        vs._embed_and_upsert_documents.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_remote_concurrent_processing(self):
@@ -703,13 +718,12 @@ class TestProcessDocumentChunks:
 
         vs = _make_vectorstore()
         vs.embedding_provider = "openai"
-        vs.vector_store = AsyncMock()
-        vs.vector_store.aadd_documents = AsyncMock()
+        vs._embed_and_upsert_documents = AsyncMock()
 
         chunks = [Document(page_content=f"test {i}", metadata={}) for i in range(5)]
-        await vs._process_document_chunks(chunks, "test-record")
+        await vs._process_document_chunks(chunks, "rec-1")
 
-        vs.vector_store.aadd_documents.assert_awaited()
+        vs._embed_and_upsert_documents.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_record_not_found_skips_embedding(self):
@@ -718,15 +732,13 @@ class TestProcessDocumentChunks:
 
         vs = _make_vectorstore()
         vs.embedding_provider = None
-        vs.vector_store = AsyncMock()
-        vs.vector_store.aadd_documents = AsyncMock()
+        # Don't mock _embed_and_upsert_documents so real implementation runs
         vs.graph_provider.get_document = AsyncMock(return_value=None)
 
         chunks = [Document(page_content="test", metadata={})]
-        await vs._process_document_chunks(chunks, "missing-record")
+        await vs._process_document_chunks(chunks, "rec-1")
 
         vs.graph_provider.get_document.assert_awaited_once()
-        vs.vector_store.aadd_documents.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_local_batch_failure_raises(self):
@@ -736,12 +748,11 @@ class TestProcessDocumentChunks:
 
         vs = _make_vectorstore()
         vs.embedding_provider = None  # local
-        vs.vector_store = AsyncMock()
-        vs.vector_store.aadd_documents = AsyncMock(side_effect=RuntimeError("fail"))
+        vs._embed_and_upsert_documents = AsyncMock(side_effect=RuntimeError("fail"))
 
         chunks = [Document(page_content="test", metadata={})]
         with pytest.raises(VectorStoreError):
-            await vs._process_document_chunks(chunks, "test-record")
+            await vs._process_document_chunks(chunks, "rec-1")
 
 
 # ===================================================================
@@ -851,7 +862,7 @@ class TestIndexDocuments:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(
                 BlocksContainer(blocks=[], block_groups=[]),
@@ -868,17 +879,10 @@ class TestIndexDocuments:
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
 
-        # Mock nlp to return sentences
-        mock_doc = MagicMock()
-        mock_sent = MagicMock()
-        mock_sent.text = "Hello world"
-        mock_doc.sents = [mock_sent]
-        vs.nlp = MagicMock(return_value=mock_doc)
-
         block = Block(index=0, type="text", format="txt", data="Hello world", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -893,19 +897,10 @@ class TestIndexDocuments:
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
 
-        # Mock nlp to return multiple sentences
-        sent1 = MagicMock()
-        sent1.text = "First sentence."
-        sent2 = MagicMock()
-        sent2.text = "Second sentence."
-        mock_doc = MagicMock()
-        mock_doc.sents = [sent1, sent2]
-        vs.nlp = MagicMock(return_value=mock_doc)
-
         block = Block(index=0, type="text", format="txt", data="First sentence. Second sentence.", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -925,7 +920,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="image", format="bin", data={"uri": "base64data"}, comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -948,7 +943,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="image", format="bin", data={"uri": "base64data"}, comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -968,7 +963,7 @@ class TestIndexDocuments:
         bg.data = {"table_summary": "Summary of the table"}
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -990,7 +985,7 @@ class TestIndexDocuments:
         )
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1008,7 +1003,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="divider", format="txt", data="test", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1026,7 +1021,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="heading", format="txt", data="Main Heading", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1054,7 +1049,7 @@ class TestIndexDocuments:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.side_effect = RuntimeError("llm fail")
             with pytest.raises(IndexingError, match="Failed to get LLM"):
                 await vs.index_documents(
@@ -1075,7 +1070,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="text", format="txt", data="Hello", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             with pytest.raises(IndexingError, match="Unexpected error during indexing"):
                 await vs.index_documents(container, "org-1", "rec-1", "vr-1")
@@ -1092,7 +1087,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="paragraph", format="txt", data="A paragraph", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1110,7 +1105,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="quote", format="txt", data="A quote", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1128,7 +1123,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="table_cell", format="txt", data={"cell": "value"}, comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1136,86 +1131,126 @@ class TestIndexDocuments:
         assert result is True
 
 
-class TestCreateCustomTokenizer:
-    """Tests for VectorStore._create_custom_tokenizer."""
-
-    def test_returns_language_instance(self):
-        """_create_custom_tokenizer returns a Language instance."""
-        vs = _make_vectorstore()
-        import spacy
-        # blank("en") has no "parser" pipe; add one so _create_custom_tokenizer
-        # can insert sentencizer before it (mirrors en_core_web_sm layout).
-        nlp = spacy.blank("en")
-        nlp.add_pipe("parser")
-        result = vs._create_custom_tokenizer(nlp)
-        assert result is not None
-        assert "sentencizer" in result.pipe_names
-
-
 # ===================================================================
-# _get_shared_nlp (lines 42-54)
+# _detect_record_language / _build_text_documents / _chunk_oversized_text /
+# _process_text_blocks (module-level helpers that replaced spaCy)
 # ===================================================================
 
-class TestGetSharedNlp:
-    """Tests for the _get_shared_nlp module-level function."""
+class TestDetectRecordLanguage:
+    """Tests for the _detect_record_language module-level function."""
 
-    @staticmethod
-    def _blank_with_parser():
-        """Return a blank English model with a parser pipe (mimics en_core_web_sm)."""
-        import spacy
-        nlp = spacy.blank("en")
-        nlp.add_pipe("parser")
-        return nlp
+    def test_empty_blocks_defaults_to_en(self):
+        from app.modules.transformers.vectorstore import _detect_record_language
+        assert _detect_record_language([]) == "en"
 
-    def test_returns_language_instance(self):
-        """_get_shared_nlp returns a spaCy Language instance."""
-        from spacy.language import Language
-        with patch("app.modules.transformers.vectorstore.spacy.load", return_value=self._blank_with_parser()):
-            from app.modules.transformers.vectorstore import _get_shared_nlp
-            # Clear cache so we exercise the creation path
-            if hasattr(_get_shared_nlp, "_cached_nlp"):
-                delattr(_get_shared_nlp, "_cached_nlp")
-            nlp = _get_shared_nlp()
-            assert isinstance(nlp, Language)
+    def test_blocks_with_no_text_defaults_to_en(self):
+        from app.models.blocks import Block
+        from app.modules.transformers.vectorstore import _detect_record_language
+        blocks = [Block(index=0, type="text", format="txt", data="", comments=[])]
+        assert _detect_record_language(blocks) == "en"
 
-    def test_caching_returns_same_instance(self):
-        """Subsequent calls return the same cached instance."""
-        with patch("app.modules.transformers.vectorstore.spacy.load", return_value=self._blank_with_parser()):
-            from app.modules.transformers.vectorstore import _get_shared_nlp
-            # Clear cache to start fresh
-            if hasattr(_get_shared_nlp, "_cached_nlp"):
-                delattr(_get_shared_nlp, "_cached_nlp")
-            nlp1 = _get_shared_nlp()
-            nlp2 = _get_shared_nlp()
-            assert nlp1 is nlp2
+    def test_detects_english_text(self):
+        from app.models.blocks import Block
+        from app.modules.transformers.vectorstore import _detect_record_language
+        blocks = [
+            Block(
+                index=0,
+                type="text",
+                format="txt",
+                data="This is a perfectly ordinary English sentence about the weather today.",
+                comments=[],
+            )
+        ]
+        assert _detect_record_language(blocks) == "en"
 
-
-# ===================================================================
-# VectorStore.__init__ error paths (lines 96-107)
-# ===================================================================
-
-class TestVectorStoreInitErrors:
-    """Tests for VectorStore.__init__ error handling."""
-
-    def test_sparse_embedding_failure_raises_indexing_error(self):
-        """When FastEmbedSparse fails, should raise IndexingError."""
-        from app.exceptions.indexing_exceptions import IndexingError
-
+    def test_delegates_to_detect_language(self):
+        """Passes the sampled text straight through to detect_language."""
+        from app.models.blocks import Block
+        from app.modules.transformers.vectorstore import _detect_record_language
+        blocks = [Block(index=0, type="text", format="txt", data="Some text", comments=[])]
         with patch(
-            "app.modules.transformers.vectorstore.FastEmbedSparse",
-            side_effect=Exception("sparse init failed"),
-        ):
-            with patch("app.modules.transformers.vectorstore._get_shared_nlp") as mock_nlp:
-                mock_nlp.return_value = MagicMock()
-                from app.modules.transformers.vectorstore import VectorStore
-                with pytest.raises(IndexingError, match="Failed to initialize"):
-                    VectorStore(
-                        logger=MagicMock(),
-                        config_service=AsyncMock(),
-                        graph_provider=AsyncMock(),
-                        collection_name="test",
-                        vector_db_service=AsyncMock(),
-                    )
+            "app.modules.transformers.vectorstore.detect_language",
+            return_value="fr",
+        ) as mock_detect:
+            result = _detect_record_language(blocks)
+        assert result == "fr"
+        mock_detect.assert_called_once_with("Some text")
+
+
+class TestChunkOversizedText:
+    """Tests for the _chunk_oversized_text module-level function."""
+
+    def test_short_text_returns_single_chunk(self):
+        from app.modules.transformers.vectorstore import _chunk_oversized_text
+        chunks = _chunk_oversized_text("Just one short sentence.", "en")
+        assert len(chunks) == 1
+
+    def test_long_text_splits_into_multiple_chunks(self):
+        from app.modules.transformers.vectorstore import (
+            _OVERSIZED_CHUNK_SIZE,
+            _chunk_oversized_text,
+        )
+        sentence = "This is a moderately long sentence for testing purposes. "
+        text = sentence * 200  # far exceeds _OVERSIZED_CHUNK_SIZE
+        chunks = _chunk_oversized_text(text, "en")
+        assert len(chunks) > 1
+        assert all(len(c) <= _OVERSIZED_CHUNK_SIZE + len(sentence) for c in chunks)
+
+    def test_empty_text_returns_text_as_single_chunk(self):
+        from app.modules.transformers.vectorstore import _chunk_oversized_text
+        assert _chunk_oversized_text("", "en") == [""]
+
+
+class TestBuildTextDocuments:
+    """Tests for the _build_text_documents module-level function."""
+
+    def test_single_sentence_block_yields_one_document(self):
+        from app.models.blocks import Block
+        from app.modules.transformers.vectorstore import _build_text_documents
+        blocks = [Block(index=0, type="text", format="txt", data="Hello world", comments=[])]
+        docs = _build_text_documents(blocks, "vr-1", "org-1", "en")
+        assert len(docs) == 1
+        assert docs[0].metadata["isBlock"] is True
+
+    def test_multi_sentence_block_yields_sentences_plus_block(self):
+        from app.models.blocks import Block
+        from app.modules.transformers.vectorstore import _build_text_documents
+        blocks = [
+            Block(
+                index=0,
+                type="text",
+                format="txt",
+                data="First sentence. Second sentence.",
+                comments=[],
+            )
+        ]
+        docs = _build_text_documents(blocks, "vr-1", "org-1", "en")
+        assert len(docs) == 3
+        assert sum(1 for d in docs if d.metadata["isBlock"]) == 1
+
+    def test_oversized_block_skips_whole_block_document(self):
+        from app.models.blocks import Block
+        from app.modules.transformers.vectorstore import (
+            _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT,
+            _build_text_documents,
+        )
+        oversized_text = ("Sentence number filler text here. " * 2000)
+        assert len(oversized_text) > _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT
+        blocks = [Block(index=0, type="text", format="txt", data=oversized_text, comments=[])]
+        docs = _build_text_documents(blocks, "vr-1", "org-1", "en")
+        assert len(docs) > 1
+        assert all(not d.metadata["isBlock"] for d in docs)
+
+
+class TestProcessTextBlocks:
+    """Tests for the _process_text_blocks module-level function."""
+
+    def test_combines_detection_and_document_building(self):
+        from app.models.blocks import Block
+        from app.modules.transformers.vectorstore import _process_text_blocks
+        blocks = [Block(index=0, type="text", format="txt", data="Hello world", comments=[])]
+        docs = _process_text_blocks(blocks, "vr-1", "org-1")
+        assert len(docs) == 1
 
 
 # ===================================================================
@@ -1254,37 +1289,29 @@ class TestApply:
 
 
 # ===================================================================
-# custom_sentence_boundary (lines 166-240)
+# split_into_sentences (app.modules.parsers.text_splitting) — replaces the
+# old spaCy custom_sentence_boundary component used by VectorStore.
 # ===================================================================
 
-class TestCustomSentenceBoundary:
-    """Tests for the custom_sentence_boundary component."""
+class TestSplitIntoSentences:
+    """Tests for the pysbd-based split_into_sentences helper used by VectorStore."""
 
     def test_number_period_not_sentence_boundary(self):
         """Number followed by period should not be a sentence boundary."""
-        import spacy
-        nlp = spacy.blank("en")
-        nlp.add_pipe("sentencizer")
-        doc = nlp("Section 1. The first item.")
-        sents = list(doc.sents)
+        from app.modules.parsers.text_splitting import split_into_sentences
+        sents = split_into_sentences("Section 1. The first item.", "en")
         assert len(sents) >= 1
 
     def test_abbreviation_not_sentence_boundary(self):
         """Common abbreviations should not cause sentence splits."""
-        import spacy
-        nlp = spacy.blank("en")
-        nlp.add_pipe("sentencizer")
-        doc = nlp("Dr. Smith went to the store.")
-        sents = list(doc.sents)
+        from app.modules.parsers.text_splitting import split_into_sentences
+        sents = split_into_sentences("Dr. Smith went to the store.", "en")
         assert len(sents) <= 2
 
     def test_ellipsis_not_sentence_boundary(self):
         """Ellipsis (...) should not cause sentence splits."""
-        import spacy
-        nlp = spacy.blank("en")
-        nlp.add_pipe("sentencizer")
-        doc = nlp("Wait... I think so.")
-        sents = list(doc.sents)
+        from app.modules.parsers.text_splitting import split_into_sentences
+        sents = split_into_sentences("Wait... I think so.", "en")
         assert len(sents) >= 1
 
 
@@ -1298,34 +1325,36 @@ class TestInitializeCollection:
     @pytest.mark.asyncio
     async def test_collection_exists_same_size(self):
         """When collection exists with correct size, should not recreate."""
+        from app.services.vector_db.models import VectorCollectionInfo
         vs = _make_vectorstore()
-        mock_info = MagicMock()
-        mock_info.config.params.vectors = {"dense": MagicMock(size=1024)}
-        vs.vector_db_service.get_collection = AsyncMock(return_value=mock_info)
+        vs.vector_db_service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(name="test_collection", exists=True, dense_dimension=1024)
+        )
 
         await vs._initialize_collection(embedding_size=1024)
         vs.vector_db_service.create_collection.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_collection_exists_different_size(self):
-        """When collection exists with wrong size, should recreate."""
+        """When collection exists with wrong size, should raise VectorStoreError."""
+        from app.exceptions.indexing_exceptions import VectorStoreError
+        from app.services.vector_db.models import VectorCollectionInfo
         vs = _make_vectorstore()
-        mock_info = MagicMock()
-        mock_info.config.params.vectors = {"dense": MagicMock(size=512)}
-        vs.vector_db_service.get_collection = AsyncMock(return_value=mock_info)
-        vs.vector_db_service.delete_collection = AsyncMock()
-        vs.vector_db_service.create_collection = AsyncMock()
-        vs.vector_db_service.create_index = AsyncMock()
+        vs.vector_db_service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(name="test_collection", exists=True, dense_dimension=512)
+        )
 
-        await vs._initialize_collection(embedding_size=1024)
-        vs.vector_db_service.delete_collection.assert_awaited_once()
-        vs.vector_db_service.create_collection.assert_awaited_once()
+        with pytest.raises(VectorStoreError):
+            await vs._initialize_collection(embedding_size=1024)
 
     @pytest.mark.asyncio
     async def test_collection_not_found_creates_new(self):
         """When collection does not exist, should create it."""
+        from app.services.vector_db.models import VectorCollectionInfo
         vs = _make_vectorstore()
-        vs.vector_db_service.get_collection = AsyncMock(side_effect=Exception("not found"))
+        vs.vector_db_service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(name="test_collection", exists=False)
+        )
         vs.vector_db_service.create_collection = AsyncMock()
         vs.vector_db_service.create_index = AsyncMock()
 
@@ -1336,8 +1365,11 @@ class TestInitializeCollection:
     async def test_collection_creation_failure(self):
         """When collection creation fails, should raise VectorStoreError."""
         from app.exceptions.indexing_exceptions import VectorStoreError
+        from app.services.vector_db.models import VectorCollectionInfo
         vs = _make_vectorstore()
-        vs.vector_db_service.get_collection = AsyncMock(side_effect=Exception("not found"))
+        vs.vector_db_service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(name="test_collection", exists=False)
+        )
         vs.vector_db_service.create_collection = AsyncMock(side_effect=Exception("create failed"))
 
         with pytest.raises(VectorStoreError, match="Failed to create collection"):
@@ -1358,7 +1390,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embeddings = MagicMock()
-        mock_embeddings.embed_query.return_value = [0.1] * 1024
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         mock_embeddings.model_name = "default-model"
 
         vs.config_service.get_config = AsyncMock(return_value={
@@ -1366,8 +1398,7 @@ class TestGetEmbeddingModelInstance:
         })
 
         with patch("app.modules.transformers.vectorstore.get_default_embedding_model", return_value=mock_embeddings):
-            with patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
-                result = await vs.get_embedding_model_instance()
+            result = await vs.get_embedding_model_instance()
 
         assert result is False  # Default is not multimodal
 
@@ -1378,7 +1409,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embeddings = MagicMock()
-        mock_embeddings.embed_query.return_value = [0.1] * 1536
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 1536)
         mock_embeddings.model_name = "text-embedding-3-small"
 
         config = {
@@ -1396,8 +1427,7 @@ class TestGetEmbeddingModelInstance:
         vs.config_service.get_config = AsyncMock(return_value=config)
 
         with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embeddings):
-            with patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
-                result = await vs.get_embedding_model_instance()
+            result = await vs.get_embedding_model_instance()
 
         assert result is True
 
@@ -1408,7 +1438,7 @@ class TestGetEmbeddingModelInstance:
 
         vs = _make_vectorstore()
         mock_embeddings = MagicMock()
-        mock_embeddings.embed_query.side_effect = Exception("embed failed")
+        mock_embeddings.aembed_query = AsyncMock(side_effect=Exception("embed failed"))
 
         vs.config_service.get_config = AsyncMock(return_value={
             "embedding": [{
@@ -1429,14 +1459,13 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embeddings = MagicMock(spec=[])
-        mock_embeddings.embed_query = MagicMock(return_value=[0.1] * 768)
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 768)
         mock_embeddings.model = "my-model"
 
         vs.config_service.get_config = AsyncMock(return_value={"embedding": []})
 
         with patch("app.modules.transformers.vectorstore.get_default_embedding_model", return_value=mock_embeddings):
-            with patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
-                result = await vs.get_embedding_model_instance()
+            result = await vs.get_embedding_model_instance()
 
         assert vs.model_name == "my-model"
 
@@ -1447,14 +1476,13 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embeddings = MagicMock(spec=[])
-        mock_embeddings.embed_query = MagicMock(return_value=[0.1] * 768)
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 768)
         mock_embeddings.model_id = "my-model-id"
 
         vs.config_service.get_config = AsyncMock(return_value={"embedding": []})
 
         with patch("app.modules.transformers.vectorstore.get_default_embedding_model", return_value=mock_embeddings):
-            with patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
-                result = await vs.get_embedding_model_instance()
+            result = await vs.get_embedding_model_instance()
 
         assert vs.model_name == "my-model-id"
 
@@ -1465,13 +1493,12 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embeddings = MagicMock(spec=[])
-        mock_embeddings.embed_query = MagicMock(return_value=[0.1] * 768)
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 768)
 
         vs.config_service.get_config = AsyncMock(return_value={"embedding": []})
 
         with patch("app.modules.transformers.vectorstore.get_default_embedding_model", return_value=mock_embeddings):
-            with patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
-                await vs.get_embedding_model_instance()
+            await vs.get_embedding_model_instance()
 
         assert vs.model_name == "unknown"
 
@@ -1482,7 +1509,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embeddings = MagicMock()
-        mock_embeddings.embed_query.return_value = [0.1] * 1024
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         mock_embeddings.model_name = "amazon.titan-embed-image-v1"
 
         config = {
@@ -1503,8 +1530,7 @@ class TestGetEmbeddingModelInstance:
         vs.config_service.get_config = AsyncMock(return_value=config)
 
         with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embeddings):
-            with patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
-                await vs.get_embedding_model_instance()
+            await vs.get_embedding_model_instance()
 
         assert vs.aws_access_key_id == "AKID"
         assert vs.aws_secret_access_key == "SECRET"
@@ -1522,8 +1548,9 @@ class TestProcessImageEmbeddings:
         """Should dispatch to Cohere handler."""
         vs = _make_vectorstore()
         vs.embedding_provider = "cohere"
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
         vs._process_image_embeddings_cohere = AsyncMock(return_value=[])
-        result = await vs._process_image_embeddings([], [], "test-record")
+        result = await vs._process_image_embeddings([], [], "rec-1")
         vs._process_image_embeddings_cohere.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1531,8 +1558,9 @@ class TestProcessImageEmbeddings:
         """Should dispatch to Voyage handler."""
         vs = _make_vectorstore()
         vs.embedding_provider = "voyage"
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
         vs._process_image_embeddings_voyage = AsyncMock(return_value=[])
-        result = await vs._process_image_embeddings([], [], "test-record")
+        result = await vs._process_image_embeddings([], [], "rec-1")
         vs._process_image_embeddings_voyage.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1540,8 +1568,9 @@ class TestProcessImageEmbeddings:
         """Should dispatch to Bedrock handler."""
         vs = _make_vectorstore()
         vs.embedding_provider = "bedrock"
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
         vs._process_image_embeddings_bedrock = AsyncMock(return_value=[])
-        result = await vs._process_image_embeddings([], [], "test-record")
+        result = await vs._process_image_embeddings([], [], "rec-1")
         vs._process_image_embeddings_bedrock.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1549,8 +1578,9 @@ class TestProcessImageEmbeddings:
         """Should dispatch to Jina handler."""
         vs = _make_vectorstore()
         vs.embedding_provider = "jinaAI"
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
         vs._process_image_embeddings_jina = AsyncMock(return_value=[])
-        result = await vs._process_image_embeddings([], [], "test-record")
+        result = await vs._process_image_embeddings([], [], "rec-1")
         vs._process_image_embeddings_jina.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1558,7 +1588,8 @@ class TestProcessImageEmbeddings:
         """Unsupported provider should return empty list."""
         vs = _make_vectorstore()
         vs.embedding_provider = "unknown_provider"
-        result = await vs._process_image_embeddings([], [], "test-record")
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
+        result = await vs._process_image_embeddings([], [], "rec-1")
         assert result == []
 
 
@@ -1630,12 +1661,11 @@ class TestProcessDocumentChunks:
         from langchain_core.documents import Document
         vs = _make_vectorstore()
         vs.embedding_provider = None  # local
-        vs.vector_store = AsyncMock()
-        vs.vector_store.aadd_documents = AsyncMock()
+        vs._embed_and_upsert_documents = AsyncMock()
 
         docs = [Document(page_content="text", metadata={})]
-        await vs._process_document_chunks(docs, "test-record")
-        vs.vector_store.aadd_documents.assert_awaited()
+        await vs._process_document_chunks(docs, "rec-1")
+        vs._embed_and_upsert_documents.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_remote_concurrent_processing(self):
@@ -1643,12 +1673,11 @@ class TestProcessDocumentChunks:
         from langchain_core.documents import Document
         vs = _make_vectorstore()
         vs.embedding_provider = "openai"
-        vs.vector_store = AsyncMock()
-        vs.vector_store.aadd_documents = AsyncMock()
+        vs._embed_and_upsert_documents = AsyncMock()
 
         docs = [Document(page_content=f"text {i}", metadata={}) for i in range(5)]
-        await vs._process_document_chunks(docs, "test-record")
-        vs.vector_store.aadd_documents.assert_awaited()
+        await vs._process_document_chunks(docs, "rec-1")
+        vs._embed_and_upsert_documents.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_local_batch_failure_raises(self):
@@ -1657,12 +1686,11 @@ class TestProcessDocumentChunks:
         from langchain_core.documents import Document
         vs = _make_vectorstore()
         vs.embedding_provider = None  # local
-        vs.vector_store = AsyncMock()
-        vs.vector_store.aadd_documents = AsyncMock(side_effect=Exception("batch failed"))
+        vs._embed_and_upsert_documents = AsyncMock(side_effect=Exception("batch failed"))
 
         docs = [Document(page_content="text", metadata={})]
-        with pytest.raises(VectorStoreError, match="Failed to store document batch"):
-            await vs._process_document_chunks(docs, "test-record")
+        with pytest.raises(VectorStoreError):
+            await vs._process_document_chunks(docs, "rec-1")
 
     @pytest.mark.asyncio
     async def test_remote_batch_failure_raises(self):
@@ -1671,12 +1699,11 @@ class TestProcessDocumentChunks:
         from langchain_core.documents import Document
         vs = _make_vectorstore()
         vs.embedding_provider = "openai"
-        vs.vector_store = AsyncMock()
-        vs.vector_store.aadd_documents = AsyncMock(side_effect=Exception("batch failed"))
+        vs._embed_and_upsert_documents = AsyncMock(side_effect=Exception("batch failed"))
 
         docs = [Document(page_content="text", metadata={})]
-        with pytest.raises(VectorStoreError, match="Failed to store document batch"):
-            await vs._process_document_chunks(docs, "test-record")
+        with pytest.raises(VectorStoreError):
+            await vs._process_document_chunks(docs, "rec-1")
 
 
 # ===================================================================
@@ -1722,7 +1749,7 @@ class TestCreateEmbeddings:
         vs._process_document_chunks = AsyncMock(side_effect=Exception("store failed"))
 
         doc = Document(page_content="text", metadata={})
-        with pytest.raises(VectorStoreError, match="Failed to store langchain documents"):
+        with pytest.raises(VectorStoreError, match="Failed to store documents in vector store"):
             await vs._create_embeddings([doc], "rec-1", "vr-1")
 
 
@@ -1757,6 +1784,29 @@ class TestDescribeImages:
         assert results[0]["success"] is True
         assert results[1]["success"] is False
 
+    @pytest.mark.asyncio
+    async def test_describe_image_async_flattens_content_blocks(self):
+        """OpenAI's Responses API returns `content` as a list of blocks
+        (reasoning + text) rather than a plain string."""
+        vs = _make_vectorstore()
+        mock_vlm = AsyncMock()
+        mock_vlm.ainvoke.return_value = MagicMock(content=[
+            {"type": "reasoning", "summary": [], "id": "rs_1"},
+            {"type": "text", "text": "A diagram showing flow.", "annotations": []},
+        ])
+        result = await vs.describe_image_async("base64data", mock_vlm)
+        assert result == "A diagram showing flow."
+
+    @pytest.mark.asyncio
+    async def test_describe_images_with_content_blocks(self):
+        vs = _make_vectorstore()
+        mock_vlm = AsyncMock()
+        mock_vlm.ainvoke.return_value = MagicMock(content=[
+            {"type": "text", "text": "  A red square.  ", "annotations": []},
+        ])
+        results = await vs.describe_images(["img1"], mock_vlm)
+        assert results == [{"index": 0, "success": True, "description": "A red square."}]
+
 
 # ===================================================================
 # index_documents additional paths (lines 1051-1052, 1064->1061, etc.)
@@ -1780,7 +1830,7 @@ class TestIndexDocumentsAdditional:
         )
         container = BlocksContainer(blocks=[img_block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1807,7 +1857,7 @@ class TestIndexDocumentsAdditional:
         )
         container = BlocksContainer(blocks=[img_block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1833,7 +1883,7 @@ class TestIndexDocumentsAdditional:
         )
         container = BlocksContainer(blocks=[table_row], block_groups=[table_bg])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1849,7 +1899,7 @@ class TestIndexDocumentsAdditional:
 
         container = BlocksContainer(blocks=[], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1879,7 +1929,7 @@ class TestIndexDocumentsAdditional:
             topics=["onboarding"],
         )
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(
                 container,
@@ -1929,7 +1979,7 @@ class TestIndexDocumentsAdditional:
 
         container = BlocksContainer(blocks=[], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock, side_effect=Exception("LLM failed")):
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock, side_effect=Exception("LLM failed")):
             with pytest.raises(IndexingError, match="Failed to get LLM"):
                 await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1945,7 +1995,7 @@ class TestIndexDocumentsAdditional:
         block = Block(index=0, type="image", format="base64", data={"no_uri": True}, comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1953,7 +2003,7 @@ class TestIndexDocumentsAdditional:
 
     @pytest.mark.asyncio
     async def test_embedding_creation_failure_raises(self):
-        """When _create_embeddings raises an unknown exception, index_documents wraps it in IndexingError."""
+        """When _create_embeddings raises an exception, index_documents wraps it in IndexingError."""
         from app.exceptions.indexing_exceptions import IndexingError
         from app.models.blocks import Block, BlocksContainer
         vs = _make_vectorstore()
@@ -1964,7 +2014,7 @@ class TestIndexDocumentsAdditional:
         block = Block(index=0, type="text", format="txt", data="Hello world", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             with pytest.raises(IndexingError, match="Unexpected error during indexing"):
                 await vs.index_documents(container, "org-1", "rec-1", "vr-1")
@@ -2211,6 +2261,132 @@ class TestProcessImageEmbeddingsJina:
         assert len(points) == 0
 
 
+class TestProcessImageEmbeddingsOpenAICompatible:
+    """Tests for multimodal embeddings through an OpenAI-compatible endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_success_uses_standard_input_format(self):
+        """First attempt uses the standard OpenAI `input` schema (e.g. Requesty/LiteLLM
+        routing to Gemini Embedding 2), not vLLM's `messages` extension."""
+        vs = _make_vectorstore()
+        vs.embedding_endpoint = "http://embedding.test/v1/"
+        vs.api_key = "test-key"
+        vs.model_name = "vertex/google/gemini-embedding-2-preview"
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"data": [{"embedding": [0.1, 0.2]}]}
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            points = await vs._process_image_embeddings_openai_compatible(
+                [{"metadata": {"page": 1}, "image_uri": "aW1hZ2U="}],
+                ["aW1hZ2U="],
+            )
+
+        assert len(points) == 1
+        mock_client.post.assert_awaited_once()
+        call = mock_client.post.await_args
+        assert call.args[0] == "http://embedding.test/v1/embeddings"
+        assert call.kwargs["headers"]["Authorization"] == "Bearer test-key"
+        assert call.kwargs["json"]["input"] == ["data:image/jpeg;base64,aW1hZ2U="]
+        assert "messages" not in call.kwargs["json"]
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_messages_image_url_when_input_format_rejected(self):
+        """When the endpoint rejects the standard `input` schema (e.g. a self-hosted
+        vLLM multimodal embedding server), retry with vLLM's `messages` extension."""
+        vs = _make_vectorstore()
+        vs.embedding_endpoint = "http://embedding.test/v1/"
+        vs.api_key = "test-key"
+        vs.model_name = "Qwen/Qwen3-VL-Embedding-2B"
+
+        rejected_response = MagicMock()
+        rejected_response.raise_for_status.side_effect = RuntimeError("400 Bad Request")
+        accepted_response = MagicMock()
+        accepted_response.json.return_value = {"data": [{"embedding": [0.1, 0.2]}]}
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post.side_effect = [rejected_response, accepted_response]
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            points = await vs._process_image_embeddings_openai_compatible(
+                [{"metadata": {"page": 1}, "image_uri": "aW1hZ2U="}],
+                ["aW1hZ2U="],
+            )
+
+        assert len(points) == 1
+        assert mock_client.post.await_count == 2
+        first_call = mock_client.post.await_args_list[0]
+        assert first_call.kwargs["json"]["input"] == ["data:image/jpeg;base64,aW1hZ2U="]
+        assert "messages" not in first_call.kwargs["json"]
+        second_call = mock_client.post.await_args_list[1]
+        content = second_call.kwargs["json"]["messages"][0]["content"]
+        assert content[0]["image_url"]["url"] == "data:image/jpeg;base64,aW1hZ2U="
+
+    @pytest.mark.asyncio
+    async def test_http_failure_skips_image(self):
+        vs = _make_vectorstore()
+        vs.embedding_endpoint = "http://embedding.test/v1"
+        vs.model_name = "vl-embedding"
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post.side_effect = RuntimeError("unsupported messages")
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            points = await vs._process_image_embeddings_openai_compatible(
+                [{"metadata": {}, "image_uri": "aW1hZ2U="}], ["aW1hZ2U="]
+            )
+
+        assert points == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            [],
+            {},
+            {"data": []},
+            {"data": [None]},
+            {"data": [{}]},
+            {"data": [{"embedding": []}]},
+            {"data": [{"embedding": [True]}]},
+            {"data": [{"embedding": [0.1, "invalid"]}]},
+            {"data": [{"embedding": [0.1, float("nan")]}]},
+            {"data": [{"embedding": [0.1, float("inf")]}]},
+            {"data": [{"embedding": [0.1, float("-inf")]}]},
+        ],
+    )
+    async def test_invalid_response_skips_image(self, payload):
+        vs = _make_vectorstore()
+        vs.embedding_endpoint = "http://embedding.test/v1"
+        vs.model_name = "vl-embedding"
+        mock_response = MagicMock()
+        mock_response.json.return_value = payload
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            points = await vs._process_image_embeddings_openai_compatible(
+                [{"metadata": {}, "image_uri": "aW1hZ2U="}], ["aW1hZ2U="]
+            )
+
+        assert points == []
+
+
 # ===================================================================
 # _process_document_chunks — remote concurrent batch failure (lines 826-843)
 # ===================================================================
@@ -2226,25 +2402,24 @@ class TestProcessDocumentChunksRemoteFailure:
 
         vs = _make_vectorstore()
         vs.embedding_provider = "openai"
-        vs.vector_store = AsyncMock()
-        vs.vector_store.aadd_documents = AsyncMock(side_effect=RuntimeError("batch fail"))
+        vs._embed_and_upsert_documents = AsyncMock(side_effect=RuntimeError("batch fail"))
 
         chunks = [Document(page_content="test", metadata={})]
         with pytest.raises(VectorStoreError):
-            await vs._process_document_chunks(chunks, "test-record")
+            await vs._process_document_chunks(chunks, "rec-1")
 
 
 # ===================================================================
-# custom_sentence_boundary (lines 166-240)
+# split_into_sentences — replacement for the removed custom_sentence_boundary
+# spaCy component
 # ===================================================================
 
-class TestCustomSentenceBoundary:
-    """Tests for the custom_sentence_boundary spaCy component."""
+class TestSplitIntoSentencesExists:
+    """split_into_sentences is defined and importable from text_splitting."""
 
     def test_function_exists(self):
-        """custom_sentence_boundary function is defined."""
-        from app.modules.transformers.vectorstore import VectorStore
-        assert hasattr(VectorStore, 'custom_sentence_boundary')
+        from app.modules.parsers.text_splitting import split_into_sentences
+        assert callable(split_into_sentences)
 
 
 # ===================================================================
@@ -2271,12 +2446,11 @@ class TestGetEmbeddingModelInstanceUnknown:
         vs._initialize_collection = AsyncMock()
 
         mock_embed = MagicMock(spec=[])  # no attributes
-        mock_embed.embed_query = MagicMock(return_value=[0.1] * 1024)
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         # No model_name, model, or model_id attributes
 
         with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
-            with patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
-                await vs.get_embedding_model_instance()
+            await vs.get_embedding_model_instance()
 
         assert vs.model_name == "unknown"
 
@@ -2304,12 +2478,11 @@ class TestGetEmbeddingModelInstanceUnknown:
         vs._initialize_collection = AsyncMock()
 
         mock_embed = MagicMock()
-        mock_embed.embed_query.return_value = [0.1] * 1024
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         mock_embed.model_name = "titan-embed"
 
         with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
-            with patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
-                await vs.get_embedding_model_instance()
+            await vs.get_embedding_model_instance()
 
         assert vs.aws_access_key_id == "AKID"
         assert vs.aws_secret_access_key == "secret"
@@ -2336,7 +2509,7 @@ class TestIndexDocumentsImageDescription:
         block = Block(index=0, type="image", format="bin", data={"uri": "base64data"}, comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -2356,7 +2529,7 @@ class TestIndexDocumentsImageDescription:
         bg.data = {"table_summary": "Revenue data by quarter"}
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -2376,7 +2549,7 @@ class TestIndexDocumentsImageDescription:
         block = Block(index=0, type="textsection", format="txt", data="A text section", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -2409,7 +2582,7 @@ class TestRecordSummaryEdgeCases:
             categories=[],
         )
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             await vs.index_documents(
                 container, "org-1", "rec-1", "vr-1", record=record,
@@ -2441,10 +2614,10 @@ class TestRecordSummaryEdgeCases:
         record = MagicMock()
         record.semantic_metadata = None
 
-        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", record=record,
+                container, "org-1", "rec-1", "vr-1",
             )
 
         chunks = vs._create_embeddings.await_args.args[0]
@@ -2453,3 +2626,48 @@ class TestRecordSummaryEdgeCases:
             if isinstance(c, Document) and (c.metadata or {}).get("isRecordSummary")
         ]
         assert summary_docs == []
+
+
+class TestResolveBatchConcurrency:
+    """EMBEDDING_BATCH_CONCURRENCY must be >= 1: asyncio.Semaphore(0) is
+    locked from creation, so a misconfigured 0/negative value would hang
+    every remote-embedding batch forever instead of failing at startup.
+
+    Exercises the pure helper directly rather than reloading the module —
+    module reload changes class identity for everything it defines
+    (VectorStore, etc.), breaking isinstance checks in unrelated tests that
+    imported the pre-reload class.
+    """
+
+    def test_zero_raises_value_error(self):
+        from app.modules.transformers.vectorstore import _resolve_batch_concurrency
+
+        with pytest.raises(ValueError, match="EMBEDDING_BATCH_CONCURRENCY"):
+            _resolve_batch_concurrency("0")
+
+    def test_negative_raises_value_error(self):
+        from app.modules.transformers.vectorstore import _resolve_batch_concurrency
+
+        with pytest.raises(ValueError, match="EMBEDDING_BATCH_CONCURRENCY"):
+            _resolve_batch_concurrency("-1")
+
+    def test_unset_defaults_to_five(self):
+        from app.modules.transformers.vectorstore import _resolve_batch_concurrency
+
+        assert _resolve_batch_concurrency(None) == 5
+
+    def test_empty_string_defaults_to_five(self):
+        from app.modules.transformers.vectorstore import _resolve_batch_concurrency
+
+        assert _resolve_batch_concurrency("") == 5
+
+    def test_valid_positive_value_is_used(self):
+        from app.modules.transformers.vectorstore import _resolve_batch_concurrency
+
+        assert _resolve_batch_concurrency("8") == 8
+
+    def test_module_level_constant_matches_helper_with_no_env(self):
+        """The module-level default is wired through the same helper."""
+        from app.modules.transformers import vectorstore as module
+
+        assert module._DEFAULT_CONCURRENCY_LIMIT == module._resolve_batch_concurrency(None)

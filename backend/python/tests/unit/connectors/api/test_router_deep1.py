@@ -74,12 +74,17 @@ def _mock_request(
 ):
     """Build a minimal mock FastAPI request object."""
     req = MagicMock()
-    user_data = user or {"userId": "user-1", "orgId": "org-1"}
+    _headers = headers or {}
+    user_data = dict(user or {"userId": "user-1", "orgId": "org-1"})
+    if "role" not in user_data:
+        admin_hdr = str(
+            _headers.get("X-Is-Admin") or _headers.get("x-is-admin") or ""
+        ).lower()
+        user_data["role"] = "admin" if admin_hdr == "true" else "member"
     req.state = MagicMock()
     req.state.user = MagicMock()
     req.state.user.get = lambda k, default=None: user_data.get(k, default)
 
-    _headers = headers or {}
     req.headers = MagicMock()
     req.headers.get = lambda k, default=None: _headers.get(k, default)
 
@@ -265,7 +270,7 @@ class TestConvertToPdf:
             patch("os.path.exists", return_value=True),
         ):
             result = await convert_to_pdf("/tmp/file.pptx", "/tmp")
-            assert result == "/tmp/file.pdf"
+            assert result == os.path.join("/tmp", "file.pdf")
 
     @pytest.mark.asyncio
     async def test_timeout_terminates_process(self):
@@ -321,10 +326,27 @@ class TestConvertToPdf:
         with (
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_process),
             patch("os.path.exists", return_value=False),
+            patch("os.listdir", return_value=[]),
         ):
             with pytest.raises(HTTPException) as exc:
                 await convert_to_pdf("/tmp/file.pptx", "/tmp")
             assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+
+    @pytest.mark.asyncio
+    async def test_uses_pdf_renamed_by_libreoffice(self):
+        """A successful conversion accepts LibreOffice's normalized output name."""
+        mock_process = AsyncMock()
+        mock_process.communicate = AsyncMock(return_value=(b"ok", b""))
+        mock_process.returncode = 0
+
+        with (
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_process),
+            patch("os.path.exists", return_value=False),
+            patch("os.listdir", return_value=["Quarterly Review.pdf"]),
+        ):
+            result = await convert_to_pdf("/tmp/Quarterly%20Review.pptx", "/tmp")
+
+        assert result == "/tmp/Quarterly Review.pdf"
 
     @pytest.mark.asyncio
     async def test_generic_subprocess_exception(self):
@@ -375,6 +397,40 @@ class TestConvertBufferToPdfStream:
                 mock_stream.return_value = StreamingResponse(iter([b"pdf"]), media_type="application/pdf")
                 result = await convert_buffer_to_pdf_stream(buffer, "slides.pptx", "pptx")
                 assert isinstance(result, StreamingResponse)
+
+    @pytest.mark.asyncio
+    async def test_adds_inferred_pptx_extension_to_temporary_file(self):
+        """MIME-inferred PPTX records without a suffix remain convertible."""
+        with (
+            patch(f"{_ROUTER}.convert_to_pdf", new_callable=AsyncMock) as mock_convert,
+            patch("builtins.open", create=True) as mock_open,
+            patch("os.path.exists", return_value=True),
+            patch(f"{_ROUTER}.create_stream_record_response") as mock_stream,
+            patch("asyncio.to_thread", side_effect=lambda fn, *a: fn(*a)),
+        ):
+            write_buf = io.BytesIO()
+            read_buf = io.BytesIO(b"pdf-data")
+
+            def open_side_effect(path, mode="r"):
+                cm = MagicMock()
+                cm.__enter__ = MagicMock(
+                    return_value=write_buf if "w" in mode else read_buf
+                )
+                cm.__exit__ = MagicMock(return_value=False)
+                return cm
+
+            mock_open.side_effect = open_side_effect
+            mock_convert.return_value = "/tmp/test/Quarterly review.pdf"
+            mock_stream.return_value = StreamingResponse(
+                iter([b"pdf"]), media_type="application/pdf"
+            )
+
+            await convert_buffer_to_pdf_stream(
+                b"fake-pptx", "Quarterly review", "pptx"
+            )
+
+        input_path = mock_convert.await_args.args[0]
+        assert input_path.endswith("Quarterly review.pptx")
 
     @pytest.mark.asyncio
     async def test_streaming_response_buffer(self):
@@ -1383,13 +1439,13 @@ class TestStreamRecordDeepPaths:
         container = MagicMock()
         container.connectors_map = {"conn-1": connector_obj} if has_connector_obj else {}
 
-        user_data = {"userId": "u1", "orgId": "org-1"}
+        user_data = {"userId": "u1", "orgId": "org-1", "role": "member"}
         req = MagicMock()
         req.state = MagicMock()
         req.state.user = MagicMock()
         req.state.user.get = lambda k, default=None: user_data.get(k, default)
         req.headers = MagicMock()
-        req.headers.get = lambda k, default=None: {"X-Is-Admin": "false"}.get(k, default)
+        req.headers.get = lambda k, default=None: {}.get(k, default)
         req.app = MagicMock()
         req.app.container = container
         req.app.state = MagicMock()
@@ -1410,7 +1466,7 @@ class TestStreamRecordDeepPaths:
             mock_convert.return_value = StreamingResponse(iter([b"pdf"]), media_type="application/pdf")
 
             from app.connectors.api.router import stream_record
-            result = await stream_record(req, "rec-1", MimeTypes.PDF.value, gp, cs)
+            result = await stream_record(req, "rec-1", convertTo=MimeTypes.PDF.value, version=None, graph_provider=gp, config_service=cs)
             assert isinstance(result, StreamingResponse)
             mock_convert.assert_awaited_once()
 
@@ -1422,7 +1478,7 @@ class TestStreamRecordDeepPaths:
         record.mime_type = "application/pdf"
 
         from app.connectors.api.router import stream_record
-        result = await stream_record(req, "rec-1", MimeTypes.PDF.value, gp, cs)
+        result = await stream_record(req, "rec-1", convertTo=MimeTypes.PDF.value, version=None, graph_provider=gp, config_service=cs)
         assert isinstance(result, Response)
 
     @pytest.mark.asyncio
@@ -1438,7 +1494,7 @@ class TestStreamRecordDeepPaths:
             mock_convert.return_value = StreamingResponse(iter([b"pdf"]), media_type="application/pdf")
 
             from app.connectors.api.router import stream_record
-            result = await stream_record(req, "rec-1", MimeTypes.PDF.value, gp, cs)
+            result = await stream_record(req, "rec-1", convertTo=MimeTypes.PDF.value, version=None, graph_provider=gp, config_service=cs)
             mock_convert.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1453,7 +1509,7 @@ class TestStreamRecordDeepPaths:
         ):
             from app.connectors.api.router import stream_record
             with pytest.raises(HTTPException) as exc:
-                await stream_record(req, "rec-1", MimeTypes.PDF.value, gp, cs)
+                await stream_record(req, "rec-1", convertTo=MimeTypes.PDF.value, version=None, graph_provider=gp, config_service=cs)
             assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
     @pytest.mark.asyncio
@@ -1464,7 +1520,7 @@ class TestStreamRecordDeepPaths:
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
-            await stream_record(req, "rec-1", None, gp, cs)
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
@@ -1476,7 +1532,7 @@ class TestStreamRecordDeepPaths:
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
-            await stream_record(req, "rec-1", None, gp, cs)
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
@@ -1495,7 +1551,7 @@ class TestStreamRecordDeepPaths:
         gp.get_document = AsyncMock(side_effect=get_doc)
 
         from app.connectors.api.router import stream_record
-        result = await stream_record(req, "rec-1", None, gp, cs)
+        result = await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         # Should have fetched org-2 after mismatch
         assert call_count[0] >= 2
 
@@ -1507,7 +1563,7 @@ class TestStreamRecordDeepPaths:
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
-            await stream_record(req, "rec-1", None, gp, cs)
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     @pytest.mark.asyncio
@@ -1520,7 +1576,7 @@ class TestStreamRecordDeepPaths:
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
-            await stream_record(req, "rec-1", None, gp, cs)
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.CONFLICT.value
 
     @pytest.mark.asyncio
@@ -1534,7 +1590,7 @@ class TestStreamRecordDeepPaths:
         with patch(f"{_ROUTER}._get_streaming_connector", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = conn_obj
             from app.connectors.api.router import stream_record
-            result = await stream_record(req, "rec-1", None, gp, cs)
+            result = await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
             assert isinstance(result, Response)
             mock_get.assert_awaited_once()
 
@@ -1554,7 +1610,7 @@ class TestStreamRecordDeepPaths:
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
-            await stream_record(req, "rec-1", None, gp, cs)
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
@@ -1565,7 +1621,7 @@ class TestStreamRecordDeepPaths:
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
-            await stream_record(req, "rec-1", None, gp, cs)
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
     @pytest.mark.asyncio
@@ -1578,7 +1634,7 @@ class TestStreamRecordDeepPaths:
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
-            await stream_record(req, "rec-1", None, gp, cs)
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == 403
 
     @pytest.mark.asyncio
@@ -1589,5 +1645,5 @@ class TestStreamRecordDeepPaths:
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
-            await stream_record(req, "rec-1", None, gp, cs)
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value

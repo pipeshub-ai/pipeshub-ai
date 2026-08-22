@@ -214,13 +214,8 @@ export function CollectionsMode({
 }: CollectionsModeProps) {
   const { t } = useTranslation();
 
-  // Filter out app nodes (only show folders/collections)
-  const filteredSharedTree = sharedTree.filter(
-    (node) => !('nodeType' in node) || node.nodeType !== 'app'
-  );
-  const filteredPrivateTree = privateTree.filter(
-    (node) => !('nodeType' in node) || node.nodeType !== 'app'
-  );
+  const filteredSharedTree = sharedTree;
+  const filteredPrivateTree = privateTree;
 
   // Show a full-sidebar spinner only on the initial fetch (before any tree
   // data exists). Once trees are populated, subsequent loads (e.g. auto-expand)

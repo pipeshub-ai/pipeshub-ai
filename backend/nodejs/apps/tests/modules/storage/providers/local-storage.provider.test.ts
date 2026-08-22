@@ -163,7 +163,7 @@ describe('LocalStorageAdapter', () => {
     it('should handle simple relative path', () => {
       const adapter = createAdapter()
       const result = (adapter as any).sanitizePath('folder/file.txt')
-      expect(result).to.equal('folder/file.txt')
+      expect(result.replace(/\\/g, '/')).to.equal('folder/file.txt')
     })
 
     it('should handle path with backslash-dot sequences', () => {

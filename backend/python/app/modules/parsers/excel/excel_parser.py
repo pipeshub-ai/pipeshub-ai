@@ -4,9 +4,12 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, time
 from typing import Any
 
+from app.services.parsing.interface import ParseResult
+from app.utils.llm import get_llm_for_role
+from app.config.configuration_service import ConfigurationService
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from openpyxl import load_workbook
@@ -18,6 +21,8 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
+
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 
 from app.models.blocks import (
     Block,
@@ -39,6 +44,7 @@ from app.modules.parsers.excel.prompt_template import (
     sheet_summary_prompt,
     table_summary_prompt,
 )
+from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
 from app.utils.streaming import (
     invoke_with_row_descriptions_and_reflection,
@@ -93,10 +99,11 @@ COMMON_FORMAT_WHITELIST = {
     "hh:mm": ("%H:%M", ""),
     "hh:mm:ss": ("%H:%M:%S", ""),
     "h:mm:ss": ("%H:%M:%S", "h"),
-    "h:mm AM/PM": ("%I:%M %p", "h"),
-    "hh:mm AM/PM": ("%I:%M %p", ""),
-    "h:mm:ss AM/PM": ("%I:%M:%S %p", "h"),
-    "hh:mm:ss AM/PM": ("%I:%M:%S %p", ""),
+    # Keys are lowercase; format_excel_datetime lowercases Excel formats before lookup.
+    "h:mm am/pm": ("%I:%M %p", "h"),
+    "hh:mm am/pm": ("%I:%M %p", ""),
+    "h:mm:ss am/pm": ("%I:%M:%S %p", "h"),
+    "hh:mm:ss am/pm": ("%I:%M:%S %p", ""),
 
     # Combined date-time formats (first mm=month, second mm=minute)
     "mm/dd/yyyy h:mm": ("%m/%d/%Y %H:%M", "h"),
@@ -109,8 +116,8 @@ COMMON_FORMAT_WHITELIST = {
     "m/d/yy h:mm": ("%m/%d/%y %H:%M", "dmh"),
     "m/d/yyyy h:m": ("%m/%d/%Y %H:%M", "dmh"),
     "dd-mmm-yy hh:mm": ("%d-%b-%y %H:%M", ""),
-    "mmm dd, yyyy h:mm AM/PM": ("%b %d, %Y %I:%M %p", "dh"),
-    "mm/dd/yyyy h:mm AM/PM": ("%m/%d/%Y %I:%M %p", "h"),
+    "mmm dd, yyyy h:mm am/pm": ("%b %d, %Y %I:%M %p", "dh"),
+    "mm/dd/yyyy h:mm am/pm": ("%m/%d/%Y %I:%M %p", "h"),
 
     # Edge cases that are uncommon but appear in tests
     "mm:ss": ("%M:%S", ""),  # Minutes:seconds format (no hours)
@@ -290,7 +297,13 @@ def _resolve_ambiguous_format(format_str: str) -> str:
     return python_format
 
 
-def format_excel_datetime(dt_value: datetime | str | int | float | None, number_format: str) -> str | int | float | None:
+def _lowercase_preserving_quoted_literals(format_str: str) -> str:
+    """Lowercase format tokens while preserving the casing of quoted literals (e.g. "UTC")."""
+    parts = re.split(r'("[^"]*")', format_str)
+    return "".join(part if part.startswith('"') else part.lower() for part in parts)
+
+
+def format_excel_datetime(dt_value: datetime | time | str | int | float | None, number_format: str) -> str | int | float | None:
     """
     Apply Excel number format to datetime value using whitelist-based approach.
 
@@ -310,8 +323,9 @@ def format_excel_datetime(dt_value: datetime | str | int | float | None, number_
     Returns:
         Formatted string if datetime with valid format, otherwise original value
     """
-    # Early returns for non-datetime values
-    if not isinstance(dt_value, datetime):
+    # Early returns for non-datetime values. openpyxl represents time-only
+    # cells (e.g. number_format "h:mm:ss") as datetime.time, not datetime.datetime.
+    if not isinstance(dt_value, (datetime, time)):
         return dt_value
 
     if not number_format or number_format == "General":
@@ -320,6 +334,10 @@ def format_excel_datetime(dt_value: datetime | str | int | float | None, number_
     try:
         # Step 1: Resolve built-in format codes (14-22) to format strings
         format_str = _resolve_builtin_format(number_format)
+        # Excel date/time tokens are case-insensitive (DD-MMM-YYYY, HH:MM, etc.).
+        # Normalize so whitelist lookup and _resolve_ambiguous_format see lowercase tokens,
+        # but keep quoted literal text (e.g. "UTC") exactly as authored.
+        format_str = _lowercase_preserving_quoted_literals(format_str)
 
         # Step 2: Try whitelist first (covers 80-90% of cases with simple lookup)
         if format_str in COMMON_FORMAT_WHITELIST:
@@ -338,8 +356,9 @@ def format_excel_datetime(dt_value: datetime | str | int | float | None, number_
 
 
 class ExcelParser:
-    def __init__(self, logger: logging.Logger) -> None:
+    def __init__(self, logger: logging.Logger,config_service: ConfigurationService) -> None:
         self.logger = logger
+        self.config_service = config_service
         self.workbook = None
         self.file_binary = None
 
@@ -352,6 +371,23 @@ class ExcelParser:
         self.max_retries = 3
         self.min_wait = 1  # seconds
         self.max_wait = 10  # seconds
+    
+    async def parse(
+        self,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None = None,
+    ) -> ParseResult:
+            llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
+            # openpyxl's load is synchronous and can take seconds on large
+            # workbooks; keep it off the event loop.
+            await asyncio.to_thread(self.load_workbook_from_binary, content)
+            blocks_containers = await self.create_blocks(llm)
+
+            return ParseResult(
+                block_container=blocks_containers,
+                metadata={"record_name": record_name},
+            )
 
     def load_workbook_from_binary(self, file_binary: bytes) -> None:
         """Load workbook from binary (no LLM calls).
@@ -380,14 +416,159 @@ class ExcelParser:
                 self.logger.info("Closing workbook")
                 self.workbook.close()
 
+    async def parse_workbook(self, content: bytes) -> BlocksContainer:
+        """Parse workbook from binary without LLM, for use by the Parsing Service.
+
+        Produces a basic SHEET → TABLE → TABLE_ROW block hierarchy using
+        ``generate_simple_row_text`` for row descriptions instead of LLM calls.
+        """
+        self.load_workbook_from_binary(content)
+        try:
+            return self._build_basic_block_container()
+        finally:
+            if self.workbook:
+                self.workbook.close()
+
+    async def create_blocks_lightweight(self, max_rows: int | None = None) -> BlocksContainer:
+        """Create blocks from a loaded workbook without LLM enrichment.
+
+        Must call ``load_workbook_from_binary()`` first. Used by chat attachment
+        upload where latency matters and the chat LLM will see the raw blocks.
+        """
+        self.logger.info("Starting lightweight (no-LLM) block creation from workbook")
+        try:
+            return await asyncio.to_thread(self._build_basic_block_container, max_rows)
+        finally:
+            if self.workbook:
+                self.logger.info("Closing workbook")
+                self.workbook.close()
+
+    def _build_basic_block_container(self, max_rows: int | None = None) -> BlocksContainer:
+        """Build a BlocksContainer from the loaded workbook without LLM calls.
+
+        Mirrors the structure of ``get_blocks_from_workbook`` but treats each
+        sheet as a single flat table and uses ``generate_simple_row_text`` for
+        all row descriptions.
+        """
+        if not self.workbook:
+            return BlocksContainer(blocks=[], block_groups=[])
+
+        blocks: list[Block] = []
+        block_groups: list[BlockGroup] = []
+        rows_emitted = 0
+
+        for sheet_idx, sheet_name in enumerate(self.workbook.sheetnames, 1):
+            if max_rows is not None and rows_emitted >= max_rows:
+                break
+
+            remaining = None if max_rows is None else max_rows - rows_emitted
+            sheet_data = self._process_sheet(self.workbook[sheet_name], max_data_rows=remaining)
+            headers: list = sheet_data.get("headers") or []
+            rows: list = sheet_data.get("data") or []
+
+            if not rows:
+                continue
+
+            col_names = [
+                str(h) if h is not None else f"col_{i}"
+                for i, h in enumerate(headers)
+            ]
+
+            # SHEET group
+            sg_idx = len(block_groups)
+            block_groups.append(
+                BlockGroup(
+                    index=sg_idx,
+                    name=sheet_name,
+                    type=GroupType.SHEET,
+                    parent_index=None,
+                    data={"sheet_name": sheet_name, "table_count": 1},
+                    format=DataFormat.JSON,
+                )
+            )
+
+            # TABLE group (one per sheet in the basic non-LLM path)
+            tg_idx = len(block_groups)
+            block_groups.append(
+                BlockGroup(
+                    index=tg_idx,
+                    name=None,
+                    type=GroupType.TABLE,
+                    parent_index=sg_idx,
+                    table_metadata=TableMetadata(
+                        num_of_rows=len(rows),
+                        num_of_cols=len(headers),
+                        num_of_cells=len(rows) * len(headers),
+                    ),
+                    data={
+                        "table_summary": "",
+                        "column_headers": col_names,
+                        "sheet_number": sheet_idx,
+                        "sheet_name": sheet_name,
+                    },
+                    format=DataFormat.JSON,
+                )
+            )
+
+            # TABLE_ROW blocks
+            row_indices: list[int] = []
+            for ri, row in enumerate(rows):
+                row_data = {
+                    (
+                        cell.get("header")
+                        or (col_names[ci] if ci < len(col_names) else f"col_{ci}")
+                    ): cell.get("value")
+                    for ci, cell in enumerate(row)
+                }
+                bi = len(blocks)
+                row_num = row[0].get("row", ri + 2) if row else ri + 2
+                blocks.append(
+                    Block(
+                        index=bi,
+                        type=BlockType.TABLE_ROW,
+                        format=DataFormat.JSON,
+                        data={
+                            "row_natural_language_text": generate_simple_row_text(row_data),
+                            "row_number": int(row_num),
+                            "row_end_number": int(row_num),
+                            "row_count": 1,
+                            "sheet_number": sheet_idx,
+                            "sheet_name": sheet_name,
+                        },
+                        parent_index=tg_idx,
+                    )
+                )
+                row_indices.append(bi)
+
+            block_groups[tg_idx].children = BlockGroupChildren.from_indices(
+                block_indices=row_indices
+            )
+            block_groups[sg_idx].children = BlockGroupChildren.from_indices(
+                block_group_indices=[tg_idx]
+            )
+            rows_emitted += len(rows)
+
+        self.logger.info(
+            "Basic (no-LLM) workbook parsing complete: %d blocks, %d block groups",
+            len(blocks),
+            len(block_groups),
+        )
+        return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
     def _json_default(self, obj: object) -> str:
-        if isinstance(obj, datetime):
+        if isinstance(obj, (datetime, time)):
             return obj.isoformat()
         return str(obj)
 
-    def _process_sheet(self, sheet: Worksheet) -> dict[str, list[list[dict[str, Any]]]]:
-        """Process individual sheet and extract cell data"""
+    def _process_sheet(
+        self, sheet: Worksheet, max_data_rows: int | None = None
+    ) -> dict[str, list[list[dict[str, Any]]]]:
+        """Process individual sheet and extract cell data.
+
+        ``max_data_rows`` bounds how many data rows are read from ``iter_rows``,
+        so callers with a row cap (e.g. chat attachment uploads) don't pay the
+        cost of building every row of a large sheet just to truncate it after.
+        """
         try:
             self.logger.info(f"Processing sheet: {sheet.title}")
             sheet_data = {"headers": [], "data": []}
@@ -399,6 +580,8 @@ class ExcelParser:
 
             # Start from second row
             for row_idx, row in enumerate(sheet.iter_rows(min_row=2), 2):
+                if max_data_rows is not None and len(sheet_data["data"]) >= max_data_rows:
+                    break
                 row_data = []
 
                 for col_idx, cell in enumerate(row, 1):
@@ -742,8 +925,8 @@ class ExcelParser:
                             row=merged_range.min_row, column=merged_range.min_col
                         )
                         merged_value = top_left_cell.value
-                        # Apply datetime formatting if applicable
-                        if isinstance(merged_value, datetime) and hasattr(top_left_cell, 'number_format'):
+                        # Apply datetime/time formatting if applicable
+                        if isinstance(merged_value, (datetime, time)) and hasattr(top_left_cell, 'number_format'):
                             merged_value = format_excel_datetime(merged_value, top_left_cell.number_format)
                         break
 
@@ -759,9 +942,9 @@ class ExcelParser:
                 }
 
             # If not a merged cell, process normally.
-            # Apply datetime formatting if the cell contains a datetime value
+            # Apply datetime/time formatting if the cell contains such a value
             cell_value = cell.value
-            if isinstance(cell_value, datetime) and hasattr(cell, 'number_format'):
+            if isinstance(cell_value, (datetime, time)) and hasattr(cell, 'number_format'):
                 cell_value = format_excel_datetime(cell_value, cell.number_format)
 
             return {
@@ -965,7 +1148,7 @@ class ExcelParser:
                 formatted_samples.append(formatted_row)
 
             # Format as JSON string for prompt
-            sample_data_str = json.dumps(formatted_samples, indent=2)
+            sample_data_str = json.dumps(formatted_samples, indent=2, ensure_ascii=False)
 
             # Initial messages
             messages = excel_header_generation_prompt.format_messages(
@@ -1008,7 +1191,7 @@ class ExcelParser:
                             messages_list = list(messages)
 
                             # Add the failed response to context
-                            failed_response = json.dumps({"headers": generated_headers}, indent=2)
+                            failed_response = json.dumps({"headers": generated_headers}, indent=2, ensure_ascii=False)
                             messages_list.append(AIMessage(content=failed_response))
 
                             # Add reflection prompt
@@ -1108,7 +1291,10 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         self.logger.info(f"Getting tables in sheet: {sheet_name}")
         try:
             if not self.workbook:
-                raise ValueError("Workbook not loaded")
+                raise DocumentProcessingError(
+                    "Workbook not loaded",
+                    details={"method": "get_tables_in_sheet"},
+                )
 
             if sheet_name not in self.workbook.sheetnames:
                 self.logger.warning(f"Sheet '{sheet_name}' not found in workbook")
@@ -1134,7 +1320,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 {
                     cell["header"]: (
                         cell["value"].isoformat()
-                        if isinstance(cell["value"], datetime)
+                        if isinstance(cell["value"], (datetime, time))
                         else cell["value"]
                     )
                     for cell in row
@@ -1144,13 +1330,15 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
             # Get summary from LLM with retry
             messages = self.table_summary_prompt.format_messages(
-                headers=table["headers"], sample_data=json.dumps(sample_data, indent=2)
+                headers=table["headers"], sample_data=json.dumps(sample_data, indent=2, ensure_ascii=False)
             )
             response = await self._call_llm(messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
+            # Gemini and similar return content as a list of blocks, not a string.
+            summary = coerce_message_content_to_text(response.content)
+            if '</think>' in summary:
+                summary = summary.split('</think>')[-1]
             self.logger.info("Table summary generated")
-            return response.content
+            return summary
 
         except Exception as e:
             self.logger.error(f"Error getting table summary: {e}", exc_info=True)
@@ -1167,7 +1355,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 {
                     cell["header"]: (
                         cell["value"].isoformat()
-                        if isinstance(cell["value"], datetime)
+                        if isinstance(cell["value"], (datetime, time))
                         else cell["value"]
                     )
                     for cell in row
@@ -1430,5 +1618,4 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
         self.logger.info(f"Workbook processing complete. Total: {len(blocks)} blocks, {len(block_groups)} block groups")
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
-
 

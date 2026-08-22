@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, Badge, Blockquote } from '@radix-ui/themes';
+import { renderInlineMarkdown } from '@/app/components/ui/inline-markdown';
 import type { PreviewCitation } from './types';
 
 interface CitationsPanelProps {
@@ -209,7 +210,7 @@ export const CitationCard = React.forwardRef<HTMLDivElement, CitationCardProps>(
                 }),
               }}
             >
-              {citation.content}
+              {renderInlineMarkdown(citation.content)}
             </Blockquote>
 
             {(isTruncated || expanded) && (

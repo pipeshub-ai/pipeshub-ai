@@ -44,7 +44,7 @@
   <a href="https://www.npmjs.com/package/@pipeshub-ai/sdk"><img src="https://img.shields.io/npm/v/@pipeshub-ai/sdk?logo=npm&amp;logoColor=white&amp;label=node%20sdk" alt="Node.js SDK" /></a>
   <a href="https://pypi.org/project/pipeshub-sdk/"><img src="https://img.shields.io/pypi/v/pipeshub-sdk?logo=python&amp;logoColor=white&amp;label=python%20sdk" alt="Python SDK" /></a>
   <a href="https://github.com/pipeshub-ai/pipeshub-sdk-go"><img src="https://img.shields.io/github/v/release/pipeshub-ai/pipeshub-sdk-go?logo=go&amp;logoColor=white&amp;label=go%20sdk" alt="Go SDK" /></a>
-  <a href="https://www.npmjs.com/package/pipeshub"><img src="https://img.shields.io/npm/v/pipeshub?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
+  <a href="https://www.npmjs.com/package/@pipeshub-ai/mcp"><img src="https://img.shields.io/npm/v/@pipeshub-ai/mcp?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
 </p>
 
 </div>
@@ -124,7 +124,6 @@
 |-----------|-------------|
 | FastAPI | מסגרת ווב ב-Python בעלת ביצועים גבוהים |
 | LangChain | מסגרת לצינורות LLM |
-| LangGraph | גרף מצבים לתהליכי עבודה של LLM |
 | Qdrant | מנוע חיפוש בדמיון וקטורי |
 | Neo4j / ArangoDB | מסד נתונים גרפי |
 | Kafka / Redis Streams | פלטפורמה מבוזרת להזרמת אירועים |
@@ -267,7 +266,7 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 
 ### אילו ספקי LLM PipesHub תומך בהם?
 
-PipesHub פועל לפי עקרון "הבא את המודל שלך" — אתה יכול להשתמש בכל ספק LLM. פרוס בתוך ה-VPC שלך עם המודלים המועדפים עליך. ערכת הטכנולוגיות כוללת את LangChain ו-LangGraph לצינורות ולתהליכי עבודה של LLM.
+PipesHub פועל לפי עקרון "הבא את המודל שלך" — אתה יכול להשתמש בכל ספק LLM. פרוס בתוך ה-VPC שלך עם המודלים המועדפים עליך. ערכת הטכנולוגיות כוללת את LangChain לצינורות ולתהליכי עבודה של LLM.
 
 ### מהי תכונת האחזור מבוסס גרף הידע?
 

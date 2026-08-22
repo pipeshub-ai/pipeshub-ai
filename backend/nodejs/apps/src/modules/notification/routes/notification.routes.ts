@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { Container } from 'inversify';
-import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { AuthMiddleware } from '../../../config';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
   listNotifications,

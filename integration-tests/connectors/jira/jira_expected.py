@@ -9,10 +9,12 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
 )
 from app.connectors.utils.value_mapper import ValueMapper
 from app.models.entities import (
     AppMetadata,
+    AppRole,
     AppUserGroup,
     FileRecord,
     RecordGroup,
@@ -43,6 +45,7 @@ class JiraExpected:
             scope="team",
             created_at_timestamp=0,
             updated_at_timestamp=0,
+            permission_model=PermissionModel.RECORD_LEVEL.value,
         )
 
     @staticmethod
@@ -166,6 +169,32 @@ class JiraExpected:
             source_user_group_id=str(source_user_group_id),
             name=name,
             description=None,
+            created_at=0,
+            updated_at=0,
+            source_created_at=None,
+            source_updated_at=None,
+        )
+
+    @staticmethod
+    def app_role(
+        *,
+        name: str,
+        source_role_id: str,
+        connector_id: str,
+    ) -> AppRole:
+        """Build an ``AppRole`` for a Jira project role or the synthetic project-lead role.
+
+        Mirrors ``_sync_project_roles`` (``source_role_id = "{key}_{roleId}"``,
+        ``name = "{key} - {roleName}"``) and ``_sync_project_lead_roles``
+        (``source_role_id = "{key}_projectLead"``, ``name = "{key} - Project Lead"``).
+        """
+        return AppRole(
+            id="",
+            org_id="",
+            app_name=Connectors.JIRA,
+            connector_id=connector_id,
+            source_role_id=source_role_id,
+            name=name,
             created_at=0,
             updated_at=0,
             source_created_at=None,

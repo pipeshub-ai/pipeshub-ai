@@ -83,6 +83,8 @@ from app.connectors.sources.slack.team.connector import SlackConnector
 from app.connectors.sources.gitlab.connector import GitLabConnector
 from app.connectors.sources.gitlab_personal.connector import GitLabPersonalConnector
 
+from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
+
 from app.connectors.sources.snowflake.connector import SnowflakeConnector
 from app.connectors.sources.postgres.connector import PostgreSQLConnector
 from app.connectors.sources.mariadb.connector import MariaDBConnector
@@ -131,9 +133,10 @@ class ConnectorFactory:
         "salesforce": SalesforceConnector,
         "gitlab": GitLabConnector,
         "gitlabpersonal": GitLabPersonalConnector,
+        "githubteams": GitHubTeamsConnector,
         "mariadb": MariaDBConnector,
         "slackworkspace": SlackConnector,
-        # "slack": SlackIndividualConnector,
+        "slack": SlackIndividualConnector,
     }
 
     # Beta connector definitions - single source of truth
@@ -194,9 +197,17 @@ class ConnectorFactory:
         connector_id: str,
         scope: str,
         created_by: str,
+        org_id: str | None = None,
         **kwargs,
     ) -> BaseConnector | None:
-        """Create a connector instance"""
+        """Create a connector instance.
+
+        ``org_id`` is bound here (not forwarded to the connector) and applied to the
+        connector's entities processor after creation. The processor's initialize()
+        resolves an arbitrary orgs[0] fallback; connectors read
+        ``self.data_entities_processor.org_id`` live at sync time, so overriding it
+        here makes every record/edge use the connector's actual org (multi-org fix).
+        """
         connector_class = cls.get_connector_class(name)
         if not connector_class:
             logger.error(f"Unknown connector type: {name} {connector_id}")
@@ -213,8 +224,11 @@ class ConnectorFactory:
                 created_by=created_by,
                 **kwargs,
             )
-            if connector is not None and notification_service is not None:
-                connector._notification_service = notification_service
+            if connector is not None:
+                if org_id and getattr(connector, "data_entities_processor", None) is not None:
+                    connector.data_entities_processor.org_id = org_id
+                if notification_service is not None:
+                    connector._notification_service = notification_service
             logger.info(f"Created {name} {connector_id} connector successfully")
             return connector
         except Exception as e:
@@ -265,6 +279,19 @@ class ConnectorFactory:
 
         return None
 
+    @staticmethod
+    async def _run_sync_and_invalidate(connector: BaseConnector, connector_id: str) -> None:
+        """Run a sync started outside `EventService`, then drop the connector's
+        cached accessible-record map the same way that path does."""
+        from app.services.cache.invalidation_hooks import notify_connector_sync_completed
+
+        try:
+            await connector.run_sync()
+        finally:
+            processor = getattr(connector, "data_entities_processor", None)
+            org_id = getattr(processor, "org_id", None) if processor is not None else None
+            await notify_connector_sync_completed(connector_id, org_id)
+
     @classmethod
     async def create_and_start_sync(
         cls,
@@ -301,7 +328,7 @@ class ConnectorFactory:
                     )
                 else:
                     await sync_task_manager.start_sync(
-                        connector_id, connector.run_sync()
+                        connector_id, cls._run_sync_and_invalidate(connector, connector_id)
                     )
                     logger.info(f"Started sync for {name} {connector_id} connector")
                 return connector

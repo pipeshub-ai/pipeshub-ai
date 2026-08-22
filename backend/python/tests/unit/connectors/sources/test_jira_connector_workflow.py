@@ -503,21 +503,13 @@ class TestJiraInit:
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as mock_client_cls:
             mock_client = MagicMock()
+            mock_client.get_site_url.return_value = "https://test.atlassian.net"
             mock_client_cls.build_from_services = AsyncMock(return_value=mock_client)
-            mock_client_cls.get_accessible_resources = AsyncMock(return_value=[
-                MagicMock(id="cloud-1", url="https://test.atlassian.net")
-            ])
 
             with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraDataSource"):
-                cs.get_config = AsyncMock(return_value={
-                    "auth": {"authType": "OAUTH", "baseUrl": "https://test.atlassian.net"},
-                    "credentials": {"access_token": "token"},
-                })
-                connector._get_access_token = AsyncMock(return_value="token")
-
                 result = await connector.init()
                 assert result is True
-                assert connector.cloud_id == "cloud-1"
+                assert connector.site_url == "https://test.atlassian.net"
 
     @pytest.mark.asyncio
     async def test_init_api_token(self):
@@ -525,17 +517,13 @@ class TestJiraInit:
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as mock_client_cls:
             mock_client = MagicMock()
+            mock_client.get_site_url.return_value = "https://test.atlassian.net"
             mock_client_cls.build_from_services = AsyncMock(return_value=mock_client)
 
             with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraDataSource"):
-                cs.get_config = AsyncMock(return_value={
-                    "auth": {"authType": "API_TOKEN", "baseUrl": "https://test.atlassian.net"},
-                })
-
                 result = await connector.init()
                 assert result is True
                 assert connector.site_url == "https://test.atlassian.net"
-                assert connector.cloud_id is None
 
     @pytest.mark.asyncio
     async def test_init_failure(self):

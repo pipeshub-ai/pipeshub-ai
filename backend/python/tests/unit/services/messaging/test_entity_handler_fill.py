@@ -97,6 +97,7 @@ class TestGetOrCreateAllTeamAndAddUserException:
         )
 
 
+@pytest.mark.skip(reason="Method __create_kb_connector_app_instance removed - KB creation now per-user, not per-org")
 class TestCreateKbConnectorNoMetadataReal:
     """Lines 655-656: guard that the class lacks ``_connector_metadata``.
 
@@ -126,6 +127,7 @@ class TestCreateKbConnectorNoMetadataReal:
         assert "metadata not found" in svc.logger.warning.call_args[0][0]
 
 
+@pytest.mark.skip(reason="Method __create_kb_connector_app_instance removed - KB creation now per-user, not per-org")
 class TestCreateKbConnectorMissingConnectorsMap:
     """Lines 730-731: ``connectors_map`` attribute missing on app_container.
 

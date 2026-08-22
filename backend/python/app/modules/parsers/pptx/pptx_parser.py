@@ -4,6 +4,8 @@ from docling.datamodel.base_models import DocumentStream
 from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+
 
 class PPTXParser:
     def __init__(self) -> None:
@@ -32,7 +34,10 @@ class PPTXParser:
         result = self.converter.convert(source)
 
         if result.status.value != "success":
-            raise ValueError(f"Failed to parse PPTX: {result.status}")
+            raise DocumentProcessingError(
+                f"Failed to parse PPTX: {result.status}",
+                details={"status": str(result.status)},
+            )
 
         return result.document
 
@@ -52,6 +57,9 @@ class PPTXParser:
         result = self.converter.convert(file_path)
 
         if result.status.value != "success":
-            raise ValueError(f"Failed to parse PPTX: {result.status}")
+            raise DocumentProcessingError(
+                f"Failed to parse PPTX: {result.status}",
+                details={"status": str(result.status)},
+            )
 
         return result.document

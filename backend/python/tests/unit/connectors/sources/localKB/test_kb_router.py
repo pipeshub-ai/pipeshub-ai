@@ -243,7 +243,7 @@ class TestUpdateKnowledgeBase:
         app, kb_svc, _ = _make_app()
         kb_svc.update_knowledge_base = AsyncMock(return_value={"success": True})
         client = TestClient(app)
-        resp = client.put("/api/v1/kb/kb1", json={"groupName": "New"})
+        resp = client.put("/api/v1/kb/kb1", json={"name": "New"})
         assert resp.status_code == 200
 
     def test_invalid_body(self):
@@ -258,14 +258,14 @@ class TestUpdateKnowledgeBase:
             "success": False, "code": 403, "reason": "No permission"
         })
         client = TestClient(app)
-        resp = client.put("/api/v1/kb/kb1", json={})
+        resp = client.put("/api/v1/kb/kb1", json={"name": "New Name"})
         assert resp.status_code == 403
 
     def test_unexpected_exception(self):
         app, kb_svc, _ = _make_app()
-        kb_svc.update_knowledge_base = AsyncMock(side_effect=RuntimeError("err"))
+        kb_svc.update_knowledge_base = AsyncMock(side_effect=RuntimeError("error"))
         client = TestClient(app)
-        resp = client.put("/api/v1/kb/kb1", json={})
+        resp = client.put("/api/v1/kb/kb1", json={"description": "Updated"})
         assert resp.status_code == 500
 
 
@@ -1309,7 +1309,7 @@ class TestUpdateKnowledgeBaseFullCoverage:
         app, kb_svc, _ = _make_app()
         kb_svc.update_knowledge_base = AsyncMock(return_value={"success": True})
         client = TestClient(app)
-        resp = client.put("/api/v1/kb/kb1", json={"groupName": "New"})
+        resp = client.put("/api/v1/kb/kb1", json={"name": "New"})
         assert resp.status_code == 200
 
     def test_invalid_body(self):
@@ -1324,14 +1324,14 @@ class TestUpdateKnowledgeBaseFullCoverage:
             "success": False, "code": 403, "reason": "No permission"
         })
         client = TestClient(app)
-        resp = client.put("/api/v1/kb/kb1", json={})
+        resp = client.put("/api/v1/kb/kb1", json={"name": "Updated Name"})
         assert resp.status_code == 403
 
     def test_unexpected_exception(self):
         app, kb_svc, _ = _make_app()
         kb_svc.update_knowledge_base = AsyncMock(side_effect=RuntimeError("err"))
         client = TestClient(app)
-        resp = client.put("/api/v1/kb/kb1", json={})
+        resp = client.put("/api/v1/kb/kb1", json={"description": "Updated"})
         assert resp.status_code == 500
 
 

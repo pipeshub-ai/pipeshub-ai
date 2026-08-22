@@ -753,14 +753,16 @@ class TestPyMuPDFOpenCVProcessorExtended:
         ]
         pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=regions)
 
-        mock_response = MagicMock()
-        mock_response.summary = "Table"
-        mock_response.headers = ["A", "B"]
+        from app.utils.table_enrichment import TableEnrichmentResult
 
-        with patch("app.modules.parsers.pdf.pdfplumber_opencv_processor.get_table_summary_n_headers",
-                    new_callable=AsyncMock, return_value=mock_response), \
-             patch("app.modules.parsers.pdf.pdfplumber_opencv_processor.get_rows_text",
-                    new_callable=AsyncMock, return_value=(["Row text"], [["A", "B"]])):
+        enrichment = TableEnrichmentResult(
+            summary="Table", headers=["A", "B"], descriptions=["Row text"]
+        )
+
+        with patch("app.modules.parsers.pdf.pdfplumber_opencv_processor.get_llm_for_role",
+                    new_callable=AsyncMock, return_value=(MagicMock(), {})), \
+             patch("app.modules.parsers.pdf.pdfplumber_opencv_processor.enrich_tables",
+                    new_callable=AsyncMock, return_value=[enrichment]):
             result = await proc.create_blocks([pd])
 
         # TABLE row, IMAGE, 4 list items (2 groups), 1 TEXT
@@ -899,18 +901,18 @@ class TestPyMuPDFOpenCVProcessorExtended:
         block_groups: list = []
 
         with patch(
-            "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_table_summary_n_headers",
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_llm_for_role",
             new_callable=AsyncMock,
-        ) as mock_summary, patch(
-            "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_rows_text",
+        ) as mock_get_llm, patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.enrich_table_grid",
             new_callable=AsyncMock,
-        ) as mock_rows:
+        ) as mock_enrich:
             bg = await proc._build_table_group(
                 region, pd, blocks, block_groups, skip_llm_enrichment=True
             )
 
-        mock_summary.assert_not_called()
-        mock_rows.assert_not_called()
+        mock_get_llm.assert_not_called()
+        mock_enrich.assert_not_called()
         assert bg is not None
         assert bg.type.value == "table"
         assert len(blocks) == 2
@@ -964,13 +966,19 @@ class TestPyMuPDFOpenCVProcessorExtended:
 
     @pytest.mark.asyncio
     async def test_build_table_group_missing_row_text_fallback(self):
-        """Row blocks use empty string when table_rows_text is shorter than table_rows."""
+        """Row blocks are built one-to-one from the enrichment's descriptions.
+
+        Padding a short LLM response out to the full row count is enrich_table_grid's
+        job (it never returns fewer descriptions than data rows); _build_table_group
+        just renders whatever it's given.
+        """
         from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
             LayoutRegion,
             LayoutRegionType,
             ParsedPageData,
             PDFPlumberOpenCVProcessor,
         )
+        from app.utils.table_enrichment import TableEnrichmentResult
 
         proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
         region = LayoutRegion(
@@ -982,22 +990,15 @@ class TestPyMuPDFOpenCVProcessorExtended:
         blocks: list = []
         block_groups: list = []
 
-        mock_response = MagicMock()
-        mock_response.summary = "Table summary"
-        mock_response.headers = ["A", "B"]
+        enrichment = TableEnrichmentResult(
+            summary="Table summary",
+            headers=["A", "B"],
+            descriptions=["Row one text", "Row two text"],
+        )
 
-        with patch(
-            "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_table_summary_n_headers",
-            new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["Only one row text"], [["1", "2"], ["3", "4"]]),
-        ):
-            bg = await proc._build_table_group(region, pd, blocks, block_groups)
+        bg = await proc._build_table_group(region, pd, blocks, block_groups, enrichment=enrichment)
 
         assert bg is not None
         assert len(blocks) == 2
-        assert blocks[0].data["row_natural_language_text"] == "Only one row text"
-        assert blocks[1].data["row_natural_language_text"] == ""
+        assert blocks[0].data["row_natural_language_text"] == "Row one text"
+        assert blocks[1].data["row_natural_language_text"] == "Row two text"

@@ -4,7 +4,12 @@ from inspect import isclass
 from typing import Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import CollectionNames, Connectors, ProgressStatus
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    PermissionModel,
+    ProgressStatus,
+)
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.connectors.core.registry.connector_builder import ConnectorScope
@@ -12,6 +17,13 @@ from app.containers.connector import ConnectorAppContainer
 from app.models.entities import RecordType
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+
+# KB app documents store type == Connectors.KNOWLEDGE_BASE.value ("KB"), but the
+# connector class is registered under its display name (see
+# app/connectors/sources/localKB/connector.py, KB_CONNECTOR_NAME) — so registry
+# lookups keyed directly on doc "type" miss KB instances entirely.
+_KB_REGISTRY_KEY = "Collections"
 
 
 class Origin(str, Enum):
@@ -203,6 +215,16 @@ class ConnectorRegistry:
         except Exception as e:
             self.logger.error(f"Error discovering connectors: {e}")
 
+    @staticmethod
+    def _permission_model_for(metadata: dict[str, Any]) -> str:
+        """The connector's declared permission model, defaulting to RECORD_LEVEL.
+
+        RECORD_LEVEL is the safe default: it resolves visibility per user, so a
+        connector that forgets to declare can only under-share.
+        """
+        config = metadata.get('config') or {}
+        return config.get('permissionModel') or PermissionModel.RECORD_LEVEL.value
+
     def _normalize_connector_name(self, name: str) -> str:
         """
         Normalize connector name for matching (case-insensitive, ignore spaces).
@@ -276,6 +298,43 @@ class ConnectorRegistry:
 
         except Exception as e:
             self.logger.error(f"Error checking connector access: {e}")
+            return False
+
+    async def can_user_view_connector(
+        self,
+        connector_id: str,
+        connector_instance: dict[str, Any],
+        user_id: str,
+        *,
+        is_admin: bool,
+    ) -> bool:
+        """Read-only visibility for a connector, mirroring the connector listing.
+
+        Whereas :meth:`_can_access_connector` gates *mutations* to the creator or
+        an admin, a team-scoped connector is *viewable* by anyone who can reach it
+        via a direct or team app edge — the same rule
+        :meth:`get_all_connector_instances` uses. This keeps stats visibility in
+        sync with list visibility: if a user can see a connector, they can see its
+        stats.
+        """
+        try:
+            scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value)
+            created_by = connector_instance.get("createdBy")
+
+            if scope == ConnectorScope.PERSONAL.value:
+                return created_by == user_id
+
+            if scope == ConnectorScope.TEAM.value:
+                if is_admin or created_by == user_id:
+                    return True
+                graph_provider = await self._get_graph_provider()
+                accessible = await graph_provider.get_user_accessible_team_app_ids(user_id)
+                return connector_id in accessible
+
+            return False
+
+        except Exception as e:
+            self.logger.error(f"Error checking connector view access: {e}")
             return False
 
     async def _check_name_uniqueness(
@@ -429,6 +488,10 @@ class ConnectorRegistry:
                 'appGroup': metadata['appGroup'],
                 'authType': auth_type_to_store,  # Store selected auth type (user's choice, not metadata)
                 'scope': scope,
+                'orgId': org_id,
+                # Denormalized off the decorator so the query service can route
+                # permission resolution without importing connector code.
+                'permissionModel': self._permission_model_for(metadata),
                 'isActive': False,
                 'isAgentActive': False,
                 'isConfigured': True,
@@ -549,6 +612,7 @@ class ConnectorRegistry:
 
             # Collect keys of instances that need to be deactivated
             keys_to_deactivate = []
+            stale_permission_models: list[tuple[str, str]] = []
             for document in all_documents:
                 connector_type = document.get('type')
                 is_active = document.get('isActive', False)
@@ -559,6 +623,12 @@ class ConnectorRegistry:
                 if connector_type not in self._connectors and is_active:
                     keys_to_deactivate.append(doc_key)
 
+                registered = self._connectors.get(connector_type)
+                if registered and doc_key:
+                    expected = self._permission_model_for(registered)
+                    if document.get('permissionModel') != expected:
+                        stale_permission_models.append((doc_key, expected))
+
             # Batch deactivate all instances using graph provider
             if keys_to_deactivate:
                 updated_count = await graph_provider.batch_update_connector_status(
@@ -568,6 +638,23 @@ class ConnectorRegistry:
                     is_agent_active=False,
                 )
                 self.logger.info(f"Batch deactivated {updated_count} connector instances")
+
+            # Backfill instances created before the flag existed, and pick up
+            # reclassifications. Best-effort: a failure here only costs the
+            # query service some cache sharing, never correctness.
+            for doc_key, expected in stale_permission_models:
+                try:
+                    await graph_provider.update_node(
+                        doc_key, self._collection_name, {'permissionModel': expected}
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Could not set permissionModel on connector instance {doc_key}: {e}"
+                    )
+            if stale_permission_models:
+                self.logger.info(
+                    f"Backfilled permissionModel on {len(stale_permission_models)} connector instances"
+                )
 
             self.logger.info("Successfully synced registry with database")
             return True
@@ -678,11 +765,14 @@ class ConnectorRegistry:
 
             for document in documents:
                 doc_type = document.get('type')
-                if doc_type in self._connectors:
+                registry_key = (
+                    _KB_REGISTRY_KEY if doc_type == Connectors.KNOWLEDGE_BASE.value else doc_type
+                )
+                if registry_key in self._connectors:
                     connectors.append(
                         self._build_connector_info(
                             doc_type,
-                            self._connectors[doc_type],
+                            self._connectors[registry_key],
                             document,
                             include_config=False,
                         )
@@ -1153,14 +1243,17 @@ class ConnectorRegistry:
                 return None
 
             connector_type = document['type']
+            registry_key = (
+                _KB_REGISTRY_KEY if connector_type == Connectors.KNOWLEDGE_BASE.value else connector_type
+            )
 
-            if connector_type not in self._connectors:
+            if registry_key not in self._connectors:
                 self.logger.error(
                     f"Connector type {connector_type} not found in registry"
                 )
                 return None
 
-            metadata = self._connectors[connector_type]
+            metadata = self._connectors[registry_key]
             return self._build_connector_info(connector_type, metadata, document)
 
         except Exception as e:

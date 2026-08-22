@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { Container } from 'inversify'
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware'
-import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware'
+import { AuthMiddleware } from '../../../config'
 import { createOAuthClientRateLimiter } from '../../../libs/middlewares/rate-limit.middleware'
 import { OAuthProviderController } from '../controller/oauth.provider.controller'
 import { OIDCProviderController } from '../controller/oid.provider.controller'

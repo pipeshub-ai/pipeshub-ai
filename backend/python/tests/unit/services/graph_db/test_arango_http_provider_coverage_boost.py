@@ -296,10 +296,10 @@ class TestGetAccessibleVirtualRecordIds:
     @pytest.mark.asyncio
     async def test_merges_results_across_tasks(self, provider):
         """Results from connector + kb paths are merged; first wins on duplicates."""
-        async def fake_connector(user, org, cid, metadata):
+        async def fake_connector(user, org, cid, metadata, time_range=None):
             return {"v1": "r1", "v2": "r2"}
 
-        async def fake_kb(user, org, kb_ids, metadata):
+        async def fake_kb(user, org, kb_ids, metadata, time_range=None):
             # v2 is a duplicate with a different recordId; existing mapping wins
             return {"v2": "OVERRIDE", "v3": "r3"}
 
@@ -316,10 +316,10 @@ class TestGetAccessibleVirtualRecordIds:
 
     @pytest.mark.asyncio
     async def test_task_exceptions_are_tolerated(self, provider):
-        async def failing(user, org, cid, metadata):
+        async def failing(user, org, cid, metadata, time_range=None):
             raise RuntimeError("boom")
 
-        async def ok(user, org, kb_ids, metadata):
+        async def ok(user, org, kb_ids, metadata, time_range=None):
             return {"v1": "r1"}
 
         provider._get_user_app_ids = AsyncMock(return_value=["c1"])

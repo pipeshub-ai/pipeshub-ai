@@ -1,9 +1,11 @@
 """Tests for OCRHandler and OCRStrategy."""
 
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 
 from app.config.constants.ai_models import OCRProvider
 from app.modules.parsers.pdf.ocr_handler import OCRHandler, OCRStrategy
@@ -151,32 +153,18 @@ class TestOCRHandlerInit:
     def logger(self):
         return logging.getLogger("test_ocr_handler")
 
-    @patch("app.modules.parsers.pdf.ocr_handler.OCRProvider", OCRProvider)
     def test_init_vlm_ocr_strategy(self, logger):
-        """OCRHandler with VLM OCR strategy."""
-        with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.VLMOCRStrategy"
-        ) as mock_cls:
-            mock_strategy = MagicMock()
-            mock_cls.return_value = mock_strategy
+        """OCRHandler with VLM OCR strategy validates and stores config."""
+        handler = OCRHandler(logger, OCRProvider.VLM_OCR.value, config={"key": "val"})
 
-            handler = OCRHandler(logger, OCRProvider.VLM_OCR.value, config={"key": "val"})
-
-            assert handler.strategy is mock_strategy
-            mock_cls.assert_called_once_with(logger=logger, config={"key": "val"})
+        assert handler.provider == OCRProvider.VLM_OCR.value
+        assert handler._strategy_kwargs == {"config": {"key": "val"}}
 
     def test_init_unsupported_strategy_raises(self, logger):
         """Unsupported strategy type raises ValueError."""
-        with pytest.raises(ValueError, match="Unsupported OCR strategy"):
+        with pytest.raises(DocumentProcessingError, match="Unsupported OCR strategy"):
             OCRHandler(logger, "unknown_strategy")
 
-
-class TestOCRHandlerCreateStrategy:
-    """Tests for OCRHandler._create_strategy selection logic."""
-
-    @pytest.fixture
-    def logger(self):
-        return logging.getLogger("test_strategy")
 
 class TestOCRHandlerProcessDocument:
     """Tests for OCRHandler.process_document."""
@@ -187,36 +175,60 @@ class TestOCRHandlerProcessDocument:
 
     @pytest.mark.asyncio
     async def test_process_document_success(self, logger):
-        """process_document calls strategy.load_document and returns result."""
+        """process_document creates a strategy, loads the document, returns result."""
         mock_strategy = MagicMock()
         mock_strategy.load_document = AsyncMock(return_value=None)
         mock_strategy.document_analysis_result = {"pages": [{"text": "Hello"}]}
 
-        # Bypass __init__ strategy creation
-        with patch.object(OCRHandler, "__init__", lambda self, *a, **kw: None):
-            handler = OCRHandler.__new__(OCRHandler)
-            handler.logger = logger
-            handler.strategy = mock_strategy
-            mock_strategy.load_document = AsyncMock()
+        handler = OCRHandler.__new__(OCRHandler)
+        handler.logger = logger
+        handler.provider = OCRProvider.VLM_OCR.value
+        handler._strategy_kwargs = {"config": {"key": "val"}}
 
+        with patch.object(handler, "_create_strategy", return_value=mock_strategy) as create:
             result = await handler.process_document(b"pdf-bytes")
 
-            mock_strategy.load_document.assert_awaited_once_with(b"pdf-bytes")
-            assert result == {"pages": [{"text": "Hello"}]}
+        create.assert_called_once_with(OCRProvider.VLM_OCR.value, config={"key": "val"})
+        mock_strategy.load_document.assert_awaited_once_with(b"pdf-bytes")
+        assert result == {"pages": [{"text": "Hello"}]}
 
     @pytest.mark.asyncio
     async def test_process_document_raises_on_error(self, logger):
         """process_document re-raises exceptions from strategy."""
-        with patch.object(OCRHandler, "__init__", lambda self, *a, **kw: None):
-            handler = OCRHandler.__new__(OCRHandler)
-            handler.logger = logger
-            handler.strategy = MagicMock()
-            handler.strategy.load_document = AsyncMock(side_effect=RuntimeError("parse error"))
+        mock_strategy = MagicMock()
+        mock_strategy.load_document = AsyncMock(side_effect=RuntimeError("parse error"))
 
+        handler = OCRHandler.__new__(OCRHandler)
+        handler.logger = logger
+        handler.provider = OCRProvider.VLM_OCR.value
+        handler._strategy_kwargs = {}
+
+        with patch.object(handler, "_create_strategy", return_value=mock_strategy):
             with pytest.raises(RuntimeError, match="parse error"):
                 await handler.process_document(b"bad-pdf")
 
+    @pytest.mark.asyncio
+    async def test_process_document_uses_fresh_strategy_per_call(self, logger):
+        """Concurrent-safe: each process_document call gets its own strategy."""
+        strategies = []
 
-# Need this import for AsyncMock in process_document tests
-from unittest.mock import AsyncMock
-import asyncio
+        def make_strategy(*_args, **_kwargs):
+            strategy = MagicMock()
+            strategy.load_document = AsyncMock()
+            strategy.document_analysis_result = {"id": len(strategies)}
+            strategies.append(strategy)
+            return strategy
+
+        handler = OCRHandler(logger, OCRProvider.VLM_OCR.value, config={})
+        with patch(
+            "app.modules.parsers.pdf.vlm_ocr_strategy.VLMOCRStrategy",
+            side_effect=make_strategy,
+        ):
+            result_a = await handler.process_document(b"doc-a")
+            result_b = await handler.process_document(b"doc-b")
+
+        assert result_a == {"id": 0}
+        assert result_b == {"id": 1}
+        assert strategies[0] is not strategies[1]
+        strategies[0].load_document.assert_awaited_once_with(b"doc-a")
+        strategies[1].load_document.assert_awaited_once_with(b"doc-b")

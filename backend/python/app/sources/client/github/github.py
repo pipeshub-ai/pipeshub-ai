@@ -3,6 +3,18 @@ from typing import Any
 
 from github import Auth, Github
 from pydantic import BaseModel, Field  # type: ignore
+from urllib3.util.retry import Retry
+
+# PyGithub's default retry (GithubRetry) silently sleeps INSIDE the SDK until
+# the rate-limit window resets — observed parking worker threads for 30+ min.
+# Rate limits are handled explicitly by the connector (probe + pause + backfill
+# floor), so the SDK should only retry transient server errors, briefly, and
+# let 403s surface immediately as failures.
+_TRANSIENT_RETRY = Retry(
+    total=3,
+    backoff_factor=1.0,
+    status_forcelist=(500, 502, 503, 504),
+)
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
@@ -14,6 +26,11 @@ class GitHubResponse(BaseModel):
     data: Any | None = None
     error: str | None = None
     message: str | None = None
+    # HTTP status and exception class are preserved separately because callers
+    # need to tell 401 (re-auth) from 403 (rate limit) from 5xx (retry), and
+    # stringifying the exception into `error` loses that distinction.
+    status_code: int | None = None
+    exception_type: str | None = None
 
     def to_dict(self) -> dict[str, Any]:  # type: ignore
         return self.model_dump()
@@ -36,7 +53,7 @@ class GitHubClientViaToken:
 
     def create_client(self) -> None:
         # Build kwargs dynamically to exclude None values
-        kwargs = {"auth": Auth.Token(self.token)}
+        kwargs = {"auth": Auth.Token(self.token), "retry": _TRANSIENT_RETRY}
 
         if self.base_url is not None:
             kwargs["base_url"] = self.base_url
@@ -58,6 +75,16 @@ class GitHubClientViaToken:
 
     def get_token(self) ->str:
         return self.token
+
+    def set_token(self, token: str) -> None:
+        """Rotate the access token and rebuild the underlying PyGithub SDK instance.
+
+        PyGithub binds the ``Auth.Token`` at construction time, so a refreshed
+        OAuth access token requires a new ``Github`` instance rather than
+        mutating the existing one in place.
+        """
+        self.token = token
+        self.create_client()
 
 
 class GitHubConfig(BaseModel):

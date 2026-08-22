@@ -18,6 +18,8 @@ const nextConfig = {
             { source: '/toolsets/oauth/callback/:slug/', destination: '/toolsets/oauth/callback/' },
             { source: '/connectors/oauth/callback/:slug', destination: '/connectors/oauth/callback/' },
             { source: '/connectors/oauth/callback/:slug/', destination: '/connectors/oauth/callback/' },
+            { source: '/mcp-servers/oauth/callback/:slug', destination: '/mcp-servers/oauth/callback/' },
+            { source: '/mcp-servers/oauth/callback/:slug/', destination: '/mcp-servers/oauth/callback/' },
             // `/record/<recordId>` URLs can't ship a dynamic `[recordId]` segment
             // under `output: 'export'`, so the build emits a single `/record/` shell.
             // Rewrite every `/record/:id` to that shell for `next dev`; the page reads

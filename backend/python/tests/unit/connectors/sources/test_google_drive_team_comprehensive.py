@@ -119,6 +119,7 @@ def connector():
         dep.on_record_content_update = AsyncMock()
         dep.on_updated_record_permissions = AsyncMock()
         dep.add_permission_to_record = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
         provider = _make_mock_data_store_provider()
 
         config_svc = AsyncMock()
@@ -430,7 +431,9 @@ class TestProcessDriveItemComprehensive:
         existing.indexing_status = "COMPLETED"
         existing.extraction_status = "COMPLETED"
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         meta = _make_file_metadata(parents=["new-parent"])
         connector.drive_data_source.permissions_list = AsyncMock(return_value={
             "permissions": []
@@ -470,7 +473,7 @@ class TestProcessDriveItemComprehensive:
             drive_id="drive1", is_shared_drive=False
         )
         assert result is not None
-        assert result.record.is_shared_with_me is True
+        assert result.record.shared_with_me_record_group_ids == ["0S:me@test.com"]
         assert result.record.external_record_group_id is None
 
 
@@ -597,14 +600,14 @@ class TestCreateAndSyncSharedDriveRecordGroupComprehensive:
     @pytest.mark.asyncio
     async def test_creates_record_group(self, connector):
         drive = {"id": "sd-1", "name": "SharedDrive1", "createdTime": "2025-01-01T00:00:00Z"}
-        connector._fetch_permissions = AsyncMock(return_value=([], False))
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         await connector._create_and_sync_shared_drive_record_group(drive)
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_drive_with_description(self, connector):
         drive = {"id": "sd-2", "name": "SharedDrive2", "description": "Test Drive"}
-        connector._fetch_permissions = AsyncMock(return_value=([], False))
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         await connector._create_and_sync_shared_drive_record_group(drive)
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
 

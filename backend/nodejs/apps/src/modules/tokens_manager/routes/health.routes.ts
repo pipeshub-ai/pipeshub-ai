@@ -83,13 +83,19 @@ export function createHealthRouter(
 
       const brokerName = deployment.messageBrokerType === 'redis' ? 'Redis Streams' : 'Kafka';
       const graphDbName = deployment.dataStoreType === 'arangodb' ? 'ArangoDB' : 'Neo4j';
+      const vectorDbNames: Record<string, string> = {
+        qdrant: 'Qdrant',
+        opensearch: 'OpenSearch',
+        redis: 'Redis',
+      };
+      const vectorDbName = vectorDbNames[deployment.vectorDbType || ''] || 'VectorDB';
 
       const serviceNames: Record<string, string> = {
         redis: 'Redis',
         messageBroker: brokerName,
         mongodb: 'MongoDB',
         graphDb: graphDbName,
-        vectorDb: 'Qdrant',
+        vectorDb: vectorDbName,
       };
 
       // When KV store uses etcd, add it as a separate service
@@ -162,14 +168,23 @@ export function createHealthRouter(
         }
       }
 
-      try {
-        const qdrantUrl = `http://${appConfig.qdrant.host}:${appConfig.qdrant.port}`;
-        const qdrantResp = await axios.get(`${qdrantUrl}/healthz`, { timeout: 3000 });
-        services.vectorDb = qdrantResp.status === 200 ? 'healthy' : 'unhealthy';
-        if (qdrantResp.status !== 200) overallHealthy = false;
-      } catch (error) {
-        services.vectorDb = 'unhealthy';
-        overallHealthy = false;
+      // Vector DB — delegate to the Python connector service which knows the
+      // configured provider (Qdrant, OpenSearch, or Redis) via VECTOR_DB_TYPE.
+      if (!deployment.vectorDbType) {
+        services.vectorDb = 'pending';
+        logger.info('vectorDbType not yet available in deployment config — Python backend may not have started');
+      } else {
+        try {
+          const vectorDbResp = await axios.get(
+            `${appConfig.connectorBackend}/health/vector-db`,
+            { timeout: 5000, validateStatus: () => true },
+          );
+          services.vectorDb = vectorDbResp.status === 200 ? 'healthy' : 'unhealthy';
+          if (vectorDbResp.status !== 200) overallHealthy = false;
+        } catch (error) {
+          services.vectorDb = 'unhealthy';
+          overallHealthy = false;
+        }
       }
 
       const health: HealthStatus = {
@@ -192,7 +207,8 @@ export function createHealthRouter(
     }
   });
 
-  // Combined services health check (Python query + connector + indexing + docling + embedding services)
+  // Combined services health check (Python query + connector + indexing + docling + embedding,
+  // plus parsing + extraction when USE_PARSING_SERVICE=true)
   router.get('/services', async (_req, res, _next) => {
     try {
       const aiHealthUrl = `${appConfig.aiBackend}/health`;
@@ -202,14 +218,25 @@ export function createHealthRouter(
       const doclingHealthUrl = `${doclingBackend}/health`;
       const embeddingBackend = (process.env.EMBEDDING_SERVER_URL || 'http://localhost:8002').replace(/\/v1\/?$/, '');
       const embeddingHealthUrl = `${embeddingBackend}/health`;
+      const parsingServicesEnabled = (process.env.USE_PARSING_SERVICE || '').toLowerCase() === 'true';
+      const parsingBackend = process.env.PARSING_SERVICE_URL || 'http://localhost:8092';
+      const extractionBackend = process.env.EXTRACTION_SERVICE_URL || 'http://localhost:8093';
 
-      const [aiResp, connectorResp, indexingResp, doclingResp, embeddingResp] = await Promise.allSettled([
+      const baseSettled = Promise.allSettled([
         axios.get(aiHealthUrl, { timeout: 3000 }),
         axios.get(connectorHealthUrl, { timeout: 3000 }),
         axios.get(indexingHealthUrl, { timeout: 3000 }),
         axios.get(doclingHealthUrl, { timeout: 3000 }),
         axios.get(embeddingHealthUrl, { timeout: 3000 }),
       ]);
+      const parsingSettled = parsingServicesEnabled
+        ? Promise.allSettled([
+            axios.get(`${parsingBackend}/health`, { timeout: 3000 }),
+            axios.get(`${extractionBackend}/health`, { timeout: 3000 }),
+          ])
+        : null;
+
+      const [aiResp, connectorResp, indexingResp, doclingResp, embeddingResp] = await baseSettled;
 
       const isServiceHealthy = (res: PromiseSettledResult<any>) =>
         res.status === 'fulfilled' &&
@@ -225,29 +252,41 @@ export function createHealthRouter(
       // Critical services: query + connector (required for core functionality)
       const overallHealthy = aiOk && connectorOk;
 
+      const services: Record<string, string> = {
+        query: aiOk ? 'healthy' : 'unhealthy',
+        connector: connectorOk ? 'healthy' : 'unhealthy',
+        indexing: indexingOk ? 'healthy' : 'unhealthy',
+        docling: doclingOk ? 'healthy' : 'unhealthy',
+        embedding: embeddingOk ? 'healthy' : 'unhealthy',
+      };
+      if (parsingSettled) {
+        const [parsingResp, extractionResp] = await parsingSettled;
+        services.parsing = isServiceHealthy(parsingResp) ? 'healthy' : 'unhealthy';
+        services.extraction = isServiceHealthy(extractionResp) ? 'healthy' : 'unhealthy';
+      }
+
       res.status(200).json({
         status: overallHealthy ? 'healthy' : 'unhealthy',
         timestamp: new Date().toISOString(),
-        services: {
-          query: aiOk ? 'healthy' : 'unhealthy',
-          connector: connectorOk ? 'healthy' : 'unhealthy',
-          indexing: indexingOk ? 'healthy' : 'unhealthy',
-          docling: doclingOk ? 'healthy' : 'unhealthy',
-          embedding: embeddingOk ? 'healthy' : 'unhealthy',
-        },
+        services,
       });
     } catch (error: any) {
       logger.error('Combined services health check failed', error?.message ?? error);
+      const services: Record<string, string> = {
+        query: 'unknown',
+        connector: 'unknown',
+        indexing: 'unknown',
+        docling: 'unknown',
+        embedding: 'unknown',
+      };
+      if ((process.env.USE_PARSING_SERVICE || '').toLowerCase() === 'true') {
+        services.parsing = 'unknown';
+        services.extraction = 'unknown';
+      }
       res.status(200).json({
         status: 'unhealthy',
         timestamp: new Date().toISOString(),
-        services: {
-          query: 'unknown',
-          connector: 'unknown',
-          indexing: 'unknown',
-          docling: 'unknown',
-          embedding: 'unknown',
-        },
+        services,
       });
     }
   });

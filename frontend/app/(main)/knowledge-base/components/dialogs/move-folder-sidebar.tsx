@@ -31,6 +31,8 @@ interface FolderTreeItemProps {
   onSelect: (id: string) => void;
   onToggle: (id: string) => void;
   expandedFolders: Record<string, boolean>;
+  onExpand?: (nodeId: string) => Promise<void>;
+  loadingNodeIds?: Set<string>;
 }
 
 function FolderTreeItem({
@@ -42,10 +44,13 @@ function FolderTreeItem({
   onSelect,
   onToggle,
   expandedFolders,
+  onExpand,
+  loadingNodeIds,
 }: FolderTreeItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const isExpanded = !!expandedFolders[node.id];
-  const hasChildren = node.children.length > 0;
+  const hasChildren = node.children.length > 0 || !!node.hasChildren;
+  const isLoading = loadingNodeIds?.has(node.id) ?? false;
   const indent = depth * TREE_INDENT_PER_LEVEL;
   const isSelected = selectedFolderId === node.id;
   const isCurrent = currentFolderId === node.id;
@@ -100,15 +105,34 @@ function FolderTreeItem({
               }}
               onClick={(e) => {
                 e.stopPropagation();
-                if (hasChildren) onToggle(node.id);
+                if (hasChildren) {
+                  // If children not yet loaded, trigger lazy load first, then toggle
+                  if (node.children.length === 0 && onExpand) {
+                    onExpand(node.id).then(() => {
+                      onToggle(node.id);
+                    });
+                  } else {
+                    // Children already loaded, just toggle
+                    onToggle(node.id);
+                  }
+                }
               }}
             >
               {hasChildren && (
-                <MaterialIcon
-                  name={isExpanded ? 'expand_more' : 'chevron_right'}
-                  size={16}
-                  color={getIconColor()}
-                />
+                isLoading ? (
+                  <MaterialIcon
+                    name="refresh"
+                    size={16}
+                    color={getIconColor()}
+                    style={{ animation: 'spin 1s linear infinite' }}
+                  />
+                ) : (
+                  <MaterialIcon
+                    name={isExpanded ? 'expand_more' : 'chevron_right'}
+                    size={16}
+                    color={getIconColor()}
+                  />
+                )
               )}
             </Box>
 
@@ -162,6 +186,8 @@ function FolderTreeItem({
             onSelect={onSelect}
             onToggle={onToggle}
             expandedFolders={expandedFolders}
+            onExpand={onExpand}
+            loadingNodeIds={loadingNodeIds}
           />
         ))}
     </>
@@ -179,6 +205,10 @@ export interface MoveFolderSidebarProps {
   itemToMoveId?: string;
   onMove: (newParentId: string) => void;
   isMoving?: boolean;
+  /** Callback to lazily load folder children when expanded */
+  onExpand?: (nodeId: string) => Promise<void>;
+  /** Set of node IDs currently loading their children */
+  loadingNodeIds?: Set<string>;
 }
 
 export function MoveFolderSidebar({
@@ -189,6 +219,8 @@ export function MoveFolderSidebar({
   itemToMoveId,
   onMove,
   isMoving = false,
+  onExpand,
+  loadingNodeIds,
 }: MoveFolderSidebarProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
@@ -481,6 +513,8 @@ export function MoveFolderSidebar({
                   onSelect={handleSelect}
                   onToggle={handleToggle}
                   expandedFolders={expandedFolders}
+                  onExpand={onExpand}
+                  loadingNodeIds={loadingNodeIds}
                 />
               ))}
             </Flex>

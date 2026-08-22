@@ -1244,11 +1244,12 @@ class TestCreateAndDeleteUser(UsersTestBase):
             )
             assert_response_matches_openapi_operation(del_resp.json(), "deleteUser")
 
-        # Required fields only — fullName + email.
+        # Required fields only — fullName + email + role.
         unique = uuid.uuid4().hex[:8]
         resp = self.users.create_user(
             email=f"integration-test-{unique}@test-pipeshub.com",
             full_name=f"Integration Test {unique}",
+            role="member",
         )
         assert resp.status_code == 201, (
             f"[required only] Expected 201, got {resp.status_code}: {resp.text}"
@@ -1315,9 +1316,13 @@ class TestCreateAndDeleteUser(UsersTestBase):
         _cleanup(body["_id"], "all fields")
 
     def test_create_user_negative_tests(self) -> None:
-        """401 no auth · 400 missing fullName · 400 missing email · 400 invalid email format."""
+        """401 no auth · 400 missing fullName/email · omitted role defaults to member · 400 invalid role/email."""
         # Missing Authorization header — auth middleware rejects before Zod.
-        resp = self.users.post("/", json={"fullName": "x", "email": "x@test.com"}, auth=False)
+        resp = self.users.post(
+            "/",
+            json={"fullName": "x", "email": "x@test.com", "role": "member"},
+            auth=False,
+        )
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -1331,7 +1336,7 @@ class TestCreateAndDeleteUser(UsersTestBase):
         )
 
         # Missing fullName — Zod requires fullName.min(1).
-        resp = self.users.post("/", json={"email": "x@test.com"})
+        resp = self.users.post("/", json={"email": "x@test.com", "role": "member"})
         assert resp.status_code == 400, (
             f"[missing fullName] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -1342,7 +1347,7 @@ class TestCreateAndDeleteUser(UsersTestBase):
         )
 
         # Missing email — Zod requires email.
-        resp = self.users.post("/", json={"fullName": "Test User"})
+        resp = self.users.post("/", json={"fullName": "Test User", "role": "member"})
         assert resp.status_code == 400, (
             f"[missing email] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -1352,8 +1357,52 @@ class TestCreateAndDeleteUser(UsersTestBase):
             f"[missing email] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
 
+        # Missing role — optional; defaults to member.
+        unique = uuid.uuid4().hex[:8]
+        created_id = ""
+        try:
+            resp = self.users.post(
+                "/",
+                json={
+                    "fullName": f"Default Role {unique}",
+                    "email": f"default-role-{unique}@test-pipeshub.com",
+                },
+            )
+            assert resp.status_code == 201, (
+                f"[missing role defaults] Expected 201, got {resp.status_code}: {resp.text}"
+            )
+            body = resp.json()
+            created_id = str(body.get("_id") or "")
+            assert_response_matches_openapi_operation(body, "createUser", status_code="201")
+            assert body.get("role") == "member", (
+                f"[missing role defaults] Expected role 'member', got {body.get('role')!r}"
+            )
+        finally:
+            if created_id:
+                del_resp = self.users.delete_user(created_id)
+                assert del_resp.status_code == 200, (
+                    f"[missing role defaults cleanup] Expected 200, got {del_resp.status_code}: {del_resp.text}"
+                )
+
+        # Invalid role — Zod enum rejects values other than admin|member.
+        resp = self.users.post(
+            "/",
+            json={"fullName": "Test User", "email": "x@test.com", "role": "superadmin"},
+        )
+        assert resp.status_code == 400, (
+            f"[invalid role] Expected 400, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "createUser", status_code="400")
+        assert body["error"]["code"] == "VALIDATION_ERROR", (
+            f"[invalid role] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
+        )
+
         # Invalid email format — Zod email() validator rejects malformed addresses.
-        resp = self.users.post("/", json={"fullName": "Test User", "email": "not-an-email"})
+        resp = self.users.post(
+            "/",
+            json={"fullName": "Test User", "email": "not-an-email", "role": "member"},
+        )
         assert resp.status_code == 400, (
             f"[invalid email] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -1364,7 +1413,15 @@ class TestCreateAndDeleteUser(UsersTestBase):
         )
 
         # Invalid mobile format — Zod refine: must match ^\+?[0-9]{10,15}$.
-        resp = self.users.post("/", json={"fullName": "Test User", "email": "valid@example.com", "mobile": "abc123"})
+        resp = self.users.post(
+            "/",
+            json={
+                "fullName": "Test User",
+                "email": "valid@example.com",
+                "role": "member",
+                "mobile": "abc123",
+            },
+        )
         assert resp.status_code == 400, (
             f"[invalid mobile] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -1375,7 +1432,15 @@ class TestCreateAndDeleteUser(UsersTestBase):
         )
 
         # Null mobile is invalid — schema expects string when provided.
-        resp = self.users.post("/", json={"fullName": "Test User", "email": "valid@example.com", "mobile": None})
+        resp = self.users.post(
+            "/",
+            json={
+                "fullName": "Test User",
+                "email": "valid@example.com",
+                "role": "member",
+                "mobile": None,
+            },
+        )
         assert resp.status_code == 400, (
             f"[null mobile] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -1863,3 +1928,67 @@ class TestGetUsersByIds(UsersTestBase):
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[wrong type] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
+
+
+# ====================================================================
+# POST /api/v1/users/bulk/invite  and  /bulk/invite/upload
+# ====================================================================
+@pytest.mark.integration
+class TestBulkInvite(UsersTestBase):
+    """POST /api/v1/users/bulk/invite and /bulk/invite/upload.
+
+    The bulk-invite routes are gated by an smtpConfigCheck middleware, so the
+    class depends on the shared ``smtp_configured`` fixture (response-validation
+    conftest), which configures SMTP from the SMTP_* env and skips when it is
+    unset — so local runs without a mail server stay green (export the vars,
+    Mailpit is easiest, to exercise it).
+
+    Recipients use the reserved example.com domain so a real relay accepts the
+    submission without generating deliverable mail.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_smtp(self, smtp_configured: None) -> None:
+        """Gate every test in this class on the global SMTP setup fixture."""
+
+    @staticmethod
+    def _unique_email() -> str:
+        return f"bulk-invite-it-{uuid.uuid4().hex[:12]}@example.com"
+
+    def _csv(self, emails: list[str]) -> bytes:
+        return ("Email\n" + "\n".join(emails) + "\n").encode()
+
+    # ---- POST /bulk/invite (manual list, synchronous) ----
+    def test_bulk_invite_new_users_returns_200(self) -> None:
+        emails = [self._unique_email(), self._unique_email()]
+        resp = self.users.invite_bulk(emails)
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+    def test_bulk_invite_rejects_non_array_emails(self) -> None:
+        resp = self.users.post("/bulk/invite", json={"emails": "not-a-list"})
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    def test_bulk_invite_rejects_invalid_email(self) -> None:
+        resp = self.users.invite_bulk(["definitely not an email"])
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    # ---- POST /bulk/invite/upload (file, async → 202) ----
+    def test_bulk_invite_upload_csv_returns_202(self) -> None:
+        emails = [self._unique_email(), self._unique_email()]
+        resp = self.users.invite_bulk_upload(self._csv(emails), "invites.csv")
+        assert resp.status_code == 202, f"{resp.status_code}: {resp.text}"
+
+    def test_bulk_invite_upload_empty_file_returns_400(self) -> None:
+        resp = self.users.invite_bulk_upload(b"", "empty.csv")
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    def test_bulk_invite_upload_rejects_wrong_file_type(self) -> None:
+        resp = self.users.invite_bulk_upload(
+            b"\x89PNG\r\n\x1a\n", "avatar.png", "image/png"
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    def test_bulk_invite_upload_over_limit_returns_400(self) -> None:
+        emails = [f"user{i}@example.com" for i in range(1001)]
+        resp = self.users.invite_bulk_upload(self._csv(emails), "toomany.csv")
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"

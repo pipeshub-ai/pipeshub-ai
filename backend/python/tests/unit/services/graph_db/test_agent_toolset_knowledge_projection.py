@@ -133,16 +133,17 @@ class TestNeo4jProjectAgents:
             {"agent_id": "a2", "toolset": {"_key": "ts2", "name": "slack", "tools": []}},
         ]
         knowledge_rows = [
-            # KB-backed knowledge (recordGroups → resolve to a KB group doc)
-            {"agent_id": "a1", "_key": "k1", "connectorId": "kbconn",
-             "filters": json.dumps({"recordGroups": ["kb1"]})},
-            # App-backed knowledge (no recordGroups → resolve via Apps doc)
+            # KB-backed knowledge (KB app UUID as connectorId, type will be resolved from app doc)
+            {"agent_id": "a1", "_key": "k1", "connectorId": "kb-uuid-1",
+             "filters": json.dumps({})},  # No recordGroups filter needed with new architecture
+            # App-backed knowledge (regular connector app)
             {"agent_id": "a2", "_key": "k2", "connectorId": "app1",
              "filters": json.dumps({})},
         ]
         doc_store = {
-            "kb1": {"id": "kb1", "groupType": Connectors.KNOWLEDGE_BASE.value,
-                    "groupName": "My KB", "connectorId": "kbconn"},
+            # KB app in apps collection with type="KB"
+            "kb-uuid-1": {"id": "kb-uuid-1", "name": "My KB", "type": "KB"},
+            # Regular app
             "app1": {"id": "app1", "name": "Slack", "type": "SLACK"},
         }
         client, calls = _make_projection_client(toolset_rows, knowledge_rows, doc_store)
@@ -161,11 +162,11 @@ class TestNeo4jProjectAgents:
 
         # KB knowledge resolved.
         k1 = result["a1"]["knowledge"][0]
-        assert k1["type"] == "KB"
+        assert k1["type"] == "KB"  # Type comes from app doc
         assert k1["name"] == "My KB"
         assert k1["displayName"] == "My KB"
-        assert k1["connectorId"] == "kbconn"
-        assert k1["filtersParsed"] == {"recordGroups": ["kb1"]}
+        assert k1["connectorId"] == "kb-uuid-1"  # KB app UUID
+        assert k1["filtersParsed"] == {}  # No recordGroups filter in new architecture
 
         # App knowledge resolved.
         k2 = result["a2"]["knowledge"][0]

@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useCallback, useRef, useState, Suspense } fr
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text, Badge } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { formatDate } from '@/lib/utils/formatters';
@@ -27,11 +27,13 @@ import type { BulkAction } from '../components';
 import type { ColumnConfig } from '../components';
 import type { FilterChipConfig } from '../components/entity-filter-bar';
 import type { RowAction } from '../components/entity-row-action-menu';
-import { USER_ROLES, ALL_ROLE_OPTIONS } from '../constants';
+import { isProcessedError } from '@/lib/api';
+import { USER_ROLES, INVITE_ROLE_OPTIONS } from '../constants';
 import { GroupType, type Group } from '../groups/types';
 import { useUsersStore } from './store';
 import { UsersApi } from './api';
 import { GroupsApi } from '../groups/api';
+import { ProfileApi } from '../profile/api';
 import type { User } from './types';
 import { InviteUsersSidebar, UserProfileSidebar } from './components';
 import { usePaginatedFilterOptions } from '../hooks/use-paginated-filter-options';
@@ -173,7 +175,7 @@ function UsersPageContent() {
       }
     },
   });
-  // Filter out "everyone" group from displayed options
+  // Filter out system groups from displayed options
   const groupOptions = useMemo(
     () => groupFilter.options.filter((o) => {
       const group = groupsRef.current.find((g) => g._id === o.value);
@@ -588,8 +590,7 @@ function UsersPageContent() {
 
   const bulkActions = useMemo<BulkAction[]>(() => {
     if (allSelectedArePending) {
-      // All selected are invited (pending) users
-      return [
+      const actions: BulkAction[] = [
         {
           key: 'resend-invite',
           label: t('workspace.users.bulk.resendInvite', 'Resend Invite'),
@@ -597,14 +598,21 @@ function UsersPageContent() {
           variant: 'default',
           onClick: handleBulkResendInvite,
         },
-        {
+      ];
+      if (isAdmin) {
+        actions.push({
           key: 'cancel-invite',
           label: t('workspace.users.bulk.cancelInvite', 'Cancel Invite'),
           icon: 'cancel_schedule_send',
           variant: 'danger',
           onClick: handleBulkCancelInvite,
-        },
-      ];
+        });
+      }
+      return actions;
+    }
+
+    if (!isAdmin) {
+      return [];
     }
 
     // Mixed set or all active users
@@ -620,7 +628,7 @@ function UsersPageContent() {
         onClick: handleBulkRemove,
       },
     ];
-  }, [allSelectedArePending, hasAdminSelected, t, handleBulkResendInvite, handleBulkCancelInvite, handleBulkRemove]);
+  }, [allSelectedArePending, hasAdminSelected, isAdmin, t, handleBulkResendInvite, handleBulkCancelInvite, handleBulkRemove]);
 
   // ── Column definitions ──────────────────
 
@@ -790,25 +798,10 @@ function UsersPageContent() {
       const currentRole = user.role || 'Member';
       if (newRole === currentRole) return;
 
-      const adminGroup = adminGroupRef.current;
-      if (!adminGroup) {
-        addToast({
-          variant: 'error',
-          title: t('workspace.users.actions.changeRoleError', 'Failed to change role'),
-          description: 'Admin group not found',
-          duration: 5000,
-        });
-        return;
-      }
-
       try {
-        if (newRole === 'Admin') {
-          // Add user to admin group
-          await GroupsApi.addUsersToGroups([user.userId], [adminGroup._id]);
-        } else {
-          // Remove user from admin group
-          await GroupsApi.removeUsersFromGroups([user.userId], [adminGroup._id]);
-        }
+        await ProfileApi.updateUser(user.userId, {
+          role: newRole === USER_ROLES.ADMIN ? 'admin' : 'member',
+        });
 
         addToast({
           variant: 'success',
@@ -826,10 +819,12 @@ function UsersPageContent() {
 
         // Refresh users list to reflect the change
         fetchUsers();
-      } catch {
+      } catch (err: unknown) {
+        const description = isProcessedError(err) ? err.message : undefined;
         addToast({
           variant: 'error',
           title: t('workspace.users.actions.changeRoleError', 'Failed to change role'),
+          ...(description ? { description } : {}),
           duration: 5000,
         });
       }
@@ -876,9 +871,10 @@ function UsersPageContent() {
 
   // Role options for the sub-menu — sourced from shared constants,
   // with i18n-translated labels and descriptions.
+  // Admin | Member only — Guest is not a persisted org role
   const ROLE_SUB_MENU_OPTIONS = useMemo(
     () =>
-      ALL_ROLE_OPTIONS.map((role) => ({
+      INVITE_ROLE_OPTIONS.map((role) => ({
         value: role.value,
         label: t(`workspace.users.roles.${role.value.toLowerCase()}`, role.label),
         description: t(
@@ -910,26 +906,26 @@ function UsersPageContent() {
             label: t('workspace.users.actions.viewProfile'),
             onClick: () => navigateToProfilePanel(user),
           },
-          {
+          isAdmin && {
             icon: 'lock_open',
             label: t('workspace.users.actions.unblock', 'Unblock'),
             onClick: () => setUnblockTarget(user),
           },
         ];
       } else if (isPending) {
-        // Pending invite — invite management actions
+        // Pending invite — members can resend; edit/cancel stay admin-only
         actions = [
           {
             icon: 'send',
             label: t('workspace.users.actions.resendInvite'),
             onClick: () => handleResendInvite(user),
           },
-          {
+          isAdmin && {
             icon: 'edit',
             label: t('workspace.users.actions.editInvite'),
             onClick: () => handleEditInvite(user),
           },
-          {
+          isAdmin && {
             icon: 'cancel_schedule_send',
             label: t('workspace.users.actions.cancelInvite'),
             variant: 'danger' as const,
@@ -938,14 +934,13 @@ function UsersPageContent() {
           },
         ];
       } else if (isPendingExpired) {
-        // Expired invite — same as pending: resend or cancel
         actions = [
           {
             icon: 'send',
             label: t('workspace.users.actions.resendInvite'),
             onClick: () => handleResendInvite(user),
           },
-          {
+          isAdmin && {
             icon: 'cancel_schedule_send',
             label: t('workspace.users.actions.cancelInvite'),
             variant: 'danger' as const,
@@ -957,48 +952,66 @@ function UsersPageContent() {
         // TODO: Handle deactivated user — e.g. Reactivate, Remove from Workspace
         actions = [];
       } else if (isActive && currentRole === 'Admin') {
-        // Active Admin — View Profile only
         actions = [
           {
             icon: 'visibility',
             label: t('workspace.users.actions.viewProfile'),
             onClick: () => navigateToProfilePanel(user),
           },
-          // {
-          //   icon: 'manage_accounts',
-          //   label: t('workspace.users.actions.changeRole'),
-          //   subMenu: {
-          //     type: 'radio' as const,
-          //     value: currentRole,
-          //     onValueChange: (newRole: string) => handleChangeRole(user, newRole),
-          //     options: ROLE_SUB_MENU_OPTIONS,
-          //   },
-          // },
+          isAdmin && {
+            icon: 'manage_accounts',
+            label: t('workspace.users.actions.changeRole'),
+            subMenu: {
+              type: 'radio' as const,
+              value: currentRole,
+              onValueChange: (newRole: string) => handleChangeRole(user, newRole),
+              options: ROLE_SUB_MENU_OPTIONS,
+            },
+          },
+          isAdmin && {
+            icon: 'person_remove',
+            label: t('workspace.users.actions.removeFromWorkspace'),
+            variant: 'danger' as const,
+            separatorBefore: true,
+            onClick: () => {
+              addToast({
+                variant: 'info',
+                title: t(
+                  'workspace.users.actions.demoteAdminBeforeRemoveTitle',
+                  'Cannot remove admin'
+                ),
+                description: t(
+                  'workspace.users.actions.demoteAdminBeforeRemove',
+                  'Demote the admin to member, then remove them.'
+                ),
+                duration: 5000,
+              });
+            },
+          },
         ];
       } else if (isActive) {
-        // Active Member/Guest — management actions
         actions = [
           {
             icon: 'visibility',
             label: t('workspace.users.actions.viewProfile'),
             onClick: () => navigateToProfilePanel(user),
           },
-          // {
-          //   icon: 'manage_accounts',
-          //   label: t('workspace.users.actions.changeRole'),
-          //   subMenu: {
-          //     type: 'radio' as const,
-          //     value: currentRole,
-          //     onValueChange: (newRole: string) => handleChangeRole(user, newRole),
-          //     options: ROLE_SUB_MENU_OPTIONS,
-          //   },
-          // },
-          {
+          isAdmin && {
+            icon: 'manage_accounts',
+            label: t('workspace.users.actions.changeRole'),
+            subMenu: {
+              type: 'radio' as const,
+              value: currentRole,
+              onValueChange: (newRole: string) => handleChangeRole(user, newRole),
+              options: ROLE_SUB_MENU_OPTIONS,
+            },
+          },
+          isAdmin && {
             icon: 'person_off',
             label: t('workspace.users.actions.deactivate'),
             onClick: showComingSoon,
           },
-          {
+          isAdmin && {
             icon: 'person_remove',
             label: t('workspace.users.actions.removeFromWorkspace'),
             variant: 'danger' as const,
@@ -1014,6 +1027,8 @@ function UsersPageContent() {
     },
     [
       t,
+      isAdmin,
+      addToast,
       navigateToProfilePanel,
       showComingSoon,
       handleChangeRole,
@@ -1023,16 +1038,7 @@ function UsersPageContent() {
     ]
   );
 
-  // ── Redirect non-admin users ──────────────────────────────
-  useEffect(() => {
-    if (isProfileInitialized && isAdmin === false) {
-      router.replace('/workspace/general');
-    }
-  }, [isProfileInitialized, isAdmin, router]);
-
-  // Prevent rendering (and running data-fetching effects) while profile is
-  // unresolved or before the redirect fires for confirmed non-admin users.
-  if (!isProfileInitialized || isAdmin === false) {
+  if (!isProfileInitialized) {
     return null;
   }
 
@@ -1127,7 +1133,7 @@ function UsersPageContent() {
             selectedCount={selectedUsers.size}
             itemLabel={t('workspace.users.bulkLabel', 'Users')}
             actions={bulkActions}
-            visible={selectedUsers.size > 0}
+            visible={selectedUsers.size > 0 && bulkActions.length > 0}
           />
         </Flex>
       </Flex>

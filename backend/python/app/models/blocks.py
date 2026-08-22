@@ -23,6 +23,7 @@ class BlockType(str, Enum):
     IMAGE = "image"
     TABLE_ROW = "table_row"
     RECORD_SUMMARY = "record_summary"
+    CODE = "code"  # source-code symbol, emitted by CodeFileParser
     # Do not use these types as currently not supported
     PARAGRAPH = "paragraph"
     TEXTSECTION = "textsection"
@@ -32,7 +33,6 @@ class BlockType(str, Enum):
     VIDEO = "video"
     AUDIO = "audio"
     LINK = "link"
-    CODE = "code"
     BULLET_LIST = "bullet_list"
     NUMBERED_LIST = "numbered_list"
     HEADING = "heading"
@@ -124,8 +124,10 @@ class CitationMetadata(BaseModel):
 
     @field_validator('bounding_boxes')
     @classmethod
-    def validate_bounding_boxes(cls, v: list[Point]) -> list[Point]:
+    def validate_bounding_boxes(cls, v: list[Point] | None) -> list[Point] | None:
         """Validate that the bounding boxes contain exactly 4 points"""
+        if v is None:
+            return v
         COORDINATE_COUNT = 4
         if len(v) != COORDINATE_COUNT:
             raise ValueError(f'bounding_boxes must contain exactly {COORDINATE_COUNT} points')
@@ -174,6 +176,14 @@ class CodeMetadata(BaseModel):
     execution_context: Optional[str] = None
     is_executable: bool = False
     dependencies: Optional[list[str]] = None
+    # Populated by CodeFileParser for source files.
+    kind: Optional[str] = None  # function | method | class | interface | field | ...
+    signature: Optional[str] = None
+    docstring: Optional[str] = None
+    decorators: Optional[list[str]] = None
+    qualified_name: Optional[str] = None  # "method:Outer.Inner.run"
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
 
 class MediaMetadata(BaseModel):
     """Metadata for media blocks (image, video, audio)"""
@@ -239,8 +249,8 @@ class GroupType(str, Enum):
     CONVERSATION = "conversation"  # Slack / messaging platform conversation group
 
     VIEW = "view"
+    CODE = "code"  # class / interface / enum group in a source file
     # Do not use these types as currently not supported
-    CODE = "code"
     MEDIA = "media"
     FULL_CODE_PATCH = "full_code_patch"
 
@@ -264,8 +274,9 @@ class GroupSubType(str, Enum):
     THREAD = "thread"            # A threaded conversation under a parent message
     SINGLE_MESSAGE = "single_message"  # A standalone single message
     PR_FILE_CHANGE = "pr_file_change"
-    SQL_TABLE = "sql_table" 
+    SQL_TABLE = "sql_table"
     SQL_VIEW = "sql_view"
+    CODE_CLASS = "code_class"  # class / interface / enum group in a source file
 
 class SemanticMetadata(BaseModel):
     entities: Optional[list[dict[str, Any]]] = None
@@ -285,18 +296,20 @@ class SemanticMetadata(BaseModel):
     def to_llm_context(self) -> list[str]:
         lines = []
         if self.summary:
-            lines.append(f"Summary         : {self.summary}")
+            lines.append(f"Summary: {self.summary}")
         if self.topics:
-            lines.append(f"Topics          : {self.topics}")
+            lines.append(f"Topics: {self.topics}")
+        cat_parts = []
         if self.categories:
-            lines.append(f"Category        : {self.categories[0]}")
+            cat_parts.append(self.categories[0])
         if self.sub_category_level_1:
-            lines.append(f"Sub-categories  :\n  - Level 1: {self.sub_category_level_1}")
+            cat_parts.append(self.sub_category_level_1)
         if self.sub_category_level_2:
-            lines.append(f"  - Level 2: {self.sub_category_level_2}")
+            cat_parts.append(self.sub_category_level_2)
         if self.sub_category_level_3:
-            lines.append(f"  - Level 3: {self.sub_category_level_3}")
-
+            cat_parts.append(self.sub_category_level_3)
+        if cat_parts:
+            lines.append(f"Category: {' > '.join(cat_parts)}")
         return lines
 
 class Block(BaseModel):
@@ -505,3 +518,63 @@ class BlockGroups(BaseModel):
 class BlocksContainer(BaseModel):
     block_groups: list[BlockGroup] = Field(default_factory=list)
     blocks: list[Block] = Field(default_factory=list)
+
+    def extend(self, other: 'BlocksContainer') -> None:
+        """Append *other*'s content, rebasing its indices onto this container.
+
+        Every cross-reference in the model is positional (BlockContainerValidator
+        requires index == list position), so each one has to shift by the
+        current lengths. *other*'s items are mutated and re-parented rather
+        than copied, so merging a sequence of page/batch results never holds
+        two copies of one batch; treat *other* as consumed afterwards.
+        """
+        block_offset = len(self.blocks)
+        group_offset = len(self.block_groups)
+
+        for block in other.blocks:
+            block.index += block_offset
+            if block.parent_index is not None:
+                block.parent_index += group_offset
+            if block.parent_block_index is not None:
+                block.parent_block_index += block_offset
+            self.blocks.append(block)
+
+        for block_group in other.block_groups:
+            block_group.index += group_offset
+            if block_group.parent_index is not None:
+                block_group.parent_index += group_offset
+            if block_group.children:
+                for block_range in block_group.children.block_ranges:
+                    block_range.start += block_offset
+                    block_range.end += block_offset
+                for group_range in block_group.children.block_group_ranges:
+                    group_range.start += group_offset
+                    group_range.end += group_offset
+            self.block_groups.append(block_group)
+
+        other.blocks = []
+        other.block_groups = []
+
+
+def wire_block_group_parent_children(block_groups: list[BlockGroup]) -> None:
+    """Set parent.children.block_group_ranges from each child's parent_index.
+
+    Keeps existing block_ranges on the parent when present. Without this the
+    container validator reports REVERSE_LINKAGE_MISSING, since parent_index is
+    a one-way pointer.
+    """
+    children_map: dict[int, list[int]] = {}
+    for bg in block_groups:
+        if bg.parent_index is not None:
+            children_map.setdefault(bg.parent_index, []).append(bg.index)
+
+    for bg in block_groups:
+        child_indices = children_map.get(bg.index)
+        if not child_indices:
+            continue
+        wired = BlockGroupChildren.from_indices(block_group_indices=sorted(child_indices))
+        if bg.children is None:
+            bg.children = wired
+        else:
+            bg.children.block_group_ranges = wired.block_group_ranges
+

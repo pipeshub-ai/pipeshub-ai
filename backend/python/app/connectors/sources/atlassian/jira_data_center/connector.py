@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from logging import Logger
 from typing import Any, Optional
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 from uuid import uuid4
 
 import httpx  # type: ignore
@@ -95,6 +95,8 @@ from app.utils.streaming import create_stream_record_response
 DEFAULT_MAX_RESULTS: int = 50
 BATCH_PROCESSING_SIZE: int = 100
 USER_PAGE_SIZE: int = 50
+# /user/list supports up to 2000; use a moderate page to cut round-trips vs USER_PAGE_SIZE.
+USER_LIST_PAGE_SIZE: int = 100
 GROUP_MEMBER_PAGE_SIZE: int = 50
 GROUPS_PICKER_MAX: int = 1000  # maxResults for GET /rest/api/2/groups/picker
 AUDIT_PAGE_SIZE: int = 500  # page size for GET /rest/auditing/1.0/events
@@ -111,6 +113,18 @@ ISSUE_SEARCH_FIELDS: list[str] = [
 
 DC_EPIC_LINK_FIELD_NAME = "Epic Link"
 DC_EPIC_LINK_SCHEMA_CUSTOM = "com.pyxis.greenhopper.jira:gh-epic-link"
+DC_PARENT_LINK_FIELD_NAME = "Parent Link"
+DC_PARENT_LINK_SCHEMA_CUSTOM = "com.atlassian.jpo:jpo-custom-field-parent"
+
+# Placeholder ancestor sweep (mirrors Jira Cloud; DC fetches via JQL id in (...))
+PLACEHOLDER_SWEEP_BATCH: int = 50
+PLACEHOLDER_SWEEP_MAX_DEPTH: int = 10
+PLACEHOLDER_REVISION_PREFIX: str = "placeholder:"
+ANCESTOR_STUB_FIELDS: list[str] = [
+    "summary", "status", "priority", "issuetype",
+    "project", "parent", "created", "updated",
+    "creator", "reporter", "assignee",
+]
 
 
 def _normalize_jira_dc_group_row(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -131,6 +145,34 @@ def _application_role_groups_from_dc_role(role: dict[str, Any]) -> list[dict[str
         name = group_name.strip()
         normalized.append({"groupId": name, "name": name})
     return normalized
+
+
+def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], str | None]:
+    """Parse ``GET /rest/api/2/user/list`` JSON into ``(users, next_cursor)``."""
+    if isinstance(payload, list):
+        return [u for u in payload if isinstance(u, dict)], None
+    if not isinstance(payload, dict):
+        return [], None
+
+    raw_users = payload.get("values")
+    if raw_users is None:
+        raw_users = payload.get("users")
+    users = [u for u in raw_users if isinstance(u, dict)] if isinstance(raw_users, list) else []
+
+    next_cursor = payload.get("nextCursor")
+    if not next_cursor and isinstance(payload.get("nextPage"), str):
+        next_page = payload["nextPage"]
+        if "cursor=" in next_page:
+            qs = parse_qs(urlparse(next_page).query)
+            cursor_vals = qs.get("cursor") or []
+            next_cursor = cursor_vals[0] if cursor_vals else None
+        elif next_page and not next_page.startswith("http"):
+            next_cursor = next_page
+
+    if payload.get("isLast") is True:
+        next_cursor = None
+
+    return users, next_cursor if isinstance(next_cursor, str) and next_cursor else None
 
 
 @(
@@ -312,12 +354,16 @@ class JiraDataCenterConnector(BaseConnector):
         self._issue_attachments_cache: dict[str, list[dict[str, Any]]] = {}
 
         self._app_roles_forbidden: bool = False  # GET /applicationrole returned 403
-        self._user_bulk_forbidden: bool = False  # GET /user/search returned 401/403
+        self._user_bulk_forbidden: bool = False  # bulk user list/search returned 401/403
+        # True when bulk fell back to /user/search (may be incomplete on Jira 10+) —
+        # reverse lookup must sweep all PipesHub candidates, not only bulk gaps.
+        self._user_bulk_incomplete: bool = False
         # DC username (``name``) -> source_user_id (``key``); built during _fetch_users
         self._dc_name_to_source_id: dict[str, str] = {}
-        # Epic Link field id: None = before init, "" = not found, else customfield id
+        # Hierarchy link field ids: None = before init, "" = not found, else customfield id
         self._epic_link_field_id: str | None = None
-        # Epic key -> numeric id; cleared at start of each project sync
+        self._parent_link_field_id: str | None = None
+        # Issue key -> numeric id; cleared at start of each project sync
         self._issue_key_to_id_cache: dict[str, str] = {}
 
     async def init(self) -> bool:
@@ -376,7 +422,7 @@ class JiraDataCenterConnector(BaseConnector):
                 except Exception as e:
                     self.logger.warning("Could not resolve creator email for created_by %s: %s", self.created_by, e)
 
-            await self._discover_epic_link_field_id()
+            await self._discover_hierarchy_link_field_ids()
 
             return True
         except Exception as e:
@@ -593,9 +639,15 @@ class JiraDataCenterConnector(BaseConnector):
 
             await self._handle_issue_deletions(last_sync_time)
 
+            placeholders_backfilled = await self._sweep_placeholder_records(
+                synced_project_ids={p.external_group_id for p, _ in projects},
+                full_sync_project_ids=sync_stats.get("full_sync_project_ids") or set(),
+            )
+
             self.logger.info(
                 f"✅ Jira sync completed. Total: {sync_stats['total_synced']} issues "
-                f"(New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']})"
+                f"(New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']}); "
+                f"placeholders backfilled: {placeholders_backfilled}"
             )
 
         except Exception as e:
@@ -616,7 +668,7 @@ class JiraDataCenterConnector(BaseConnector):
         except Exception:
             return None
 
-    async def _update_issues_sync_checkpoint(self, stats: dict[str, int], project_count: int) -> None:
+    async def _update_issues_sync_checkpoint(self, stats: dict[str, Any], project_count: int) -> None:
         """
         Update global sync checkpoint.
         """
@@ -912,22 +964,20 @@ class JiraDataCenterConnector(BaseConnector):
 
     async def _fetch_users(self) -> list[AppUser]:
         """
-        Fetch and resolve all active Jira DC users using a two-pass strategy:
-        1. Bulk fetch from Jira (visible-email users resolved directly)
-        2. Reverse lookup for hidden-email users using PipesHub directory emails
+        Fetch and resolve active Jira DC users:
 
-        DC uses ``GET /rest/api/2/user/search`` with ``username`` parameter.
-        Identifier is ``key`` (immutable) falling back to ``name``.
+        1. Bulk enumerate via ``/user/list`` (preferred) or ``/user/search`` fallback
+        2. Resolve visible-email + cached users in memory
+        3. Reverse-lookup remaining PipesHub emails when bulk left gaps
+           (hidden emails, incomplete search, or bulk forbidden)
+
+        Identifier is ``key`` (immutable), falling back to ``accountId`` / ``name``.
         """
-
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
         self._dc_name_to_source_id = {}
 
-        # ====================================================================
-        # Phase 1: DB reads (0 API calls)
-        # ====================================================================
         cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
         pipeshub_users = await self.data_entities_processor.get_all_active_users()
 
@@ -936,35 +986,28 @@ class JiraDataCenterConnector(BaseConnector):
             for u in cached_app_users
             if u.source_user_id and u.email
         }
-
         pipeshub_emails: set[str] = {
             u.email.lower() for u in pipeshub_users if u.email
         }
 
-        # ====================================================================
-        # Phase 2: DC bulk fetch (paginated API call)
-        # ====================================================================
         raw_jira_users = await self._fetch_all_jira_users_bulk()
 
         all_active_user_keys: set[str] = set()
-        visible_email_map: dict[str, str] = {}  # email.lower() -> user_key
+        visible_email_map: dict[str, str] = {}
         key_to_display: dict[str, str] = {}
 
         for user in raw_jira_users:
             if not user.get("active", True):
                 continue
-
             user_key = user.get("accountId") or user.get("key") or user.get("name")
             if not user_key:
                 continue
 
             all_active_user_keys.add(user_key)
             key_to_display[user_key] = user.get("displayName", "")
-
             username = user.get("name")
             if username:
                 self._dc_name_to_source_id[username.lower()] = user_key
-
             email = user.get("emailAddress")
             if email:
                 visible_email_map[email.lower()] = user_key
@@ -974,44 +1017,35 @@ class JiraDataCenterConnector(BaseConnector):
             f"{len(visible_email_map)} with visible email"
         )
 
-        # ====================================================================
-        # Phase 3: Merge into resolved set (in-memory, 0 API calls)
-        # ====================================================================
-        resolved: dict[str, AppUser] = {}  # user_key -> AppUser
+        resolved: dict[str, AppUser] = {}
+        org_id = self.data_entities_processor.org_id
 
-        # 3A: Visible-email users from bulk (freshest data)
         for email_lower, user_key in visible_email_map.items():
             resolved[user_key] = AppUser(
                 app_name=self.connector_name,
                 connector_id=self.connector_id,
                 source_user_id=user_key,
-                org_id=self.data_entities_processor.org_id,
+                org_id=org_id,
                 email=email_lower,
                 full_name=key_to_display.get(user_key, email_lower),
-                is_active=True
+                is_active=True,
             )
 
-        # 3B: Valid cached users (prior syncs, still active in Jira)
         for user_key, email in cached_key_to_email.items():
             if user_key in all_active_user_keys and user_key not in resolved:
                 resolved[user_key] = AppUser(
                     app_name=self.connector_name,
                     connector_id=self.connector_id,
                     source_user_id=user_key,
-                    org_id=self.data_entities_processor.org_id,
+                    org_id=org_id,
                     email=email,
                     full_name=key_to_display.get(user_key, email),
-                    is_active=True
+                    is_active=True,
                 )
 
-        # ====================================================================
-        # Phase 4: Determine if reverse lookup is needed
-        # ====================================================================
-        unresolved_user_keys = all_active_user_keys - set(resolved.keys())
+        unresolved_user_keys = all_active_user_keys - resolved.keys()
         unresolved_count = len(unresolved_user_keys)
-
-        resolved_emails = {u.email.lower() for u in resolved.values()}
-        candidate_emails = pipeshub_emails - resolved_emails
+        candidate_emails = pipeshub_emails - {u.email.lower() for u in resolved.values()}
         candidate_count = len(candidate_emails)
 
         self.logger.info(
@@ -1020,58 +1054,105 @@ class JiraDataCenterConnector(BaseConnector):
             f"{candidate_count} PipesHub candidate emails"
         )
 
-        # ====================================================================
-        # Phase 5: Reverse lookup (only when there are gaps to fill)
-        # ====================================================================
-        # Normally Phase 5 only runs when the bulk fetch left us with
-        # ``unresolved_user_keys`` — but when the bulk fetch was forbidden
-        # (``_user_bulk_forbidden``) ``all_active_user_keys`` is empty by
-        # construction, so ``unresolved_count == 0`` even though we resolved
-        # nobody. In that case fall back to a directory-driven sweep: try
-        # per-email search for every PipesHub user we know about, since the
-        # single-user ``/user/search?username=<email>`` endpoint is often
-        # permitted even when the bulk enumeration is not.
-        if (unresolved_count > 0 or self._user_bulk_forbidden) and candidate_count > 0:
+        needs_reverse = (
+            unresolved_count > 0
+            or self._user_bulk_forbidden
+            or self._user_bulk_incomplete
+        )
+        if needs_reverse and candidate_count > 0:
             new_found = await self._resolve_private_email_users(
                 candidate_emails, unresolved_user_keys, resolved
             )
-            self.logger.info(
-                f"👥 Reverse lookup resolved {new_found} additional users"
-            )
-        elif unresolved_count == 0 and not self._user_bulk_forbidden:
+            self.logger.info(f"👥 Reverse lookup resolved {new_found} additional users")
+        elif not needs_reverse:
             self.logger.info("👥 All Jira DC users resolved, no reverse lookup needed")
 
         self.logger.info(f"👥 Total: {len(resolved)} Jira DC AppUsers resolved")
         return list(resolved.values())
 
-    async def _fetch_all_jira_users_bulk(self) -> list[dict[str, Any]]:
+    async def _fetch_users_via_list(self) -> list[dict[str, Any]] | None:
         """
-        Paginated fetch of all Jira DC users via GET /rest/api/2/user/search.
-        Returns raw user dicts (unfiltered).
+        Cursor-paginated fetch via ``GET /rest/api/2/user/list``.
+
+        Returns users on success, ``None`` when the endpoint is unavailable
+        (caller falls back to ``/user/search``).
         """
         users: list[dict[str, Any]] = []
-        start_at = 0
-        max_results_per_request = USER_PAGE_SIZE
-        self._user_bulk_forbidden = False
+        cursor: str | None = None
+        # DC has no OAuth refresh — one datasource for the whole pagination loop.
+        datasource = await self._get_fresh_datasource()
 
         while True:
-            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_user_list_v2(
+                cursor=cursor,
+                maxResults=USER_LIST_PAGE_SIZE,
+                includeInactive=False,
+            )
+
+            if response.status in (
+                HttpStatusCode.NOT_FOUND.value,
+                HttpStatusCode.METHOD_NOT_ALLOWED.value,
+            ):
+                self.logger.info(
+                    "ℹ️ DC /user/list returned %s — falling back to /user/search",
+                    response.status,
+                )
+                return None
+
+            if response.status != HttpStatusCode.OK.value:
+                if response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    self._user_bulk_forbidden = True
+                    self.logger.warning(
+                        "⚠️ DC /user/list returned %s — configuring user lacks "
+                        "'Browse users and groups'. Returning %s users collected "
+                        "so far; user resolution will degrade to PipesHub-directory "
+                        "reverse lookup only.",
+                        response.status, len(users),
+                    )
+                    return users
+                raise Exception(f"Failed to fetch users via /user/list: {response.text()}")
+
+            payload = self._safe_json_parse(response, "users list")
+            if payload is None:
+                self.logger.error("Failed to parse /user/list response, stopping list fetch")
+                break
+
+            batch_users, next_cursor = _parse_jira_dc_user_list_page(payload)
+            if not batch_users and not next_cursor:
+                break
+
+            users.extend(batch_users)
+            if not next_cursor:
+                break
+            cursor = next_cursor
+
+        self.logger.info("👥 Jira DC /user/list returned %s users", len(users))
+        return users
+
+    async def _fetch_users_via_search(self) -> list[dict[str, Any]]:
+        """
+        Paginated fetch via ``GET /rest/api/2/user/search?username=.``.
+
+        Pages until an empty or short page. Dedupes by user key so a stuck
+        ``startAt`` (Jira 10+ JRASERVER-78660) cannot loop forever.
+        """
+        users: list[dict[str, Any]] = []
+        seen_keys: set[str] = set()
+        start_at = 0
+        datasource = await self._get_fresh_datasource()
+
+        while True:
             response = await datasource.get_user_search_v2(
                 username=".",
                 includeInactive=False,
-                maxResults=max_results_per_request,
+                maxResults=USER_PAGE_SIZE,
                 startAt=start_at,
             )
 
             if response.status != HttpStatusCode.OK.value:
-                # /rest/api/2/user/search requires the *Browse users and groups*
-                # global permission. Non-admin sync users get 401/403 here.
-                # Mirror the ``_app_roles_forbidden`` fallback in
-                # ``_fetch_application_roles_to_groups_mapping``: rather than
-                # killing the whole ``run_sync`` (and silently dropping the
-                # entire connector), mark the gap, return whatever pages we
-                # already collected, and let downstream code degrade to
-                # per-email reverse-lookup / configuring-user fallbacks.
                 if response.status in (
                     HttpStatusCode.UNAUTHORIZED.value,
                     HttpStatusCode.FORBIDDEN.value,
@@ -1095,19 +1176,78 @@ class JiraDataCenterConnector(BaseConnector):
             if isinstance(users_batch, list):
                 batch_users = users_batch
             else:
-                batch_users = users_batch.get("values", []) if isinstance(users_batch, dict) else []
+                batch_users = (
+                    users_batch.get("values", []) if isinstance(users_batch, dict) else []
+                )
 
             if not batch_users:
                 break
 
-            users.extend(batch_users)
+            new_in_page = 0
+            for user in batch_users:
+                user_key = user.get("accountId") or user.get("key") or user.get("name")
+                if user_key and user_key in seen_keys:
+                    continue
+                if user_key:
+                    seen_keys.add(user_key)
+                users.append(user)
+                new_in_page += 1
 
-            if len(batch_users) < max_results_per_request:
+            if new_in_page == 0:
+                self.logger.warning(
+                    "⚠️ DC /user/search returned no new users at startAt=%s "
+                    "(collected %s). Stopping pagination.",
+                    start_at, len(users),
+                )
                 break
 
-            start_at += max_results_per_request
+            if len(batch_users) < USER_PAGE_SIZE:
+                break
 
+            start_at += USER_PAGE_SIZE
+
+        self.logger.info("👥 Jira DC /user/search returned %s users", len(users))
         return users
+
+    async def _fetch_all_jira_users_bulk(self) -> list[dict[str, Any]]:
+        """
+        Fetch Jira DC users for sync matching.
+
+        Prefers ``GET /rest/api/2/user/list`` (cursor pagination). Falls back to
+        ``GET /rest/api/2/user/search?username=.`` when ``/list`` is unavailable;
+        search results are marked incomplete so reverse lookup can fill gaps.
+
+        Endpoint behaviour by Jira DC/Server version (JRASERVER-78660):
+
+        - ``/user/list`` — full directory enumeration (cursor pagination, up to
+          2000/page). Available on Jira 10.3.13+ (back-ported to the 10.3 LTS) and
+          11.0.0+. Returns 404 on 8.x, 9.x, 10.0–10.3.12, and 10.4+ feature releases
+          that predate the back-port; those fall back to ``/user/search``.
+
+        - ``/user/search`` — relevance/substring endpoint, not a documented
+          directory-enumeration API. ``username="."`` matches against name /
+          username / email, and in practice nearly every user matches (emails
+          contain a ``.``), so it usually returns the whole directory. But on
+          Jira 10+ it is hard-capped at the first 100 results (``startAt`` cannot
+          page past); on 9.x and below ``startAt`` paginates normally (up to 1000
+          per request). Because completeness is not guaranteed by contract (and the
+          100-cap actively truncates on Jira 10+), this path sets
+          ``_user_bulk_incomplete`` and the caller sweeps PipesHub candidate emails
+          via per-email reverse lookup to fill any gap.
+        """
+        self._user_bulk_forbidden = False
+        self._user_bulk_incomplete = False
+
+        list_users = await self._fetch_users_via_list()
+        if list_users is not None:
+            return list_users
+
+        self._user_bulk_incomplete = True
+        self.logger.info(
+            "👥 Using /user/search for bulk users (incomplete on Jira 10+; "
+            "reverse lookup will sweep PipesHub candidates)"
+        )
+        return await self._fetch_users_via_search()
 
     async def _resolve_private_email_users(
         self,
@@ -1143,9 +1283,23 @@ class JiraDataCenterConnector(BaseConnector):
                     if not results or not isinstance(results, list):
                         return None
 
-                    user = results[0]
-                    if not user:
-                        return None
+                    # ``username=<email>`` is a substring match over name/username/
+                    # email and can return several users, so don't trust results[0]:
+                    # pick the exact email match. Otherwise trust a lone hit only
+                    # when its email is hidden (absent) — a lone hit with a visible
+                    # *mismatching* email is a fuzzy name/username match, not us.
+                    matches = [u for u in results if isinstance(u, dict)]
+                    user = next(
+                        (u for u in matches if (u.get("emailAddress") or "").lower() == email.lower()),
+                        None,
+                    )
+                    if user is None:
+                        if len(matches) != 1:
+                            return None
+                        lone_email = matches[0].get("emailAddress")
+                        if lone_email and lone_email.lower() != email.lower():
+                            return None
+                        user = matches[0]
                     user_key = user.get("accountId") or user.get("key") or user.get("name")
                     if not user_key:
                         return None
@@ -1160,12 +1314,9 @@ class JiraDataCenterConnector(BaseConnector):
 
         batch_size = 20
         email_list = list(candidate_emails)
-        # When the bulk fetch was forbidden, ``unresolved_count`` is 0
-        # (``all_active_user_keys`` was empty) and the standard early-exit
-        # would skip every batch. Disable the early-exit in that case so we
-        # actually exhaust the candidate list and resolve as many directory
-        # users as the per-email endpoint will let us.
-        skip_early_exit = self._user_bulk_forbidden
+        # When bulk was forbidden or incomplete, ``unresolved_count`` only reflects
+        # the (partial) bulk set — disable early-exit and sweep all candidates.
+        skip_early_exit = self._user_bulk_forbidden or self._user_bulk_incomplete
 
         for i in range(0, len(email_list), batch_size):
             if not skip_early_exit and new_found >= unresolved_count:
@@ -1293,10 +1444,11 @@ class JiraDataCenterConnector(BaseConnector):
         """
         Fetch permission holders for a project from its Permission Scheme (Data Center).
 
-        Uses ``GET /rest/api/2/project/{projectKeyOrId}/permissionscheme?expand=all``,
-        which embeds fully expanded ``permissions`` (including ``user.key`` / email).
-        Falls back to ``GET /rest/api/2/permissionscheme/{schemeId}/permission`` only
-        when the project scheme response has no ``permissions`` array.
+        Two calls, uniform across builds: ``GET /project/{key}/permissionscheme``
+        (no expand) for the scheme id, then ``GET /permissionscheme/{schemeId}/permission``
+        for the grants. ``?expand=all`` on the project endpoint is avoided because it
+        500s on some DC/Server builds (internal RequestScope NPE from lazy holder
+        expansion); the standalone grants endpoint expands no holders inline.
 
         Permission Schemes grant permissions (like BROWSE_PROJECTS) through different holder types:
         - group: Direct group permissions (e.g., "jira-software-users")
@@ -1314,10 +1466,16 @@ class JiraDataCenterConnector(BaseConnector):
         try:
             datasource = await self._get_fresh_datasource()
 
-            # Step 1: permission scheme assigned to this project (DC REST v2)
+            # Resolve the scheme in two steps instead of one ``?expand=all`` call.
+            # ``GET /project/{key}/permissionscheme?expand=all`` 500s on some
+            # DC/Server builds (internal RequestScope NPE — holders are expanded
+            # lazily during serialization, after the request scope is torn down).
+            # A bare scheme lookup + the standalone grants endpoint expands no
+            # holders inline, so it works uniformly across builds.
+
+            # Step 1: the scheme id assigned to this project (no expand).
             scheme_response = await datasource.get_assigned_permission_scheme_v2(
                 projectKeyOrId=project_key,
-                expand="all",
             )
 
             if scheme_response.status != HttpStatusCode.OK.value:
@@ -1342,37 +1500,40 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.warning(f"⚠️ Failed to fetch permission scheme for {project_key}: {scheme_response.text()}")
                 return []
 
-            scheme_data = scheme_response.json()
-            scheme_id = scheme_data.get("id")
-            permission_grants = scheme_data.get("permissions")
-
-            if not permission_grants:
-                # Fallback when expand=all did not embed permissions (older DC / tests).
-                grants_response = await datasource.get_permission_scheme_grants_v2(
-                    schemeId=scheme_id,
-                    expand="all",
+            scheme_id = scheme_response.json().get("id")
+            if not scheme_id:
+                self.logger.warning(
+                    "⚠️ Permission scheme for %s has no id — cannot fetch grants",
+                    project_key,
                 )
+                return []
 
-                if grants_response.status != HttpStatusCode.OK.value:
-                    if grants_response.status in (
-                        HttpStatusCode.UNAUTHORIZED.value,
-                        HttpStatusCode.FORBIDDEN.value,
-                    ):
-                        return self._fallback_permissions_for_forbidden_scheme(
-                            project_key=project_key,
-                            status=grants_response.status,
-                            stage=f"permission grants (scheme {scheme_id})",
-                        )
-                    self.logger.warning(
-                        "⚠️ Failed to fetch permission grants for scheme %s: %s",
-                        scheme_id,
-                        grants_response.text(),
+            # Step 2: grants from the standalone endpoint. No expand — the grant
+            # ``holder.parameter`` (group name / user key / role id) is always
+            # present, user emails resolve via ``user_by_key``, and expanding
+            # holders inline is what triggers the NPE above.
+            grants_response = await datasource.get_permission_scheme_grants_v2(
+                schemeId=scheme_id,
+            )
+
+            if grants_response.status != HttpStatusCode.OK.value:
+                if grants_response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    return self._fallback_permissions_for_forbidden_scheme(
+                        project_key=project_key,
+                        status=grants_response.status,
+                        stage=f"permission grants (scheme {scheme_id})",
                     )
-                    return []
+                self.logger.warning(
+                    "⚠️ Failed to fetch permission grants for scheme %s: %s",
+                    scheme_id,
+                    grants_response.text(),
+                )
+                return []
 
-                grants_data = grants_response.json()
-                permission_grants = grants_data.get("permissions", [])
-
+            permission_grants = grants_response.json().get("permissions", [])
             if not isinstance(permission_grants, list):
                 permission_grants = []
 
@@ -2160,11 +2321,12 @@ class JiraDataCenterConnector(BaseConnector):
         projects: list[tuple[RecordGroup, list[Permission]]],
         jira_users: list[AppUser],
         last_sync_time: Optional[int]
-    ) -> dict[str, int]:
+    ) -> dict[str, Any]:
         """Sync issues for all projects and return statistics."""
         total_synced = 0
         new_count = 0
         updated_count = 0
+        full_sync_project_ids: set[str] = set()
 
         for project, _ in projects:
             try:
@@ -2174,6 +2336,8 @@ class JiraDataCenterConnector(BaseConnector):
                 total_synced += project_stats["total_synced"]
                 new_count += project_stats["new_count"]
                 updated_count += project_stats["updated_count"]
+                if project_stats.get("is_new_project"):
+                    full_sync_project_ids.add(project.external_group_id)
             except Exception as e:
                 self.logger.error(f"❌ Error processing issues for project {project.short_name}: {e}", exc_info=True)
                 continue
@@ -2181,7 +2345,8 @@ class JiraDataCenterConnector(BaseConnector):
         return {
             "total_synced": total_synced,
             "new_count": new_count,
-            "updated_count": updated_count
+            "updated_count": updated_count,
+            "full_sync_project_ids": full_sync_project_ids,
         }
 
     async def _sync_project_issues(
@@ -2189,7 +2354,7 @@ class JiraDataCenterConnector(BaseConnector):
         project: RecordGroup,
         jira_users: list[AppUser],
         global_last_sync_time: Optional[int]
-    ) -> dict[str, int]:
+    ) -> dict[str, Any]:
         """
         Sync issues for a single project with project-level sync points.
         Processes in batches and updates sync point after each batch for fault tolerance.
@@ -2292,7 +2457,8 @@ class JiraDataCenterConnector(BaseConnector):
         return {
             "total_synced": total_issues_processed,
             "new_count": stats["new_count"],
-            "updated_count": stats["updated_count"]
+            "updated_count": stats["updated_count"],
+            "is_new_project": is_new_project,
         }
 
     async def _fetch_issues_batched(
@@ -2360,11 +2526,9 @@ class JiraDataCenterConnector(BaseConnector):
         # timezone-independent so the same query yields the same result regardless of
         # where the server is configured.
         now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
-        # Safety buffer absorbs clock skew between the connector host and the Jira
-        # server, plus the minute-level rounding inherent in ``-Nm``. Downstream
-        # ``_process_new_records`` dedupes unchanged issues by ``source_updated_at``,
-        # so a small overlap is harmless.
-        _jql_buffer_minutes = 5
+        # 1-minute buffer absorbs clock skew / ``-Nm`` minute rounding. Downstream
+        # ``_process_new_records`` dedupes unchanged issues by ``source_updated_at``.
+        _jql_buffer_minutes = 1
 
         def _jql_minutes_ago(epoch_ms: int) -> Optional[int]:
             """Convert ``epoch_ms`` to ``N`` for JQL ``-Nm``.
@@ -2596,20 +2760,21 @@ class JiraDataCenterConnector(BaseConnector):
 
         return related_records
 
-    async def _discover_epic_link_field_id(self) -> None:
-        """Discover Epic Link custom field id via GET /rest/api/2/field (once at init)."""
-        if self._epic_link_field_id is not None:
+    async def _discover_hierarchy_link_field_ids(self) -> None:
+        """Discover Epic Link and Parent Link custom field ids via GET /rest/api/2/field (once at init)."""
+        if self._epic_link_field_id is not None and self._parent_link_field_id is not None:
             return
         self._epic_link_field_id = ""
+        self._parent_link_field_id = ""
         try:
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_fields_v2()
             if response.status != HttpStatusCode.OK.value:
                 self.logger.warning(
-                    "Failed to discover Epic Link field: HTTP %s", response.status
+                    "Failed to discover hierarchy link fields: HTTP %s", response.status
                 )
                 return
-            fields_list = self._safe_json_parse(response, "Epic Link field discovery")
+            fields_list = self._safe_json_parse(response, "hierarchy link field discovery")
             if isinstance(fields_list, list):
                 for field in fields_list:
                     if not isinstance(field, dict):
@@ -2617,105 +2782,468 @@ class JiraDataCenterConnector(BaseConnector):
                     name = field.get("name")
                     schema = field.get("schema") or {}
                     custom = schema.get("custom") if isinstance(schema, dict) else None
-                    if name == DC_EPIC_LINK_FIELD_NAME or custom == DC_EPIC_LINK_SCHEMA_CUSTOM:
-                        field_id = field.get("id")
-                        if field_id:
-                            self._epic_link_field_id = str(field_id)
-                            self.logger.info(
-                                "Discovered Epic Link field: %s", self._epic_link_field_id
-                            )
-                        return
-            self.logger.debug(
-                "Epic Link field not found (non-Scrum or custom epic link configuration)"
-            )
+                    field_id = field.get("id")
+                    if not field_id:
+                        continue
+                    if (
+                        not self._epic_link_field_id
+                        and (name == DC_EPIC_LINK_FIELD_NAME or custom == DC_EPIC_LINK_SCHEMA_CUSTOM)
+                    ):
+                        self._epic_link_field_id = str(field_id)
+                        self.logger.info(
+                            "Discovered Epic Link field: %s", self._epic_link_field_id
+                        )
+                    elif (
+                        not self._parent_link_field_id
+                        and (
+                            name == DC_PARENT_LINK_FIELD_NAME
+                            or custom == DC_PARENT_LINK_SCHEMA_CUSTOM
+                        )
+                    ):
+                        self._parent_link_field_id = str(field_id)
+                        self.logger.info(
+                            "Discovered Parent Link field: %s", self._parent_link_field_id
+                        )
+                    if self._epic_link_field_id and self._parent_link_field_id:
+                        break
+            if not self._epic_link_field_id:
+                self.logger.debug(
+                    "Epic Link field not found (non-Scrum or custom epic link configuration)"
+                )
+            if not self._parent_link_field_id:
+                self.logger.debug(
+                    "Parent Link field not found (Advanced Roadmaps may be unavailable)"
+                )
         except Exception as e:
-            self.logger.warning("Epic Link field discovery failed: %s", e)
+            self.logger.warning("Hierarchy link field discovery failed: %s", e)
 
     def _get_issue_search_fields(self) -> list[str]:
+        fields = list(ISSUE_SEARCH_FIELDS)
         if self._epic_link_field_id:
-            return ISSUE_SEARCH_FIELDS + [self._epic_link_field_id]
-        return list(ISSUE_SEARCH_FIELDS)
+            fields.append(self._epic_link_field_id)
+        if self._parent_link_field_id:
+            fields.append(self._parent_link_field_id)
+        return fields
+
+    def _get_ancestor_stub_fields(self) -> list[str]:
+        fields = list(ANCESTOR_STUB_FIELDS)
+        if self._epic_link_field_id:
+            fields.append(self._epic_link_field_id)
+        if self._parent_link_field_id:
+            fields.append(self._parent_link_field_id)
+        return fields
+
+    @staticmethod
+    def _extract_link_ref_from_value(raw: Any) -> tuple[str | None, str | None]:
+        """Extract (issue_id, issue_key) from Epic Link / expanded issue ref shapes."""
+        if isinstance(raw, str) and raw.strip():
+            return None, raw.strip()
+        if isinstance(raw, dict):
+            key = raw.get("key")
+            inline_id = raw.get("id")
+            issue_key = str(key).strip() if key else None
+            issue_id = str(inline_id) if inline_id is not None and inline_id != "" else None
+            return issue_id, issue_key
+        return None, None
+
+    @staticmethod
+    def _extract_parent_link_ref(raw: Any) -> tuple[str | None, str | None]:
+        """Extract (issue_id, issue_key) from Parent Link field value.
+
+        Documented AR shape nests under ``data``; also tolerates plain string / top-level id/key.
+        """
+        if not raw:
+            return None, None
+        if isinstance(raw, str) and raw.strip():
+            return None, raw.strip()
+        if not isinstance(raw, dict):
+            return None, None
+        data = raw.get("data")
+        if isinstance(data, dict):
+            return JiraDataCenterConnector._extract_link_ref_from_value(data)
+        if data is None and ("hasEpicLinkFieldDependency" in raw or "showField" in raw):
+            return None, None
+        return JiraDataCenterConnector._extract_link_ref_from_value(raw)
+
+    async def _resolve_issue_id_from_key_or_id(
+        self,
+        *,
+        issue_id: str | None,
+        issue_key: str | None,
+        context: str,
+    ) -> str | None:
+        if issue_id:
+            if issue_key:
+                self._issue_key_to_id_cache[issue_key] = issue_id
+            return issue_id
+        if not issue_key:
+            return None
+
+        cached = self._issue_key_to_id_cache.get(issue_key)
+        if cached:
+            return cached
+
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_issue_v2(issueIdOrKey=issue_key, fields=["id"])
+            if response.status == HttpStatusCode.NOT_FOUND.value:
+                self.logger.debug("%s target issue %s not found", context, issue_key)
+                return None
+            if response.status != HttpStatusCode.OK.value:
+                self.logger.warning(
+                    "Failed to resolve %s key %s: HTTP %s", context, issue_key, response.status
+                )
+                return None
+            issue = self._safe_json_parse(response, f"{context} resolve {issue_key}")
+            resolved_id = issue.get("id") if issue else None
+        except Exception as e:
+            self.logger.warning("Failed to resolve %s key %s: %s", context, issue_key, e)
+            return None
+        if not resolved_id:
+            return None
+        resolved_id = str(resolved_id)
+        self._issue_key_to_id_cache[issue_key] = resolved_id
+        return resolved_id
 
     async def _resolve_hierarchy_parent_id(
         self,
         fields: dict[str, Any],
         *,
         is_subtask: bool,
-        is_epic: bool,
         parent_from_parent_field: str | None,
     ) -> str | None:
-        """Resolve parent id from fields.parent (sub-tasks) or Epic Link (stories)."""
-        if is_epic:
-            return None
+        """Resolve parent id from fields.parent, Epic Link, or Parent Link."""
         if is_subtask or parent_from_parent_field:
             return parent_from_parent_field
 
         epic_link_field_id = self._epic_link_field_id
-        if not epic_link_field_id:
-            return None
-
-        raw = fields.get(epic_link_field_id)
-        if not raw:
-            return None
-
-        epic_key: str | None = None
-        epic_id: str | None = None
-        if isinstance(raw, str) and raw.strip():
-            epic_key = raw.strip()
-        elif isinstance(raw, dict):
-            key = raw.get("key")
-            inline_id = raw.get("id")
-            epic_key = str(key).strip() if key else None
-            epic_id = str(inline_id) if inline_id else None
-
-        if epic_id:
-            if epic_key:
-                self._issue_key_to_id_cache[epic_key] = epic_id
-            return epic_id
-        if not epic_key:
-            return None
-
-        cached = self._issue_key_to_id_cache.get(epic_key)
-        if cached:
-            return cached
-
-        try:
-            datasource = await self._get_fresh_datasource()
-            response = await datasource.get_issue_v2(issueIdOrKey=epic_key, fields=["id"])
-            if response.status == HttpStatusCode.NOT_FOUND.value:
-                self.logger.debug("Epic Link target issue %s not found", epic_key)
-                return None
-            if response.status != HttpStatusCode.OK.value:
-                self.logger.warning(
-                    "Failed to resolve Epic Link key %s: HTTP %s", epic_key, response.status
+        if epic_link_field_id:
+            raw = fields.get(epic_link_field_id)
+            if raw:
+                epic_id, epic_key = self._extract_link_ref_from_value(raw)
+                resolved = await self._resolve_issue_id_from_key_or_id(
+                    issue_id=epic_id, issue_key=epic_key, context="Epic Link"
                 )
-                return None
-            issue = self._safe_json_parse(response, f"Epic Link resolve {epic_key}")
-            resolved_id = issue.get("id") if issue else None
-        except Exception as e:
-            self.logger.warning("Failed to resolve Epic Link key %s: %s", epic_key, e)
-            return None
-        if not resolved_id:
-            return None
-        resolved_id = str(resolved_id)
-        self._issue_key_to_id_cache[epic_key] = resolved_id
-        return resolved_id
+                if resolved:
+                    return resolved
+
+        parent_link_field_id = self._parent_link_field_id
+        if parent_link_field_id:
+            raw = fields.get(parent_link_field_id)
+            if raw:
+                parent_id, parent_key = self._extract_parent_link_ref(raw)
+                if parent_id or parent_key:
+                    return await self._resolve_issue_id_from_key_or_id(
+                        issue_id=parent_id, issue_key=parent_key, context="Parent Link"
+                    )
+                if not isinstance(raw, (str, dict)):
+                    self.logger.debug(
+                        "Unrecognized Parent Link value type: %s", type(raw).__name__
+                    )
+
+        return None
 
     async def _extract_issue_data_with_parent(
         self,
         issue: dict[str, Any],
         user_by_account_id: dict[str, AppUser],
     ) -> dict[str, Any]:
-        """Extract issue fields and resolve hierarchy parent (Epic Link + parent field)."""
+        """Extract issue fields and resolve hierarchy parent (parent / Epic Link / Parent Link)."""
         issue_data = self._extract_issue_data(issue, user_by_account_id)
         fields = issue.get("fields", {}) or {}
         issue_data["parent_external_id"] = await self._resolve_hierarchy_parent_id(
             fields,
             is_subtask=issue_data["is_subtask"],
-            is_epic=issue_data["is_epic"],
             parent_from_parent_field=issue_data["parent_external_id"],
         )
         return issue_data
+
+    # -------------------------------------------------------------------------
+    # Placeholder Sweep
+    # -------------------------------------------------------------------------
+
+    async def _sweep_placeholder_records(
+        self,
+        synced_project_ids: set[str],
+        full_sync_project_ids: set[str] | None = None,
+    ) -> int:
+        """Backfill metadata for placeholder ancestor stubs left unreconciled.
+
+        Time/created-time sync filters don't respect hierarchy: an in-scope child can be
+        synced while its parent (and higher ancestors) are filtered out, leaving stubs
+        keyed by the ancestors' issue ids with no name, status or weburl.
+
+        Seeds are ticket stubs inside ``synced_project_ids``. Of those, only never-backfilled
+        stubs (``external_revision_id is None``) or stubs in ``full_sync_project_ids``
+        (edge restore after full sync) are processed. Already-backfilled stubs are skipped
+        on incremental sync.
+
+        Returns:
+            Total number of placeholder stubs refreshed from source (all BFS depths).
+        """
+        if not synced_project_ids:
+            return 0
+
+        full_sync_project_ids = full_sync_project_ids or set()
+        visited: set[str] = set()
+        frontier: list[Record] = []
+        for stub in await self.data_entities_processor.get_placeholder_records(self.connector_id):
+            if (
+                stub.record_type != RecordType.TICKET
+                or stub.external_record_group_id not in synced_project_ids
+                or stub.external_record_id in visited
+            ):
+                continue
+            needs_backfill = stub.external_revision_id is None
+            needs_edge_restore = stub.external_record_group_id in full_sync_project_ids
+            if not (needs_backfill or needs_edge_restore):
+                continue
+            visited.add(stub.external_record_id)
+            frontier.append(stub)
+
+        if not frontier:
+            return 0
+
+        synced_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        user_by_account_id: dict[str, AppUser] = {
+            u.source_user_id: u for u in synced_users if u.source_user_id
+        }
+
+        total_backfilled = 0
+        depth = 0
+        while frontier:
+            depth += 1
+            self.logger.info("Placeholder sweep: backfilling %s ancestor stub(s)", len(frontier))
+            issues = await self._fetch_ancestor_level(frontier)
+
+            backfills: list[tuple[Record, list[Permission]]] = []
+            parent_refs: list[str] = []
+            for stub, issue in zip(frontier, issues):
+                if issue:
+                    record = await self._build_ancestor_stub(issue, stub, user_by_account_id)
+                    total_backfilled += 1
+                else:
+                    record = stub
+                record.is_placeholder = True
+                backfills.append((record, []))
+                if record.parent_external_record_id:
+                    parent_refs.append(record.parent_external_record_id)
+
+            await self.data_entities_processor.on_new_records(backfills)
+
+            next_frontier: list[Record] = []
+            for parent_ext_id in parent_refs:
+                if parent_ext_id in visited:
+                    continue
+                visited.add(parent_ext_id)
+                parent_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=parent_ext_id,
+                )
+                if parent_record is None:
+                    continue
+                if not parent_record.is_placeholder:
+                    continue
+                next_frontier.append(parent_record)
+
+            if depth >= PLACEHOLDER_SWEEP_MAX_DEPTH and next_frontier:
+                self.logger.error(
+                    "Placeholder sweep hit the depth cap (%s) with %s stub(s) unresolved; aborting",
+                    PLACEHOLDER_SWEEP_MAX_DEPTH,
+                    len(next_frontier),
+                )
+                break
+            frontier = next_frontier
+
+        self.logger.info(
+            "Placeholder sweep: backfilled %s ancestor stub(s) total",
+            total_backfilled,
+        )
+        return total_backfilled
+
+    async def _fetch_ancestor_level(
+        self, frontier: list[Record]
+    ) -> list[dict[str, Any] | None]:
+        """Fetch one frontier level, aligned with ``frontier`` (``None`` if missing).
+
+        Prefer paginated ``_search_issues_with_retry`` with ``id in (...)`` per chunk
+        (``startAt`` / ``maxResults``). Jira DC rejects the whole query if any id is
+        unknown/deleted, so on non-OK / transport failure fall back to per-id
+        ``_get_issue_with_retry`` (tolerates 404s).
+        """
+        fields = self._get_ancestor_stub_fields()
+        issue_by_id: dict[str, dict[str, Any]] = {}
+
+        for i in range(0, len(frontier), PLACEHOLDER_SWEEP_BATCH):
+            chunk = frontier[i:i + PLACEHOLDER_SWEEP_BATCH]
+            # Preserve order for logging; dedupe for the API call.
+            issue_ids = list(dict.fromkeys(
+                str(stub.external_record_id)
+                for stub in chunk
+                if stub.external_record_id
+            ))
+            if not issue_ids:
+                continue
+            fetched = await self._search_ancestors_by_jql(issue_ids, fields)
+            if fetched is None:
+                fetched = await self._fetch_ancestors_by_get(issue_ids, fields)
+            issue_by_id.update(fetched)
+
+        return [issue_by_id.get(str(stub.external_record_id)) for stub in frontier]
+
+    async def _search_ancestors_by_jql(
+        self,
+        issue_ids: list[str],
+        fields: list[str],
+    ) -> dict[str, dict[str, Any]] | None:
+        """Fetch issues by id via paginated ``_search_issues_with_retry``.
+
+        Returns ``None`` when the caller should fall back to GET (e.g. DC rejects the
+        whole ``id in`` clause if any id is unknown/deleted).
+        """
+        # ORDER BY id ASC keeps startAt pagination stable (same as project issue sync).
+        jql = f"id in ({', '.join(issue_ids)}) ORDER BY id ASC"
+        page_size = min(DEFAULT_MAX_RESULTS, PLACEHOLDER_SWEEP_BATCH, len(issue_ids))
+        start_at = 0
+        issue_by_id: dict[str, dict[str, Any]] = {}
+
+        while True:
+            try:
+                response = await self._search_issues_with_retry(
+                    project_key="placeholder-sweep",
+                    jql=jql,
+                    start_at=start_at,
+                    max_results=page_size,
+                    fields=fields,
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "Placeholder sweep: JQL id-in failed at startAt=%s for %s id(s): %s — using get_issue_v2",
+                    start_at,
+                    len(issue_ids),
+                    e,
+                )
+                return None
+
+            if response.status != HttpStatusCode.OK.value:
+                # DC returns 400 with "A value with ID '…' does not exist for the field 'id'"
+                # when any id in the clause is unknown — the whole batch is rejected.
+                self.logger.warning(
+                    "Placeholder sweep: JQL id-in HTTP %s at startAt=%s for %s id(s) — using get_issue_v2 "
+                    "(often caused by a deleted/unknown issue id in the batch)",
+                    response.status,
+                    start_at,
+                    len(issue_ids),
+                )
+                return None
+
+            payload = self._safe_json_parse(response, "placeholder ancestor search")
+            if not isinstance(payload, dict):
+                self.logger.warning(
+                    "Placeholder sweep: JQL id-in returned unparseable body at startAt=%s — using get_issue_v2",
+                    start_at,
+                )
+                return None
+
+            page_issues = payload.get("issues") or []
+            for issue in page_issues:
+                if isinstance(issue, dict) and issue.get("id"):
+                    issue_by_id[str(issue["id"])] = issue
+
+            total_matching = int(payload.get("total", 0) or 0)
+            next_start = start_at + len(page_issues)
+            if not page_issues or next_start >= total_matching:
+                break
+            start_at = next_start
+
+        return issue_by_id
+
+    async def _fetch_ancestors_by_get(
+        self,
+        issue_ids: list[str],
+        fields: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """Concurrent ``_get_issue_with_retry``; skips missing/inaccessible ids."""
+        if not issue_ids:
+            return {}
+
+        semaphore = asyncio.Semaphore(10)
+        results: dict[str, dict[str, Any]] = {}
+
+        async def fetch_one(issue_id: str) -> None:
+            async with semaphore:
+                try:
+                    response = await self._get_issue_with_retry(issue_id, fields)
+                    if response.status != HttpStatusCode.OK.value:
+                        return
+                    issue = self._safe_json_parse(response, f"placeholder ancestor {issue_id}")
+                    if isinstance(issue, dict) and issue.get("id"):
+                        results[str(issue["id"])] = issue
+                except Exception as e:
+                    self.logger.debug(
+                        "Placeholder sweep: get_issue_with_retry failed for %s: %s", issue_id, e
+                    )
+
+        await asyncio.gather(*(fetch_one(i) for i in issue_ids))
+        return results
+
+    async def _build_ancestor_stub(
+        self,
+        issue: dict[str, Any],
+        stub: Record,
+        user_by_account_id: dict[str, AppUser],
+    ) -> Record:
+        """Refresh a stub's metadata from source, keeping it a stub."""
+        issue_data = await self._extract_issue_data_with_parent(issue, user_by_account_id)
+        fields = issue.get("fields") or {}
+        project = fields.get("project") or {}
+        parent_external_id = issue_data["parent_external_id"]
+        issue_key = issue_data["issue_key"]
+        atlassian_domain = self.site_url or ""
+        project_id = project.get("id")
+        if project_id is not None:
+            project_id = str(project_id)
+
+        return TicketRecord(
+            id=stub.id,
+            org_id=self.data_entities_processor.org_id,
+            priority=issue_data["priority"],
+            status=issue_data["status"],
+            type=issue_data["issue_type"],
+            creator_email=issue_data["creator_email"],
+            creator_name=issue_data["creator_name"],
+            reporter_email=issue_data["reporter_email"],
+            reporter_name=issue_data["reporter_name"],
+            assignee=issue_data["assignee_name"],
+            assignee_email=issue_data["assignee_email"],
+            external_record_id=stub.external_record_id,
+            external_revision_id=f"{PLACEHOLDER_REVISION_PREFIX}{issue_data['updated_at']}",
+            record_name=issue_data["issue_name"],
+            record_type=RecordType.TICKET,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            record_group_type=RecordGroupType.PROJECT,
+            external_record_group_id=project_id or stub.external_record_group_id,
+            parent_external_record_id=parent_external_id,
+            parent_record_type=RecordType.TICKET if parent_external_id else None,
+            version=stub.version,
+            mime_type=MimeTypes.UNKNOWN.value,
+            weburl=(
+                f"{atlassian_domain}/browse/{issue_key}"
+                if atlassian_domain and issue_key
+                else None
+            ),
+            source_created_at=issue_data["created_at"],
+            source_updated_at=issue_data["updated_at"],
+            created_at=issue_data["created_at"],
+            updated_at=issue_data["updated_at"],
+            inherit_permissions=True,
+            preview_renderable=False,
+            is_dependent_node=False,
+            parent_node_id=None,
+            is_placeholder=True,
+        )
 
     def _extract_issue_data(
         self,
@@ -2870,8 +3398,6 @@ class JiraDataCenterConnector(BaseConnector):
             issue_key = issue_data["issue_key"]
             issue_name = issue_data["issue_name"]
             issue_type = issue_data["issue_type"]
-            is_epic = issue_data["is_epic"]
-            is_subtask = issue_data["is_subtask"]
             parent_external_id = issue_data["parent_external_id"]
             status = issue_data["status"]
             priority = issue_data["priority"]
@@ -2897,10 +3423,14 @@ class JiraDataCenterConnector(BaseConnector):
 
             record_id = existing_record.id if existing_record else str(uuid4())
             is_new = existing_record is None
+            # Stub created by _handle_parent_record when a child arrived before this
+            # ancestor was in scope — promote it like a new record so revision/content
+            # replace the placeholder breadcrumb.
+            is_placeholder = bool(existing_record and existing_record.is_placeholder)
 
             # Only increment version if issue content actually changed
             is_issue_changed = False
-            if is_new:
+            if is_new or is_placeholder:
                 version = 0
                 is_issue_changed = True
                 self.logger.debug(f"🆕 New issue found: {issue_key} (external_id: {issue_id})")
@@ -2925,15 +3455,7 @@ class JiraDataCenterConnector(BaseConnector):
             parent_record_id = None
             parent_record_type = None
 
-            if is_epic:
-                # Epic is a Record that belongs to Project RecordGroup
-                pass
-            elif parent_external_id and not is_subtask:
-                # Story/Task with Epic parent → Epic is now a Record, not RecordGroup
-                parent_record_id = parent_external_id
-                parent_record_type = RecordType.TICKET
-            elif is_subtask and parent_external_id:
-                # Sub-task → has parent Record (creates PARENT_CHILD edge in recordRelations)
+            if parent_external_id:
                 parent_record_id = parent_external_id
                 parent_record_type = RecordType.TICKET
 
@@ -4168,6 +4690,12 @@ class JiraDataCenterConnector(BaseConnector):
         try:
             if not self.data_source:
                 await self.init()
+
+            if record.is_placeholder:
+                raise ValueError(
+                    f"Cannot stream placeholder record {record.external_record_id}: "
+                    "it is a stub for an out-of-scope ancestor and has no content"
+                )
 
             if record.record_type == RecordType.TICKET:
                 # Stream BlocksContainer as JSON

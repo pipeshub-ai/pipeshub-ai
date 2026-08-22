@@ -1,13 +1,36 @@
 import os
 import subprocess
 import tempfile
+from typing import Any
+
+from app.modules.parsers.excel.excel_parser import ExcelParser
+from app.services.parsing.interface import ParseResult
+
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.utils.libreoffice_convert import convert_with_libreoffice
 
 
 class XLSParser:
     """Parser for Microsoft Excel .xls files"""
 
-    def __init__(self) -> None:
-        pass
+    def __init__(self, excel_parser: ExcelParser) -> None:
+        self._excel_parser = excel_parser
+
+    async def parse(
+        self,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None = None,
+    ) -> ParseResult:
+        xlsx_bytes = await self.convert_xls_to_xlsx_async(content)
+        return await self._excel_parser.parse(xlsx_bytes, record_name)
+
+    async def convert_xls_to_xlsx_async(self, binary: bytes) -> bytes:
+        """Async .xls -> .xlsx conversion for use on an event loop (e.g. the
+        parsing service). See :func:`DocParser.convert_doc_to_docx_async` for
+        rationale.
+        """
+        return await convert_with_libreoffice(binary, "xls", "xlsx")
 
     def convert_xls_to_xlsx(self, binary: bytes) -> bytes:
         """
@@ -78,8 +101,12 @@ class XLSParser:
                     e.returncode, e.cmd, output=e.output, stderr=error_msg.encode()
                 )
             except subprocess.TimeoutExpired as e:
-                raise Exception(
-                    "LibreOffice conversion timed out after 30 seconds"
+                raise DocumentProcessingError(
+                    "LibreOffice conversion timed out after 60 seconds",
+                    details={"timeout": "60s"},
                 ) from e
             except Exception as e:
-                raise Exception(f"Error converting .xls to .xlsx: {str(e)}") from e
+                raise DocumentProcessingError(
+                    f"Error converting .xls to .xlsx: {str(e)}",
+                    details={"error": str(e)},
+                ) from e

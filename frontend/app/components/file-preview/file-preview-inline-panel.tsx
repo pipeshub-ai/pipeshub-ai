@@ -11,9 +11,11 @@ import { FilePreviewTabs } from './file-preview-tabs';
 import { FilePreviewRenderer } from './renderers/file-preview-renderer';
 import { FileDetailsTab } from './file-details-tab';
 import { CitationsPanel } from './citations-panel';
+import { VersionSwitcher } from './version-switcher';
 import { useCitationSync } from './use-citation-sync';
 import { usePdfZoom } from './use-pdf-zoom';
 import { downloadPreviewFile, getTabsForSource, shouldShowPagination, resolvePreviewIconExtension } from './utils';
+import { resolveWebUrl } from './resolve-web-url';
 import { PDF_ZOOM_MAX, PDF_ZOOM_MIN } from './types';
 import type { FilePreviewProps, FilePreviewTab, PaginationControls } from './types';
 import { useCitationsColumnResize } from './use-citations-column-resize';
@@ -62,6 +64,9 @@ export function FilePreviewInlinePanel({
   initialCitationId,
   hideFileDetails,
   showDownload,
+  latestVersion,
+  onVersionChange,
+  isSwitchingVersion,
   showLeftEdgeResizeHandle = false,
   onPointerDownLeftEdgeResize,
   style,
@@ -71,6 +76,8 @@ export function FilePreviewInlinePanel({
   const hasError = !isLoading && !!error;
   const canDownload =
     !!showDownload && !isLoading && !hasError && (!!file.blob || !!file.url);
+
+  const externalWebUrl = resolveWebUrl(recordDetails?.record, file.webUrl);
 
   const { citationsWidthPx, beginCitationsSplitResize } = useCitationsColumnResize();
 
@@ -195,6 +202,33 @@ export function FilePreviewInlinePanel({
           >
             {file.name}
           </Text>
+          {externalWebUrl && (
+            <a
+              href={externalWebUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`Open ${file.name} in source`}
+              title="Open in source"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+                color: 'var(--accent-9)',
+                lineHeight: 0,
+              }}
+            >
+              <MaterialIcon name="open_in_new" size={ICON_SIZES.FILE_ICON_SMALL} color="var(--accent-9)" />
+            </a>
+          )}
+          {file.version !== undefined && onVersionChange && (
+            <VersionSwitcher
+              version={file.version}
+              latestVersion={latestVersion ?? file.version}
+              onVersionChange={onVersionChange}
+              isSwitching={isSwitchingVersion}
+            />
+          )}
         </Flex>
 
         <Flex align="center" gap="1">
@@ -318,7 +352,7 @@ export function FilePreviewInlinePanel({
                   fileName={file.name}
                   fileType={file.type}
                   fileBlob={file.blob}
-                  webUrl={file.webUrl}
+                  webUrl={externalWebUrl ?? undefined}
                   previewRenderable={file.previewRenderable}
                   pagination={paginationControls}
                   highlightBox={hasCitations ? syncHighlightBox : highlightBox}

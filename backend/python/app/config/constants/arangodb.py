@@ -62,6 +62,7 @@ class Connectors(Enum):
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
     GITHUB = "GITHUB"
+    GITHUB_TEAMS = "GITHUB TEAMS"
     SERVICENOW = "SERVICENOW"
     SALESFORCE = "SALESFORCE"
     S3 = "S3"
@@ -88,6 +89,22 @@ class Connectors(Enum):
     DATABASE_SANDBOX = "DATABASE_SANDBOX"
     IMAGE_GENERATION = "IMAGE_GENERATION"
     ATTACHMENTS = "ATTACHMENTS"
+
+
+class PermissionModel(Enum):
+    """How a connector's records derive their per-user visibility.
+
+    ``APP_LEVEL`` means access to the connector app implies access to every
+    record it syncs — the source has no per-record ACLs, so each connector
+    writes one blanket ORG (or single creator-USER) permission. ``RECORD_LEVEL``
+    means the source syncs real per-record ACLs and visibility must be resolved
+    per user. Declared per connector via ``ConnectorBuilder.configure(...)``;
+    ``RECORD_LEVEL`` is the default because assuming per-record ACLs can only
+    under-share, never over-share.
+    """
+
+    APP_LEVEL = "APP_LEVEL"
+    RECORD_LEVEL = "RECORD_LEVEL"
 
 
 class AppGroups(Enum):
@@ -237,11 +254,25 @@ class CollectionNames(Enum):
     AGENT_KNOWLEDGE = "agentKnowledge"
     AGENT_TOOLSETS = "agentToolsets"
     AGENT_TOOLS = "agentTools"
+    AGENT_MCP_SERVERS = "agentMcpServers"
 
     # Agent Builder Graph edges
     AGENT_HAS_KNOWLEDGE = "agentHasKnowledge"
     AGENT_HAS_TOOLSET = "agentHasToolset"
     TOOLSET_HAS_TOOL = "toolsetHasTool"
+    AGENT_HAS_MCP_SERVER = "agentHasMcpServer"
+    MCP_SERVER_HAS_TOOL = "mcpServerHasTool"
+
+    # Agent Skills collections (agent_loop_lib SkillManager — GraphSkillStore)
+    AGENT_SKILLS = "agentSkills"
+    AGENT_SKILL_VERSIONS = "agentSkillVersions"
+    AGENT_SKILL_CANDIDATES = "agentSkillCandidates"
+
+    # Agent Skills Graph edge — skill-to-skill connectedness (related/requires/replaced_by)
+    AGENT_SKILL_RELATION = "agentSkillRelation"
+
+    # Agent -> Skill assignment edge (Agent Builder), mirrors AGENT_HAS_TOOLSET
+    AGENT_HAS_SKILL = "agentHasSkill"
 
 
 class QdrantCollectionNames(Enum):
@@ -269,8 +300,10 @@ class ExtensionTypes(Enum):
     SVG = "svg"
     HEIC = "heic"
     HEIF = "heif"
-    SQL_TABLE = "sql_table"  
+    SQL_TABLE = "sql_table"
     SQL_VIEW = "sql_view"
+    # Registry key for the tree-sitter code parser; not a file extension.
+    CODE = "code"
     PY = "py"
     JS = "js"
     JSX = "jsx"
@@ -298,7 +331,10 @@ class ExtensionTypes(Enum):
     SH = "sh"
     BASH = "bash"
     HTM = "htm"
-
+    BLOCKS = "blocks"
+    JSON = "json"
+    YAML = "yaml"
+    YML = "yml"
 
 class MimeTypes(Enum):
     PDF = "application/pdf"
@@ -339,11 +375,14 @@ class MimeTypes(Enum):
     ZIP = "application/zip"
     GIF = "image/gif"
     PYTHON = "text/x-python"
+    PYTHON_SCRIPT = "text/x-python-script"
+    PYTHON_SCRIPT_X = "text/x-script.python"
     JAVA_SOURCE = "text/x-java-source"
     C_SOURCE = "text/x-c"
     CPP = "text/x-c++"
     PHP = "text/x-php"
     JAVASCRIPT = "application/javascript"
+    JAVASCRIPT_TEXT = "text/javascript"
     TYPESCRIPT = "application/typescript"
     CSHARP = "text/x-csharp"
     GO = "text/x-go"
@@ -353,16 +392,21 @@ class MimeTypes(Enum):
     KOTLIN = "text/x-kotlin"
     DART = "application/dart"
     SHELL = "application/x-sh"
+    SHELL_TEXT = "text/x-sh"
+    SHELLSCRIPT = "text/x-shellscript"
     SQL_TABLE = "application/vnd.sql.table"  
     SQL_VIEW = "application/vnd.sql.view"  
 
 CODE_FILE_MIME_TYPE_VALUES = frozenset({
     MimeTypes.PYTHON.value,
+    MimeTypes.PYTHON_SCRIPT.value,
+    MimeTypes.PYTHON_SCRIPT_X.value,
     MimeTypes.JAVA_SOURCE.value,
     MimeTypes.C_SOURCE.value,
     MimeTypes.CPP.value,
     MimeTypes.PHP.value,
     MimeTypes.JAVASCRIPT.value,
+    MimeTypes.JAVASCRIPT_TEXT.value,
     MimeTypes.TYPESCRIPT.value,
     MimeTypes.CSHARP.value,
     MimeTypes.GO.value,
@@ -372,6 +416,8 @@ CODE_FILE_MIME_TYPE_VALUES = frozenset({
     MimeTypes.KOTLIN.value,
     MimeTypes.DART.value,
     MimeTypes.SHELL.value,
+    MimeTypes.SHELL_TEXT.value,
+    MimeTypes.SHELLSCRIPT.value,
 })
 
 CODE_FILE_EXTENSION_VALUES = frozenset({
@@ -416,6 +462,8 @@ FILE_MIME_TYPES = {
     '.csv': MimeTypes.CSV,
     '.tsv': MimeTypes.TSV,
     '.json': MimeTypes.JSON,
+    '.yaml': MimeTypes.YAML,
+    '.yml': MimeTypes.YAML,
     '.xml': MimeTypes.XML,
     '.zip': MimeTypes.ZIP,
     '.jpg': MimeTypes.JPEG,
@@ -481,6 +529,33 @@ RECONCILIATION_ENABLED_EXTENSIONS = {
     ExtensionTypes.HTML.value
 }
 
+# Extensions that make a repository blob a CODE_FILE record. Connectors that walk
+# a git tree (GitLab, GitHub) classify each blob against this set; anything outside
+# it is an ordinary FILE record and is gated by the generic mime/extension allowlist
+# instead. Text-based only — a binary listed here would be fed to the code parser.
+SUPPORTED_CODE_FILE_EXTENSIONS = {
+    # C / C++
+    "c", "h", "cpp", "cc", "cxx", "hpp", "hxx",
+    # C#
+    "cs",
+    # Java / JVM
+    "java", "kt", "kts", "scala", "groovy", "gradle",
+    # Python
+    "py", "pyi",
+    # JavaScript / TypeScript
+    "js", "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte",
+    # Go / Rust / Ruby / PHP / Swift / Dart
+    "go", "rs", "rb", "php", "swift", "dart",
+    # Other languages
+    "lua", "pl", "pm", "r", "ex", "exs", "erl", "hs", "clj", "cljs",
+    # Shell
+    "sh", "bash", "zsh", "fish", "ps1",
+    # Markup / stylesheets
+    "html", "htm", "css", "scss", "sass", "less", "md",
+    # Schema / IDL / infra-as-code
+    "sql", "proto", "graphql", "gql", "tf", "tfvars",
+}
+
 
 class ProgressStatus(Enum):
     NOT_STARTED = "NOT_STARTED"
@@ -536,6 +611,16 @@ class RecordRelations(Enum):
     CAUSES = "CAUSES"
     RELATED = "RELATED"
     FOREIGN_KEY = "FOREIGN_KEY"
+    # An output artifact (chart, PDF, spreadsheet, ...) was produced by
+    # running a specific version of a CODE artifact. Auto-captured by the
+    # harness (`sandbox_bridge.py`'s POST_TOOL_USE hook) — never asserted
+    # by the model — carrying `sourceVersion`/`derivedVersion` custom
+    # properties (see `record_relations_schema`, which allows additional
+    # properties). Portable to Neo4j unchanged: it is just another
+    # `relationshipType` value on the existing RECORD_RELATION edge type
+    # (see `config/constants/neo4j.py`), no new edge collection or Neo4j
+    # relationship type required.
+    DERIVED_FROM = "DERIVED_FROM"
 
 
 class EntityRelations(Enum):

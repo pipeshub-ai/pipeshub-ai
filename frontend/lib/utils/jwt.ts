@@ -1,4 +1,4 @@
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 
 // ========================================
 // JWT token helpers

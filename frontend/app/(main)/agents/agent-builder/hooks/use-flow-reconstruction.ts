@@ -10,8 +10,14 @@ import {
 } from '../display-utils';
 import { WEB_SEARCH_PROVIDER_META } from '../../../workspace/web-search/types';
 import { FLOW_EDGE } from '../flow-theme';
-import { selectPreferredModel, llmNodeTypeSlug } from '../agent-model-utils';
-import type { AgentConfiguredModel, AgentToolset, AgentToolDefinition } from '../../types';
+import { llmNodeTypeSlug } from '../agent-model-utils';
+import type {
+  AgentConfiguredModel,
+  AgentToolset,
+  AgentToolDefinition,
+  AgentSkillReference,
+  AgentMcpServer,
+} from '../../types';
 import type { AgentReconstructionSource, FlowNodeData } from '../types';
 
 /** Reconstructed model config — unified shape for both object and legacy string entries. */
@@ -79,6 +85,8 @@ export function useAgentBuilderReconstruction(): {
           knowledge: { x: 500, baseY: 400 },     // Layer 2: Knowledge & Context
           llm: { x: 950, baseY: 400 },           // Layer 3: LLMs
           tools: { x: 1400, baseY: 400 },        // Layer 4: Toolsets (separate layer)
+          skills: { x: 1400, baseY: 750 },       // Layer 4b: Skills (below toolsets, same column)
+          mcp: { x: 1400, baseY: 1050 },         // Layer 4c: MCP servers (below skills, same column)
           agent: { x: 1850, baseY: 400 },        // Layer 5: Agent Core
           output: { x: 2300, baseY: 400 },       // Layer 6: Response Output
         },
@@ -117,10 +125,15 @@ export function useAgentBuilderReconstruction(): {
       }
 
       const counts = {
-        llm: agent.models?.length || (modelCatalog.length > 0 ? 1 : 0),
+        // Agents saved with no models render with zero LLM nodes — see the
+        // "Create LLM nodes" section below, which no longer injects a
+        // default node when `agent.models` is empty.
+        llm: agent.models?.length || 0,
         tools: 0,
         toolsets: toolsetsCount,
         knowledge: agent.knowledge?.length || 0,
+        skills: agent.skills?.length || 0,
+        mcp: agent.mcpServers?.length || 0,
       };
 
 
@@ -170,6 +183,8 @@ export function useAgentBuilderReconstruction(): {
         if (counts.knowledge > 0) addPositions('knowledge', counts.knowledge, 1.0);
         if (counts.llm > 0) addPositions('llm', counts.llm, 1.5);
         if (counts.toolsets > 0) addPositions('tools', counts.toolsets, 1.0);
+        if (counts.skills > 0) addPositions('skills', counts.skills, 1.0);
+        if (counts.mcp > 0) addPositions('mcp', counts.mcp, 1.0);
 
         if (connectedPositions.length === 0) {
           return { x: layout.layers.agent.x, y: layout.layers.agent.baseY };
@@ -246,7 +261,10 @@ export function useAgentBuilderReconstruction(): {
           if (isKnowledgeBase) {
             const kbName = knowledgeItem.name || knowledgeItem.displayName || t('agentBuilder.nodeCollectionFallbackName');
             const kbDisplayName = knowledgeItem.displayName || knowledgeItem.name || kbName;
-            const kbId = kbIdsInRecordGroups[0] || recordGroups[0] || knowledgeItem._key || '';
+            // connectorId is a KB's own id under the per-KB-app model; recordGroups
+            // is only read here as a backward-compat fallback for agents saved
+            // before that model (never written back out — see filters below).
+            const kbId = connectorId || kbIdsInRecordGroups[0] || recordGroups[0] || knowledgeItem._key || '';
 
             const matchingKB = knowledgeBases.find((kb) => kb.id === kbId);
 
@@ -271,7 +289,6 @@ export function useAgentBuilderReconstruction(): {
                   kbName: finalKbName,
                   connectorInstanceId: kbConnectorId,
                   filters: {
-                    recordGroups: [finalKbId],
                     records,
                   },
                   selectedRecords: records,
@@ -410,42 +427,10 @@ export function useAgentBuilderReconstruction(): {
           nodes.push(llmNode);
           llmNodes.push(llmNode);
         });
-      } else if (modelCatalog.length > 0) {
-        const defaultModel = selectPreferredModel(modelCatalog);
-        const displayName =
-          defaultModel.modelFriendlyName || defaultModel.modelName || t('agentBuilder.placeholderAiModel');
-        nodeCounter += 1;
-        const nodeId = `llm-${nodeCounter}`;
-        const llmNode: Node<FlowNodeData> = {
-          id: nodeId,
-          type: 'flowNode',
-          position: calculateOptimalPosition('llm', 0, 1),
-          data: {
-            id: nodeId,
-            type: llmNodeTypeSlug(defaultModel.provider, defaultModel.modelKey, defaultModel.modelName),
-            label: displayName.trim(),
-            description: t('agentBuilder.llmLanguageModelSuffix', {
-              provider: formattedProvider(defaultModel.provider || 'AI'),
-            }),
-            icon: 'psychology',
-            config: {
-              modelKey: defaultModel.modelKey,
-              modelName: defaultModel.modelName,
-              modelFriendlyName: defaultModel.modelFriendlyName,
-              provider: defaultModel.provider,
-              modelType: defaultModel.modelType,
-              isMultimodal: defaultModel.isMultimodal,
-              isDefault: defaultModel.isDefault,
-              isReasoning: defaultModel.isReasoning,
-            },
-            inputs: [],
-            outputs: ['response'],
-            isConfigured: true,
-          },
-        };
-        nodes.push(llmNode);
-        llmNodes.push(llmNode);
       }
+      // Note: agents saved with no models intentionally render with no LLM
+      // node — they fall back to the organization's default LLM at chat
+      // time. We no longer inject a default LLM node on reconstruction.
 
       // 4. Create Toolset nodes
       const toolsetNodes: Node<FlowNodeData>[] = [];
@@ -690,6 +675,87 @@ export function useAgentBuilderReconstruction(): {
         webSearchNodes.push(wsNode);
       }
 
+      // 4c. Skill nodes — each assigned skill is its own catalog-pick node (mirrors toolsets, no per-tool granularity).
+      const skillNodes: Node<FlowNodeData>[] = [];
+      if (agent.skills && agent.skills.length > 0) {
+        agent.skills.forEach((skill: AgentSkillReference, index: number) => {
+          const skillName = skill.name || '';
+          if (!skillName) return;
+          nodeCounter += 1;
+          const nodeId = `skill-${nodeCounter}`;
+          const skillNode: Node<FlowNodeData> = {
+            id: nodeId,
+            type: 'flowNode',
+            position: calculateOptimalPosition('skills', index, counts.skills),
+            data: {
+              id: nodeId,
+              type: `skill-${skillName}`,
+              label: normalizeDisplayName(skillName),
+              description: skill.description || t('agentBuilder.skillNodeTemplateDescription'),
+              icon: 'psychology',
+              category: 'skills',
+              config: {
+                skillName,
+                skillDescription: skill.description,
+                skillCategory: skill.category,
+              },
+              inputs: [],
+              outputs: ['output'],
+              isConfigured: true,
+            },
+          };
+          nodes.push(skillNode);
+          skillNodes.push(skillNode);
+        });
+      }
+
+      // 4d. MCP server nodes — one node per attached instance (never merged; unlike toolsets,
+      // an agent can attach several distinct instances but never two of the same typeId).
+      const mcpServerNodes: Node<FlowNodeData>[] = [];
+      if (agent.mcpServers && agent.mcpServers.length > 0) {
+        agent.mcpServers.forEach((mcpServer: AgentMcpServer, index: number) => {
+          const instanceId = mcpServer.instanceId || mcpServer._key || '';
+          if (!instanceId) return;
+          const displayName = mcpServer.displayName || mcpServer.name || t('agentBuilder.mcpServerDefaultName');
+          const mcpTools = (mcpServer.tools || []).map((tool) => ({
+            name: tool.name,
+            fullName: tool.fullName || `${mcpServer.name}.${tool.name}`,
+            description: tool.description || '',
+          }));
+
+          nodeCounter += 1;
+          const nodeId = `mcp-${instanceId}-${nodeCounter}`;
+          const mcpNode: Node<FlowNodeData> = {
+            id: nodeId,
+            type: 'flowNode',
+            position: calculateOptimalPosition('mcp', index, counts.mcp),
+            data: {
+              id: nodeId,
+              type: `mcp-${instanceId}`,
+              label: normalizeDisplayName(displayName),
+              description: t('agentBuilder.mcpServerWithToolCount', {
+                count: mcpTools.length,
+              }),
+              icon: 'hub',
+              category: 'mcp-server',
+              config: {
+                instanceId,
+                name: mcpServer.name,
+                displayName,
+                typeId: mcpServer.typeId || undefined,
+                tools: mcpTools,
+                isAuthenticated: true,
+              },
+              inputs: [],
+              outputs: ['output'],
+              isConfigured: true,
+            },
+          };
+          nodes.push(mcpNode);
+          mcpServerNodes.push(mcpNode);
+        });
+      }
+
       // 5. Create Agent Core with optimal centered positioning
       const agentPosition = calculateAgentPosition();
       const agentCoreNode: Node<FlowNodeData> = {
@@ -706,10 +772,11 @@ export function useAgentBuilderReconstruction(): {
             systemPrompt: agent.systemPrompt || t('agentBuilder.defaultSystemPrompt'),
             instructions: agent.instructions ?? '',
             startMessage: agent.startMessage || t('agentBuilder.defaultStartMessage'),
+            defaultReasoningEffort: agent.defaultReasoningEffort ?? null,
             routing: 'auto',
             allowMultipleLLMs: true,
           },
-          inputs: ['input', 'toolsets', 'knowledge', 'llms'],
+          inputs: ['input', 'toolsets', 'knowledge', 'llms', 'skills', 'mcpServers'],
           outputs: ['response'],
           isConfigured: true,
         },
@@ -796,6 +863,32 @@ export function useAgentBuilderReconstruction(): {
           target: 'agent-core-1',
           sourceHandle: 'results',
           targetHandle: 'toolsets',
+          type: 'smoothstep',
+          style: edgeStyle,
+          animated: false,
+        });
+      });
+
+      skillNodes.forEach((skillNode) => {
+        edges.push({
+          id: `e-skill-agent-${(edgeCounter += 1)}`,
+          source: skillNode.id,
+          target: 'agent-core-1',
+          sourceHandle: 'output',
+          targetHandle: 'skills',
+          type: 'smoothstep',
+          style: edgeStyle,
+          animated: false,
+        });
+      });
+
+      mcpServerNodes.forEach((mcpNode) => {
+        edges.push({
+          id: `e-mcp-agent-${(edgeCounter += 1)}`,
+          source: mcpNode.id,
+          target: 'agent-core-1',
+          sourceHandle: 'output',
+          targetHandle: 'mcpServers',
           type: 'smoothstep',
           style: edgeStyle,
           animated: false,

@@ -20,11 +20,15 @@ import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/f
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { Users } from '../schema/users.schema';
-import { UserGroups } from '../schema/userGroup.schema';
-import { NotFoundError } from '../../../libs/errors/http.errors';
+import {
+  BadRequestError,
+  NotFoundError,
+} from '../../../libs/errors/http.errors';
+import { findOrgAdminUserIds, isUserOrgAdmin } from '../services/user-admin.service';
 import { MailService } from '../services/mail.service';
 import { AuthService } from '../services/auth.service';
 import { EntitiesEventProducer } from '../services/entity_events.service';
+import { NotificationProducer } from '../../notification/service/notification.producer';
 import { OrgController } from '../controller/org.controller';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
@@ -61,6 +65,8 @@ const createUserBody = z.object({
       message: 'Invalid mobile number',
     }),
   designation: z.string().optional(),
+  // Absent → member (resolveOptionalUserRole). Present must be admin|member.
+  role: z.enum(['admin', 'member']).optional(),
 });
 
 const updateUserBody = z.object({
@@ -87,10 +93,26 @@ const updateUserBody = z.object({
     .optional(),
   dataCollectionConsent: z.boolean().optional(),
   hasLoggedIn: z.boolean().optional(),
+  role: z.enum(['admin', 'member']).optional(),
 }).strict(); // Use strict mode to reject unknown fields
 
 const createUserValidationSchema = z.object({
   body: createUserBody,
+  query: z.object({}),
+  params: z.object({}),
+  headers: z.object({}),
+});
+
+const bulkInviteBody = z.object({
+  emails: z
+    .array(z.string())
+    .min(1, 'emails are required'),
+  groupIds: z.array(z.string()).optional(),
+  role: z.enum(['admin', 'member']).optional(),
+});
+
+const bulkInviteValidationSchema = z.object({
+  body: bulkInviteBody,
   query: z.object({}),
   params: z.object({}),
   headers: z.object({}),
@@ -358,24 +380,51 @@ export function createUserRouter(container: Container) {
           return;
         }
 
-        const adminGroups = await UserGroups.find({
-          orgId,
-          type: 'admin',
-          isDeleted: false,
-        }).select('users');
-        type AdminGroupUsers = {
-          users?: Array<{ toString: () => string }>;
-        };
-
-        const adminUserIds = [
-          ...new Set(
-            adminGroups.flatMap((group: AdminGroupUsers) =>
-              (group.users || []).map((id) => id.toString()),
-            ),
-          ),
-        ];
+        const adminUserIds = await findOrgAdminUserIds(orgId);
 
         res.status(200).json({ adminUserIds });
+        return;
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  /**
+   * GET /users/internal/:id/adminCheck
+   * Internal S2S admin check. Uses USER_LOOKUP scoped token (no user-session role).
+   * Token userId must match :id; admin privilege is verified from User.role in DB.
+   */
+  router.get(
+    '/internal/:id/adminCheck',
+    authMiddleware.scopedTokenValidator(TokenScopes.USER_LOOKUP),
+    ValidationMiddleware.validate(UserIdValidationSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const tokenUserId = req.tokenPayload?.userId;
+        const orgId = req.tokenPayload?.orgId;
+        const pathUserId = req.params.id;
+
+        if (!tokenUserId || !orgId) {
+          throw new NotFoundError('Account not found');
+        }
+        if (String(tokenUserId) !== String(pathUserId)) {
+          throw new BadRequestError('Admin access required');
+        }
+
+        const isAdmin = await isUserOrgAdmin(
+          String(tokenUserId),
+          String(orgId),
+        );
+        if (!isAdmin) {
+          throw new BadRequestError('Admin access required');
+        }
+
+        res.status(200).json({ message: 'User has admin access' });
         return;
       } catch (error) {
         next(error);
@@ -684,6 +733,8 @@ export function createUserRouter(container: Container) {
 
   router.get(
     '/:id/adminCheck',
+    // User-session JWT path (e.g. Python toolsets forwarding the browser token).
+    // Auth-service S2S calls use GET /internal/:id/adminCheck with a USER_LOOKUP scoped token.
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_READ),
     ValidationMiddleware.validate(UserIdValidationSchema),
@@ -706,9 +757,9 @@ export function createUserRouter(container: Container) {
     '/bulk/invite',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_INVITE),
-    smtpConfigCheck(config.cmBackend),
-    userAdminCheck,
+    smtpConfigCheck(config.cmBackend, config.scopedJwtSecret),
     accountTypeCheck,
+    ValidationMiddleware.validate(bulkInviteValidationSchema),
     // attachContainerMiddleware(container),
     async (
       req: AuthenticatedUserRequest,
@@ -723,13 +774,48 @@ export function createUserRouter(container: Container) {
       }
     },
   );
+
+  router.post(
+    '/bulk/invite/upload',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_INVITE),
+    smtpConfigCheck(config.cmBackend, config.scopedJwtSecret),
+    accountTypeCheck,
+    ...FileProcessorFactory.createBufferUploadProcessor({
+      fieldName: 'file',
+      allowedExtensions: ['csv', 'xlsx', 'xls'],
+      allowedMimeTypes: [
+        'text/csv',
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/octet-stream',
+      ],
+      maxFilesAllowed: 1,
+      isMultipleFilesAllowed: false,
+      processingType: FileProcessingType.BUFFER,
+      maxFileSize: 5 * 1024 * 1024,
+      strictFileUpload: true,
+    }).getMiddleware,
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.addManyUsersFromFile(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   router.post(
     '/:id/resend-invite',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_INVITE),
     ValidationMiddleware.validate(UserIdValidationSchema),
-    smtpConfigCheck(config.cmBackend),
-    userAdminCheck,
+    smtpConfigCheck(config.cmBackend, config.scopedJwtSecret),
     accountTypeCheck,
     // attachContainerMiddleware(container),
     async (
@@ -789,6 +875,7 @@ export function createUserRouter(container: Container) {
               container.get<AuthService>('AuthService'),
               logger,
               container.get<EntitiesEventProducer>('EntitiesEventProducer'),
+              container.get<NotificationProducer>('NotificationProducer'),
             );
           });
         res.status(200).json({

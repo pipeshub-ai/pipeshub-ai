@@ -9,11 +9,10 @@ This connector syncs Confluence Cloud data including:
 Authentication: OAuth 2.0 (3-legged OAuth)
 """
 
+import asyncio
 import base64
 import json
 import uuid
-import asyncio
-from collections.abc import AsyncGenerator
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
@@ -35,8 +34,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -46,6 +44,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO, IconPaths
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -60,7 +59,6 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
-from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -110,9 +108,15 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import (
+    NotificationRecipientRole,
+    NotificationSeverity,
+    NotificationType,
+)
 from app.sources.client.confluence.confluence import (
     ConfluenceClient as ExternalConfluenceClient,
 )
+from app.sources.external.common.atlassian import AtlassianMultiSiteError
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 from app.utils.streaming import create_stream_record_response
 
@@ -236,16 +240,6 @@ def extract_media_from_adf(adf_content: dict[str, Any]) -> list[dict[str, Any]]:
             fields=[
                 CommonFields.client_id("Atlassian OAuth App"),
                 CommonFields.client_secret("Atlassian OAuth App"),
-                AuthField(
-                    name="baseUrl",
-                    display_name="Atlassian site URL",
-                    placeholder="https://yourcompany.atlassian.net",
-                    description="Atlassian site URL to use. Must match the Confluence site you want to sync.",
-                    field_type="URL",
-                    required=True,
-                    max_length=2000,
-                    is_secret=False,
-                ),
                 AuthField(
                     name="includeJiraScope",
                     display_name="Grant Jira user access",
@@ -473,9 +467,32 @@ class ConfluenceConnector(BaseConnector):
             self.logger.info("✅ Confluence connector initialized successfully")
             return True
 
+        except AtlassianMultiSiteError as e:
+            # Propagate the actionable reason so the API surfaces it instead of the
+            # generic "Failed to initialize connector" message.
+            await self._notify_multi_site_ambiguity(e)
+            raise ConnectorInitError(str(e)) from e
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Confluence connector: {e}", exc_info=True)
             return False
+
+    async def _notify_multi_site_ambiguity(self, error: AtlassianMultiSiteError) -> None:
+        """Notify admin: account-level app reaches multiple sites — needs a new
+        Resource-restricted OAuth app (grants cannot be changed on an existing app)."""
+        self.logger.error(
+            "❌ Confluence connector %s: OAuth app can access multiple Atlassian sites: %s",
+            self.connector_id, error,
+        )
+        await self.notify(
+            type=NotificationType.CONNECTOR_AUTH_ERROR,
+            severity=NotificationSeverity.ERROR,
+            title="Confluence connector: Resource-restricted OAuth required",
+            message=(
+                "This OAuth app has access to multiple Confluence sites. "
+                "Create a single-site (resource-restricted) OAuth app in the "
+                "Atlassian Developer Console, then reconnect."
+            ),
+        )
 
     async def _get_fresh_datasource(self) -> ConfluenceDataSource:
         """
@@ -611,11 +628,158 @@ class ConfluenceConnector(BaseConnector):
             # This catches permission changes that don't update content's lastModified
             await self._sync_permission_changes_from_audit_log()
 
+            # Step 6: Backfill placeholder ancestors that out-of-scope sync filters left
+            # unreconciled (metadata + permissions only; they remain non-indexed stubs).
+            await self._sweep_placeholder_records(org_id)
+
             self.logger.info("✅ Confluence sync completed successfully")
 
         except Exception as e:
             self.logger.error(f"❌ Error during Confluence sync: {e}", exc_info=True)
             raise
+
+    # Bound the per-level source fanout; Confluence is rate-limited.
+    _PLACEHOLDER_SWEEP_CONCURRENCY = 5
+    # Runaway backstop only — `visited` already guarantees termination (even on cyclic
+    # source data). If we ever exceed this many distinct ancestors, something is wrong.
+    _PLACEHOLDER_SWEEP_SAFETY_MAX = 10000
+
+    async def _sweep_placeholder_records(self, org_id: str) -> None:
+        """Backfill the full ancestor breadcrumb for placeholder stubs left unreconciled.
+
+        Time/created-time sync filters don't respect hierarchy: an in-scope child can be
+        synced while its parent (and higher ancestors) are filtered out, leaving stubs
+        keyed by the ancestors' source ids with no real name or permissions.
+
+        This is an ancestor-closure walk over child->parent pointers, implemented as a
+        frontier BFS with a ``visited`` set (dedup + cycle guard) and a boundary that stops
+        at ancestors already materialized as real records or at the space root:
+
+          - seed the frontier from the stubs this sync left behind (one DB query);
+          - fetch each frontier level from source (bounded concurrency), refreshing metadata
+            + permissions but keeping ``is_placeholder=True`` so out-of-scope ancestors are
+            never indexed/searchable;
+          - expand to each fetched record's parent, skipping ones already visited or already
+            real in the graph, until the frontier drains.
+
+        Reconciliation is keyed by external id and idempotent, so an interrupted sweep is
+        completed by the next sync's sweep.
+        """
+        visited: set[str] = set()
+        seeds = await self.data_entities_processor.get_placeholder_records(self.connector_id)
+        frontier: list[Record] = []
+        for stub in seeds:
+            if stub.external_record_id not in visited:
+                visited.add(stub.external_record_id)
+                frontier.append(stub)
+
+        total = 0
+        while frontier:
+            self.logger.info(f"Placeholder sweep: backfilling {len(frontier)} ancestor stub(s)")
+            results = await self._fetch_ancestor_level(org_id, frontier)
+
+            backfills: list[tuple[Record, list[Permission]]] = []
+            parent_refs: list[tuple[str, RecordType]] = []
+            for stub, result in zip(frontier, results):
+                if result:
+                    record, permissions = result
+                    # Folders carry no content, so sync them as normal (real) folder records —
+                    # identical to _sync_folders output. Content records (pages/blogposts) stay
+                    # metadata-only stubs so their out-of-scope content is never indexed/searchable.
+                    is_folder = isinstance(record, FileRecord) and not record.is_file
+                    record.is_placeholder = not is_folder
+                else:
+                    # Source fetch failed (inaccessible/deleted/unsupported). Re-submit the
+                    # persisted stub anyway so its structural edges — record group (BELONGS_TO)
+                    # and parent (PARENT_CHILD) — which a full sync deletes are still restored.
+                    # Keeps it a stub; access fails closed (inherits the record group's perms).
+                    record, permissions = stub, []
+                    record.is_placeholder = True
+                backfills.append((record, permissions))
+                if record.parent_external_record_id and record.parent_record_type:
+                    parent_refs.append((record.parent_external_record_id, record.parent_record_type))
+
+            if backfills:
+                # Creates/updates the stubs and, via _handle_parent_record, materializes the
+                # next level's parent stubs so we can pick them up below.
+                await self.data_entities_processor.on_new_records(backfills)
+
+            next_frontier: list[Record] = []
+            for parent_ext_id, _parent_type in parent_refs:
+                if parent_ext_id in visited:
+                    continue
+                visited.add(parent_ext_id)
+                parent_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, parent_ext_id
+                )
+                if parent_record is None:
+                    continue  # stub should exist after on_new_records; skip defensively
+                if not parent_record.is_placeholder:
+                    continue  # boundary: parent already synced in scope — nothing to backfill
+                next_frontier.append(parent_record)
+
+            total += len(frontier)
+            if total > self._PLACEHOLDER_SWEEP_SAFETY_MAX:
+                self.logger.error(
+                    f"Placeholder sweep exceeded safety bound ({self._PLACEHOLDER_SWEEP_SAFETY_MAX}); aborting"
+                )
+                break
+            frontier = next_frontier
+
+    async def _fetch_ancestor_level(
+        self, org_id: str, frontier: list[Record]
+    ) -> list[tuple[Record, list[Permission]] | None]:
+        """Fetch one frontier level from source with bounded concurrency.
+
+        Returns results aligned with ``frontier``; each entry is the refreshed
+        ``(record, permissions)`` or ``None`` when the ancestor is gone/inaccessible.
+        Placeholders carry no external_revision_id, so ``_check_and_fetch_updated_record``
+        always treats them as changed and returns fresh data.
+        """
+        semaphore = asyncio.Semaphore(self._PLACEHOLDER_SWEEP_CONCURRENCY)
+
+        async def fetch_one(stub: Record) -> tuple[Record, list[Permission]] | None:
+            async with semaphore:
+                try:
+                    # A FILE-type stub with is_file=False is a folder (attachments can't be
+                    # parents in Confluence); fetch it via the folder API, not as an attachment.
+                    if isinstance(stub, FileRecord) and not stub.is_file:
+                        return await self._fetch_folder_for_sweep(stub)
+                    return await self._check_and_fetch_updated_record(org_id, stub)
+                except Exception as e:
+                    self.logger.warning(
+                        f"Placeholder sweep: failed to fetch {stub.external_record_id} "
+                        f"({stub.record_type}): {e}"
+                    )
+                    return None
+
+        return await asyncio.gather(*[fetch_one(stub) for stub in frontier])
+
+    async def _fetch_folder_for_sweep(
+        self, stub: Record
+    ) -> tuple[Record, list[Permission]] | None:
+        """Fetch a folder ancestor from source and return it as a real folder record.
+
+        Folders have no indexable content, so they are backfilled as normal folders
+        (``is_placeholder`` left False by the caller) rather than kept as stubs.
+        """
+        folder_id = stub.external_record_id
+        datasource = await self._get_fresh_datasource()
+        response = await datasource.get_folder_by_id(id=int(folder_id))
+        if not response or response.status != HttpStatusCode.SUCCESS.value:
+            self.logger.warning(f"Folder {folder_id} not found at source during placeholder sweep")
+            return None
+
+        folder_record = self._transform_to_folder_file_record(response.json(), existing_record=stub)
+        if not folder_record:
+            return None
+
+        permissions = await self._fetch_page_permissions(folder_id)
+        # Mirror _sync_folders: only drop space inheritance when READ restrictions exist.
+        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
+        if len(read_permissions) > 0:
+            folder_record.inherit_permissions = False
+        return (folder_record, permissions)
 
     async def _sync_users(self) -> None:
         """
@@ -3447,6 +3611,11 @@ class ConfluenceConnector(BaseConnector):
         Returns:
             StreamingResponse: Streaming response with BlocksContainer JSON or file content
         """
+        if record.is_placeholder:
+            raise ValueError(
+                f"Cannot stream placeholder record {record.external_record_id}: "
+                "it is a stub for an out-of-scope ancestor and has no content"
+            )
         try:
             self.logger.info(f"📥 Streaming record: {record.record_name} ({record.external_record_id})")
 

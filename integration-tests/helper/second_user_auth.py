@@ -36,7 +36,7 @@ def _create_test_user(pipeshub_client: PipeshubClient, timeout: int) -> dict:
     resp = requests.post(
         f"{pipeshub_client.base_url}/api/v1/users",
         headers=pipeshub_client._headers(),
-        json={"fullName": full_name, "email": email},
+        json={"fullName": full_name, "email": email, "role": "member"},
         timeout=timeout,
     )
     if resp.status_code >= 400:

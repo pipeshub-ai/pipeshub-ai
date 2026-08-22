@@ -20,6 +20,8 @@ const MIME_BY_EXT = new Map<string, string>(Object.entries({
   log: 'text/plain',
   md: 'text/markdown',
   json: 'application/json',
+  yaml: 'application/x-yaml',
+  yml: 'application/x-yaml',
   csv: 'text/csv',
   tsv: 'text/tab-separated-values',
   html: 'text/html',

@@ -1,9 +1,11 @@
 """Unit tests for pure functions in app.modules.parsers.excel.excel_parser."""
 
-from datetime import datetime
+from datetime import datetime, time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 
 from app.modules.parsers.excel.excel_parser import (
     BUILTIN_DATE_FORMATS,
@@ -322,6 +324,13 @@ class TestFormatExcelDatetime:
         result = format_excel_datetime(dt, "dd.mm.yyyy")
         assert result == "15.06.2023"
 
+    def test_quoted_literal_casing_preserved(self):
+        dt = datetime(2023, 6, 15, 14, 30, 45)
+        # Quoted literal text (e.g. "UTC") must keep its original casing,
+        # while the date/time tokens around it are still normalized.
+        result = format_excel_datetime(dt, 'yyyy-mm-dd "UTC"')
+        assert result == '2023-06-15 "UTC"'
+
     def test_unparseable_format_fallback_to_iso(self):
         dt = datetime(2023, 6, 15, 10, 30)
         # Something truly broken
@@ -341,6 +350,31 @@ class TestFormatExcelDatetime:
         # The minute "07" also gets stripped to "7" because the "m" pattern
         # in _strip_leading_zeros applies broadly after "d" has already run.
         assert result == "3/5/23 9:7"
+
+    def test_uppercase_date_format_dd_mmm_yyyy(self):
+        # Excel often stores custom formats in uppercase; tokens are case-insensitive.
+        dt = datetime(2024, 3, 15)
+        result = format_excel_datetime(dt, "DD-MMM-YYYY")
+        assert result == "15-mar-2024"
+        assert "DD" not in result
+        assert "YYYY" not in result
+
+    def test_uppercase_time_format_hh_mm(self):
+        dt = datetime(2023, 1, 1, 10, 30)
+        result = format_excel_datetime(dt, "HH:MM")
+        assert result == "10:30"
+        assert "MM" not in result
+
+    def test_datetime_time_with_h_mm_ss(self):
+        # openpyxl yields datetime.time for time-only cells
+        t = time(10, 30, 45)
+        result = format_excel_datetime(t, "h:mm:ss")
+        assert result == "10:30:45"
+
+    def test_datetime_time_with_uppercase_hh_mm(self):
+        t = time(11, 0)
+        result = format_excel_datetime(t, "HH:MM")
+        assert result == "11:00"
 
 
 # ---------------------------------------------------------------------------
@@ -378,11 +412,11 @@ class TestCommonFormatWhitelist:
 # ExcelParser helpers — instantiation
 # ---------------------------------------------------------------------------
 def _make_excel_parser():
-    """Create an ExcelParser instance with a mock logger."""
+    """Create an ExcelParser instance with a mock logger and config_service."""
     from unittest.mock import MagicMock
 
     from app.modules.parsers.excel.excel_parser import ExcelParser
-    return ExcelParser(logger=MagicMock())
+    return ExcelParser(logger=MagicMock(), config_service=MagicMock())
 
 
 # ---------------------------------------------------------------------------
@@ -1423,6 +1457,25 @@ class TestExcelGetTableSummary:
         assert "<think>" not in result
 
     @pytest.mark.asyncio
+    async def test_list_content_blocks_coerced_to_text(self):
+        """Gemini returns content as a list of blocks; must not crash on '</think>' check."""
+        ep = _make_excel_parser()
+        mock_response = MagicMock()
+        mock_response.content = [
+            {"type": "text", "text": "Table of "},
+            {"type": "text", "text": "employees"},
+        ]
+        ep.llm = AsyncMock()
+        ep.llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        table = {
+            "headers": ["Name"],
+            "data": [[{"header": "Name", "value": "Alice", "row": 2, "data_type": "s"}]],
+        }
+        result = await ep.get_table_summary(table)
+        assert result == "Table of employees"
+
+    @pytest.mark.asyncio
     async def test_exception_propagates(self):
         """When LLM fails, exception propagates (for retry decorator)."""
         import tenacity
@@ -2134,7 +2187,7 @@ class TestGetTablesInSheet:
         ep = _make_excel_parser()
         ep.workbook = None
 
-        with pytest.raises(ValueError, match="Workbook not loaded"):
+        with pytest.raises(DocumentProcessingError, match="Workbook not loaded"):
             await ep.get_tables_in_sheet("Sheet1", AsyncMock())
 
     @pytest.mark.asyncio

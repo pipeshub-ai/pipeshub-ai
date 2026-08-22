@@ -1,7 +1,7 @@
 """Knowledge Hub Unified Browse API Request and Response Models"""
 
 from enum import Enum
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -79,6 +79,7 @@ class NodeItem(BaseModel):
     permission: Optional[ItemPermission] = Field(None, description="User's permission on this item")
     sharingStatus: Optional[str] = Field(None, description="Sharing status: 'private', 'shared', or 'workspace' (only for kb and app node types)")
     isInternal: bool = Field(False, description="True when the node is an internal/system record group or record (doesn't come from source)")
+    isPlaceholder: bool = Field(False, description="True when the node is a placeholder stub for an out-of-scope ancestor (rendered read-only, no content actions)")
 
     class Config:
         use_enum_values = True
@@ -187,6 +188,7 @@ class KnowledgeHubNodesResponse(BaseModel):
     breadcrumbs: Optional[List[BreadcrumbItem]] = Field(None, description="Breadcrumb trail")
     counts: Optional[CountsInfo] = Field(None, description="Counts summary")
     permissions: Optional[PermissionsInfo] = Field(None, description="User permissions")
+    typed_records: Optional[Dict[str, Any]] = Field(None, description="Typed Record instances keyed by record ID (only when include_typed_records is requested)")
 
     class Config:
         # Exclude None values from JSON response

@@ -190,3 +190,27 @@ export type RegistryBadgeCapabilityKey = (typeof REGISTRY_BADGE_CAPABILITY_KEYS)
 export function isRegistryBadgeCapability(cap: string): cap is RegistryBadgeCapabilityKey {
   return (REGISTRY_BADGE_CAPABILITY_KEYS as readonly string[]).includes(cap);
 }
+
+// ========================================
+// Local embedding model download progress
+// ========================================
+
+export type EmbeddingDownloadStatus =
+  | 'not_found'
+  | 'checking'
+  | 'downloading'
+  | 'loading'
+  | 'ready'
+  | 'failed';
+
+export interface DownloadProgressPayload {
+  model: string;
+  status: EmbeddingDownloadStatus;
+  progress: number;
+  downloaded_bytes: number;
+  total_bytes: number;
+  error: string | null;
+  started_at?: number;
+  updated_at?: number;
+  timestamp?: number;
+}

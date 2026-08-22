@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from typing import Tuple
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -11,10 +12,15 @@ from app.utils.aimodels import (
     get_generator_model,
     get_stt_model,
     get_tts_model,
+    is_local_cpu_embedding_provider,
 )
 
-
-async def get_llm(config_service: ConfigurationService, llm_configs = None) -> Tuple[BaseChatModel, dict]:
+async def get_llm(
+    config_service: ConfigurationService,
+    llm_configs = None,
+    *,
+    reasoning_effort: str | None = None,
+) -> Tuple[BaseChatModel, dict]:
     if not llm_configs:
         ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value,use_cache=False)
         llm_configs = ai_models["llm"]
@@ -24,22 +30,27 @@ async def get_llm(config_service: ConfigurationService, llm_configs = None) -> T
 
     for config in llm_configs:
         if config.get("isDefault", False):
-            llm = await asyncio.to_thread(get_generator_model, config["provider"], config)
+            llm = await asyncio.to_thread(
+                get_generator_model, config["provider"], config, None, reasoning_effort,
+            )
             if llm:
                 return llm, config
 
     for config in llm_configs:
-        llm = await asyncio.to_thread(get_generator_model, config["provider"], config)
+        llm = await asyncio.to_thread(
+            get_generator_model, config["provider"], config, None, reasoning_effort,
+        )
         if llm:
             return llm, config
 
 
     raise ValueError("No LLM found")
 
-
 async def get_llm_for_role(
     config_service: ConfigurationService,
     role: str,
+    *,
+    reasoning_effort: str | None = None,
 ) -> Tuple[BaseChatModel, dict]:
     """Return the LLM assigned to *role*, falling back to the default LLM.
 
@@ -70,14 +81,14 @@ async def get_llm_for_role(
             )
             if matched:
                 llm = await asyncio.to_thread(
-                    get_generator_model, matched["provider"], matched
+                    get_generator_model, matched["provider"], matched, None, reasoning_effort,
                 )
                 if llm:
                     return llm, matched
     except Exception:
         pass
 
-    return await get_llm(config_service)
+    return await get_llm(config_service, reasoning_effort=reasoning_effort or "low")
 
 async def get_embedding_model_config(config_service: ConfigurationService) -> dict|None:
         try:
@@ -92,6 +103,43 @@ async def get_embedding_model_config(config_service: ConfigurationService) -> di
                 return config
         except Exception as e:
             raise e
+
+
+async def is_local_cpu_embedding_configured(
+    config_service: ConfigurationService,
+    logger: logging.Logger,
+) -> bool:
+    """Whether records will be embedded on local CPU rather than a hosted API.
+
+    Read once at startup by the services that hold CPU back from their
+    heavy-parse ceiling for the embedding server (see
+    ``resource_governor.policy.EMBEDDING_CPU_RESERVATION``). Mirrors the
+    config selection ``VectorStore._get_embedding_model`` makes, so both
+    reach the same verdict for a given deployment, and treats an
+    unconfigured deployment as local because that path falls back to
+    ``get_default_embedding_model()``.
+
+    An unreadable config also resolves to ``True``: over-reserving two cores
+    costs some parse throughput, while under-reserving them starves the
+    embedding step that every record has to pass through.
+    """
+    try:
+        ai_models = await config_service.get_config(
+            config_node_constants.AI_MODELS.value, use_cache=False
+        )
+        embedding_configs = (ai_models or {}).get("embedding") or []
+        if not embedding_configs:
+            return True
+        config = next(
+            (c for c in embedding_configs if c.get("isDefault")), embedding_configs[0]
+        )
+        return is_local_cpu_embedding_provider(config.get("provider"))
+    except Exception:
+        logger.warning(
+            "Could not resolve the embedding provider; assuming a local CPU model",
+            exc_info=True,
+        )
+        return True
 
 
 async def get_image_generation_config(config_service: ConfigurationService) -> dict | None:

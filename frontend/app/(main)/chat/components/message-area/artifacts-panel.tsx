@@ -10,6 +10,10 @@ import type { ChatArtifact } from '../../types';
 interface ArtifactsPanelProps {
   artifacts: ChatArtifact[];
   onPreview?: (artifact: ChatArtifact) => void | Promise<void>;
+  /** Jump to the CODE artifact `artifact.derivedFromCodeArtifactId` was generated from. */
+  onViewSource?: (codeArtifactId: string) => void | Promise<void>;
+  /** recordId -> highest version seen anywhere in the conversation — powers the "newer version available" hint (see `MessageList`). */
+  latestArtifactVersions?: Map<string, number>;
 }
 
 const MIME_ICONS: Record<string, string> = {
@@ -57,7 +61,9 @@ function isPreviewableImage(mimeType: string): boolean {
 async function handleDownload(artifact: ChatArtifact): Promise<void> {
   if (artifact.recordId) {
     try {
-      await KnowledgeBaseApi.streamDownloadRecord(artifact.recordId, artifact.fileName);
+      await KnowledgeBaseApi.streamDownloadRecord(artifact.recordId, artifact.fileName, {
+        version: artifact.version,
+      });
       return;
     } catch {
       // Intentionally fall through to URL classification below — but without
@@ -87,7 +93,12 @@ async function handleDownload(artifact: ChatArtifact): Promise<void> {
   link.remove();
 }
 
-export function ArtifactsPanel({ artifacts, onPreview }: ArtifactsPanelProps) {
+export function ArtifactsPanel({
+  artifacts,
+  onPreview,
+  onViewSource,
+  latestArtifactVersions,
+}: ArtifactsPanelProps) {
   const [collapsed, setCollapsed] = useState(false);
 
   if (!artifacts.length) return null;
@@ -110,9 +121,24 @@ export function ArtifactsPanel({ artifacts, onPreview }: ArtifactsPanelProps) {
 
       {!collapsed && (
         <Flex direction="column" gap="2">
-          {artifacts.map((artifact) => (
-            <ArtifactCard key={artifact.id} artifact={artifact} onPreview={onPreview} />
-          ))}
+          {artifacts.map((artifact) => {
+            const latestVersion = artifact.recordId
+              ? latestArtifactVersions?.get(artifact.recordId)
+              : undefined;
+            const newerVersionAvailable =
+              !!artifact.version && !!latestVersion && latestVersion > artifact.version
+                ? latestVersion
+                : undefined;
+            return (
+              <ArtifactCard
+                key={artifact.id}
+                artifact={artifact}
+                onPreview={onPreview}
+                onViewSource={onViewSource}
+                newerVersionAvailable={newerVersionAvailable}
+              />
+            );
+          })}
         </Flex>
       )}
     </Box>
@@ -166,7 +192,7 @@ function ArtifactThumbnail({ artifact }: { artifact: ChatArtifact }) {
       };
     }
 
-    KnowledgeBaseApi.streamRecord(artifact.recordId)
+    KnowledgeBaseApi.streamRecord(artifact.recordId, { version: artifact.version })
       .then((blob) => {
         if (cancelled) return;
         setAndTrack(URL.createObjectURL(blob));
@@ -183,7 +209,7 @@ function ArtifactThumbnail({ artifact }: { artifact: ChatArtifact }) {
         blobUrlRef.current = null;
       }
     };
-  }, [artifact.recordId, artifact.downloadUrl]);
+  }, [artifact.recordId, artifact.downloadUrl, artifact.version]);
 
   const showSkeleton = !src || (!loaded && !errored);
 
@@ -247,14 +273,20 @@ function ArtifactThumbnail({ artifact }: { artifact: ChatArtifact }) {
 function ArtifactCard({
   artifact,
   onPreview,
+  onViewSource,
+  newerVersionAvailable,
 }: {
   artifact: ChatArtifact;
   onPreview?: (artifact: ChatArtifact) => void | Promise<void>;
+  onViewSource?: (codeArtifactId: string) => void | Promise<void>;
+  /** Set to the higher version number when a later turn has since produced a newer copy of this same artifact. */
+  newerVersionAvailable?: number;
 }) {
   const icon = getIconForMime(artifact.mimeType);
   const showThumbnail = isPreviewableImage(artifact.mimeType);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
+  const [isViewingSource, setIsViewingSource] = useState(false);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -281,6 +313,16 @@ function ArtifactCard({
       await onPreview(artifact);
     } finally {
       if (mountedRef.current) setIsPreviewing(false);
+    }
+  };
+
+  const runViewSource = async () => {
+    if (!onViewSource || !artifact.derivedFromCodeArtifactId || isViewingSource) return;
+    setIsViewingSource(true);
+    try {
+      await onViewSource(artifact.derivedFromCodeArtifactId);
+    } finally {
+      if (mountedRef.current) setIsViewingSource(false);
     }
   };
 
@@ -326,15 +368,54 @@ function ArtifactCard({
       )}
 
       <Flex direction="column" style={{ flex: 1, minWidth: 0 }}>
-        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {artifact.fileName}
-        </Text>
+        <Flex align="center" gap="1">
+          <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {artifact.fileName}
+          </Text>
+          {!!artifact.version && (
+            <Text
+              size="1"
+              weight="medium"
+              style={{
+                color: 'var(--accent-11)',
+                backgroundColor: 'var(--accent-3)',
+                borderRadius: 'var(--radius-1)',
+                padding: '0 6px',
+                flexShrink: 0,
+              }}
+            >
+              v{artifact.version}
+            </Text>
+          )}
+        </Flex>
         <Text size="1" style={{ color: 'var(--slate-9)' }}>
           {artifact.artifactType} {artifact.sizeBytes > 0 ? `· ${formatFileSize(artifact.sizeBytes)}` : ''}
         </Text>
+        {newerVersionAvailable !== undefined && (
+          <Text size="1" weight="medium" style={{ color: 'var(--amber-11)' }}>
+            Newer version available (v{newerVersionAvailable})
+          </Text>
+        )}
       </Flex>
 
       <Flex gap="1">
+        {onViewSource && artifact.derivedFromCodeArtifactId && (
+          <IconButton
+            size="1"
+            variant="ghost"
+            onClick={runViewSource}
+            disabled={isViewingSource}
+            aria-label={isViewingSource ? 'Loading source code' : 'View source code'}
+            title="View the code that generated this artifact"
+            style={{ cursor: isViewingSource ? 'wait' : 'pointer' }}
+          >
+            {isViewingSource ? (
+              <Spinner size={16} />
+            ) : (
+              <span className="material-icons-outlined" style={{ fontSize: 18 }}>code</span>
+            )}
+          </IconButton>
+        )}
         {onPreview && (
           <IconButton
             size="1"

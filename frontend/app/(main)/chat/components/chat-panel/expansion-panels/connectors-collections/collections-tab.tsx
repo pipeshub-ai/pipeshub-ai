@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Flex, Text, Checkbox, IconButton } from '@radix-ui/themes';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { Flex, Text, Checkbox } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
@@ -11,8 +11,7 @@ import { useMainChatConnectorDefaultHint } from '@/chat/hooks/use-main-chat-conn
 import { groupByTime, getNonEmptyGroups } from '@/lib/utils/group-by-time';
 import { CollectionRow, CollectionLeadingIcon } from './collection-row';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
-import { KnowledgeHubApi } from '@/app/(main)/knowledge-base/api';
-import type { KnowledgeHubApiResponse, KnowledgeHubNode, NodeType } from '@/app/(main)/knowledge-base/types';
+import type { NodeType } from '@/app/(main)/knowledge-base/types';
 import { KbNodeNameIcon } from '@/app/(main)/knowledge-base/utils/kb-node-name-icon';
 
 // ── Types ──
@@ -51,21 +50,15 @@ function transformToCollectionItems(
   }));
 }
 
-/** KB / “Collections” connector hub row (expand to list KB record groups). */
-function isKbCollectionsConnectorRow(row: CollectionSelectItem): boolean {
-  const c = (row.connector ?? '').toString().trim().toUpperCase();
-  if (c === 'KB') return true;
-  const st = (row.subType ?? '').toString().trim().toUpperCase();
-  return st === 'KB';
+/**
+ * A Collection/KB row (origin COLLECTION) each Collection is its own standalone `app` node with no nested
+ * recordGroup layer underneath it — the row itself is the whole selectable
+ * unit, so there's nothing to expand or fetch children for.
+ */
+function isCollectionAppRow(row: CollectionSelectItem): boolean {
+  return (row.origin ?? '').toString().trim().toUpperCase() === 'COLLECTION';
 }
 
-/** COLLECTION-origin container that can hold nested collection / record-group children. */
-function isCollectionScopeExpandableRow(row: CollectionSelectItem): boolean {
-  if ((row.origin ?? '').toString().toUpperCase() !== 'COLLECTION') return false;
-  return row.nodeType === 'app' || row.nodeType === 'kb' || row.nodeType === 'recordGroup';
-}
-
-const CHILD_PAGE_LIMIT = 20;
 const ROOT_APPS_PAGE_LIMIT = 20;
 const MAX_ROOT_PAGES_RESTRICT_MODE = 200;
 
@@ -82,7 +75,7 @@ type HubPaginationSlice = {
 } | null | undefined;
 
 /**
- * Shared hub pagination merge (record-group children under a root, or hub root apps list).
+ * Shared hub pagination merge for the root apps list.
  */
 function mergePagedListMeta(
   pagination: HubPaginationSlice,
@@ -111,25 +104,6 @@ function mergePagedListMeta(
     nextPage: pageFetched + 1,
     totalItems: cumulativeLoaded,
   };
-}
-
-function mapRecordGroupItems(items: KnowledgeHubNode[]): { id: string; name: string }[] {
-  return items
-    .filter((item) => item.nodeType === 'recordGroup')
-    .map((item) => ({ id: item.id, name: item.name }));
-}
-
-/**
- * Derive next-page cursor after a hub `getDataNodes` response.
- * If the API omits `pagination`, infer `hasMore` when a full page of rows was returned.
- */
-function mergeChildListMeta(
-  data: KnowledgeHubApiResponse,
-  pageFetched: number,
-  newKidsCount: number,
-  previous?: ChildListMeta | null
-): ChildListMeta {
-  return mergePagedListMeta(data.pagination, pageFetched, CHILD_PAGE_LIMIT, newKidsCount, previous ?? null);
 }
 
 function mergeRootsListMeta(
@@ -188,8 +162,9 @@ interface CollectionsTabProps {
 }
 
 /**
- * Collections tab: time-grouped hub roots. Chevron only on KB connector + COLLECTION
- * containers (not other connector apps). Expand loads record groups under that parent.
+ * Collections tab: time-grouped hub roots. Collection/KB rows (origin
+ * COLLECTION) are standalone selectable units — no expand/children fetch.
+ * Connector app rows (Slack, Drive, etc.) are likewise whole-app selectable.
  */
 export function CollectionsTab({
   apps,
@@ -203,22 +178,8 @@ export function CollectionsTab({
   const [collections, setCollections] = useState<CollectionSelectItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
-  const [expandedRootIds, setExpandedRootIds] = useState<Record<string, boolean>>({});
-  const [childrenByRootId, setChildrenByRootId] = useState<
-    Record<string, { id: string; name: string }[]>
-  >({});
-  const [childrenErrorByRootId, setChildrenErrorByRootId] = useState<Record<string, string>>({});
-  const [childrenMetaByRootId, setChildrenMetaByRootId] = useState<Record<string, ChildListMeta>>({});
-  // Set so multiple containers can show their individual spinners concurrently
-  const [loadingChildrenRootIds, setLoadingChildrenRootIds] = useState<Set<string>>(new Set());
-  const [loadingMoreRootId, setLoadingMoreRootId] = useState<string | null>(null);
   const [rootsListMeta, setRootsListMeta] = useState<ChildListMeta | null>(null);
   const [loadingMoreApps, setLoadingMoreApps] = useState(false);
-  const loadedChildrenRef = useRef<Set<string>>(new Set());
-  // Tracks every in-flight loadChildren call; prevents duplicate concurrent fetches per ID
-  const loadingChildRootRef = useRef<Set<string>>(new Set());
-  // Prevents re-running the auto-expand logic on every re-render after initial load
-  const autoExpandedAfterFetchRef = useRef(false);
 
   const setCollectionNamesCache = useChatStore((s) => s.setCollectionNamesCache);
   const setCollectionMetaCache = useChatStore((s) => s.setCollectionMetaCache);
@@ -229,15 +190,6 @@ export function CollectionsTab({
     try {
       setIsLoading(true);
       setHasError(false);
-      loadedChildrenRef.current.clear();
-      loadingChildRootRef.current.clear();
-      autoExpandedAfterFetchRef.current = false;
-      setChildrenByRootId({});
-      setChildrenMetaByRootId({});
-      setExpandedRootIds({});
-      setChildrenErrorByRootId({});
-      setLoadingChildrenRootIds(new Set());
-      setLoadingMoreRootId(null);
       setRootsListMeta(null);
       setLoadingMoreApps(false);
 
@@ -344,200 +296,27 @@ export function CollectionsTab({
     fetchCollections();
   }, [fetchCollections]);
 
-  const showExpandChevron = useCallback((row: CollectionSelectItem) => {
-    if (row.hasChildren === false) return false;
-    return isKbCollectionsConnectorRow(row) || isCollectionScopeExpandableRow(row);
-  }, []);
-
-  const loadChildren = useCallback(async (row: CollectionSelectItem) => {
-    if (loadedChildrenRef.current.has(row.id) || loadingChildRootRef.current.has(row.id)) return;
-    loadingChildRootRef.current.add(row.id);
-    setLoadingChildrenRootIds((prev) => new Set(prev).add(row.id));
-    setChildrenErrorByRootId((prev) => {
-      const next = { ...prev };
-      delete next[row.id];
-      return next;
-    });
-    setChildrenMetaByRootId((prev) => {
-      const next = { ...prev };
-      delete next[row.id];
-      return next;
-    });
-    try {
-      const data = await KnowledgeHubApi.getDataNodes(row.nodeType as NodeType, row.id, {
-        page: 1,
-        limit: CHILD_PAGE_LIMIT,
-        sortBy: 'name',
-        sortOrder: 'asc',
-        nodeTypes: 'recordGroup',
-        onlyContainers: false,
-      });
-      const kids = mapRecordGroupItems(data.items);
-      setChildrenByRootId((prev) => ({ ...prev, [row.id]: kids }));
-      setChildrenMetaByRootId((prev) => ({
-        ...prev,
-        [row.id]: mergeChildListMeta(data, 1, kids.length, null),
-      }));
-      loadedChildrenRef.current.add(row.id);
-      if (kids.length > 0) {
-        const kidNames: Record<string, string> = {};
-        const kidMeta: Record<string, { name: string; nodeType: string; connector: string }> = {};
-        for (const k of kids) {
-          kidNames[k.id] = k.name;
-          kidMeta[k.id] = { name: k.name, nodeType: 'recordGroup', connector: row.connector ?? 'KB' };
-        }
-        setCollectionNamesCache(kidNames);
-        setCollectionMetaCache(kidMeta);
-      }
-    } catch {
-      setChildrenErrorByRootId((prev) => ({
-        ...prev,
-        [row.id]: t('chat.failedToLoadCollections', { defaultValue: 'Failed to load' }),
-      }));
-    } finally {
-      loadingChildRootRef.current.delete(row.id);
-      setLoadingChildrenRootIds((prev) => {
-        const next = new Set(prev);
-        next.delete(row.id);
-        return next;
-      });
-    }
-  }, [setCollectionNamesCache, setCollectionMetaCache, t]);
-
-  // When in 'collections' mode, auto-fetch KB children sequentially on root list change.
-  // Sequential processing avoids bursting N parallel API calls for workspaces with many roots.
-  useEffect(() => {
-    if (filterMode !== 'collections') return;
-    let cancelled = false;
-    const expandableRows = collections.filter(
-      (row) => isKbCollectionsConnectorRow(row) || isCollectionScopeExpandableRow(row)
-    );
-    (async () => {
-      for (const row of expandableRows) {
-        if (cancelled) break;
-        await loadChildren(row);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [collections, filterMode, loadChildren]);
-
-  // Auto-expand KB/Collections connector rows once after each fetch cycle completes.
-  // Uses a ref to ensure this only runs once per fetch, not on every re-render.
-  useEffect(() => {
-    if (isLoading || autoExpandedAfterFetchRef.current || filterMode === 'collections') return;
-    const kbRows = collections.filter(isKbCollectionsConnectorRow);
-    if (kbRows.length === 0) return;
-    autoExpandedAfterFetchRef.current = true;
-    setExpandedRootIds((prev) => {
-      const next = { ...prev };
-      for (const row of kbRows) next[row.id] = true;
-      return next;
-    });
-    kbRows.forEach((row) => void loadChildren(row));
-  }, [collections, isLoading, filterMode, loadChildren]);
-
-  const loadMoreChildren = useCallback(
-    async (row: CollectionSelectItem) => {
-      const meta = childrenMetaByRootId[row.id];
-      if (!meta?.hasMore) return;
-      if (loadingMoreRootId === row.id || loadingChildrenRootIds.has(row.id)) return;
-      setLoadingMoreRootId(row.id);
-      setChildrenErrorByRootId((prev) => {
-        const next = { ...prev };
-        delete next[row.id];
-        return next;
-      });
-      try {
-        const data = await KnowledgeHubApi.getDataNodes(row.nodeType as NodeType, row.id, {
-          page: meta.nextPage,
-          limit: CHILD_PAGE_LIMIT,
-          sortBy: 'name',
-          sortOrder: 'asc',
-          nodeTypes: 'recordGroup',
-          onlyContainers: false,
-        });
-        const newKids = mapRecordGroupItems(data.items);
-        setChildrenByRootId((prev) => {
-          const existing = prev[row.id] ?? [];
-          const seen = new Set(existing.map((k) => k.id));
-          const merged = [...existing];
-          for (const k of newKids) {
-            if (!seen.has(k.id)) {
-              seen.add(k.id);
-              merged.push(k);
-            }
-          }
-          return { ...prev, [row.id]: merged };
-        });
-        setChildrenMetaByRootId((prev) => ({
-          ...prev,
-          [row.id]: mergeChildListMeta(data, meta.nextPage, newKids.length, meta),
-        }));
-        if (newKids.length > 0) {
-          const kidNames: Record<string, string> = {};
-          const kidMeta: Record<string, { name: string; nodeType: string; connector: string }> = {};
-          for (const k of newKids) {
-            kidNames[k.id] = k.name;
-            kidMeta[k.id] = { name: k.name, nodeType: 'recordGroup', connector: row.connector ?? 'KB' };
-          }
-          setCollectionNamesCache(kidNames);
-          setCollectionMetaCache(kidMeta);
-        }
-      } catch {
-        setChildrenErrorByRootId((prev) => ({
-          ...prev,
-          [row.id]: t('chat.failedToLoadCollections', { defaultValue: 'Failed to load' }),
-        }));
-      } finally {
-        setLoadingMoreRootId(null);
-      }
-    },
-    [childrenMetaByRootId, loadingChildrenRootIds, loadingMoreRootId, setCollectionNamesCache, setCollectionMetaCache, t]
-  );
-
-  const toggleExpanded = useCallback(
-    (row: CollectionSelectItem) => {
-      const next = !expandedRootIds[row.id];
-      setExpandedRootIds((prev) => ({ ...prev, [row.id]: next }));
-      if (next) void loadChildren(row);
-    },
-    [expandedRootIds, loadChildren]
-  );
-
   const toggleRoot = useCallback(
     (rootId: string) => {
       const row = collections.find((c) => c.id === rootId);
-      const isKbRow = row ? isKbCollectionsConnectorRow(row) : false;
+      const isCollection = row ? isCollectionAppRow(row) : false;
 
-      if (isKbRow) {
-        // KB/Collections root: toggle all children in kb, never add root to apps
-        const children = childrenByRootId[rootId] ?? [];
-        const childIds = children.map((c) => c.id);
-        const allSelected =
-          childIds.length > 0 && childIds.every((id) => kb.includes(id));
-        if (allSelected) {
-          const childIdSet = new Set(childIds);
-          onSelectionChange({ apps, kb: kb.filter((id) => !childIdSet.has(id)) });
+      if (isCollection) {
+        if (kb.includes(rootId)) {
+          onSelectionChange({ apps, kb: kb.filter((id) => id !== rootId) });
         } else {
-          onSelectionChange({ apps, kb: [...new Set([...kb, ...childIds])] });
+          onSelectionChange({ apps, kb: [...kb, rootId] });
         }
       } else {
-        // Original behavior for connector app roots
+        // Connector app roots (Slack, Drive, etc.) — unchanged.
         if (apps.includes(rootId)) {
-          const childIds = new Set((childrenByRootId[rootId] ?? []).map((c) => c.id));
-          onSelectionChange({
-            apps: apps.filter((x) => x !== rootId),
-            kb: kb.filter((id) => !childIds.has(id)),
-          });
+          onSelectionChange({ apps: apps.filter((x) => x !== rootId), kb });
         } else {
-          onSelectionChange({
-            apps: [...apps, rootId],
-            kb,
-          });
+          onSelectionChange({ apps: [...apps, rootId], kb });
         }
       }
     },
-    [childrenByRootId, apps, onSelectionChange, kb, collections]
+    [apps, onSelectionChange, kb, collections]
   );
 
   const toggleRecordGroup = useCallback(
@@ -548,51 +327,16 @@ export function CollectionsTab({
     [apps, onSelectionChange, kb]
   );
 
-  // In 'collections' mode: flat list of KB items.
-  // Strategy A: children of KB container rows (the classic expand-to-show pattern).
-  // Strategy B: root items with nodeType === 'kb' shown directly (if hub returns them at root).
-  // Both are de-duped and search-filtered.
+  // In 'collections' mode: flat list of Collection/KB root items — each is
+  // already the whole selectable unit, nothing to expand or merge in.
   const flatKbItems = useMemo(() => {
     if (filterMode !== 'collections') return [];
     const query = searchQuery.toLowerCase();
-    const seen = new Set<string>();
-    const all: { id: string; name: string }[] = [];
-
-    // A: children of recognised KB container rows
-    for (const row of collections) {
-      if (!isKbCollectionsConnectorRow(row) && !isCollectionScopeExpandableRow(row)) continue;
-      for (const kid of childrenByRootId[row.id] ?? []) {
-        if (seen.has(kid.id)) continue;
-        seen.add(kid.id);
-        if (!query || kid.name.toLowerCase().includes(query)) {
-          all.push(kid);
-        }
-      }
-    }
-
-    // B: root-level kb nodes (in case the hub returns them without a container wrapper)
-    for (const row of collections) {
-      if (row.nodeType !== 'kb') continue;
-      if (seen.has(row.id)) continue;
-      seen.add(row.id);
-      if (!query || row.name.toLowerCase().includes(query)) {
-        all.push({ id: row.id, name: row.name });
-      }
-    }
-
-    return all;
-  }, [filterMode, collections, childrenByRootId, searchQuery]);
-
-  // True while KB container children are still being fetched — prevents premature empty state.
-  // Uses childrenByRootId (state) so re-renders fire when it changes.
-  const isLoadingKbChildren = useMemo(() => {
-    if (filterMode !== 'collections' || isLoading) return false;
-    return collections.some(
-      (row) =>
-        (isKbCollectionsConnectorRow(row) || isCollectionScopeExpandableRow(row)) &&
-        childrenByRootId[row.id] === undefined
-    );
-  }, [filterMode, isLoading, collections, childrenByRootId]);
+    return collections
+      .filter(isCollectionAppRow)
+      .filter((row) => !query || row.name.toLowerCase().includes(query))
+      .map((row) => ({ id: row.id, name: row.name }));
+  }, [filterMode, collections, searchQuery]);
 
   const groupedCollections = useMemo(() => {
     // In 'collections' mode we render flatKbItems instead of this grouped list
@@ -604,11 +348,9 @@ export function CollectionsTab({
         )
       : collections;
 
-    // 'connectors' mode: show only non-KB connector app roots
+    // 'connectors' mode: show only non-Collection connector app roots
     if (filterMode === 'connectors') {
-      filtered = filtered.filter(
-        (c) => !isKbCollectionsConnectorRow(c) && !isCollectionScopeExpandableRow(c)
-      );
+      filtered = filtered.filter((c) => !isCollectionAppRow(c));
     }
 
     const groups = groupByTime(filtered, (c) => c.updatedAt);
@@ -693,7 +435,7 @@ export function CollectionsTab({
           overflowY: 'auto',
         }}
       >
-        {(isLoading || isLoadingKbChildren) && (
+        {isLoading && (
           <Flex align="center" justify="center" style={{ flex: 1, minHeight: 0 }}>
             <LottieLoader variant="loader" size={48} />
           </Flex>
@@ -708,7 +450,7 @@ export function CollectionsTab({
         )}
 
         {/* ── Collections mode: flat KB items, no parent container row ── */}
-        {filterMode === 'collections' && !isLoading && !isLoadingKbChildren && !hasError && (
+        {filterMode === 'collections' && !isLoading && !hasError && (
           flatKbItems.length === 0 ? (
             <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
               <Text size="2" style={{ color: 'var(--slate-9)' }}>
@@ -765,26 +507,8 @@ export function CollectionsTab({
               </Flex>
 
               {items.map((col) => {
-                const expanded = Boolean(expandedRootIds[col.id]);
-                const children = childrenByRootId[col.id] ?? [];
-                const childErr = childrenErrorByRootId[col.id];
-                const canExpand = showExpandChevron(col);
-
-                // For KB/Collections rows, derive checked/indeterminate from children in kb
-                const isKbRow = isKbCollectionsConnectorRow(col);
-                const kbRowChildIds = isKbRow ? children.map((c) => c.id) : [];
-                const kbRowSelectedCount = isKbRow
-                  ? kbRowChildIds.filter((id) => kb.includes(id)).length
-                  : 0;
-                const kbRowChecked: boolean | 'indeterminate' = isKbRow
-                  ? kbRowChildIds.length === 0
-                    ? false
-                    : kbRowSelectedCount === kbRowChildIds.length
-                      ? true
-                      : kbRowSelectedCount > 0
-                        ? 'indeterminate'
-                        : false
-                  : apps.includes(col.id);
+                const isCollection = isCollectionAppRow(col);
+                const rowChecked = isCollection ? kb.includes(col.id) : apps.includes(col.id);
 
                 return (
                   <Flex key={col.id} direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
@@ -808,7 +532,7 @@ export function CollectionsTab({
                           <Checkbox
                             size="1"
                             variant="classic"
-                            checked={kbRowChecked}
+                            checked={rowChecked}
                             onCheckedChange={() => toggleRoot(col.id)}
                             onClick={(e) => e.stopPropagation()}
                           />
@@ -822,7 +546,7 @@ export function CollectionsTab({
                           }}
                           aria-hidden
                         >
-                          {isKbCollectionsConnectorRow(col) ? (
+                          {isCollection ? (
                             <CollectionLeadingIcon
                               sourceType={col.connector?.trim() || col.subType?.trim() || 'KB'}
                               size={20}
@@ -846,96 +570,7 @@ export function CollectionsTab({
                           {col.name}
                         </Text>
                       </Flex>
-                      {canExpand ? (
-                        <IconButton
-                          type="button"
-                          size="1"
-                          variant="ghost"
-                          color="gray"
-                          aria-expanded={expanded}
-                          aria-label={expanded ? t('common.collapse') : t('common.expand')}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleExpanded(col);
-                          }}
-                        >
-                          <MaterialIcon
-                            name="chevron_right"
-                            size={18}
-                            color="var(--slate-11)"
-                            style={{
-                              transform: expanded ? 'rotate(90deg)' : undefined,
-                              transition: 'transform 0.15s ease',
-                            }}
-                          />
-                        </IconButton>
-                      ) : null}
                     </Flex>
-
-                    {expanded && loadingChildrenRootIds.has(col.id) ? (
-                      <Flex justify="center" style={{ padding: 'var(--space-2)' }}>
-                        <LottieLoader variant="loader" size={32} />
-                      </Flex>
-                    ) : null}
-
-                    {expanded && childErr ? (
-                      <Text size="1" style={{ color: 'var(--red-9)', paddingLeft: 'var(--space-4)' }}>
-                        {childErr}
-                      </Text>
-                    ) : null}
-
-                    {expanded &&
-                      !childErr &&
-                      children.map((ch) => (
-                        <Flex
-                          key={ch.id}
-                          style={{
-                            width: '100%',
-                            minWidth: 0,
-                            paddingLeft: 'var(--space-4)',
-                            boxSizing: 'border-box',
-                          }}
-                        >
-                          <CollectionRow
-                            id={ch.id}
-                            name={ch.name}
-                            isSelected={kb.includes(ch.id)}
-                            onToggle={() => toggleRecordGroup(ch.id)}
-                          />
-                        </Flex>
-                      ))}
-
-                    {expanded && !childErr && childrenMetaByRootId[col.id]?.hasMore ? (
-                      <Flex
-                        align="center"
-                        style={{
-                          width: '100%',
-                          minWidth: 0,
-                          paddingLeft: 'var(--space-4)',
-                          paddingTop: 'var(--space-1)',
-                          boxSizing: 'border-box',
-                        }}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => void loadMoreChildren(col)}
-                          disabled={loadingMoreRootId === col.id}
-                          style={{
-                            background: 'none',
-                            border: 'none',
-                            cursor: loadingMoreRootId === col.id ? 'default' : 'pointer',
-                            color: 'var(--olive-9)',
-                            fontSize: 12,
-                            padding: 0,
-                            textAlign: 'left',
-                          }}
-                        >
-                          {loadingMoreRootId === col.id
-                            ? t('agentBuilder.loadingMore')
-                            : t('agentBuilder.loadMore')}
-                        </button>
-                      </Flex>
-                    ) : null}
                   </Flex>
                 );
               })}

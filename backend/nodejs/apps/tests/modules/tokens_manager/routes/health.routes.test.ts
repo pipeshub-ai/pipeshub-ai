@@ -568,15 +568,15 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.services.graphDb).to.equal('unhealthy')
     })
 
-    it('should mark vectorDb as unhealthy when qdrant health check fails', async () => {
+    it('should mark vectorDb as unhealthy when vector-db health check fails', async () => {
       const handler = findHandler('/', 'get')
       const res = mockRes()
       const next = sinon.stub()
 
       const axiosModule = require('axios')
       sinon.stub(axiosModule, 'get').callsFake((url: string) => {
-        if (url.includes('healthz')) {
-          return Promise.reject(new Error('Qdrant connection refused'))
+        if (url.includes('health/vector-db')) {
+          return Promise.reject(new Error('Vector DB connection refused'))
         }
         return Promise.resolve({ status: 200 })
       })
@@ -588,14 +588,14 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.services.vectorDb).to.equal('unhealthy')
     })
 
-    it('should mark vectorDb as unhealthy when qdrant returns non-200', async () => {
+    it('should mark vectorDb as unhealthy when vector-db returns non-200', async () => {
       const handler = findHandler('/', 'get')
       const res = mockRes()
       const next = sinon.stub()
 
       const axiosModule = require('axios')
       sinon.stub(axiosModule, 'get').callsFake((url: string) => {
-        if (url.includes('healthz')) {
+        if (url.includes('health/vector-db')) {
           return Promise.resolve({ status: 503 })
         }
         return Promise.resolve({ status: 200 })
@@ -712,8 +712,8 @@ describe('tokens_manager/routes/health.routes', () => {
 
       const axiosModule = require('axios')
       sinon.stub(axiosModule, 'get').callsFake((url: string) => {
-        if (url.includes('healthz')) {
-          return Promise.reject(new Error('Qdrant down'))
+        if (url.includes('health/vector-db')) {
+          return Promise.reject(new Error('Vector DB down'))
         }
         return Promise.resolve({ status: 200 })
       })
@@ -728,8 +728,8 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.services.mongodb).to.equal('healthy')
     })
 
-    it('should check qdrant at the correct URL from config', async () => {
-      mockAppConfig.qdrant = { host: 'qdrant.example.com', port: 6333, apiKey: '', grpcPort: 6334 }
+    it('should call connector /health/vector-db and mark healthy on 200', async () => {
+      mockAppConfig.connectorBackend = 'http://localhost:8088'
       router = createHealthRouter(container, cmContainer)
 
       const handler = findHandler('/', 'get')
@@ -741,11 +741,11 @@ describe('tokens_manager/routes/health.routes', () => {
 
       await handler({}, res, next)
 
-      const qdrantCall = axiosStub.getCalls().find(
-        (c: any) => c.args[0].includes('qdrant.example.com'),
+      const vectorDbCall = axiosStub.getCalls().find(
+        (c: any) => c.args[0].includes('health/vector-db'),
       )
-      expect(qdrantCall).to.exist
-      expect(qdrantCall!.args[0]).to.equal('http://qdrant.example.com:6333/healthz')
+      expect(vectorDbCall).to.exist
+      expect(vectorDbCall!.args[0]).to.equal('http://localhost:8088/health/vector-db')
     })
 
     it('should call connector /health/graph-db for arangodb and mark healthy on 200', async () => {
@@ -1349,6 +1349,129 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(urls).to.include('http://localhost:8091/health')
       expect(urls).to.include('http://localhost:8081/health')
       expect(urls).to.include('http://localhost:8002/health')
+    })
+
+    describe('parsing + extraction services (USE_PARSING_SERVICE)', () => {
+      beforeEach(() => {
+        delete process.env.USE_PARSING_SERVICE
+        delete process.env.PARSING_SERVICE_URL
+        delete process.env.EXTRACTION_SERVICE_URL
+      })
+
+      afterEach(() => {
+        delete process.env.USE_PARSING_SERVICE
+        delete process.env.PARSING_SERVICE_URL
+        delete process.env.EXTRACTION_SERVICE_URL
+      })
+
+      it('should not include parsing/extraction keys when USE_PARSING_SERVICE is not set', async () => {
+        sinon.stub(axiosModule, 'get').resolves({
+          status: 200,
+          data: { status: 'healthy' },
+        })
+
+        const handler = findHandler('/services', 'get')
+        const res = mockRes()
+        const next = sinon.stub()
+
+        await handler({}, res, next)
+
+        const jsonArg = res.json.firstCall.args[0]
+        expect(jsonArg.services).to.not.have.property('parsing')
+        expect(jsonArg.services).to.not.have.property('extraction')
+      })
+
+      it('should include parsing/extraction as healthy when enabled and probes succeed', async () => {
+        process.env.USE_PARSING_SERVICE = 'true'
+        sinon.stub(axiosModule, 'get').resolves({
+          status: 200,
+          data: { status: 'healthy' },
+        })
+
+        const handler = findHandler('/services', 'get')
+        const res = mockRes()
+        const next = sinon.stub()
+
+        await handler({}, res, next)
+
+        const jsonArg = res.json.firstCall.args[0]
+        expect(jsonArg.services.parsing).to.equal('healthy')
+        expect(jsonArg.services.extraction).to.equal('healthy')
+      })
+
+      it('should probe default parsing/extraction URLs when enabled', async () => {
+        process.env.USE_PARSING_SERVICE = 'true'
+        const axiosStub = sinon.stub(axiosModule, 'get').resolves({
+          status: 200,
+          data: { status: 'healthy' },
+        })
+
+        const handler = findHandler('/services', 'get')
+        const res = mockRes()
+        const next = sinon.stub()
+
+        await handler({}, res, next)
+
+        const urls = axiosStub.getCalls().map((c: any) => c.args[0])
+        expect(urls).to.include('http://localhost:8092/health')
+        expect(urls).to.include('http://localhost:8093/health')
+      })
+
+      it('should use PARSING_SERVICE_URL and EXTRACTION_SERVICE_URL env vars', async () => {
+        process.env.USE_PARSING_SERVICE = 'true'
+        process.env.PARSING_SERVICE_URL = 'http://custom-parsing:9092'
+        process.env.EXTRACTION_SERVICE_URL = 'http://custom-extraction:9093'
+        const axiosStub = sinon.stub(axiosModule, 'get').resolves({
+          status: 200,
+          data: { status: 'healthy' },
+        })
+
+        const handler = findHandler('/services', 'get')
+        const res = mockRes()
+        const next = sinon.stub()
+
+        await handler({}, res, next)
+
+        const urls = axiosStub.getCalls().map((c: any) => c.args[0])
+        expect(urls).to.include('http://custom-parsing:9092/health')
+        expect(urls).to.include('http://custom-extraction:9093/health')
+      })
+
+      it('should stay healthy overall when parsing/extraction are down (non-critical)', async () => {
+        process.env.USE_PARSING_SERVICE = 'true'
+        sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+          if (url.includes('8092') || url.includes('8093')) {
+            return Promise.reject(new Error('Service down'))
+          }
+          return Promise.resolve({ status: 200, data: { status: 'healthy' } })
+        })
+
+        const handler = findHandler('/services', 'get')
+        const res = mockRes()
+        const next = sinon.stub()
+
+        await handler({}, res, next)
+
+        const jsonArg = res.json.firstCall.args[0]
+        expect(jsonArg.status).to.equal('healthy')
+        expect(jsonArg.services.parsing).to.equal('unhealthy')
+        expect(jsonArg.services.extraction).to.equal('unhealthy')
+      })
+
+      it('should include parsing/extraction as unknown in error fallback when enabled', async () => {
+        process.env.USE_PARSING_SERVICE = 'true'
+        sinon.stub(axiosModule, 'get').throws(new Error('Unexpected'))
+
+        const handler = findHandler('/services', 'get')
+        const res = mockRes()
+        const next = sinon.stub()
+
+        await handler({}, res, next)
+
+        const jsonArg = res.json.firstCall.args[0]
+        expect(jsonArg.services.parsing).to.equal('unknown')
+        expect(jsonArg.services.extraction).to.equal('unknown')
+      })
     })
   })
 })

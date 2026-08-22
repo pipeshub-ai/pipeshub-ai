@@ -80,16 +80,9 @@ def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
         )
     return items if items else None
 
-# Collection app ID format: knowledgeBase_<orgId> (allowed for parent_id when parent_type is app)
-_KNOWLEDGE_BASE_APP_ID_PATTERN = re.compile(r'^knowledgeBase_[a-zA-Z0-9_-]+$')
-
-
 def _validate_uuid_format(value: Optional[str], field_name: str) -> None:
-    """Validate UUID format for IDs, or knowledgeBase_<orgId> for Collection app."""
+    """Validate UUID format for IDs."""
     if not value:
-        return
-
-    if _KNOWLEDGE_BASE_APP_ID_PATTERN.match(value):
         return
 
     uuid_pattern = re.compile(r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$', re.IGNORECASE)
@@ -201,7 +194,7 @@ async def get_knowledge_hub_root_nodes(
     created_at: Optional[str] = Query(None, description="Created date range: gte:timestamp,lte:timestamp"),
     updated_at: Optional[str] = Query(None, description="Updated date range: gte:timestamp,lte:timestamp"),
     size: Optional[str] = Query(None, description="Size range: gte:bytes,lte:bytes"),
-    flattened: bool = Query(False, description="Return flattened view with all nested children (even without filters)"),
+    flattened: Optional[bool] = Query(None, description="Force flattened/recursive search (true) or direct listing (false). When omitted, computed from which filters are present."),
     include: Optional[str] = Query(None, description="Comma-separated includes: breadcrumbs, counts, availableFilters, permissions"),
     knowledge_hub_service: KnowledgeHubService = Depends(get_knowledge_hub_service),
 ) -> Union[KnowledgeHubNodesResponse, Dict[str, Any]]:
@@ -262,7 +255,7 @@ async def get_knowledge_hub_children_nodes(
     created_at: Optional[str] = Query(None, description="Created date range: gte:timestamp,lte:timestamp"),
     updated_at: Optional[str] = Query(None, description="Updated date range: gte:timestamp,lte:timestamp"),
     size: Optional[str] = Query(None, description="Size range: gte:bytes,lte:bytes"),
-    flattened: bool = Query(False, description="Return flattened view with all nested children (even without filters)"),
+    flattened: Optional[bool] = Query(None, description="Force flattened/recursive search (true) or direct listing (false). When omitted, computed from which filters are present."),
     include: Optional[str] = Query(None, description="Comma-separated includes: breadcrumbs, counts, availableFilters, permissions"),
     knowledge_hub_service: KnowledgeHubService = Depends(get_knowledge_hub_service),
 ) -> Union[KnowledgeHubNodesResponse, Dict[str, Any]]:
@@ -320,7 +313,7 @@ async def _handle_get_nodes(
     created_at: Optional[str],
     updated_at: Optional[str],
     size: Optional[str],
-    flattened: bool,
+    flattened: Optional[bool],
     include: Optional[str],
 ) -> Union[KnowledgeHubNodesResponse, Dict[str, Any]]:
     """Shared handler for both root and children node retrieval."""

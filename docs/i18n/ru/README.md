@@ -44,7 +44,7 @@
   <a href="https://www.npmjs.com/package/@pipeshub-ai/sdk"><img src="https://img.shields.io/npm/v/@pipeshub-ai/sdk?logo=npm&amp;logoColor=white&amp;label=node%20sdk" alt="Node.js SDK" /></a>
   <a href="https://pypi.org/project/pipeshub-sdk/"><img src="https://img.shields.io/pypi/v/pipeshub-sdk?logo=python&amp;logoColor=white&amp;label=python%20sdk" alt="Python SDK" /></a>
   <a href="https://github.com/pipeshub-ai/pipeshub-sdk-go"><img src="https://img.shields.io/github/v/release/pipeshub-ai/pipeshub-sdk-go?logo=go&amp;logoColor=white&amp;label=go%20sdk" alt="Go SDK" /></a>
-  <a href="https://www.npmjs.com/package/pipeshub"><img src="https://img.shields.io/npm/v/pipeshub?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
+  <a href="https://www.npmjs.com/package/@pipeshub-ai/mcp"><img src="https://img.shields.io/npm/v/@pipeshub-ai/mcp?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
 </p>
 
 </div>
@@ -122,7 +122,6 @@
 |-----------|-------------|
 | FastAPI | Высокопроизводительный веб-фреймворк на Python |
 | LangChain | Фреймворк для конвейеров LLM |
-| LangGraph | Граф состояний для рабочих процессов LLM |
 | Qdrant | Движок поиска по векторному сходству |
 | Neo4j / ArangoDB | Графовая база данных |
 | Kafka / Redis Streams | Распределённая платформа потоковой передачи событий |
@@ -265,7 +264,7 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 
 ### Каких провайдеров LLM поддерживает PipesHub?
 
-PipesHub работает по принципу «Используйте свою модель» — вы можете использовать любого провайдера LLM. Разверните в своём VPC предпочитаемые модели. Технологический стек включает LangChain и LangGraph для конвейеров и рабочих процессов LLM.
+PipesHub работает по принципу «Используйте свою модель» — вы можете использовать любого провайдера LLM. Разверните в своём VPC предпочитаемые модели. Технологический стек включает LangChain для конвейеров и рабочих процессов LLM.
 
 ### Что такое функция извлечения по графу знаний?
 

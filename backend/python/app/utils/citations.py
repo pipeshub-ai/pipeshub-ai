@@ -4,7 +4,9 @@ from typing import Any
 
 from app.models.blocks import BlockType, GroupType
 from app.utils.chat_helpers import (
+    generate_text_fragment_url,
     get_enhanced_metadata,
+    group_child_results,
     is_base64_image,
     valid_group_labels,
 )
@@ -292,6 +294,9 @@ def _resolve_ref(target: str, ref_to_url: dict[str, str] | None) -> str:
         return ref_to_url[inner_ref]
     return target
 
+_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(ref\d+\)')
+
+
 def _renumber_citation_links(
     text: str,
     md_matches: list,
@@ -315,7 +320,18 @@ def _renumber_citation_links(
         if new_num is not None:
             replacement = f"[{new_num}]({full_url})"
             text = text[:match.start()] + replacement + text[match.end():]
+    text = _strip_unresolved_ref_citations(text)
     return text
+
+
+def _strip_unresolved_ref_citations(text: str) -> str:
+    """Remove ``[text](refN)`` links that survived renumbering.
+
+    These are dead references — typically carried over from a prior
+    conversation turn whose ``CitationRefMapper`` no longer exists.
+    Leaving them renders as broken ``[source](ref209)`` in the UI.
+    """
+    return _UNRESOLVED_REF_LINK_RE.sub('', text)
 
 
 def _extract_block_index_from_url(url: str) -> int | None:
@@ -380,17 +396,100 @@ def _append_record_page_citation(
     return citation_num + 1
 
 
+_TEXT_FRAGMENT_DIRECTIVE_PREFIX = "#:~:text="
+
+
+def _page_of(url: str) -> str:
+    """Strip a `#:~:text=` fragment so a bare page URL can be compared
+    against fragment-keyed web records (see `generate_text_fragment_url`)."""
+    return url.split(_TEXT_FRAGMENT_DIRECTIVE_PREFIX, 1)[0]
+
+
+def _build_web_record_page_index(
+    web_records: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Maps page URL (fragment stripped) -> the first web record for that
+    page. Built once per normalization call so the page-level fallback
+    below doesn't rescan `web_records` for every citation target —
+    `TerminalAnswerStreamer` re-runs the containing normalizer on every
+    streamed token, so an O(web_records) rescan per URL would make citation
+    resolution O(tokens x unique_urls x web_records)."""
+    index: dict[str, dict[str, Any]] = {}
+    for rec in web_records:
+        page = _page_of(rec.get("url", ""))
+        if page and page not in index:
+            index[page] = rec
+    return index
+
+
 def _find_web_record_by_url(
     url: str,
     web_records: list[dict[str, Any]],
+    page_index: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """Find a web record whose 'url' field matches exactly."""
+    """Find a web record for `url`. Exact match first (per-block
+    precision), then a page-level fallback: models sometimes paraphrase a
+    per-block `#:~:text=` citation down to the bare page URL, which would
+    otherwise never match and silently drop the citation."""
     if not url:
         return None
     for rec in web_records:
         if rec.get("url") == url:
             return rec
+    page = _page_of(url)
+    if page_index is not None:
+        return page_index.get(page)
+    for rec in web_records:
+        if _page_of(rec.get("url", "")) == page:
+            return rec
     return None
+
+
+def _try_append_web_citation(
+    url: str,
+    web_records: list[dict[str, Any]],
+    page_index: dict[str, dict[str, Any]],
+    new_citations: list[dict[str, Any]],
+    url_to_citation_num: dict[str, int],
+    citation_num: int,
+) -> tuple[bool, int]:
+    """Shared web-record branch for `_normalize_markdown_link_citations`
+    and its `_for_agent` twin: web citations are keyed by URL, not by the
+    `final_results`/`records` block indexes the rest of this module
+    resolves against, so they need their own lookup before falling through
+    to record/vectordb resolution.
+
+    Returns `(handled, next_citation_num)`. `handled=True` means the
+    caller should move on to the next URL regardless of whether a citation
+    was appended — a web record with no content is dropped, not passed
+    through to record-based matching (a URL that happens to also look like
+    a record URL should not be double-resolved).
+    """
+    if not web_records:
+        return False, citation_num
+    web_rec = _find_web_record_by_url(url, web_records, page_index)
+    if not web_rec:
+        return False, citation_num
+    web_content = web_rec.get("content", "")
+    if not web_content:
+        return True, citation_num
+    new_citations.append({
+        "content": _safe_stringify_content(value=web_content),
+        "chunkIndex": citation_num,
+        "metadata": {
+            "recordId": _page_of(url),
+            "mimeType": "text/html",
+            "recordName": _page_of(url),
+            "webUrl": url,
+            "origin": "WEB_SEARCH",
+            "orgId": web_rec.get("org_id", ""),
+            "connector": "WEB",
+            "recordType": "WEBPAGE",
+        },
+        "citationType": "web|url",
+    })
+    url_to_citation_num[url] = citation_num
+    return True, citation_num + 1
 
 
 def _safe_stringify_content(value: Any) -> str:
@@ -402,6 +501,64 @@ def _safe_stringify_content(value: Any) -> str:
         return ""
 
 
+def _resolve_fragment_content(
+    blocks: list[dict[str, Any]], container_index: int
+) -> tuple[str, str]:
+    """Assemble citation content from child fragment blocks of a container.
+
+    When a block (table row, list item, etc.) contains inline images, the parser
+    splits it into an empty container plus TEXT/IMAGE children linked via
+    parent_block_index.
+
+    Returns:
+        (display_content, fragment_text) — display may include "Image" placeholders;
+        fragment_text is text-only for #:~:text= URL highlighting on the source page.
+    """
+    children = [b for b in blocks if b.get("parent_block_index") == container_index]
+    if not children:
+        return "", ""
+    children.sort(key=lambda b: b.get("index", 0))
+    display_parts: list[str] = []
+    text_parts: list[str] = []
+    for child in children:
+        child_type = child.get("type")
+        child_data = child.get("data")
+        if child_type == BlockType.IMAGE.value:
+            display_parts.append("Image")
+        elif isinstance(child_data, str) and child_data.strip():
+            text = child_data.strip()
+            display_parts.append(text)
+            text_parts.append(text)
+    if not display_parts:
+        return "", ""
+    if not text_parts:
+        return "Image", ""
+    return " ".join(display_parts), " ".join(text_parts)
+
+
+def _enrich_metadata_from_fragment(
+    metadata: dict[str, Any],
+    record: dict[str, Any],
+    display_content: str,
+    fragment_text: str,
+) -> None:
+    """Fill blockText/webUrl when primary block data was empty (image-split container).
+
+    No-op when blockText is already set, so the normal (non-fragment) path is unchanged.
+    """
+    if metadata.get("blockText"):
+        return
+    metadata["blockText"] = display_content
+    if not fragment_text or metadata.get("hideWeburl"):
+        return
+    origin = metadata.get("origin") or record.get("origin") or ""
+    record_type = metadata.get("recordType") or record.get("record_type") or ""
+    if origin == "UPLOAD" or record_type == "MAIL":
+        return
+    base_url = record.get("weburl") or ""
+    if not base_url:
+        return
+    metadata["webUrl"] = generate_text_fragment_url(base_url, fragment_text)
 
 
 def detect_hallucinated_citation_urls(
@@ -506,8 +663,13 @@ def _normalize_markdown_link_citations(
 
     for doc in final_results:
         block_type = doc.get("block_type")
-        if block_type == GroupType.TABLE.value or block_type in valid_group_labels:
-            _, child_results = doc.get("content", ("", []))
+        # "code" labels both BlockType.CODE (leaf) and GroupType.CODE (group).
+        # Only groups have content shaped as a (summary, children) tuple;
+        # leaf blocks carry a plain string that must not be unpacked as a tuple.
+        child_results = group_child_results(doc)
+        if (
+            block_type == GroupType.TABLE.value or block_type in valid_group_labels
+        ) and child_results is not None:
             if child_results:
                 for child in child_results:
                     child_url = child.get("block_web_url")
@@ -533,6 +695,7 @@ def _normalize_markdown_link_citations(
     url_to_citation_num = {}
     new_citations = []
     new_citation_num = 1
+    web_page_index = _build_web_record_page_index(web_records)
 
     def _append_citation_from_record(
         record: dict[str, Any],
@@ -564,13 +727,19 @@ def _normalize_markdown_link_citations(
             data = data.get("row_natural_language_text", "")
         elif block_type == BlockType.IMAGE.value:
             data = data.get("uri", "")
-        if not data:
-            logger.warning(
-                "🔎 [KB-CITE] normalize(chat): %s | record_id=%s block_index=%s block_type=%s",
-                empty_data_log_prefix, record_id, block_index, block_type,
-            )
-            return False
 
+        if not data:
+            display, fragment_text = _resolve_fragment_content(blocks, block_index)
+            if not display:
+                logger.warning(
+                    "🔎 [KB-CITE] normalize(chat): %s | record_id=%s block_index=%s block_type=%s",
+                    empty_data_log_prefix, record_id, block_index, block_type,
+                )
+                return False
+            _enrich_metadata_from_fragment(
+                enhanced_metadata, record, display, fragment_text
+            )
+            data = display
         citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
         if not citation_content:
             return False
@@ -586,31 +755,11 @@ def _normalize_markdown_link_citations(
         return True
 
     for url in unique_urls:
-        # Try web records first (web citations are keyed by URL)
-        if web_records:
-            web_rec = _find_web_record_by_url(url, web_records)
-            if web_rec:
-                web_content = web_rec.get("content", "")
-                if not web_content:
-                    continue
-                new_citations.append({
-                    "content": _safe_stringify_content(value=web_content),
-                    "chunkIndex": new_citation_num,
-                    "metadata": {
-                        "recordId": url.split("#:~:text=")[0],
-                        "mimeType": "text/html",
-                        "recordName": url.split("#:~:text=")[0],
-                        "webUrl": url,
-                        "origin": "WEB_SEARCH",
-                        "orgId": web_rec.get("org_id", ""),
-                        "connector": "WEB",
-                        "recordType": "WEBPAGE",
-                    },
-                    "citationType": "web|url",
-                })
-                url_to_citation_num[url] = new_citation_num
-                new_citation_num += 1
-                continue
+        handled, new_citation_num = _try_append_web_citation(
+            url, web_records, web_page_index, new_citations, url_to_citation_num, new_citation_num,
+        )
+        if handled:
+            continue
 
         if url in url_to_doc_index:
             idx = url_to_doc_index[url]
@@ -743,8 +892,13 @@ def _normalize_markdown_link_citations_for_agent(
     for doc in final_results:
         virtual_record_id = doc.get("virtual_record_id")
         block_type = doc.get("block_type")
-        if block_type == GroupType.TABLE.value or block_type in valid_group_labels:
-            _, child_results = doc.get("content", ("", []))
+        # "code" labels both BlockType.CODE (leaf) and GroupType.CODE (group).
+        # Only groups have content shaped as a (summary, children) tuple;
+        # leaf blocks carry a plain string that must not be unpacked as a tuple.
+        child_results = group_child_results(doc)
+        if (
+            block_type == GroupType.TABLE.value or block_type in valid_group_labels
+        ) and child_results is not None:
             if child_results:
                 for child in child_results:
                     child_url = child.get("block_web_url")
@@ -770,33 +924,14 @@ def _normalize_markdown_link_citations_for_agent(
     url_to_citation_num = {}
     new_citations = []
     new_citation_num = 1
+    web_page_index = _build_web_record_page_index(web_records)
 
     for url in unique_urls:
-        # Try web records first (web citations are keyed by URL)
-        if web_records:
-            web_rec = _find_web_record_by_url(url, web_records)
-            if web_rec:
-                web_content = web_rec.get("content", "")
-                if not web_content:
-                    continue
-                new_citations.append({
-                    "content": _safe_stringify_content(value=web_content),
-                    "chunkIndex": new_citation_num,
-                    "metadata": {
-                        "recordId": url.split("#:~:text=")[0],
-                        "mimeType": "text/html",
-                        "recordName": url.split("#:~:text=")[0],
-                        "webUrl": url,
-                        "origin": "WEB_SEARCH",
-                        "orgId": web_rec.get("org_id", ""),
-                        "connector": "WEB",
-                        "recordType": "WEBPAGE",
-                    },
-                    "citationType": "web|url",
-                })
-                url_to_citation_num[url] = new_citation_num
-                new_citation_num += 1
-                continue
+        handled, new_citation_num = _try_append_web_citation(
+            url, web_records, web_page_index, new_citations, url_to_citation_num, new_citation_num,
+        )
+        if handled:
+            continue
 
         if url in url_to_doc_index:
             idx = url_to_doc_index[url]
@@ -877,7 +1012,15 @@ def _normalize_markdown_link_citations_for_agent(
                             elif bt == BlockType.IMAGE.value:
                                 data = data.get("uri", "")
                             if not data:
-                                continue
+                                display, fragment_text = _resolve_fragment_content(
+                                    blocks, block_index
+                                )
+                                if not display:
+                                    continue
+                                _enrich_metadata_from_fragment(
+                                    enhanced_metadata, r, display, fragment_text
+                                )
+                                data = display
                             citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
                             if not citation_content:
                                 continue
@@ -918,7 +1061,15 @@ def _normalize_markdown_link_citations_for_agent(
                                 elif bt == BlockType.IMAGE.value:
                                     data = data.get("uri", "")
                                 if not data:
-                                    continue
+                                    display, fragment_text = _resolve_fragment_content(
+                                        blocks, block_index
+                                    )
+                                    if not display:
+                                        continue
+                                    _enrich_metadata_from_fragment(
+                                        enhanced_metadata, rec, display, fragment_text
+                                    )
+                                    data = display
                                 citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
                                 if not citation_content:
                                     continue

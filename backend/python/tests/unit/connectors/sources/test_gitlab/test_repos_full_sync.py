@@ -225,6 +225,8 @@ class TestBuildCodeFileRecords:
         updates = repos._process_records.call_args.args[0]
         assert len(updates) == 1
         assert updates[0].record.record_name == "main.py"
+        assert updates[0].record.extension == "py"
+        assert updates[0].record.to_kafka_record()["extension"] == "py"
 
     async def test_dotfile_blob_skipped(self) -> None:
         c = make_mock_connector()
@@ -282,6 +284,18 @@ class TestBuildCodeFileRecords:
         )
         updates = repos._process_records.call_args.args[0]
         assert updates[0].record.parent_external_record_id is None
+
+    async def test_blob_record_leaves_version_to_the_processor(self) -> None:
+        """The connector always emits 0; _process_record carries the stored version forward."""
+        c = make_mock_connector()
+        repos = ReposSync(c)
+        repos._process_records = AsyncMock()
+
+        await repos.build_code_file_records(
+            [self._blob_node("src/main.py")], _PROJECT_ID, _PROJECT_PATH
+        )
+        updates = repos._process_records.call_args.args[0]
+        assert updates[0].record.version == 0
 
 
 # ===========================================================================

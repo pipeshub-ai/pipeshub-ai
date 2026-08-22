@@ -378,6 +378,10 @@ class TestLocalExecutorSubprocess:
         assert "test input" in result.stdout
 
 
+@pytest.mark.skipif(
+    __import__("sys").platform == "win32",
+    reason="'env' command not available on Windows",
+)
 class TestSubprocessEnvAllowlist:
     """Security: host env must NOT leak into sandboxed subprocess."""
 

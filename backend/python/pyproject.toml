@@ -154,6 +154,23 @@ ignore = [
 "app/sources/external/**/example*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN401", "T201", "T203"]
 "app/**/migrations/*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN401"]
 "tests/**/*.py" = ["ANN001", "ANN002", "ANN003", "FBT001", "FBT002", "T201", "T203"]
+# Inlined third-party library (formerly vendored at lib/agent_loop, see
+# app/agent_loop_lib/README.md) — written to its own upstream conventions,
+# not PipesHub's. Relax stylistic rules only; real bug-catchers (F401, F811,
+# F841, B006, etc.) stay enforced.
+"app/agent_loop_lib/**/*.py" = [
+    "ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN204", "ANN401",
+    "TC001", "TC002", "TC003",
+    "T201", "T203",
+    "FBT001", "FBT002",
+    "E402", "E731",
+    "A001", "A002",
+    "SIM102", "SIM105",
+    "PERF401",
+    "PLW0603", "PLW2901",
+    "B904",
+    "RET504",
+]
 
 
 [project]
@@ -167,7 +184,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aioboto3>=12.0.0",
-    "aiohttp==3.14.1",
+    "aiohttp==3.14.3",
     "aiokafka==0.12.0",
     "aiolimiter==1.2.1",
     "azure-ai-formrecognizer==3.3.3",
@@ -178,10 +195,12 @@ dependencies = [
     "Brotli==1.2.0",
     "CairoSVG==2.9.0",
     "celery==5.4.0",
+    "chardet==7.4.3",
     "confluent-kafka==2.8.0",
     "cachetools==6.2.4",
     "cloudscraper==1.2.71",
-    "cryptography==46.0.7",
+    "cryptography==50.0.0",
+    "crawl4ai==0.9.0",
     "curl-cffi==0.14.0",
     # "databricks-sdk>=0.85.0",
     "dependency-injector==4.44.0",
@@ -211,25 +230,25 @@ dependencies = [
     "google-genai>=1.72.0",
     "Jinja2==3.1.6",
     "jsonschema==4.23.0",
-    "langchain-anthropic==1.4.6",
+    "langchain-anthropic==1.5.3",
     "langchain-aws==1.1.0",
     "langchain-cohere==0.5.0",
     "langchain-community==0.4.1",
+    "langchain-core==1.5.3",
     "langchain-experimental==0.4.0",
-    "langchain-fireworks==1.1.0",
-    "langchain-google-genai==4.2.1",
+    "langchain-fireworks==1.5.2",
+    "langchain-google-genai==4.3.2",
     "langchain-google-vertexai==2.1.2",
     "langchain-groq==1.1.0",
     "langchain-huggingface==1.1.0",
     "langchain-mistralai==0.2.12",
     "langchain-ollama==1.0.0",
-    "langchain-openai==1.1.14",
+    "langchain-openai==1.4.1",
+    "openai==2.45.0",
     "langchain-qdrant==1.0.0",
     "langchain-voyageai==0.3.0",
-    "langchain-xai==1.1.0",
+    "langchain-xai==1.3.0",
     "langchain==1.1.3",
-    "langgraph==1.0.4",
-    "langgraph-prebuilt==1.0.8",
     "linkedin-api-client>=0.3.0",
     "lxml>=4.9.0",
     "lxml_html_clean>=0.4.0",
@@ -244,7 +263,7 @@ dependencies = [
     "msgraph-sdk==1.16.0",
     "nats-py==2.1.0",
     "notion-client==2.2.1",
-    "nltk==3.9.4",
+    "nltk==3.10.0",
     "numpy==2.3.2",
     "opencv-python-headless==4.11.0.86",
     "openpyxl==3.1.5",
@@ -254,6 +273,7 @@ dependencies = [
     "Pillow<12.0.0",
     "pdfplumber==0.11.9",
     "pillow-avif-plugin==1.5.5",
+    "pypdfium2==4.30.0",
     "protobuf>=4.25.0,<6",
     "pydantic==2.12.5",
     "py-trello==0.20.1",
@@ -261,6 +281,7 @@ dependencies = [
     "python-docx==1.1.2",
     "neo4j>=5.0.0",
     "python-dotenv==1.2.2",
+    "pyyaml>=6.0",
     "redshift_connector==2.1.8",
     # PDF generation libs for the coding sandbox. Pure-Python, no native deps.
     # Pre-shipping these means offline sandbox hosts don't have to hit PyPI
@@ -269,6 +290,8 @@ dependencies = [
     "fpdf2>=2.7.0,<3.0.0",
     "python-jose==3.4.0",
     "python-multipart==0.0.31",
+    "pysbd==0.3.4",
+    "lingua-language-detector==2.2.0",
     "qdrant-client==1.13.1",
     "redis==5.2.1",
     "requests-toolbelt==1.0.0",
@@ -276,7 +299,7 @@ dependencies = [
     "selectolax>=0.3.21",
     "sentence-transformers==3.4.1",
     "slack-sdk==3.27.0",
-    "spacy==3.8.2",
+    "talon==1.4.4",
     "tenacity==8.5.0",
     "thrift>=0.16.0",
     "trafilatura>=1.6.0",
@@ -285,10 +308,38 @@ dependencies = [
     "zstandard==0.25.0",
     "mariadb[binary,pool]>=2.0.0rc2,<3",
     "asyncpg>=0.31.0",
+    "opensearch-py[async]==3.2.0",
+    # Code-file parsing. Versions are pinned rather than floated because the
+    # grammar wheels are compiled against a specific tree-sitter ABI and a
+    # mismatch fails at Language() construction, not at install.
+    "tree-sitter==0.25.2",
+    "tree-sitter-python==0.25.0",
+    "tree-sitter-javascript==0.25.0",
+    "tree-sitter-typescript==0.23.2",
+    "tree-sitter-c==0.24.2",
+    "tree-sitter-cpp==0.23.4",
+    "tree-sitter-c-sharp==0.23.5",
+    "tree-sitter-java==0.23.5",
+    "tree-sitter-kotlin==1.1.0",
+    "tree-sitter-scala==0.26.2",
+    "tree-sitter-groovy==0.1.2",
+    "tree-sitter-go==0.25.0",
+    "tree-sitter-rust==0.24.2",
+    "tree-sitter-ruby==0.23.1",
+    "tree-sitter-php==0.24.1",
+    "tree-sitter-swift==0.7.3",
+    "tree-sitter-dart==0.1.0",
+    "tree-sitter-lua==0.5.0"
 ]
 
 [tool.setuptools.packages.find]
 exclude = ["modules", "build*", "dist*", "*.egg-info*", "venv*", ".venv*"]
+
+# cchardet has no wheels for Python 3.12+ and fails to build from source.
+# talon declares it as a dependency; chardet (direct dep above) plus the
+# sys.modules shim in gmail cover runtime needs.
+[tool.uv]
+exclude-dependencies = ["cchardet"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
@@ -296,9 +347,11 @@ build-backend = "setuptools.build_meta"
 
 [project.scripts]
 module = "app.indexing_main:run"
+parsing-service = "app.parsing_main:app"
+extraction-service = "app.extraction_main:app"
 
 [project.optional-dependencies]
-dev = ["ruff==0.11.9", "pyright", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio"]
+dev = ["ruff==0.11.9", "pyright", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio", "fakeredis[lua]"]
 
 [tool.pyright]
 pythonVersion = "3.12"

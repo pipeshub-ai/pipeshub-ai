@@ -6,22 +6,11 @@ import morgan from 'morgan';
 import http from 'http';
 import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
-import { TokenManagerContainer } from './modules/tokens_manager/container/token-manager.container';
 import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
-import { createUserRouter } from './modules/user_management/routes/users.routes';
-import { createUserGroupRouter } from './modules/user_management/routes/userGroups.routes';
-import { createOrgRouter } from './modules/user_management/routes/org.routes';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
 import { registerOAuthTokenService } from './libs/services/oauth-token-service.provider';
-import {
-  createConversationalRouter,
-  createSemanticSearchRouter,
-  createAgentConversationalRouter,
-  createChatSpeechRouter,
-} from './modules/enterprise_search/routes/es.routes';
-import { EnterpriseSearchAgentContainer } from './modules/enterprise_search/container/es.container';
 import { requestContextMiddleware } from './libs/middlewares/request.context';
 import {
   runWithRequestContext,
@@ -31,24 +20,43 @@ import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 
-import { createUserAccountRouter } from './modules/auth/routes/userAccount.routes';
-import { UserManagerContainer } from './modules/user_management/container/userManager.container';
-import { AuthServiceContainer } from './modules/auth/container/authService.container';
-import { createSamlRouter } from './modules/auth/routes/saml.routes';
-import { createOrgAuthConfigRouter } from './modules/auth/routes/orgAuthConfig.routes';
-import { KnowledgeBaseContainer } from './modules/knowledge_base/container/kb_container';
-import { createKnowledgeBaseRouter } from './modules/knowledge_base/routes/kb.routes';
-import { createStorageRouter } from './modules/storage/routes/storage.routes';
-import { createConfigurationManagerRouter } from './modules/configuration_manager/routes/cm_routes';
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
-import { ConfigurationManagerContainer } from './modules/configuration_manager/container/cm_container';
-import { MailServiceContainer } from './modules/mail/container/mailService.container';
-import { createMailServiceRouter } from './modules/mail/routes/mail.routes';
-import { createConnectorRouter } from './modules/tokens_manager/routes/connectors.routes';
+import { MigrationService } from './modules/configuration_manager/services/migration.service';
 import { createOAuthRouter } from './modules/tokens_manager/routes/oauth.routes';
 import { startTelemetry } from './libs/services/telemetry/telemetry.service';
 import { KeyValueStoreService } from './libs/services/keyValueStore.service';
-import { StorageContainer } from './modules/storage/container/storage.container';
+// Import shared symbols from `./config` rather than `./modules/*` directly.
+import {
+  createStorageRouter,
+  StorageContainer,
+  createConnectorRouter,
+  TokenManagerContainer,
+  createUserRouter,
+  createUserGroupRouter,
+  createOrgRouter,
+  UserManagerContainer,
+  AuthServiceContainer,
+  createUserAccountRouter,
+  createSamlRouter,
+  createOrgAuthConfigRouter,
+  SamlController,
+  MailServiceContainer,
+  createMailServiceRouter,
+  EnterpriseSearchAgentContainer,
+  createConversationalRouter,
+  createSemanticSearchRouter,
+  createAgentConversationalRouter,
+  createChatSpeechRouter,
+  KnowledgeBaseContainer,
+  createKnowledgeBaseRouter,
+  ConfigurationManagerContainer,
+  createConfigurationManagerRouter,
+  createWorkspaceAuthRouter,
+  createFeatureFlagRouter,
+  createOrgConfigRouter,
+  OAuthAppsContainer,
+  createOAuthAppsRouter,
+} from './config';
 import { NotificationContainer } from './modules/notification/container/notification.container';
 import { NotificationConsumer } from './modules/notification/service/notification.consumer';
 import { createNotificationRouter } from './modules/notification/routes/notification.routes';
@@ -65,13 +73,13 @@ import { createApiDocsRouter } from './modules/api-docs/docs.routes';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
 import createCrawlingManagerRouter from './modules/crawling_manager/routes/cm_routes';
 import { CrawlingSchedulerService } from './modules/crawling_manager/services/crawling_service';
-import { MigrationService } from './modules/configuration_manager/services/migration.service';
 import { checkAndMigrateIfNeeded } from './libs/keyValueStore/migration/kvStoreMigration.service';
 import { StoreType } from './libs/keyValueStore/constants/KeyValueStoreType';
 import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
 import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
+import { createPatRouter } from './modules/oauth_provider/routes/pat.routes';
 import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
 import {
   resolveMessageBrokerConfig,
@@ -80,8 +88,11 @@ import {
 } from './libs/services/message-broker.factory';
 import { ToolsetsContainer } from './modules/toolsets/container/toolsets.container';
 import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes';
+import { SkillsContainer } from './modules/skills/container/skills.container';
+import { createSkillsRouter } from './modules/skills/routes/skills.routes';
+import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
+import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
-import { SamlController } from './modules/auth/controller/saml.controller';
 
 const loggerConfig = {
   service: 'Application',
@@ -105,6 +116,9 @@ export class Application {
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
   private toolsetsContainer!: Container;
+  private skillsContainer!: Container;
+  private oauthAppsContainer!: Container;
+  private mcpServersContainer!: Container;
   private desktopProxySocketGateway: DesktopProxySocketGateway | null = null;
   private port: number;
 
@@ -169,7 +183,7 @@ export class Application {
       );
 
       this.mailServiceContainer =
-        await MailServiceContainer.initialize(appConfig);
+        await MailServiceContainer.initialize(appConfig, configurationManagerConfig);
 
       this.notificationContainer =
         await NotificationContainer.initialize(appConfig);
@@ -189,6 +203,17 @@ export class Application {
 
 
       this.toolsetsContainer = await ToolsetsContainer.initialize(
+        configurationManagerConfig,
+      );
+
+      this.skillsContainer = await SkillsContainer.initialize(
+        configurationManagerConfig,
+      );
+
+      this.oauthAppsContainer = await OAuthAppsContainer.initialize(
+        configurationManagerConfig,
+      );
+      this.mcpServersContainer = await McpServersContainer.initialize(
         configurationManagerConfig,
       );
 
@@ -388,6 +413,16 @@ export class Application {
     );
     this.app.use('/api/v1/org', createOrgRouter(this.entityManagerContainer));
 
+    this.app.use(
+      '/api/v1/orgConfig',
+      createOrgConfigRouter(this.entityManagerContainer),
+    );
+
+    this.app.use(
+      '/api/v1/featureFlags',
+      createFeatureFlagRouter(this.entityManagerContainer),
+    );
+
     this.app.use('/api/v1/saml', createSamlRouter(this.authServiceContainer));
 
     this.app.use(
@@ -397,6 +432,11 @@ export class Application {
     this.app.use(
       '/api/v1/orgAuthConfig',
       createOrgAuthConfigRouter(this.authServiceContainer),
+    );
+
+    this.app.use(
+      '/api/v1',
+      createWorkspaceAuthRouter(this.authServiceContainer),
     );
 
     // storage routes
@@ -469,6 +509,24 @@ export class Application {
       createToolsetsRouter(this.toolsetsContainer)
     );
 
+    // skills routes (Personal Settings > Skills -> Python query service)
+    this.app.use(
+      '/api/v1/skills',
+      createSkillsRouter(this.skillsContainer)
+    );
+
+    // oauth-apps routes — thin proxy to Python connector service
+    this.app.use(
+      '/api/v1/oauth-apps',
+      createOAuthAppsRouter(this.oauthAppsContainer),
+    );
+
+    // MCP servers routes (registry + auth + token management -> Python connectors service)
+    this.app.use(
+      '/api/v1/mcp-servers',
+      createMcpServersRouter(this.mcpServersContainer)
+    );
+
     this.app.use(
       '/api/v1/mail',
       createMailServiceRouter(this.mailServiceContainer),
@@ -490,6 +548,11 @@ export class Application {
     this.app.use(
       '/api/v1/oauth-clients',
       createOAuthClientsRouter(this.oauthProviderContainer),
+    );
+
+    this.app.use(
+      '/api/v1/personal-access-tokens',
+      createPatRouter(this.oauthProviderContainer),
     );
 
     // MCP (Model Context Protocol) routes

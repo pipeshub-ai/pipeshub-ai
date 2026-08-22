@@ -194,24 +194,10 @@ class TestCloudInitCoverageGaps:
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
             mock_client = MagicMock()
+            mock_client.get_site_url.return_value = "https://shared.atlassian.net"
             MockJiraClient.build_from_services = AsyncMock(return_value=mock_client)
-            MockJiraClient.get_accessible_resources = AsyncMock(return_value=[mock_resource])
 
-            connector.config_service.get_config = AsyncMock(return_value={
-                "auth": {
-                    "authType": "OAUTH",
-                    OAuthConfigKeys.OAUTH_CONFIG_ID: "oauth-config-1",
-                },
-                "credentials": {"access_token": "test-token"},
-            })
-
-            with patch(
-                "app.connectors.sources.atlassian.jira_cloud.connector.fetch_oauth_config_by_id",
-                new=AsyncMock(return_value={
-                    OAuthConfigKeys.CONFIG: {"baseUrl": "https://shared.atlassian.net"},
-                }),
-            ):
-                result = await connector.init()
+            result = await connector.init()
 
         assert result is True
         assert connector.site_url == "https://shared.atlassian.net"
@@ -225,37 +211,24 @@ class TestCloudInitCoverageGaps:
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
             mock_client = MagicMock()
+            mock_client.get_site_url.return_value = "https://first.atlassian.net"
             MockJiraClient.build_from_services = AsyncMock(return_value=mock_client)
-            MockJiraClient.get_accessible_resources = AsyncMock(return_value=[mock_resource])
 
-            connector.config_service.get_config = AsyncMock(return_value={
-                "auth": {"authType": "OAUTH"},
-                "credentials": {"access_token": "test-token"},
-            })
-
-            with patch(
-                "app.connectors.sources.atlassian.jira_cloud.connector.fetch_oauth_config_by_id",
-                new=AsyncMock(return_value=None),
-            ):
-                result = await connector.init()
+            result = await connector.init()
 
         assert result is True
-        assert connector.cloud_id == "cloud-first"
         assert connector.site_url == "https://first.atlassian.net"
 
     @pytest.mark.asyncio
-    async def test_oauth_no_base_url_and_no_resources_fails(self):
+    async def test_init_returns_false_when_client_build_fails(self):
+        """Site resolution (incl. the no-accessible-sites error) now lives in
+        build_from_services; if it raises a plain error, init() returns False."""
         connector = _make_cloud_connector()
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
-            mock_client = MagicMock()
-            MockJiraClient.build_from_services = AsyncMock(return_value=mock_client)
-            MockJiraClient.get_accessible_resources = AsyncMock(return_value=[])
-
-            connector.config_service.get_config = AsyncMock(return_value={
-                "auth": {"authType": "OAUTH"},
-                "credentials": {"access_token": "test-token"},
-            })
+            MockJiraClient.build_from_services = AsyncMock(
+                side_effect=ValueError("Jira: No accessible Atlassian sites for this OAuth token.")
+            )
 
             result = await connector.init()
 

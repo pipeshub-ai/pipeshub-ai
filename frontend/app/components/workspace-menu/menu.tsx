@@ -2,12 +2,11 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { Flex, Box, Text } from '@radix-ui/themes';
-import { logoutFromWorkspaceMenu } from '@/lib/store/auth-store';
+import { logoutFromWorkspaceMenu, SettingsSection } from '@/config';
 import { UserAvatar } from '@/app/components/ui/user-avatar';
 import type { OrgInfo } from './types';
 import { POPUP_WIDTH } from './types';
 import { Divider } from './menu-item';
-import { SettingsSection } from './settings-section';
 import { ExternalLinksSection } from './external-links-section';
 import { LanguagePanel } from './language-panel';
 import { AppearancePanel } from './appearance-panel';

@@ -382,68 +382,6 @@ class TestUserAdded:
         assert user_data["id"] == "existing-key"
 
     @pytest.mark.asyncio
-    async def test_with_sync_action_immediate(self):
-        """When syncAction is 'immediate', triggers sync for org apps."""
-        graph_provider = AsyncMock()
-        graph_provider.get_user_by_email = AsyncMock(return_value=None)
-        graph_provider.get_document = AsyncMock(
-            return_value={"_key": "org-1", "accountType": "enterprise"}
-        )
-        graph_provider.batch_upsert_nodes = AsyncMock()
-        graph_provider.batch_create_edges = AsyncMock()
-        graph_provider.get_org_apps = AsyncMock(
-            return_value=[{"name": "GoogleDrive"}]
-        )
-        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
-
-        svc = _make_entity_service(graph_provider=graph_provider)
-        svc._EntityEventService__get_or_create_knowledge_base = AsyncMock(return_value={})
-        svc._EntityEventService__create_user_kb_app_relation = AsyncMock()
-        svc._EntityEventService__handle_sync_event = AsyncMock(return_value=True)
-
-        payload = {
-            "orgId": "org-1",
-            "userId": "u-1",
-            "email": "alice@test.com",
-            "syncAction": "immediate",
-        }
-        result = await svc.process_event("userAdded", payload)
-        assert result is True
-
-        svc._EntityEventService__handle_sync_event.assert_awaited()
-
-    @pytest.mark.asyncio
-    async def test_calendar_app_skipped_during_sync(self):
-        """Calendar apps are skipped during sync trigger."""
-        graph_provider = AsyncMock()
-        graph_provider.get_user_by_email = AsyncMock(return_value=None)
-        graph_provider.get_document = AsyncMock(
-            return_value={"_key": "org-1", "accountType": "enterprise"}
-        )
-        graph_provider.batch_upsert_nodes = AsyncMock()
-        graph_provider.batch_create_edges = AsyncMock()
-        graph_provider.get_org_apps = AsyncMock(
-            return_value=[{"name": "Calendar"}, {"name": "GoogleDrive"}]
-        )
-        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
-
-        svc = _make_entity_service(graph_provider=graph_provider)
-        svc._EntityEventService__get_or_create_knowledge_base = AsyncMock(return_value={})
-        svc._EntityEventService__create_user_kb_app_relation = AsyncMock()
-        svc._EntityEventService__handle_sync_event = AsyncMock(return_value=True)
-
-        payload = {
-            "orgId": "org-1",
-            "userId": "u-1",
-            "email": "alice@test.com",
-            "syncAction": "immediate",
-        }
-        await svc.process_event("userAdded", payload)
-
-        # Only GoogleDrive sync should be triggered, not Calendar
-        assert svc._EntityEventService__handle_sync_event.await_count == 1
-
-    @pytest.mark.asyncio
     async def test_org_not_found_returns_false(self):
         """When org doesn't exist, returns False."""
         graph_provider = AsyncMock()
@@ -1101,47 +1039,6 @@ class TestHandleAppDisabledExtended:
 
 
 # ===================================================================
-# __handle_user_added - immediate sync paths
-# ===================================================================
-
-class TestHandleUserAddedImmediateSync:
-
-    @pytest.mark.asyncio
-    async def test_immediate_sync_skips_calendar(self):
-        svc = _make_service()
-        svc.graph_provider.get_user_by_email = AsyncMock(return_value=None)
-        svc.graph_provider.get_document = AsyncMock(
-            return_value={"accountType": "ENTERPRISE"}
-        )
-        svc.graph_provider.batch_upsert_nodes = AsyncMock()
-        svc.graph_provider.batch_create_edges = AsyncMock()
-        svc.graph_provider.get_org_apps = AsyncMock(
-            return_value=[
-                {"name": "Calendar"},
-                {"name": "Gmail"},
-            ]
-        )
-        svc._EntityEventService__get_or_create_knowledge_base = AsyncMock(return_value={})
-        svc._EntityEventService__create_user_kb_app_relation = AsyncMock(return_value=True)
-        svc._EntityEventService__handle_sync_event = AsyncMock(return_value=True)
-
-        result = await svc.process_event(
-            "userAdded",
-            {
-                "userId": "u1",
-                "orgId": "org-1",
-                "email": "user@test.com",
-                "syncAction": "immediate",
-            },
-        )
-        assert result is True
-        # Only Gmail should trigger sync, Calendar skipped
-        assert svc._EntityEventService__handle_sync_event.await_count == 1
-        call_kwargs = svc._EntityEventService__handle_sync_event.call_args[1]
-        assert call_kwargs["event_type"] == "gmail.user"
-
-
-# ===================================================================
 # __handle_org_created - BUSINESS account type
 # ===================================================================
 
@@ -1175,9 +1072,58 @@ class TestOrgCreatedBusinessAccount:
 
 
 # ===================================================================
+# __get_or_create_knowledge_base - creation path (KB refactor)
+# ===================================================================
+
+class TestGetOrCreateKnowledgeBaseCreationActive:
+
+    @pytest.mark.asyncio
+    async def test_rollback_on_kb_upsert_failure(self):
+        """Failed KB app write rolls back the transaction and returns empty."""
+        svc = _make_service()
+        svc.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+        svc.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
+        svc.graph_provider.batch_upsert_nodes = AsyncMock(side_effect=RuntimeError("upsert failed"))
+        svc.graph_provider.rollback_transaction = AsyncMock()
+
+        result = await svc._EntityEventService__get_or_create_knowledge_base(
+            "user-key", "user-1", "org-1"
+        )
+        assert result == {}
+        svc.graph_provider.rollback_transaction.assert_awaited_once_with("txn1")
+
+    @pytest.mark.asyncio
+    async def test_connector_registration_failure_still_returns_kb(self):
+        """KB app is created even when runtime connector registration fails."""
+        svc = _make_service()
+        svc.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+        svc.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
+        svc.graph_provider.batch_upsert_nodes = AsyncMock()
+        svc.graph_provider.batch_create_edges = AsyncMock()
+        svc.graph_provider.commit_transaction = AsyncMock()
+        svc.app_container.data_store = AsyncMock(return_value=AsyncMock())
+        svc.app_container.connector_notification_service.return_value = MagicMock()
+        svc.app_container.connectors_map = {}
+
+        with patch(
+            "app.services.messaging.kafka.handlers.entity.ConnectorFactory.create_and_start_sync",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("connector start failed"),
+        ):
+            result = await svc._EntityEventService__get_or_create_knowledge_base(
+                "user-key", "user-1", "org-1"
+            )
+
+        assert result.get("success") is True
+        assert "kb_id" in result
+        svc.logger.warning.assert_called()
+
+
+# ===================================================================
 # __get_or_create_knowledge_base - edge cases
 # ===================================================================
 
+@pytest.mark.skip(reason="Method __create_kb_connector_app_instance removed - KB creation now per-user, not per-org")
 class TestGetOrCreateKBEdgeCases:
 
     @pytest.mark.asyncio
@@ -1239,6 +1185,7 @@ class TestGetOrCreateKBEdgeCases:
 # __create_kb_connector_app_instance - edge cases
 # ===================================================================
 
+@pytest.mark.skip(reason="Method __create_kb_connector_app_instance removed - KB creation now per-user, not per-org")
 class TestCreateKbConnectorAppInstanceEdgeCases:
 
     @pytest.mark.asyncio

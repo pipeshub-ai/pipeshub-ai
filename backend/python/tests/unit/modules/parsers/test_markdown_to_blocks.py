@@ -968,7 +968,8 @@ class TestMixedContentOrder:
 
 
 class TestMarkdownItParserIntegration:
-    def test_parse_to_blocks_delegates_to_converter(self):
+    @pytest.mark.asyncio
+    async def test_parse_to_blocks_delegates_to_converter(self):
         pytest.importorskip("markdown")
         from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
 
@@ -976,7 +977,7 @@ class TestMarkdownItParserIntegration:
         expected = MagicMock()
         parser._converter.convert = MagicMock(return_value=expected)
 
-        result = parser.parse_to_blocks("# Hello", caption_map={"Image_1": "uri"})
+        result = await parser.parse_to_blocks("# Hello", caption_map={"Image_1": "uri"})
 
         assert result is expected
         parser._converter.convert.assert_called_once_with(

@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import { Response, NextFunction } from 'express';
 import {
   AuthenticatedServiceRequest,
@@ -64,7 +64,10 @@ import { AIModelConfiguration, AIModelsConfig } from '../types/ai-models.types';
 import { WebSearchConfig } from '../types/web-search.types';
 import { WebSearchProviderConfiguration } from '../types/web-search.types';
 import {
+  CONFIG_SECRET_PLACEHOLDER,
+  SMTP_SECRET_KEYS,
   maskSmtpConfig,
+  mergeSmtpConfigPlaceholders,
   maskAiModelsStoredConfig,
   maskAiModelEntry,
 } from '../utils/maskConfigSecrets';
@@ -427,12 +430,31 @@ export const createSmtpConfig =
       if (!req.user) {
         throw new UnauthorizedError('User not Found');
       }
-      const smtpConfig = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedSmtpConfig = EncryptionService.getInstance(
+      const encryptionService = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(smtpConfig));
+      );
+
+      let smtpConfig = req.body as Record<string, unknown>;
+      const hasPlaceholder = SMTP_SECRET_KEYS.some(
+        (key) => smtpConfig[key] === CONFIG_SECRET_PLACEHOLDER,
+      );
+      if (hasPlaceholder) {
+        const encryptedExisting = await keyValueStoreService.get<string>(
+          configPaths.smtp,
+        );
+        if (encryptedExisting) {
+          const existing = JSON.parse(
+            encryptionService.decrypt(encryptedExisting),
+          );
+          smtpConfig = mergeSmtpConfigPlaceholders(smtpConfig, existing);
+        }
+      }
+
+      const encryptedSmtpConfig = encryptionService.encrypt(
+        JSON.stringify(smtpConfig),
+      );
       await keyValueStoreService.set<string>(
         configPaths.smtp,
         encryptedSmtpConfig,
@@ -614,7 +636,7 @@ export const createSlackBotConfig =
 
           const timestamp = new Date().toISOString();
           const createdConfig: SlackBotConfigEntry = {
-            id: uuidv4(),
+            id: randomUUID(),
             name,
             botToken,
             signingSecret,
@@ -789,6 +811,30 @@ export const getAvailablePlatformFeatureFlags =
     // Labs UI.
     const flags = PLATFORM_FEATURE_FLAGS.filter((f) => !f.hidden);
     res.status(200).json({ flags }).end();
+  };
+
+export const getEffectivePlatformFeatureFlags =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (
+    _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    // Unlike getPlatformSettings/getAvailablePlatformFeatureFlags (admin-only),
+    // this is callable by every authenticated user: flag values are just
+    // booleans (no secrets), and non-admin UI (chat, agent builder, personal
+    // pages) needs them to decide whether to render flag-gated features.
+    try {
+      const { featureFlags } = await getPlatformSettingsFromStore(
+        keyValueStoreService,
+      );
+      res.status(200).json({ featureFlags }).end();
+    } catch (error: any) {
+      logger.error('Error getting effective platform feature flags', {
+        error,
+      });
+      next(error);
+    }
   };
 
 export const getAzureAdAuthConfig =
@@ -2537,7 +2583,7 @@ export const createAIModelsConfig =
 
       if (aiConfig.llm.length > 0) {
         aiConfig.llm.forEach((llm: any, index: number) => {
-          const modelKey = uuidv4();
+          const modelKey = randomUUID();
           llm.modelKey = modelKey;
           llm.isMultimodal = false;
           llm.isReasoning = false;
@@ -2547,7 +2593,7 @@ export const createAIModelsConfig =
 
       if (aiConfig.embedding.length > 0) {
         aiConfig.embedding.forEach((embedding: any, index: number) => {
-          const modelKey = uuidv4();
+          const modelKey = randomUUID();
           embedding.modelKey = modelKey;
           embedding.isMultimodal = false;
           embedding.isDefault = index === 0;
@@ -2896,6 +2942,125 @@ export const getAvailableModelsByType =
     }
   };
 
+// Mirrors the huggingface_hub repo-id shape (`owner/name` or a bare model
+// id) that the embedding server accepts, so a malformed value fails fast in
+// Node.js instead of reaching the Python service or the filesystem cache.
+const MODEL_NAME_PATTERN = /^[\w.-]+(\/[\w.-]+)?$/;
+
+function resolveEmbeddingServerUrl(): string {
+  return (process.env.EMBEDDING_SERVER_URL || 'http://localhost:8002').replace(
+    /\/v1\/?$/,
+    '',
+  );
+}
+
+// Kicks off a non-blocking download/load on the embedding server and
+// returns immediately with its status. Callers then poll
+// `streamEmbeddingDownloadProgress` instead of blocking a single request on
+// a multi-GB download — that is what previously tripped both the axios
+// timeout here and the health-check timeout downstream.
+export const prepareEmbeddingModel =
+  () =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { model, trustRemoteCode = false } = req.body;
+
+      if (!model || typeof model !== 'string' || !MODEL_NAME_PATTERN.test(model)) {
+        res.status(400).json({
+          status: 'error',
+          message: 'A valid model name is required',
+        });
+        return;
+      }
+
+      const embeddingServerUrl = resolveEmbeddingServerUrl();
+      const response = await axios.post(
+        `${embeddingServerUrl}/prepare-model`,
+        { model, trust_remote_code: Boolean(trustRemoteCode) },
+        { timeout: 5000 },
+      );
+
+      res.status(response.status).json(response.data);
+    } catch (error: any) {
+      logger.error('Error preparing embedding model', { error });
+      if (error.response) {
+        res.status(error.response.status).json(error.response.data);
+        return;
+      }
+      next(error);
+    }
+  };
+
+// Server-Sent Events proxy: polls the embedding server's download-progress
+// endpoint and forwards each snapshot to the browser so the config dialog
+// can render a live progress bar instead of an opaque spinner.
+export const streamEmbeddingDownloadProgress =
+  () =>
+  async (req: AuthenticatedUserRequest, res: Response, _next: NextFunction) => {
+    const model = req.query.model;
+    if (!model || typeof model !== 'string' || !MODEL_NAME_PATTERN.test(model)) {
+      res.status(400).json({
+        status: 'error',
+        message: 'A valid model query parameter is required',
+      });
+      return;
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    const embeddingServerUrl = resolveEmbeddingServerUrl();
+    const encodedModel = encodeURIComponent(model);
+    let closed = false;
+
+    req.on('close', () => {
+      closed = true;
+    });
+
+    while (!closed) {
+      try {
+        const response = await axios.get(
+          `${embeddingServerUrl}/download-progress/${encodedModel}`,
+          { timeout: 5000 },
+        );
+        const payload = { ...response.data, timestamp: Date.now() };
+        if (!closed) {
+          res.write(`event: progress\ndata: ${JSON.stringify(payload)}\n\n`);
+        }
+
+        if (payload.status === 'ready' || payload.status === 'failed') {
+          break;
+        }
+      } catch (error: any) {
+        logger.error('Lost connection to embedding server', { error });
+        if (!closed) {
+          res.write(
+            `event: progress\ndata: ${JSON.stringify({
+              model,
+              status: 'failed',
+              progress: 0,
+              downloaded_bytes: 0,
+              total_bytes: 0,
+              error: 'Lost connection to embedding server',
+              timestamp: Date.now(),
+            })}\n\n`,
+          );
+        }
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+
+    if (!closed) {
+      res.end();
+    }
+  };
+
 export const addAIModelProvider =
   (
     keyValueStoreService: KeyValueStoreService,
@@ -3023,7 +3188,7 @@ export const addAIModelProvider =
       let modelKey: string;
       let existingKeys: string[];
       do {
-        modelKey = uuidv4();
+        modelKey = randomUUID();
         existingKeys = aiModels[modelType].map(
           (config: any) => config.modelKey,
         );
@@ -3771,7 +3936,14 @@ export const getCustomSystemPrompt =
       );
 
       if (!encryptedAIConfig) {
-        res.status(200).json({ customSystemPrompt: '', customSystemPromptWebSearch: '' }).end();
+        res
+          .status(200)
+          .json({
+            customSystemPrompt: '',
+            customSystemPromptWebSearch: '',
+            customSystemPromptAgent: '',
+          })
+          .end();
         return;
       }
 
@@ -3784,7 +3956,11 @@ export const getCustomSystemPrompt =
 
       const customSystemPrompt = aiModels.customSystemPrompt || '';
       const customSystemPromptWebSearch = aiModels.customSystemPromptWebSearch || '';
-      res.status(200).json({ customSystemPrompt, customSystemPromptWebSearch }).end();
+      const customSystemPromptAgent = aiModels.customSystemPromptAgent || '';
+      res
+        .status(200)
+        .json({ customSystemPrompt, customSystemPromptWebSearch, customSystemPromptAgent })
+        .end();
     } catch (error: any) {
       logger.error('Error getting custom system prompt', { error });
       next(error);
@@ -3795,13 +3971,23 @@ export const setCustomSystemPrompt =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { customSystemPrompt, customSystemPromptWebSearch } = req.body;
+      const {
+        customSystemPrompt,
+        customSystemPromptWebSearch,
+        // Older clients may not send this field yet -- default to '' rather
+        // than rejecting the request, so agent-mode prompt rollout doesn't
+        // break existing Internal Search / Web Search saves.
+        customSystemPromptAgent = '',
+      } = req.body;
 
       if (typeof customSystemPrompt !== 'string') {
         throw new BadRequestError('customSystemPrompt must be a string');
       }
       if (typeof customSystemPromptWebSearch !== 'string') {
         throw new BadRequestError('customSystemPromptWebSearch must be a string');
+      }
+      if (typeof customSystemPromptAgent !== 'string') {
+        throw new BadRequestError('customSystemPromptAgent must be a string');
       }
 
       const configManagerConfig = loadConfigurationManagerConfig();
@@ -3828,6 +4014,7 @@ export const setCustomSystemPrompt =
         // Update only the custom prompt fields, keeping everything else intact
         aiModels.customSystemPrompt = customSystemPrompt;
         aiModels.customSystemPromptWebSearch = customSystemPromptWebSearch;
+        aiModels.customSystemPromptAgent = customSystemPromptAgent;
 
         // Encrypt the updated configuration
         const encryptedUpdatedConfig = EncryptionService.getInstance(
@@ -3864,6 +4051,7 @@ export const setCustomSystemPrompt =
         message: 'Custom system prompts updated successfully',
         customSystemPrompt,
         customSystemPromptWebSearch,
+        customSystemPromptAgent,
       });
     } catch (error: any) {
       logger.error('Error setting custom system prompt', { error });
@@ -4156,7 +4344,7 @@ export const addWebSearchProvider =
       }
 
       // Generate a unique providerKey
-      const providerKey = uuidv4();
+      const providerKey = randomUUID();
 
       // If this is set as default, remove default flag from other providers
       if (isDefault) {

@@ -11,7 +11,9 @@ from app.services.messaging.config import (
     StreamMessage,
     messaging_env,
 )
+from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
 from app.services.messaging.interface.consumer import IMessagingConsumer
+from app.services.messaging.retry_manager import RetryManager
 from app.utils.request_context import (
     context_from_envelope,
     reset_context,
@@ -25,17 +27,29 @@ _MESSAGE_VALUE_FIELD = "value"
 
 
 class RedisStreamsConsumer(IMessagingConsumer):
-    """Redis Streams implementation of messaging consumer"""
+    """Redis Streams implementation of messaging consumer.
 
-    def __init__(self, logger: Logger, config: RedisStreamsConfig) -> None:
+    Uses RetryManager for failure-based retry counting when provided;
+    falls back to Redis native times_delivered when not. Pending messages
+    (failed retries) are processed only when no new messages arrive
+    (idle-based retry).
+    """
+
+    def __init__(
+        self,
+        logger: Logger,
+        config: RedisStreamsConfig,
+        retry_manager: Optional[RetryManager] = None,
+    ) -> None:
         self.logger = logger
         self.config = config
+        self.retry_manager = retry_manager
         self.redis: Optional[Redis] = None
         self.running = False
         self.consume_task: Optional[asyncio.Task] = None
         self.message_handler: Optional[MessageHandler] = None
-        self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
-        self.active_tasks: set[asyncio.Task] = set()
+        self._consecutive_empty_polls = 0
+        self._idle_threshold = 3  # Drain pending after N consecutive empty polls
 
     async def initialize(self) -> None:
         try:
@@ -121,47 +135,147 @@ class RedisStreamsConsumer(IMessagingConsumer):
     def is_running(self) -> bool:
         return self.running
 
-    async def _exceeds_max_retries(self, topic: str, message_id: str) -> bool:
-        """Check delivery count via XPENDING and ACK poison messages.
+    async def _clear_retry_tracking(self, message_id: str) -> None:
+        if not self.retry_manager:
+            return
+        try:
+            await self.retry_manager.clear(message_id)
+        except Exception as e:
+            self.logger.error(
+                "Failed to clear retry tracking for %s: %s", message_id, e
+            )
+
+    async def _get_retry_count(self, message_id: str) -> int:
+        if not self.retry_manager:
+            return 0
+        return await self.retry_manager.get_count(message_id)
+
+    async def _increment_retry_and_check(
+        self, message_id: str
+    ) -> tuple[int, bool]:
+        if not self.retry_manager:
+            return 0, False
+        return await self.retry_manager.increment_and_check(
+            message_id, messaging_env.max_delivery_attempts
+        )
+
+    async def _should_dead_letter(self, topic: str, message_id: str) -> bool:
+        """Check if message should be dead-lettered based on delivery count.
 
         Returns True (and ACKs the message) when the delivery count exceeds
         ``MAX_DELIVERY_ATTEMPTS``, effectively dead-lettering the message so
-        it no longer blocks the PEL on every restart.
+        it no longer blocks the PEL.
         """
         max_attempts = messaging_env.max_delivery_attempts
+
+        # Use RetryManager for failure-based retry counting if available
+        if self.retry_manager is not None:
+            failure_count = await self._get_retry_count(message_id)
+            if failure_count >= max_attempts:
+                await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore
+                await self._clear_retry_tracking(message_id)
+                self.logger.warning(
+                    "Dead-lettered %s after %d transient failures (max %d) via RetryManager",
+                    message_id,
+                    failure_count,
+                    max_attempts,
+                )
+                return True
+            return False
+
+        # Fallback to Redis native times_delivered if no RetryManager
         try:
             # XPENDING <stream> <group> <start> <end> <count> returns
             # [(message_id, consumer, idle_ms, times_delivered), ...]
             details = await self.redis.xpending_range(  # type: ignore
-                topic, self.config.group_id,
-                min=message_id, max=message_id, count=1,
+                topic,
+                self.config.group_id,
+                min=message_id,
+                max=message_id,
+                count=1,
             )
             if details:
                 times_delivered = details[0].get("times_delivered", 0)
                 if times_delivered >= max_attempts:
                     await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore
                     self.logger.warning(
-                        "Dead-lettered message %s on stream %s after %d delivery attempts (max %d)",
-                        message_id, topic, times_delivered, max_attempts,
+                        "Dead-lettered message %s on stream %s after %d delivery attempts (max %d) via native PEL",
+                        message_id,
+                        topic,
+                        times_delivered,
+                        max_attempts,
                     )
                     return True
         except Exception as e:
             self.logger.error(
-                "Error checking delivery count for %s: %s", message_id, e,
+                "Error checking delivery count for %s: %s",
+                message_id,
+                e,
             )
         return False
 
-    async def _drain_pending(self) -> None:
+    async def _finalize_message(
+        self, stream_name: str, message_id: str, success: bool, is_terminal: bool
+    ) -> None:
+        """Centralized logic to acknowledge or prepare message for retry.
+
+        Args:
+            stream_name: Name of the Redis stream
+            message_id: Message ID
+            success: True if message processed successfully
+            is_terminal: True if error is terminal (should ACK immediately)
+        """
+        if success or is_terminal:
+            # Success or terminal error: clear retry tracking and ACK
+            if self.retry_manager:
+                await self._clear_retry_tracking(message_id)
+            await self.redis.xack(stream_name, self.config.group_id, message_id)  # type: ignore
+            self.logger.info(
+                "Acknowledged message %s on stream %s (success=%s, terminal=%s)",
+                message_id,
+                stream_name,
+                success,
+                is_terminal,
+            )
+        else:
+            # Transient error
+            if self.retry_manager:
+                # Use RetryManager to track failures and check if should dead-letter
+                failure_count, should_dead_letter = await self._increment_retry_and_check(message_id)
+                if should_dead_letter:
+                    await self.redis.xack(stream_name, self.config.group_id, message_id)  # type: ignore
+                    await self._clear_retry_tracking(message_id)
+                    self.logger.warning(
+                        "Dead-lettered %s after %d transient failures (max %d) via RetryManager",
+                        message_id,
+                        failure_count,
+                        messaging_env.max_delivery_attempts,
+                    )
+                else:
+                    self.logger.warning(
+                        "Transient error for %s, will retry (%d/%d) via RetryManager",
+                        message_id,
+                        failure_count,
+                        messaging_env.max_delivery_attempts,
+                    )
+            else:
+                # No RetryManager: leave message unacked for PEL-based retry
+                self.logger.warning(
+                    "Failed to process message %s, will retry via native PEL",
+                    message_id,
+                )
+
+    async def _drain_pending(self) -> bool:
         """Re-process messages left in the Pending Entries List (PEL).
+
+        Called when no new messages arrive (idle-based retry). Returns True
+        if any pending messages were processed.
 
         Phase 1: XAUTOCLAIM to steal idle messages from other (crashed) consumers.
         Phase 2: XREADGROUP with id "0" to recover messages already owned by THIS
-        consumer (e.g. delivered before a crash/restart but never ACK-ed). Without
-        Phase 2, on a same-client_id restart those messages would sit in the PEL
-        forever — XAUTOCLAIM won't touch them (same consumer name) and XREADGROUP
-        with ">" only delivers brand-new messages.
+        consumer (e.g. delivered before a crash/restart but never ACK-ed).
         """
-        self.logger.info("Draining pending messages from PEL")
+        processed_any = False
 
         for topic in self.config.topics:
             # Phase 1: claim idle messages from other (possibly crashed) consumers
@@ -181,25 +295,19 @@ class RedisStreamsConsumer(IMessagingConsumer):
                         break
                     for message_id, fields in claimed:
                         try:
-                            if await self._exceeds_max_retries(topic, message_id):
+                            if await self._should_dead_letter(topic, message_id):
+                                processed_any = True
                                 continue
-                            success = await self._process_message(
+                            processed_any = True
+                            success, is_terminal = await self._process_message_with_classification(
                                 topic, message_id, fields
                             )
-                            if success:
-                                await self.redis.xack(  # type: ignore
-                                    topic, self.config.group_id, message_id,
-                                )
-                                self.logger.info(
-                                    "Recovered pending message %s on stream %s",
-                                    message_id, topic,
-                                )
-                            else:
-                                await self._exceeds_max_retries(topic, message_id)
+                            await self._finalize_message(topic, message_id, success, is_terminal)
                         except Exception as e:
                             self.logger.error(
                                 "Error recovering pending message %s: %s",
-                                message_id, e,
+                                message_id,
+                                e,
                             )
                     start_id = next_id
                     if next_id == b"0-0" or next_id == "0-0":
@@ -208,16 +316,14 @@ class RedisStreamsConsumer(IMessagingConsumer):
                     self.logger.error("Error during XAUTOCLAIM on %s: %s", topic, e)
                     break
 
-            # Phase 2: read messages already in THIS consumer's PEL.
-            # Using id "0" tells Redis to redeliver everything in our own PEL —
-            # this is the only way a same-client_id restart can resume in-flight
-            # work that was delivered but never ACK-ed.
+            # Phase 2: read messages already in THIS consumer's PEL
+            last_pending_id = "0"
             while self.running:
                 try:
                     results = await self.redis.xreadgroup(  # type: ignore
                         groupname=self.config.group_id,
                         consumername=self.config.client_id,
-                        streams={topic: "0"},
+                        streams={topic: last_pending_id},
                         count=self.config.batch_size,
                     )
 
@@ -230,41 +336,47 @@ class RedisStreamsConsumer(IMessagingConsumer):
                             continue
                         for message_id, fields in messages:
                             drained_any = True
+                            last_pending_id = message_id
                             try:
-                                if await self._exceeds_max_retries(topic, message_id):
+                                if await self._should_dead_letter(topic, message_id):
+                                    processed_any = True
                                     continue
-                                success = await self._process_message(
+                                processed_any = True
+                                success, is_terminal = await self._process_message_with_classification(
                                     topic, message_id, fields
                                 )
-                                if success:
-                                    await self.redis.xack(  # type: ignore
-                                        topic, self.config.group_id, message_id,
-                                    )
-                                    self.logger.info(
-                                        "Recovered own pending message %s on stream %s",
-                                        message_id, topic,
-                                    )
-                                else:
-                                    await self._exceeds_max_retries(topic, message_id)
+                                await self._finalize_message(topic, message_id, success, is_terminal)
                             except Exception as e:
                                 self.logger.error(
                                     "Error recovering own pending message %s: %s",
-                                    message_id, e,
+                                    message_id,
+                                    e,
                                 )
 
                     if not drained_any:
                         break
                 except Exception as e:
                     self.logger.error(
-                        "Error draining own PEL on %s: %s", topic, e,
+                        "Error draining own PEL on %s: %s",
+                        topic,
+                        e,
                     )
                     break
 
-        self.logger.info("PEL fully drained, switching to new messages")
+        if processed_any:
+            self.logger.info("Processed pending messages from PEL")
+        return processed_any
 
     async def _consume_loop(self) -> None:
+        """Main consumption loop with idle-based pending drain.
+
+        New messages are processed first. When no new messages arrive for
+        several consecutive polls (idle), pending messages from the PEL
+        are processed (retry of failed messages).
+        """
         try:
             self.logger.info("Starting Redis Streams consumer loop")
+            # Initial drain on startup
             await self._drain_pending()
             while self.running:
                 try:
@@ -279,7 +391,16 @@ class RedisStreamsConsumer(IMessagingConsumer):
                     )
 
                     if not results:
+                        # No new messages - increment idle counter
+                        self._consecutive_empty_polls += 1
+                        if self._consecutive_empty_polls >= self._idle_threshold:
+                            # Idle: process pending messages
+                            await self._drain_pending()
+                            self._consecutive_empty_polls = 0
                         continue
+
+                    # Reset idle counter when new messages arrive
+                    self._consecutive_empty_polls = 0
 
                     for stream_name, messages in results:
                         for message_id, fields in messages:
@@ -289,30 +410,16 @@ class RedisStreamsConsumer(IMessagingConsumer):
                                     stream_name,
                                     message_id,
                                 )
-                                success = await self._process_message(
+                                success, is_terminal = await self._process_message_with_classification(
                                     stream_name, message_id, fields
                                 )
-                                if success:
-                                    await self.redis.xack(  # type: ignore
-                                        stream_name,
-                                        self.config.group_id,
-                                        message_id,
-                                    )
-                                    self.logger.info(
-                                        "Acknowledged message %s on stream %s",
-                                        message_id,
-                                        stream_name,
-                                    )
-                                else:
-                                    self.logger.warning(
-                                        "Failed to process message at id %s",
-                                        message_id,
-                                    )
-
+                                await self._finalize_message(stream_name, message_id, success, is_terminal)
                             except Exception as e:
                                 self.logger.error(
                                     "Error processing individual message: %s", e
                                 )
+                                # Treat as transient error for retry
+                                await self._finalize_message(stream_name, message_id, False, False)
                                 continue
 
                 except asyncio.CancelledError:
@@ -327,16 +434,23 @@ class RedisStreamsConsumer(IMessagingConsumer):
         finally:
             await self.cleanup()
 
-    async def _process_message(
+    async def _process_message_with_classification(
         self, stream_name: str, message_id: str, fields: dict[str, str]
-    ) -> bool:
+    ) -> tuple[bool, bool]:
+        """Process message and return (success, is_terminal_error).
+
+        Returns:
+            Tuple of (success, is_terminal_error):
+            - success: True if message processed successfully
+            - is_terminal_error: True if error is terminal (should ACK immediately)
+        """
         try:
             if _MESSAGE_VALUE_FIELD not in fields:
                 self.logger.debug(
                     "Skipping message %s without value field (likely init message)",
                     message_id,
                 )
-                return True
+                return True, False
 
             value_str = fields[_MESSAGE_VALUE_FIELD]
             try:
@@ -347,17 +461,18 @@ class RedisStreamsConsumer(IMessagingConsumer):
                 self.logger.error(
                     "JSON parsing failed for message %s: %s", message_id, e
                 )
-                return False
+                # JSON decode error is terminal
+                return False, True
 
             if not self.message_handler:
                 self.logger.error("No message handler set for %s", message_id)
-                return False
+                return False, True
 
             if raw is None:
                 self.logger.error(
                     "Parsed message is None for %s, skipping", message_id
                 )
-                return False
+                return False, True
 
             parsed_message = StreamMessage(**raw)
 
@@ -366,7 +481,8 @@ class RedisStreamsConsumer(IMessagingConsumer):
             ctx = context_from_envelope(envelope)
             token = set_context(ctx.root_id)
             try:
-                return await self.message_handler(parsed_message)
+                result = await self.message_handler(parsed_message)
+                return result, False
             except Exception as e:
                 self.logger.error(
                     "Error in message handler for %s: %s",
@@ -374,7 +490,25 @@ class RedisStreamsConsumer(IMessagingConsumer):
                     e,
                     exc_info=True,
                 )
-                return False
+
+                # Classify the exception
+                error_type = MessageErrorClassifier.classify_by_exception(e)
+                is_terminal = error_type == MessageErrorType.TERMINAL
+
+                if is_terminal:
+                    self.logger.warning(
+                        "Terminal error in handler for %s: %s",
+                        message_id,
+                        type(e).__name__,
+                    )
+                else:
+                    self.logger.warning(
+                        "Transient error in handler for %s: %s, will retry",
+                        message_id,
+                        type(e).__name__,
+                    )
+
+                return False, is_terminal
             finally:
                 reset_context(token)
 
@@ -385,4 +519,9 @@ class RedisStreamsConsumer(IMessagingConsumer):
                 e,
                 exc_info=True,
             )
-            return False
+
+            # Classify the exception
+            error_type = MessageErrorClassifier.classify_by_exception(e)
+            is_terminal = error_type == MessageErrorType.TERMINAL
+
+            return False, is_terminal

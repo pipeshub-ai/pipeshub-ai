@@ -7,6 +7,8 @@ import { Box, Flex, Text, IconButton, Dialog, Button, TextArea, Badge } from '@r
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
+import type { ReasoningEffort } from '@/chat/types';
+import { REASONING_EFFORT_OPTIONS } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import type { FlowNodeData } from '../types';
 import {
   AGENT_KNOWLEDGE_FALLBACK_ICON,
@@ -79,14 +81,30 @@ function toolsetConnectionChipLabel(n: FlowNodeData): string {
   return normalizeDisplayName(inst || disp || n.label);
 }
 
-type CoreInboundHandle = 'input' | 'llms' | 'knowledge' | 'toolsets';
+/** MCP server instances are named at attach time (no logical "type" grouping to fall back to). */
+function mcpConnectionChipLabel(n: FlowNodeData): string {
+  const c = (n.config || {}) as Record<string, unknown>;
+  const disp = String(c.displayName ?? '').trim();
+  return normalizeDisplayName(disp || n.label);
+}
+
+type CoreInboundHandle = 'input' | 'llms' | 'knowledge' | 'toolsets' | 'skills' | 'mcpServers';
 
 function inboundHandleForEdge(
   targetHandle: string | null | undefined,
   source: FlowNodeData
 ): CoreInboundHandle | null {
   const h = targetHandle as CoreInboundHandle | undefined;
-  if (h === 'input' || h === 'llms' || h === 'knowledge' || h === 'toolsets') return h;
+  if (
+    h === 'input' ||
+    h === 'llms' ||
+    h === 'knowledge' ||
+    h === 'toolsets' ||
+    h === 'skills' ||
+    h === 'mcpServers'
+  ) {
+    return h;
+  }
 
   const t = source.type;
   if (t === 'user-input') return 'input';
@@ -101,6 +119,8 @@ function inboundHandleForEdge(
   if (t === 'kb-group' || t.startsWith('kb-') || t === 'app-group' || t.startsWith('app-')) {
     return 'knowledge';
   }
+  if (t.startsWith('skill-')) return 'skills';
+  if (t.startsWith('mcp-')) return 'mcpServers';
   return null;
 }
 
@@ -201,7 +221,7 @@ function ConnectionChip({
   );
 }
 
-const MAX_VISIBLE = { models: 5, knowledge: 5, toolsets: 5, input: 4 } as const;
+const MAX_VISIBLE = { models: 5, knowledge: 5, toolsets: 5, skills: 5, mcpServers: 5, input: 4 } as const;
 
 function ConnectedChips({
   nodes,
@@ -277,6 +297,9 @@ export function AgentCoreNode({
   const [startMessage, setStartMessage] = useState(
     (data.config?.startMessage as string) || t('agentBuilder.defaultStartMessage')
   );
+  const [defaultReasoningEffort, setDefaultReasoningEffort] = useState<ReasoningEffort | null>(
+    (data.config?.defaultReasoningEffort as ReasoningEffort | null) ?? null
+  );
 
   const connected = useMemo(() => {
     const incoming = storeEdges.filter((e) => e.target === data.id);
@@ -285,6 +308,8 @@ export function AgentCoreNode({
       toolsets: [],
       knowledge: [],
       llms: [],
+      skills: [],
+      mcpServers: [],
     };
     incoming.forEach((e) => {
       const source = storeNodes.find((n) => n.id === e.source);
@@ -299,6 +324,11 @@ export function AgentCoreNode({
     return map;
   }, [data.id, storeEdges, storeNodes]);
 
+  const hasReasoningModel = useMemo(
+    () => connected.llms.some((n) => Boolean(n.config?.isReasoning)),
+    [connected.llms]
+  );
+
   const savePrompts = useCallback(() => {
     setNodes((nodes) =>
       nodes.map((node) =>
@@ -312,6 +342,7 @@ export function AgentCoreNode({
                   systemPrompt,
                   instructions,
                   startMessage,
+                  defaultReasoningEffort,
                 },
               },
             }
@@ -319,12 +350,13 @@ export function AgentCoreNode({
       )
     );
     setPromptOpen(false);
-  }, [data.id, instructions, setNodes, startMessage, systemPrompt]);
+  }, [data.id, defaultReasoningEffort, instructions, setNodes, startMessage, systemPrompt]);
 
   const openPrompts = () => {
     setSystemPrompt((data.config?.systemPrompt as string) || t('agentBuilder.defaultSystemPrompt'));
     setInstructions((data.config?.instructions as string) || '');
     setStartMessage((data.config?.startMessage as string) || t('agentBuilder.defaultStartMessage'));
+    setDefaultReasoningEffort((data.config?.defaultReasoningEffort as ReasoningEffort | null) ?? null);
     setPromptOpen(true);
   };
 
@@ -486,7 +518,7 @@ export function AgentCoreNode({
               />
             ) : (
               <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
-                {t('agentBuilder.connectModel')}
+                {t('agentBuilder.usingOrgDefault')}
               </Text>
             )}
           </Section>
@@ -518,6 +550,23 @@ export function AgentCoreNode({
                 nodes={connected.toolsets}
                 max={MAX_VISIBLE.toolsets}
                 labelOf={toolsetConnectionChipLabel}
+                chipIconKind="toolset"
+              />
+            ) : (
+              <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
+                {t('agentBuilder.optional')}
+              </Text>
+            )}
+          </Section>
+
+
+          <Section title={t('agentBuilder.mcpServersSection')} icon="hub">
+            <CoreHandle type="target" position={Position.Left} id="mcpServers" nodeDataId={data.id} offsetStyle={{ left: -8 }} />
+            {connected.mcpServers.length ? (
+              <ConnectedChips
+                nodes={connected.mcpServers}
+                max={MAX_VISIBLE.mcpServers}
+                labelOf={mcpConnectionChipLabel}
                 chipIconKind="toolset"
               />
             ) : (
@@ -607,6 +656,12 @@ export function AgentCoreNode({
               showAllLabel={(n) => t('agentBuilder.showAll', { count: n })}
               showLessLabel={t('agentBuilder.showLess')}
             />
+            {hasReasoningModel ? (
+              <DefaultReasoningEffortSelector
+                value={defaultReasoningEffort}
+                onSelect={setDefaultReasoningEffort}
+              />
+            ) : null}
           </Box>
 
           {/* Fixed footer */}
@@ -770,6 +825,67 @@ function PromptSection({
           {expanded ? showLessLabel : showAllLabel(lineCount)}
         </button>
       )}
+    </Box>
+  );
+}
+
+/** Agent-level fallback shown only when a connected LLM is reasoning-capable — mirrors the
+ * per-request selector in chat/model-selector-panel.tsx so users see a familiar control. */
+function DefaultReasoningEffortSelector({
+  value,
+  onSelect,
+}: {
+  value: ReasoningEffort | null;
+  onSelect: (value: ReasoningEffort | null) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <Box style={{ flexShrink: 0 }}>
+      <Flex align="center" gap="2" mb="1">
+        <Text size="2" weight="bold">
+          {t('agentBuilder.defaultReasoningEffortLabel')}
+        </Text>
+      </Flex>
+      <Flex align="center" gap="2" wrap="wrap" role="radiogroup" aria-label={t('agentBuilder.defaultReasoningEffortLabel')}>
+        {REASONING_EFFORT_OPTIONS.map((option) => {
+          const isActive = value === option.value;
+          return (
+            <Flex
+              key={option.value}
+              align="center"
+              justify="center"
+              role="radio"
+              aria-checked={isActive}
+              tabIndex={0}
+              onClick={() => onSelect(isActive ? null : option.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onSelect(isActive ? null : option.value);
+                }
+              }}
+              style={{
+                padding: '4px 12px',
+                borderRadius: 'var(--radius-6)',
+                border: isActive ? '1px solid var(--accent-9)' : '1px solid var(--gray-6)',
+                backgroundColor: isActive ? 'var(--accent-3)' : 'transparent',
+                cursor: 'pointer',
+              }}
+            >
+              <Text
+                size="1"
+                weight={isActive ? 'medium' : 'regular'}
+                style={{ color: isActive ? 'var(--accent-11)' : 'var(--agent-flow-text-muted)' }}
+              >
+                {t(option.labelKey, option.defaultLabel)}
+              </Text>
+            </Flex>
+          );
+        })}
+      </Flex>
+      <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', display: 'block', marginTop: 4 }}>
+        {t('agentBuilder.defaultReasoningEffortHint')}
+      </Text>
     </Box>
   );
 }

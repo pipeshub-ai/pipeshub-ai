@@ -2,12 +2,32 @@ import os
 import subprocess
 import tempfile
 
+from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.utils.libreoffice_convert import convert_with_libreoffice
+
 
 class PPTParser:
     """Parser for Microsoft PowerPoint .ppt files"""
 
-    def __init__(self) -> None:
-        pass
+    def __init__(self, pptx_parser=None) -> None:
+        self.pptx_parser = pptx_parser
+
+    async def parse(self, content: bytes, record_name: str, config: dict[str, any] | None = None) -> ParseResult:
+        if self.pptx_parser is None:
+            raise ParseError(
+                ParseErrorCode.PROVIDER_UNAVAILABLE,
+                "PPT parsing requires a pptx_parser; none was configured",
+            )
+        pptx_result = await self.convert_ppt_to_pptx_async(content)
+        return await self.pptx_parser.parse(pptx_result, record_name, config)
+
+    async def convert_ppt_to_pptx_async(self, binary: bytes) -> bytes:
+        """Async .ppt -> .pptx conversion for use on an event loop (e.g. the
+        parsing service). See :func:`DocParser.convert_doc_to_docx_async` for
+        rationale.
+        """
+        return await convert_with_libreoffice(binary, "ppt", "pptx")
 
     def convert_ppt_to_pptx(self, binary: bytes) -> bytes:
         """Convert .ppt file to .pptx using LibreOffice
@@ -77,8 +97,12 @@ class PPTParser:
                     e.returncode, e.cmd, output=e.output, stderr=error_msg.encode()
                 )
             except subprocess.TimeoutExpired as e:
-                raise Exception(
-                    "LibreOffice conversion timed out after 30 seconds"
+                raise DocumentProcessingError(
+                    "LibreOffice conversion timed out after 60 seconds",
+                    details={"timeout": "60s"},
                 ) from e
             except Exception as e:
-                raise Exception(f"Error converting .ppt to .pptx: {str(e)}") from e
+                raise DocumentProcessingError(
+                    f"Error converting .ppt to .pptx: {str(e)}",
+                    details={"error": str(e)},
+                ) from e

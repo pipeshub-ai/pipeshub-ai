@@ -10,14 +10,41 @@ export const PROVIDER_FRIENDLY_NAMES: Record<string, string> = {
   openAI: 'OpenAI',
   anthropic: 'Anthropic',
   google: 'Google',
+  gemini: 'Gemini',
   mistral: 'Mistral',
   meta: 'Meta',
   cohere: 'Cohere',
   groq: 'Groq',
+  xai: 'xAI',
+  fireworks: 'Fireworks',
+  together: 'Together AI',
+  bedrock: 'AWS Bedrock',
+  vertexAI: 'Vertex AI',
+  azureOpenAI: 'Azure OpenAI',
+  azureAI: 'Azure AI',
+  ollama: 'Ollama',
+  openAICompatible: 'OpenAI Compatible',
   openRouter: 'OpenRouter',
   lmStudio: 'LM Studio',
   litellmProxy: 'LiteLLM Proxy',
+  voyage: 'Voyage AI',
+  jinaAI: 'Jina AI',
+  sentenceTransformers: 'Sentence Transformers',
+  fastembed: 'FastEmbed',
 };
+
+/**
+ * Fallback for provider keys not (yet) covered by PROVIDER_FRIENDLY_NAMES —
+ * splits camelCase (e.g. "openAICompatible") into space-separated words so
+ * the UI never renders a raw camelCase key.
+ */
+export function humanizeProviderKey(key: string): string {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/^./, (c) => c.toUpperCase())
+    .trim();
+}
 
 /**
  * Maps model name → short one-liner description shown under the model name.
@@ -52,7 +79,7 @@ export const QUERY_MODES: QueryModeConfig[] = [
     id: 'agent',
     label: 'Agent',
     toolbarLabel: 'chat.queryModes.agent.toolbarLabel',
-    description: 'Delegate multi-step reasoning and tool use with a configurable strategy',
+    description: 'Agent that can plan and use tools to complete complex tasks',
     icon: 'smart_toy',
     iconType: 'material',
     colors: {
@@ -190,3 +217,33 @@ export const AGENT_CONVERSATIONS_PAGE_SIZE = 20;
 /** Number of messages fetched per page when loading a conversation (initial load and
  *  "load older messages" infinite scroll). Must match the backend's default limit. */
 export const CONVERSATION_MESSAGES_PAGE_SIZE = 20;
+
+/**
+ * Shared content column for message body and composer. The message *scroll*
+ * stays full-pane width (scrollbar on the pane edge); only the inner content
+ * and the composer use this style so their edges match.
+ */
+export const CHAT_CONTENT_MAX_WIDTH = '50rem';
+
+export const CHAT_CONTENT_PADDING_X = {
+  mobile: 'var(--space-4)',
+  desktop: 'var(--space-5)',
+} as const;
+
+export function chatContentColumnStyle(isMobile: boolean): {
+  maxWidth: string;
+  width: string;
+  minWidth: number;
+  boxSizing: 'border-box';
+  paddingLeft: string;
+  paddingRight: string;
+} {
+  return {
+    maxWidth: CHAT_CONTENT_MAX_WIDTH,
+    width: '100%',
+    minWidth: 0,
+    boxSizing: 'border-box',
+    paddingLeft: isMobile ? CHAT_CONTENT_PADDING_X.mobile : CHAT_CONTENT_PADDING_X.desktop,
+    paddingRight: isMobile ? CHAT_CONTENT_PADDING_X.mobile : CHAT_CONTENT_PADDING_X.desktop,
+  };
+}

@@ -14,6 +14,7 @@ export function snapToFlowGrid(x: number, y: number, grid = SNAP): { x: number; 
 function footprintFromTypeString(t: string): { w: number; h: number } {
   if (t === 'agent-core') return { w: 340, h: 560 };
   if (t.startsWith('toolset-')) return { w: 340, h: 400 };
+  if (t.startsWith('mcp-')) return { w: 340, h: 320 };
   if (t.startsWith('tool-group-')) return { w: 276, h: 320 };
   if (t === 'kb-group' || t === 'app-group') return { w: 276, h: 300 };
   return { w: 276, h: 240 };

@@ -12,6 +12,12 @@ export interface IOAuthAccessToken extends Document {
   revokedBy?: Types.ObjectId
   revokedReason?: string
   parentRefreshTokenId?: Types.ObjectId
+  /** User-given label. Set for personal access tokens; undefined for
+   * tokens minted through the interactive OAuth grant flows. */
+  name?: string
+  /** Last time this token authenticated a request, updated best-effort
+   * (throttled) so a PAT list can show recency without a write per call. */
+  lastUsedAt?: Date
   createdAt: Date
 }
 
@@ -51,6 +57,8 @@ const OAuthAccessTokenSchema = new Schema<IOAuthAccessToken>(
       type: Schema.Types.ObjectId,
       ref: 'oauthRefreshToken',
     },
+    name: { type: String, trim: true, maxlength: 100 },
+    lastUsedAt: { type: Date },
   },
   { timestamps: true },
 )

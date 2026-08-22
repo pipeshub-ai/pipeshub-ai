@@ -2,6 +2,8 @@
 
 import asyncio
 import hashlib
+import json
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -13,6 +15,7 @@ from app.connectors.sources.web.connector import (
     IMAGE_MIME_TYPES,
     MAX_RETRIES,
     RETRYABLE_STATUS_CODES,
+    CrawlFetchResult,
     RecordUpdate,
     RetryUrl,
     Status,
@@ -167,9 +170,12 @@ class TestWebConnectorConfig:
     async def test_init_success(self):
         connector = _make_connector()
         connector.config_service.get_config = AsyncMock(return_value=_mock_config())
-        result = await connector.init()
+        with patch.object(connector, "_detect_csr", new_callable=AsyncMock, return_value=False):
+            result = await connector.init()
         assert result is True
         assert connector.url == "https://example.com"
+        if connector.session is not None:
+            await connector.session.close()
 
     @pytest.mark.asyncio
     async def test_init_missing_config(self):
@@ -927,7 +933,18 @@ class TestWebConnectorCrawlRecursiveDeep:
         )
 
         async def mock_generator(start_url, depth):
-            yield mock_update
+            yield CrawlFetchResult(
+                url="https://example.com",
+                depth=0,
+                referer=None,
+                fetch_response=FetchResponse(
+                    status_code=200, content_bytes=b"<html></html>",
+                    headers={"Content-Type": "text/html"},
+                    final_url="https://example.com", strategy="aiohttp",
+                ),
+            )
+
+        connector._fetch_and_process_url = AsyncMock(return_value=mock_update)
 
         with patch.object(connector, "_crawl_recursive_generator", side_effect=mock_generator), \
              patch.object(connector, "_check_index_filter", return_value=False), \
@@ -958,7 +975,18 @@ class TestWebConnectorCrawlRecursiveDeep:
         )
 
         async def mock_generator(start_url, depth):
-            yield mock_update
+            yield CrawlFetchResult(
+                url="https://example.com",
+                depth=0,
+                referer=None,
+                fetch_response=FetchResponse(
+                    status_code=200, content_bytes=b"<html></html>",
+                    headers={"Content-Type": "text/html"},
+                    final_url="https://example.com", strategy="aiohttp",
+                ),
+            )
+
+        connector._fetch_and_process_url = AsyncMock(return_value=mock_update)
 
         with patch.object(connector, "_crawl_recursive_generator", side_effect=mock_generator), \
              patch.object(connector, "_handle_record_updates", new_callable=AsyncMock) as mock_handle, \
@@ -1007,25 +1035,21 @@ class TestWebConnectorCrawlRecursiveGeneratorDeep:
         connector.max_size_mb = 10
         connector.follow_external = False
         connector.restrict_to_start_path = False
-        connector.indexing_filters = MagicMock()
-        connector.indexing_filters.is_enabled = MagicMock(return_value=True)
-
-        mock_record = MagicMock()
-        mock_record.mime_type = MimeTypes.HTML.value
-        mock_update = RecordUpdate(
-            record=mock_record, is_new=True, is_updated=False, is_deleted=False,
-            metadata_changed=False, content_changed=False, permissions_changed=False,
-            new_permissions=[MagicMock()], html_bytes=b"<html></html>",
-        )
-        connector._fetch_and_process_url = AsyncMock(return_value=mock_update)
+        connector.url_should_contain = []
         connector._normalize_url = MagicMock(side_effect=lambda u: u.rstrip("/"))
-        connector._check_index_filter = MagicMock(return_value=False)
-        connector._extract_links_from_content = AsyncMock(return_value=[])
-        connector._create_ancestor_placeholder_records = AsyncMock()
 
-        results = []
-        async for update in connector._crawl_recursive_generator("https://example.com", 0):
-            results.append(update)
+        fetch_response = FetchResponse(
+            status_code=200, content_bytes=b"<html></html>",
+            headers={"Content-Type": "text/html"},
+            final_url="https://example.com", strategy="aiohttp",
+        )
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock, return_value=fetch_response,
+        ):
+            results = []
+            async for update in connector._crawl_recursive_generator("https://example.com", 0):
+                results.append(update)
         assert len(results) == 1
 
     @pytest.mark.asyncio
@@ -1064,24 +1088,22 @@ class TestWebConnectorCrawlRecursiveGeneratorDeep:
         connector.processed_urls = 0
         connector.max_size_mb = 10
         connector.follow_external = False
-        connector.indexing_filters = MagicMock()
-
-        mock_record = MagicMock()
-        mock_record.mime_type = MimeTypes.HTML.value
-        mock_update = RecordUpdate(
-            record=mock_record, is_new=True, is_updated=False, is_deleted=False,
-            metadata_changed=False, content_changed=False, permissions_changed=False,
-            new_permissions=[MagicMock()], html_bytes=b"<html></html>",
-        )
-        connector._fetch_and_process_url = AsyncMock(return_value=mock_update)
+        connector.url_should_contain = []
         connector._normalize_url = MagicMock(side_effect=lambda u: u.rstrip("/"))
-        connector._check_index_filter = MagicMock(return_value=False)
-        connector._extract_links_from_content = AsyncMock(return_value=["https://example.com/deep"])
-        connector._create_ancestor_placeholder_records = AsyncMock()
 
-        results = []
-        async for update in connector._crawl_recursive_generator("https://example.com", 0):
-            results.append(update)
+        fetch_response = FetchResponse(
+            status_code=200,
+            content_bytes=b'<html><a href="https://example.com/deep">deep</a></html>',
+            headers={"Content-Type": "text/html"},
+            final_url="https://example.com", strategy="aiohttp",
+        )
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock, return_value=fetch_response,
+        ):
+            results = []
+            async for update in connector._crawl_recursive_generator("https://example.com", 0):
+                results.append(update)
         # At depth=0 with max_depth=0, it processes the start URL but doesn't follow links (depth+1 > max_depth)
         assert len(results) == 1
 
@@ -1098,32 +1120,25 @@ class TestWebConnectorCrawlRecursiveGeneratorDeep:
         connector.processed_urls = 0
         connector.max_size_mb = 10
         connector.follow_external = False
-        connector.indexing_filters = MagicMock()
-
-        call_count = 0
-
-        async def mock_fetch(url, depth, referer=None):
-            nonlocal call_count
-            call_count += 1
-            mock_record = MagicMock()
-            mock_record.mime_type = MimeTypes.HTML.value
-            return RecordUpdate(
-                record=mock_record, is_new=True, is_updated=False, is_deleted=False,
-                metadata_changed=False, content_changed=False, permissions_changed=False,
-                new_permissions=[MagicMock()], html_bytes=b"<html></html>",
-            )
-
-        connector._fetch_and_process_url = AsyncMock(side_effect=mock_fetch)
+        connector.url_should_contain = []
         connector._normalize_url = MagicMock(side_effect=lambda u: u.rstrip("/"))
-        connector._check_index_filter = MagicMock(return_value=False)
-        connector._extract_links_from_content = AsyncMock(return_value=[
-            "https://example.com/page2", "https://example.com/page3"
-        ])
-        connector._create_ancestor_placeholder_records = AsyncMock()
 
-        results = []
-        async for update in connector._crawl_recursive_generator("https://example.com", 0):
-            results.append(update)
+        fetch_response = FetchResponse(
+            status_code=200,
+            content_bytes=(
+                b'<html><a href="https://example.com/page2">2</a>'
+                b'<a href="https://example.com/page3">3</a></html>'
+            ),
+            headers={"Content-Type": "text/html"},
+            final_url="https://example.com", strategy="aiohttp",
+        )
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock, return_value=fetch_response,
+        ):
+            results = []
+            async for update in connector._crawl_recursive_generator("https://example.com", 0):
+                results.append(update)
         # Should only process 1 page due to max_pages=1
         assert len(results) == 1
 
@@ -2117,7 +2132,8 @@ class TestInitSession:
     async def test_init_creates_session(self):
         connector = _make_connector_fullcov()
         connector.config_service.get_config = AsyncMock(return_value=_mock_config())
-        result = await connector.init()
+        with patch.object(connector, "_detect_csr", new_callable=AsyncMock, return_value=False):
+            result = await connector.init()
         assert result is True
         assert connector.session is not None
         await connector.session.close()
@@ -2558,6 +2574,8 @@ class TestFetchAndProcessUrl:
         connector.visited_urls = set()
         connector.url_should_contain = []
         connector._ensure_parent_records_exist = AsyncMock()
+        connector._process_html_content = AsyncMock(return_value="<html>processed</html>")
+        connector._store_crawled_content = AsyncMock(return_value="storage-doc-id")
 
         html_content = b"<html><head><title>Test</title></head><body>content</body></html>"
         content_hash = hashlib.md5(BeautifulSoup(html_content, "html.parser").get_text(separator="\n", strip=True).encode("utf-8")).hexdigest()
@@ -2569,6 +2587,7 @@ class TestFetchAndProcessUrl:
         existing.parent_external_record_id = None
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = "COMPLETED"
+        existing.storage_document_id = "existing-storage-doc-id"
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         with patch("app.connectors.sources.web.connector.fetch_url_with_fallback",
@@ -2886,7 +2905,7 @@ class TestRecursiveGeneratorRetry:
         connector.processed_urls = 0
         connector.max_size_mb = 10
         connector.follow_external = False
-        connector.indexing_filters = MagicMock()
+        connector.url_should_contain = []
 
         connector.retry_urls = {
             "https://example.com/retry": RetryUrl(
@@ -2896,11 +2915,21 @@ class TestRecursiveGeneratorRetry:
             ),
         }
         connector._normalize_url = MagicMock(side_effect=lambda u: u.rstrip("/"))
-        connector._fetch_and_process_url = AsyncMock(return_value=None)
 
-        results = []
-        async for update in connector._crawl_recursive_generator("https://example.com/other", 0):
-            results.append(update)
+        # Non-retryable status (404) so _validate_fetch_result drops the URL
+        # without adding it to retry_urls — avoids the real backoff sleep in
+        # the "no queue left, wait for retry candidates" branch.
+        fetch_response = FetchResponse(
+            status_code=404, content_bytes=b"", headers={},
+            final_url="https://example.com/other", strategy="aiohttp",
+        )
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock, return_value=fetch_response,
+        ):
+            results = []
+            async for update in connector._crawl_recursive_generator("https://example.com/other", 0):
+                results.append(update)
         assert len(results) == 0
 
 
@@ -2936,3 +2965,199 @@ class TestCreateConnectorFactory:
                 logger, dsp, cs, "wc-factory", "team", "test-user-id"
             )
             assert isinstance(conn, WebConnector)
+
+
+# ---------------------------------------------------------------------------
+# Storage upload (S3 presigned PUT redirect)
+# ---------------------------------------------------------------------------
+
+
+class _FakeStorageResponse:
+    def __init__(self, status: int, text: str = "", headers: Optional[dict] = None):
+        self.status = status
+        self._text = text
+        self.headers = headers or {}
+
+    async def text(self) -> str:
+        return self._text
+
+    async def json(self):
+        return json.loads(self._text) if self._text else {}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
+class _FakeStorageSession:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+
+    def _take(self, method: str, url: str, **kwargs) -> _FakeStorageResponse:
+        self.calls.append({"method": method, "url": url, **kwargs})
+        if not self._responses:
+            raise AssertionError(f"Unexpected {method} {url}: no response queued")
+        expected_method, response = self._responses.pop(0)
+        assert expected_method == method, (
+            f"Expected next call to be {expected_method}, got {method}"
+        )
+        return response
+
+    def post(self, url, *, data=None, headers=None, **kwargs):
+        return self._take("post", url, data=data, headers=headers, **kwargs)
+
+    def put(self, url, *, data=None, headers=None, **kwargs):
+        return self._take("put", url, data=data, headers=headers, **kwargs)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
+class TestUploadNewToStorage:
+    def _prepare(self, connector, monkeypatch, session: _FakeStorageSession):
+        connector._get_storage_url = AsyncMock(return_value="http://storage.local")
+        connector._get_storage_token = AsyncMock(return_value="tok")
+        monkeypatch.setattr(
+            "app.connectors.sources.web.connector.aiohttp.ClientSession",
+            lambda *a, **kw: session,
+        )
+
+    @pytest.mark.asyncio
+    async def test_inline_200_returns_id(self, monkeypatch):
+        connector = _make_connector()
+        session = _FakeStorageSession([
+            ("post", _FakeStorageResponse(200, json.dumps({"_id": "doc-inline"}))),
+        ])
+        self._prepare(connector, monkeypatch, session)
+
+        doc_id = await connector._upload_new_to_storage(
+            b"%PDF-1.4", "Asics 2023 Report", "pdf", "application/pdf"
+        )
+        assert doc_id == "doc-inline"
+        assert session.calls[0]["method"] == "post"
+        assert session.calls[0].get("allow_redirects") is False
+
+    @pytest.mark.asyncio
+    async def test_308_puts_raw_bytes_to_presigned_url(self, monkeypatch):
+        connector = _make_connector()
+        presigned = (
+            "https://bucket.s3.amazonaws.com/org/Asics%202023%20Report.pdf"
+            "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+        )
+        session = _FakeStorageSession([
+            (
+                "post",
+                _FakeStorageResponse(
+                    308,
+                    json.dumps({"document": {"_id": "doc-presigned"}}),
+                    headers={
+                        "Location": presigned,
+                        "x-document-id": "doc-presigned",
+                    },
+                ),
+            ),
+            ("put", _FakeStorageResponse(200, "")),
+        ])
+        self._prepare(connector, monkeypatch, session)
+
+        content = b"%PDF-large-file"
+        doc_id = await connector._upload_new_to_storage(
+            content, "Asics 2023 Report", "pdf", "application/pdf"
+        )
+        assert doc_id == "doc-presigned"
+        assert session.calls[0]["method"] == "post"
+        assert session.calls[0].get("allow_redirects") is False
+        assert session.calls[1]["method"] == "put"
+        assert session.calls[1]["url"] == presigned
+        assert session.calls[1]["data"] == content
+        assert session.calls[1]["headers"]["Content-Length"] == str(len(content))
+        assert session.calls[1].get("allow_redirects") is False
+
+    @pytest.mark.asyncio
+    async def test_presigned_put_does_not_follow_redirect_to_another_host(self, monkeypatch):
+        """The presigned-URL PUT must pin allow_redirects=False so a redirecting
+        response (e.g. a compromised/malicious presigned target) can't cause the
+        raw file bytes to be re-sent to an unrelated host."""
+        connector = _make_connector()
+        presigned = "https://bucket.s3.amazonaws.com/org/report.pdf?X-Amz-Signature=abc"
+        session = _FakeStorageSession([
+            (
+                "post",
+                _FakeStorageResponse(
+                    308,
+                    "{}",
+                    headers={"Location": presigned, "x-document-id": "doc-presigned"},
+                ),
+            ),
+            (
+                "put",
+                _FakeStorageResponse(
+                    200, "", headers={"Location": "https://attacker.example/exfil"}
+                ),
+            ),
+        ])
+        self._prepare(connector, monkeypatch, session)
+
+        content = b"%PDF-secret"
+        doc_id = await connector._upload_new_to_storage(
+            content, "report", "pdf", "application/pdf"
+        )
+        assert doc_id == "doc-presigned"
+        # Only the POST and the single presigned PUT should have happened; the
+        # fake session's response Location must never trigger a follow-up call.
+        assert len(session.calls) == 2
+        assert session.calls[1]["method"] == "put"
+        assert session.calls[1]["url"] == presigned
+        assert session.calls[1].get("allow_redirects") is False
+
+    @pytest.mark.asyncio
+    async def test_308_put_failure_returns_none(self, monkeypatch):
+        connector = _make_connector()
+        session = _FakeStorageSession([
+            (
+                "post",
+                _FakeStorageResponse(
+                    308,
+                    "{}",
+                    headers={"Location": "https://s3.example/p", "x-document-id": "doc-x"},
+                ),
+            ),
+            ("put", _FakeStorageResponse(403, "SignatureDoesNotMatch")),
+        ])
+        self._prepare(connector, monkeypatch, session)
+
+        doc_id = await connector._upload_new_to_storage(
+            b"pdf", "report", "pdf", "application/pdf"
+        )
+        assert doc_id is None
+
+    @pytest.mark.asyncio
+    async def test_308_missing_location_returns_none(self, monkeypatch):
+        connector = _make_connector()
+        session = _FakeStorageSession([
+            ("post", _FakeStorageResponse(308, "{}", headers={})),
+        ])
+        self._prepare(connector, monkeypatch, session)
+
+        doc_id = await connector._upload_new_to_storage(
+            b"pdf", "report", "pdf", "application/pdf"
+        )
+        assert doc_id is None
+        assert len(session.calls) == 1
+
+    def test_storage_document_id_from_nested_document(self):
+        connector = _make_connector()
+        assert connector._storage_document_id_from_upload(
+            {"x-document-id": "hdr-id"},
+            {"document": {"_id": "nested-id"}},
+        ) == "hdr-id"
+        assert connector._storage_document_id_from_upload(
+            {},
+            {"document": {"_id": "nested-id"}},
+        ) == "nested-id"

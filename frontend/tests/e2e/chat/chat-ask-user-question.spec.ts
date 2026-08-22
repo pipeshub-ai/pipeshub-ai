@@ -7,8 +7,9 @@
  * ── Flow being tested ────────────────────────────────────────────────────
  *
  *  1. User sends a message on an agent chat (/chat/?agentId=…)
- *  2. Backend fires SSE events:
- *       connected → ask_user_question   (no `complete` — stream stays open)
+ *  2. Backend fires AG-UI frames:
+ *       CUSTOM(conversation_created) → CUSTOM(ask_user_question)
+ *       (no `RUN_FINISHED` — stream stays open)
  *  3. The AskUserQuestionCard renders with:
  *       - heading "Quick question :" / "Quick questions :"
  *       - question text + option labels (radio or checkbox)
@@ -48,6 +49,7 @@
  */
 
 import { test, expect } from '../fixtures/base.fixture';
+import { buildAguiSseBody, buildAguiAskUserQuestionSseBody } from './agui-sse-builder';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared constants
@@ -136,16 +138,13 @@ const MOCK_MAIN_CONVERSATIONS_EMPTY = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SSE body builders
+// SSE body builders (AG-UI wire format — see agui-sse-builder.ts)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function sseEvt(name: string, data: object): string {
-  return `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
-}
-
 /**
- * Builds an SSE body that stops after the ask_user_question event.
- * The stream deliberately has no `complete` — the card should be interactive.
+ * Builds an AG-UI SSE body that stops after the CUSTOM(ask_user_question)
+ * frame. The stream deliberately has no `RUN_FINISHED` — the card should
+ * remain interactive.
  */
 function buildAskQuestionSse(
   questions: Array<{
@@ -156,83 +155,26 @@ function buildAskQuestionSse(
   }>,
   userIntent?: string,
 ): string {
-  return [
-    sseEvt('connected', {
-      message: 'ok',
-      conversationId: AGENT_CONV_ID,
-      title: 'E2E Ask Question Test',
-    }),
-    sseEvt('status', { status: 'planning', message: 'Determining follow-up questions…' }),
-    sseEvt('ask_user_question', {
-      status: 'tool_call',
-      toolData: {
-        name: 'ask_user_question',
-        ...(userIntent ? { userIntent } : {}),
-        questions,
-      },
-    }),
-    // No 'complete' — card stays interactive
-  ].join('');
+  return buildAguiAskUserQuestionSseBody(
+    AGENT_CONV_ID,
+    { name: 'ask_user_question', ...(userIntent ? { userIntent } : {}), questions },
+    'E2E Ask Question Test',
+  );
 }
 
 /**
- * Builds a complete SSE answer body for the follow-up stream after card submission.
+ * Builds a complete AG-UI answer body for the follow-up stream after card submission.
  */
 function buildAnswerSse(answer: string): string {
-  return [
-    sseEvt('connected', { message: 'ok', conversationId: AGENT_CONV_ID }),
-    sseEvt('answer_chunk', { chunk: answer, accumulated: answer, citations: [] }),
-    sseEvt('complete', {
-      conversation: {
-        _id: AGENT_CONV_ID,
-        userId: 'u-e2e',
-        orgId: 'o-e2e',
-        title: 'E2E Ask Question Test',
-        initiator: 'agent',
-        messages: [
-          {
-            _id: 'msg-user-ask-001',
-            messageType: 'user_query',
-            content: 'User selections:\n1. "Which department?" → Engineering',
-            contentFormat: 'MARKDOWN',
-            citations: [],
-            followUpQuestions: [],
-            referenceData: [],
-            modelInfo: MOCK_MODEL_INFO,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            feedback: [],
-          },
-          {
-            _id: 'msg-bot-ask-001',
-            messageType: 'bot_response',
-            content: answer,
-            contentFormat: 'MARKDOWN',
-            citations: [],
-            confidence: 'High',
-            followUpQuestions: [],
-            referenceData: [],
-            modelInfo: MOCK_MODEL_INFO,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            feedback: [],
-          },
-        ],
-        isShared: false,
-        isDeleted: false,
-        isArchived: false,
-        lastActivityAt: Date.now(),
-        status: 'active',
-        modelInfo: MOCK_MODEL_INFO,
-        sharedWith: [],
-        conversationErrors: [],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        __v: 0,
-      },
-      meta: { requestId: 'req-ask-e2e', timestamp: new Date().toISOString(), duration: 300 },
-    }),
-  ].join('');
+  return buildAguiSseBody({
+    conversationId: AGENT_CONV_ID,
+    userMessageId: 'msg-user-ask-001',
+    botMessageId: 'msg-bot-ask-001',
+    question: 'User selections:\n1. "Which department?" → Engineering',
+    answer,
+    modelInfo: MOCK_MODEL_INFO,
+    requestId: 'req-ask-e2e',
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -194,19 +194,27 @@ function preprocessHtmlIndentation(content: string): string {
  * remark-math v6 requires.  remark-math v6 deliberately dropped \( / \[ /
  * \] / \) support (they were ambiguous with backslash escapes in v5).
  *
- * Skips fenced code blocks and inline code spans so we never mangle
- * literal backslash sequences inside code examples.
+ * Skips fenced code blocks, inline code spans, and markdown links/images
+ * so we never mangle literal backslash sequences inside code examples or
+ * escaped brackets inside link text (e.g. `[Title \[Subtitle\]](url)`).
  *
- *   \(...\)  →  $...$        (inline math)
+ *   \(...\)  →  $$...$$      (inline math; singleDollarTextMath is disabled
+ *                             on remarkMath so currency amounts like $5 stay plain text)
  *   \[...\]  →  $$\n...\n$$  (display math)
  */
 function preprocessMath(content: string): string {
-  // Split on fenced code blocks (``` or ~~~) and inline code spans (`...`).
-  // Even-indexed segments are outside code; odd-indexed are inside code.
-  const parts = content.split(/(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`]*`)/g);
+  // Split on fenced code blocks (``` or ~~~), inline code spans (`...`),
+  // and markdown links/images whose text may contain escaped brackets.
+  // Without the link protection, \[text\] inside [link \[text\]](url)
+  // would be misidentified as display math and converted to $$..$$,
+  // completely breaking the link structure.
+  // Even-indexed segments are outside protected spans; odd-indexed are inside.
+  const parts = content.split(
+    /(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`]*`|!?\[(?:[^\[\]\\]|\\.)*\]\([^)]*\))/g
+  );
   return parts
     .map((part, i) => {
-      if (i % 2 !== 0) return part; // inside code — leave untouched
+      if (i % 2 !== 0) return part; // inside protected span — leave untouched
       return part
         // Block math first (greedy order matters): \[ ... \]
         // Tempered greedy token stops at blank lines (paragraph breaks) so an
@@ -214,7 +222,9 @@ function preprocessMath(content: string): string {
         .replace(/\\\[((?:(?!\n\n)[\s\S])*?)\\\]/g, (_m, math: string) => `$$\n${math.trim()}\n$$`)
         // Inline math: \( ... \)
         // Same paragraph-break guard — inline math must not span blank lines.
-        .replace(/\\\(((?:(?!\n\n)[\s\S])*?)\\\)/g, (_m, math: string) => `$${math}$`);
+        // Double dollars (not single) because singleDollarTextMath is disabled
+        // on remarkMath below to keep currency amounts like $1,234.56 as plain text.
+        .replace(/\\\(((?:(?!\n\n)[\s\S])*?)\\\)/g, (_m, math: string) => `$$${math}$$`);
     })
     .join('');
 }
@@ -278,7 +288,7 @@ interface AnswerContentProps {
   citationCallbacks?: CitationCallbacks;
 }
 
-interface CitationMatch {
+export interface CitationMatch {
   chunkIndex: number;
   citation?: CitationData;
   index: number;
@@ -568,7 +578,7 @@ function CodeBlock({ language, codeText }: { language: string; codeText: string 
  * Emit either an InlineCitationGroup (2+ consecutive same-record markers) or an
  * InlineCitationBadge (single marker) for a run of citation matches.
  */
-function emitRun(
+export function emitRun(
   run: CitationMatch[],
   citationCallbacks?: CitationCallbacks,
 ): React.ReactNode {
@@ -603,7 +613,7 @@ function emitRun(
  * Consecutive markers pointing at the same recordId — separated only by
  * whitespace — are collapsed into a single InlineCitationGroup.
  */
-function parseInlineCitations(
+export function parseInlineCitations(
   text: string,
   citationMaps?: CitationMaps,
   citationCallbacks?: CitationCallbacks,
@@ -691,7 +701,7 @@ function parseInlineCitations(
 /**
  * Recursively walk React children, replacing `[N]` citations in any string segments.
  */
-function processChildren(
+export function processChildren(
   children: React.ReactNode,
   citationMaps?: CitationMaps,
   citationCallbacks?: CitationCallbacks,
@@ -714,27 +724,11 @@ function processChildren(
   return children;
 }
 
-export function AnswerContent({
-  content,
-  citationMaps,
-  citationCallbacks,
-}: AnswerContentProps) {
-  // Keep refs to the latest citationMaps/citationCallbacks so the `components`
-  // object below can be fully stable (empty useMemo deps). Without this,
-  // `components` recreates on every streaming chunk that brings new citation
-  // data, causing react-markdown to unmount+remount ALL DOM elements — including
-  // table scroll containers (resetting horizontal scroll position) and citation
-  // badge buttons (breaking the inline-citation popover anchor).
-  const citationMapsRef = useRef(citationMaps);
-  citationMapsRef.current = citationMaps;
-  const citationCallbacksRef = useRef(citationCallbacks);
-  citationCallbacksRef.current = citationCallbacks;
-
-  // Stable `components` — never recreated after mount. Callbacks read from refs
-  // at call-time so they always use the latest citationMaps/citationCallbacks.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const components = useMemo(
-    () => ({
+export function createMarkdownComponents(
+  citationMapsRef: React.MutableRefObject<CitationMaps | undefined>,
+  citationCallbacksRef: React.MutableRefObject<CitationCallbacks | undefined>,
+) {
+  return {
     h1: ({ children }: { children?: React.ReactNode }) => <AnchorHeading level={1}>{children}</AnchorHeading>,
     h2: ({ children }: { children?: React.ReactNode }) => <AnchorHeading level={2}>{children}</AnchorHeading>,
     h3: ({ children }: { children?: React.ReactNode }) => <AnchorHeading level={3}>{children}</AnchorHeading>,
@@ -1063,7 +1057,8 @@ export function AnswerContent({
         style={{
           color: 'var(--accent-11)',
           textDecoration: 'underline',
-          fontSize: 'var(--font-size-2)',
+          // Inherit so links in headings keep heading size (not body font-size-2).
+          fontSize: 'inherit',
         }}
       >
         {processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
@@ -1151,17 +1146,29 @@ export function AnswerContent({
         {processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
       </td>
     ),
-  }),
+  };
+}
+
+export function AnswerContent({
+  content,
+  citationMaps,
+  citationCallbacks,
+}: AnswerContentProps) {
+  const citationMapsRef = useRef(citationMaps);
+  citationMapsRef.current = citationMaps;
+  const citationCallbacksRef = useRef(citationCallbacks);
+  citationCallbacksRef.current = citationCallbacks;
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  const components = useMemo(
+    () => createMarkdownComponents(citationMapsRef, citationCallbacksRef),
   []);
-  // ^ empty deps: components is stable for the lifetime of this instance.
-  // Citation data is read from citationMapsRef/citationCallbacksRef at call-time.
 
   // Pipeline order matters:
   // 1. preprocessHtmlCodeBlocks  — convert <pre><code> to fenced blocks
   // 2. preprocessHtmlIndentation — strip ≥4-space indent from HTML tag lines
   //    so remark treats them as HTML blocks, not indented code blocks
-  // 3. preprocessMath            — \[..\] / \(..\) → $$..$$  /  $..$ 
+  // 3. preprocessMath            — \[..\] / \(..\) → $$..$$  (both forms)
   //    (skips fenced blocks created by step 1)
   const normalizedContent = preprocessMath(
     preprocessHtmlIndentation(
@@ -1172,7 +1179,7 @@ export function AnswerContent({
   return (
     <Box>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath, remarkCallouts]}
+        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkCallouts]}
         rehypePlugins={[rehypeRaw, [rehypeSanitize, SANITIZE_SCHEMA], rehypeKatex]}
         components={components}
       >

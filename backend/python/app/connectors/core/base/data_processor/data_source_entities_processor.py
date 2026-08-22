@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
+    Connectors,
     EntityRelations,
     MimeTypes,
     OriginTypes,
@@ -42,7 +43,9 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.utils import MessagingUtils
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -112,9 +115,7 @@ class DataSourceEntitiesProcessor:
         self.config_service: ConfigurationService = config_service
         self.org_id = ""
 
-    async def initialize(self) -> None:
-        from app.services.messaging.utils import MessagingUtils
-
+    async def initialize(self, org_id: Optional[str] = None) -> None:
         config = await MessagingUtils.create_producer_config_from_service(
             self.config_service, "connectors"
         )
@@ -123,14 +124,58 @@ class DataSourceEntitiesProcessor:
             config=config,
         )
         await self.messaging_producer.initialize()
+        if org_id:
+            # Caller-supplied org (per-connector / per-request) is authoritative.
+            self.org_id = org_id
+            return
+
         async with self.data_store_provider.transaction() as tx_store:
             orgs = await tx_store.get_all_orgs()
             if not orgs:
-                raise Exception("No organizations found in the database. Cannot initialize DataSourceEntitiesProcessor.")
+                self.logger.warning(
+                    "No organizations found while initializing DataSourceEntitiesProcessor; "
+                    "org_id must be supplied per-record by the caller."
+                )
+                return
             # Use backward-compatible field access
             self.org_id = orgs[0].get("id", orgs[0].get("_key"))
 
-    
+
+    async def _link_kb_record_to_app(self, record: Record, tx_store: TransactionStore) -> None:
+        """Anchor a KB record/folder to its KB ``apps`` doc.
+
+        Reproduces the edges the KB CRUD path writes directly: a ``belongsTo``
+        edge (record → apps/<kbId>, entityType "KB") plus, when the record
+        inherits permissions, an ``inheritPermissions`` edge to the same app.
+        Both use idempotent UPSERT on (_from, _to), so re-running is a no-op.
+        """
+        kb_id = record.connector_id
+        ts = get_epoch_timestamp_in_ms()
+        await tx_store.batch_create_edges(
+            [{
+                "from_id": record.id,
+                "from_collection": CollectionNames.RECORDS.value,
+                "to_id": kb_id,
+                "to_collection": CollectionNames.APPS.value,
+                "entityType": Connectors.KNOWLEDGE_BASE.value,
+                "createdAtTimestamp": ts,
+                "updatedAtTimestamp": ts,
+            }],
+            collection=CollectionNames.BELONGS_TO.value,
+        )
+        if record.inherit_permissions:
+            await tx_store.batch_create_edges(
+                [{
+                    "from_id": record.id,
+                    "from_collection": CollectionNames.RECORDS.value,
+                    "to_id": kb_id,
+                    "to_collection": CollectionNames.APPS.value,
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }],
+                collection=CollectionNames.INHERIT_PERMISSIONS.value,
+            )
+
     def _create_placeholder_parent_record(
         self,
         parent_external_id: str,
@@ -172,6 +217,7 @@ class DataSourceEntitiesProcessor:
             "mime_type": MimeTypes.UNKNOWN.value,
             "source_created_at": 0,  # Will be updated when real parent is synced
             "source_updated_at": 0,  # Will be updated when real parent is synced
+            "is_placeholder": True,  # Reconciled to False when the real record syncs
         }
 
         # Map RecordType to appropriate Record class
@@ -262,6 +308,14 @@ class DataSourceEntitiesProcessor:
                 await tx_store.batch_upsert_records([parent_record])
 
                 # Link record to group AFTER saving (when record.id is available for edges)
+                if record_group_id:
+                    await self._link_record_to_group(parent_record, record_group_id, tx_store)
+            elif parent_record is not None and parent_record.is_placeholder:
+                # A pre-existing placeholder never re-syncs as a real record, so its
+                # record-group (BELONGS_TO) edge isn't restored after a full sync (which
+                # deletes all edges). Re-anchor it here — idempotently — so the placeholder
+                # and its subtree stay reachable from the record group.
+                record_group_id = await self._handle_record_group(parent_record, tx_store)
                 if record_group_id:
                     await self._link_record_to_group(parent_record, record_group_id, tx_store)
 
@@ -417,12 +471,18 @@ class DataSourceEntitiesProcessor:
             else:
                 await tx_store.delete_inherit_permissions_relation_record_group(record.id, record_group_id)
 
-        if record.is_shared_with_me and record.shared_with_me_record_group_id is not None:
-            shared_with_me_record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id, external_id=record.shared_with_me_record_group_id)
-            if shared_with_me_record_group:
-                await tx_store.create_record_group_relation(record.id, shared_with_me_record_group.id)
-            else:
-                self.logger.warning(f"Shared with me record group with external ID {record.shared_with_me_record_group_id} not found in database")
+        if record.shared_with_me_record_group_ids:
+            for external_group_id in record.shared_with_me_record_group_ids:
+                shared_with_me_record_group = await tx_store.get_record_group_by_external_id(
+                    connector_id=record.connector_id,
+                    external_id=external_group_id
+                )
+                if shared_with_me_record_group:
+                    await tx_store.create_record_group_relation(
+                        record.id, shared_with_me_record_group.id
+                    )
+                else:
+                    self.logger.warning(f"Shared with me record group with external ID {external_group_id} not found in database")
 
     async def _prepare_ticket_user_edge(
         self,
@@ -827,6 +887,27 @@ class DataSourceEntitiesProcessor:
                         record.record_name,
                     )
                     await self._process_record(record, [], tx_store)
+                elif record.shared_with_me_record_group_ids:
+                    # The record already has BELONGS_TO edges (e.g. to the owner's "My Drive"), but
+                    # the shared-with-me edge for *this* user may still be missing because
+                    # _process_record is skipped in the belongs_to_edges branch above.
+                    for external_group_id in record.shared_with_me_record_group_ids:
+                        self.logger.debug(
+                            "Creating shared-with-me record group relation for record %s and record group %s",
+                            record.record_name,
+                            external_group_id,
+                        )
+                        shared_with_me_rg = await tx_store.get_record_group_by_external_id(
+                            connector_id=record.connector_id,
+                            external_id=external_group_id,
+                        )
+                        if shared_with_me_rg:
+                            await tx_store.create_record_group_relation(record.id, shared_with_me_rg.id)
+                        else:
+                            self.logger.warning(
+                                "Shared with me record group with external ID %s not found in database",
+                                external_group_id,
+                            )
 
                 # Step 1: Delete all existing permission edges that point TO this record.
                 deleted_count = await tx_store.delete_edges_to(
@@ -874,38 +955,102 @@ class DataSourceEntitiesProcessor:
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
 
-        # Set org_id for the record
-        record.org_id = self.org_id
+        # Set org_id only when the caller didn't supply one. KB and cross-org
+        # callers pass an explicit request org that must win over self.org_id.
+        if not record.org_id:
+            record.org_id = self.org_id
 
+        # KB / Collections records anchor directly to their apps doc, not a recordGroup.
         # Prepare record group BEFORE saving (so record_group_id is included in first save)
-        record_group_id = await self._handle_record_group(record, tx_store)
+        record_group_id = (
+            None
+            if record.origin == OriginTypes.UPLOAD
+            else await self._handle_record_group(record, tx_store)
+        )
 
         if existing_record is None:
             self.logger.debug("New record: %s", record)
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id
+            # Connectors that track their own version pass a non-zero value; fill
+            # it in for those that leave it at the default (GitLab, Jira) so the
+            # stored version isn't pinned at 0 forever. Bump only on a real
+            # content change, so a metadata-only refresh doesn't inflate it.
+            # Placeholders are not content versions: stub backfills keep the stored
+            # value, and stub→real is the first genuine record (version 0).
+            if record.version == 0:
+                if record.is_placeholder:
+                    record.version = existing_record.version
+                elif existing_record.is_placeholder:
+                    record.version = 0
+                else:
+                    record.version = existing_record.version + (
+                        1
+                        if record.external_revision_id
+                        != existing_record.external_revision_id
+                        else 0
+                    )
             # Only fall back to the stored weburl when the incoming record
             # doesn't carry one. Overwriting unconditionally would:
             #   (a) revert renames / moves where the connector re-saves
             #       the new URL on every sync, and
             #   (b) leave a placeholder's empty `weburl=""` in place when
             #       the real parent record arrives to fill it in.
-            if existing_record.indexing_status == ProgressStatus.COMPLETED.value:
-                # If the existing record is completed, set the indexing status to not started so that it can be reindexed
-                record.indexing_status = ProgressStatus.NOT_STARTED.value
+            if record.origin != OriginTypes.UPLOAD:
+                if existing_record.indexing_status == ProgressStatus.COMPLETED.value:
+                    if record.external_revision_id != existing_record.external_revision_id:
+                        # Real content change on an indexed record: reset so it
+                        # re-queues — unless indexing is manual-only for this
+                        # record, which a content change must not override.
+                        if record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
+                            record.indexing_status = ProgressStatus.NOT_STARTED.value
+                    else:
+                        # Unchanged content stays COMPLETED (blocks re-publish
+                        # below). Resetting unconditionally made every full
+                        # re-sync re-embed the entire already-indexed set, and
+                        # clobbered AUTO_INDEX_OFF on manually-indexed records.
+                        record.indexing_status = ProgressStatus.COMPLETED.value
+            elif record.external_revision_id == existing_record.external_revision_id:
+                # KB uploads with unchanged content must keep their indexing status
+                # (folders are created COMPLETED and must not be re-queued on metadata updates).
+                record.indexing_status = existing_record.indexing_status
             if not record.weburl:
                 record.weburl = existing_record.weburl
+            # Same fall-back rule for source timestamps: connectors whose source
+            # exposes no cheap per-item dates (e.g. git blobs) send None and
+            # backfill them later out-of-band. The Neo4j upsert is `SET n +=`,
+            # where a null-valued key DELETES the stored property — without this
+            # carry-forward every re-sync silently erased the backfilled dates.
+            if record.source_created_at is None:
+                record.source_created_at = existing_record.source_created_at
+            if record.source_updated_at is None:
+                record.source_updated_at = existing_record.source_updated_at
+            # A real record replacing a stub promotes it out of placeholder state.
+            # Set explicitly so we don't depend on batch_upsert overwrite-vs-merge semantics.
+            if existing_record.is_placeholder and not record.is_placeholder:
+                record.is_placeholder = False
             #check if revision Id is same as existing record
             if record.external_revision_id != existing_record.external_revision_id:
                 await self._handle_updated_record(record, existing_record, tx_store)
 
         # Link record to group AFTER saving (when record.id is available for edges)
-        if record_group_id or record.is_shared_with_me:
+        if record_group_id or record.shared_with_me_record_group_ids:
             await self._link_record_to_group(record, record_group_id, tx_store, existing_record)
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
-        await self._handle_parent_record(record, tx_store, existing_record)
+        if record.origin == OriginTypes.UPLOAD:
+            # KB records anchor to apps/<kbId> (belongsTo + inheritPermissions) and
+            # nest under a parent folder by its _key. Root items get no PARENT_CHILD edge.
+            await self._link_kb_record_to_app(record, tx_store)
+            if existing_record is None and record.parent_external_record_id:
+                await tx_store.create_record_relation(
+                    record.parent_external_record_id,
+                    record.id,
+                    RecordRelations.PARENT_CHILD.value,
+                )
+        else:
+            await self._handle_parent_record(record, tx_store, existing_record)
 
         # Handle related external records (issue links, project links, FK relations, etc.)
         # For TicketRecord, ProjectRecord, SQLTableRecord and SQLViewRecord, ALWAYS call this
@@ -940,29 +1085,28 @@ class DataSourceEntitiesProcessor:
 
         return record
 
-    async def _reset_indexing_status_to_queued(self, record_id: str, tx_store: TransactionStore) -> None:
+    async def _mark_queued_after_publish(self, record_ids: list[str]) -> None:
         """
-        Reset indexing status to QUEUED before sending update/reindex events.
-        Only skips if status is already QUEUED.
+        Promote records to QUEUED once their events are on the topic.
+
+        Must run after the publish, never before: a record marked QUEUED for an
+        event that then fails to publish is stuck forever, since nothing consumes
+        QUEUED. Running after opens the opposite risk — the indexing service may
+        already have taken the record to IN_PROGRESS or COMPLETED — so the write is
+        a compare-and-swap that simply loses if it is no longer NOT_STARTED. Losing
+        is the correct outcome, not an error.
         """
+        if not record_ids:
+            return
         try:
-            # Get the record — get_record_by_key delegates to get_document which returns a raw dict
-            record = await tx_store.get_record_by_key(record_id)
-            if not record:
-                self.logger.warning(f"Record {record_id} not found for status reset")
-                return
-            self.logger.debug(f"Record: {record}")
-            # The document uses camelCase keys (indexingStatus), not snake_case attributes
-            current_status = record.get("indexingStatus")
-            if current_status == ProgressStatus.QUEUED.value:
-                self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
-                return
-            record["indexingStatus"] = ProgressStatus.QUEUED.value
-            await tx_store.batch_upsert_nodes([record], CollectionNames.RECORDS.value)
-            self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
+            await self.data_store_provider.compare_and_set_indexing_status(
+                record_ids,
+                ProgressStatus.NOT_STARTED.value,
+                ProgressStatus.QUEUED.value,
+            )
         except Exception as e:
-            # Log but don't fail the main operation if status update fails
-            self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
+            # Never fail a publish over a status write; the records are already on the topic.
+            self.logger.error(f"❌ Failed to mark {len(record_ids)} record(s) QUEUED: {str(e)}")
 
     @retry_on_deadlock()
     async def on_new_records(self, records_with_permissions: list[tuple[Record, list[Permission]]]) -> None:
@@ -980,25 +1124,66 @@ class DataSourceEntitiesProcessor:
                     if processed_record:
                         records_to_publish.append(processed_record)
 
-            if records_to_publish:
-                for record in records_to_publish:
-                    # Skip publishing indexing events for records with AUTO_INDEX_OFF status
-                    if hasattr(record, 'indexing_status') and record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
-                        self.logger.debug(
-                            f"Skipping automatic indexing event for record {record.id} "
-                            f"with AUTO_INDEX_OFF status"
-                        )
-                        continue
+            publishable: list[Record] = []
+            for record in records_to_publish:
+                # Skip publishing indexing events for records with AUTO_INDEX_OFF status
+                if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
+                    self.logger.debug(
+                        f"Skipping automatic indexing event for record {record.id} "
+                        f"with AUTO_INDEX_OFF status"
+                    )
+                    continue
 
-                    if record.is_internal:
-                        self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
-                        continue
+                if record.is_internal:
+                    self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
+                    continue
 
-                    await self.messaging_producer.send_message(
-                            "record-events",
-                            {"eventType": "newRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
-                            key=record.id
+                # Already indexed and unchanged — the COMPLETED status was carried
+                # forward from the stored record precisely so this publish can be
+                # skipped; there is nothing for the indexing consumer to redo.
+                if record.indexing_status == ProgressStatus.COMPLETED.value:
+                    self.logger.debug(
+                        f"Skipping indexing event for already-completed record {record.id}"
+                    )
+                    continue
+
+                # KB folders carry no indexable content; they are created COMPLETED
+                # and must not emit a newRecord event (the indexing consumer would
+                # skip them anyway, but this avoids leaving them stuck non-COMPLETED).
+                if (
+                    record.origin == OriginTypes.UPLOAD
+                    and isinstance(record, FileRecord)
+                    and record.is_file is False
+                ):
+                    self.logger.debug(f"Skipping newRecord event for KB folder {record.id}")
+                    continue
+
+                if record.is_placeholder:
+                    self.logger.debug(
+                        f"Skipping automatic indexing event for placeholder record {record.id}"
+                    )
+                    continue
+
+                publishable.append(record)
+
+            if publishable:
+                acked = await self.messaging_producer.send_messages(
+                    "record-events",
+                    [
+                        (
+                            record.id,
+                            {
+                                "eventType": "newRecord",
+                                "timestamp": get_epoch_timestamp_in_ms(),
+                                "payload": record.to_kafka_record(),
+                            },
                         )
+                        for record in publishable
+                    ],
+                )
+                await self._mark_queued_after_publish(
+                    [r.id for r, ok in zip(publishable, acked) if ok]
+                )
         except Exception as e:
             self.logger.error(f"Transaction on_new_records failed: {str(e)}")
             raise e
@@ -1010,30 +1195,62 @@ class DataSourceEntitiesProcessor:
             processed_record = await self._process_record(record, [], tx_store)
 
             # Skip publishing update events for records with AUTO_INDEX_OFF status
-            if hasattr(processed_record, 'indexing_status') and processed_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
+            if processed_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
                 self.logger.debug(
                     f"Skipping content update event for record {record.id} with AUTO_INDEX_OFF status"
                 )
                 return
 
-            # Reset indexing status to QUEUED before sending update event
-            current_status = processed_record.indexing_status if hasattr(processed_record, 'indexing_status') else None
-            if current_status != ProgressStatus.QUEUED.value:
-                await self._reset_indexing_status_to_queued(record.id, tx_store)
+        # Publish after the transaction commits. Publishing inside it would put the
+        # event on the topic even if the transaction went on to roll back.
+        await self.messaging_producer.send_message(
+            "record-events",
+            {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
+            key=record.id
+        )
+        await self._mark_queued_after_publish([record.id])
 
-            await self.messaging_producer.send_message(
-                "record-events",
-                {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
-                key=record.id
-            )
+    def _preserve_indexing_state(self, record: Record, existing_record: Record) -> None:
+        """Carry the stored indexing lifecycle onto a metadata-only write.
+
+        These fields belong to the indexing pipeline, not to a metadata refresh.
+        The caller supplies a record it hydrated for its own purpose — GitLab's
+        commit-timestamp backfill reads every record up front and writes them back
+        minutes later — so whatever it carries is a stale snapshot, and
+        to_arango_base_record rewrites the whole document. On top of that,
+        _process_record resets a COMPLETED record to NOT_STARTED to request a
+        re-index, but this path publishes no event and nothing consumes
+        NOT_STARTED, which strands the record permanently.
+        """
+        record.indexing_status = existing_record.indexing_status
+        record.parsing_status = existing_record.parsing_status
+        record.extraction_status = existing_record.extraction_status
+        record.processing_started_at = existing_record.processing_started_at
+        record.reason = existing_record.reason
+        record.is_vlm_ocr_processed = existing_record.is_vlm_ocr_processed
+        # A connector may legitimately report these from the source, so keep its
+        # value when it has one and fall back to what is stored otherwise.
+        # size_in_bytes=0 is valid (empty file) — only fall back when unset.
+        record.md5_hash = record.md5_hash or existing_record.md5_hash
+        if record.size_in_bytes is None:
+            record.size_in_bytes = existing_record.size_in_bytes
+        record.storage_document_id = (
+            record.storage_document_id or existing_record.storage_document_id
+        )
 
     @retry_on_deadlock()
     async def on_record_metadata_update(self, record: Record) -> None:
+        """Persist source-metadata changes (timestamps, name, url) for an existing record.
+
+        Leaves the indexing lifecycle untouched — see ``_preserve_indexing_state``.
+        """
         async with self.data_store_provider.transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
             processed_record = await self._process_record(record, [], tx_store)
             if processed_record:
+                if existing_record is not None:
+                    self._preserve_indexing_state(processed_record, existing_record)
                 await self._handle_updated_record(processed_record, existing_record, tx_store)
 
     @retry_on_deadlock()
@@ -1067,7 +1284,8 @@ class DataSourceEntitiesProcessor:
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 for old_external_id, new_record, permissions in moves:
-                    new_record.org_id = self.org_id
+                    if not new_record.org_id:
+                        new_record.org_id = self.org_id
 
                     old_record = await tx_store.get_record_by_external_id(
                         connector_id=new_record.connector_id,
@@ -1092,13 +1310,37 @@ class DataSourceEntitiesProcessor:
                     # Reuse the existing DB vertex id so all downstream edges
                     # (permissions, belongs-to, etc.) survive the path change.
                     new_record.id = old_record.id
-                    
+
+                    # Keep stored Git/source timestamps when the connector did not
+                    # supply real ones (e.g. rename path with null timestamps).
+                    if new_record.source_created_at is None:
+                        new_record.source_created_at = old_record.source_created_at
+                    if new_record.source_updated_at is None:
+                        new_record.source_updated_at = old_record.source_updated_at
+
+                    # Same contract as _process_record: connectors that leave version
+                    # at 0 (GitLab) inherit / bump on content change; placeholders are
+                    # not content versions (stub refresh keeps stored; stub→real = 0).
+                    if new_record.version == 0:
+                        if new_record.is_placeholder:
+                            new_record.version = old_record.version
+                        elif old_record.is_placeholder:
+                            new_record.version = 0
+                        else:
+                            new_record.version = old_record.version + (
+                                1 if content_changed else 0
+                            )
+
                     if old_record.indexing_status == ProgressStatus.COMPLETED.value:
                         if not content_changed:
                             # If the old record is completed and content hasn't changed,
                             # preserve the completed status for the new record
                             new_record.indexing_status = ProgressStatus.COMPLETED.value
-                    record_group_id = await self._handle_record_group(new_record, tx_store)
+                    record_group_id = (
+                        None
+                        if new_record.origin == OriginTypes.UPLOAD
+                        else await self._handle_record_group(new_record, tx_store)
+                    )
 
                     if content_changed:
                         if new_record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
@@ -1112,68 +1354,148 @@ class DataSourceEntitiesProcessor:
 
                     # existing_record=None forces _handle_parent_record to build a
                     # fresh parent edge (the stale one was deleted above).
-                    await self._handle_parent_record(new_record, tx_store, existing_record=None)
+                    if new_record.origin == OriginTypes.UPLOAD:
+                        # Re-point the KB PARENT_CHILD edge by _key; a None parent means
+                        # the record moved to KB root (no edge). belongsTo / inheritPermissions
+                        # already exist on the reused vertex, so the idempotent re-link is a
+                        # no-op unless they were missing.
+                        if new_record.parent_external_record_id:
+                            await tx_store.create_record_relation(
+                                new_record.parent_external_record_id,
+                                new_record.id,
+                                RecordRelations.PARENT_CHILD.value,
+                            )
+                        await self._link_kb_record_to_app(new_record, tx_store)
+                    else:
+                        await self._handle_parent_record(new_record, tx_store, existing_record=None)
                     await self._handle_record_permissions(new_record, permissions, tx_store)
 
 
             # Publish events outside the transaction.
-            for record in new_records_to_publish:
-                if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
-                    continue
-                if record.is_internal:
-                    continue
-                await self.messaging_producer.send_message(
+            def _publishable(candidates: list[Record]) -> list[Record]:
+                return [
+                    r
+                    for r in candidates
+                    if r.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+                    and not r.is_internal
+                ]
+
+            new_batch = _publishable(new_records_to_publish)
+            if new_batch:
+                await self.messaging_producer.send_messages(
                     "record-events",
-                    {
-                        "eventType": "newRecord",
-                        "timestamp": get_epoch_timestamp_in_ms(),
-                        "payload": record.to_kafka_record(),
-                    },
-                    key=record.id,
+                    [
+                        (
+                            record.id,
+                            {
+                                "eventType": "newRecord",
+                                "timestamp": get_epoch_timestamp_in_ms(),
+                                "payload": record.to_kafka_record(),
+                            },
+                        )
+                        for record in new_batch
+                    ],
                 )
 
-            for record in records_to_reindex:
+            reindex_batch = _publishable(records_to_reindex)
+            for record in reindex_batch:
                 self.logger.info(
                     "Firing updateRecord event for moved record %s (id=%s): content changed",
                     record.record_name,
                     record.id,
                 )
-                if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
-                    continue
-                if record.is_internal:
-                    continue
-                await self.messaging_producer.send_message(
+            if reindex_batch:
+                await self.messaging_producer.send_messages(
                     "record-events",
-                    {
-                        "eventType": "updateRecord",
-                        "timestamp": get_epoch_timestamp_in_ms(),
-                        "payload": record.to_kafka_record(),
-                    },
-                    key=record.id,
+                    [
+                        (
+                            record.id,
+                            {
+                                "eventType": "updateRecord",
+                                "timestamp": get_epoch_timestamp_in_ms(),
+                                "payload": record.to_kafka_record(),
+                            },
+                        )
+                        for record in reindex_batch
+                    ],
                 )
 
         except Exception as e:
             self.logger.error(f"on_records_moved failed: {e}", exc_info=True)
             raise
 
+    async def _publish_delete_events(self, event_data: dict | None) -> None:
+        """Publish deleteRecord events (Qdrant vector cleanup) for a delete result.
+
+        Called AFTER the DB transaction commits so the graph vertex is gone before
+        the indexing consumer runs its cleanup — a guard there skips vector deletion
+        while a graph record still references the virtualRecordId.
+        """
+        if not event_data:
+            return
+        for payload in event_data.get("payloads", []):
+            await self.messaging_producer.send_message(
+                "record-events",
+                {
+                    "eventType": "deleteRecord",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                    "payload": payload,
+                },
+                key=payload.get("recordId"),
+            )
+
     @retry_on_deadlock()
     async def on_record_deleted(self, record_id: str) -> None:
-        async with self.data_store_provider.transaction() as tx_store:
-            await tx_store.delete_record_by_key(record_id)
+        """Shallow per-record delete for connectors (GitHub, GitLab, Drive, …).
 
-    @retry_on_deadlock()
-    async def on_folder_deleted(self, record_id: str) -> None:
-        """Delete a folder record and its incoming PARENT_CHILD edge atomically.
-
-        Plain ``on_record_deleted`` only removes the vertex; it leaves any
-        ``PARENT_CHILD`` edge from the parent folder pointing at the now-absent
-        node.  For the folder cascade cleanup we need to remove both together so
-        the parent folder's child-list is correct when we evaluate it on the
-        next iteration of the cascade loop.
+        Removes the record vertex, every edge on it, and its isOfType type doc.
+        Does not walk PARENT_CHILD / ATTACHMENT — connectors own hierarchy
+        (delete blobs then empty folders). Publishes deleteRecord when the
+        record had a virtualRecordId so indexing can drop Qdrant vectors.
         """
         async with self.data_store_provider.transaction() as tx_store:
-            await tx_store.delete_parent_child_edge_to_record(record_id)
-            await tx_store.delete_record_by_key(record_id)
+            result = await tx_store.delete_single_record(record_id)
+        await self._publish_delete_events((result or {}).get("eventData"))
+
+    @retry_on_deadlock()
+    async def on_records_deleted_cascade(
+        self, record_ids: list[str], connector_id: str
+    ) -> dict:
+        """Recursively delete records — the single delete path for files, folders and
+        multi-record deletes, generic across KB and connectors.
+
+        A folder is just a record with children, so there is no folder/file special-casing:
+        each root id is deleted together with its whole containment subtree (a leaf yields
+        just itself; a folder/container yields all descendants). Scoped by
+        ``connectorId == connector_id`` (kb_id for a KB). Returns the provider result
+        (counts, deleted/failed) for the HTTP response and publishes one deleteRecord event
+        per deleted record that has a virtualRecordId (Qdrant cleanup).
+        """
+        if not record_ids:
+            return {
+                "success": True,
+                "deleted_records": [],
+                "failed_records": [],
+                "total_requested": 0,
+                "successfully_deleted": 0,
+                "failed_count": 0,
+            }
+        async with self.data_store_provider.transaction() as tx_store:
+            result = await tx_store.delete_records_recursive(record_ids, connector_id)
+        if (result or {}).get("successfully_deleted"):
+            # Before publishing: the transaction has committed, so the records are
+            # already gone, and _publish_delete_events can fail. Invalidating
+            # afterwards would leave the cache serving deleted records until the
+            # TTL expired whenever publication threw. A concurrent read that
+            # repopulates between these two lines reads post-delete state, so
+            # moving this earlier cannot cache anything stale.
+            #
+            # No-ops unless connector_id is a KB; connectors invalidate on sync
+            # completion instead, so a mid-sync delete does not thrash the cache.
+            await notify_kb_records_changed(connector_id)
+        await self._publish_delete_events((result or {}).get("eventData"))
+        return result
+
 
     @retry_on_deadlock()
     async def reindex_existing_records(self, records: list[Record]) -> None:
@@ -1190,46 +1512,64 @@ class DataSourceEntitiesProcessor:
                 self.logger.info("No records to reindex")
                 return
 
+            existing_keys = await self.data_store_provider.get_existing_record_keys(
+                [r.id for r in records]
+            )
+
+            to_publish: list[Record] = []
+            missing = 0
             skipped_records = 0
-
-            # Verify records exist in database before reindexing
-            existing_records: list[Record] = []
-            async with self.data_store_provider.transaction() as tx_store:
-                for record in records:
-                    # Check if record exists in database
-                    existing = await tx_store.get_record_by_key(record.id)
-                    if not existing:
-                        self.logger.warning(
-                            f"Skipping reindex for record {record.id} ({record.record_name}): "
-                            f"record not found in database"
-                        )
-                        continue
-
-                    existing_records.append(record)
-                    current_status = record.indexing_status if hasattr(record, 'indexing_status') else None
-                    if current_status != ProgressStatus.QUEUED.value and not record.is_internal:
-                        await self._reset_indexing_status_to_queued(record.id, tx_store)
-
-            # Now send the reindex events
             for record in records:
+                if record.id not in existing_keys:
+                    self.logger.warning(
+                        f"Skipping reindex for record {record.id} ({record.record_name}): "
+                        f"record not found in database"
+                    )
+                    missing += 1
+                    continue
                 if record.is_internal:
                     self.logger.debug(f"Skipping reindex event for internal record {record.id}")
                     skipped_records += 1
                     continue
+                if record.is_placeholder:
+                    self.logger.debug(f"Skipping reindex event for placeholder record {record.id}")
+                    skipped_records += 1
+                    continue
+                to_publish.append(record)
 
-                payload = record.to_kafka_record()
+            if not to_publish:
+                return
 
-                await self.messaging_producer.send_message(
-                    "record-events",
-                    {
-                        "eventType": "reindexRecord",
-                        "timestamp": get_epoch_timestamp_in_ms(),
-                        "payload": payload
-                    },
-                    key=record.id
-                )
+            acked = await self.messaging_producer.send_messages(
+                "record-events",
+                [
+                    (
+                        record.id,
+                        {
+                            "eventType": "reindexRecord",
+                            "timestamp": get_epoch_timestamp_in_ms(),
+                            # An explicit reindex must re-run even when the record is
+                            # already COMPLETED; without this the consumer's
+                            # already-indexed guard skips it and reindex silently
+                            # does nothing for a healthy corpus.
+                            "payload": {**record.to_kafka_record(), "forceReindex": True},
+                        },
+                    )
+                    for record in to_publish
+                ],
+            )
 
-            self.logger.debug(f"Published reindex events for {len(records) - skipped_records} records and skipped {skipped_records} internal records")
+            # Only records whose event actually reached the broker may be marked
+            # QUEUED; marking a failed publish would strand the record, since nothing
+            # consumes QUEUED.
+            published_ids = [r.id for r, ok in zip(to_publish, acked) if ok]
+            await self._mark_queued_after_publish(published_ids)
+
+            self.logger.debug(
+                f"Published reindex events for {len(published_ids)} records; "
+                f"skipped {skipped_records} internal, {missing} missing, "
+                f"{len(to_publish) - len(published_ids)} failed to publish"
+            )
         except Exception as e:
             self.logger.error(f"Failed to publish reindex events: {str(e)}")
             raise e
@@ -1660,6 +2000,10 @@ class DataSourceEntitiesProcessor:
             return None
         return User.from_arango_user(raw) if isinstance(raw, dict) else raw
 
+    async def get_users_with_permission_to_node(self, node_id: str, node_collection: str) -> list[User]:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_users_with_permission_to_node(node_id, node_collection)
+
     async def get_all_app_users(self, connector_id: str) -> list[AppUser]:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_app_users(self.org_id, connector_id)
@@ -1685,6 +2029,26 @@ class DataSourceEntitiesProcessor:
                 connector_id=connector_id,
                 parent_external_record_id=parent_external_record_id,
                 record_type=record_type,
+            )
+
+    async def get_placeholder_records(
+        self,
+        connector_id: str,
+        record_group_id: str | None = None,
+    ) -> list[Record]:
+        """Return unreconciled placeholder (stub) records for a connector.
+
+        Used by a connector's post-sync sweep to backfill ancestors that were
+        never synced (e.g. filtered out of scope). Pass ``record_group_id`` to
+        scope the sweep to a single record group.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_records_by_status(
+                org_id=self.org_id,
+                connector_id=connector_id,
+                status_filters=None,
+                record_group_id=record_group_id,
+                is_placeholder=True,
             )
 
     async def get_app_by_id(self, connector_id: str) -> AppMetadata | None:

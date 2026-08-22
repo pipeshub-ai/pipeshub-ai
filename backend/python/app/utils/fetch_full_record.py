@@ -25,7 +25,7 @@ class FetchFullRecordArgs(BaseModel):
     record_ids: list[str] = Field(
         ...,
         description=(
-            "List of Record IDs to fetch. Each Record ID is shown in the 'Record ID :' line "
+            "List of Record IDs to fetch. Each Record ID is shown in the 'Record ID:' line "
             "of the record's context metadata in the conversation. "
             "Use ONLY the exact Record IDs from the context — do NOT invent, guess, or reuse example IDs. "
             "Pass ALL record IDs in a single call."
@@ -151,15 +151,21 @@ async def _fetch_multiple_records_impl(
     graph_provider: IGraphDBProvider | None = None,
     blob_store: BlobStorage | None = None,
     org_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Fetch multiple complete records at once.
     For SQL_TABLE records, also enriches with FK parent/child record IDs.
 
     If a record_id is not found in the map, attempts to:
+    0. Verify the user may read it (the map itself is already ACL-filtered,
+       an arbitrary id is not), skipping the record when they may not
     1. Fetch the Record from graph_provider to get virtual_record_id
     2. Fetch the record content from blob_store
     3. Enrich with FK relations if SQL_TABLE
+
+    Without `user_id` the check cannot run, so the id-resolution path is
+    skipped entirely rather than served unchecked.
 
     Returns:
     {
@@ -207,7 +213,12 @@ async def _fetch_multiple_records_impl(
             found_records.append(found_record)
             continue
 
-        if org_id and graph_provider:
+        if org_id and graph_provider and user_id:
+            access = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
+            if not access:
+                not_available_ids.append(record_id)
+                continue
+
             try:
                 graphDb_record = await graph_provider.get_document(
                                 document_key=record_id,
@@ -272,6 +283,7 @@ def create_fetch_full_record_tool(
     org_id: str | None = None,
     graph_provider: IGraphDBProvider | None = None,
     blob_store: BlobStorage | None = None,
+    user_id: str | None = None,
 ) -> Callable:
     """
     Factory function to create the tool with runtime dependencies injected.
@@ -282,18 +294,44 @@ def create_fetch_full_record_tool(
                         with FK parent/child relations and resolving record IDs
         blob_store: Optional blob storage for fetching records not in the map
         org_id: Optional organization ID for blob storage lookups
+        user_id: Requesting user, required to resolve a record ID that is not
+                 already in the (ACL-filtered) map — see
+                 `_fetch_multiple_records_impl`
     """
     @tool("fetch_full_record", args_schema=FetchFullRecordArgs)
     async def fetch_full_record_tool(record_ids: list[str], reason: str = "Fetching full record content for comprehensive answer") -> dict[str, Any]:
-        """Fetch the complete content of one or more records when the provided blocks are insufficient to answer the query. Pass ALL record IDs in a SINGLE call using the record_ids parameter.
+        """Read one or more records end to end. Search gives you a few matching blocks per record; lookup_record/navigate/list_files give you an ID and metadata and no content at all; this gives you everything.
 
-        IMPORTANT: record_ids must be taken directly from the 'Record ID :' field shown in the context metadata for each record. Do NOT use invented IDs, example IDs that are not present in the current context.
+        Call this BEFORE answering whenever what you currently hold is
+        incomplete for what the question needs:
+
+        - The answer is a property of the whole document — a summary or
+          overview, its risks/gaps/obligations/key points, a review or
+          assessment, a comparison of documents, whether it mentions something
+          anywhere, anything asking for all of something. A handful of blocks
+          CANNOT support that answer, however relevant they look, because the
+          parts you were not given are exactly what you would be implying are
+          unimportant.
+        - You hold no passage at all — the record came from lookup, navigation
+          or listing, so you have its ID and metadata and nothing it says.
+          Never infer content from a title.
+
+        (Skip only when the exact fact needed — a date, a name, a number, a
+        status, one clause — is already visible in a block you hold, or
+        metadata alone settles the question outright, e.g. a ticket's status
+        or assignee.)
+
+        Those are illustrations, not a checklist — apply the same reasoning to
+        whatever was actually asked.
+
+        Pass every record_id you need in ONE call, taken from a candidate list, a
+        'Record ID' field, a record_id= or node_id= shown by navigation — never invent IDs.
 
         For SQL_TABLE records, also returns fk_parent_record_ids and fk_child_record_ids
         which can be used to fetch related tables for nested FK relationships.
 
         Args:
-            record_ids: List of Record IDs to fetch — use the exact 'Record ID :' values from the context
+            record_ids: List of Record IDs to fetch — use the exact Record ID values from the context
             reason: Brief explanation of why the full records are needed
 
         Returns: Complete content of the records or {"ok": false, "error": "..."}.
@@ -310,6 +348,7 @@ def create_fetch_full_record_tool(
                 org_id=org_id,
                 graph_provider=graph_provider,
                 blob_store=blob_store,
+                user_id=user_id,
             )
         except Exception as e:
             # Return error as dict

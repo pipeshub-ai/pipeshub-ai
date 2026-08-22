@@ -39,6 +39,12 @@ export function connectionError(
   if (st === 'web-search' && (tt !== 'agent-core' || connection.targetHandle !== 'toolsets')) {
     return 'agentBuilder.connectionWebSearchToToolsets';
   }
+  if (st.startsWith('skill-') && (tt !== 'agent-core' || connection.targetHandle !== 'skills')) {
+    return 'agentBuilder.connectionSkillToSkillsHandle';
+  }
+  if (st.startsWith('mcp-') && (tt !== 'agent-core' || connection.targetHandle !== 'mcpServers')) {
+    return 'agentBuilder.connectionMcpToMcpServersHandle';
+  }
   if (
     st.startsWith('tool-') &&
     !st.startsWith('tool-group-') &&
@@ -165,6 +171,20 @@ export function applyAutoConnectToEdges(
       target: agent.id,
       sourceHandle: 'results',
       targetHandle: 'toolsets',
+    });
+  } else if (st.startsWith('skill-')) {
+    proposals.push({
+      source: droppedNode.id,
+      target: agent.id,
+      sourceHandle: 'output',
+      targetHandle: 'skills',
+    });
+  } else if (st.startsWith('mcp-')) {
+    proposals.push({
+      source: droppedNode.id,
+      target: agent.id,
+      sourceHandle: 'output',
+      targetHandle: 'mcpServers',
     });
   } else if (st.startsWith('connector-group-')) {
     if (outs.includes('context')) {

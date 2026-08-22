@@ -68,7 +68,8 @@ export class TokenManagerContainer {
         .toConstantValue(redisService);
 
       // Initialize KeyValueStoreService for PrometheusService dependency
-      const configurationManagerConfig = container.get<ConfigurationManagerConfig>('ConfigurationManagerConfig');
+      const configurationManagerConfig =
+        container.get<ConfigurationManagerConfig>('ConfigurationManagerConfig');
       const keyValueStoreService = KeyValueStoreService.getInstance(
         configurationManagerConfig,
       );
@@ -79,7 +80,10 @@ export class TokenManagerContainer {
 
       // Create broker-agnostic message producer
       const brokerConfig = resolveMessageBrokerConfig(config);
-      const messageProducer = createMessageProducer(brokerConfig, container.get('Logger'));
+      const messageProducer = createMessageProducer(
+        brokerConfig,
+        container.get('Logger'),
+      );
       await messageProducer.connect();
 
       container
@@ -123,10 +127,15 @@ export class TokenManagerContainer {
 
       const jwtSecret = config.jwtSecret;
       const scopedJwtSecret = config.scopedJwtSecret;
-      const authTokenService = new AuthTokenService(
-        jwtSecret || ' ',
-        scopedJwtSecret || ' ',
-      );
+      // Substituting a placeholder here authenticated the gateway with a secret
+      // that is published in this repository: any token signed with it verifies.
+      // A missing secret must stop startup, not silently weaken auth.
+      if (!jwtSecret || !scopedJwtSecret) {
+        throw new Error(
+          'JWT secrets are not configured; refusing to start the token manager',
+        );
+      }
+      const authTokenService = new AuthTokenService(jwtSecret, scopedJwtSecret);
       const authMiddleware = new AuthMiddleware(
         container.get('Logger'),
         authTokenService,

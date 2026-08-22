@@ -50,7 +50,8 @@ def _make_processor(**overrides):
         "sink_orchestrator": MagicMock(),
     }
     kwargs.update(overrides)
-    with patch("app.events.processor.DoclingClient"):
+    with patch("app.events.processor.DoclingClient"), \
+         patch("app.events.processor.DoclingProcessor"):
         proc = Processor(**kwargs)
     return proc
 
@@ -84,7 +85,7 @@ async def _collect_events(async_gen):
 
 # ===================================================================
 # Lines 156-157: process_image - non-DocumentProcessingError wrapping
-# When batch_update_nodes raises a generic Exception (not
+# When update_node raises a generic Exception (not
 # DocumentProcessingError), it should be wrapped.
 # ===================================================================
 
@@ -97,8 +98,7 @@ class TestProcessImageNonDocError:
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="photo.png", mimeType="image/png")
         )
-        # batch_update_nodes raises a generic error
-        proc.graph_provider.batch_update_nodes = AsyncMock(
+        proc.graph_provider.update_node = AsyncMock(
             side_effect=RuntimeError("db connection lost")
         )
 
@@ -132,8 +132,13 @@ class TestProcessPdfWithOcrVlmPageParseFail:
         })
         proc.config_service = mock_config
 
-        with patch("app.events.processor.OCRHandler") as MockOCR, \
-             patch("app.events.processor.DoclingProcessor") as MockDocling:
+        mock_processor = AsyncMock()
+        mock_processor.parse_document = AsyncMock(
+            side_effect=RuntimeError("parse failed for page")
+        )
+        proc.docling_processor = mock_processor
+
+        with patch("app.events.processor.OCRHandler") as MockOCR:
             mock_ocr = AsyncMock()
             mock_ocr.process_document = AsyncMock(return_value={
                 "pages": [
@@ -142,13 +147,7 @@ class TestProcessPdfWithOcrVlmPageParseFail:
             })
             MockOCR.return_value = mock_ocr
 
-            mock_processor = AsyncMock()
-            mock_processor.parse_document = AsyncMock(
-                side_effect=RuntimeError("parse failed for page")
-            )
-            MockDocling.return_value = mock_processor
-
-            with pytest.raises(RuntimeError, match="parse failed for page"):
+            with pytest.raises(DocumentProcessingError, match="parse failed for page"):
                 await _collect_events(
                     proc.process_pdf_document_with_ocr(
                         "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
@@ -174,8 +173,14 @@ class TestProcessPdfWithOcrVlmBlocksFail:
         })
         proc.config_service = mock_config
 
-        with patch("app.events.processor.OCRHandler") as MockOCR, \
-             patch("app.events.processor.DoclingProcessor") as MockDocling:
+        mock_processor = AsyncMock()
+        mock_processor.parse_document = AsyncMock(return_value=MagicMock())
+        mock_processor.create_blocks = AsyncMock(
+            side_effect=RuntimeError("block creation failed")
+        )
+        proc.docling_processor = mock_processor
+
+        with patch("app.events.processor.OCRHandler") as MockOCR:
             mock_ocr = AsyncMock()
             mock_ocr.process_document = AsyncMock(return_value={
                 "pages": [
@@ -184,14 +189,7 @@ class TestProcessPdfWithOcrVlmBlocksFail:
             })
             MockOCR.return_value = mock_ocr
 
-            mock_processor = AsyncMock()
-            mock_processor.parse_document = AsyncMock(return_value=MagicMock())
-            mock_processor.create_blocks = AsyncMock(
-                side_effect=RuntimeError("block creation failed")
-            )
-            MockDocling.return_value = mock_processor
-
-            with pytest.raises(RuntimeError, match="block creation failed"):
+            with pytest.raises(DocumentProcessingError, match="block creation failed"):
                 await _collect_events(
                     proc.process_pdf_document_with_ocr(
                         "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
@@ -263,8 +261,16 @@ class TestProcessPdfWithOcrVlmChunkProcessing:
         ]
         page2_container = BlocksContainer(blocks=page2_blocks, block_groups=page2_groups)
 
+        mock_processor = AsyncMock()
+        # parse_document called for each page
+        mock_processor.parse_document = AsyncMock(side_effect=[MagicMock(), MagicMock()])
+        # create_blocks returns different containers for each page
+        mock_processor.create_blocks = AsyncMock(
+            side_effect=[page1_container, page2_container]
+        )
+        proc.docling_processor = mock_processor
+
         with patch("app.events.processor.OCRHandler") as MockOCR, \
-             patch("app.events.processor.DoclingProcessor") as MockDocling, \
              patch("app.events.processor.IndexingPipeline") as MockPipeline:
             mock_ocr = AsyncMock()
             mock_ocr.process_document = AsyncMock(return_value={
@@ -274,15 +280,6 @@ class TestProcessPdfWithOcrVlmChunkProcessing:
                 ],
             })
             MockOCR.return_value = mock_ocr
-
-            mock_processor = AsyncMock()
-            # parse_document called for each page
-            mock_processor.parse_document = AsyncMock(side_effect=[MagicMock(), MagicMock()])
-            # create_blocks returns different containers for each page
-            mock_processor.create_blocks = AsyncMock(
-                side_effect=[page1_container, page2_container]
-            )
-            MockDocling.return_value = mock_processor
 
             proc.graph_provider.get_document = AsyncMock(
                 return_value=_mock_record_dict()
@@ -308,45 +305,20 @@ class TestProcessPdfWithOcrVlmChunkProcessing:
 class TestProcessPdfWithOcrBoundingBoxError:
     @pytest.mark.asyncio
     async def test_bounding_box_parse_error_falls_back(self):
-        """Malformed bounding_box triggers TypeError/KeyError and sets bounding_boxes=None."""
+        """AzureDI provider is not yet supported; raises IndexingError."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
         proc = _make_processor()
-
-        mock_config = AsyncMock()
-        mock_config.get_config = AsyncMock(return_value={
+        proc.config_service.get_config = AsyncMock(return_value={
             "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
             "llm": [],
         })
-        proc.config_service = mock_config
-
-        with patch("app.events.processor.OCRHandler") as MockOCR, \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline:
-            mock_ocr = AsyncMock()
-            # Return blocks as already-constructed Block objects to skip the bounding_box parsing
-            from app.models.blocks import Block, BlockType, DataFormat, CitationMetadata
-            prebuilt_block = Block(
-                index=0, type=BlockType.TEXT, format=DataFormat.TXT,
-                data="some text",
-                citation_metadata=CitationMetadata(page_number=1),
-            )
-            mock_ocr.process_document = AsyncMock(return_value={
-                "blocks": [prebuilt_block],
-                "tables": [],
-            })
-            MockOCR.return_value = mock_ocr
-
-            proc.graph_provider.get_document = AsyncMock(
-                return_value=_mock_record_dict()
-            )
-            MockPipeline.return_value.apply = AsyncMock()
-
-            events = await _collect_events(
+        with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+            await _collect_events(
                 proc.process_pdf_document_with_ocr(
                     "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
                 )
             )
-
-        assert any(e.event == "parsing_complete" for e in events)
-        assert any(e.event == "indexing_complete" for e in events)
 
 
 # ===================================================================
@@ -358,41 +330,20 @@ class TestProcessPdfWithOcrBoundingBoxError:
 class TestProcessPdfWithOcrEmptyTableRows:
     @pytest.mark.asyncio
     async def test_block_group_children_set_to_none(self):
-        """Block groups with no matching table_rows have children set to None."""
-        from app.models.blocks import BlockGroup, GroupType
-
+        """AzureDI provider is not yet supported; raises IndexingError."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
         proc = _make_processor()
-
-        mock_config = AsyncMock()
-        mock_config.get_config = AsyncMock(return_value={
+        proc.config_service.get_config = AsyncMock(return_value={
             "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
             "llm": [],
         })
-        proc.config_service = mock_config
-
-        table_group = BlockGroup(index=99, type=GroupType.TABLE)
-
-        with patch("app.events.processor.OCRHandler") as MockOCR, \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline:
-            mock_ocr = AsyncMock()
-            mock_ocr.process_document = AsyncMock(return_value={
-                "blocks": [],
-                "tables": [table_group],
-            })
-            MockOCR.return_value = mock_ocr
-
-            proc.graph_provider.get_document = AsyncMock(
-                return_value=_mock_record_dict()
-            )
-            MockPipeline.return_value.apply = AsyncMock()
-
-            events = await _collect_events(
+        with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+            await _collect_events(
                 proc.process_pdf_document_with_ocr(
                     "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
                 )
             )
-
-        assert any(e.event == "indexing_complete" for e in events)
 
 
 # ===================================================================
@@ -404,35 +355,60 @@ class TestProcessPdfWithOcrEmptyTableRows:
 class TestEnhanceTablesDataNoneAndTableMetadata:
     @pytest.mark.asyncio
     async def test_table_group_data_none_set_to_dict(self):
-        """When table_group.data is None and response exists, data is set to {}."""
-        from app.models.blocks import BlockGroup, BlocksContainer, GroupType, TableMetadata
+        """Enrichment result propagates to table_group.data (summary + column_headers)."""
+        from app.models.blocks import (
+            Block,
+            BlockGroup,
+            BlockGroupChildren,
+            BlocksContainer,
+            BlockType,
+            DataFormat,
+            GroupType,
+            IndexRange,
+            TableMetadata,
+            TableRowMetadata,
+        )
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
 
         proc = _make_processor()
+
+        row_block = Block(
+            index=0,
+            type=BlockType.TABLE_ROW,
+            format=DataFormat.TXT,
+            data={"cells": ["1", "2"]},
+            table_row_metadata=TableRowMetadata(is_header=False),
+        )
 
         bg = BlockGroup(
             index=0,
             type=GroupType.TABLE,
             data={"table_markdown": "| a | b |\n| 1 | 2 |"},
+            children=BlockGroupChildren(
+                block_ranges=[IndexRange(start=0, end=0)],
+                block_group_ranges=[],
+            ),
             table_metadata=TableMetadata(column_names=[]),
         )
-        bc = BlocksContainer(blocks=[], block_groups=[bg])
+        bc = BlocksContainer(blocks=[row_block], block_groups=[bg])
 
-        mock_response = MagicMock()
-        mock_response.summary = "Test summary"
-        mock_response.headers = ["col_a", "col_b"]
+        result = TableEnrichmentResult(
+            summary="Test summary",
+            headers=["col_a", "col_b"],
+            header_row_count=0,
+            descriptions=["Row 1 description"],
+        )
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
+            return_value=result,
         ):
-            await proc._enhance_tables_with_llm(bc)
+            await enhance_tables_with_llm(bc, proc.config_service, proc.logger, llm=MagicMock())
 
-        # Verify data was updated with summary and headers
         assert bg.data["table_summary"] == "Test summary"
         assert bg.data["column_headers"] == ["col_a", "col_b"]
-        # Line 715: column_names updated
-        assert bg.table_metadata.column_names == ["col_a", "col_b"]
+        assert row_block.data["row_natural_language_text"] == "Row 1 description"
 
 
 # ===================================================================
@@ -455,10 +431,11 @@ class TestEnhanceTablesOldFormatChildren:
             GroupType,
             TableRowMetadata,
         )
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
 
         proc = _make_processor()
 
-        # Create a table row block with cells that are NOT a list => row_dicts.append({})
+        # Create a table row block with cells that are NOT a list
         row_block = Block(
             index=0,
             type=BlockType.TABLE_ROW,
@@ -477,20 +454,19 @@ class TestEnhanceTablesOldFormatChildren:
         )
         bc = BlocksContainer(blocks=[row_block], block_groups=[bg])
 
-        mock_response = MagicMock()
-        mock_response.summary = "Summary"
-        mock_response.headers = ["col_a"]
+        result = TableEnrichmentResult(
+            summary="Summary",
+            headers=["col_a"],
+            header_row_count=0,
+            descriptions=["Row 1 description"],
+        )
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["Row 1 description"], None),
+            return_value=result,
         ):
-            await proc._enhance_tables_with_llm(bc)
+            await enhance_tables_with_llm(bc, proc.config_service, proc.logger, llm=MagicMock())
 
     @pytest.mark.asyncio
     async def test_old_format_with_list_cells(self):
@@ -505,6 +481,7 @@ class TestEnhanceTablesOldFormatChildren:
             GroupType,
             TableRowMetadata,
         )
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
 
         proc = _make_processor()
 
@@ -526,20 +503,19 @@ class TestEnhanceTablesOldFormatChildren:
         )
         bc = BlocksContainer(blocks=[row_block], block_groups=[bg])
 
-        mock_response = MagicMock()
-        mock_response.summary = "Summary"
-        mock_response.headers = ["col_a", "col_b"]
+        result = TableEnrichmentResult(
+            summary="Summary",
+            headers=["col_a", "col_b"],
+            header_row_count=0,
+            descriptions=["Row desc"],
+        )
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["Row desc"], None),
+            return_value=result,
         ):
-            await proc._enhance_tables_with_llm(bc)
+            await enhance_tables_with_llm(bc, proc.config_service, proc.logger, llm=MagicMock())
 
 
 # ===================================================================
@@ -550,7 +526,13 @@ class TestEnhanceTablesOldFormatChildren:
 class TestEnhanceTablesRowDescriptionException:
     @pytest.mark.asyncio
     async def test_get_rows_text_exception_caught(self):
-        """Exception from get_rows_text is caught and logged as warning."""
+        """Exception from enrich_table_grid on the only table degrades the row text
+
+        rather than propagating, since enhance_tables_with_llm only raises when every
+        attempted table fails and fail_on_all_errors is left at its default True -
+        which is exactly this single-table case, so we pass fail_on_all_errors=False
+        to assert the per-table catch-and-degrade behavior instead.
+        """
         from app.models.blocks import (
             Block,
             BlockGroup,
@@ -562,6 +544,7 @@ class TestEnhanceTablesRowDescriptionException:
             IndexRange,
             TableRowMetadata,
         )
+        from app.utils.table_enrichment import enhance_tables_with_llm
 
         proc = _make_processor()
 
@@ -584,21 +567,20 @@ class TestEnhanceTablesRowDescriptionException:
         )
         bc = BlocksContainer(blocks=[row_block], block_groups=[bg])
 
-        mock_response = MagicMock()
-        mock_response.summary = "Summary"
-        mock_response.headers = ["col_a", "col_b"]
-
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
-            new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
             side_effect=RuntimeError("LLM failed"),
         ):
-            # Should not raise -- exception is caught and logged
-            await proc._enhance_tables_with_llm(bc)
+            # Should not raise -- exception is caught and logged, row degrades to
+            # simple text instead.
+            stats = await enhance_tables_with_llm(
+                bc, proc.config_service, proc.logger, llm=MagicMock(), fail_on_all_errors=False
+            )
+
+        assert stats.attempted == 1
+        assert stats.failed == 1
+        assert row_block.data["row_natural_language_text"]
 
 
 # ===================================================================
@@ -874,7 +856,7 @@ class TestProcessDelimitedNonUnicodeError:
 class TestProcessDelimitedOuterException:
     @pytest.mark.asyncio
     async def test_outer_exception_propagated(self):
-        """Exceptions from the pipeline propagate through the outer handler."""
+        """Exceptions from the pipeline propagate through the outer handler wrapped in DocumentProcessingError."""
         csv_parser = MagicMock()
         csv_parser.read_raw_rows.return_value = [["a", "b"], ["1", "2"]]
         csv_parser.find_tables_in_csv.return_value = [
@@ -892,7 +874,7 @@ class TestProcessDelimitedOuterException:
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
-            with pytest.raises(RuntimeError, match="pipeline exploded"):
+            with pytest.raises(DocumentProcessingError, match="pipeline exploded"):
                 await _collect_events(
                     proc.process_delimited_document("test.csv", "r1", b"a,b\n1,2", "vr1")
                 )
@@ -916,7 +898,7 @@ class TestProcessHtmlInputHandling:
         html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
         html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
-        html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
+        html_parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers = {"html": html_parser}
 
         html = b"<html><head><script>alert('x')</script><style>body{}</style></head><body><p>Content</p></body></html>"
@@ -927,7 +909,7 @@ class TestProcessHtmlInputHandling:
                 proc.process_html_document("test.html", "r1", "1", "src", "o1", html, "vr1")
             )
 
-        html_parser.parse.assert_awaited_once()
+        html_parser.parse_to_blocks.assert_awaited_once()
         MockPipeline.return_value.apply.assert_awaited_once()
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
@@ -944,7 +926,7 @@ class TestProcessHtmlInputHandling:
         html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
         html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
-        html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
+        html_parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers = {"html": html_parser}
 
         html_str = "<p>Hello</p>"
@@ -955,7 +937,7 @@ class TestProcessHtmlInputHandling:
                 proc.process_html_document("test.html", "r1", "1", "src", "o1", html_str, "vr1")
             )
 
-        html_parser.parse.assert_awaited_once_with(
+        html_parser.parse_to_blocks.assert_awaited_once_with(
             "<p>Hello</p>", caption_map=None, name="test.html"
         )
         assert any(e.event == "indexing_complete" for e in events)
@@ -1017,7 +999,7 @@ class TestProcessMdImageUrlConversion:
             "# Hello ![img](image_alt_text)",
             [{"url": "https://example.com/img.png", "new_alt_text": "image_alt_text"}],
         )
-        md_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
+        md_parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
 
         image_parser = MagicMock()
         image_parser.urls_to_base64 = AsyncMock(
@@ -1040,7 +1022,7 @@ class TestProcessMdImageUrlConversion:
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
         image_parser.urls_to_base64.assert_called_once()
-        md_parser.parse.assert_awaited_once_with(
+        md_parser.parse_to_blocks.assert_awaited_once_with(
             "# Hello ![img](image_alt_text)",
             caption_map={"image_alt_text": "data:image/png;base64,abc123"},
             name="test.md",
@@ -1066,7 +1048,7 @@ class TestProcessMdImageBlockCaptionMapping:
             [{"url": "https://example.com/img.png", "new_alt_text": "cap1"}],
         )
         mock_blocks = BlocksContainer(blocks=[], block_groups=[])
-        md_parser.parse = AsyncMock(return_value=mock_blocks)
+        md_parser.parse_to_blocks = AsyncMock(return_value=mock_blocks)
 
         image_parser = MagicMock()
         image_parser.urls_to_base64 = AsyncMock(
@@ -1087,7 +1069,7 @@ class TestProcessMdImageBlockCaptionMapping:
             )
 
         assert any(e.event == "indexing_complete" for e in events)
-        md_parser.parse.assert_awaited_once_with(
+        md_parser.parse_to_blocks.assert_awaited_once_with(
             "# Doc\n![cap1](cap1)",
             caption_map={"cap1": "data:image/png;base64,IMAGEDATA"},
             name="test.md",
@@ -1106,7 +1088,7 @@ class TestProcessMdImageBlockCaptionMapping:
             [{"url": "https://example.com/img.png", "new_alt_text": "different_cap"}],
         )
         mock_blocks = BlocksContainer(blocks=[], block_groups=[])
-        md_parser.parse = AsyncMock(return_value=mock_blocks)
+        md_parser.parse_to_blocks = AsyncMock(return_value=mock_blocks)
 
         image_parser = MagicMock()
         image_parser.urls_to_base64 = AsyncMock(
@@ -1127,7 +1109,7 @@ class TestProcessMdImageBlockCaptionMapping:
             )
 
         assert any(e.event == "indexing_complete" for e in events)
-        md_parser.parse.assert_awaited_once_with(
+        md_parser.parse_to_blocks.assert_awaited_once_with(
             "# Doc\n![missing_cap](missing_cap)",
             caption_map={"different_cap": "data:image/png;base64,DATA"},
             name="test.md",
@@ -1146,7 +1128,7 @@ class TestProcessMdImageBlockCaptionMapping:
             [{"url": "https://example.com/img.png", "new_alt_text": "cap1"}],
         )
         mock_blocks = BlocksContainer(blocks=[], block_groups=[])
-        md_parser.parse = AsyncMock(return_value=mock_blocks)
+        md_parser.parse_to_blocks = AsyncMock(return_value=mock_blocks)
 
         image_parser = MagicMock()
         image_parser.urls_to_base64 = AsyncMock(
@@ -1167,7 +1149,7 @@ class TestProcessMdImageBlockCaptionMapping:
             )
 
         assert any(e.event == "indexing_complete" for e in events)
-        md_parser.parse.assert_awaited_once_with(
+        md_parser.parse_to_blocks.assert_awaited_once_with(
             "# Doc\n![cap1](cap1)",
             caption_map={"cap1": "data:image/png;base64,IMAGEDATA"},
             name="test.md",
@@ -1363,19 +1345,24 @@ class TestEnhanceTablesEmptyCellsDict:
         )
         bc = BlocksContainer(blocks=[row_block], block_groups=[bg])
 
-        mock_response = MagicMock()
-        mock_response.summary = "Summary"
-        mock_response.headers = []  # Empty headers
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
+
+        result = TableEnrichmentResult(
+            summary="Summary",
+            headers=[],  # Empty headers
+            header_row_count=0,
+            descriptions=["Row desc"],
+        )
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
+            return_value=result,
         ):
-            # No get_rows_text needed because non_header_row_dicts will be [{...}]
-            # Actually with empty headers, the condition `isinstance(cells, list) and column_headers`
-            # evaluates to False (empty list is falsy), so row_dicts.append({}) is reached
-            await proc._enhance_tables_with_llm(bc)
+            await enhance_tables_with_llm(bc, proc.config_service, proc.logger, llm=MagicMock())
+
+        assert bg.data["column_headers"] == []
+        assert row_block.data["row_natural_language_text"] == "Row desc"
 
 
 # ===================================================================
@@ -1386,34 +1373,20 @@ class TestEnhanceTablesEmptyCellsDict:
 class TestProcessPdfOcrFallback:
     @pytest.mark.asyncio
     async def test_azure_ocr_failure_propagates(self):
-        """When Azure OCR fails, exception propagates (no fallback)."""
+        """AzureDI provider is not yet supported; raises IndexingError."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
         proc = _make_processor()
-
-        mock_config = AsyncMock()
-        mock_config.get_config = AsyncMock(return_value={
-            "ocr": [{
-                "provider": "azureDI",
-                "configuration": {"endpoint": "https://example.com", "apiKey": "key"},
-            }],
+        proc.config_service.get_config = AsyncMock(return_value={
+            "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://example.com", "apiKey": "key"}}],
             "llm": [],
         })
-        proc.config_service = mock_config
-
-        with patch("app.events.processor.OCRHandler") as MockOCR:
-            mock_ocr = MagicMock()
-            mock_ocr.process_document = AsyncMock(side_effect=RuntimeError("Azure DI failed"))
-            MockOCR.return_value = mock_ocr
-
-            proc.graph_provider.get_document = AsyncMock(
-                return_value=_mock_record_dict()
-            )
-
-            with pytest.raises(RuntimeError, match="Azure DI failed"):
-                await _collect_events(
-                    proc.process_pdf_document_with_ocr(
-                        "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
-                    )
+        with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+            await _collect_events(
+                proc.process_pdf_document_with_ocr(
+                    "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
                 )
+            )
 
 
 # ===================================================================
@@ -1431,7 +1404,7 @@ class TestCreateTransformContextCalledByProcessMethods:
 
         md_parser = MagicMock()
         md_parser.extract_and_replace_images.return_value = ("# Hello", [])
-        md_parser.parse = AsyncMock(
+        md_parser.parse_to_blocks = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
         proc.parsers = {"md": md_parser}
@@ -1503,9 +1476,9 @@ class TestProcessorCoverageBranchesTo95:
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="slides")
         )
+        proc.docling_processor = mock_processor
 
-        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline:
+        with patch("app.events.processor.IndexingPipeline") as MockPipeline:
             MockPipeline.return_value.apply = AsyncMock()
 
             await _collect_events(
@@ -1581,7 +1554,7 @@ class TestProcessorCoverageBranchesTo95:
             data={"uri": "data:image/png;base64,AAA"},
             image_metadata=ImageMetadata(captions=["pic"]),
         )
-        md_parser.parse = AsyncMock(
+        md_parser.parse_to_blocks = AsyncMock(
             return_value=BlocksContainer(blocks=[blk], block_groups=[])
         )
 
@@ -1595,7 +1568,7 @@ class TestProcessorCoverageBranchesTo95:
             await _collect_events(proc.process_md_document("doc.md", "r1", b"# Hi", "vr1"))
 
         png_parser.urls_to_base64.assert_awaited_once()
-        md_parser.parse.assert_awaited_once_with(
+        md_parser.parse_to_blocks.assert_awaited_once_with(
             "![pic](http://example.com/i.png)",
             caption_map={"pic": "data:image/png;base64,AAA"},
             name="doc.md",
@@ -1622,93 +1595,40 @@ class TestProcessorCoverageBranchesTo95:
 
     @pytest.mark.asyncio
     async def test_ocr_azure_di_after_unknown_provider_iteration(self):
-        """Skip unknown OCR providers; configure Azure on a later config entry."""
+        """Unknown OCR providers are skipped; with no valid provider, raises IndexingError."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
         proc = _make_processor()
-        proc.config_service = AsyncMock()
         proc.config_service.get_config = AsyncMock(return_value={
             "ocr": [
                 {"provider": "not_supported_yet"},
-                {
-                    "provider": "azureDI",
-                    "configuration": {"endpoint": "https://e.azure.com", "apiKey": "k"},
-                },
+                {"provider": "azureDI", "configuration": {"endpoint": "https://e.azure.com", "apiKey": "k"}},
             ],
             "llm": [],
         })
-
-        with patch("app.events.processor.OCRHandler") as MockOCR, \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline:
-            h = AsyncMock()
-            h.process_document = AsyncMock(return_value={
-                "blocks": [],
-                "tables": [],
-            })
-            MockOCR.return_value = h
-            MockPipeline.return_value.apply = AsyncMock()
-
-            proc.graph_provider.get_document = AsyncMock(
-                return_value=_mock_record_dict()
-            )
-
+        with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
             await _collect_events(
                 proc.process_pdf_document_with_ocr(
                     "test.pdf", "r1", "1", "src", "o1", b"pdf", "vr1"
                 )
             )
 
-        MockOCR.assert_called_once()
-        assert MockOCR.call_args.kwargs["model_id"] == "prebuilt-document"
-
     @pytest.mark.asyncio
     async def test_non_vlm_ocr_prebuilt_block_table_row_and_plain_paragraph(self):
-        """Non-VLM: Block TABLE_ROW populates table_rows + second Block skips dict path."""
-        from app.models.blocks import Block, BlockGroup, BlockType, DataFormat, GroupType
-
+        """AzureDI provider is not yet supported; raises IndexingError."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
         proc = _make_processor()
-        proc.config_service = AsyncMock()
         proc.config_service.get_config = AsyncMock(return_value={
             "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://e", "apiKey": "k"}}],
             "llm": [],
         })
-
-        row_blk = Block(
-            index=0,
-            type=BlockType.TABLE_ROW,
-            format=DataFormat.TXT,
-            data="cell",
-            parent_index=42,
-        )
-        text_blk = Block(
-            index=0,
-            type=BlockType.TEXT,
-            format=DataFormat.TXT,
-            data="plain",
-            parent_index=None,
-        )
-        tbl = BlockGroup(index=42, type=GroupType.TABLE)
-
-        with patch("app.events.processor.OCRHandler") as MockOCR, \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline:
-            mock_ocr = AsyncMock()
-            mock_ocr.process_document = AsyncMock(return_value={
-                "blocks": [row_blk, text_blk],
-                "tables": [tbl],
-            })
-            MockOCR.return_value = mock_ocr
-            MockPipeline.return_value.apply = AsyncMock()
-
-            proc.graph_provider.get_document = AsyncMock(
-                return_value=_mock_record_dict()
-            )
-
-            events = await _collect_events(
+        with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+            await _collect_events(
                 proc.process_pdf_document_with_ocr(
                     "p.pdf", "r1", "1", "s", "o", b"x", "vr"
                 )
             )
-
-        assert any(e.event == "indexing_complete" for e in events)
-        assert tbl.children is not None
 
     @pytest.mark.asyncio
     async def test_vlm_nested_block_groups_children_ranges_shift(self):
@@ -1746,8 +1666,12 @@ class TestProcessorCoverageBranchesTo95:
             "llm": [],
         })
 
+        mproc = AsyncMock()
+        mproc.parse_document = AsyncMock(return_value=MagicMock())
+        mproc.create_blocks = AsyncMock(return_value=nested_container)
+        proc.docling_processor = mproc
+
         with patch("app.events.processor.OCRHandler") as MockOCR, \
-             patch("app.events.processor.DoclingProcessor") as MockDocling, \
              patch("app.events.processor.IndexingPipeline") as MockPipeline:
             mo = AsyncMock()
             mo.process_document = AsyncMock(return_value={
@@ -1755,10 +1679,6 @@ class TestProcessorCoverageBranchesTo95:
             })
             MockOCR.return_value = mo
 
-            mproc = AsyncMock()
-            mproc.parse_document = AsyncMock(return_value=MagicMock())
-            mproc.create_blocks = AsyncMock(return_value=nested_container)
-            MockDocling.return_value = mproc
             MockPipeline.return_value.apply = AsyncMock()
 
             proc.graph_provider.get_document = AsyncMock(
@@ -1804,19 +1724,22 @@ class TestProcessorCoverageBranchesTo95:
         bc.block_groups = [tg]
         bc.blocks = [row_block]
 
-        mock_response = Mg()
-        mock_response.summary = "s"
-        mock_response.headers = ["c"]
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
+
+        result = TableEnrichmentResult(
+            summary="s",
+            headers=["c"],
+            header_row_count=0,
+            descriptions=["desc"],
+        )
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["desc"], []),
+            return_value=result,
         ):
-            await proc._enhance_tables_with_llm(bc)
+            await enhance_tables_with_llm(bc, proc.config_service, proc.logger, llm=MagicMock())
 
         assert row_block.data.get("row_natural_language_text") == "desc"
+
+

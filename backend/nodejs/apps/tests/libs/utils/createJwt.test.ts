@@ -248,6 +248,7 @@ describe('createJwt', () => {
         'org-1',
         'John Doe',
         'premium',
+        'admin',
       )
       const decoded = jwt.verify(token, secret) as any
       expect(decoded.email).to.equal('user@example.com')
@@ -255,6 +256,20 @@ describe('createJwt', () => {
       expect(decoded.orgId).to.equal('org-1')
       expect(decoded.fullName).to.equal('John Doe')
       expect(decoded.accountType).to.equal('premium')
+      expect(decoded.role).to.equal('admin')
+    })
+
+    it('should omit role claim when role is not provided', () => {
+      const token = authJwtGenerator(
+        secret,
+        'user@example.com',
+        'user-1',
+        'org-1',
+        'John Doe',
+        'premium',
+      )
+      const decoded = jwt.verify(token, secret) as any
+      expect(decoded).to.not.have.property('role')
     })
 
     it('should handle null/undefined optional claims', () => {

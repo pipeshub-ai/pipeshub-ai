@@ -43,7 +43,7 @@ export default function PublicLayout({
         <I18nextProvider i18n={i18n}>
           <ThemeProvider>
             <AuthHydrator />
-            <ServerUrlGuard>{children}</ServerUrlGuard>
+            <ServerUrlGuard allowChangeServer>{children}</ServerUrlGuard>
             <ToastContainer />
           </ThemeProvider>
         </I18nextProvider>

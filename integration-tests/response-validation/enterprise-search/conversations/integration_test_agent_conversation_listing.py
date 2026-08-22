@@ -32,6 +32,12 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
+from helper.agui_sse import (
+    is_root_error,
+    is_root_finished,
+    iter_sse_envelopes,
+    run_finished_result,
+)
 from helper.clients.conversations_client import AgentConversationsClient
 from openapi_schema_validator import (
     assert_response_matches_openapi_operation,
@@ -40,8 +46,6 @@ from openapi_schema_validator import (
 
 logger = logging.getLogger(__name__)
 
-_SSE_MAX_EVENTS = 10_000
-_SSEEnvelope = dict[str, str]
 
 
 def _response_json(resp: requests.Response) -> dict[str, Any]:
@@ -53,51 +57,6 @@ def _response_json(resp: requests.Response) -> dict[str, Any]:
         ) from exc
     assert isinstance(data, dict), f"Expected dict JSON body, got: {data!r}"
     return data
-
-
-def _iter_sse_envelopes(
-    resp: requests.Response,
-    *,
-    max_events: int = _SSE_MAX_EVENTS,
-) -> Iterator[_SSEEnvelope]:
-    event_name: str | None = None
-    data_lines: list[str] = []
-
-    def flush() -> _SSEEnvelope | None:
-        nonlocal event_name, data_lines
-        if event_name is None:
-            return None
-        env = {"event": event_name, "data": "\n".join(data_lines)}
-        event_name = None
-        data_lines = []
-        return env
-
-    emitted = 0
-    for raw in resp.iter_lines(decode_unicode=True):
-        if raw is None:
-            continue
-        line = raw.rstrip("\r")
-        if line == "":
-            env = flush()
-            if env is not None:
-                yield env
-                emitted += 1
-                if emitted >= max_events:
-                    raise AssertionError(f"SSE exceeded max_events={max_events}")
-            continue
-
-        if line.startswith(":"):
-            continue
-        if line.startswith("event:"):
-            event_name = line[len("event:") :].strip()
-            continue
-        if line.startswith("data:"):
-            data_lines.append(line[len("data:") :].lstrip())
-            continue
-
-    env = flush()
-    if env is not None:
-        yield env
 
 
 @pytest.mark.integration
@@ -116,11 +75,14 @@ class TestAgentConversationListing:
             if stream_override
             else max(self.timeout, 120)
         )
-        self.primary_agent = agent_session["primary_agent"]
+        # Nothing here asserts on KB content, and a knowledge-free agent cannot register
+        # the retrieval toolset — so every conversation this file seeds costs one LLM
+        # turn instead of two.
+        self.agent_key = agent_session["workhorse_agent"]
         self.secondary_agents = list(agent_session["secondary_agents"])
 
     @pytest.fixture
-    def created_conversations(self):
+    def created_conversations(self) -> Iterator[list[tuple[str, str]]]:
         created: list[tuple[str, str]] = []
         yield created
         for agent_key, conversation_id in reversed(created):
@@ -168,23 +130,23 @@ class TestAgentConversationListing:
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
-            for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+            for envelope in iter_sse_envelopes(resp):
+                payload = json.loads(envelope["data"])
+                if is_root_error(envelope["event"], payload):
+                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
+                if not is_root_finished(envelope["event"], payload):
                     continue
 
-                payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
+                result = run_finished_result(payload)
+                conv = result.get("conversation") or {}
                 conversation_id = conv.get("_id")
                 assert isinstance(conversation_id, str) and conversation_id, (
-                    f"complete payload missing conversation._id: {payload!r}"
+                    f"RUN_FINISHED result missing conversation._id: {result!r}"
                 )
                 created_conversations.append((agent_key, conversation_id))
                 return conversation_id
 
-        raise AssertionError("agent conversation stream ended without a complete event")
+        raise AssertionError("agent conversation stream ended without a RUN_FINISHED event")
 
     def _stream_add_message(
         self,
@@ -201,16 +163,16 @@ class TestAgentConversationListing:
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
-            for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
+            for envelope in iter_sse_envelopes(resp):
+                payload = json.loads(envelope["data"])
+                if is_root_error(envelope["event"], payload):
                     raise AssertionError(
-                        f"message stream emitted error event: {payload!r}"
+                        f"message stream emitted RUN_ERROR: {payload!r}"
                     )
-                if envelope["event"] == "complete":
+                if is_root_finished(envelope["event"], payload):
                     return
 
-        raise AssertionError("agent add-message stream ended without a complete event")
+        raise AssertionError("agent add-message stream ended without a RUN_FINISHED event")
 
     def _list_agent_conversations(
         self,
@@ -359,12 +321,12 @@ class TestAgentConversationListing:
     ) -> None:
         query = f"listing-default-{uuid4().hex}"
         conversation_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=query,
             created_conversations=created_conversations,
         )
 
-        resp = self._list_agent_conversations(self.primary_agent)
+        resp = self._list_agent_conversations(self.agent_key)
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
@@ -387,13 +349,13 @@ class TestAgentConversationListing:
     ) -> None:
         search_token = f"listing-search-{uuid4().hex}"
         created_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"{search_token} tell me about the attached kb",
             created_conversations=created_conversations,
         )
 
         resp = self._list_agent_conversations(
-            self.primary_agent,
+            self.agent_key,
             params={
                 "search": search_token,
                 "page": "1",
@@ -423,7 +385,7 @@ class TestAgentConversationListing:
         created_conversations: list[tuple[str, str]],
     ) -> None:
         created_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"listing-date-range-{uuid4().hex}",
             created_conversations=created_conversations,
         )
@@ -432,7 +394,7 @@ class TestAgentConversationListing:
         end_date = (now + timedelta(days=1)).isoformat()
 
         resp = self._list_agent_conversations(
-            self.primary_agent,
+            self.agent_key,
             params={
                 "page": "1",
                 "limit": "1",
@@ -471,14 +433,14 @@ class TestAgentConversationListing:
                 "Agent-scoped listing returned a conversation from a different agent: "
                 f"{row!r}"
             )
-            assert row.get("agentKey") != self.primary_agent, (
+            assert row.get("agentKey") != self.agent_key, (
                 "Agent-scoped listing leaked the primary agent key into another "
                 f"agent's results: {row!r}"
             )
 
     def test_list_agent_conversations_without_auth_returns_401(self) -> None:
         resp = self.conversations.list_conversations(
-            self.primary_agent,
+            self.agent_key,
             auth=False,
             timeout=self.timeout,
         )
@@ -501,7 +463,7 @@ class TestAgentConversationListing:
         label: str,
         params: dict[str, str],
     ) -> None:
-        resp = self._list_agent_conversations(self.primary_agent, params=params)
+        resp = self._list_agent_conversations(self.agent_key, params=params)
         body = self._assert_validation_error(resp)
         assert body["error"]["metadata"]["errors"], (
             f"[{label}] Expected validation details"
@@ -509,7 +471,7 @@ class TestAgentConversationListing:
 
     def test_list_agent_conversations_rejects_duplicate_search_query_param(self) -> None:
         resp = self._list_agent_conversations(
-            self.primary_agent,
+            self.agent_key,
             params=[("search", "first"), ("search", "second")],
         )
         self._assert_validation_error(resp)
@@ -527,7 +489,7 @@ class TestAgentConversationListing:
         search_value: str,
     ) -> None:
         resp = self._list_agent_conversations(
-            self.primary_agent,
+            self.agent_key,
             params={"search": search_value},
         )
         body = self._assert_validation_error(resp)
@@ -537,7 +499,7 @@ class TestAgentConversationListing:
 
     def test_list_agent_conversations_rejects_xss_search_via_middleware(self) -> None:
         resp = self._list_agent_conversations(
-            self.primary_agent,
+            self.agent_key,
             params={"search": "<script>alert('x')</script>"},
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
@@ -555,7 +517,7 @@ class TestAgentConversationListing:
         created_conversations: list[tuple[str, str]],
     ) -> None:
         primary_conversation_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"grouped-archives-primary-{uuid4().hex}",
             created_conversations=created_conversations,
         )
@@ -566,13 +528,13 @@ class TestAgentConversationListing:
             created_conversations=created_conversations,
         )
         active_conversation_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"grouped-archives-active-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
         for agent_key, conversation_id in (
-            (self.primary_agent, primary_conversation_id),
+            (self.agent_key, primary_conversation_id),
             (secondary_agent_key, secondary_conversation_id),
         ):
             archive_resp = self._archive_agent_conversation(agent_key, conversation_id)
@@ -607,7 +569,7 @@ class TestAgentConversationListing:
         )
 
         seen_agent_keys = {agent_key for agent_key, _ in rows}
-        assert self.primary_agent in seen_agent_keys, (
+        assert self.agent_key in seen_agent_keys, (
             f"Primary agent group missing from grouped archives: {body!r}"
         )
         assert secondary_agent_key in seen_agent_keys, (
@@ -653,7 +615,7 @@ class TestAgentConversationListing:
         self,
         created_conversations: list[tuple[str, str]],
     ) -> None:
-        seeded_agents = [self.primary_agent, self.secondary_agents[0], self.secondary_agents[1]]
+        seeded_agents = [self.agent_key, self.secondary_agents[0], self.secondary_agents[1]]
         archived_by_agent: dict[str, str] = {}
 
         for agent_key in seeded_agents:
@@ -725,12 +687,12 @@ class TestAgentConversationListing:
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"grouped-archives-normalize-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         archive_resp = self._archive_agent_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
         )
         assert archive_resp.status_code == 200, (
@@ -770,12 +732,12 @@ class TestAgentConversationListing:
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"grouped-archives-nonnumeric-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         archive_resp = self._archive_agent_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
         )
         assert archive_resp.status_code == 200, (
@@ -813,25 +775,25 @@ class TestAgentConversationListing:
         created_conversations: list[tuple[str, str]],
     ) -> None:
         archived_conversation_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-archives-default-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         active_conversation_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-archives-active-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
         archive_resp = self._archive_agent_conversation(
-            self.primary_agent,
+            self.agent_key,
             archived_conversation_id,
         )
         assert archive_resp.status_code == 200, (
             f"{archive_resp.status_code}: {archive_resp.text}"
         )
 
-        resp = self._list_archived_agent_conversations(self.primary_agent)
+        resp = self._list_archived_agent_conversations(self.agent_key)
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
@@ -852,7 +814,7 @@ class TestAgentConversationListing:
 
         for row in conversations:
             assert isinstance(row, dict), f"Expected conversation object, got: {row!r}"
-            assert row.get("agentKey") == self.primary_agent, (
+            assert row.get("agentKey") == self.agent_key, (
                 f"Archive listing returned conversation for wrong agent: {row!r}"
             )
             assert row.get("archivedAt"), (
@@ -885,12 +847,12 @@ class TestAgentConversationListing:
     ) -> None:
         search_token = f"agent-archives-search-{uuid4().hex}"
         archived_conversation_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"{search_token} explain the attached kb",
             created_conversations=created_conversations,
         )
         archive_resp = self._archive_agent_conversation(
-            self.primary_agent,
+            self.agent_key,
             archived_conversation_id,
         )
         assert archive_resp.status_code == 200, (
@@ -901,7 +863,7 @@ class TestAgentConversationListing:
         start_date = (now - timedelta(days=1)).isoformat()
         end_date = (now + timedelta(days=1)).isoformat()
         resp = self._list_archived_agent_conversations(
-            self.primary_agent,
+            self.agent_key,
             params={
                 "search": search_token,
                 "page": "1",
@@ -945,12 +907,12 @@ class TestAgentConversationListing:
         created_conversations: list[tuple[str, str]],
     ) -> None:
         archived_conversation_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-archives-scoped-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         archive_resp = self._archive_agent_conversation(
-            self.primary_agent,
+            self.agent_key,
             archived_conversation_id,
         )
         assert archive_resp.status_code == 200, (
@@ -999,12 +961,12 @@ class TestAgentConversationListing:
         created_conversations: list[tuple[str, str]],
     ) -> None:
         archived_conversation_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-archives-normalize-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         archive_resp = self._archive_agent_conversation(
-            self.primary_agent,
+            self.agent_key,
             archived_conversation_id,
         )
         assert archive_resp.status_code == 200, (
@@ -1012,7 +974,7 @@ class TestAgentConversationListing:
         )
 
         resp = self._list_archived_agent_conversations(
-            self.primary_agent,
+            self.agent_key,
             params={"page": "0", "limit": "101"},
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -1032,12 +994,12 @@ class TestAgentConversationListing:
         created_conversations: list[tuple[str, str]],
     ) -> None:
         archived_conversation_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-archives-defaults-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         archive_resp = self._archive_agent_conversation(
-            self.primary_agent,
+            self.agent_key,
             archived_conversation_id,
         )
         assert archive_resp.status_code == 200, (
@@ -1045,7 +1007,7 @@ class TestAgentConversationListing:
         )
 
         resp = self._list_archived_agent_conversations(
-            self.primary_agent,
+            self.agent_key,
             params={"page": "abc", "limit": "xyz"},
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -1062,7 +1024,7 @@ class TestAgentConversationListing:
 
     def test_list_archived_agent_conversations_without_auth_returns_401(self) -> None:
         resp = self.conversations.list_archived_conversations(
-            self.primary_agent,
+            self.agent_key,
             auth=False,
             timeout=self.timeout,
         )
@@ -1082,7 +1044,7 @@ class TestAgentConversationListing:
         label: str,
         params: dict[str, str],
     ) -> None:
-        resp = self._list_archived_agent_conversations(self.primary_agent, params=params)
+        resp = self._list_archived_agent_conversations(self.agent_key, params=params)
         body = self._assert_validation_error(resp)
         assert body["error"]["metadata"]["errors"], (
             f"[{label}] Expected validation details"
@@ -1092,7 +1054,7 @@ class TestAgentConversationListing:
         self,
     ) -> None:
         resp = self._list_archived_agent_conversations(
-            self.primary_agent,
+            self.agent_key,
             params=[("search", "first"), ("search", "second")],
         )
         self._assert_validation_error(resp)
@@ -1110,7 +1072,7 @@ class TestAgentConversationListing:
         search_value: str,
     ) -> None:
         resp = self._list_archived_agent_conversations(
-            self.primary_agent,
+            self.agent_key,
             params={"search": search_value},
         )
         body = self._assert_validation_error(resp)
@@ -1122,7 +1084,7 @@ class TestAgentConversationListing:
         self,
     ) -> None:
         resp = self._list_archived_agent_conversations(
-            self.primary_agent,
+            self.agent_key,
             params={"search": "<script>alert('x')</script>"},
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
@@ -1139,12 +1101,12 @@ class TestAgentConversationListing:
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-get-default-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
-        resp = self._get_agent_conversation(self.primary_agent, conversation_id)
+        resp = self._get_agent_conversation(self.agent_key, conversation_id)
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
@@ -1175,12 +1137,12 @@ class TestAgentConversationListing:
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-get-query-1-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         self._stream_add_message(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             query=f"agent-get-query-2-{uuid4().hex}",
         )
@@ -1189,7 +1151,7 @@ class TestAgentConversationListing:
         start_date = (now - timedelta(days=1)).isoformat()
         end_date = (now + timedelta(days=1)).isoformat()
         resp = self._get_agent_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             params={
                 "page": "1",
@@ -1231,13 +1193,13 @@ class TestAgentConversationListing:
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-get-sort-order-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
         resp = self._get_agent_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             params={"sortOrder": "sideways"},
         )
@@ -1256,7 +1218,7 @@ class TestAgentConversationListing:
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-get-wrong-agent-{uuid4().hex}",
             created_conversations=created_conversations,
         )
@@ -1267,7 +1229,7 @@ class TestAgentConversationListing:
 
     def test_get_agent_conversation_by_id_without_auth_returns_401(self) -> None:
         resp = self.conversations.get_conversation(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             auth=False,
             timeout=self.timeout,
@@ -1295,7 +1257,7 @@ class TestAgentConversationListing:
         params: dict[str, str] | None,
     ) -> None:
         resp = self._get_agent_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             params=params,
         )
@@ -1320,7 +1282,7 @@ class TestAgentConversationListing:
         params: list[tuple[str, str]],
     ) -> None:
         resp = self._get_agent_conversation(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             params=params,
         )
@@ -1333,13 +1295,13 @@ class TestAgentConversationListing:
         created_conversations: list[tuple[str, str]],
     ) -> None:
         self._create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"listing-openapi-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
         resp = self._list_agent_conversations(
-            self.primary_agent,
+            self.agent_key,
             params={"page": "1", "limit": "20"},
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"

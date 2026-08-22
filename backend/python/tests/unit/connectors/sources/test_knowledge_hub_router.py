@@ -538,7 +538,7 @@ class TestHandleGetNodes:
         result = await _handle_get_nodes(
             request=request,
             knowledge_hub_service=svc,
-            parent_id="knowledgeBase_org-123",
+            parent_id="550e8400-e29b-41d4-a716-446655440070",
             parent_type="app",
             only_containers=False,
             page=1,
@@ -1108,7 +1108,7 @@ class TestHandleGetNodesCoverage:
         result = await _handle_get_nodes(
             request=request,
             knowledge_hub_service=svc,
-            parent_id="knowledgeBase_org-123",
+            parent_id="550e8400-e29b-41d4-a716-446655440070",
             parent_type="app",
             only_containers=False,
             page=1,

@@ -10,9 +10,13 @@ validate the full downstream pipeline:
      RecordGroup structure
   4. **Cleanup stage** — after deletion, record is removed from API and graph
 
+These tests are generic and work with both Kafka and Redis messaging backends.
+The backend is determined by the MESSAGE_BROKER environment variable.
+
 Run:
     cd integration-tests
-    pytest messaging/test_e2e_record_pipeline.py -v --timeout=300
+    MESSAGE_BROKER=redis pytest messaging/test_e2e_record_pipeline.py -v --timeout=300
+    MESSAGE_BROKER=kafka pytest messaging/test_e2e_record_pipeline.py -v --timeout=300
 
 Requires:
     PIPESHUB_BASE_URL, CLIENT_ID + CLIENT_SECRET (or user creds),

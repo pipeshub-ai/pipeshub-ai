@@ -127,6 +127,7 @@ def connector():
         dep.add_permission_to_record = AsyncMock()
         dep.delete_permission_from_record = AsyncMock()
         dep.get_all_active_users = AsyncMock(return_value=[])
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -483,7 +484,9 @@ class TestProcessDriveItemDeep:
         existing.indexing_status = "completed"
         existing.extraction_status = "completed"
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         connector.drive_data_source.permissions_list = AsyncMock(return_value={
             "permissions": [{"id": "p1", "role": "reader", "type": "user", "emailAddress": "u@t.com"}],
         })
@@ -509,7 +512,9 @@ class TestProcessDriveItemDeep:
         existing.indexing_status = "completed"
         existing.extraction_status = "completed"
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         connector.drive_data_source.permissions_list = AsyncMock(return_value={
             "permissions": [{"id": "p1", "role": "reader", "type": "user", "emailAddress": "u@t.com"}],
         })
@@ -587,16 +592,9 @@ class TestProcessDriveItemDeep:
 
     async def test_exception_returns_none(self, connector):
         """Exception during processing returns None."""
-        # Make data_store_provider raise
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _failing_tx():
-            raise RuntimeError("DB error")
-            yield  # noqa: unreachable
-
-        provider.transaction = _failing_tx
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=RuntimeError("DB error")
+        )
 
         metadata = _make_file_metadata(file_id="f1", parents=["d1"])
         result = await connector._process_drive_item(
@@ -619,7 +617,9 @@ class TestProcessDriveItemDeep:
         existing.indexing_status = "completed"
         existing.extraction_status = "completed"
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
 
         mock_resp = MagicMock()
         mock_resp.status = HttpStatusCode.FORBIDDEN.value
@@ -781,7 +781,7 @@ class TestFetchPermissionsDeep:
                 "permissions": [{"id": "p2", "role": "writer", "type": "user", "emailAddress": "b@t.com"}],
             },
         ])
-        perms, is_fallback = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert len(perms) == 2
         assert is_fallback is False
 
@@ -792,7 +792,7 @@ class TestFetchPermissionsDeep:
                 {"id": "p1", "role": "reader", "type": "anyone", "emailAddress": None},
             ],
         })
-        perms, is_fallback = await connector._fetch_permissions(
+        perms, is_fallback, _ = await connector._fetch_permissions(
             "file-1", is_drive=False, user_email="user@t.com"
         )
         assert is_fallback is True
@@ -807,7 +807,7 @@ class TestFetchPermissionsDeep:
                 {"id": "p2", "role": "writer", "type": "user", "emailAddress": "user@t.com"},
             ],
         })
-        perms, is_fallback = await connector._fetch_permissions(
+        perms, is_fallback, _ = await connector._fetch_permissions(
             "file-1", is_drive=False, user_email="user@t.com"
         )
         assert is_fallback is False  # Not fallback since user has explicit permission
@@ -831,7 +831,7 @@ class TestFetchPermissionsDeep:
         mock_resp.status = 500
         http_error = HttpError(mock_resp, b"server error")
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
-        perms, is_fallback = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert perms == []
         assert is_fallback is False
 
@@ -848,7 +848,7 @@ class TestFetchPermissionsDeep:
         connector.drive_data_source.permissions_list = AsyncMock(
             side_effect=RuntimeError("network error")
         )
-        perms, is_fallback = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert perms == []
 
     async def test_group_permission_maps_external_id_to_email(self, connector):
@@ -858,7 +858,7 @@ class TestFetchPermissionsDeep:
                 {"id": "p1", "role": "reader", "type": "group", "emailAddress": "group@t.com"},
             ],
         })
-        perms, _ = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, _, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert len(perms) == 1
         assert perms[0].entity_type == EntityType.GROUP
         assert perms[0].external_id == "group@t.com"

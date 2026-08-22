@@ -25,6 +25,12 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
+from helper.agui_sse import (
+    is_root_error,
+    is_root_finished,
+    iter_sse_envelopes,
+    run_finished_result,
+)
 from helper.clients.conversations_client import AgentConversationsClient
 from openapi_schema_validator import (
     assert_request_body_matches_openapi_operation,
@@ -32,58 +38,11 @@ from openapi_schema_validator import (
     assert_response_matches_openapi_ref,
 )
 
-_SSE_MAX_EVENTS = 10_000
-_SSEEnvelope = dict[str, str]
 
 _MINIMAL_FEEDBACK_PAYLOAD: dict[str, Any] = {
     "isHelpful": True,
     "categories": ["excellent_answer"],
 }
-
-
-def _iter_sse_envelopes(
-    resp: requests.Response,
-    *,
-    max_events: int = _SSE_MAX_EVENTS,
-) -> Iterator[_SSEEnvelope]:
-    event_name: str | None = None
-    data_lines: list[str] = []
-
-    def flush() -> _SSEEnvelope | None:
-        nonlocal event_name, data_lines
-        if event_name is None:
-            return None
-        env = {"event": event_name, "data": "\n".join(data_lines)}
-        event_name = None
-        data_lines = []
-        return env
-
-    emitted = 0
-    for raw in resp.iter_lines(decode_unicode=True):
-        if raw is None:
-            continue
-        line = raw.rstrip("\r")
-        if line == "":
-            env = flush()
-            if env is not None:
-                yield env
-                emitted += 1
-                if emitted >= max_events:
-                    raise AssertionError(f"SSE exceeded max_events={max_events}")
-            continue
-
-        if line.startswith(":"):
-            continue
-        if line.startswith("event:"):
-            event_name = line[len("event:") :].strip()
-            continue
-        if line.startswith("data:"):
-            data_lines.append(line[len("data:") :].lstrip())
-            continue
-
-    env = flush()
-    if env is not None:
-        yield env
 
 
 def _response_json(resp: requests.Response) -> dict[str, Any]:
@@ -159,7 +118,10 @@ class AgentConversationsTestBase:
             if stream_override
             else max(self.timeout, 120)
         )
-        self.primary_agent = agent_session["primary_agent"]
+        # Nothing here asserts on KB content, and a knowledge-free agent cannot register
+        # the retrieval toolset — so every conversation this file seeds costs one LLM
+        # turn instead of two.
+        self.agent_key = agent_session["workhorse_agent"]
 
     @pytest.fixture
     def created_conversations(self) -> Iterator[list[tuple[str, str]]]:
@@ -191,23 +153,23 @@ class AgentConversationsTestBase:
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
-            for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+            for envelope in iter_sse_envelopes(resp):
+                payload = json.loads(envelope["data"])
+                if is_root_error(envelope["event"], payload):
+                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
+                if not is_root_finished(envelope["event"], payload):
                     continue
 
-                payload = json.loads(envelope["data"])
-                conversation = payload.get("conversation") or {}
+                result = run_finished_result(payload)
+                conversation = result.get("conversation") or {}
                 conversation_id = conversation.get("_id")
                 assert isinstance(conversation_id, str) and conversation_id, (
-                    f"complete payload missing conversation._id: {payload!r}"
+                    f"RUN_FINISHED result missing conversation._id: {result!r}"
                 )
                 created_conversations.append((agent_key, conversation_id))
                 return conversation_id
 
-        raise AssertionError("agent conversation stream ended without a complete event")
+        raise AssertionError("agent conversation stream ended without a RUN_FINISHED event")
 
     def _get_conversation_messages(
         self,
@@ -311,13 +273,13 @@ class TestAgentConversationMessageFeedback(AgentConversationsTestBase):
 
         conversation_id, bot_id, _user_id = (
             self._stream_create_agent_conversation_bot_and_user_message_ids(
-                self.primary_agent,
+                self.agent_key,
                 query=f"integration: agent message feedback positive-{uuid4().hex}",
                 created_conversations=created_conversations,
             )
         )
         resp = self.conversations.submit_message_feedback(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             bot_id,
             **_MINIMAL_FEEDBACK_PAYLOAD,
@@ -349,13 +311,13 @@ class TestAgentConversationMessageFeedback(AgentConversationsTestBase):
 
         conversation_id, bot_id, _user_id = (
             self._stream_create_agent_conversation_bot_and_user_message_ids(
-                self.primary_agent,
+                self.agent_key,
                 query=f"integration: agent message feedback rich-{uuid4().hex}",
                 created_conversations=created_conversations,
             )
         )
         resp = self.conversations.submit_message_feedback(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             bot_id,
             **payload,
@@ -377,14 +339,14 @@ class TestAgentConversationMessageFeedback(AgentConversationsTestBase):
     ) -> None:
         conversation_id, bot_id, _user_id = (
             self._stream_create_agent_conversation_bot_and_user_message_ids(
-                self.primary_agent,
+                self.agent_key,
                 query=f"integration: agent message feedback strip-{uuid4().hex}",
                 created_conversations=created_conversations,
             )
         )
         payload = {**_MINIMAL_FEEDBACK_PAYLOAD, "unexpectedTopLevelField": "drop-me"}
         resp = self.conversations.submit_message_feedback(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             bot_id,
             **payload,
@@ -400,19 +362,13 @@ class TestAgentConversationMessageFeedback(AgentConversationsTestBase):
 
     def test_post_agent_message_feedback_on_user_query_returns_400(
         self,
-        created_conversations: list[tuple[str, str]],
+        readonly_agent_conversation: dict[str, str],
     ) -> None:
-        conversation_id, _bot_id, user_id = (
-            self._stream_create_agent_conversation_bot_and_user_message_ids(
-                self.primary_agent,
-                query=f"integration: agent message feedback user_query-{uuid4().hex}",
-                created_conversations=created_conversations,
-            )
-        )
+        # Rejected before any write, so the shared conversation keeps no feedback.
         resp = self.conversations.submit_message_feedback(
-            self.primary_agent,
-            conversation_id,
-            user_id,
+            self.agent_key,
+            readonly_agent_conversation["conversation_id"],
+            readonly_agent_conversation["user_message_id"],
             timeout=self.timeout,
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
@@ -421,39 +377,22 @@ class TestAgentConversationMessageFeedback(AgentConversationsTestBase):
             f"unexpected error body: {resp.text!r}"
         )
 
-    def test_post_agent_message_feedback_invalid_category_returns_400(
-        self,
-        created_conversations: list[tuple[str, str]],
-    ) -> None:
-        conversation_id, bot_id, _user_id = (
-            self._stream_create_agent_conversation_bot_and_user_message_ids(
-                self.primary_agent,
-                query=f"integration: agent message feedback bad category-{uuid4().hex}",
-                created_conversations=created_conversations,
-            )
-        )
+    def test_post_agent_message_feedback_invalid_category_returns_400(self) -> None:
+        # Placeholder ids are fine since validation runs before the lookup.
         resp = self.conversations.submit_message_feedback(
-            self.primary_agent,
-            conversation_id,
-            bot_id,
+            self.agent_key,
+            "0" * 24,
+            "0" * 24,
             isHelpful=False,
             categories=["citation_issues"],
             timeout=self.timeout,
         )
         self._assert_validation_error(resp)
 
-    def test_post_agent_message_feedback_invalid_message_id_returns_400(
-        self,
-        created_conversations: list[tuple[str, str]],
-    ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"integration: agent message feedback bad message id-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
+    def test_post_agent_message_feedback_invalid_message_id_returns_400(self) -> None:
         resp = self.conversations.submit_message_feedback(
-            self.primary_agent,
-            conversation_id,
+            self.agent_key,
+            "0" * 24,
             "bad-id",
             **_MINIMAL_FEEDBACK_PAYLOAD,
             timeout=self.timeout,

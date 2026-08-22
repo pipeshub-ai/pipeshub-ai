@@ -8,9 +8,6 @@ from typing import Any
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_qdrant import FastEmbedSparse
-from qdrant_client import models
-
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
@@ -27,6 +24,11 @@ from app.models.blocks import GroupType
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.interface.vector_db import IVectorDBService
+from app.services.vector_db.models import (
+    FusionMethod,
+    HybridSearchRequest,
+)
+from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.sources.client.http.exception.exception import VectorDBEmptyError
 from app.utils.aimodels import (
     get_default_embedding_model,
@@ -34,6 +36,7 @@ from app.utils.aimodels import (
     get_generator_model,
 )
 from app.utils.chat_helpers import (
+    GRAPH_BATCH_CHUNK_SIZE,
     get_flattened_results,
     get_record,
 )
@@ -43,6 +46,10 @@ from app.utils.image_utils import get_extension_from_mimetype
 _user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
 USER_CACHE_TTL = 300  # 5 minutes
 MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
+
+# Applied when a caller passes no limit at all. Matches `search_with_filters`'s
+# own default so the None path and the omitted path retrieve the same amount.
+DEFAULT_SEARCH_LIMIT = 20
 
 # User-facing guidance when the graph/permissions yield no searchable corpus
 ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE = (
@@ -86,28 +93,42 @@ class RetrievalService:
         self.llm = None
         self.graph_provider = graph_provider
         self.blob_store = blob_store
-        # Defer sparse embeddings init to first use — FastEmbedSparse downloads
-        # and loads an ONNX model which blocks the event loop for 30-60s on a
-        # cold cache.  Lazy-load in a worker thread via _ensure_sparse_embeddings().
-        self.sparse_embeddings = None
-        self._sparse_embeddings_lock = asyncio.Lock()
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
-        self.logger.info(f"Retrieval service initialized with collection name: {self.collection_name}")
+
+        # Capability negotiation — determines which embedding legs are needed.
+        self._capabilities = vector_db_service.get_capabilities()
+
+        # Sparse embeddings — only for providers that store client-side sparse vectors.
+        # SparseEmbedder lazy-initialises in a worker thread on first use.
+        self._sparse_embedder: SparseEmbedder | None = None
+        self._sparse_embedder_lock = asyncio.Lock()
+
+        # Dense embedding model cache: re-read config on every call to detect
+        # provider changes, but reuse the built instance when config is stable.
         self._cached_dense_embeddings: Embeddings | None = None
         self._cached_embedding_config_hash: str | None = None
         self._embedding_model_lock = asyncio.Lock()
 
-    async def _ensure_sparse_embeddings(self) -> FastEmbedSparse:
-        """Lazily initialise FastEmbedSparse in a worker thread."""
-        if self.sparse_embeddings is not None:
-            return self.sparse_embeddings
-        async with self._sparse_embeddings_lock:
-            if self.sparse_embeddings is None:
-                self.sparse_embeddings = await asyncio.to_thread(
-                    FastEmbedSparse, model_name="Qdrant/BM25"
-                )
-        return self.sparse_embeddings
+        self.logger.info(
+            f"Retrieval service initialised: collection='{collection_name}', "
+            f"provider='{vector_db_service.get_service_name()}', "
+            f"supports_sparse={self._capabilities.supports_sparse_vectors}, "
+            f"supports_text_search={self._capabilities.supports_server_side_text_search}"
+        )
+
+    async def _ensure_sparse_embedder(self) -> SparseEmbedder | None:
+        """Return the SparseEmbedder if this provider uses client-side sparse vectors."""
+        if not self._capabilities.supports_sparse_vectors:
+            return None
+        if self._sparse_embedder is not None:
+            return self._sparse_embedder
+        async with self._sparse_embedder_lock:
+            if self._sparse_embedder is None:
+                embedder = SparseEmbedder()
+                await embedder._ensure_initialized()
+                self._sparse_embedder = embedder
+        return self._sparse_embedder
 
     async def get_llm_instance(self, use_cache: bool = False) -> BaseChatModel | None:
         try:
@@ -240,6 +261,32 @@ class RetrievalService:
         else:
             return None
 
+    @staticmethod
+    def to_qdrant_sparse(sparse: Any) -> Any:
+        """Convert a sparse embedding to Qdrant SparseVector format.
+
+        Kept for backward compatibility with callers that pre-date the generic
+        ``to_generic_sparse_vector`` helper.  New code should use
+        ``app.services.vector_db.models.to_generic_sparse_vector`` instead.
+        """
+        try:
+            from qdrant_client import models as qdrant_models  # type: ignore
+            SparseVector = qdrant_models.SparseVector
+        except Exception:
+            SparseVector = None  # type: ignore[assignment]
+
+        if SparseVector is not None and isinstance(sparse, SparseVector):
+            return sparse
+        if hasattr(sparse, "indices") and hasattr(sparse, "values"):
+            if SparseVector is not None:
+                return SparseVector(indices=list(sparse.indices), values=list(sparse.values))
+            return sparse
+        if isinstance(sparse, dict) and "indices" in sparse and "values" in sparse:
+            if SparseVector is not None:
+                return SparseVector(indices=sparse["indices"], values=sparse["values"])
+            return sparse
+        raise ValueError("Cannot convert sparse embedding to Qdrant SparseVector")
+
     async def _preprocess_query(self, query: str) -> str:
         """
         Preprocess the query text.
@@ -281,9 +328,10 @@ class RetrievalService:
         user_id: str,
         org_id: str,
         filter_groups: dict[str, list[str]] | None = None,
-        limit: int = 20,
+        limit: int | None = 20,
         virtual_record_ids_from_tool: list[str] | None = None,
-        knowledge_search:bool = False,
+        knowledge_search: bool = False,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Perform semantic search on records the given user may access (graph permission checks)."""
 
@@ -291,6 +339,18 @@ class RetrievalService:
             # Get accessible records
             if not self.graph_provider:
                 raise ValueError("GraphProvider is required for permission checking")
+
+            # `None` reaches here from the prefetch path, which forwards the
+            # request's optional `limit` verbatim (chat_modes/bridge.py ->
+            # prefetch.py). A default argument cannot cover that -- an explicit
+            # None overrides it -- and HybridSearchRequest is a plain dataclass,
+            # so the None survived all the way to `req.limit * 2` in
+            # qdrant/utils.py and took the whole search down with a TypeError
+            # that the except below logged as "Filtered search failed",
+            # returning an empty result set. The turn then answered with no
+            # retrieved context and no visible error.
+            if limit is None:
+                limit = DEFAULT_SEARCH_LIMIT
 
             filter_groups = filter_groups or {}
 
@@ -306,7 +366,9 @@ class RetrievalService:
                     filters[metadata_key] = values
 
             init_tasks = [
-                self._get_accessible_virtual_ids_task(user_id, org_id, filters, self.graph_provider),
+                self._get_accessible_virtual_ids_task(
+                    user_id, org_id, filters, self.graph_provider, time_range=time_range
+                ),
                 self._get_user_cached(user_id)  # Get user info in parallel with caching
             ]
 
@@ -318,14 +380,16 @@ class RetrievalService:
 
             self.logger.debug(f"Accessible virtual record ids count: {len(accessible_virtual_id_to_record_id)}")
 
+            # Graph key for KH permission_role checks (Location trails).
+            user_key = (user.get("_key") or user.get("id")) if user else None
+
             if virtual_record_ids_from_tool:
                 filter  = await self.vector_db_service.filter_collection(
                         must={"orgId": org_id,"virtualRecordId": virtual_record_ids_from_tool},
                     )
             else:
                 filter = await self.vector_db_service.filter_collection(
-                        must={"orgId": org_id},
-                        should={"virtualRecordId": list(accessible_virtual_id_to_record_id.keys())}
+                        must={"orgId": org_id, "virtualRecordId": list(accessible_virtual_id_to_record_id.keys())}
                     )
             search_results = await self._execute_parallel_searches(queries, filter, limit)
 
@@ -335,7 +399,7 @@ class RetrievalService:
 
             self.logger.info(f"Search results count: {len(search_results) if search_results else 0}")
 
-            self.logger.debug("Extracting virtualRecordIds from Qdrant results")
+            self.logger.debug("Extracting virtualRecordIds from search results")
             returned_virtual_record_ids = list({
                 result["metadata"]["virtualRecordId"]
                 for result in search_results
@@ -345,7 +409,7 @@ class RetrievalService:
                 and result["metadata"].get("virtualRecordId") is not None
             })
 
-            self.logger.debug(f"Qdrant returned {len(returned_virtual_record_ids)} unique virtualRecordIds")
+            self.logger.debug(f"Vector DB returned {len(returned_virtual_record_ids)} unique virtualRecordIds")
 
             if not returned_virtual_record_ids:
                 return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
@@ -462,41 +526,107 @@ class RetrievalService:
             files_map = {}
             mails_map = {}
 
-            async def fetch_files() -> dict:
-                if not file_record_ids_to_fetch:
+            async def _fetch_by_ids(record_ids: list[str], collection: str, label: str) -> dict:
+                """One query per collection instead of one per chunk.
+
+                The id lists are appended per search result, so a record matched
+                by several chunks was previously fetched once per chunk.
+                """
+                if not record_ids:
                     return {}
+                unique_ids = list(dict.fromkeys(record_ids))
                 try:
-                    file_results = await asyncio.gather(*[
-                        self.graph_provider.get_document(record_id, CollectionNames.FILES.value)
-                        for record_id in file_record_ids_to_fetch
-                    ], return_exceptions=True)
-                    return {
-                        record_id: result
-                        for record_id, result in zip(file_record_ids_to_fetch, file_results)
-                        if result and not isinstance(result, Exception)
-                    }
+                    nodes: list[dict] = []
+                    for start in range(0, len(unique_ids), GRAPH_BATCH_CHUNK_SIZE):
+                        nodes.extend(
+                            await self.graph_provider.get_nodes_by_field_in(
+                                collection, "id", unique_ids[start:start + GRAPH_BATCH_CHUNK_SIZE]
+                            )
+                            or []
+                        )
                 except Exception as e:
-                    self.logger.warning(f"Failed to batch fetch files: {str(e)}")
-                    return {}
+                    self.logger.warning(
+                        f"Failed to batch fetch {label}, per-id fallback: {str(e)}"
+                    )
+                    nodes = []
+
+                resolved = {}
+                for node in nodes:
+                    key = (node or {}).get("id") or (node or {}).get("_key")
+                    if key:
+                        resolved[key] = node
+
+                # Losing the batch strips webUrl/mimeType from every record in
+                # it, and a result without mimeType is dropped outright by the
+                # required_fields filter below -- the citation disappears from
+                # the answer with no error. The except above cannot catch that:
+                # get_nodes_by_field_in swallows its own errors and returns [],
+                # so a failure looks exactly like "no rows". Recover on which
+                # ids actually came back instead.
+                missing = [rid for rid in unique_ids if rid not in resolved]
+                if missing:
+                    per_id = await asyncio.gather(
+                        *[
+                            self.graph_provider.get_document(rid, collection)
+                            for rid in missing
+                        ],
+                        return_exceptions=True,
+                    )
+                    resolved.update({
+                        rid: doc
+                        for rid, doc in zip(missing, per_id)
+                        if doc and not isinstance(doc, BaseException)
+                    })
+                return resolved
+
+            async def fetch_files() -> dict:
+                return await _fetch_by_ids(
+                    file_record_ids_to_fetch, CollectionNames.FILES.value, "files"
+                )
 
             async def fetch_mails() -> dict:
-                if not mail_record_ids_to_fetch:
-                    return {}
+                return await _fetch_by_ids(
+                    mail_record_ids_to_fetch, CollectionNames.MAILS.value, "mails"
+                )
+
+            async def fetch_locations() -> dict[str, str]:
+                """Resolve permission-aware Location trails for retrieved records.
+
+                One adjacency query + KH permission_role batch on ancestors.
+                Soft-fail is App-only (never unfiltered RG/parent ids).
+                """
                 try:
-                    mail_results = await asyncio.gather(*[
-                        self.graph_provider.get_document(record_id, CollectionNames.MAILS.value)
-                        for record_id in mail_record_ids_to_fetch
-                    ], return_exceptions=True)
-                    return {
-                        record_id: result
-                        for record_id, result in zip(mail_record_ids_to_fetch, mail_results)
-                        if result and not isinstance(result, Exception)
-                    }
-                except Exception as e:
-                    self.logger.warning(f"Failed to batch fetch mails: {str(e)}")
+                    from app.agents.actions.knowledge_graph.location import (
+                        resolve_ancestor_locations,
+                    )
+
+                    rids = list(unique_record_ids)
+                    if not rids:
+                        return {}
+
+                    result = await resolve_ancestor_locations(
+                        rids,
+                        graph_provider=self.graph_provider,
+                        org_id=org_id,
+                        user_key=user_key or "",
+                        record_docs=record_id_to_record_map,
+                    )
+                    self.logger.info(
+                        "fetch_locations: %d/%d trails resolved",
+                        len(result),
+                        len(rids),
+                    )
+                    return result
+                except Exception as loc_exc:
+                    self.logger.warning("fetch_locations: skipped — %s", loc_exc, exc_info=True)
                     return {}
 
-            if file_record_ids_to_fetch or mail_record_ids_to_fetch:
+            locations_map: dict[str, str] = {}
+            if file_record_ids_to_fetch or mail_record_ids_to_fetch or unique_record_ids:
+                files_map, mails_map, locations_map = await asyncio.gather(
+                    fetch_files(), fetch_mails(), fetch_locations()
+                )
+            else:
                 files_map, mails_map = await asyncio.gather(fetch_files(), fetch_mails())
 
             for idx, (record_id, record_type) in result_to_record_map.items():
@@ -530,6 +660,16 @@ class RetrievalService:
                         result["metadata"]["extension"] = fallback_ext
 
                 final_search_results.append(result)
+
+            # Inject location into virtual_to_record_map entries so get_record()
+            # (chat_helpers.py) can forward it to Record.to_llm_context().
+            if locations_map:
+                for vr_entry in virtual_to_record_map.values():
+                    if vr_entry is None:
+                        continue
+                    rid = vr_entry.get("_key")
+                    if rid and rid in locations_map:
+                        vr_entry["location"] = locations_map[rid]
 
             # OPTIMIZATION: Get full record documents from Arango using list comprehension
             records = [
@@ -606,7 +746,12 @@ class RetrievalService:
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
     async def _get_accessible_virtual_ids_task(
-        self, user_id: str, org_id: str, filters: dict[str, list[str]], graph_provider: IGraphDBProvider
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]],
+        graph_provider: IGraphDBProvider,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, str]:
         """
         Separate task for getting accessible virtualRecordId -> recordId mapping (optimized version).
@@ -615,7 +760,7 @@ class RetrievalService:
         user has permission to access, preventing cross-connector leakage.
         """
         return await graph_provider.get_accessible_virtual_record_ids(
-            user_id=user_id, org_id=org_id, filters=filters
+            user_id=user_id, org_id=org_id, filters=filters, time_range=time_range
         )
 
     async def _get_user_cached(self, user_id: str) -> dict[str, Any] | None:
@@ -650,81 +795,71 @@ class RetrievalService:
 
         return user_data
 
-    # Convert sparse embeddings to Qdrant's SparseVector format; FastEmbedSparse returns
-    # LangChain's SparseVector, which Prefetch does not accept.
-    @staticmethod
-    def to_qdrant_sparse(sparse: models.SparseVector | dict[str, Any] | object) -> models.SparseVector:
-        if isinstance(sparse, models.SparseVector):
-            return sparse
-        if hasattr(sparse, "indices") and hasattr(sparse, "values"):
-            return models.SparseVector(indices=list(sparse.indices), values=list(sparse.values))
-        if isinstance(sparse, dict) and "indices" in sparse and "values" in sparse:
-            return models.SparseVector(indices=sparse["indices"], values=sparse["values"])
-        raise ValueError("Cannot convert sparse embedding to Qdrant SparseVector")
-
     async def _execute_parallel_searches(self, queries, filter, limit) -> list[dict[str, Any]]:
-        """Execute all searches in parallel using hybrid (dense + sparse) retrieval with RRF fusion."""
-        all_results = []
+        """Execute all searches in parallel using hybrid (dense + sparse) retrieval with RRF fusion.
+
+        The search strategy adapts to provider capabilities:
+        - Providers with sparse vector support (Qdrant): full dense+sparse hybrid with client-side BM25.
+        - Providers without sparse support (OpenSearch, Redis): dense-only search,
+          server-side BM25/text handled by the provider internally.
+        """
+        all_results: list[tuple] = []
 
         dense_embeddings = await self.get_embedding_model_instance()
         if not dense_embeddings:
             raise ValueError("No dense embeddings found")
-        sparse_embeddings = await self._ensure_sparse_embeddings()
-        if not sparse_embeddings:
-            raise ValueError("No sparse embeddings found")
 
-        # OPTIMIZATION: Parallelize dense and sparse embedding generation for multiple queries
+        sparse_embedder = await self._ensure_sparse_embedder()
+
         dense_tasks = [dense_embeddings.aembed_query(query) for query in queries]
-        sparse_tasks = [
-            asyncio.to_thread(sparse_embeddings.embed_query, query) for query in queries
-        ]
-        dense_query_embeddings, sparse_query_embeddings = await asyncio.gather(
-            asyncio.gather(*dense_tasks),
-            asyncio.gather(*sparse_tasks),
-        )
+        supports_sparse = self._capabilities.supports_sparse_vectors
+        supports_text = self._capabilities.supports_server_side_text_search
 
-        query_requests = [
-            models.QueryRequest(
-                prefetch=[
-                    models.Prefetch(
-                        query=dense_embedding,
-                        using="dense",
-                        limit=limit * 2,
-                        filter=filter,
-                    ),
-                    models.Prefetch(
-                        query=self.to_qdrant_sparse(sparse_embedding),
-                        using="sparse",
-                        limit=limit * 2,
-                        filter=filter,
-                    ),
-                ],
-                query=models.FusionQuery(fusion=models.Fusion.RRF),
-                with_payload=True,
-                limit=limit,
-                filter=filter,
+        if sparse_embedder is not None and supports_sparse:
+            # Parallelise dense and sparse embedding generation
+            sparse_tasks = [sparse_embedder.embed_query(query) for query in queries]
+            (dense_query_embeddings, sparse_query_embeddings) = await asyncio.gather(
+                asyncio.gather(*dense_tasks),
+                asyncio.gather(*sparse_tasks),
             )
-            for dense_embedding, sparse_embedding in zip(dense_query_embeddings, sparse_query_embeddings)
+        else:
+            dense_query_embeddings = await asyncio.gather(*dense_tasks)
+            sparse_query_embeddings = [None] * len(queries)
+
+        requests = [
+            HybridSearchRequest(
+                dense_query=dense_embedding,
+                # Only send sparse vectors to providers that store them (Qdrant)
+                sparse_query=sparse_embedding if supports_sparse else None,
+                # Send text query to providers that do server-side BM25 (OpenSearch, Redis)
+                text_query=query if supports_text else None,
+                filter=filter,
+                limit=limit,
+                fusion_method=FusionMethod.RRF,
+            )
+            for query, dense_embedding, sparse_embedding in zip(
+                queries, dense_query_embeddings, sparse_query_embeddings
+            )
         ]
+
         search_results = await self.vector_db_service.query_nearest_points(
             collection_name=self.collection_name,
-            requests=query_requests,
+            requests=requests,
         )
-        seen_points = set()
-        for r in search_results:
-                points = r.points
-                for point in points:
-                    if point.id in seen_points:
-                        continue
-                    seen_points.add(point.id)
-                    metadata = point.payload.get("metadata", {})
-                    metadata.update({"point_id": point.id})
-                    doc = Document(
-                        page_content=point.payload.get("page_content", ""),
-                        metadata=metadata
-                    )
-                    score = point.score
-                    all_results.append((doc, score))
+
+        seen_points: set = set()
+        for batch in search_results:
+            for point in batch:
+                if point.id in seen_points:
+                    continue
+                seen_points.add(point.id)
+                metadata = point.payload.get("metadata") or {}
+                metadata["point_id"] = point.id
+                doc = Document(
+                    page_content=point.payload.get("page_content", ""),
+                    metadata=metadata,
+                )
+                all_results.append((doc, point.score))
 
         return self._format_results(all_results)
 

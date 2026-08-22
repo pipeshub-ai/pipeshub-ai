@@ -1,6 +1,6 @@
 import { Address } from '../../../libs/utils/address.utils';
 import { generateUniqueSlug } from '../../../libs/utils/counter';
-import mongoose, { Document, Schema } from 'mongoose';
+import mongoose, { Document, Schema, Model } from 'mongoose';
 
 // Define the interface for Org Document
 
@@ -17,6 +17,8 @@ interface IOrg extends Document {
   isDeleted: boolean;
   deletedByUser?: string;
   onBoardingStatus : string;
+  /** Written during admin demotion txns to serialize last-admin checks. */
+  adminRoleGuardAt?: Date;
 }
 
 const orgSchema = new Schema<IOrg>(
@@ -65,6 +67,7 @@ const orgSchema = new Schema<IOrg>(
     },
     isDeleted: { type: Boolean, default: false },
     deletedByUser: { type: String },
+    adminRoleGuardAt: { type: Date },
   },
   { timestamps: true },
 );
@@ -80,4 +83,6 @@ orgSchema.pre<IOrg>('save', async function (next) {
   }
 });
 
-export const Org = mongoose.model<IOrg>('org', orgSchema, 'org');
+export const Org: Model<IOrg> =
+  (mongoose.models['org'] as Model<IOrg>) ||
+  mongoose.model<IOrg>('org', orgSchema, 'org');

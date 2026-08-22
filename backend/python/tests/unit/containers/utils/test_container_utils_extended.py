@@ -22,12 +22,12 @@ from app.containers.utils.utils import ContainerUtils
 class TestGetVectorDbServiceExtended:
     @pytest.mark.asyncio
     async def test_passes_correct_params(self):
-        """Verifies is_async=False and correct service_type."""
+        """Verifies config_service is forwarded to create_provider."""
         cu = ContainerUtils()
         config_service = MagicMock()
 
         with patch(
-            "app.containers.utils.utils.VectorDBFactory.create_vector_db_service",
+            "app.containers.utils.utils.VectorDBProviderFactory.create_provider",
             new_callable=AsyncMock,
         ) as mock_factory:
             mock_factory.return_value = MagicMock()
@@ -35,8 +35,7 @@ class TestGetVectorDbServiceExtended:
 
             mock_factory.assert_called_once()
             call_kwargs = mock_factory.call_args[1]
-            assert call_kwargs["is_async"] is False
-            assert call_kwargs["config"] is config_service
+            assert call_kwargs["config_service"] is config_service
 
 
 # ---------------------------------------------------------------------------
@@ -73,8 +72,7 @@ class TestCreateParsersExtended:
     async def test_all_expected_extensions(self):
         """Verify all file extension types have parsers."""
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.DocxParser"), \
-             patch("app.containers.utils.utils.DocParser"), \
+        with patch("app.containers.utils.utils.DocParser"), \
              patch("app.containers.utils.utils.PPTXParser"), \
              patch("app.containers.utils.utils.PPTParser"), \
              patch("app.containers.utils.utils.HTMLParser"), \
@@ -87,19 +85,43 @@ class TestCreateParsersExtended:
             parsers = await cu.create_parsers(MagicMock(), MagicMock())
 
             expected_keys = [
-                "docx", "doc", "pptx", "ppt", "html", "md", "mdx",
+                "doc", "pptx", "ppt", "html", "md", "mdx",
                 "csv", "tsv", "xlsx", "xls",
                 "png", "jpg", "jpeg", "webp", "svg", "heic", "heif",
+                "sql_table", "sql_view",
+                "json", "yaml", "yml",
             ]
             for key in expected_keys:
                 assert key in parsers, f"Missing parser for extension: {key}"
 
     @pytest.mark.asyncio
+    async def test_json_and_yaml_parsers_registered(self):
+        """Indexing create_parsers must wire JSON/YAML so events routing can resolve them."""
+        from app.modules.parsers.json.json_parser import JSONParser
+        from app.modules.parsers.yaml.yaml_parser import YAMLParser
+
+        cu = ContainerUtils()
+        with patch("app.containers.utils.utils.DocParser"), \
+             patch("app.containers.utils.utils.PPTXParser"), \
+             patch("app.containers.utils.utils.PPTParser"), \
+             patch("app.containers.utils.utils.HTMLParser"), \
+             patch("app.containers.utils.utils.MarkdownParser"), \
+             patch("app.containers.utils.utils.MDXParser"), \
+             patch("app.containers.utils.utils.CSVParser"), \
+             patch("app.containers.utils.utils.ExcelParser"), \
+             patch("app.containers.utils.utils.XLSParser"), \
+             patch("app.containers.utils.utils.ImageParser"):
+            parsers = await cu.create_parsers(MagicMock(), MagicMock())
+
+            assert isinstance(parsers["json"], JSONParser)
+            assert isinstance(parsers["yaml"], YAMLParser)
+            assert isinstance(parsers["yml"], YAMLParser)
+
+    @pytest.mark.asyncio
     async def test_image_parsers_share_same_instance(self):
         """All image extensions should share the same ImageParser instance."""
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.DocxParser"), \
-             patch("app.containers.utils.utils.DocParser"), \
+        with patch("app.containers.utils.utils.DocParser"), \
              patch("app.containers.utils.utils.PPTXParser"), \
              patch("app.containers.utils.utils.PPTParser"), \
              patch("app.containers.utils.utils.HTMLParser"), \

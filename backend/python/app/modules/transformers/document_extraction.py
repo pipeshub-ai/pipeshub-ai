@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import logging
 from typing import List, Literal, Optional
 
@@ -13,6 +14,7 @@ from app.modules.extraction.prompt_template import (
 )
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
@@ -250,7 +252,74 @@ class DocumentExtraction(Transformer):
                     content.append(candidate)
                     total_tokens += increment
 
+            elif block.type.value == "code":
+                if block.data:
+                    code_text = block.data.get("text", "") if isinstance(block.data, dict) else str(block.data)
+                    if code_text:
+                        candidate = {
+                            "type": "text",
+                            "text": code_text,
+                        }
+                        increment = count_tokens(code_text)
+                        if total_tokens + increment > MAX_TOKENS:
+                            self.logger.info("✂️ Content exceeds %d tokens (%d). Truncating to head.", MAX_TOKENS, total_tokens + increment)
+                            break
+                        content.append(candidate)
+                        total_tokens += increment
+
         return content
+
+    async def classify(
+        self,
+        blocks: List[Block],
+        org_id: str,
+        departments: Optional[List[str]] = None,
+    ) -> Optional[DocumentClassification]:
+        """Extract metadata using pre-fetched *departments*.
+
+        This variant is intended for use by the standalone Extraction Service
+        where injecting a graph provider is undesirable.  When *departments* is
+        ``None`` or empty the method falls back to the DepartmentNames defaults
+        rather than making a graph call.
+        """
+        self.logger.info("🎯 Extracting domain metadata (pre-fetched departments)")
+        self.llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
+        is_multimodal_llm = config.get("isMultimodal")
+        context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
+        self.logger.info(f"Context length: {context_length}")
+
+        try:
+            resolved_departments: List[str] = departments or [dept.value for dept in DepartmentNames]
+            department_list = "\n".join(f'     - "{dept}"' for dept in resolved_departments)
+            sentiment_list = "\n".join(
+                f'     - "{sentiment}"' for sentiment in SentimentType.__args__
+            )
+            filled_prompt = prompt_for_document_extraction.replace(
+                "{department_list}", department_list
+            ).replace("{sentiment_list}", sentiment_list)
+            content = self._prepare_content(blocks, is_multimodal_llm, context_length)
+            if len(content) == 0:
+                self.logger.info("No content to process in document extraction")
+                return None
+            message_content = [
+                {"type": "text", "text": filled_prompt},
+                {"type": "text", "text": "Document Content: "},
+            ]
+            message_content.extend(content)
+            messages = [HumanMessage(content=message_content)]
+            parsed_response = await invoke_with_structured_output_and_reflection(
+                self.llm, messages, DocumentClassification
+            )
+            if parsed_response is not None:
+                self.logger.info("✅ Document classification parsed successfully")
+                return parsed_response
+            self.logger.warning(
+                "⚠️ Structured extraction failed after all attempts. Falling back to summary."
+            )
+            return await self._fallback_summary(message_content)
+        except Exception as e:
+            self.logger.error(f"❌ Error during classify: {str(e)}")
+            raise
 
     async def extract_metadata(
         self, blocks: List[Block], org_id: str
@@ -259,7 +328,7 @@ class DocumentExtraction(Transformer):
         Extract metadata from document content.
         """
         self.logger.info("🎯 Extracting domain metadata")
-        self.llm, config = await get_llm_for_role(self.config_service, "indexing")
+        self.llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
         is_multimodal_llm = config.get("isMultimodal")
         context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
 
@@ -348,13 +417,14 @@ class DocumentExtraction(Transformer):
                 [HumanMessage(content=fallback_prompt)]
             )
 
-            summary_text = ""
             if hasattr(response, "content"):
-                summary_text = response.content
+                raw_content = response.content
             elif isinstance(response, str):
-                summary_text = response
+                raw_content = response
+            else:
+                raw_content = None
 
-            summary_text = summary_text.strip()
+            summary_text = coerce_message_content_to_text(raw_content).strip()
             if not summary_text:
                 self.logger.error("❌ Fallback summary returned empty response")
                 return None

@@ -57,7 +57,11 @@ def _make_service():
         logger=logger,
         graph_provider=graph_provider,
         kafka_service=kafka_service,
+        processor=AsyncMock(),
     )
+    svc.processor.on_new_records = AsyncMock()
+    svc.processor.on_record_metadata_update = AsyncMock()
+    svc.processor.on_records_deleted_cascade = AsyncMock(return_value={"success": True, "virtual_record_ids": []})
     return svc, graph_provider
 
 
@@ -107,31 +111,31 @@ class TestResolveUserAndKbAccess:
         gp.kb_exists.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_role_kb_exists_returns_403(self):
-        """No role + KB exists → 403 (permission denied), not 404 (not found)."""
+    async def test_no_role_returns_404_to_prevent_enumeration(self):
+        """No role → 404 (hide KB existence from unauthorized callers)."""
         svc, gp = _make_service()
         gp.get_user_by_user_id.return_value = _user()
         gp.get_user_kb_permission.return_value = None
-        gp.kb_exists.return_value = True
 
         user_key, user_role, err = await svc._resolve_user_and_kb_access("kb-1", "uid-1")
 
         assert user_key is None
-        assert err["code"] == 403
-        gp.kb_exists.assert_called_once_with("kb-1")
+        assert err["code"] == 404
+        assert "Knowledge base not found" in err["reason"]
+        gp.kb_exists.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_role_kb_not_found_returns_404(self):
-        """No role + KB does not exist → 404 (not found), not 403 (forbidden)."""
+        """No role → 404 regardless of whether the KB exists (anti-enumeration)."""
         svc, gp = _make_service()
         gp.get_user_by_user_id.return_value = _user()
         gp.get_user_kb_permission.return_value = None
-        gp.kb_exists.return_value = False
 
         _, _, err = await svc._resolve_user_and_kb_access("kb-1", "uid-1")
 
         assert err["code"] == 404
         assert "Knowledge base not found" in err["reason"]
+        gp.kb_exists.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_required_roles_satisfied(self):
@@ -191,15 +195,15 @@ class TestResolveUserAndKbAccess:
             await svc._resolve_user_and_kb_access("kb-1", "uid-1")
 
     @pytest.mark.asyncio
-    async def test_db_error_in_kb_exists_propagates(self):
-        """On the error path, if kb_exists throws the exception must propagate (Blocker 1)."""
+    async def test_no_role_does_not_call_kb_exists(self):
+        """kb_exists is not used on the no-role auth path."""
         svc, gp = _make_service()
         gp.get_user_by_user_id.return_value = _user()
         gp.get_user_kb_permission.return_value = None
-        gp.kb_exists.side_effect = TimeoutError("Arango query timeout")
 
-        with pytest.raises(TimeoutError, match="Arango query timeout"):
-            await svc._resolve_user_and_kb_access("kb-1", "uid-1")
+        await svc._resolve_user_and_kb_access("kb-1", "uid-1")
+
+        gp.kb_exists.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_user_key_fallback_to_underscore_key(self):
@@ -270,7 +274,6 @@ class TestGetKnowledgeBase:
         svc, gp = _make_service()
         gp.get_user_by_user_id.return_value = _user()
         gp.get_user_kb_permission.return_value = None
-        gp.kb_exists.return_value = False
 
         result = await svc.get_knowledge_base("kb-1", "uid-1")
 
@@ -278,16 +281,15 @@ class TestGetKnowledgeBase:
         assert result["code"] == 404
 
     @pytest.mark.asyncio
-    async def test_no_permission_returns_403(self):
+    async def test_no_permission_returns_404(self):
         svc, gp = _make_service()
         gp.get_user_by_user_id.return_value = _user()
         gp.get_user_kb_permission.return_value = None
-        gp.kb_exists.return_value = True
 
         result = await svc.get_knowledge_base("kb-1", "uid-1")
 
         assert result["success"] is False
-        assert result["code"] == 403
+        assert result["code"] == 404
 
     @pytest.mark.asyncio
     async def test_success_returns_kb_data(self):
@@ -328,18 +330,17 @@ class TestGetKnowledgeBase:
 
     @pytest.mark.asyncio
     async def test_404_vs_403_distinction_preserved(self):
-        """404 (KB not found) and 403 (user has no permission) must be distinct."""
+        """404 (no relationship to KB) and 403 (insufficient role) must be distinct."""
         svc, gp = _make_service()
         gp.get_user_by_user_id.return_value = _user()
-        gp.get_user_kb_permission.return_value = None
 
-        # KB doesn't exist → 404
-        gp.kb_exists.return_value = False
+        gp.get_user_kb_permission.return_value = None
         result_404 = await svc.get_knowledge_base("kb-missing", "uid-1")
 
-        # KB exists but no permission → 403
-        gp.kb_exists.return_value = True
-        result_403 = await svc.get_knowledge_base("kb-exists", "uid-1")
+        gp.get_user_kb_permission.return_value = "READER"
+        result_403 = await svc.update_knowledge_base(
+            "kb-exists", "uid-1", {"name": "x"}, 
+        )
 
         assert result_404["code"] == 404
         assert result_403["code"] == 403
@@ -433,7 +434,7 @@ class TestDeleteKnowledgeBase:
         gp.get_user_by_user_id.return_value = _user()
         gp.get_user_kb_permission.return_value = "WRITER"
 
-        result = await svc.delete_knowledge_base(kb_id="kb-1", user_id="uid-1")
+        result = await svc.delete_knowledge_base(kb_id="kb-1", user_id="uid-1", org_id="org-1")
 
         assert result["code"] == 403
         assert result["reason"] == "Only KB owners can delete knowledge bases"
@@ -449,7 +450,7 @@ class TestDeleteKnowledgeBase:
         gp.get_user_by_user_id.return_value = _user()
         gp.get_user_kb_permission.return_value = "READER"  # insufficient
 
-        await svc.delete_knowledge_base(kb_id="kb-1", user_id="uid-1")
+        await svc.delete_knowledge_base(kb_id="kb-1", user_id="uid-1", org_id="org-1")
 
         # logger.error must NOT have been called for this access-control denial
         svc.logger.error.assert_not_called()
@@ -460,9 +461,8 @@ class TestDeleteKnowledgeBase:
         svc, gp = _make_service()
         gp.get_user_by_user_id.return_value = _user()
         gp.get_user_kb_permission.return_value = None
-        gp.kb_exists.return_value = False
 
-        await svc.delete_knowledge_base(kb_id="kb-missing", user_id="uid-1")
+        await svc.delete_knowledge_base(kb_id="kb-missing", user_id="uid-1", org_id="org-1")
 
         svc.logger.error.assert_not_called()
 
@@ -471,9 +471,9 @@ class TestDeleteKnowledgeBase:
         svc, gp = _make_service()
         gp.get_user_by_user_id.return_value = _user()
         gp.get_user_kb_permission.return_value = "OWNER"
-        gp.delete_knowledge_base.return_value = {"success": True}
+        gp.delete_connector_instance.return_value = {"success": True, "virtual_record_ids": []}
 
-        result = await svc.delete_knowledge_base(kb_id="kb-1", user_id="uid-1")
+        result = await svc.delete_knowledge_base(kb_id="kb-1", user_id="uid-1", org_id="org-1")
 
         assert result["success"] is True
 

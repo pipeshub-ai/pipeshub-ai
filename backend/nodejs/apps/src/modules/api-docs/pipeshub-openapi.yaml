@@ -103,6 +103,38 @@ tags:
       - Regenerate secrets if compromised
       - Suspend/activate apps to control access
       - Revoke all tokens for emergency access removal
+  - name: Personal Access Tokens
+    description: |
+      Self-service, long-lived, scoped, revocable credentials that act as their
+      creator — unlike an OAuth app's `client_credentials` flow, which acts as
+      the app.
+
+      **Who can create one**
+      - **Any authenticated org member** — unlike OAuth apps, this is
+        deliberately not admin-gated.
+
+      **How it's issued**
+      - Minted through the same OAuth access-token machinery as `/oauth2/token`,
+        against one lazily-created, per-org synthetic OAuth app
+        (`clientId: pat-system:<orgId>`) that every PAT in that org shares.
+        That app is hidden from `/oauth-clients/*` — it never appears in your
+        own OAuth app list and can't be managed through those routes.
+      - The raw token is prefixed `phpat_` ahead of the underlying JWT (see the
+        `bearerAuth` security scheme) so it's recognizable to secret scanners.
+        It's shown exactly once, at creation.
+
+      **Expiry and scopes**
+      - `expiryDays`: `30` (default), `90`, `365`, or `never`.
+      - Scopes default to the org's full configured `MCP_SCOPES` set if none
+        are requested; `GET /personal-access-tokens/scopes` lists what's
+        available.
+
+      **Admin visibility**
+      - Regular members only ever see and revoke their own tokens.
+      - Org admins can list and revoke *any* member's token via
+        `/personal-access-tokens/admin*` — for incident response (a departed
+        employee, a compromised laptop) — without needing the OAuth app CRUD
+        access described above.
   - name: OpenID Connect
     description: |
       OpenID Connect 1.0 endpoints for identity federation and discovery.
@@ -286,7 +318,14 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: JWT Bearer token for authenticated requests
+      description: |
+        JWT Bearer token for authenticated requests.
+
+        A personal access token (see the **Personal Access Tokens** tag) is a
+        `phpat_`-prefixed variant of this same JWT — e.g. `phpat_eyJhbGci...`.
+        The prefix is display-only, added for secret-scanner detectability; the
+        gateway strips it before verifying the token, so send it exactly as
+        issued, prefix included.
     scopedToken:
       type: http
       scheme: bearer
@@ -891,6 +930,10 @@ components:
           type: string
         designation:
           type: string
+        role:
+          type: string
+          enum: [admin, member]
+          description: Organization role stored on the user document (`admin` or `member`)
         hasLoggedIn:
           type: boolean
         isDeleted:
@@ -2032,6 +2075,230 @@ components:
             $ref: '#/components/schemas/OAuthTokenListItem'
           description: Active access and refresh tokens for the app
 
+    # ==================== PERSONAL ACCESS TOKEN SCHEMAS ====================
+    CreatePatRequest:
+      type: object
+      description: |
+        Request to create a personal access token (`createPatTokenSchema` in `pat.validators.ts`).
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Label to help you recognize the token later
+          minLength: 1
+          maxLength: 100
+          example: "Claude Desktop"
+        scopes:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: |
+            Scopes to grant, validated against the org's configured `MCP_SCOPES`
+            (not the full role-aware OAuth-app scope set). Defaults to every
+            scope in `MCP_SCOPES` if omitted.
+          example: ["kb:read", "semantic:write"]
+        expiryDays:
+          oneOf:
+            - type: integer
+              enum: [30, 90, 365]
+            - type: string
+              enum: ["never"]
+          description: |
+            Token lifetime. Defaults to `30` if omitted — a token minted
+            without an explicit choice shouldn't default to the longest
+            lifetime. `"never"` is stored as a ~100-year expiry (the
+            underlying schema field is required and TTL-indexed, so there's
+            no literal null option).
+          default: 30
+          example: 30
+
+    PatListItem:
+      type: object
+      description: |
+        A personal access token as seen by its own creator (one element of
+        `GET /personal-access-tokens`'s `tokens` array, or the `token` object
+        returned by `POST /personal-access-tokens` before `accessToken` is added).
+      required:
+        - id
+        - name
+        - scopes
+        - createdAt
+        - expiresAt
+      properties:
+        id:
+          type: string
+          description: Token ID
+        name:
+          type: string
+          description: Token name
+        scopes:
+          type: array
+          items:
+            type: string
+          description: Granted scopes
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          description: |
+            Expiry timestamp. A `"never"`-expiry token is stored as a
+            ~100-year-out date, not a literal null — treat anything decades
+            out as "never" rather than a real deadline.
+        lastUsedAt:
+          type: string
+          format: date-time
+          description: |
+            Last time this token successfully authenticated a request.
+            Throttled server-side to update at most once per 5 minutes per
+            token; absent if the token has never been used.
+
+    PatWithSecret:
+      allOf:
+        - $ref: '#/components/schemas/PatListItem'
+        - type: object
+          required:
+            - accessToken
+          properties:
+            accessToken:
+              type: string
+              description: |
+                The raw token, `phpat_`-prefixed. Returned **only** in this
+                creation response — only its hash is stored server-side, so
+                it cannot be retrieved again later.
+              example: "phpat_eyJhbGciOiJIUzI1NiIs..."
+
+    CreatePatResponse:
+      type: object
+      description: Response body for `POST /personal-access-tokens` (`pat.controller.ts` `createToken`).
+      required:
+        - message
+        - token
+      properties:
+        message:
+          type: string
+          example: Personal access token created successfully
+        token:
+          $ref: '#/components/schemas/PatWithSecret'
+
+    ListPatResponse:
+      type: object
+      description: |
+        Response body for `GET /personal-access-tokens` (`listTokens`) — the
+        caller's own active tokens, capped at 100 most-recent server-side.
+        Unlike the admin list, this is a flat array with no pagination
+        envelope and no owner fields (it's implicitly scoped to the caller).
+      required:
+        - tokens
+      properties:
+        tokens:
+          type: array
+          items:
+            $ref: '#/components/schemas/PatListItem'
+
+    RevokePatRequest:
+      type: object
+      description: |
+        Optional request body for `DELETE /personal-access-tokens/{tokenId}`
+        and `DELETE /personal-access-tokens/admin/{tokenId}`. The body itself
+        is optional; `reason`, if present, is stored on the revocation for
+        auditing.
+      properties:
+        reason:
+          type: string
+          example: "rotated"
+
+    RevokePatResponse:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          example: Personal access token revoked successfully
+
+    PatScopesListResponse:
+      type: object
+      description: |
+        Response body for `GET /personal-access-tokens/scopes` (`listScopes`).
+        Unlike `GET /oauth-clients/scopes`, this is a **flat array**, not
+        grouped by category, and reflects the org's configured `MCP_SCOPES`
+        rather than the full role-aware OAuth-app scope catalog.
+      required:
+        - scopes
+      properties:
+        scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/OAuthScopeInfo'
+
+    AdminPatListItem:
+      description: |
+        A personal access token as seen by an org admin — extends
+        `PatListItem` with who it belongs to, since an admin is looking
+        across every member's tokens rather than just their own.
+      allOf:
+        - $ref: '#/components/schemas/PatListItem'
+        - type: object
+          required:
+            - userId
+            - ownerDeleted
+          properties:
+            userId:
+              type: string
+              description: ID of the user who created this token
+            ownerEmail:
+              type: string
+              format: email
+              description: |
+                Owner's email. Populated even when `ownerDeleted` is true
+                (last-known value), for auditing.
+            ownerFullName:
+              type: string
+              description: Owner's full name (same last-known-value behavior as `ownerEmail`)
+            ownerDeleted:
+              type: boolean
+              description: |
+                True if the owning user has been removed from the org (or no
+                longer resolves at all). The token still appears — a deleted
+                user's tokens stop authenticating automatically, but stay
+                visible here so an admin can audit/clean them up.
+
+    AdminPatListResponse:
+      type: object
+      description: |
+        Response body for `GET /personal-access-tokens/admin` (`adminListTokens`).
+        Paginated — unlike the self-service `ListPatResponse` — since an org
+        can have far more active tokens than a fixed-window cap's worth.
+      required:
+        - data
+        - pagination
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminPatListItem'
+        pagination:
+          type: object
+          required:
+            - page
+            - limit
+            - total
+            - totalPages
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+              description: Items per page (max 100)
+            total:
+              type: integer
+            totalPages:
+              type: integer
+
     # ==================== USER MANAGEMENT SCHEMAS ====================
     User:
       type: object
@@ -2077,6 +2344,10 @@ components:
         designation:
           type: string
           description: Job title/designation
+        role:
+          type: string
+          enum: [admin, member]
+          description: Organization role stored on the user document (`admin` or `member`)
         address:
           $ref: '#/components/schemas/Address'
         dataCollectionConsent:
@@ -2156,6 +2427,10 @@ components:
         designation:
           type: string
           description: Job title/designation
+        role:
+          type: string
+          enum: [admin, member]
+          description: Organization role stored on the user document (`admin` or `member`)
         address:
           $ref: '#/components/schemas/Address'
         dataCollectionConsent:
@@ -3448,6 +3723,7 @@ components:
         - "WEB"
         - "BOOKSTACK"
         - "GITHUB"
+        - "GITHUB TEAMS"
         - "SERVICENOW"
         - "SALESFORCE"
         - "S3"
@@ -3548,6 +3824,25 @@ components:
           type: integer
           format: int64
           description: Source last modified timestamp (from connector)
+        processingStartedAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms when parse/index processing began for the current attempt; null when idle
+        parsingStatus:
+          type: string
+          enum: [NOT_STARTED, IN_PROGRESS, FAILED, COMPLETED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, QUEUED]
+          description: |
+            Parse-phase status (ahead of indexing/extraction):
+            - NOT_STARTED: Awaiting parsing
+            - QUEUED: In parsing queue
+            - IN_PROGRESS: Currently being parsed
+            - COMPLETED: Successfully parsed
+            - FAILED: Parsing failed
+            - FILE_TYPE_NOT_SUPPORTED: Unsupported file format
+            - AUTO_INDEX_OFF: Auto-indexing disabled for this record
+            - EMPTY: File has no extractable content
+          example: "COMPLETED"
         indexingStatus:
           type: string
           enum: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED]
@@ -3679,17 +3974,14 @@ components:
             - recordType
             - origin
             - version
-            - isLatestVersion
             - createdAtTimestamp
             - updatedAtTimestamp
             - sourceCreatedAtTimestamp
             - sourceLastModifiedTimestamp
-            - lastSyncTimestamp
             - indexingStatus
             - extractionStatus
             - isDeleted
             - isArchived
-            - isDirty
             - isVLMOcrProcessed
             - mimeType
             - sizeInBytes
@@ -3712,6 +4004,15 @@ components:
             externalGroupId:
               type: string
               nullable: true
+            externalParentId:
+              type: string
+              nullable: true
+            externalRevisionId:
+              type: string
+              nullable: true
+            recordGroupId:
+              type: string
+              nullable: true
             connectorId:
               type: string
             connectorName:
@@ -3724,6 +4025,7 @@ components:
               type: integer
             isLatestVersion:
               type: boolean
+              nullable: true
             createdAtTimestamp:
               type: integer
               format: int64
@@ -3739,35 +4041,86 @@ components:
             lastSyncTimestamp:
               type: integer
               format: int64
+              nullable: true
             lastIndexTimestamp:
               type: integer
               format: int64
             lastExtractionTimestamp:
               type: integer
               format: int64
+            processingStartedAt:
+              type: integer
+              format: int64
+              nullable: true
+            parsingStatus:
+              type: string
+              nullable: true
             indexingStatus:
               type: string
             extractionStatus:
               type: string
+            reason:
+              type: string
+              nullable: true
             isDeleted:
               type: boolean
             isArchived:
               type: boolean
+            deletedByUserId:
+              type: string
+              nullable: true
             isDirty:
               type: boolean
+              nullable: true
             isVLMOcrProcessed:
               type: boolean
+              nullable: true
             mimeType:
               type: string
+              nullable: true
             sizeInBytes:
               type: integer
               format: int64
+              nullable: true
             md5Checksum:
               type: string
+              nullable: true
             virtualRecordId:
               type: string
+              nullable: true
+            summaryDocumentId:
+              type: string
+              nullable: true
+            storageDocumentId:
+              type: string
+              nullable: true
             webUrl:
               type: string
+              nullable: true
+            previewRenderable:
+              type: boolean
+              nullable: true
+            isShared:
+              type: boolean
+              nullable: true
+            isDependentNode:
+              type: boolean
+              nullable: true
+            parentNodeId:
+              type: string
+              nullable: true
+            hideWeburl:
+              type: boolean
+              nullable: true
+            isInternal:
+              type: boolean
+              nullable: true
+            isPlaceholder:
+              type: boolean
+              nullable: true
+              description: >-
+                True for placeholder/stub records standing in for an out-of-scope ancestor
+                (rendered read-only, no content actions; excluded from search and indexing).
             fileRecord:
               type: object
               nullable: true
@@ -3777,10 +4130,7 @@ components:
                 - orgId
                 - name
                 - extension
-                - mimeType
-                - sizeInBytes
                 - isFile
-                - webUrl
               properties:
                 id:
                   type: string
@@ -3790,15 +4140,39 @@ components:
                   type: string
                 extension:
                   type: string
+                etag:
+                  type: string
+                  nullable: true
+                ctag:
+                  type: string
+                  nullable: true
+                md5Checksum:
+                  type: string
+                  nullable: true
+                quickXorHash:
+                  type: string
+                  nullable: true
+                crc32Hash:
+                  type: string
+                  nullable: true
+                sha1Hash:
+                  type: string
+                  nullable: true
+                sha256Hash:
+                  type: string
+                  nullable: true
                 mimeType:
                   type: string
+                  nullable: true
                 sizeInBytes:
                   type: integer
                   format: int64
+                  nullable: true
                 isFile:
                   type: boolean
                 webUrl:
                   type: string
+                  nullable: true
                 path:
                   type: string
                   nullable: true
@@ -3968,6 +4342,325 @@ components:
                 enum: [OWNER, WRITER, READER]
               accessType:
                 type: string
+
+    GetRecordContentResponseSchema:
+      type: object
+      additionalProperties: false
+      description: |
+        Response returned by GET /connectors/record/{recordId}/content.
+
+        `content` is the record's full parsed content flattened into a single
+        plain-text string: a metadata header (title, source, key fields, and a
+        short summary), then the record's block/table text in reading order, and
+        finally a foreign-key related-tables footer for `SQL_TABLE` records.
+
+        For `TICKET` records (e.g. Jira) the metadata header is refreshed with
+        live ticket fields (status, assignee, comments) at request time rather
+        than the last-indexed snapshot. `content` may be empty for records with
+        no extractable text (e.g. image-only or not-yet-parsed records).
+      required:
+        - content
+      properties:
+        content:
+          type: string
+          description: >-
+            The record's full parsed content as a single plain-text string.
+
+    KnowledgeGraphNodeRefSchema:
+      type: object
+      additionalProperties: false
+      description: Minimal identity reference for a node in the knowledge graph.
+      required:
+        - id
+        - name
+        - node_type
+        - sub_type
+        - is_record
+      properties:
+        id:
+          type: string
+          description: >-
+            Node identifier. Pass it back as `nodeId` to open this node. When
+            `is_record` is true it is also the Record ID accepted by
+            GET /connectors/record/{recordId}/content.
+        name:
+          type: string
+        node_type:
+          type: string
+          description: One of `app`, `recordGroup`, `folder`, `record`.
+        sub_type:
+          type: string
+          nullable: true
+          description: e.g. `TICKET`, `CONFLUENCE_PAGE`, `PROJECT`, `COLLECTION`.
+        is_record:
+          type: boolean
+          description: >-
+            True for record and folder nodes — the nodes whose content can be
+            read via GET /connectors/record/{recordId}/content.
+
+    KnowledgeGraphNodeRowSchema:
+      type: object
+      additionalProperties: false
+      description: |
+        One row in a navigate listing. Carries the identity fields of
+        KnowledgeGraphNodeRefSchema (inlined rather than composed, so this
+        object can stay closed) plus display detail.
+      required:
+        - id
+        - name
+        - node_type
+        - sub_type
+        - is_record
+        - has_children
+        - detail
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        node_type:
+          type: string
+          description: >-
+            One of `recordGroup`, `folder`, `record`. Listings never contain
+            `app` nodes.
+        sub_type:
+          type: string
+          nullable: true
+        is_record:
+          type: boolean
+        has_children:
+          type: boolean
+          description: Whether this node can itself be opened with `nodeId`.
+        detail:
+          type: string
+          nullable: true
+          description: e.g. size, indexing status, or relationship type.
+        web_url:
+          type: string
+          nullable: true
+          description: >-
+            Link to the record in its source system. Records that carry a
+            relative URL (uploaded/KB records) are resolved against the
+            configured frontend public URL (see
+            POST /configurationManager/frontendPublicUrl). The value is null
+            when that host is not configured.
+        indexing_status:
+          type: string
+          nullable: true
+        source_created_at:
+          type: integer
+          format: int64
+          nullable: true
+          description: >-
+            Creation time in the source system, epoch milliseconds. Null when
+            the underlying node did not carry one.
+        source_modified_at:
+          type: integer
+          format: int64
+          nullable: true
+        level:
+          type: integer
+          description: >-
+            1-based nesting depth from the navigated parent. Always 1 for a
+            `depth=1` listing; 2 or 3 for deeper rows when `depth` > 1.
+        context_summary:
+          type: string
+          nullable: true
+
+    KnowledgeGraphPaginationSchema:
+      type: object
+      additionalProperties: false
+      description: Pagination envelope for a navigate listing.
+      required:
+        - page
+        - limit
+        - total
+        - has_next
+        - has_prev
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+          description: Total children of the current node, ignoring pagination.
+        has_next:
+          type: boolean
+        has_prev:
+          type: boolean
+
+    NavigateKnowledgeGraphResponseSchema:
+      type: object
+      additionalProperties: false
+      description: |
+        Response returned by GET /connectors/navigate.
+
+        Field names are snake_case, matching the knowledge graph's internal
+        view models. `text` carries the same flat-text rendering PipesHub's
+        own agent sees for this node; the remaining fields carry the same
+        information in structured form.
+      required:
+        - current
+        - breadcrumbs
+        - rows
+        - related
+        - pagination
+        - web_url
+        - indexing_status
+        - connector
+        - text
+      properties:
+        current:
+          allOf:
+            - $ref: '#/components/schemas/KnowledgeGraphNodeRefSchema'
+          nullable: true
+          description: The node that was opened. Null at the root listing.
+        breadcrumbs:
+          type: array
+          description: Root to parent, not including `current`.
+          items:
+            $ref: '#/components/schemas/KnowledgeGraphNodeRefSchema'
+        rows:
+          type: array
+          description: >-
+            The current node's children for this page. With `depth` > 1 this is
+            a flat list of all descendants up to that depth, each row carrying
+            its own `level`.
+          items:
+            $ref: '#/components/schemas/KnowledgeGraphNodeRowSchema'
+        related:
+          type: array
+          description: >-
+            Cross-referenced records (non-containment edges), e.g. the
+            Confluence page linked from a Jira ticket. Page 1 only.
+          items:
+            $ref: '#/components/schemas/KnowledgeGraphNodeRowSchema'
+        pagination:
+          allOf:
+            - $ref: '#/components/schemas/KnowledgeGraphPaginationSchema'
+          nullable: true
+        web_url:
+          type: string
+          nullable: true
+        indexing_status:
+          type: string
+          nullable: true
+        connector:
+          type: string
+          nullable: true
+        context_block:
+          type: string
+          nullable: true
+          description: >-
+            Type-specific metadata for the current node when it is a record —
+            for a ticket, status, assignee, priority and dates.
+        text:
+          type: string
+          description: |
+            Flat-text rendering of this view: breadcrumbs, the current node's
+            metadata, the children listing with an id per row, `Related:`, and
+            a closing `Next:` line naming a follow-up call.
+
+            Shape depends on the page: pages after the first omit the header,
+            breadcrumbs and related rows to stay compact, while the structured
+            fields above remain complete. Capped at 25,000 bytes, with a
+            truncation marker appended when exceeded.
+
+    KnowledgeGraphLookupMatchSchema:
+      type: object
+      additionalProperties: false
+      description: A single record resolved from an identifier.
+      required:
+        - id
+        - name
+        - record_type
+        - connector_name
+        - web_url
+        - indexing_status
+        - identifier_used
+      properties:
+        id:
+          type: string
+          description: >-
+            The Record ID. Pass it to GET /connectors/record/{recordId}/content
+            to read the record, or as `nodeId` to GET /connectors/navigate to
+            list what is under it.
+        name:
+          type: string
+        record_type:
+          type: string
+          nullable: true
+        connector_name:
+          type: string
+          nullable: true
+        web_url:
+          type: string
+          nullable: true
+        indexing_status:
+          type: string
+          nullable: true
+        identifier_used:
+          type: string
+          description: Which of the supplied identifiers produced this match.
+        external_id:
+          type: string
+          nullable: true
+          description: e.g. `PA-1787`, a Confluence page id, a Drive file id.
+        context_block:
+          type: string
+          nullable: true
+          description: >-
+            Type-specific metadata for the record — for a ticket, status,
+            assignee, priority and dates.
+
+    LookupRecordResponseSchema:
+      type: object
+      additionalProperties: false
+      description: |
+        Response returned by GET /connectors/record/lookup.
+
+        Field names are snake_case, matching the knowledge graph's internal
+        view models. A miss is a 200 with an empty `matches` and the input
+        echoed in `not_found_identifiers` — see the endpoint description.
+      required:
+        - matches
+        - ambiguous
+        - not_found_identifiers
+        - text
+      properties:
+        matches:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnowledgeGraphLookupMatchSchema'
+        ambiguous:
+          type: boolean
+          description: >-
+            True when one identifier resolved to more than one accessible
+            record. Present the choice rather than taking the first, or retry
+            with `connectorName`.
+        not_found_identifiers:
+          type: array
+          description: Identifiers that resolved to nothing the caller can access.
+          items:
+            type: string
+        searched_connectors:
+          type: object
+          description: >-
+            Per-identifier list of the connector types that were searched, so a
+            miss can be retried against a different `connectorName`. Keys are
+            the identifiers exactly as supplied.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        text:
+          type: string
+          description: >-
+            Flat-text rendering of the matches — each match's metadata block
+            followed by a `Next:` line naming a follow-up call — and a line per
+            miss naming the connectors that were searched. Capped at 25,000
+            bytes.
 
     DeleteRecordResponseSchema:
       type: object
@@ -4262,21 +4955,16 @@ components:
           description: |
             When set, only records matching these indexing statuses are reindexed.
 
-    ReindexFailedConnectorRequestBody:
+    ReindexConnectorRequestBody:
       type: object
-      required:
-        - app
       properties:
-        app:
-          type: string
-          description: Connector app name (e.g. `KB`, `DRIVE`).
-          example: "DRIVE"
         statusFilters:
           type: array
           items:
             $ref: '#/components/schemas/IndexingStatusFilter'
           description: |
-            Statuses to reindex. Defaults to `FAILED` when omitted (connector-wide reindex).
+            Statuses to reindex. Omitting this reindexes everything for a KB
+            connector; other connector types default server-side to `FAILED`.
 
     ResyncConnectorRequestBody:
       type: object
@@ -4396,6 +5084,7 @@ components:
         - permission
         - sharingStatus
         - isInternal
+        - isPlaceholder
       properties:
         id:
           type: string
@@ -4438,6 +5127,11 @@ components:
         isInternal:
           type: boolean
           description: True for internal/system nodes that do not originate from a source.
+        isPlaceholder:
+          type: boolean
+          description: >-
+            True for placeholder/stub nodes standing in for an out-of-scope ancestor
+            (rendered read-only, no content actions; excluded from search and indexing).
         createdAt:
           type: integer
           description: Creation timestamp (epoch ms).
@@ -4956,6 +5650,28 @@ components:
         - teamIds
 
     # ==================== ENTERPRISE SEARCH SCHEMAS ====================
+    AgentCapabilities:
+      type: object
+      additionalProperties: false
+      description: |
+        Per-request agent capability toggles. Only meaningful when `chatMode`
+        selects an agent mode; ignored otherwise. Each field falls back to its
+        own `default` below when omitted — a missing flag is not uniformly
+        `true`. Omitting the whole object applies every default.
+      properties:
+        internalSearch:
+          type: boolean
+          default: true
+          description: Whether the agent may search internal knowledge bases for this turn.
+        webSearch:
+          type: boolean
+          default: true
+          description: Whether the agent may perform web search for this turn.
+        deepSearch:
+          type: boolean
+          default: false
+          description: Whether the agent may use deeper, higher-latency retrieval for this turn.
+
     Filters:
       type: object
       additionalProperties: false
@@ -4973,18 +5689,15 @@ components:
             type: string
           description: |
             Connector instance ids to scope retrieval for this turn. Each element
-            must be a UUID (connector instance id, record-group id, etc.) or the
-            org knowledge-base collection sentinel `knowledgeBase_<orgId>`
-            (pattern `knowledgeBase_[a-zA-Z0-9_-]+`). Gateway validation matches
-            Zod `appOrKbIdSchema`.
+            must be a valid UUID (connector app id, KB app id, record-group id, etc.).
+            Gateway validation matches Zod `appOrKbIdSchema`.
         kb:
           type: array
           items:
             type: string
           description: |
-            Knowledge-base / record-group ids to scope retrieval for this turn.
-            Each element uses the same accepted formats as `apps`: a UUID or
-            `knowledgeBase_<orgId>` (pattern `knowledgeBase_[a-zA-Z0-9_-]+`).
+            Knowledge-base app ids to scope retrieval for this turn.
+            Each element must be a valid UUID.
 
     AppliedFilterNode:
       type: object
@@ -5087,10 +5800,15 @@ components:
           type: string
           minLength: 1
           description: Synthetic record id used by the graph layer.
+        parseMode:
+          type: string
+          minLength: 1
+          description: Backend-reported parsing mode used for the attachment (e.g. `pdfplumber`, `docling`, `csv_lightweight`).
         ocrMode:
           type: string
           minLength: 1
-          description: Optional backend-reported processing mode for the attachment.
+          deprecated: true
+          description: Deprecated alias for `parseMode`, kept for backward compatibility. Use `parseMode` instead.
 
     ChatAttachmentUploadResponse:
       type: object
@@ -5176,10 +5894,14 @@ components:
         chatMode:
           type: string
           enum:
-            - web_search
+            - agent
             - internal_search
+            - web_search
           description: |
-            Chat mode affecting response behavior.
+            Optional execution mode for non-stream consumers of this shared
+            request schema.
+            `agent` uses the universal agent loop, while `internal_search`
+            and `web_search` use their corresponding assistant search paths.
           example: "internal_search"
         timezone:
           type: string
@@ -5203,8 +5925,30 @@ components:
             Optional list of tool identifiers (fully-qualified action names such as
             "jira.create_issue") that the AI agent is permitted to invoke for this
             request. When omitted the agent may use any configured tool. Applicable
-            only when chatMode is an agent mode (e.g. "agent:auto").
+            only when `chatMode` is `agent`.
           example: ["jira.create_issue", "confluence.search_content"]
+        protocol:
+          type: string
+          enum:
+            - agui
+          description: |
+            AG-UI is the only supported wire protocol. When present must be
+            `"agui"`. Omitting the field is equivalent — the server always
+            uses the AG-UI vocabulary (`RUN_STARTED`, `TEXT_MESSAGE_CONTENT`,
+            etc.). Kept in the schema for backward compatibility with callers
+            that already send it.
+        agentCapabilities:
+          $ref: '#/components/schemas/AgentCapabilities'
+
+    ConversationStreamRequest:
+      allOf:
+        - $ref: '#/components/schemas/CreateConversationRequest'
+        - type: object
+          description: |
+            Request body for `POST /conversations/stream`. The public stream
+            requires an explicit universal execution mode.
+          required:
+            - chatMode
 
     CreateConversationResponse:
       type: object
@@ -5244,11 +5988,12 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Request body for `POST /agents/{agentKey}/conversations/stream`. Only
-        `query` is required; all other fields are optional overrides or routing
-        hints. Unknown fields are stripped during validation.
+        Request body for `POST /agents/{agentKey}/conversations/stream`.
+        `query` and `chatMode: quick` are required; all other fields are
+        optional overrides. Unknown fields are stripped during validation.
       required:
         - query
+        - chatMode
       properties:
         query:
           type: string
@@ -5270,9 +6015,8 @@ components:
             - $ref: '#/components/schemas/Filters'
           description: |
             Optional retrieval scope (`apps` / `kb`) for this turn. Each id must
-            be a UUID or a `knowledgeBase_<orgId>` collection id. Omit for
-            agent defaults; send `{ "apps": [], "kb": [] }` to force no
-            knowledge sources for this turn.
+            be a valid UUID. Omit for agent defaults; send `{ "apps": [], "kb": [] }`
+            to force no knowledge sources for this turn.
         appliedFilters:
           allOf:
             - $ref: '#/components/schemas/AppliedFilters'
@@ -5289,16 +6033,10 @@ components:
         chatMode:
           type: string
           enum:
-            - auto
             - quick
-            - verification
-            - deep
           description: |
-            Chat mode hint forwarded to the agent backend.
-            - `auto` lets the agent pick its default strategy.
-            - `quick` favors low-latency answers over depth.
-            - `verification` runs additional grounding/verification passes.
-            - `deep` performs deeper retrieval and reasoning.
+            Required execution mode. Scoped agent conversations currently
+            support only `quick`.
         modelKey:
           type: string
           minLength: 1
@@ -5334,12 +6072,24 @@ components:
             Allowed tool ids for this turn, such as `jira.create_issue`. Omit
             to let the agent use its default toolset; send `[]` to disable
             tools for this turn.
+        protocol:
+          type: string
+          enum:
+            - agui
+          description: |
+            AG-UI is the only supported wire protocol. When present must be
+            `"agui"`. Omitting the field is equivalent — the server always
+            uses the AG-UI vocabulary (see `AgentStreamSSEEvent`). Kept in
+            the schema for backward compatibility with callers that already
+            send it.
+        agentCapabilities:
+          $ref: '#/components/schemas/AgentCapabilities'
       example:
         query: what are some latest tech news?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
         modelName: gpt-5.4-mini
         modelFriendlyName: GPT 5.4 mini
-        chatMode: auto
+        chatMode: quick
         timezone: Asia/Kolkata
         currentTime: "2026-05-19T12:58:01+05:30"
         tools: []
@@ -5387,6 +6137,9 @@ components:
         - `currentTime` — optional ISO 8601 / RFC 3339 datetime string with
           UTC `Z` or a numeric offset
         - `tools` — optional array of non-empty tool identifiers
+        - `protocol` — optional inert compatibility field; when present it must
+          be `agui`, which is also the protocol used when the field is omitted
+        - `agentCapabilities` — optional per-request agent capability toggles
       properties:
         filters:
           $ref: '#/components/schemas/Filters'
@@ -5413,7 +6166,7 @@ components:
           minLength: 1
           description: |
             Chat mode used for regeneration (for example `internal_search`,
-            `web_search`, or an agent mode such as `agent:auto`).
+            `web_search`, or the universal `agent` mode).
           example: "internal_search"
         timezone:
           type: string
@@ -5439,6 +6192,33 @@ components:
             such as `jira.create_issue`) the agent may invoke when
             regenerating. Applicable only in agent chat modes.
           example: ["jira.create_issue", "confluence.search_content"]
+        protocol:
+          type: string
+          enum:
+            - agui
+          description: |
+            AG-UI is the only supported wire protocol. When present must be
+            `"agui"`. Omitting the field is equivalent — the server always
+            uses the AG-UI vocabulary. Kept in the schema for backward
+            compatibility with callers that already send it.
+        agentCapabilities:
+          $ref: '#/components/schemas/AgentCapabilities'
+
+    AgentRegenerateRequest:
+      allOf:
+        - $ref: '#/components/schemas/RegenerateRequest'
+        - type: object
+          description: |
+            Regeneration payload for a scoped agent conversation. The public
+            gateway requires `chatMode: quick`; all other fields retain the
+            semantics defined by `RegenerateRequest`.
+          required:
+            - chatMode
+          properties:
+            chatMode:
+              type: string
+              enum:
+                - quick
 
     AddMessageRequest:
       type: object
@@ -5474,9 +6254,12 @@ components:
         chatMode:
           type: string
           enum:
-            - web_search
+            - agent
             - internal_search
-          description: Chat mode for this message
+            - web_search
+          description: |
+            Optional execution mode for non-stream consumers of this shared
+            request schema.
         timezone:
           type: string
           minLength: 1
@@ -5500,6 +6283,29 @@ components:
             follow-up message. Semantics are identical to the create-conversation
             tools field.
           example: ["jira.create_issue", "confluence.search_content"]
+        protocol:
+          type: string
+          enum:
+            - agui
+          description: |
+            AG-UI is the only supported wire protocol. When present must be
+            `"agui"`. Omitting the field is equivalent — the server always
+            uses the AG-UI vocabulary (see `ConversationMessageStreamSSEEvent`).
+            Kept in the schema for backward compatibility with callers that
+            already send it.
+        agentCapabilities:
+          $ref: '#/components/schemas/AgentCapabilities'
+
+    ConversationMessageStreamRequest:
+      allOf:
+        - $ref: '#/components/schemas/AddMessageRequest'
+        - type: object
+          description: |
+            Request body for
+            `POST /conversations/{conversationId}/messages/stream`. The public
+            stream requires an explicit universal execution mode.
+          required:
+            - chatMode
 
     AddMessageResponse:
       type: object
@@ -5553,10 +6359,11 @@ components:
       additionalProperties: false
       description: |
         Request body for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
-        Only `query` is required; all other fields are optional overrides or
-        routing hints. Unknown fields are stripped during validation.
+        `query` and `chatMode: quick` are required; all other fields are
+        optional overrides. Unknown fields are stripped during validation.
       required:
         - query
+        - chatMode
       properties:
         query:
           type: string
@@ -5570,9 +6377,8 @@ components:
             - $ref: '#/components/schemas/Filters'
           description: |
             Optional retrieval scope (`apps` / `kb`) for this turn. Each id must
-            be a UUID or a `knowledgeBase_<orgId>` collection id. Omit to let
-            the agent use its stored defaults; send `{ "apps": [], "kb": [] }`
-            to force no knowledge sources for this turn.
+            be a valid UUID. Omit to let the agent use its stored defaults;
+            send `{ "apps": [], "kb": [] }` to force no knowledge sources for this turn.
         appliedFilters:
           allOf:
             - $ref: '#/components/schemas/AppliedFilters'
@@ -5589,17 +6395,10 @@ components:
         chatMode:
           type: string
           enum:
-            - auto
             - quick
-            - verification
-            - deep
           description: |
-            Chat mode hint forwarded to the agent backend. Defaults to `auto`
-            in the upstream AI payload when omitted.
-            - `auto` lets the agent pick its default strategy.
-            - `quick` favors low-latency answers over depth.
-            - `verification` runs additional grounding/verification passes.
-            - `deep` performs deeper retrieval and reasoning.
+            Required execution mode. Scoped agent conversations currently
+            support only `quick`.
         modelKey:
           type: string
           minLength: 1
@@ -5635,12 +6434,24 @@ components:
             Allowed tool ids for this turn, such as `jira.create_issue`. Omit
             to let the agent use its default toolset; send `[]` to disable
             tools for this turn.
+        protocol:
+          type: string
+          enum:
+            - agui
+          description: |
+            AG-UI is the only supported wire protocol. When present must be
+            `"agui"`. Omitting the field is equivalent — the server always
+            uses the AG-UI vocabulary (see `AgentMessageStreamSSEEvent`).
+            Kept in the schema for backward compatibility with callers that
+            already send it.
+        agentCapabilities:
+          $ref: '#/components/schemas/AgentCapabilities'
       example:
         query: can you elaborate on the latest headlines?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
         modelName: gpt-5.4-mini
         modelFriendlyName: GPT 5.4 mini
-        chatMode: verification
+        chatMode: quick
         timezone: Asia/Kolkata
         currentTime: "2026-05-19T12:58:01+05:30"
         tools: []
@@ -5666,6 +6477,87 @@ components:
               nodeType: recordGroup
               connector: KB
 
+    MessageToolCall:
+      type: object
+      additionalProperties: false
+      description: One tool invocation recorded on a message turn.
+      properties:
+        toolName:
+          type: string
+        toolResult: {}
+
+    MessageReasoningTurn:
+      type: object
+      additionalProperties: false
+      description: |
+        One model turn's chain-of-thought. Persisted only when reasoning
+        persistence is enabled; the array is empty otherwise.
+      required:
+        - content
+      properties:
+        messageId:
+          type: string
+        turnIndex:
+          type: number
+        content:
+          type: string
+
+    MessagePart:
+      type: object
+      additionalProperties: false
+      description: |
+        One entry in the ordered agent-activity transcript for a message turn.
+        Every field beyond `type` is optional and depends on the part kind, and
+        `sub_agent` nests this same shape recursively under `parts`.
+
+        Tool results here are always a bounded preview, never the full payload —
+        `artifactId` points at the complete result.
+      properties:
+        type:
+          type: string
+          enum: [text, reasoning, tool_call, sub_agent]
+        content:
+          type: string
+        toolCallId:
+          type: string
+        toolName:
+          type: string
+        displayName:
+          type: string
+        args:
+          type: string
+        argsSummary:
+          type: string
+          description: Human-readable summary of `args`, computed server-side.
+        status:
+          type: string
+          enum: [running, completed, failed, blocked]
+        resultPreview:
+          type: string
+        resultSummary:
+          type: string
+          description: |
+            Human-readable summary of the tool result, computed server-side from
+            the full untruncated output.
+        artifactId:
+          type: string
+          description: Blob-backed artifact id for the full tool result.
+        runId:
+          type: string
+        roleName:
+          type: string
+        isFinal:
+          type: boolean
+          description: |
+            Set on the single root-level `text` part carrying the answer. Every
+            other root `text` part is an abandoned preamble turn. Never set on
+            child parts nested under a `sub_agent`.
+        parts:
+          type: array
+          description: Nested transcript of a `sub_agent` part.
+          items:
+            $ref: '#/components/schemas/MessagePart'
+
     Message:
       type: object
       additionalProperties: false
@@ -5679,7 +6571,7 @@ components:
           description: Unique message identifier
         messageType:
           type: string
-          enum: [user_query, bot_response, error, feedback, system]
+          enum: [user_query, bot_response, error, feedback, system, tool_call]
           description: |
             Type of message:
             - `user_query` - User's question or input
@@ -5687,6 +6579,7 @@ components:
             - `error` - Error message from the system
             - `feedback` - User feedback on a response
             - `system` - System notification or status
+            - `tool_call` - Tool invocation turn; details are on `tools`
         content:
           type: string
           description: The message text content
@@ -5782,12 +6675,17 @@ components:
           type: array
           description: Tool call results invoked during this message turn.
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              toolName:
-                type: string
-              toolResult: {}
+            $ref: '#/components/schemas/MessageToolCall'
+        reasoning:
+          type: array
+          description: Persisted chain-of-thought for this turn.
+          items:
+            $ref: '#/components/schemas/MessageReasoningTurn'
+        parts:
+          type: array
+          description: Ordered agent-activity transcript for this turn.
+          items:
+            $ref: '#/components/schemas/MessagePart'
         createdAt:
           type: string
           format: date-time
@@ -6829,6 +7727,12 @@ components:
         deletedByUserId:
           type: string
           nullable: true
+        processingStartedAt:
+          type: number
+          nullable: true
+        parsingStatus:
+          type: string
+          nullable: true
         indexingStatus:
           type: string
           nullable: true
@@ -6851,6 +7755,9 @@ components:
           type: number
           nullable: true
         summaryDocumentId:
+          type: string
+          nullable: true
+        storageDocumentId:
           type: string
           nullable: true
         virtualRecordId:
@@ -7857,16 +8764,19 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Indexed scope for a knowledge connector: record-group ids (collections /
-        KB roots) and individual record ids. First-party create/update flows set
-        `recordGroups` and `records`. On GET, `filtersParsed` is this shape
-        parsed from the stored `filters` JSON string.
+        Indexed scope for a knowledge connector: record-group ids and
+        individual record ids. On GET, `filtersParsed` is this shape parsed
+        from the stored `filters` JSON string.
       properties:
         recordGroups:
           type: array
           items:
             type: string
-          description: Record-group ids (e.g. knowledge-base roots) in scope.
+          description: >-
+            Deprecated/legacy: record-group ids for connector record-group
+            scoping (e.g. Confluence spaces, Jira projects). No longer set for
+            KB (Collection) entries — a KB is identified by its own
+            `connectorId`, not by an id in this list.
         records:
           type: array
           items:
@@ -7936,6 +8846,46 @@ components:
                   (its `@tool` was removed). Read-only; ignored on create/update
                   bodies. Not stamped on the `GET /agents` list projection.
 
+    McpServer:
+      type: object
+      additionalProperties: false
+      description: |
+        MCP server instance linked to an agent, as projected by the graph
+        store on `GET /agents/{agentKey}` and `GET /agents` — same shape as
+        `Toolset`. MCP server nodes carry no secrets, only the attach-time
+        snapshot of `instanceId`/`typeId`/`name`.
+      properties:
+        _key:
+          type: string
+          description: MCP server instance node key in the backing graph store.
+        name:
+          type: string
+          description: MCP server attachment name (attach-time snapshot).
+        displayName:
+          type: string
+          description: Human-readable MCP server product label (for example `Jira MCP`).
+        typeId:
+          type: string
+          description: Catalog server type id, when this instance came from a registered template.
+        instanceId:
+          type: string
+          description: Admin-created MCP server instance id.
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              _key:
+                type: string
+                description: Tool node key in the backing graph store.
+              name:
+                type: string
+              fullName:
+                type: string
+              description:
+                type: string
+
     AgentFilters:
       description: |
         Knowledge scope filter as stored on the graph edge. The Node `getAgent`
@@ -7975,6 +8925,37 @@ components:
             Empty object when `filters` is missing or invalid JSON.
           allOf:
             - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
+
+    AgentSkill:
+      type: object
+      additionalProperties: false
+      description: |
+        A skill linked to the agent, as returned by the agent detail graph
+        projection. Flat by design — a skill carries no sub-entities analogous
+        to a toolset's tools. Fields other than `name` are read straight off
+        the skill document and are null when unset.
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Unique skill name, used to reference the skill on agent create/update.
+        description:
+          type: string
+          nullable: true
+        category:
+          type: string
+          nullable: true
+        subcategory:
+          type: string
+          nullable: true
+        version:
+          type: string
+          nullable: true
+        status:
+          type: string
+          nullable: true
+          description: Lifecycle state of the skill — `active` or `deprecated`.
 
     Agent:
       type: object
@@ -8055,6 +9036,13 @@ components:
                     example: llm
                   modelFriendlyName:
                     type: string
+        usesOrgDefault:
+          type: boolean
+          description: |
+            True when this agent has no models configured and will use the
+            organization's default LLM (marked `isDefault: true` in the AI
+            models configuration) at chat time. Derived from `models` being
+            empty — not persisted separately.
         toolsets:
           type: array
           description: |
@@ -8063,11 +9051,23 @@ components:
             and optional `instanceName`.
           items:
             $ref: '#/components/schemas/Toolset'
+        mcpServers:
+          type: array
+          description: |
+            MCP server instances linked to the agent (GET /agents/{agentKey} graph
+            projection). Same shape/semantics as `toolsets`, keyed by `instanceId`.
+          items:
+            $ref: '#/components/schemas/McpServer'
         knowledge:
           type: array
           description: Knowledge connectors and indexed scopes linked to the agent
           items:
             $ref: '#/components/schemas/Knowledge'
+        skills:
+          type: array
+          description: Skills linked to the agent via `agentHasSkill` edges
+          items:
+            $ref: '#/components/schemas/AgentSkill'
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the whole organization
@@ -8088,6 +9088,11 @@ components:
             - provider
           example:
             provider: "serper"
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: [none, low, medium, high, max]
+          description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
         tags:
           type: array
           items:
@@ -8149,6 +9154,8 @@ components:
         - shareWithOrg
         - knowledge
         - toolsets
+        - mcpServers
+        - skills
         - can_view
         - can_share
         - can_edit
@@ -8235,6 +9242,13 @@ components:
           type: string
           nullable: true
           description: User id of the last updater, if present.
+        usesOrgDefault:
+          type: boolean
+          description: |
+            True when this agent has no models configured and will use the
+            organization's default LLM (marked `isDefault: true` in the AI
+            models configuration) at chat time. Derived from `models` being
+            empty — not persisted separately.
         webSearch:
           type: object
           additionalProperties: false
@@ -8253,6 +9267,11 @@ components:
               type: string
             providerLabel:
               type: string
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: [none, low, medium, high, max]
+          description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the organization.
@@ -8264,6 +9283,14 @@ components:
             for each agent on the returned page.
           items:
             $ref: '#/components/schemas/Toolset'
+        mcpServers:
+          type: array
+          description: |
+            MCP server instances linked to the agent. Same projection as
+            `GET /agents/{agentKey}`; the backend builds it from the graph
+            edges for each agent on the returned page.
+          items:
+            $ref: '#/components/schemas/McpServer'
         knowledge:
           type: array
           description: |
@@ -8306,6 +9333,7 @@ components:
         - updatedAtTimestamp
         - shareWithOrg
         - toolsets
+        - mcpServers
         - knowledge
         - can_view
         - can_share
@@ -8405,8 +9433,11 @@ components:
         The gateway accepts either a non-empty string model entry or an object entry
         with a required `modelKey`.
 
-        The `models` array must include at least one object entry with `isReasoning: true`.
-        String-only entries are schema-valid but are rejected at the gateway with HTTP 400.
+        The `models` array itself is optional and may be empty (the agent then uses
+        the organization's default LLM). When the array is non-empty, it must include
+        at least one object entry with `isReasoning: true`. String-only entries are
+        schema-valid but, if present without any reasoning-flagged object entry, are
+        rejected at the gateway with HTTP 400.
       oneOf:
         - type: string
           minLength: 1
@@ -8446,10 +9477,12 @@ components:
         - calendar
         - clickup
         - confluence
+        - confluencedatacenter
         - drive
         - github
         - gmail
         - jira
+        - jiradatacenter
         - lumos
         - mariadb
         - onedrive
@@ -8503,9 +9536,8 @@ components:
 
     AgentCreateWebSearch:
       description: |
-        Accepted web-search attachment for `POST /agents/create`.
-        The gateway accepts either a provider string or an object with at least
-        a `provider` field.
+        Web-search attachment for an agent. Accepts either a provider string
+        or an object with at least a `provider` field.
       anyOf:
         - type: string
         - type: object
@@ -8526,12 +9558,25 @@ components:
             - provider
         - type: 'null'
 
+    AgentSkillAssignment:
+      type: object
+      additionalProperties: false
+      description: Reference to an existing skill assigned to an agent.
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+          description: Lowercase skill name using single hyphens between segments.
+
     AgentCreateRequest:
       type: object
       additionalProperties: false
       required:
         - name
-        - models
       properties:
         name:
           type: string
@@ -8557,11 +9602,15 @@ components:
           description: Additional agent execution instructions
         models:
           type: array
-          minItems: 1
+          minItems: 0
+          default: []
           description: |
-            Agent model configuration entries. The gateway requires at least one
-            object entry with `isReasoning: true`. String-only arrays are schema-valid
-            but rejected at runtime with HTTP 400.
+            Agent model configuration entries. Optional — an agent created without
+            any models (an empty array or an omitted field) uses the organization's
+            default LLM at chat time. When at least one model entry IS provided, the
+            gateway requires at least one object entry with `isReasoning: true`.
+            String-only arrays are schema-valid but rejected at runtime with HTTP 400
+            unless the array is empty.
           items:
             $ref: '#/components/schemas/AgentCreateModelEntry'
         tags:
@@ -8590,8 +9639,19 @@ components:
           description: Knowledge sources connected to the agent
           items:
             $ref: '#/components/schemas/AgentCreateKnowledge'
+        skills:
+          type: array
+          maxItems: 100
+          description: Existing skills to assign to the agent
+          items:
+            $ref: '#/components/schemas/AgentSkillAssignment'
         webSearch:
           $ref: '#/components/schemas/AgentCreateWebSearch'
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: [none, low, medium, high, max]
+          description: Agent-level reasoning effort used when a chat request omits its own.
 
     AgentCreateWarning:
       type: object
@@ -8638,6 +9698,42 @@ components:
           items:
             $ref: '#/components/schemas/AgentCreateResponseTool'
 
+    AgentCreateResponseMcpServerTool:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - fullName
+        - key
+      properties:
+        name:
+          type: string
+        fullName:
+          type: string
+        key:
+          type: string
+
+    AgentCreateResponseMcpServer:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - displayName
+        - key
+        - tools
+      properties:
+        name:
+          type: string
+        displayName:
+          type: string
+          description: Human-readable MCP server product label (for example `Jira MCP`).
+        key:
+          type: string
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCreateResponseMcpServerTool'
+
     AgentCreateResponseKnowledge:
       type: object
       additionalProperties: false
@@ -8657,6 +9753,19 @@ components:
             - type: string
             - type: array
               items: {}
+
+    AgentCreateResponseSkill:
+      type: object
+      additionalProperties: false
+      description: |
+        A skill linked to the agent at creation time. Creating or updating an
+        agent only links edges to skills that already exist and never writes a
+        skill document, so only the name is echoed back here.
+      required:
+        - name
+      properties:
+        name:
+          type: string
 
     AgentCreateResponseAgent:
       type: object
@@ -8679,7 +9788,9 @@ components:
         - updatedAtTimestamp
         - isDeleted
         - toolsets
+        - mcpServers
         - knowledge
+        - skills
       properties:
         _key:
           type: string
@@ -8714,6 +9825,11 @@ components:
                 providerLabel:
                   type: string
             - type: 'null'
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: [none, low, medium, high, max]
+          description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
         isActive:
           type: boolean
         isServiceAccount:
@@ -8733,10 +9849,18 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AgentCreateResponseToolset'
+        mcpServers:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCreateResponseMcpServer'
         knowledge:
           type: array
           items:
             $ref: '#/components/schemas/AgentCreateResponseKnowledge'
+        skills:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCreateResponseSkill'
 
     AgentCreateResponse:
       type: object
@@ -8769,9 +9893,11 @@ components:
         Partial update payload for `PUT /agents/{agentKey}`.
 
         Every field is optional — only the fields present in the request body
-        are updated. When `models` is included, the gateway Zod middleware
-        (mirroring the Python backend) requires at least one model entry and
-        at least one object entry with `isReasoning: true`.
+        are updated. `models` may be omitted, set to an empty array to clear
+        the agent's models (reverting it to the organization's default LLM at
+        chat time), or set to a non-empty array. When a non-empty array is
+        provided, the gateway Zod middleware (mirroring the Python backend)
+        requires at least one object entry with `isReasoning: true`.
       properties:
         name:
           type: string
@@ -8797,11 +9923,13 @@ components:
           description: Additional agent execution instructions
         models:
           type: array
-          minItems: 1
+          minItems: 0
           description: |
-            Agent model configuration entries. When present, the Zod middleware
-            requires at least one object entry with `isReasoning: true`.
-            String-only arrays are schema-valid but rejected at runtime with HTTP 400.
+            Agent model configuration entries. Optional. An empty array clears the
+            agent's models so it falls back to the organization's default LLM.
+            When a non-empty array is present, the Zod middleware requires at
+            least one object entry with `isReasoning: true`. String-only arrays
+            are schema-valid but rejected at runtime with HTTP 400 unless empty.
           items:
             $ref: '#/components/schemas/AgentCreateModelEntry'
         tags:
@@ -8830,8 +9958,21 @@ components:
           description: Knowledge sources connected to the agent
           items:
             $ref: '#/components/schemas/AgentCreateKnowledge'
+        skills:
+          type: array
+          maxItems: 100
+          description: |
+            Complete replacement set of skills assigned to the agent. Send
+            an empty array to clear all skill assignments.
+          items:
+            $ref: '#/components/schemas/AgentSkillAssignment'
         webSearch:
           $ref: '#/components/schemas/AgentCreateWebSearch'
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: [none, low, medium, high, max]
+          description: Agent-level reasoning effort used when a chat request omits its own.
 
     AgentUpdateResponse:
       type: object
@@ -9426,7 +10567,7 @@ components:
           format: objectId
         messageType:
           type: string
-          enum: [user_query, bot_response, error, feedback, system]
+          enum: [user_query, bot_response, error, feedback, system, tool_call]
         content:
           type: string
         contentFormat:
@@ -9497,12 +10638,17 @@ components:
           type: array
           description: Tool call results invoked during this message turn.
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              toolName:
-                type: string
-              toolResult: {}
+            $ref: '#/components/schemas/MessageToolCall'
+        reasoning:
+          type: array
+          description: Persisted chain-of-thought for this turn.
+          items:
+            $ref: '#/components/schemas/MessageReasoningTurn'
+        parts:
+          type: array
+          description: Ordered agent-activity transcript for this turn.
+          items:
+            $ref: '#/components/schemas/MessagePart'
         modelInfo:
           $ref: '#/components/schemas/ConversationModelInfo'
         appliedFilters:
@@ -9773,295 +10919,335 @@ components:
       additionalProperties: false
       description: |
         SSE event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate`.
+        AG-UI is the sole wire protocol.
 
-        Stable events:
+        `event` carries the AG-UI type name and `data` is a JSON object that
+        includes a `"type"` field matching `event`, plus type-specific
+        fields. Stable gateway-generated top-level outcomes:
 
-        - `connected` confirms the stream is open.
-        - `complete` returns the updated conversation plus request metadata
-          after the regenerated bot response is persisted.
-        - `error` returns a failure message. Conversation lookup failures,
-          unauthorized conversation access, and regenerate rule failures such
-          as "not the last message" are reported here after the stream starts.
+        - `RUN_FINISHED` returns `{ type, result }` where
+          `result` is `{ conversation, recordsUsed, meta }` — the updated
+          conversation plus request metadata after the regenerated response
+          is persisted.
+        - `RUN_ERROR` returns `{ type, message, code? }`. Conversation
+          lookup failures, unauthorized conversation access, and regenerate
+          rule failures such as "not the last message" are reported here.
 
         Other events are forwarded from the agent backend and should be
-        treated as informational updates.
+        treated as informational updates. Those forwarded lifecycle and
+        child-run events may contain `runId`, `threadId`, and `parentRunId`;
+        the gateway-generated root terminal event does not.
       properties:
         event:
           type: string
           enum:
-            - connected
-            - status
-            - tool_calls
-            - tool_call
-            - tool_success
-            - tool_error
-            - tool_result
-            - tool_execution_complete
-            - answer_chunk
-            - restreaming
-            - metadata
-            - complete
-            - error
+            - RUN_STARTED
+            - RUN_FINISHED
+            - RUN_ERROR
+            - STEP_STARTED
+            - STEP_FINISHED
+            - TEXT_MESSAGE_START
+            - TEXT_MESSAGE_CONTENT
+            - TEXT_MESSAGE_END
+            - REASONING_START
+            - REASONING_MESSAGE_START
+            - REASONING_MESSAGE_CONTENT
+            - REASONING_MESSAGE_END
+            - REASONING_END
+            - TOOL_CALL_START
+            - TOOL_CALL_ARGS
+            - TOOL_CALL_END
+            - TOOL_CALL_RESULT
+            - STATE_DELTA
+            - STATE_SNAPSHOT
+            - CUSTOM
+            - HEARTBEAT
         data:
           type: string
-          description: JSON-encoded event payload. Shape depends on `event`.
+          description: |
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`.
 
     SSEEvent:
       type: object
       description: |
-        Server-Sent Event envelope for streaming chat responses.
+        Server-Sent Event envelope for streaming chat responses. AG-UI is
+        the sole wire protocol.
 
-        `data` is a JSON-encoded string whose shape depends on `event`.
-        Three events are emitted by the API layer and have stable shapes
-        documented on the streaming routes:
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
+        type-specific fields. Stable gateway-generated top-level outcomes:
 
-        - `connected` — fired once on connection. Carries the newly created
-          `conversationId` and `title` so the client can link the stream to
-          a row before any tokens arrive.
-        - `complete` — fired once after the AI backend finishes. Carries the
-          full persisted `conversation` and a `meta` block with `requestId`,
+        - `RUN_FINISHED` — `{ type, result }`; `result` carries the full
+          persisted `conversation` and a `meta` block with `requestId`,
           `timestamp` and `duration`.
-        - `error` — fired when the stream fails. Carries an `error` message
-          and optional `details`. The conversation row is marked FAILED
-          before the stream closes.
+        - `RUN_ERROR` — `{ type, message, code? }`. The conversation row is
+          marked FAILED before the stream closes.
 
-        All other events are forwarded verbatim from the AI backend; their
-        payloads are AI-backend defined and may evolve. Currently observed
-        names include `status`, `answer_chunk`, `tool_call`, `tool_calls`,
-        `tool_result`, `tool_success`, `tool_error`,
-        `tool_execution_complete`, `restreaming`, and `metadata`.
+        Forwarded upstream lifecycle or child-run events may contain `runId`,
+        `threadId`, and `parentRunId`. Gateway-generated root terminal events
+        do not. Clients should ignore unknown event names.
       properties:
         event:
           type: string
           enum:
-            - connected
-            - status
-            - answer_chunk
-            - tool_call
-            - tool_calls
-            - tool_result
-            - tool_success
-            - tool_error
-            - tool_execution_complete
-            - restreaming
-            - metadata
-            - complete
-            - error
+            - RUN_STARTED
+            - RUN_FINISHED
+            - RUN_ERROR
+            - STEP_STARTED
+            - STEP_FINISHED
+            - TEXT_MESSAGE_START
+            - TEXT_MESSAGE_CONTENT
+            - TEXT_MESSAGE_END
+            - REASONING_START
+            - REASONING_MESSAGE_START
+            - REASONING_MESSAGE_CONTENT
+            - REASONING_MESSAGE_END
+            - REASONING_END
+            - TOOL_CALL_START
+            - TOOL_CALL_ARGS
+            - TOOL_CALL_END
+            - TOOL_CALL_RESULT
+            - STATE_DELTA
+            - STATE_SNAPSHOT
+            - CUSTOM
+            - HEARTBEAT
         data:
           type: string
-          description: JSON-encoded event payload. Shape depends on `event`.
+          description: |
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`.
 
-    AssistantStreamSSEEvent:
+    ConversationStreamSSEEvent:
       type: object
       description: |
-        Server-Sent Event envelope for non-agent assistant chat streams
-        (`internal_search` / `web_search` chat modes). `data` is a
-        JSON-encoded string whose shape depends on `event`.
+        Server-Sent Event envelope for public conversation streams using
+        `agent`, `internal_search`, or `web_search`. AG-UI is the sole wire
+        protocol.
 
-        Three events are emitted by the API layer with stable, server-defined
-        shapes:
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
+        type-specific fields. Universal `agent` mode may emit `STEP_STARTED`,
+        `STEP_FINISHED`, and nested child-run events carrying `parentRunId`.
+        Stable gateway-generated top-level outcomes:
 
-        - `connected` — `{ "message": string, "conversationId": string,
-          "title": string }`. Fired once on connection so the client can link
-          the stream to the new row before any tokens arrive.
-        - `complete` — `{ "conversation": Conversation,
-          "meta": { "requestId": string, "timestamp": string,
-          "duration": number } }`. Fired once after the AI backend finishes.
-        - `error` — `{ "error": string, "details"?: string }`. Fired when the
-          stream fails; the conversation row is marked FAILED before close.
+        - `CUSTOM` (`name: "conversation_created"`) — fired once on
+          connection. Carries the newly created `conversationId` and
+          `title` so the client can link the stream to the new row before
+          any tokens arrive.
+        - `RUN_FINISHED` — fired once after the AI backend finishes.
+          The gateway emits `{ type, result }`; `result` carries the full
+          persisted `conversation` and a `meta` block.
+        - `RUN_ERROR` — fired when the stream fails. Carries a `message`
+          and optional `code`; the conversation row is marked FAILED
+          before close.
 
-        The remaining events are forwarded from the Python query service.
-        Their payloads are AI-backend defined and may evolve:
-
-        - `status` — progress message describing the current pipeline stage
-          (for example `started`, `searching`, `processing`, `checking_tools`,
-          `generating_answer`, `transforming`).
-        - `answer_chunk` — incremental token batch with running `accumulated`
-          text and any new `citations`.
-        - `tool_calls` — the assistant requested one or more tool calls.
-          Carries the assistant message that triggered the tool round.
-        - `tool_call` — emitted once per individual tool invocation as it
-          starts. Payload includes `tool_name`, `tool_args`, and `call_id`.
-        - `tool_success` — a tool finished successfully. Payload includes
-          `tool_name`, `summary`, `call_id`, and any `record_info`.
-        - `tool_error` — a tool invocation failed. Payload includes
-          `tool_name`, `error`, and `call_id`.
-        - `restreaming` — the LLM is being restarted with new context, for
-          example before a citation-verification pass.
-
+        Forwarded upstream lifecycle or child-run events may contain `runId`,
+        `threadId`, and `parentRunId`. Gateway-generated root terminal events
+        do not.
         Clients should ignore unknown event names rather than treating them
         as errors.
       properties:
         event:
           type: string
           enum:
-            - connected
-            - status
-            - answer_chunk
-            - tool_calls
-            - tool_call
-            - tool_success
-            - tool_error
-            - restreaming
-            - complete
-            - error
+            - RUN_STARTED
+            - RUN_FINISHED
+            - RUN_ERROR
+            - STEP_STARTED
+            - STEP_FINISHED
+            - TEXT_MESSAGE_START
+            - TEXT_MESSAGE_CONTENT
+            - TEXT_MESSAGE_END
+            - REASONING_START
+            - REASONING_MESSAGE_START
+            - REASONING_MESSAGE_CONTENT
+            - REASONING_MESSAGE_END
+            - REASONING_END
+            - TOOL_CALL_START
+            - TOOL_CALL_ARGS
+            - TOOL_CALL_END
+            - TOOL_CALL_RESULT
+            - STATE_DELTA
+            - STATE_SNAPSHOT
+            - CUSTOM
+            - HEARTBEAT
         data:
           type: string
-          description: JSON-encoded event payload. Shape depends on `event`.
+          description: |
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`. Forwarded lifecycle events may carry `runId`,
+            `threadId`, and `parentRunId`.
 
-    AssistantMessageStreamSSEEvent:
+    ConversationMessageStreamSSEEvent:
       type: object
       description: |
-        Server-Sent Event envelope for non-agent assistant follow-up message
-        streams (`internal_search` / `web_search` chat modes) on an existing
-        conversation. `data` is a JSON-encoded string whose shape depends on
-        `event`.
+        Server-Sent Event envelope for public follow-up streams using `agent`,
+        `internal_search`, or `web_search` on an existing conversation. AG-UI
+        is the sole wire protocol.
 
-        Same event vocabulary as the conversation-creation stream — only the
-        `connected` and `complete` payloads differ because the conversation
-        already exists when this route is called.
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
+        type-specific fields. Universal `agent` mode may emit step and nested
+        child-run events. Stable gateway-generated top-level outcomes:
 
-        Three events are emitted by the API layer with stable, server-defined
-        shapes:
+        - `CUSTOM` (`name: "conversation_created"`) — fired once on
+          connection.
+        - `RUN_FINISHED` — fired once after the AI backend finishes.
+          The gateway emits `{ type, result }`; `result` carries
+          `{ conversation, recordsUsed, meta }`.
+          `recordsUsed` is the count of citations attached to the new
+          assistant message.
+        - `RUN_ERROR` — fired when the stream fails. Carries a `message`
+          and optional `code`; the conversation row is marked FAILED
+          before close.
 
-        - `connected` — `{ "message": string }`. Fired once on connection.
-          No `conversationId` or `title` is included because the caller
-          already passed the conversation ID in the URL.
-        - `complete` — `{ "conversation": Conversation, "recordsUsed": number,
-          "meta": { "requestId": string, "timestamp": string,
-          "duration": number, "recordsUsed": number } }`. Fired once after
-          the AI backend finishes. `recordsUsed` is the count of citations
-          attached to the new assistant message.
-        - `error` — `{ "error": string, "details"?: string }`. Fired when the
-          stream fails; the conversation row is marked FAILED before close.
-
-        The remaining events are forwarded from the Python query service.
-        Their payloads are AI-backend defined and may evolve:
-
-        - `status` — progress message describing the current pipeline stage
-          (for example `started`, `transforming`, `searching`, `processing`,
-          `checking_tools`, `generating_answer`). `transforming` is common on
-          this route because follow-up turns always have prior history to
-          rewrite the query against.
-        - `answer_chunk` — incremental token batch with running `accumulated`
-          text and any new `citations`.
-        - `tool_calls` — the assistant requested one or more tool calls.
-          Carries the assistant message that triggered the tool round.
-        - `tool_call` — emitted once per individual tool invocation as it
-          starts. Payload includes `tool_name`, `tool_args`, and `call_id`.
-        - `tool_success` — a tool finished successfully. Payload includes
-          `tool_name`, `summary`, `call_id`, and any `record_info`.
-        - `tool_error` — a tool invocation failed. Payload includes
-          `tool_name`, `error`, and `call_id`.
-        - `restreaming` — the LLM is being restarted with new context, for
-          example before a citation-verification pass.
-
+        Forwarded upstream lifecycle or child-run events may contain `runId`,
+        `threadId`, and `parentRunId`. Gateway-generated root terminal events
+        do not.
         Clients should ignore unknown event names rather than treating them
         as errors.
       properties:
         event:
           type: string
           enum:
-            - connected
-            - status
-            - answer_chunk
-            - tool_calls
-            - tool_call
-            - tool_success
-            - tool_error
-            - restreaming
-            - complete
-            - error
+            - RUN_STARTED
+            - RUN_FINISHED
+            - RUN_ERROR
+            - STEP_STARTED
+            - STEP_FINISHED
+            - TEXT_MESSAGE_START
+            - TEXT_MESSAGE_CONTENT
+            - TEXT_MESSAGE_END
+            - REASONING_START
+            - REASONING_MESSAGE_START
+            - REASONING_MESSAGE_CONTENT
+            - REASONING_MESSAGE_END
+            - REASONING_END
+            - TOOL_CALL_START
+            - TOOL_CALL_ARGS
+            - TOOL_CALL_END
+            - TOOL_CALL_RESULT
+            - STATE_DELTA
+            - STATE_SNAPSHOT
+            - CUSTOM
+            - HEARTBEAT
         data:
           type: string
-          description: JSON-encoded event payload. Shape depends on `event`.
+          description: |
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`. Forwarded lifecycle events may carry `runId`,
+            `threadId`, and `parentRunId`.
 
     AgentStreamSSEEvent:
       type: object
       description: |
         SSE event envelope for `POST /agents/{agentKey}/conversations/stream`.
-        Event names are listed in `event`; payload JSON is carried in `data`.
+        AG-UI is the sole wire protocol.
+
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
+        type-specific fields. The public route requires `chatMode: quick`.
+        Forwarded lifecycle events may carry `runId`, `threadId`, and
+        `parentRunId`; gateway-generated root terminal events do not.
+
+        Stable gateway-generated top-level outcomes are `RUN_FINISHED` as
+        `{ type, result }` and `RUN_ERROR` as `{ type, message, code? }`.
+        Clients should ignore unknown event names rather than treating them
+        as errors.
       properties:
         event:
           type: string
-          description: |
-            SSE event name.
-            See the enum for possible values.
           enum:
-            - connected
-            - status
-            - tool_calls
-            - tool_call
-            - tool_success
-            - tool_error
-            - tool_result
-            - tool_execution_complete
-            - answer_chunk
-            - restreaming
-            - metadata
-            - complete
-            - error
+            - RUN_STARTED
+            - RUN_FINISHED
+            - RUN_ERROR
+            - STEP_STARTED
+            - STEP_FINISHED
+            - TEXT_MESSAGE_START
+            - TEXT_MESSAGE_CONTENT
+            - TEXT_MESSAGE_END
+            - REASONING_START
+            - REASONING_MESSAGE_START
+            - REASONING_MESSAGE_CONTENT
+            - REASONING_MESSAGE_END
+            - REASONING_END
+            - TOOL_CALL_START
+            - TOOL_CALL_ARGS
+            - TOOL_CALL_END
+            - TOOL_CALL_RESULT
+            - STATE_DELTA
+            - STATE_SNAPSHOT
+            - CUSTOM
+            - HEARTBEAT
         data:
           type: string
           description: |
-            JSON-encoded event payload.
-            Shape depends on `event`.
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`.
 
     AgentMessageStreamSSEEvent:
       type: object
       description: |
         Server-Sent Event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
-        `data` is a JSON-encoded string whose shape depends on `event`.
+        AG-UI is the sole wire protocol.
 
-        Three events have stable API-defined payloads:
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
+        type-specific fields. The public route requires `chatMode: quick`.
+        Forwarded lifecycle events may carry `runId`, `threadId`, and
+        `parentRunId`. Stable gateway-generated top-level outcomes:
 
-        - `connected` — `{ "message": "SSE connection established" }`. Fired once
-          after the SSE stream opens. No `conversationId` is included because it is already
-          present in the request path.
-        - `complete` — `{ "conversation": AgentConversation, "recordsUsed": number,
-          "meta": { "requestId": string, "timestamp": string, "duration": number,
-          "recordsUsed": number } }`. Fired once after the upstream AI `complete` payload
-          is parsed, citations are saved, and the updated conversation is persisted.
-        - `error` — `{ "error": string, "details"?: string }`. Fired for runtime failures
-          after the stream has already started, including conversation lookup failures,
-          upstream AI startup failures, save failures, and stream transport errors.
+        - `CUSTOM` (`name: "conversation_created"`) — fired once after the
+          SSE stream opens.
+        - `RUN_FINISHED` — fired once after the upstream AI's result is
+          parsed, citations are saved, and the updated conversation is
+          persisted. The gateway emits `{ type, result }`; `result` carries
+          `{ conversation, recordsUsed, meta }`.
+        - `RUN_ERROR` — fired for runtime failures after the stream has
+          already started, including conversation lookup failures, upstream
+          AI startup failures, save failures, and stream transport errors.
 
-        All other events are forwarded from the upstream agent backend. Common event names:
-
-        - `status` — progress update for the current agent phase.
-        - `answer_chunk` — incremental token batch with running accumulated text.
-        - `tool_calls` / `tool_call` / `tool_success` / `tool_error` / `tool_result` /
-          `tool_execution_complete` — tool lifecycle events emitted by the upstream agent.
-        - `restreaming` — the upstream agent restarted generation with refreshed context.
-        - `metadata` — auxiliary metadata or keep-alive payload from the upstream agent.
-
-        Important wire behavior:
-
-        - The upstream agent's `complete` event is consumed server-side and replaced with the
-          API-defined `complete` event above.
-        - If the upstream `complete` payload cannot be parsed as JSON, the raw upstream
-          `complete` frame is forwarded unchanged instead.
-        - Unknown future event names may appear and should be ignored by clients.
+        Gateway-generated root terminal events do not contain `runId`,
+        `threadId`, or `parentRunId`.
+        Clients should ignore unknown event names rather than treating them
+        as errors.
       properties:
         event:
           type: string
           enum:
-            - connected
-            - status
-            - tool_calls
-            - tool_call
-            - tool_success
-            - tool_error
-            - tool_result
-            - tool_execution_complete
-            - answer_chunk
-            - restreaming
-            - metadata
-            - complete
-            - error
+            - RUN_STARTED
+            - RUN_FINISHED
+            - RUN_ERROR
+            - STEP_STARTED
+            - STEP_FINISHED
+            - TEXT_MESSAGE_START
+            - TEXT_MESSAGE_CONTENT
+            - TEXT_MESSAGE_END
+            - REASONING_START
+            - REASONING_MESSAGE_START
+            - REASONING_MESSAGE_CONTENT
+            - REASONING_MESSAGE_END
+            - REASONING_END
+            - TOOL_CALL_START
+            - TOOL_CALL_ARGS
+            - TOOL_CALL_END
+            - TOOL_CALL_RESULT
+            - STATE_DELTA
+            - STATE_SNAPSHOT
+            - CUSTOM
+            - HEARTBEAT
         data:
           type: string
-          description: JSON-encoded event payload. Shape depends on `event`.
+          description: |
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`.
 
     # ==================== CONVERSATIONAL SPEECH SCHEMAS ====================
     SpeakRequest:
@@ -11633,7 +12819,13 @@ components:
       properties:
         customSystemPrompt:
           type: string
-          description: Custom system prompt text for AI models
+          description: Custom system prompt text used for Internal Search chat mode
+        customSystemPromptWebSearch:
+          type: string
+          description: Custom system prompt text used for Web Search chat mode
+        customSystemPromptAgent:
+          type: string
+          description: Custom system prompt text used for Agent chat mode
 
     # AI Model Provider Management Schemas
     AIModelProviderConfiguration:
@@ -11878,6 +13070,119 @@ components:
           enum: [error]
         message:
           type: string
+
+    PrepareEmbeddingModelRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - model
+      properties:
+        model:
+          type: string
+          description: |
+            HuggingFace repo id of the local embedding model to prepare, in
+            `owner/name` or bare-model-id form. Must match
+            `^[\w.-]+(\/[\w.-]+)?$`.
+          example: "BAAI/bge-m3"
+        trustRemoteCode:
+          type: boolean
+          default: false
+          description: |
+            Forwarded to the embedding server as `trust_remote_code`.
+            Rejected with 403 unless the server has
+            `EMBEDDING_SERVER_ALLOW_REMOTE_CODE=true` set.
+
+    EmbeddingDownloadStatus:
+      type: string
+      description: |
+        Lifecycle state of a model load/download on the embedding server.
+        Transitions: `checking` -> `downloading` -> `loading` -> `ready`, or
+        -> `failed` from any state. `not_found` is only returned by
+        `GET .../download-progress` when no download has ever been tracked
+        for the model and it is not currently loaded.
+      enum:
+        - checking
+        - downloading
+        - loading
+        - ready
+        - failed
+        - not_found
+
+    EmbeddingDownloadProgressPayload:
+      type: object
+      additionalProperties: false
+      description: |
+        Status snapshot for a single model's load/download, proxied from the
+        embedding server's `DownloadStatus.to_dict()`.
+      required:
+        - model
+        - status
+        - progress
+        - downloaded_bytes
+        - total_bytes
+        - error
+      properties:
+        model:
+          type: string
+          description: Model repo id this snapshot refers to.
+        status:
+          $ref: '#/components/schemas/EmbeddingDownloadStatus'
+        progress:
+          type: number
+          format: float
+          description: |
+            Percent complete (0-100), rounded to 1 decimal place. Capped at
+            99 while downloading — 100 is only reported once the load is
+            fully `ready`. Stays 0 when the Hub size lookup failed and no
+            bytes have been measured on disk yet.
+        downloaded_bytes:
+          type: integer
+          description: |
+            Bytes currently on disk for this repo's HuggingFace cache blobs,
+            including in-progress `.incomplete` files.
+        total_bytes:
+          type: integer
+          description: |
+            Best-effort expected total size in bytes from the Hub metadata
+            API. `0` when the lookup failed (offline, private/gated repo) or
+            no download has been tracked for this model.
+        error:
+          type: string
+          nullable: true
+          description: Failure detail when `status` is `failed`; `null` otherwise.
+        started_at:
+          type: number
+          format: float
+          description: |
+            Unix timestamp (seconds) when this load/download attempt
+            started. Omitted from the synthesized `ready`/`not_found`
+            snapshot that `GET .../download-progress` returns when no
+            `DownloadStatus` has ever been tracked for the model.
+        updated_at:
+          type: number
+          format: float
+          description: |
+            Unix timestamp (seconds) of the last status update. Same
+            omission rule as `started_at`.
+
+    EmbeddingDownloadProgressSSEEvent:
+      type: object
+      description: |
+        SSE event envelope for
+        `GET /configurationManager/ai-models/download-progress`. Every frame
+        uses the `progress` event name; `data` is a JSON-encoded
+        `EmbeddingDownloadProgressPayload` with one extra `timestamp` field
+        (epoch milliseconds) added by the Node.js proxy on each poll.
+      properties:
+        event:
+          type: string
+          enum:
+            - progress
+        data:
+          type: string
+          description: |
+            JSON-encoded `EmbeddingDownloadProgressPayload` plus a
+            `timestamp` (epoch ms) field.
 
     AIModelProviderHealthCheckBackendDetails:
       type: object
@@ -14456,6 +15761,318 @@ paths:
               schema:
                 $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
+  # ==================== PERSONAL ACCESS TOKEN ENDPOINTS ====================
+  /personal-access-tokens:
+    get:
+      tags:
+        - Personal Access Tokens
+      summary: List your own personal access tokens
+      description: |
+        Lists the caller's own active (non-revoked, unexpired) personal
+        access tokens, newest first, capped at 100 rows server-side. Never
+        returns another user's tokens — see `GET /personal-access-tokens/admin`
+        for the org-admin, cross-user view.
+
+        Shares the same per-user rate limiter as `/oauth-clients/*`
+        (default 1000 req/min, `MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE`).
+      operationId: listPersonalAccessTokens
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The caller's active personal access tokens
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListPatResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+    post:
+      tags:
+        - Personal Access Tokens
+      summary: Create a personal access token
+      description: |
+        Mints a new personal access token for the caller. Deliberately not
+        admin-gated — any authenticated org member may create their own,
+        unlike OAuth app registration.
+
+        The token is minted against a lazily-created, per-org synthetic
+        OAuth app (`clientId: pat-system:<orgId>`) shared by every PAT in
+        that org — the same signing, hashing, and revocation machinery as
+        `/oauth2/token`, reused rather than duplicated.
+
+        `scopes` is validated against the org's configured `MCP_SCOPES`
+        env var, not the full role-aware OAuth-app scope catalog — a
+        non-admin can request any scope in that set.
+
+        The response's `accessToken` is shown **once**; only its SHA-256
+        hash is stored. It's prefixed `phpat_` (see the `bearerAuth`
+        security scheme).
+      operationId: createPersonalAccessToken
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      requestBody:
+        description: "Request body for Create personal access token"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePatRequest'
+        required: true
+      responses:
+        '201':
+          description: Personal access token created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatePatResponse'
+        '400':
+          description: Invalid request (validation error, or a requested scope isn't in the org's configured `MCP_SCOPES`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /personal-access-tokens/scopes:
+    get:
+      tags:
+        - Personal Access Tokens
+      summary: List scopes available for a new personal access token
+      description: |
+        Returns the org's configured `MCP_SCOPES` as a flat array of scope
+        definitions, for populating the create-token scope picker. Unlike
+        `GET /oauth-clients/scopes`, this is **not** grouped by category and
+        **not** role-aware — every org member sees the same set, since PAT
+        scope selection isn't gated by admin status.
+      operationId: listPersonalAccessTokenScopes
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Scopes available to grant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatScopesListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /personal-access-tokens/{tokenId}:
+    delete:
+      tags:
+        - Personal Access Tokens
+      summary: Revoke one of your own personal access tokens
+      description: |
+        Revokes a token by id, scoped to `{tokenId, clientId, callerUserId}`
+        — a caller can never revoke another user's token through this route,
+        even though everyone in the org shares the same underlying
+        `pat-system:<orgId>` client. Revocation takes effect immediately: the
+        token's next verification attempt fails, including one already in
+        flight.
+      operationId: revokePersonalAccessToken
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: Personal access token ID
+      requestBody:
+        description: "Optional request body for Revoke personal access token"
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokePatRequest'
+      responses:
+        '200':
+          description: Personal access token revoked successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokePatResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '404':
+          description: Token not found, already revoked, not owned by the caller, or the org has no PAT app yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /personal-access-tokens/admin:
+    get:
+      tags:
+        - Personal Access Tokens
+      summary: 'Admin: list every active personal access token in the org'
+      description: |
+        Lists every active personal access token across every member of the
+        org, paginated, with each token's owner attached (including owners
+        who've since been deleted from the org — see `ownerDeleted` on
+        `AdminPatListItem`). For incident response: a departed employee or a
+        compromised laptop, where only the token's own creator could
+        otherwise see or revoke it.
+
+        Requires org-admin privileges (`userAdminCheck`) — note this returns
+        **`400`**, not `403`, for a non-admin caller (shared middleware
+        behavior across the codebase, not specific to this route).
+      operationId: adminListPersonalAccessTokens
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: Page number (defaults to `1` when omitted or empty)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
+          description: Items per page (defaults to `100` when omitted or empty; max 100)
+      responses:
+        '200':
+          description: Every active personal access token in the org
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminPatListResponse'
+        '400':
+          description: Invalid query parameters, or the caller is not an org admin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /personal-access-tokens/admin/{tokenId}:
+    delete:
+      tags:
+        - Personal Access Tokens
+      summary: 'Admin: revoke any user''s personal access token by id'
+      description: |
+        Revokes a token by id, scoped to the org's PAT client but **not** to
+        a specific owning user — the admin counterpart to
+        `DELETE /personal-access-tokens/{tokenId}`. Requires org-admin
+        privileges (`userAdminCheck`); returns `400` (not `403`) for a
+        non-admin caller, same as `GET /personal-access-tokens/admin`.
+      operationId: adminRevokePersonalAccessToken
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: Personal access token ID
+      requestBody:
+        description: "Optional request body for Admin revoke personal access token"
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokePatRequest'
+      responses:
+        '200':
+          description: Personal access token revoked successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokePatResponse'
+        '400':
+          description: Invalid token ID, or the caller is not an org admin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '404':
+          description: Token not found in this org, already revoked, or the org has no PAT app yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
   # ==================== AUTHENTICATION ENDPOINTS ====================
   /userAccount/initAuth:
     post:
@@ -15735,6 +17352,7 @@ paths:
 
         - `fullName`: Required, non-empty string
         - `email`: Required, valid email format
+        - `role`: Optional, `admin` or `member` (defaults to `member` when omitted)
         - `mobile`: Optional, must match `^\+?[0-9]{10,15}$`
         - `designation`: Optional string
 
@@ -15770,6 +17388,11 @@ paths:
                   format: email
                   description: User's email address
                   example: "john.smith@company.com"
+                role:
+                  type: string
+                  enum: [admin, member]
+                  description: Organization role to assign on create
+                  example: "member"
                 mobile:
                   type: string
                   pattern: '^$|^\+?[0-9]{10,15}$'
@@ -15792,6 +17415,7 @@ paths:
 
             - Missing required fields (`fullName`, `email`)
             - Invalid email format
+            - Invalid role (must be `admin` or `member` when provided)
             - Invalid mobile number format
             - Requester does not have admin privileges (`userAdminCheck`)
           content:
@@ -15949,6 +17573,11 @@ paths:
                   type: string
                   description: Job title or role
                   example: "Senior Software Engineer"
+                role:
+                  type: string
+                  enum: [admin, member]
+                  description: Organization role (`admin` or `member`). Only admins can change roles.
+                  example: "member"
                 address:
                   $ref: '#/components/schemas/Address'
                 dataCollectionConsent:
@@ -16515,6 +18144,94 @@ paths:
             - SMTP config fetch failed (`smtpConfigCheck`)
             - Auth methods fetch failed
             - User ID missing during invite processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users/bulk/invite/upload:
+    post:
+      tags:
+        - Users
+      summary: Bulk invite users from a CSV/Excel file
+      description: |
+        Upload a CSV or Excel (`.csv`, `.xlsx`, `.xls`) file of email addresses and invite them in
+        bulk. The file is parsed server-side; every cell containing `@` is treated as a candidate
+        email, then normalized (trimmed, lower-cased, BOM-stripped) and de-duplicated.
+
+        The file is validated on the request thread — an empty/unreadable file, a file with no
+        emails, or more than 1000 addresses is rejected with `400` before any processing. Otherwise
+        the endpoint responds `202 Accepted` immediately and performs the invites in a background
+        task, so the request never blocks.
+
+        Invalid email addresses are skipped (not rejected); valid ones follow the same
+        new/restored/pending logic as `POST /users/bulk/invite`. When the batch finishes, a
+        notification is sent to the uploading admin summarizing the result
+        (invited / re-invited / restored / already-members / invalid / failed-to-email).
+
+        Optional `groupIds` (a JSON-encoded array of 24-hex-character ObjectIds) adds new/restored
+        users to the specified groups. Same middleware chain as `POST /users/bulk/invite`
+        (`smtpConfigCheck`, `userAdminCheck`, `accountTypeCheck`).
+      operationId: bulkInviteUsersFromFile
+      security:
+        - bearerAuth: []
+        - oauth2: [user:invite]
+      requestBody:
+        required: true
+        description: "Multipart form with the file and optional group IDs"
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: CSV or Excel file (max 5 MB, up to 1000 emails)
+                groupIds:
+                  type: string
+                  description: JSON-encoded array of group ObjectIds to add invited users to
+                  example: '["507f1f77bcf86cd799439011"]'
+      responses:
+        '202':
+          description: File accepted; invites are processed in the background
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  message:
+                    type: string
+                    example: "Import started. You will be notified when it finishes."
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - No file uploaded, or an unsupported/unreadable file
+            - No email addresses found in the file
+            - More than 1000 addresses
+            - `groupIds` contains an invalid ObjectId
+            - Requester is not an admin (`userAdminCheck`), or individual account (`accountTypeCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Not found. Possible reasons:
+
+            - SMTP configuration missing host, port, or fromEmail (`smtpConfigCheck`)
+            - `userId` or `orgId` missing from token (`userAdminCheck`)
+            - Organization not found (`accountTypeCheck`)
           content:
             application/json:
               schema:
@@ -22124,6 +23841,18 @@ paths:
           schema:
             type: string
           example: "gte:0,lte:10485760"
+        - name: flattened
+          in: query
+          required: false
+          description: |
+            Force flattened/recursive search (`true`) or direct top-level
+            listing (`false`). When omitted, it's computed from whether any
+            of `q`, `nodeTypes`, `recordTypes`, `origins`, `connectorIds`,
+            `indexingStatus`, `createdAt`, `updatedAt`, or `size` are present —
+            if any are, results are flattened automatically; otherwise only
+            top-level nodes are returned.
+          schema:
+            type: boolean
         - name: include
           in: query
           required: false
@@ -22161,11 +23890,11 @@ paths:
                     currentNode: null
                     parentNode: null
                     items:
-                      - id: "knowledgeBase_org123"
-                        name: "Collections"
+                      - id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                        name: "My Knowledge Base"
                         nodeType: "app"
                         parentId: null
-                        origin: "COLLECTION"
+                        origin: "UPLOAD"
                         connector: null
                         recordType: null
                         recordGroupType: null
@@ -22176,12 +23905,13 @@ paths:
                         sizeInBytes: null
                         mimeType: null
                         extension: null
-                        webUrl: "/app/knowledgeBase_org123"
+                        webUrl: "/app/a1b2c3d4-e5f6-7890-abcd-ef1234567890"
                         hasChildren: true
                         previewRenderable: null
                         permission: null
                         sharingStatus: "workspace"
                         isInternal: false
+                        isPlaceholder: false
                       - id: "f3a4b5b6-5b6c-4e85-9097-3202cfe696fc"
                         name: "Google Drive"
                         nodeType: "app"
@@ -22203,6 +23933,7 @@ paths:
                         permission: null
                         sharingStatus: null
                         isInternal: false
+                        isPlaceholder: false
                     pagination:
                       page: 1
                       limit: 20
@@ -22418,8 +24149,7 @@ paths:
         **Parent identification**
 
         - `parentType` must be one of: `app`, `recordGroup`, `folder`, `record`
-        - `parentId` is either a standard UUID or the Collection app sentinel
-          `knowledgeBase_<orgId>` (e.g. `knowledgeBase_org123`)
+        - `parentId` must be a standard UUID
 
         **Filtering and searching**
 
@@ -22460,15 +24190,13 @@ paths:
           in: path
           required: true
           description: |
-            Identifier of the parent node. Accepts two formats:
-            - A standard UUID (e.g. `f3a4b5b6-5b6c-4e85-9097-3202cfe696fc`)
-            - The Collection app sentinel `knowledgeBase_<orgId>`
-              (e.g. `knowledgeBase_org123`)
+            Identifier of the parent node. Must be a valid UUID
+            (e.g. `f3a4b5b6-5b6c-4e85-9097-3202cfe696fc`).
 
-            Any value that does not match either format returns a 400 error.
+            Any value that does not match this format returns a 400 error.
           schema:
             type: string
-            pattern: '^(knowledgeBase_[a-zA-Z0-9_-]+|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$'
+            pattern: '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
         - name: onlyContainers
           in: query
           required: false
@@ -22621,6 +24349,18 @@ paths:
           schema:
             type: string
           example: "gte:0,lte:10485760"
+        - name: flattened
+          in: query
+          required: false
+          description: |
+            Force flattened/recursive search (`true`) or direct top-level
+            listing (`false`). When omitted, it's computed from whether any
+            of `q`, `nodeTypes`, `recordTypes`, `origins`, `connectorIds`,
+            `indexingStatus`, `createdAt`, `updatedAt`, or `size` are present —
+            if any are, results are flattened automatically; otherwise only
+            top-level nodes are returned.
+          schema:
+            type: boolean
         - name: include
           in: query
           required: false
@@ -22653,28 +24393,28 @@ paths:
                   value:
                     success: true
                     error: null
-                    id: "knowledgeBase_org123"
+                    id: "c3d4e5f6-a7b8-9012-cdef-012345678901"
                     currentNode:
-                      id: "knowledgeBase_org123"
-                      name: "Collections"
+                      id: "c3d4e5f6-a7b8-9012-cdef-012345678901"
+                      name: "My Knowledge Base"
                       nodeType: "app"
                       subType: null
                     parentNode: null
                     items:
                       - id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
                         name: "Engineering Docs"
-                        nodeType: "recordGroup"
-                        parentId: "knowledgeBase_org123"
-                        origin: "COLLECTION"
+                        nodeType: "record"
+                        parentId: "c3d4e5f6-a7b8-9012-cdef-012345678901"
+                        origin: "UPLOAD"
                         connector: null
-                        recordType: null
-                        recordGroupType: "KNOWLEDGE_BASE"
+                        recordType: "FILE"
+                        recordGroupType: null
                         indexingStatus: null
                         reason: null
                         createdAt: 1700000000000
                         updatedAt: 1709500000000
                         sizeInBytes: null
-                        mimeType: null
+                        mimeType: "application/vnd.folder"
                         extension: null
                         webUrl: null
                         hasChildren: true
@@ -22682,20 +24422,21 @@ paths:
                         permission: null
                         sharingStatus: "workspace"
                         isInternal: false
+                        isPlaceholder: false
                       - id: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
                         name: "HR Policies"
-                        nodeType: "recordGroup"
-                        parentId: "knowledgeBase_org123"
-                        origin: "COLLECTION"
+                        nodeType: "record"
+                        parentId: "c3d4e5f6-a7b8-9012-cdef-012345678901"
+                        origin: "UPLOAD"
                         connector: null
-                        recordType: null
-                        recordGroupType: "KNOWLEDGE_BASE"
+                        recordType: "FILE"
+                        recordGroupType: null
                         indexingStatus: null
                         reason: null
                         createdAt: 1700100000000
                         updatedAt: 1709400000000
                         sizeInBytes: null
-                        mimeType: null
+                        mimeType: "application/vnd.folder"
                         extension: null
                         webUrl: null
                         hasChildren: true
@@ -22703,6 +24444,7 @@ paths:
                         permission: null
                         sharingStatus: "private"
                         isInternal: false
+                        isPlaceholder: false
                     pagination:
                       page: 1
                       limit: 20
@@ -22714,7 +24456,7 @@ paths:
                       applied:
                         q: null
                         nodeTypes:
-                          - "recordGroup"
+                          - "record"
                         recordTypes: null
                         origins: null
                         connectorIds: null
@@ -22726,8 +24468,8 @@ paths:
                         sortOrder: "asc"
                       available: null
                     breadcrumbs:
-                      - id: "knowledgeBase_org123"
-                        name: "Collections"
+                      - id: "c3d4e5f6-a7b8-9012-cdef-012345678901"
+                        name: "My Knowledge Base"
                         nodeType: "app"
                         subType: null
                     counts: null
@@ -22765,7 +24507,7 @@ paths:
                       code: HTTP_BAD_REQUEST
                       message: "Invalid parent_type. Must be one of: app, recordGroup, folder, record"
                 invalid_parent_id:
-                  summary: parentId is neither a UUID nor knowledgeBase_<orgId>
+                  summary: parentId is not a valid UUID
                   value:
                     error:
                       code: HTTP_BAD_REQUEST
@@ -22925,40 +24667,28 @@ paths:
 
         1. The server validates `query`, persists an in-progress
            conversation, then opens the SSE stream with HTTP `200`.
-        2. A `connected` event is emitted immediately with the new
-           `conversationId` so the client can link the stream (sidebar,
-           parallel tabs, deep links) without an extra request.
+        2. A `CUSTOM` event named `conversation_created` is emitted
+           immediately with the new `conversationId` so the client can link
+           the stream (sidebar, parallel tabs, deep links) without an extra
+           request.
         3. AI-backend events stream through (token chunks, tool calls,
            status, etc.).
-        4. On success a single `complete` event is emitted carrying the
-           full persisted conversation.
-        5. On failure an `error` event is emitted and the conversation is
-           marked FAILED before the stream closes.
+        4. On success a single root `RUN_FINISHED` event is emitted carrying
+           the full persisted conversation in `result`.
+        5. On failure a root `RUN_ERROR` event is emitted and the
+           conversation is marked FAILED before the stream closes.
 
         **Event vocabulary**
 
-        Three events have stable, server-defined `data` shapes:
+        AG-UI is the sole wire protocol. See `ConversationStreamSSEEvent`
+        for the full event enum and payload guidance.
 
-        - `connected` — `{ "message": string, "conversationId": string,
-          "title": string }`
-        - `complete` — `{ "conversation": Conversation,
-          "meta": { "requestId": string, "timestamp": string,
-          "duration": number } }`
-        - `error` — `{ "error": string, "details"?: string }`
-
-        The forwarded events are `status`, `answer_chunk`, `tool_calls`,
-        `restreaming`, `metadata`, and `tool_execution_complete`. Their
-        payloads come from the Python query service and may evolve. Note
-        that raw `tool_call` / `tool_success` / `tool_error` / `tool_result`
-        events emitted by the LLM tool runtime are rewrapped as `status` by
-        the upstream wrapper before they reach this route, so clients on
-        `/conversations/stream` never see those names directly. Clients
-        should ignore unknown event names rather than treating them as
-        errors.
+        Clients should ignore unknown event names rather than treating them
+        as errors.
 
         **Agent mode**
 
-        When `chatMode` selects an agent mode (for example `agent:auto`),
+        When `chatMode` is `agent`,
         the optional `tools` list restricts which tools the agent may
         invoke for this turn. Outside agent modes the `tools` field is
         ignored.
@@ -22973,7 +24703,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateConversationRequest'
+              $ref: '#/components/schemas/ConversationStreamRequest'
       responses:
         '200':
           description: |
@@ -22983,7 +24713,7 @@ paths:
           content:
             text/event-stream:
               schema:
-                $ref: '#/components/schemas/AssistantStreamSSEEvent'
+                $ref: '#/components/schemas/ConversationStreamSSEEvent'
         '400':
           description: |
             Invalid request — `query` is missing, empty, or exceeds the
@@ -22999,8 +24729,8 @@ paths:
           description: |
             Internal error before the SSE stream is established (for
             example, the initial conversation row could not be persisted).
-            Once the stream is open, terminal failures are surfaced as an
-            `error` SSE event instead of an HTTP status change.
+            Once the stream is open, terminal failures are surfaced as a
+            `RUN_ERROR` SSE event instead of an HTTP status change.
 
   /conversations/attachments/upload:
     post:
@@ -23043,7 +24773,11 @@ paths:
                   maxItems: 10
                   description: >
                     One or more files; part name must be `files`. Accepted MIME types:
-                    `application/pdf`, `image/jpeg`, `image/jpg`, `image/png`. Max 5 MiB each.
+                    `application/pdf`, `image/jpeg`, `image/jpg`, `image/png`,
+                    `text/plain`, `text/markdown`, `text/mdx`,
+                    `application/vnd.openxmlformats-officedocument.wordprocessingml.document`,
+                    `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`,
+                    `text/csv`, `text/tab-separated-values`. Max 5 MiB each.
                   items:
                     type: string
                     format: binary
@@ -23058,7 +24792,7 @@ paths:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
           description: >
-            Invalid `conversationId`, no files, unsupported MIME type (not PDF/JPEG/PNG), or
+            Invalid `conversationId`, no files, unsupported MIME type, or
             Multer rejection (e.g. file too large).
         '401':
           description: Unauthorized
@@ -24287,7 +26021,7 @@ paths:
                               format: objectId
                             messageType:
                               type: string
-                              enum: [user_query, bot_response, error, feedback, system]
+                              enum: [user_query, bot_response, error, feedback, system, tool_call]
                             content:
                               type: string
                             contentFormat:
@@ -24373,6 +26107,21 @@ paths:
                                 `POST /conversations/attachments/upload`).
                               items:
                                 $ref: '#/components/schemas/ChatAttachmentRef'
+                            tools:
+                              type: array
+                              description: Tool call results invoked during this message turn.
+                              items:
+                                $ref: '#/components/schemas/MessageToolCall'
+                            reasoning:
+                              type: array
+                              description: Persisted chain-of-thought for this turn.
+                              items:
+                                $ref: '#/components/schemas/MessageReasoningTurn'
+                            parts:
+                              type: array
+                              description: Ordered agent-activity transcript for this turn.
+                              items:
+                                $ref: '#/components/schemas/MessagePart'
                             metadata:
                               type: object
                               additionalProperties: false
@@ -24786,10 +26535,10 @@ paths:
         but the response is delivered as an SSE stream so clients can render
         the answer incrementally.
 
-        The wire vocabulary is described by `AssistantMessageStreamSSEEvent`.
-        It is the same event set as `/conversations/stream`; only the
-        `connected` and `complete` payloads differ because the conversation
-        already exists when this route is called.
+        AG-UI is the sole wire protocol. The vocabulary is described by
+        `ConversationMessageStreamSSEEvent`; it is the same event set as
+        `/conversations/stream`, while the terminal result reflects an
+        existing conversation.
       operationId: addMessageStream
       x-pipeshub-sdk: true
       security:
@@ -24811,7 +26560,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AddMessageRequest'
+              $ref: '#/components/schemas/ConversationMessageStreamRequest'
       responses:
         '200':
           description: |
@@ -24821,7 +26570,7 @@ paths:
           content:
             text/event-stream:
               schema:
-                $ref: '#/components/schemas/AssistantMessageStreamSSEEvent'
+                $ref: '#/components/schemas/ConversationMessageStreamSSEEvent'
         '400':
           description: |
             Invalid request — `query` is missing or empty, or another field
@@ -24841,7 +26590,7 @@ paths:
             Internal error before the SSE stream is established (for
             example, the user message could not be persisted to the
             conversation). Once the stream is open, terminal failures are
-            surfaced as an `error` SSE event instead of an HTTP status
+            surfaced as a `RUN_ERROR` SSE event instead of an HTTP status
             change.
 
   /conversations/{conversationId}/share:
@@ -25087,7 +26836,7 @@ paths:
                               format: objectId
                             messageType:
                               type: string
-                              enum: [user_query, bot_response, error, feedback, system]
+                              enum: [user_query, bot_response, error, feedback, system, tool_call]
                             content:
                               type: string
                             contentFormat:
@@ -25173,6 +26922,21 @@ paths:
                                 `POST /conversations/attachments/upload`).
                               items:
                                 $ref: '#/components/schemas/ChatAttachmentRef'
+                            tools:
+                              type: array
+                              description: Tool call results invoked during this message turn.
+                              items:
+                                $ref: '#/components/schemas/MessageToolCall'
+                            reasoning:
+                              type: array
+                              description: Persisted chain-of-thought for this turn.
+                              items:
+                                $ref: '#/components/schemas/MessageReasoningTurn'
+                            parts:
+                              type: array
+                              description: Ordered agent-activity transcript for this turn.
+                              items:
+                                $ref: '#/components/schemas/MessagePart'
                             metadata:
                               type: object
                               additionalProperties: false
@@ -25531,18 +27295,10 @@ paths:
 
         **Streaming:**
 
-        The response is delivered as an SSE (`text/event-stream`) stream. The
-        exact event vocabulary depends on `chatMode`:
-
-        - For non-agent modes (e.g. `internal_search`, `web_search`) the
-          request is dispatched to the assistant chat backend.
-        - For agent modes (e.g. `agent:auto`) the request is dispatched to
-          the agent backend with a placeholder agent built from the caller's
-          workspace, which can additionally emit `tool_result` and
-          `tool_execution_complete` events.
-
-        See `SSEEvent` for the full union of event names this endpoint can
-        emit across both backends.
+        The response is delivered as an AG-UI `text/event-stream` stream.
+        Routing still depends on `chatMode`: `internal_search` and
+        `web_search` use the assistant backend, while `agent` uses the
+        universal agent loop. See `SSEEvent` for the event vocabulary.
       operationId: regenerateAnswer
       x-pipeshub-sdk: true
       security:
@@ -25576,45 +27332,11 @@ paths:
             on `SSEEvent`. The exact subset of events emitted depends on
             `chatMode` (see the route description for routing rules).
 
-            Lifecycle (all event names are sent verbatim on the wire):
-            - `connected` — `{ "message": "SSE connection established" }`.
-              Fired once on connection by the API layer.
-            - `status` — progress messages from the AI backend. Possible
-              `status` sub-values include `started`, `transforming`,
-              `searching`, `processing`, `checking_tools`,
-              `generating_answer`, `generating`, `analyzing`, `evaluating`,
-              `planning`, `executing`, `retrying`, `continuing`, `success`,
-              `skipped`, `pending`, `keepalive`, `cascade_error`, and
-              backend-defined values that may be added over time.
-            - `answer_chunk` — incremental token batches with running
-              `accumulated` text, accumulated `citations`, and the
-              backend-supplied `confidence` (typically null until the final
-              chunk).
-            - `tool_calls` / `tool_call` / `tool_success` / `tool_error` —
-              emitted when the model invokes tools (agent chat modes, or the
-              non-agent path when SQL / record-fetch tools are configured).
-            - `tool_result` / `tool_execution_complete` — additional tool
-              lifecycle events emitted only on the agent-mode path.
-            - `restreaming` — emitted when the LLM is restarted with new
-              context (e.g. before a citation-verification pass or
-              reflection-driven retry).
-            - `metadata` — `{}` keep-alive emitted by the JSON-streaming
-              branch while waiting for the next safe-to-flush chunk.
-            - `complete` — `{ "conversation": Conversation, "recordsUsed":
-              number, "meta": { "requestId": string, "timestamp": string,
-              "duration": number, "recordsUsed": number } }`. Fired once
-              after the regeneration is persisted; the new bot response
-              replaces the previous one in `conversation.messages` at the
-              same index. The AI backend's own `complete` frame is consumed
-              server-side and is **not** forwarded — clients see only this
-              server-defined frame.
-            - `error` — `{ "error": string, "details"?: string }`. Fired if
-              the stream fails; the previous bot response is replaced with an
-              error message and the conversation row is marked FAILED before
-              close.
-
-            Clients should ignore unknown event names rather than treating
-            them as errors.
+            The gateway emits a root `RUN_FINISHED` as `{ type, result }`
+            after persistence and a root `RUN_ERROR` as
+            `{ type, message, code? }` on failure. Forwarded lifecycle and
+            child-run events may contain `runId`, `threadId`, and
+            `parentRunId`. Clients should ignore unknown event names.
           content:
             text/event-stream:
               schema:
@@ -27196,9 +28918,12 @@ paths:
 
         **Update semantics**
 
-        Only fields present in the request body are updated. When `models` is
-        included, the gateway Zod middleware requires at least one model entry
-        and at least one object entry with `isReasoning: true`.
+        Only fields present in the request body are updated. `models` may be
+        omitted (the agent's existing models are kept), set to an empty array
+        (clears the agent's models so it falls back to the organization's
+        default LLM at chat time), or set to a non-empty array. When a
+        non-empty array is provided, the gateway Zod middleware requires at
+        least one object entry with `isReasoning: true`.
 
         **Permissions**
 
@@ -27488,7 +29213,11 @@ paths:
                   maxItems: 10
                   description: >
                     One or more files; field name must be `files`. Accepted MIME types:
-                    `application/pdf`, `image/jpeg`, `image/jpg`, `image/png`. Max 5 MiB each.
+                    `application/pdf`, `image/jpeg`, `image/jpg`, `image/png`,
+                    `text/plain`, `text/markdown`, `text/mdx`,
+                    `application/vnd.openxmlformats-officedocument.wordprocessingml.document`,
+                    `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`,
+                    `text/csv`, `text/tab-separated-values`. Max 5 MiB each.
                   items:
                     type: string
                     format: binary
@@ -27504,7 +29233,7 @@ paths:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
           description: >
-            Invalid `conversationId`, no files, unsupported MIME type (not PDF/JPEG/PNG), or
+            Invalid `conversationId`, no files, unsupported MIME type, or
             Multer rejection (e.g. file too large).
         '401':
           description: Unauthorized
@@ -27584,6 +29313,9 @@ paths:
         response as Server-Sent Events (SSE). The first user message is saved
         and forwarded to the upstream agent backend; subsequent tokens, tool
         calls, and lifecycle events are emitted on the open SSE connection.
+
+        AG-UI is the sole wire protocol. The request must include
+        `chatMode: quick`; see `AgentStreamSSEEvent` for the event vocabulary.
       operationId: streamAgentConversation
       x-pipeshub-sdk: true
       security:
@@ -27624,6 +29356,10 @@ paths:
       description: |
         Append a user message to an existing agent conversation and stream the
         assistant reply over SSE.
+
+        AG-UI is the sole wire protocol. The request must include
+        `chatMode: quick`; see `AgentMessageStreamSSEEvent` for the event
+        vocabulary.
       operationId: streamAgentConversationMessage
       x-pipeshub-sdk: true
       security:
@@ -27678,8 +29414,8 @@ paths:
 
         **Request body:**
 
-        All request-body fields are optional. When omitted, the server reuses
-        the original model/context. The body supports:
+        `chatMode: quick` is required. Other fields are optional and reuse
+        the original model/context when omitted. The body supports:
         - `filters`
         - `chatMode`
         - `modelKey`
@@ -27688,18 +29424,22 @@ paths:
         - `timezone`
         - `currentTime`
         - `tools`
+        - `protocol`
+        - `agentCapabilities`
 
         **Streaming behavior:**
 
-        The response is delivered as `text/event-stream`. Stable events are
-        `connected`, `complete`, and `error`. Additional agent/tool lifecycle
-        events may be forwarded by the backend and should be treated as
-        informational updates.
+        The response is delivered as an AG-UI `text/event-stream`. Stable
+        outcomes are `RUN_FINISHED` and `RUN_ERROR`; see
+        `AgentRegenerateSSEEvent`.
+
+        Additional agent/tool lifecycle events may be forwarded by the
+        backend and should be treated as informational updates.
 
         Validation failures on params/body are returned as normal HTTP `400`
         responses before the stream starts. Valid-shape requests that fail
-        conversation lookup or regenerate rules are reported as SSE `error`
-        events after stream initialization.
+        conversation lookup or regenerate rules are reported as
+        `RUN_ERROR` events after stream initialization.
       operationId: regenerateAgentConversationMessage
       x-pipeshub-sdk: true
       security:
@@ -27728,27 +29468,27 @@ paths:
             type: string
             format: objectId
       requestBody:
-        required: false
+        required: true
         description: |
-          Optional regeneration payload. All fields are optional and are
-          validated against `RegenerateRequest`.
+          Regeneration payload requiring `chatMode: quick`.
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RegenerateRequest'
+              $ref: '#/components/schemas/AgentRegenerateRequest'
       responses:
         '200':
           description: |
             SSE stream established.
 
             Stable event names:
-            - `connected` — confirms the stream is open
-            - `complete` — returns the updated conversation plus metadata
-            - `error` — reports lookup failures, authorization failures on
-              the conversation, or regenerate-rule failures after the stream
-              has started
+            - `RUN_FINISHED` — `{ type, result }`, where `result` contains the
+              updated conversation and metadata
+            - `RUN_ERROR` — `{ type, message, code? }`, reporting lookup,
+              authorization, or regenerate-rule failures
 
-            Additional backend-defined agent/tool events may be emitted.
+            Forwarded lifecycle and child-run events may include `runId`,
+            `threadId`, and `parentRunId`. Additional backend-defined
+            agent/tool events may be emitted.
             Clients should ignore unknown event names.
           content:
             text/event-stream:
@@ -28947,15 +30687,444 @@ paths:
         '404':
           description: Connector not found
 
-  /connectors/{connectorId}/reindex-failed:
+  /connectors/record/{recordId}/content:
+    get:
+      tags:
+        - Connector
+      summary: Get a record's full parsed content and metadata
+      description: |
+        Retrieve the full parsed content and metadata of a single record —
+        the same content PipesHub's own RAG/chat pipeline uses to answer
+        questions, returned directly instead of via chat.
+
+        **When to use this vs. the other record endpoints:**
+        - `GET /knowledgeBase/record/{recordId}` returns metadata only
+          (name, type, indexing status, size) — no content.
+        - `GET /knowledgeBase/stream/record/{recordId}` returns the original,
+          unparsed file bytes — use it to download/open the source file.
+        - **This endpoint** returns the record's full parsed content as a
+          single plain-text `content` string (a metadata header, then the
+          block/table text in reading order, then any foreign-key related
+          tables) — use it when you need the record's actual textual/tabular
+          content without downloading and re-parsing the original file yourself.
+
+        **Typical flow:** obtain a `recordId` from a `pipeshub_search` hit or
+        a chat citation's `recordId`, then call this endpoint to read the
+        full content when the search snippet or citation excerpt isn't
+        enough to answer the question.
+
+        **Permission scoping:**
+
+        The requesting user/token must have access to the record; access is
+        verified via the knowledge graph before content is returned — a
+        caller with a valid scope but no access to this specific record gets
+        a `403`.
+      operationId: getRecordContent
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: recordId
+          in: path
+          required: true
+          description: >-
+            Record ID to fetch. Obtain it from a `pipeshub_search` result
+            (`hits[*].recordId`) or a chat citation (`citations[*].recordId`).
+          schema:
+            type: string
+      responses:
+        '200':
+          description: |
+            Successful operation. When the record has no available content
+            (e.g. not indexed), `content` is the literal `No record found`
+            rather than an error status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetRecordContentResponseSchema'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            OAuth token is missing the `connector:read` scope, or the
+            authenticated user does not have access to this record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while fetching record content
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /connectors/navigate:
+    get:
+      tags:
+        - Connector
+      summary: Browse the knowledge graph from a node
+      description: |
+        Open a node in the knowledge graph and see what is inside it — a file
+        explorer across every connected source.
+
+        Call it with no `nodeId` for a flat listing of every record group and
+        record the caller can reach, newest first. This is a starting point to
+        pick a node from, not a roster of connected apps — app nodes are never
+        returned in a listing, though an app's `id` is accepted as a `nodeId`
+        and lists that app's record groups. Pass a node's `id` to descend:
+        record groups contain records and folders, and a record contains its
+        own children — comments, attachments, sub-tasks — plus a `related`
+        section of cross-referenced records, such as the Confluence page linked
+        from a Jira ticket. `nodeId` is tolerant: a URL or an issue key such as
+        `PA-1787` is resolved to its record before navigating, so a link can be
+        pasted straight in without a separate lookup call.
+
+        The response carries a rendered `text` view — breadcrumbs, the current
+        node, the children listing, `Related:`, and a closing `Next:` line
+        naming a follow-up call. The structured fields carry the same
+        information for programmatic use.
+
+        **When to use this vs. the other record endpoints:**
+        - **This endpoint** is for structural exploration — "what is in this
+          project", "what is attached to this ticket", "what else links to this
+          page". It returns names, types and IDs; it never returns document
+          text.
+        - `GET /connectors/record/{recordId}/content` returns one record's
+          actual parsed text. Use it once navigation has identified the record
+          you want to read.
+        - `GET /connectors/record/lookup` is the way in when you hold a URL or
+          an issue key rather than a position in the tree.
+
+        **Typical flow:** call with no `nodeId` to see what is reachable → pass
+        a record group's `id` to list its records → take a row whose
+        `is_record` is true and call
+        `GET /connectors/record/{recordId}/content` to read it.
+
+        **Paging and depth:** results are paginated; `pagination.has_next`
+        tells you whether to request the next `page`. `depth` above 1 returns
+        all descendants down to that level as one flat list, each row carrying
+        its own `level`, instead of only direct children.
+
+        **Scope:** everything the caller can read, across both connectors and
+        Knowledge Base collections. No connector-level filter is applied — the
+        listing is bounded by per-node permissions alone.
+
+        **Permission scoping:**
+
+        `rows` and `related` carry only nodes the caller can see, and the
+        opened node itself is access-checked before any of its details are
+        returned. A node that does not exist and a node the caller cannot
+        access are deliberately indistinguishable — both return an empty view
+        rather than an error.
+
+        `breadcrumbs` is the exception: the ancestor trail is resolved by id
+        alone, without a permission check. For a record shared directly with
+        the caller, it can therefore name ancestors the caller cannot open.
+        Treat breadcrumb entries as labels, not as nodes guaranteed to be
+        navigable.
+      operationId: navigateKnowledgeGraph
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: nodeId
+          in: query
+          required: false
+          description: >-
+            The node to open. Take it from an `id` in a previous navigate or
+            lookup response. Omit it entirely for the flat listing of
+            everything reachable — the usual starting point. A URL or an issue
+            key such as `PA-1787` also works: it is resolved to its record
+            automatically.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 2048
+        - name: page
+          in: query
+          required: false
+          description: Page number, 1-indexed.
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: >-
+            Children per page. The minimum is 50 — smaller values are rejected
+            rather than silently raised.
+          schema:
+            type: integer
+            minimum: 50
+            maximum: 200
+            default: 50
+        - name: depth
+          in: query
+          required: false
+          description: >-
+            Levels of descendants to return in one call. Above 1, `rows` is a
+            flat list of all descendants down to that level rather than only
+            direct children, and each row carries its own `level`.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 3
+            default: 1
+        - name: nodeTypes
+          in: query
+          required: false
+          description: >-
+            Restrict children to these node types. Repeat the parameter for
+            multiple types: `?nodeTypes=record&nodeTypes=folder`.
+          schema:
+            type: array
+            items:
+              type: string
+        - name: createdAfter
+          in: query
+          required: false
+          description: >-
+            Filter children by source creation time. ISO 8601 `YYYY-MM-DD`, or a
+            full datetime that MUST carry a timezone offset — a naive datetime
+            is rejected rather than assumed to be UTC.
+          schema:
+            type: string
+        - name: createdBefore
+          in: query
+          required: false
+          description: >-
+            Filter children by source creation time. `YYYY-MM-DD` is inclusive
+            of the whole day.
+          schema:
+            type: string
+        - name: modifiedAfter
+          in: query
+          required: false
+          description: Filter children by source modification time.
+          schema:
+            type: string
+        - name: modifiedBefore
+          in: query
+          required: false
+          description: Filter children by source modification time.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: |
+            Successful operation. A node that does not exist or is not
+            accessible returns an empty view (null `current`, empty `rows`)
+            rather than an error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NavigateKnowledgeGraphResponseSchema'
+        '400':
+          description: |
+            A parameter failed validation: `page` below 1, `limit` outside
+            50-200, `depth` outside 1-3, an empty `nodeId`, or a date that is
+            not valid ISO 8601, carries no timezone offset, forms an inverted
+            range, or has `createdAfter` in the future.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: >-
+            OAuth token is missing both the `kb:read` and `connector:read`
+            scopes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The authenticated user could not be resolved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while navigating the knowledge graph
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /connectors/record/lookup:
+    get:
+      tags:
+        - Connector
+      summary: Resolve a URL, issue key or external ID to a Record ID
+      description: |
+        Turn an external reference into the matching PipesHub record. Accepts a
+        pasted link, a Jira-style issue key, or a bare external system ID from
+        any connected source. Repeat `identifiers` to batch-resolve up to ten
+        in one call.
+
+        The response carries a rendered `text` view — each match's metadata
+        block followed by a `Next:` line naming a follow-up call. The structured
+        fields carry the same information for programmatic use.
+
+        **Accepted identifiers**
+        - Jira issue URL — `https://acme.atlassian.net/browse/PA-1787`
+        - Jira issue key — `PA-1787`
+        - Confluence page URL —
+          `https://acme.atlassian.net/wiki/spaces/SD/pages/450625553/Agent+Loop`
+        - Google Drive / Docs URL — `https://docs.google.com/document/d/1AbC.../edit`
+        - Slack message link — `https://acme.slack.com/archives/C0123/p1720000000000100`
+        - Bare external system ID — `450625553`
+
+        **When to use this vs. the other record endpoints:**
+        - **This endpoint** converts an *external* reference into an internal
+          Record ID. Reach for it whenever you meet a link or ticket key and
+          need the record behind it.
+        - `GET /connectors/record/{recordId}/content` reads a record you have
+          already identified. It needs an internal Record ID, which is exactly
+          what this endpoint returns.
+        - `GET /connectors/navigate` browses the hierarchy when you have a
+          position in the tree rather than a specific identifier.
+
+        **Typical flow:** call this with the reference, take a match's `id`
+        from the response, then call
+        `GET /connectors/record/{recordId}/content` to read the record.
+
+        **Multiple matches:** one identifier can legitimately match more than
+        one record — the same external ID may exist in several connected
+        instances. In that case the response sets `ambiguous: true` and
+        `matches` holds every candidate. Present the choice rather than taking
+        the first; `connectorName` narrows a retry.
+
+        **Misses are not errors.**
+
+        Only records the caller can see are returned, and a miss is a `200`
+        with an empty `matches` array and the input echoed in
+        `not_found_identifiers` — not a `404`. The identifier resolved to
+        nothing *or* to something the caller may not access; the two are
+        deliberately indistinguishable, because an identifier is
+        caller-supplied and guessable, and confirming existence would leak
+        records across organizations. `searched_connectors` names what was
+        covered, so a retry with `connectorName` is often the right next move.
+
+        **Scope:** resolution searches every connector the caller can access,
+        regardless of any source filter used elsewhere.
+      operationId: lookupRecordByIdentifier
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: identifiers
+          in: query
+          required: true
+          description: >-
+            The reference(s) to resolve: a URL, an issue key such as `PA-1787`,
+            or a bare external system ID. Repeat the parameter to batch:
+            `?identifiers=PA-1787&identifiers=PA-1788`. Maximum 10.
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 10
+            items:
+              type: string
+              maxLength: 2048
+        - name: connectorName
+          in: query
+          required: false
+          description: >-
+            Optional hint that prioritises resolution order, e.g. `JIRA`,
+            `CONFLUENCE`, `DRIVE`, `SLACK`. Allowed values are the
+            `ConnectorNameEnum` values. It cannot widen the search beyond the
+            connectors the caller can already access. Useful on a retry when a
+            lookup came back empty.
+          schema:
+            $ref: '#/components/schemas/ConnectorNameEnum'
+      responses:
+        '200':
+          description: |
+            Successful operation. Identifiers that resolved to nothing the
+            caller can access are echoed in `not_found_identifiers` rather than
+            producing an error status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LookupRecordResponseSchema'
+        '400':
+          description: No non-blank identifier was supplied, or more than 10 were.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: >-
+            OAuth token is missing both the `kb:read` and `connector:read`
+            scopes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The authenticated user could not be resolved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while resolving identifiers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /connectors/{connectorId}/reindex:
     post:
       tags:
         - Connector Instances
-      summary: Reindex failed records for connector
+      summary: Reindex a connector instance
       description: |
-        Trigger reindexing for a connector instance, scoped by indexing status. When
-        `statusFilters` is omitted, only `FAILED` records are reindexed.
-      operationId: reindexFailedRecords
+        Trigger reindexing for a connector instance, optionally scoped by
+        indexing status. Covers both external connectors and KB app
+        instances (a KB is itself a connector instance). Omitting
+        `statusFilters` reindexes everything for a KB connector; other
+        connector types default server-side to `FAILED`-only.
+      operationId: reindexConnector
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -28967,12 +31136,12 @@ paths:
           schema:
             type: string
       requestBody:
-        required: true
+        required: false
         description: Request payload
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ReindexFailedConnectorRequestBody'
+              $ref: '#/components/schemas/ReindexConnectorRequestBody'
       responses:
         '200':
           description: Reindex triggered successfully
@@ -28981,9 +31150,17 @@ paths:
               schema:
                 type: object
                 properties:
-                  reindexResponse:
-                    type: object
-                    description: Connector reindex job acknowledgement from the relation service.
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  connectorId:
+                    type: string
+                  connector:
+                    type: string
+                    description: Normalized connector type/name.
+                  eventPublished:
+                    type: boolean
         '401':
           description: Unauthorized
         '404':
@@ -32887,6 +35064,191 @@ paths:
           description: Admin access required
         '404':
           description: Model not found
+
+  /configurationManager/ai-models/prepare-model:
+    post:
+      tags:
+        - AI Models Providers
+      summary: Prepare (download) a local embedding model
+      description: |
+        Kicks off a non-blocking load/download of a local (SentenceTransformer
+        / HuggingFace) embedding model on the embedding server and returns
+        immediately with the current status snapshot — it does not wait for
+        the download to finish. Poll
+        `GET /configurationManager/ai-models/download-progress` (SSE) with the
+        same `model` to observe progress until `status` reaches `ready` or
+        `failed`.
+
+        This decouples model preparation from health checks: previously, a
+        multi-GB first-time download running synchronously inside a health
+        check could exceed both the frontend's request timeout and the health
+        check's own timeout. Calling this endpoint first, and only proceeding
+        once the SSE stream reports `ready`, avoids both.
+
+        Requires org admin privileges in addition to the OAuth scope below.
+      operationId: prepareEmbeddingModel
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PrepareEmbeddingModelRequest'
+      responses:
+        '202':
+          description: |
+            Model load/download accepted (or already `ready`/in-progress).
+            Returns the current status snapshot; continue polling
+            `GET .../download-progress` until `status` is `ready` or `failed`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbeddingDownloadProgressPayload'
+              example:
+                model: "BAAI/bge-m3"
+                status: downloading
+                progress: 0
+                downloaded_bytes: 0
+                total_bytes: 2270000000
+                error: null
+                started_at: 1751900000.123
+                updated_at: 1751900000.123
+        '400':
+          description: |
+            Either `model` is missing or fails the
+            `^[\w.-]+(\/[\w.-]+)?$` repo-id pattern check performed by
+            Node.js before proxying to the embedding server, or (via the
+            shared `userAdminCheck` middleware) the caller is not an org
+            admin.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [status, message]
+                    additionalProperties: false
+                    properties:
+                      status:
+                        type: string
+                        enum: [error]
+                      message:
+                        type: string
+                        example: "A valid model name is required"
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Either the caller's OAuth token lacks the `config:write` scope,
+            or the embedding server rejected the request under its own
+            policy: `model` is not in `EMBEDDING_SERVER_ALLOWED_MODELS`, or
+            `trustRemoteCode: true` was requested while
+            `EMBEDDING_SERVER_ALLOW_REMOTE_CODE` is disabled on the server.
+            The embedding-server rejection is proxied verbatim using
+            FastAPI's `{"detail": ...}` envelope, not the Node.js
+            `ErrorResponse` shape used for the scope failure.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - type: object
+                    required: [detail]
+                    properties:
+                      detail:
+                        type: string
+                        example: "trust_remote_code is disabled on this server. Set environment variable EMBEDDING_SERVER_ALLOW_REMOTE_CODE=true to enable it."
+        '500':
+          description: |
+            The embedding server could not be reached, or returned an error
+            with no response body (network failure).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /configurationManager/ai-models/download-progress:
+    get:
+      tags:
+        - AI Models Providers
+      summary: Stream embedding model download progress (SSE)
+      description: |
+        Server-Sent Events stream that polls the embedding server's download
+        status internally (every ~2s) and forwards each snapshot to the
+        client as a `progress` event, until `status` reaches `ready` or
+        `failed`, at which point the stream closes.
+
+        Pair this with `POST .../prepare-model`: call that first to kick off
+        the load/download, then open this stream with the same `model` to
+        observe progress.
+
+        If the embedding server becomes unreachable mid-stream, one final
+        `progress` event with `status: "failed"` and
+        `error: "Lost connection to embedding server"` is emitted before the
+        stream closes. If the client disconnects, polling stops and no
+        further events are written to the response.
+      operationId: streamEmbeddingDownloadProgress
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      parameters:
+        - name: model
+          in: query
+          required: true
+          description: |
+            HuggingFace repo id to track, matching `^[\w.-]+(\/[\w.-]+)?$`.
+            Should match the `model` passed to `POST .../prepare-model`.
+          schema:
+            type: string
+          example: "BAAI/bge-m3"
+      responses:
+        '200':
+          description: |
+            SSE stream (`text/event-stream`). Every frame uses the
+            `progress` event name; `data` is a JSON-encoded
+            `EmbeddingDownloadProgressPayload` plus a `timestamp` field.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/EmbeddingDownloadProgressSSEEvent'
+        '400':
+          description: |
+            `model` query parameter missing or not a valid HuggingFace repo
+            id, or (via the shared `userAdminCheck` middleware) the caller is
+            not an org admin.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [status, message]
+                    additionalProperties: false
+                    properties:
+                      status:
+                        type: string
+                        enum: [error]
+                      message:
+                        type: string
+                        example: "A valid model query parameter is required"
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Insufficient OAuth scope — token lacks `config:read`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Web Search --------------------
   /configurationManager/web-search:

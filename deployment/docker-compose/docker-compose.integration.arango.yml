@@ -4,7 +4,7 @@ services:
     restart: always
     build:
       context: ../../
-      dockerfile: Dockerfile.integration
+      dockerfile: Dockerfile
       args:
         BUILDKIT_INLINE_CACHE: "1"
         PYTHON_DEPS_IMAGE: ${PYTHON_DEPS_IMAGE:-pipeshubai/pipeshub-ai-base:python-deps}
@@ -24,8 +24,24 @@ services:
     deploy:
       resources:
         limits:
-          memory: 10G
+          # OOM cap only (not reserved). Sibling service limits are likewise caps.
+          memory: 12G
+    # Lets the kernel page out memory that a co-located idle service (e.g.
+    # Docling's model weights between documents) is holding but not
+    # actively using, instead of counting it against the hard OOM cap above
+    # forever. memswap_limit is the combined memory+swap ceiling (not a
+    # separate swap allowance), so 12G memory / 16G memswap gives 4G of swap.
+    # mem_swappiness (per-container swap aggressiveness) is a cgroup v1-only
+    # knob and is silently discarded with a warning on cgroup v2 hosts
+    # (Docker Desktop, modern Linux distros) -- intentionally omitted here.
+    memswap_limit: 16G
     shm_size: 2gb
+    # 7 services (node, frontend, 5 python) share one container's fd budget;
+    # docker's 1024 default hits EMFILE on accept() during startup.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     init: true
     logging:
       driver: local
@@ -53,14 +69,14 @@ services:
       - CONNECTOR_BACKEND=http://localhost:8088
       - INDEXING_BACKEND=http://localhost:8091
       - EMBEDDING_SERVER_URL=http://localhost:8002
+      # Standalone parsing / extraction services (opt-in)
+      - PARSING_SERVICE_URL=http://localhost:8092
+      - EXTRACTION_SERVICE_URL=http://localhost:8093
+      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
+      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
       # Key-Value Store Configuration
-      - KV_STORE_TYPE=${KV_STORE_TYPE:-etcd}
-
-      # ETCD config
-      - ETCD_URL=http://etcd:2379
-      - ETCD_HOST=etcd
-      - ETCD_TIMEOUT=${ETCD_TIMEOUT:-5000}
+      - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
 
       # ArangoDB config
       - ARANGO_URL=http://arango:8529
@@ -71,7 +87,7 @@ services:
 
       # Message broker config
       - MESSAGE_BROKER=${MESSAGE_BROKER:-kafka}
-      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
 
       # Kafka config
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
@@ -111,7 +127,7 @@ services:
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # MCP OAuth scopes
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read,agent:read,agent:execute,connector:read}
 
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
@@ -120,9 +136,11 @@ services:
       # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 
-      # Indexing service config
-      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
-      - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-5}
+      # Indexing concurrency — leave unset (empty) to let each service derive
+      # its ceiling from this container's own cgroup/CPU limits at startup.
+      # Set an explicit integer only to pin a hard ceiling.
+      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-}
+      - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-}
 
       - OPIK_API_KEY=${OPIK_API_KEY:-}
       - OPIK_WORKSPACE=${OPIK_WORKSPACE:-}
@@ -148,9 +166,9 @@ services:
         condition: service_started
       mongodb:
         condition: service_started
-      etcd:
-        condition: service_started
       arango:
+        condition: service_healthy
+      mailpit:
         condition: service_healthy
     volumes:
       - pipeshub_data:/data/pipeshub
@@ -162,13 +180,17 @@ services:
       - "host.docker.internal:host-gateway"
 
   mongodb:
-    image: mongo:8.0.17
+    image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
     restart: always
+    # Shared ~16 GB hosts: cap WiredTiger so Mongo does not grab ~half of RAM.
+    # Sibling deploy.limits are OOM caps, not concurrent reservations.
+    command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
     ports:
       - "27017:27017"
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-password}
+      - GLIBC_TUNABLES=${MONGO_GLIBC_TUNABLES:-glibc.pthread.rseq=0}
     volumes:
       - mongodb_data:/data/db
     healthcheck:
@@ -192,6 +214,19 @@ services:
     volumes:
       - redis_data:/data
 
+  # Local SMTP sink for mail-dependent integration tests: CI runners cannot
+  mailpit:
+    image: axllent/mailpit:v1.30.6
+    restart: always
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   arango:
     image: arangodb:3.12.4
     restart: always
@@ -206,24 +241,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-
-  etcd:
-    image: quay.io/coreos/etcd:v3.5.17
-    restart: always
-    ports:
-      - "2379:2379"
-      - "2380:2380"
-    command: >
-      etcd
-      --name etcd-node
-      --data-dir /etcd-data
-      --listen-client-urls http://0.0.0.0:2379
-      --advertise-client-urls http://0.0.0.0:2379
-      --listen-peer-urls http://0.0.0.0:2380
-      --initial-advertise-peer-urls http://0.0.0.0:2380
-      --initial-cluster etcd-node=http://0.0.0.0:2380
-    volumes:
-      - etcd_data:/etcd-data
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.9.0
@@ -304,8 +321,6 @@ volumes:
   redis_data:
     driver: local
   arango_data:
-    driver: local
-  etcd_data:
     driver: local
   qdrant_storage:
     driver: local

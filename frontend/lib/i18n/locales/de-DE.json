@@ -164,7 +164,9 @@
       "usernameLabel": "Benutzername",
       "usernamePlaceholder": "z.B.: user@gmail.com",
       "passwordLabel": "Passwort",
-      "passwordPlaceholder": "Passwort eingeben"
+      "passwordPlaceholder": "Passwort eingeben",
+      "saveSuccessFallback": "SMTP-Konfiguration gespeichert.",
+      "saveErrorFallback": "SMTP-Konfiguration konnte nicht gespeichert werden."
     },
     "nav": {
       "prev": "Zurück",
@@ -188,8 +190,8 @@
     "collections": "Sammlungen",
     "allRecords": "Alle Datensätze",
     "workspace": "Arbeitsbereich",
-    "shared": "Geteilt",
-    "private": "Privat",
+    "shared": "Mit mir geteilt",
+    "private": "Meine Sammlungen",
     "connectors": "Konnektoren",
     "bots": "Bots",
     "moreConnectors": "Weitere Konnektoren",
@@ -376,6 +378,9 @@
     "continue": "Fortfahren",
     "confirm": "Bestätigen",
     "cancel": "Abbrechen",
+    "save": "Speichern",
+    "saving": "Speichern...",
+    "create": "Erstellen",
     "more": "Mehr",
     "less": "Weniger",
     "viewAll": "Alle anzeigen",
@@ -484,6 +489,10 @@
     "listening": "Zuhören...",
     "voiceInputNotSupported": "Spracheingabe wird in diesem Browser nicht unterstützt",
     "voiceError": "Zugriff auf das Mikrofon nicht möglich",
+    "noModelsAvailable": "Es sind noch keine KI-Modelle konfiguriert",
+    "failedToLoadModels": "KI-Modelle konnten nicht geladen werden",
+    "failedToLoadAgentConfig": "Die Modellkonfiguration dieses Agenten konnte nicht geladen werden",
+    "openModels": "Modelle öffnen",
     "connectorsCollectionsTitle": "Konnektoren und Sammlungen",
     "connectorsTooltip": "Konnektoren und Sammlungen",
     "connectorsDefaultScopeHint": "Standardmäßig werden alle Konnektoren und Sammlungen durchsucht. Wählen Sie unten spezifische aus, wenn Sie den Umfang einschränken möchten.",
@@ -621,7 +630,7 @@
       "agent": {
         "label": "Agent",
         "toolbarLabel": "Agent",
-        "description": "Mehrschrittiger Agent mit Werkzeugen—Strategie in der Leiste wählen"
+        "description": "Agent, der planen und Werkzeuge nutzen kann, um komplexe Aufgaben zu erledigen"
       }
     },
     "agentStrategy": {
@@ -637,10 +646,10 @@
           "short": "Schnell",
           "hint": "Bevorzugt schnelle Antworten und weniger Verfeinerung. Gut für einfache Aufgaben."
         },
-        "verify": {
-          "label": "Prüfen",
-          "short": "Prüfen",
-          "hint": "Zusätzliche Prüfung von Fakten und Schritten vor der finalen Antwort."
+        "plan-execute": {
+          "label": "Planen & Ausführen",
+          "short": "Planen & Ausführen",
+          "hint": "Plant zuerst alle Schritte und führt sie dann in der Reihenfolge aus."
         },
         "deep": {
           "label": "Tief",
@@ -762,7 +771,8 @@
     "dark": "Dunkel",
     "documentation": "Dokumentation",
     "darkMode": "Dunkelmodus",
-    "lightMode": "Hellmodus"
+    "lightMode": "Hellmodus",
+    "organisations": "Organisationen"
   },
   "workspace": {
     "users": {
@@ -851,13 +861,26 @@
         "groupLabel": "Gruppen (Optional)",
         "groupPlaceholder": "Gruppen auswählen",
         "groupSearchPlaceholder": "Gruppen suchen...",
-        "importCsv": "CSV importieren",
+        "import": "Importieren",
+        "importFormatTitle": "CSV oder Excel — jedes Layout funktioniert",
+        "importHintHeader": "Kopfzeile optional — zusätzliche Spalten werden ignoriert",
+        "importHintLimit": "Bis zu 1000 Benutzer pro Datei (.csv, .xlsx, .xls)",
         "cancel": "Abbrechen",
         "send": "Einladung senden",
         "successTitle": "Einladungen gesendet",
         "successDescription": "{{email}} wurde eingeladen",
         "invalidEmail": "Ungültige E-Mail-Adresse",
-        "errorGeneric": "Einladungen konnten nicht gesendet werden. Bitte versuchen Sie es erneut."
+        "errorGeneric": "Einladungen konnten nicht gesendet werden. Bitte versuchen Sie es erneut.",
+        "importNoEmails": "Keine E-Mail-Adressen in der Datei gefunden",
+        "importTooMany": "Die Datei überschreitet das Limit von {{max}} Benutzern",
+        "importAllDuplicates": "Alle Adressen der Datei sind bereits aufgeführt",
+        "importLoaded": "{{count}} Adresse(n) hinzugefügt",
+        "importLoadedDescription": "Liste prüfen und dann auf Einladung senden klicken.",
+        "importSkipped": "{{invalid}} ungültige, {{duplicate}} doppelte Adresse(n)",
+        "importSkippedDescription": "Ungültige Einträge sind markiert — vor dem Senden entfernen.",
+        "importFailed": "Import fehlgeschlagen",
+        "importFailedDescription": "Datei konnte nicht gelesen werden. Bitte eine gültige CSV- oder Excel-Datei hochladen.",
+        "adminGroupWarning": "Alle hier eingeladenen Personen werden vollwertige Organisations-Admins — auch jede aus einer Datei importierte Adresse. Admins können Benutzer, Gruppen und Organisationseinstellungen verwalten."
       }
     },
     "groups": {
@@ -1191,6 +1214,19 @@
       "configInfoImageGeneration": "Konfigurieren Sie Ihr Bildgenerierungsmodell. Geben Sie Ihre {{providerName}}-API-Anmeldedaten ein, um zu starten.",
       "configInfoFallback": "Konfigurieren Sie Ihr {{capLabel}}-Modell, um KI-Funktionen in Ihrer Anwendung zu aktivieren. Geben Sie Ihre {{providerName}}-API-Anmeldedaten ein, um zu starten.",
       "configInfoPlaceholderProvider": "Anbieter",
+      "downloadDialogTitle": "Embedding-Modell wird heruntergeladen",
+      "downloadDialogDescription": "\"{{modelName}}\" wird herunterladen. Dies kann je nach Modellgröße und Verbindung einige Minuten dauern.",
+      "downloadDialogHint": "Sie können diesen Dialog schließen — der Download läuft im Hintergrund weiter. Speichern Sie erneut, sobald das Modell bereit ist.",
+      "downloadStatusChecking": "Lokaler Cache wird überprüft...",
+      "downloadStatusDownloading": "Modell wird heruntergeladen...",
+      "downloadStatusLoading": "Modell wird in den Speicher geladen...",
+      "downloadStatusReady": "Modell bereit",
+      "downloadStatusFailed": "Download fehlgeschlagen",
+      "downloadProgressBytes": "{{downloaded}} von {{total}}",
+      "downloadErrorFallback": "Das Embedding-Modell konnte nicht heruntergeladen werden. Bitte versuchen Sie es erneut.",
+      "downloadPrepareError": "Die Modellvorbereitung konnte nicht gestartet werden. Bitte versuchen Sie es erneut.",
+      "downloadRetry": "Erneut versuchen",
+      "downloadClose": "Schließen",
       "chipDefault": "Standard",
       "actionEdit": "Bearbeiten",
       "actionSetDefault": "Als Standard setzen",
@@ -1289,6 +1325,7 @@
         "labs": "Labs",
         "authentication": "Authentifizierung",
         "connectors": "Konnektoren",
+        "mcpServers": "MCP-Server",
         "actions": "Aktionen",
         "bots": "Bots",
         "services": "Dienste",
@@ -1300,11 +1337,16 @@
         "profile": "Profil",
         "yourConnectors": "Ihre persönlichen Konnektoren",
         "yourActions": "Ihre Aktionen",
+        "yourSkills": "Ihre Skills",
+        "yourMcpServers": "Ihre MCP-Server",
         "archivedChats": "Archivierte Chats",
         "users": "Benutzer",
         "groups": "Gruppen",
         "teams": "Teams",
-        "webSearch": "Websuche"
+        "webSearch": "Websuche",
+        "tenants": "Mandanten",
+        "superOrgs": "Organisationen",
+        "oauthApps": "OAuth Apps"
       }
     },
     "actions": {
@@ -1586,7 +1628,8 @@
         "google": "Google-Authentifizierung konfigurieren",
         "microsoft": "Microsoft-Authentifizierung konfigurieren",
         "samlSso": "SAML-SSO konfigurieren",
-        "oauth": "OAuth 2.0 konfigurieren"
+        "oauth": "OAuth 2.0 konfigurieren",
+        "github": "GitHub-Authentifizierung konfigurieren"
       },
       "jit": {
         "title": "Just-In-Time-(JIT)-Bereitstellung aktivieren",
@@ -1857,6 +1900,149 @@
         "syncing": "Datensätze werden synchronisiert...",
         "synced": "Datensätze synchronisiert",
         "failed": "Synchronisierung fehlgeschlagen"
+      }
+    },
+    "mcpServers": {
+      "searchPlaceholder": "MCP-Server durchsuchen...",
+      "loading": "MCP-Server werden geladen…",
+      "noResults": "Keine MCP-Server entsprechen Ihrer Suche",
+      "addServer": "Server hinzufügen",
+      "custom": "Benutzerdefiniert",
+      "sharedAuth": "Gemeinsame Admin-Authentifizierung",
+      "toolsCount_one": "{{count}} Tool",
+      "toolsCount_other": "{{count}} Tools",
+      "cta": {
+        "manage": "Verwalten",
+        "delete": "Löschen",
+        "reauthenticate": "Erneut authentifizieren",
+        "disconnect": "Trennen",
+        "connect": "Verbinden",
+        "addInstance": "Instanz hinzufügen"
+      },
+      "status": {
+        "ready": "Bereit",
+        "notConnected": "Nicht verbunden",
+        "needsAuth": "Authentifizierung erforderlich"
+      },
+      "team": {
+        "title": "MCP-Server",
+        "subtitle": "Verbinden Sie Model-Context-Protocol-Server, um die Fähigkeiten der Agenten Ihres Teams zu erweitern.",
+        "emptyTitle": "Noch keine MCP-Server",
+        "emptyDescription": "Fügen Sie einen Server aus dem Katalog hinzu oder konfigurieren Sie einen benutzerdefinierten Server, um zu beginnen."
+      },
+      "personal": {
+        "title": "MCP-Server",
+        "subtitle": "Authentifizieren Sie sich bei den MCP-Servern, die Ihr Administrator bereitgestellt hat.",
+        "emptyTitle": "Keine MCP-Server verfügbar",
+        "emptyDescription": "Ihr Administrator hat noch keine MCP-Server hinzugefügt."
+      },
+      "details": {
+        "breadcrumbLabel": "MCP-Server",
+        "refreshAll": "Alle aktualisieren",
+        "addInstance": "Weitere Instanz hinzufügen",
+        "configuration": "KONFIGURATION",
+        "transport": "TRANSPORT",
+        "tools": "TOOLS",
+        "discoverTools": "Tools erkennen",
+        "discoveredTools_one": "{{count}} Tool verfügbar",
+        "discoveredTools_other": "{{count}} Tools verfügbar",
+        "discovering": "Tools werden erkannt…",
+        "discoveryError": "Tool-Erkennung fehlgeschlagen",
+        "discoveryNeedsAuth": "Authentifizieren, um Tools zu erkennen",
+        "retry": "Erneut versuchen",
+        "noInstances": "Keine Instanzen konfiguriert",
+        "authBannerTitle": "Authentifizierung erforderlich",
+        "authBannerDescription": "Authentifizieren Sie diesen MCP-Server, damit die Agenten Ihres Teams ihn nutzen können.",
+        "authBannerAuthenticatedTitle": "Verbunden",
+        "authBannerAuthenticatedDescription": "Sie können diesen MCP-Server erneut authentifizieren oder trennen."
+      },
+      "deleteDialog": {
+        "title": "MCP-Server löschen?",
+        "body": "Der Server \"{{name}}\" wird endgültig entfernt. Teammitglieder, die ihn verwenden, verlieren den Zugriff."
+      },
+      "toasts": {
+        "loadError": "MCP-Server konnten nicht geladen werden",
+        "deleted": "MCP-Server gelöscht",
+        "deleteError": "MCP-Server konnte nicht gelöscht werden",
+        "updated": "MCP-Server aktualisiert",
+        "created": "MCP-Server erstellt",
+        "saveError": "MCP-Server konnte nicht gespeichert werden",
+        "authenticated": "Erfolgreich authentifiziert",
+        "authenticateError": "Authentifizierung fehlgeschlagen",
+        "disconnected": "Erfolgreich getrennt",
+        "disconnectError": "Trennen fehlgeschlagen",
+        "credentialsSaveError": "Server gespeichert, aber die Anmeldedaten konnten nicht gespeichert werden. Sie können sie später über \"Verwalten\" hinzufügen.",
+        "discoveryError": "Tools konnten nicht erkannt werden"
+      },
+      "authDialog": {
+        "title": "Bei {{name}} authentifizieren",
+        "description": "Geben Sie Ihre Anmeldedaten ein, um diesen MCP-Server zu verbinden."
+      },
+      "form": {
+        "name": "Name",
+        "description": "Beschreibung",
+        "transport": "Transport",
+        "command": "Befehl",
+        "args": "Argumente",
+        "argsPlaceholder": "Argument hinzufügen",
+        "requiredEnv": "Erforderliche Umgebungsvariablen",
+        "requiredEnvPlaceholder": "Umgebungsvariable hinzufügen (z. B. API_KEY)",
+        "url": "URL",
+        "authMode": "Authentifizierungsmodus",
+        "headerName": "Header-Name",
+        "authorizationUrl": "Autorisierungs-URL",
+        "dcrHint": "Leer lassen — PipesHub erkennt automatisch, ob der Server dynamische Client-Registrierung unterstützt, und nutzt sie dann",
+        "tokenUrl": "Token-URL",
+        "scopes": "Berechtigungen",
+        "scopesPlaceholder": "Berechtigung hinzufügen",
+        "useAdminAuth": "Gemeinsame Admin-Authentifizierung für alle Benutzer verwenden",
+        "headerValue": "{{headerName}}",
+        "apiToken": "API-Token",
+        "credentialsHeading": "Anmeldedaten (optional)",
+        "credentialsHint": "Fügen Sie jetzt Anmeldedaten hinzu oder überspringen Sie dies und verbinden Sie sich später über den Tab \"Verbindung & Tools\".",
+        "leaveBlankToKeep": "Leer lassen, um den vorhandenen Wert zu behalten.",
+        "multiEnvIncomplete": "Füllen Sie jede erforderliche Umgebungsvariable aus, oder lassen Sie alle leer, um später zu verbinden.",
+        "oauthPairRequired": "Geben Sie sowohl die Client-ID als auch das Client-Secret ein, oder lassen Sie beide leer.",
+        "connectAfterCreateHint": "Speichern Sie diesen Server und öffnen Sie dann erneut \"Verwalten\", um ihn zu verbinden."
+      },
+      "configPanel": {
+        "editTitle": "MCP-Server bearbeiten",
+        "createTitle": "MCP-Server hinzufügen",
+        "tabs": {
+          "configuration": "Konfiguration",
+          "connection": "Verbindung & Tools"
+        }
+      },
+      "oauthConfig": {
+        "saved": "OAuth-App gespeichert",
+        "saveError": "OAuth-App konnte nicht gespeichert werden",
+        "title": "OAuth-App konfigurieren",
+        "description": "PipesHub erkennt automatisch, ob dieser Server dynamische Client-Registrierung unterstützt. Client-Anmeldedaten sind nur erforderlich, wenn das nicht der Fall ist.",
+        "alreadyConfigured": "Für diesen Server ist bereits eine OAuth-App konfiguriert.",
+        "clientId": "Client-ID",
+        "clientIdPlaceholder": "Client-ID eingeben",
+        "clientSecret": "Client-Secret",
+        "clientSecretPlaceholder": "Client-Secret eingeben",
+        "dcrProbing": "Es wird geprüft, ob sich dieser Server automatisch registrieren kann…",
+        "dcrSupportedHint": "Dieser Server unterstützt die automatische Registrierung. PipesHub registriert sich selbst, Client-Anmeldedaten sind nicht erforderlich.",
+        "dcrUnsupportedHint": "Dieser Server benötigt eine manuell registrierte OAuth-App. Erstellen Sie eine mit der unten stehenden Callback-URL und geben Sie dann deren Client-ID und Secret ein.",
+        "dcrUnknownHint": "Die Unterstützung der automatischen Registrierung konnte nicht bestätigt werden. Falls sie nicht unterstützt wird, registrieren Sie eine OAuth-App mit der unten stehenden Callback-URL und geben Sie deren Client-ID und Secret ein.",
+        "callbackUrlLabel": "Callback-URL",
+        "copyCallbackUrl": "Callback-URL kopieren",
+        "callbackUrlCopied": "Callback-URL kopiert",
+        "providerDocsLink": "Setup-Dokumentation des Anbieters anzeigen"
+      },
+      "oauth": {
+        "completingTitle": "Anmeldung wird abgeschlossen…",
+        "processingHint": "Bitte warten Sie, während wir die Verbindung zu Ihrem Konto herstellen.",
+        "successTitle": "Erfolgreich verbunden",
+        "successBody": "Sie können dieses Fenster schließen und zu PipesHub zurückkehren.",
+        "failedTitle": "Verbindung fehlgeschlagen",
+        "retryHint": "Etwas ist schiefgelaufen. Bitte schließen Sie dieses Fenster und versuchen Sie es erneut.",
+        "providerError": "Der Anbieter hat einen Fehler zurückgegeben: {{error}}",
+        "noCode": "Es wurde kein Autorisierungscode zurückgegeben.",
+        "noState": "Es wurde kein State-Parameter zurückgegeben.",
+        "backendRejected": "Der Server hat die Autorisierungsanfrage abgelehnt."
       }
     },
     "bots": {
@@ -2168,6 +2354,252 @@
       "discardMessage": "Wenn Sie verwerfen, werden Ihre Änderungen nicht gespeichert",
       "discardConfirm": "Verwerfen",
       "discardCancel": "Weiter bearbeiten"
+    },
+    "services": {
+      "pageTitle": "Dienste",
+      "pageSubtitle": "Überwachen Sie den Zustand der Plattformdienste",
+      "infraSection": "Infrastrukturdienste",
+      "infraSubtitle": "Kerninfrastrukturkomponenten, die die Plattform antreiben",
+      "appSection": "Anwendungsdienste",
+      "appSubtitle": "Python-Microservices für Suche, Indizierung und Dokumentenverarbeitung",
+      "checkNow": "Jetzt prüfen",
+      "checking": "Prüfe…",
+      "lastChecked": "Zuletzt geprüft: {{time}}",
+      "loading": "Dienststatus wird geladen…",
+      "policyTitle": "Dienstintegritätsrichtlinie",
+      "policyDescription": "Query- und Connector-Dienste sind kritisch — die Anwendung wartet auf sie vor dem Laden. Indexierungs-, Docling-, Parsing- und Extraktionsdienste sind nicht-blockierend und betreffen nur die Hintergrundverarbeitung.",
+      "allHealthy": "Alle Dienste sind funktionsfähig",
+      "someUnhealthy": "Einige Dienste sind nicht funktionsfähig",
+      "fetchFailed": "Fehler beim Prüfen des Dienststatus",
+      "statusHealthy": "Funktionsfähig",
+      "statusUnhealthy": "Nicht funktionsfähig",
+      "statusUnknown": "Unbekannt",
+      "infra": {
+        "redis": {
+          "label": "Redis",
+          "descriptionWithKvStore": "Caching, Ratenbegrenzung und Konfiguration",
+          "description": "Caching und Ratenbegrenzung"
+        },
+        "mongodb": {
+          "label": "MongoDB",
+          "description": "Sitzungen und Benutzermetadaten"
+        },
+        "messageBroker": {
+          "label": "Nachrichtenbroker",
+          "description": "Verteiltes Ereignis-Streaming"
+        },
+        "etcd": {
+          "label": "etcd",
+          "description": "Verteilte Konfiguration"
+        },
+        "graphDb": {
+          "label": "Graphdatenbank",
+          "description": "Wissensgraphen"
+        },
+        "vectorDb": {
+          "label": "Vektordatenbank",
+          "description": "Hybridsuche — Schlüsselwort und semantisch"
+        }
+      },
+      "app": {
+        "query": {
+          "label": "Abfragedienst",
+          "description": "RAG, semantische Suche und LLM-Integration"
+        },
+        "connector": {
+          "label": "Connector-Dienst",
+          "description": "OAuth, Token-Aktualisierung und Datenquellenintegrationen"
+        },
+        "indexing": {
+          "label": "Indizierungsdienst",
+          "description": "Dokumentenparsing, Embedding-Generierung und Chunking"
+        },
+        "docling": {
+          "label": "Docling-Dienst",
+          "description": "Erweiterte Dokumentenverarbeitung und OCR"
+        },
+        "parsing": {
+          "label": "Parsing-Dienst",
+          "description": "Zerlegt Dokumente in strukturierte Blöcke für die Indexierung"
+        },
+        "extraction": {
+          "label": "Extraktionsdienst",
+          "description": "LLM-basierte Dokumentklassifizierung und Metadatenextraktion"
+        }
+      }
+    },
+    "tenants": {
+      "title": "Mandanten",
+      "subtitle": "Mandantenorganisationen im Arbeitsbereich erstellen und verwalten",
+      "createTenant": "Mandanten erstellen",
+      "searchPlaceholder": "Mandanten suchen...",
+      "emptyTitle": "Noch keine Mandanten erstellt",
+      "emptyDescription": "Mandanten sind separate Organisationen, die Sie auf dieser Plattform verwalten.",
+      "noFilterResults": "Keine Mandanten entsprechen den angewendeten Filtern",
+      "noFilterResultsHint": "Versuchen Sie, die Filter oben anzupassen oder zu löschen",
+      "noSearchResults": "Keine Mandanten entsprechen Ihrer Suche",
+      "listDeleteDescription": "Dies entfernt den Mandanten und alle seine Benutzer dauerhaft.",
+      "columns": {
+        "name": "Name",
+        "domain": "Domain",
+        "contactEmail": "Kontakt-E-Mail",
+        "accountType": "Kontotyp",
+        "createdOn": "Erstellt am"
+      },
+      "actions": {
+        "tenantDetails": "Details",
+        "viewUsers": "Benutzer anzeigen",
+        "viewUserGroups": "Benutzergruppen",
+        "delete": "Löschen",
+        "deleteError": "Mandant konnte nicht gelöscht werden",
+        "deleteSuccess": "Mandant gelöscht",
+        "deleteSystemTooltip": "Dieser Mandant kann nicht gelöscht werden"
+      },
+      "groups": {
+        "title": "Benutzergruppen",
+        "subtitle": "Benutzergruppen für diesen Mandanten verwalten",
+        "backToTenants": "Zurück zu Mandanten",
+        "emptyTitle": "Noch keine Benutzergruppen",
+        "emptyDescription": "Erstellen Sie eine Benutzergruppe, um zu beginnen.",
+        "noSearchResults": "Keine Gruppen entsprechen Ihrer Suche",
+        "noSearchResultsHint": "Versuchen Sie, die Suche oben anzupassen oder zu löschen"
+      },
+      "create": {
+        "title": "Mandanten erstellen",
+        "accountTypeLabel": "Kontotyp",
+        "registeredNameLabel": "Registrierter Name",
+        "registeredNamePlaceholder": "z.B. Acme GmbH",
+        "shortNameLabel": "Kurzname",
+        "shortNamePlaceholder": "z.B. Acme",
+        "contactEmailLabel": "Kontakt-E-Mail",
+        "contactEmailPlaceholder": "z.B. admin@acme.com",
+        "submit": "Mandanten erstellen",
+        "cancel": "Abbrechen",
+        "successTitle": "Mandant erstellt!",
+        "successDescription": "Mandant wurde erfolgreich erstellt",
+        "errorGeneric": "Mandant konnte nicht erstellt werden",
+        "inheritanceTitle": "Konfigurationsvererbung",
+        "inheritanceDescription": "Aktivieren, um Einstellungen von Ihrer Organisation zu übernehmen. Deaktivieren, damit der Mandant eigene Einstellungen verwaltet.",
+        "inheritance": {
+          "aiModels": "KI-Modelle",
+          "aiModelsHintOn": "Mandant ist sofort einsatzbereit (keine KI-Einrichtung erforderlich)",
+          "aiModelsHintOff": "Mandant muss eigene KI-Modelle konfigurieren",
+          "smtp": "E-Mail (SMTP)",
+          "authentication": "Authentifizierung",
+          "prompts": "System-Prompts",
+          "platformSettings": "Plattformeinstellungen",
+          "connectors": "Konnektoren",
+          "toolsets": "Toolsets"
+        }
+      },
+      "invite": {
+        "title": "Benutzer einladen",
+        "send": "Einladung senden",
+        "cancel": "Abbrechen",
+        "tenantLabel": "Mandant",
+        "emailLabel": "Einladen an",
+        "emailPlaceholder": "Eine oder mehrere E-Mail-Adressen eingeben",
+        "groupLabel": "Einer Benutzergruppe hinzufügen",
+        "groupPlaceholder": "Benutzergruppe(n) suchen oder auswählen",
+        "successTitle": "Einladung gesendet!",
+        "successDescription": "{{email}} wurde eingeladen",
+        "errorGeneric": "Einladung konnte nicht gesendet werden"
+      },
+      "detail": {
+        "registeredNameLabel": "Registrierter Name",
+        "shortNameLabel": "Kurzname",
+        "contactEmailLabel": "Kontakt-E-Mail",
+        "domainLabel": "Domain",
+        "accountTypeLabel": "Kontotyp",
+        "inheritanceTitle": "Konfigurationsvererbung",
+        "inheritanceDescription": "Wenn aktiviert, verwendet der Mandant die Einstellungen Ihrer Organisation anstatt eigener Einstellungen."
+      },
+      "edit": {
+        "edit": "Mandanten bearbeiten",
+        "save": "Änderungen speichern",
+        "cancel": "Abbrechen",
+        "deleteButton": "Mandanten löschen",
+        "deleteTitle": "Mandant '{{name}}' löschen",
+        "deleteDescription": "Möchten Sie diesen Mandanten wirklich löschen?",
+        "deleteConfirmInputLabel": "Geben Sie \"{{name}}\" zur Bestätigung ein",
+        "deleteSuccess": "Mandant gelöscht",
+        "deleteSuccessDescription": "Mandant wurde gelöscht",
+        "deleteError": "Mandant konnte nicht gelöscht werden",
+        "deleting": "Löschen...",
+        "saveSuccess": "Mandant aktualisiert!",
+        "saveSuccessDescription": "Mandant erfolgreich aktualisiert",
+        "saveError": "Mandant konnte nicht aktualisiert werden"
+      }
+    },
+    "oauthApps": {
+      "title": "OAuth-Apps",
+      "subtitle": "Verwalten Sie OAuth-Zugangsdaten für Connectors und Aktionen. Als \u201eStandard\u201c markierte Apps werden automatisch für neue Verbindungen verwendet, sofern nicht überschrieben.",
+      "addButton": "OAuth-App hinzufügen",
+      "tabs": {
+        "connectors": "Connectors",
+        "toolsets": "Aktionen"
+      },
+      "typeSelector": {
+        "connectorLabel": "Connector-Typ",
+        "toolsetLabel": "Aktionstyp",
+        "loading": "Wird geladen…"
+      },
+      "scope": {
+        "team": "Team",
+        "personal": "Persönlich"
+      },
+      "loading": "Wird geladen…",
+      "search": {
+        "placeholder": "Apps suchen…"
+      },
+      "empty": {
+        "title": "Keine OAuth-Apps für {{typeLabel}}",
+        "connectorDescription": "Fügen Sie eine OAuth-App hinzu, damit Connectors dieses Typs sich mit Ihren Zugangsdaten authentifizieren können.",
+        "connectorDescriptionPersonal": "Fügen Sie eine OAuth-App hinzu, damit sich dieser Connector-Typ in Ihrem Namen authentifizieren kann.",
+        "toolsetDescription": "Fügen Sie eine OAuth-App hinzu, damit Aktionen dieses Typs sich mit Ihren Zugangsdaten authentifizieren können.",
+        "noSearchResults": "Keine OAuth-Apps entsprechen Ihrer Suche.",
+        "addButton": "OAuth-App hinzufügen"
+      },
+      "form": {
+        "titleCreate": "OAuth-App hinzufügen für {{typeName}}",
+        "titleEdit": "OAuth-App bearbeiten",
+        "redirectUriTitle": "Weiterleitungs-/Callback-URL",
+        "redirectUriDescription": "Registrieren Sie diese URL in der OAuth-App-Konfiguration Ihres Identitätsanbieters.",
+        "copied": "Kopiert!",
+        "copy": "Kopieren",
+        "nameLabel": "Name",
+        "namePlaceholder": "z. B. {{typeName}} Produktion",
+        "nameRequired": "Name ist erforderlich.",
+        "credentialsTitle": "Zugangsdaten",
+        "fieldRequired": "{{fieldName}} ist erforderlich.",
+        "settingsTitle": "Einstellungen",
+        "isDefaultLabel": "Als Standard festlegen",
+        "isDefaultDescription": "Diese App standardmäßig für neue Verbindungen dieses Typs verwenden.",
+        "allowChildOverrideLabel": "Untergeordnete Überschreibung erlauben",
+        "allowChildOverrideDescription": "Untergeordneten Organisationen erlauben, ihre eigene OAuth-App für diesen Typ zu konfigurieren.",
+        "cancelButton": "Abbrechen",
+        "createButton": "Erstellen",
+        "saveButton": "Änderungen speichern",
+        "savingLabel": "Wird gespeichert…",
+        "schemaError": "Schema für diesen Typ konnte nicht geladen werden.",
+        "genericError": "Ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut."
+      },
+      "delete": {
+        "title": "\u201e{{name}}\u201c l\u00f6schen?",
+        "message": "Diese OAuth-App wird dauerhaft gel\u00f6scht. Connector-Instanzen, die sie derzeit verwenden, funktionieren m\u00f6glicherweise nicht mehr.",
+        "confirmLabel": "L\u00f6schen",
+        "forceDeleteButton": "Erzwungen l\u00f6schen",
+        "forceTitle": "\u201e{{name}}\u201c erzwungen l\u00f6schen?",
+        "forceMessage": "Diese OAuth-App wird derzeit verwendet. Das erzwungene L\u00f6schen entfernt sie und kann bestehende Connector-Verbindungen, die darauf basieren, unterbrechen. Diese Aktion kann nicht r\u00fckg\u00e4ngig gemacht werden.",
+        "forceConfirmLabel": "Erzwungen l\u00f6schen",
+        "successMessage": "OAuth-App \u201e{{name}}\u201c wurde gel\u00f6scht."
+      },
+      "errors": {
+        "loadTypes": "Verfügbare OAuth-App-Typen konnten nicht geladen werden.",
+        "loadConnectors": "Connector-OAuth-Apps konnten nicht geladen werden.",
+        "loadToolsets": "Aktions-OAuth-Apps konnten nicht geladen werden.",
+        "deleteGeneric": "OAuth-App konnte nicht gelöscht werden."
+      }
     }
   },
   "filePreview": {
@@ -2247,9 +2679,11 @@
     "startMessageLabel": "Startnachricht",
     "modelSection": "Modell",
     "toolsetsSection": "Toolsets",
+    "mcpServersSection": "MCP-Server",
     "inputSection": "Eingabe",
     "responseSection": "Antwort",
     "connectModel": "Modell verbinden",
+    "usingOrgDefault": "Verwendet das Standardmodell der Organisation",
     "optional": "Optional",
     "connectChatInput": "Chat-Eingabe verbinden",
     "toChatOutput": "Zur Chat-Ausgabe",
@@ -2326,6 +2760,12 @@
     "toolsetCredentialsTitle": "Agenten-Toolset-Anmeldedaten",
     "toolsetCredentialsBadge": "Service-Agent",
     "toolsetCredentialsDesc": "Anmeldedaten gelten nur für diesen Agenten. Alle Aufrufe dieses Toolsets über den Agenten verwenden diese Anmeldedaten.",
+    "mcpCredentialsTitle": "MCP-Server-Anmeldedaten",
+    "mcpCredentialsDesc": "Authentifizieren Sie diesen MCP-Server, damit der Agent seine Tools nutzen kann.",
+    "mcpServerDefaultName": "MCP-Server",
+    "mcpAuthUpdatedNotify": "MCP-Authentifizierung aktualisiert.",
+    "mcpAuthSaveError": "MCP-Anmeldedaten konnten nicht gespeichert werden.",
+    "mcpAuthRemoveError": "MCP-Anmeldedaten konnten nicht entfernt werden.",
     "loadingSchema": "Schema wird geladen…",
     "fillRequiredFields": "Bitte füllen Sie alle Pflichtfelder aus.",
     "fieldRequired": "{{field}} ist erforderlich",
@@ -2426,6 +2866,8 @@
     "dropConnectorMustEnableApp": "Konnektor für \"{{app}}\" muss konfiguriert und für Agenten aktiviert sein.",
     "dropEnableConnectorToolGroup": "Aktivieren Sie diesen Konnektor für Agenten, bevor Sie seine Toolgruppe hinzufügen.",
     "dropOnlyOneToolGroup": "Nur eine {{type}}-Toolgruppe ist erlaubt. Entfernen Sie zuerst den vorhandenen Knoten.",
+    "dropDuplicateConnector": "{{name}} ist diesem Agenten bereits hinzugefügt",
+    "dropDuplicateKB": "{{name}} ist diesem Agenten bereits hinzugefügt",
     "toolsetStatusAuthenticated": "Authentifiziert und einsatzbereit",
     "toolsetStatusNeedsAuth": "Konfiguriert — zur Authentifizierung anmelden",
     "toolsetStatusRegistry": "Registry-Eintrag — nicht für Ihren Arbeitsbereich konfiguriert",
@@ -2612,6 +3054,16 @@
       "savingToastDescription": "Dies dauert einige Sekunden",
       "successToast": "Konto erfolgreich erstellt!",
       "failToast": "Registrierung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "createWorkspaceTitle": "Neuen Arbeitsbereich erstellen",
+      "createWorkspaceSubtitle": "Richten Sie einen neuen Arbeitsbereich für Ihre Organisation ein.",
+      "fullNameLabel": "Vollständiger Name*",
+      "fullNamePlaceholder": "Vollständigen Namen eingeben",
+      "verificationSentToast": "Posteingang prüfen",
+      "verificationSentDescription": "Ein Verifizierungslink wurde an Ihre E-Mail gesendet. Klicken Sie darauf, um Ihre Organisation zu aktivieren.",
+      "accountCreatedToast": "Konto erstellt",
+      "accountCreatedDescription": "Ihre Organisation ist bereit. Sie können sich jetzt anmelden.",
+      "emailFailedToast": "Organisation erstellt",
+      "emailFailedDescription": "Wir konnten die Verifizierungs-E-Mail nicht senden. Bitte wenden Sie sich an den Support.",
       "errors": {
         "firstNameRequired": "Vorname ist erforderlich.",
         "lastNameRequired": "Nachname ist erforderlich.",
@@ -2621,7 +3073,8 @@
         "passwordRequired": "Passwort ist erforderlich.",
         "confirmPasswordRequired": "Bitte bestätigen Sie Ihr Passwort.",
         "passwordsMismatch": "Passwörter stimmen nicht überein.",
-        "emailAlreadyExists": "Ein Konto mit dieser E-Mail-Adresse existiert bereits."
+        "emailAlreadyExists": "Ein Konto mit dieser E-Mail-Adresse existiert bereits.",
+        "fullNameRequired": "Vollständiger Name ist erforderlich."
       },
       "confirmDialog": {
         "title": "Wie PipesHub Berechtigungen zuweist",
@@ -2631,7 +3084,9 @@
         "emailNotePre": "Stellen Sie sicher, dass die E-Mail, mit der Sie sich registriert haben —",
         "emailNotePost": "— dieselbe ist, die in den Apps Ihrer Organisation verwendet wird, damit Ihre Berechtigungen korrekt erkannt werden.",
         "cancelButton": "Abbrechen",
-        "signUpButton": "Registrieren"
+        "signUpButton": "Registrieren",
+        "verificationNoteTitle": "Verifizierung erforderlich",
+        "verificationNoteBody": "Ein Verifizierungslink wird an die oben angegebene E-Mail gesendet. Ihre Organisation ist erst nach der Verifizierung zugänglich."
       }
     },
     "login": {
@@ -2641,7 +3096,11 @@
       "emailVerifyFailedDescription": "Der Link ist möglicherweise ungültig oder abgelaufen.",
       "samlErrorTitle": "Fehler bei der SAML-Anmeldung",
       "samlSignInFailedTitle": "Anmeldung fehlgeschlagen",
-      "samlSignInFailedDescription": "SAML SSO konnte nicht abgeschlossen werden. Bitte versuchen Sie es erneut."
+      "samlSignInFailedDescription": "SAML SSO konnte nicht abgeschlossen werden. Bitte versuchen Sie es erneut.",
+      "orgEmailVerifiedTitle": "Organisation verifiziert",
+      "orgEmailVerifiedDescription": "Ihre Organisation ist jetzt aktiv. Melden Sie sich an, um fortzufahren.",
+      "orgEmailVerifyFailedTitle": "Verifizierung fehlgeschlagen",
+      "orgEmailVerifyFailedDescription": "Der Link ist möglicherweise ungültig oder abgelaufen. Bitte registrieren Sie sich erneut."
     },
     "common": {
       "signIn": "Anmelden",

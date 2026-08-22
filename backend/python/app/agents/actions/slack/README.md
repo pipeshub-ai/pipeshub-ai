@@ -37,6 +37,7 @@ Here's what's available out of the box:
 | `get_channel_members` | Get members of a channel | `channel` |
 | `get_channel_members_by_id` | Get members by channel ID | `channel_id` |
 | `resolve_user` | Resolve user ID to display name and email | `user_id` |
+| `search_users` | Search users by name, returns ID and email | `name`, `include_bots (Optional)` |
 | `check_token_info` | Check token scopes/info | - |
 
 **Response:** Every tool returns two things - a boolean indicating success or failure, and a JSON string with the actual data or error details.

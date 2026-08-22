@@ -287,7 +287,7 @@ class TestGetEnvFallback:
         with patch("app.config.configuration_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)):
             result = svc._get_env_fallback("/services/qdrant")
 
-        assert result == {"host": "qdrant.local", "grpcPort": 6334, "apiKey": "my-key"}
+        assert result == {"host": "qdrant.local", "port": 6333, "grpcPort": 6334, "apiKey": "my-key"}
 
     def test_qdrant_fallback_defaults(self):
         svc = _build_service()
@@ -296,7 +296,7 @@ class TestGetEnvFallback:
         with patch("app.config.configuration_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)):
             result = svc._get_env_fallback("/services/qdrant")
 
-        assert result["grpcPort"] == 6333
+        assert result["grpcPort"] == 6334
         assert result["apiKey"] == "qdrant"
 
     def test_qdrant_fallback_no_host_returns_none(self):

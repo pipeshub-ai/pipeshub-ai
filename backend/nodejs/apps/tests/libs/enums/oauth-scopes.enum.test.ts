@@ -122,6 +122,32 @@ describe('OAuthScopeNames', () => {
     });
   });
 
+  // Agent Skills
+  describe('Agent Skills scopes', () => {
+    it('should have SKILL_READ as "skill:read"', () => {
+      expect(OAuthScopeNames.SKILL_READ).to.equal('skill:read');
+    });
+
+    it('should have SKILL_WRITE as "skill:write"', () => {
+      expect(OAuthScopeNames.SKILL_WRITE).to.equal('skill:write');
+    });
+  });
+
+  // MCP Servers
+  describe('MCP Servers scopes', () => {
+    it('should have MCP_READ as "mcp:read"', () => {
+      expect(OAuthScopeNames.MCP_READ).to.equal('mcp:read');
+    });
+
+    it('should have MCP_WRITE as "mcp:write"', () => {
+      expect(OAuthScopeNames.MCP_WRITE).to.equal('mcp:write');
+    });
+
+    it('should have MCP_DELETE as "mcp:delete"', () => {
+      expect(OAuthScopeNames.MCP_DELETE).to.equal('mcp:delete');
+    });
+  });
+
   // Connectors
   describe('Connectors scopes', () => {
     it('should have CONNECTOR_READ as "connector:read"', () => {
@@ -188,8 +214,8 @@ describe('OAuthScopeNames', () => {
 
   // Structural tests
   describe('structural checks', () => {
-    it('should have exactly 37 scope entries', () => {
-      expect(Object.keys(OAuthScopeNames)).to.have.lengthOf(37);
+    it('should have exactly 42 scope entries', () => {
+      expect(Object.keys(OAuthScopeNames)).to.have.lengthOf(42);
     });
 
     it('should contain only the expected keys', () => {
@@ -226,6 +252,13 @@ describe('OAuthScopeNames', () => {
         'AGENT_READ',
         'AGENT_WRITE',
         'AGENT_EXECUTE',
+        // Agent Skills
+        'SKILL_READ',
+        'SKILL_WRITE',
+        // MCP Servers
+        'MCP_READ',
+        'MCP_WRITE',
+        'MCP_DELETE',
         // Connectors
         'CONNECTOR_READ',
         'CONNECTOR_WRITE',

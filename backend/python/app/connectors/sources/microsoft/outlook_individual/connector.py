@@ -92,6 +92,7 @@ from app.connectors.sources.microsoft.common.outlook_constants import (
     OutlookSyncConfig,
     OutlookSyncPointKeys,
     OutlookThreadDetection,
+    normalize_conversation_index,
 )
 from app.models.entities import (
     AppUser,
@@ -1268,7 +1269,7 @@ class OutlookIndividualConnector(BaseConnector):
                 thread_id=message.conversation_id or '',
                 is_parent=False,
                 internet_message_id=message.internet_message_id or '',
-                conversation_index=message.conversation_index or '',
+                conversation_index=normalize_conversation_index(message.conversation_index),
             )
 
             # Apply indexing filter for mail records
@@ -1617,6 +1618,23 @@ class OutlookIndividualConnector(BaseConnector):
             self.logger.error(f"Error getting message {message_id}: {e}")
             return None
 
+    @staticmethod
+    def _decode_content_bytes(content_bytes: bytes | str) -> bytes:
+        """Decode Graph API content_bytes handling both old and new Kiota behavior.
+
+        Kiota ≤1.11.6 returned base64 text as UTF-8 bytes; ≥1.11.7 returns
+        properly decoded raw bytes. Detect by checking for non-ASCII content.
+        """
+        raw = content_bytes if isinstance(content_bytes, bytes) else content_bytes.encode("utf-8")
+        try:
+            raw.decode("ascii")
+        except UnicodeDecodeError:
+            return raw
+        try:
+            return base64.b64decode(raw, validate=False)
+        except Exception:
+            return raw
+
     async def _download_attachment_external(self, message_id: str, attachment_id: str) -> bytes:
         """Download attachment content for authenticated user using /me API."""
         try:
@@ -1648,8 +1666,7 @@ class OutlookIndividualConnector(BaseConnector):
             if not content_bytes:
                 return b''
 
-            # Decode base64 content
-            return base64.b64decode(content_bytes)
+            return self._decode_content_bytes(content_bytes)
 
         except Exception as e:
             self.logger.error(f"Error downloading attachment {attachment_id} for message {message_id}: {e}")

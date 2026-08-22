@@ -140,6 +140,7 @@ def connector():
         dep.on_record_content_update = AsyncMock()
         dep.on_updated_record_permissions = AsyncMock()
         dep.add_permission_to_record = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -346,7 +347,7 @@ class TestFetchPermissions:
             ],
         })
 
-        perms, is_fallback = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert len(perms) == 2
         assert perms[0].type == PermissionType.OWNER
         assert perms[1].type == PermissionType.READ
@@ -359,7 +360,7 @@ class TestFetchPermissions:
             ],
         })
 
-        perms, _ = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, _, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert len(perms) == 0
 
     async def test_403_creates_fallback_permission_for_file(self, connector):
@@ -372,7 +373,7 @@ class TestFetchPermissions:
 
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
 
-        perms, is_fallback = await connector._fetch_permissions(
+        perms, is_fallback, _ = await connector._fetch_permissions(
             "file-1", is_drive=False, user_email="user@example.com"
         )
         assert is_fallback is True
@@ -458,7 +459,7 @@ class TestTeamProcessDriveItem:
         )
 
         assert result is not None
-        assert result.record.is_shared_with_me is True
+        assert result.record.shared_with_me_record_group_ids == ["0S:reader@example.com"]
         # Shared-with-me files get external_record_group_id set to None
         assert result.record.external_record_group_id is None
 

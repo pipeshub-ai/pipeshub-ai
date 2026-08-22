@@ -87,10 +87,10 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     hidden: true,
   },
   {
-    key: 'ENABLE_CODE_EXECUTION',
-    label: 'Enable Code Execution',
+    key: 'ENABLE_MCP',
+    label: 'Enable MCP Servers',
     description:
-      'Let agents run Python/TypeScript and SQL queries in a sandboxed environment. Disable to hide coding_sandbox and database_sandbox tools from all agents.',
-    defaultEnabled: true,
+      'Allow agents to use MCP (Model Context Protocol) servers and show MCP server management in the UI. Disable to hide MCP everywhere and stop agents from loading MCP tools.',
+    defaultEnabled: false,
   },
 ];

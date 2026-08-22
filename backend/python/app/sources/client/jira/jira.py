@@ -151,10 +151,17 @@ class JiraClient(IClient):
     def __init__(self, client: JiraRESTClientViaUsernamePassword | JiraRESTClientViaApiKey | JiraRESTClientViaToken) -> None:
         """Initialize with a JIRA client object"""
         self.client = client
+        # Resolved Atlassian site web URL (e.g. https://company.atlassian.net), set by
+        # build_from_services so connectors don't re-resolve it. None on other paths.
+        self.site_url: Optional[str] = None
 
     def get_client(self) -> JiraRESTClientViaUsernamePassword | JiraRESTClientViaApiKey | JiraRESTClientViaToken:
         """Return the JIRA client object"""
         return self.client
+
+    def get_site_url(self) -> Optional[str]:
+        """Resolved Atlassian site web URL (set by build_from_services), or None."""
+        return self.site_url
 
     @staticmethod
     async def get_accessible_resources(token: str) -> list[AtlassianCloudResource]:
@@ -260,6 +267,10 @@ class JiraClient(IClient):
             # Extract configuration values
             auth_type = str(auth_config.get("authType") or "BEARER_TOKEN").strip().upper()
 
+            # Resolved Atlassian site web URL, surfaced on the returned client so the
+            # connector doesn't have to re-resolve it in init().
+            site_url = None
+
             # Create appropriate client based on auth type
             if auth_type == "API_TOKEN":
                 # Cloud: email + apiToken → Basic email:apiToken against site URL.
@@ -278,6 +289,7 @@ class JiraClient(IClient):
                     raise ValueError("API token is required for API_TOKEN auth")
 
                 base_url = base_url.rstrip("/")
+                site_url = base_url
                 if email:
                     client = JiraRESTClientViaApiKey(base_url, email, api_token)
                 else:
@@ -291,8 +303,9 @@ class JiraClient(IClient):
                     raise ValueError("Base URL is required for BASIC_AUTH")
                 if not username or not password:
                     raise ValueError("Username and password are required for BASIC_AUTH")
+                site_url = base_url.rstrip("/")
                 client = JiraRESTClientViaUsernamePassword(
-                    base_url.rstrip("/"), username, password, "Basic"
+                    site_url, username, password, "Basic"
                 )
 
             elif auth_type == "BEARER_TOKEN":  # Default to token auth
@@ -307,6 +320,7 @@ class JiraClient(IClient):
                 if not base_url:
                     raise ValueError("Jira base_url not found in configuration")
 
+                site_url = preferred_site
                 client = JiraRESTClientViaToken(base_url, token)
             elif auth_type == "OAUTH":
                 credentials_config = config.get("credentials", {}) or {}
@@ -335,11 +349,14 @@ class JiraClient(IClient):
                 if not base_url:
                     raise ValueError("Jira base_url not found in configuration")
 
+                site_url = preferred_site
                 client = JiraRESTClientViaToken(base_url, access_token)
             else:
                 raise ValueError(f"Invalid auth type: {auth_type}")
 
-            return cls(client)
+            jira_client = cls(client)
+            jira_client.site_url = (site_url or "").rstrip("/") or None
+            return jira_client
 
         except Exception as e:
             logger.error(f"Failed to build Jira client from services: {str(e)}")

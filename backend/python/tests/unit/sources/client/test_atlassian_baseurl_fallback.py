@@ -24,6 +24,11 @@ import pytest
 
 from app.sources.client.confluence.confluence import ConfluenceClient
 from app.sources.client.jira.jira import JiraClient
+from app.sources.external.common.atlassian import (
+    AtlassianCloudResource,
+    AtlassianMultiSiteError,
+    resolve_preferred_site_with_fallback,
+)
 
 
 @pytest.fixture
@@ -95,6 +100,23 @@ class TestJiraBuildFromServicesOAuthFallback:
         assert kwargs["connector_type"] == "Jira"
 
     @pytest.mark.asyncio
+    async def test_build_exposes_stripped_site_url(self, logger):
+        """build_from_services surfaces the resolved site URL on the client (trailing
+        slash stripped) so the connector reads it instead of re-resolving."""
+        config_service = AsyncMock()
+        instance_cfg = _oauth_instance_config(base_url="https://company.atlassian.net/")
+        with patch.object(
+            JiraClient, "_get_connector_config",
+            new_callable=AsyncMock, return_value=instance_cfg,
+        ), patch.object(
+            JiraClient, "get_jira_base_url",
+            new_callable=AsyncMock,
+            return_value="https://api.atlassian.com/ex/jira/cloud-x",
+        ):
+            client = await JiraClient.build_from_services(logger, config_service, "inst")
+        assert client.get_site_url() == "https://company.atlassian.net"
+
+    @pytest.mark.asyncio
     async def test_raises_when_no_oauth_config_id_and_no_baseurl(self, logger):
         """No baseUrl, no oauthConfigId, and token has zero accessible sites → error."""
         config_service = AsyncMock()
@@ -106,7 +128,7 @@ class TestJiraBuildFromServicesOAuthFallback:
             JiraClient, "get_accessible_resources",
             new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="no accessible Jira sites"):
+            with pytest.raises(ValueError, match="No accessible Atlassian sites"):
                 await JiraClient.build_from_services(logger, config_service, "inst")
 
     @pytest.mark.asyncio
@@ -125,7 +147,7 @@ class TestJiraBuildFromServicesOAuthFallback:
             JiraClient, "get_accessible_resources",
             new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="no accessible Jira sites"):
+            with pytest.raises(ValueError, match="No accessible Atlassian sites"):
                 await JiraClient.build_from_services(logger, config_service, "inst")
 
     @pytest.mark.asyncio
@@ -143,7 +165,7 @@ class TestJiraBuildFromServicesOAuthFallback:
             JiraClient, "get_accessible_resources",
             new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="no accessible Jira sites"):
+            with pytest.raises(ValueError, match="No accessible Atlassian sites"):
                 await JiraClient.build_from_services(logger, config_service, "inst")
 
 
@@ -216,7 +238,7 @@ class TestJiraBuildFromToolsetOAuthFallback:
             JiraClient, "get_accessible_resources",
             new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="no accessible Jira sites"):
+            with pytest.raises(ValueError, match="No accessible Atlassian sites"):
                 await JiraClient.build_from_toolset(toolset_cfg, logger, config_service=None)
 
     @pytest.mark.asyncio
@@ -233,7 +255,7 @@ class TestJiraBuildFromToolsetOAuthFallback:
             JiraClient, "get_accessible_resources",
             new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="no accessible Jira sites"):
+            with pytest.raises(ValueError, match="No accessible Atlassian sites"):
                 await JiraClient.build_from_toolset(toolset_cfg, logger, config_service)
 
     @pytest.mark.asyncio
@@ -254,7 +276,7 @@ class TestJiraBuildFromToolsetOAuthFallback:
             JiraClient, "get_accessible_resources",
             new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="no accessible Jira sites"):
+            with pytest.raises(ValueError, match="No accessible Atlassian sites"):
                 await JiraClient.build_from_toolset(toolset_cfg, logger, config_service)
 
 
@@ -320,7 +342,7 @@ class TestConfluenceBuildFromServicesOAuthFallback:
             ConfluenceClient, "get_accessible_resources",
             new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="no accessible Confluence sites"):
+            with pytest.raises(ValueError, match="No accessible Atlassian sites"):
                 await ConfluenceClient.build_from_services(logger, config_service, "inst")
 
     @pytest.mark.asyncio
@@ -338,7 +360,7 @@ class TestConfluenceBuildFromServicesOAuthFallback:
             ConfluenceClient, "get_accessible_resources",
             new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="no accessible Confluence sites"):
+            with pytest.raises(ValueError, match="No accessible Atlassian sites"):
                 await ConfluenceClient.build_from_services(logger, config_service, "inst")
 
 
@@ -422,7 +444,7 @@ class TestConfluenceBuildFromToolsetOAuthFallback:
             ConfluenceClient, "get_accessible_resources",
             new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="no accessible Confluence sites"):
+            with pytest.raises(ValueError, match="No accessible Atlassian sites"):
                 await ConfluenceClient.build_from_toolset(toolset_cfg, logger, config_service=None)
 
     @pytest.mark.asyncio
@@ -439,7 +461,7 @@ class TestConfluenceBuildFromToolsetOAuthFallback:
             ConfluenceClient, "get_accessible_resources",
             new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="no accessible Confluence sites"):
+            with pytest.raises(ValueError, match="No accessible Atlassian sites"):
                 await ConfluenceClient.build_from_toolset(toolset_cfg, logger, config_service)
 
     @pytest.mark.asyncio
@@ -460,5 +482,70 @@ class TestConfluenceBuildFromToolsetOAuthFallback:
             ConfluenceClient, "get_accessible_resources",
             new_callable=AsyncMock, return_value=[],
         ):
-            with pytest.raises(ValueError, match="no accessible Confluence sites"):
+            with pytest.raises(ValueError, match="No accessible Atlassian sites"):
                 await ConfluenceClient.build_from_toolset(toolset_cfg, logger, config_service)
+
+
+# ===========================================================================
+# resolve_preferred_site_with_fallback — single-site vs multi-site guard
+# ===========================================================================
+
+
+def _resource(url: str) -> AtlassianCloudResource:
+    return AtlassianCloudResource(id=f"cid-{url}", name=url, url=url, scopes=[])
+
+
+class TestResolvePreferredSiteFallback:
+    @pytest.mark.asyncio
+    async def test_preferred_site_short_circuits_without_fetching(self, logger):
+        """A configured baseUrl is returned as-is; accessible-resources is not called."""
+        get_resources = AsyncMock()
+        site = await resolve_preferred_site_with_fallback(
+            "https://company.atlassian.net", "tok", get_resources, logger, "Jira",
+        )
+        assert site == "https://company.atlassian.net"
+        get_resources.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_single_site_is_auto_selected(self, logger):
+        """Resource-restricted / SaaS happy path: exactly one site → use it."""
+        get_resources = AsyncMock(return_value=[_resource("https://only.atlassian.net")])
+        site = await resolve_preferred_site_with_fallback(
+            "", "tok", get_resources, logger, "Jira",
+        )
+        assert site == "https://only.atlassian.net"
+
+    @pytest.mark.asyncio
+    async def test_multiple_sites_without_baseurl_raises(self, logger):
+        """Ambiguous account-level token + no baseUrl → fail loudly, don't guess."""
+        get_resources = AsyncMock(return_value=[
+            _resource("https://a.atlassian.net"),
+            _resource("https://b.atlassian.net"),
+        ])
+        with pytest.raises(AtlassianMultiSiteError, match="resource-restricted"):
+            await resolve_preferred_site_with_fallback(
+                "", "tok", get_resources, logger, "Jira",
+            )
+
+    @pytest.mark.asyncio
+    async def test_duplicate_same_site_is_auto_selected(self, logger):
+        """Atlassian may return the same cloud site twice; treat as one site."""
+        dup = AtlassianCloudResource(
+            id="c7f37664-a798-44ef-a525-ecacfeb1087d",
+            name="pipeshub",
+            url="https://pipeshub.atlassian.net",
+            scopes=[],
+        )
+        get_resources = AsyncMock(return_value=[dup, dup])
+        site = await resolve_preferred_site_with_fallback(
+            "", "tok", get_resources, logger, "Confluence",
+        )
+        assert site == "https://pipeshub.atlassian.net"
+
+    @pytest.mark.asyncio
+    async def test_zero_sites_without_baseurl_raises(self, logger):
+        get_resources = AsyncMock(return_value=[])
+        with pytest.raises(ValueError, match="No accessible Atlassian sites"):
+            await resolve_preferred_site_with_fallback(
+                "", "tok", get_resources, logger, "Confluence",
+            )

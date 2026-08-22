@@ -1121,7 +1121,7 @@ describe('IamService - additional coverage', () => {
   describe('checkAdminUser - real invocations', () => {
     it('should return statusCode and data on 200 response', async () => {
       nock(IAM_BACKEND)
-        .get('/api/v1/users/u1/adminCheck')
+        .get('/api/v1/users/internal/u1/adminCheck')
         .reply(200, { isAdmin: true })
 
       const result = await iamService.checkAdminUser('u1', 'token')
@@ -1144,7 +1144,7 @@ describe('IamService - additional coverage', () => {
 
     it('should throw AxiosError on failure', async () => {
       nock(IAM_BACKEND)
-        .get('/api/v1/users/u1/adminCheck')
+        .get('/api/v1/users/internal/u1/adminCheck')
         .reply(500, { message: 'Admin check failed' }, { 'Content-Type': 'application/json' })
 
       try {
@@ -1161,7 +1161,7 @@ describe('IamService - additional coverage', () => {
 
     it('should throw AxiosError with default message', async () => {
       nock(IAM_BACKEND)
-        .get('/api/v1/users/u1/adminCheck')
+        .get('/api/v1/users/internal/u1/adminCheck')
         .reply(500, {}, { 'Content-Type': 'application/json' })
 
       try {

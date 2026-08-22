@@ -34,6 +34,8 @@ import {
   setMetricsCollectionRemoteServer,
   getAvailableModelsByType,
   addAIModelProvider,
+  prepareEmbeddingModel,
+  streamEmbeddingDownloadProgress,
   updateAIModelProvider,
   deleteAIModelProvider,
   updateDefaultAIModel,
@@ -49,6 +51,7 @@ import {
   getPlatformSettings,
   setPlatformSettings,
   getAvailablePlatformFeatureFlags,
+  getEffectivePlatformFeatureFlags,
   getCustomSystemPrompt,
   setCustomSystemPrompt,
   getWebSearchProviders,
@@ -347,6 +350,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
     getSmtpConfig(keyValueStoreService),
   );
 
+  router.get(
+    '/internal/smtpConfig',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    getSmtpConfig(keyValueStoreService),
+  );
+
   // auth config routes
   router.get(
     '/authConfig/azureAd',
@@ -484,6 +493,14 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
     getAvailablePlatformFeatureFlags(),
+  );
+
+  // Effective feature flag values — every authenticated user (not just admins)
+  // needs these to decide whether to render flag-gated UI (e.g. MCP).
+  router.get(
+    '/platform/feature-flags/effective',
+    authMiddleware.authenticate,
+    getEffectivePlatformFeatureFlags(keyValueStoreService),
   );
 
   // Slack Bot configuration
@@ -824,6 +841,23 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
 
   /**
+   * @route GET /api/v1/configurationManager/ai-models/download-progress
+   * @desc Server-Sent Events stream of embedding model download progress.
+   * @access Private (admin)
+   * @query {string} model - Model name being downloaded
+   * NOTE: Must be registered before /ai-models/:modelType, otherwise Express
+   * matches "download-progress" as the :modelType param and the enum
+   * validator on that route rejects it with a 400.
+   */
+  router.get(
+    '/ai-models/download-progress',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    streamEmbeddingDownloadProgress(),
+  );
+
+  /**
    * @route GET /api/v1/configurationManager/ai-models/:modelType
    * @desc Get all AI models of a specific type
    * @access Private (admin)
@@ -865,6 +899,21 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     ValidationMiddleware.validate(addProviderRequestSchema),
     addAIModelProvider(keyValueStoreService, aiConfigEventService, appConfig),
+  );
+
+  /**
+   * @route POST /api/v1/configurationManager/ai-models/prepare-model
+   * @desc Kick off a non-blocking download/load of a local embedding model
+   *       on the embedding server. Returns immediately; poll
+   *       /ai-models/download-progress for status.
+   * @access Private (admin)
+   */
+  router.post(
+    '/ai-models/prepare-model',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    prepareEmbeddingModel(),
   );
 
   /**

@@ -3,7 +3,9 @@ import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
-import { PIPESHUB_CHAT_MODE } from '../constants/constants';
+import { PIPESHUB_CHAT_MODE, REASONING_EFFORT_VALUES } from '../constants/constants';
+
+export { REASONING_EFFORT_VALUES };
 
 // ---------------------------------------------------------------------------
 // Primitive validators
@@ -16,13 +18,7 @@ const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
 const objectId = (label: string) =>
   z.string().regex(OBJECT_ID_REGEX, { message: `Invalid ${label} format` });
 
-/** Allow UUID or Collection app ID: knowledgeBase_<orgId> */
-const appOrKbIdSchema = z.string().refine(
-  (val) =>
-    z.string().uuid().safeParse(val).success ||
-    /^knowledgeBase_[a-zA-Z0-9_-]+$/.test(val),
-  { message: 'Must be a valid UUID or knowledgeBase_<orgId> format' },
-);
+const appOrKbIdSchema = z.string().uuid({ message: 'Must be a valid UUID' });
 
 /** Common pagination preprocessor: coerce string -> number with bounds. */
 const pageSchema = z.preprocess(
@@ -100,9 +96,10 @@ const modelFieldsSchema = {
     .string()
     .min(1, { message: 'Model friendly name is required' })
     .optional(),
+  reasoningEffort: z.enum(REASONING_EFFORT_VALUES).optional(),
 };
 
-/** Execution-context fields: timezone, currentTime, tools. */
+/** Execution-context fields shared by every stream/regenerate body schema. */
 const contextFieldsSchema = {
   timezone: z
     .string()
@@ -116,6 +113,25 @@ const contextFieldsSchema = {
     })
     .optional(),
   tools: z.array(z.string().min(1)).optional(),
+  // AG-UI is the only supported wire protocol (see
+  // utils/agui.ts::resolveProtocol, which always resolves to `agui`
+  // regardless of this field). Kept accepted-but-inert for callers still
+  // sending it; any value other than `agui` is rejected rather than
+  // silently downgrading a caller to a protocol that no longer exists.
+  // Must be declared here or Zod's default unknown-key stripping removes it
+  // from req.body before the controller can read it — the validation
+  // middleware replaces req.body with the parsed result.
+  protocol: z.enum(['agui']).optional(),
+  // Per-request agent capability toggles. Subject to the same declare-or-be-
+  // stripped constraint as `protocol` above. Python treats a missing flag as
+  // enabled, so partial objects are valid.
+  agentCapabilities: z
+    .object({
+      internalSearch: z.boolean().optional(),
+      webSearch: z.boolean().optional(),
+      deepSearch: z.boolean().optional(),
+    })
+    .optional(),
 };
 
 /** Title body shared by conversation/agent rename endpoints. */
@@ -183,6 +199,23 @@ const enterpriseSearchCreateBodySchema = z.object({
 
 export const enterpriseSearchCreateSchema = z.object({
   body: enterpriseSearchCreateBodySchema,
+});
+
+/** Public `/conversations/stream` modes. The route always requires an explicit mode. */
+export const UNIVERSAL_STREAM_CHAT_MODES = [
+  'agent',
+  'internal_search',
+  'web_search',
+] as const;
+
+const universalStreamChatModeSchema = z.enum(UNIVERSAL_STREAM_CHAT_MODES, {
+  errorMap: () => ({ message: 'Invalid chat mode' }),
+});
+
+export const enterpriseSearchStreamCreateSchema = z.object({
+  body: enterpriseSearchCreateBodySchema.extend({
+    chatMode: universalStreamChatModeSchema,
+  }),
 });
 
 // ---------------------------------------------------------------------------
@@ -281,21 +314,26 @@ export const addMessageParamsSchema = z.object({
   body: addMessageBodySchema,
 });
 
-/** Agent follow-up stream chat modes (matches OpenAPI AgentAddMessageStreamRequest). */
-export const AGENT_CHAT_MODES = ['auto', 'quick', 'verification', 'deep'] as const;
+export const addMessageStreamParamsSchema = z.object({
+  params: z.object(conversationIdParam),
+  body: addMessageBodySchema.extend({
+    chatMode: universalStreamChatModeSchema,
+  }),
+});
 
-const agentChatModeSchema = z
-  .enum(AGENT_CHAT_MODES, {
-    errorMap: () => ({ message: 'Invalid chat mode' }),
-  })
-  .optional();
+/** Public `/agents/{agentKey}/conversations/...` streams support quick mode only. */
+export const AGENT_CHAT_MODES = ['quick'] as const;
+
+const agentChatModeSchema = z.literal('quick', {
+  errorMap: () => ({ message: 'Invalid chat mode' }),
+});
 
 const agentAddMessageBodySchema = addMessageBodySchema.extend({
-  chatMode: agentChatModeSchema 
+  chatMode: agentChatModeSchema,
 });
 
 const agentStreamCreateBodySchema = enterpriseSearchCreateBodySchema.extend({
-  chatMode: agentChatModeSchema, // TODO: remove this
+  chatMode: agentChatModeSchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -337,10 +375,12 @@ export const AGENT_CREATE_TOOLSET_NAMES = [
   'calendar',
   'clickup',
   'confluence',
+  'confluencedatacenter',
   'drive',
   'github',
   'gmail',
   'jira',
+  'jiradatacenter',
   'lumos',
   'mariadb',
   'onedrive',
@@ -367,11 +407,75 @@ const agentToolsetSchema = z
     tools: z.array(agentToolRefSchema).optional(),
   });
 
+/**
+ * One attached MCP server instance reference (see Python's `_parse_mcp_servers`,
+ * `api/routes/agent.py`) — no secrets, just enough to resolve the instance +
+ * an optional stored tool selection at chat time.
+ */
+const agentMcpServerSchema = z.object({
+  instanceId: z
+    .string()
+    .trim()
+    .min(1, { message: 'MCP server instanceId is required' })
+    .max(256),
+  name: z
+    .string()
+    .trim()
+    .min(1, { message: 'MCP server name is required' })
+    .max(200),
+  displayName: z.string().max(200).optional(),
+  typeId: z.string().max(200).optional(),
+  tools: z.array(agentToolRefSchema).max(200).optional(),
+});
+
+/**
+ * `mcpServers` on create/update agent payloads. Rejects two attached
+ * instances sharing the same `typeId`, mirroring Python's `_parse_mcp_servers`
+ * duplicate-type rejection — instances with no `typeId` (custom/unregistered
+ * servers) are exempt, same as the Python side.
+ */
+const agentMcpServersSchema = z
+  .array(agentMcpServerSchema)
+  .max(50)
+  .optional()
+  .superRefine((servers, ctx) => {
+    if (!servers) {
+      return;
+    }
+    const seenTypeIds = new Set<string>();
+    servers.forEach((server, index) => {
+      if (!server.typeId) {
+        return;
+      }
+      if (seenTypeIds.has(server.typeId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate MCP server type "${server.typeId}" — only one instance per server type is allowed`,
+          path: [index, 'typeId'],
+        });
+        return;
+      }
+      seenTypeIds.add(server.typeId);
+    });
+  });
+
 const agentKnowledgeSchema = z
   .object({
     connectorId: z.string().trim().min(1),
     filters: z.union([z.record(z.unknown()), z.string(), z.array(z.unknown())]).optional(),
   });
+
+const agentSkillSchema = z
+  .object({
+    name: z
+      .string()
+      .min(1, { message: 'Skill name is required' })
+      .max(64, { message: 'Skill name must be 64 characters or fewer' })
+      .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, {
+        message: 'Skill name must be lowercase alphanumeric with single hyphens',
+      }),
+  })
+  .strict();
 
 const agentModelEntrySchema = z.union([
   z.string().trim().min(1),
@@ -395,8 +499,6 @@ const agentWebSearchSchema = z.union([
     }),
 ]);
 
-const AGENT_MODEL_REQUIRED_MESSAGE =
-  'At least one AI model is required. Please add a model to your configuration.';
 const AGENT_REASONING_MODEL_REQUIRED_MESSAGE =
   'At least one reasoning model is required. Please add a reasoning model to your configuration.';
 
@@ -411,13 +513,16 @@ const hasReasoningModel = (
       model.isReasoning === true,
   );
 
-const agentModelsSchema = z
+/**
+ * Agent model list is optional: an agent with no models configured falls back
+ * to the organization's default LLM at execution time. When models ARE
+ * provided, at least one must be a reasoning model so reasoning-effort
+ * settings behave predictably.
+ */
+const agentModelsOptionalSchema = z
   .array(agentModelEntrySchema)
-  .min(1, {
-    message: AGENT_MODEL_REQUIRED_MESSAGE,
-  })
   .superRefine((models, ctx) => {
-    if (!hasReasoningModel(models)) {
+    if (models.length > 0 && !hasReasoningModel(models)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: AGENT_REASONING_MODEL_REQUIRED_MESSAGE,
@@ -432,7 +537,11 @@ const createAgentBodySchema = z
       .trim()
       .min(1, { message: 'Name is required' })
       .max(200, { message: 'Name must be less than 200 characters' }),
-    models: agentModelsSchema,
+    /**
+     * Optional: an agent created without models uses the organization's
+     * default LLM at chat time (see get_llm_for_chat fallback chain).
+     */
+    models: agentModelsOptionalSchema.optional().default([]),
     description: agentLongTextSchema.optional(),
     startMessage: agentLongTextSchema.optional(),
     systemPrompt: agentLongTextSchema.optional(),
@@ -441,8 +550,14 @@ const createAgentBodySchema = z
     shareWithOrg: z.boolean().optional(),
     isServiceAccount: z.boolean().optional(),
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
+    mcpServers: agentMcpServersSchema,
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
+    skills: z.array(agentSkillSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
+    /** Agent-level fallback applied when a chat request omits its own reasoningEffort. */
+    defaultReasoningEffort: z
+      .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
+      .optional(),
   });
 
 export const createAgentSchema = z.object({
@@ -461,7 +576,9 @@ const updateAgentBodySchema = z
       .min(1, { message: 'Name is required' })
       .max(200, { message: 'Name must be less than 200 characters' })
       .optional(),
-    models: agentModelsSchema.optional(),
+    /** Optional; when present, an empty array clears the agent's models
+     * and reverts it to the organization default LLM. */
+    models: agentModelsOptionalSchema.optional(),
     description: agentLongTextSchema.optional(),
     startMessage: agentLongTextSchema.optional(),
     systemPrompt: agentLongTextSchema.optional(),
@@ -470,8 +587,13 @@ const updateAgentBodySchema = z
     shareWithOrg: z.boolean().optional(),
     isServiceAccount: z.boolean().optional(),
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
+    mcpServers: agentMcpServersSchema,
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
+    skills: z.array(agentSkillSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
+    defaultReasoningEffort: z
+      .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
+      .optional(),
   });
 
 export const updateAgentSchema = z.object({
@@ -572,7 +694,9 @@ export const regenerateAgentAnswersParamsSchema = z.object({
     ...conversationIdParam,
     ...messageIdParam,
   }),
-  body: regenerateBodySchema,
+  body: regenerateBodySchema.extend({
+    chatMode: agentChatModeSchema,
+  }),
 });
 
 // ---------------------------------------------------------------------------

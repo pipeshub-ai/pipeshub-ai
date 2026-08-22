@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -27,7 +29,7 @@ def _make_processor():
          patch("app.modules.parsers.pdf.docling_processor.PdfFormatOption"), \
          patch("app.modules.parsers.pdf.docling_processor.WordFormatOption"), \
          patch("app.modules.parsers.pdf.docling_processor.MarkdownFormatOption"), \
-         patch("app.modules.parsers.pdf.docling_processor.PdfPipelineOptions"), \
+         patch("app.modules.parsers.pdf.docling_processor.ThreadedPdfPipelineOptions"), \
          patch("app.modules.parsers.pdf.docling_processor.PyPdfiumDocumentBackend"):
         from app.modules.parsers.pdf.docling_processor import DoclingProcessor
         processor = DoclingProcessor(_make_mock_logger(), _make_mock_config())
@@ -53,7 +55,7 @@ class TestDoclingProcessorInit:
              patch("app.modules.parsers.pdf.docling_processor.PdfFormatOption"), \
              patch("app.modules.parsers.pdf.docling_processor.WordFormatOption"), \
              patch("app.modules.parsers.pdf.docling_processor.MarkdownFormatOption"), \
-             patch("app.modules.parsers.pdf.docling_processor.PdfPipelineOptions"), \
+             patch("app.modules.parsers.pdf.docling_processor.ThreadedPdfPipelineOptions"), \
              patch("app.modules.parsers.pdf.docling_processor.PyPdfiumDocumentBackend"):
             from app.modules.parsers.pdf.docling_processor import DoclingProcessor
             config = {"ocr": True, "model": "fast"}
@@ -108,7 +110,7 @@ class TestDoclingProcessorParseDocument:
 
         with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 1), \
              patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
-            with pytest.raises(ValueError, match="Failed to parse document"):
+            with pytest.raises(DocumentProcessingError, match="Failed to parse document"):
                 await processor.parse_document("test.pdf", b"bad content")
 
     @pytest.mark.asyncio
@@ -191,7 +193,9 @@ class TestDoclingProcessorCreateBlocks:
             mock_doc = MagicMock()
             result = await processor.create_blocks(mock_doc)
             assert result is mock_blocks_container
-            mock_converter_instance.convert.assert_awaited_once_with(mock_doc, page_number=None)
+            mock_converter_instance.convert.assert_awaited_once_with(
+                mock_doc, page_number=None, skip_table_enrichment=False
+            )
 
     @pytest.mark.asyncio
     async def test_create_blocks_with_page_number(self):
@@ -206,7 +210,27 @@ class TestDoclingProcessorCreateBlocks:
 
             mock_doc = MagicMock()
             result = await processor.create_blocks(mock_doc, page_number=5)
-            mock_converter_instance.convert.assert_awaited_once_with(mock_doc, page_number=5)
+            mock_converter_instance.convert.assert_awaited_once_with(
+                mock_doc, page_number=5, skip_table_enrichment=False
+            )
+
+    @pytest.mark.asyncio
+    async def test_create_blocks_with_skip_table_enrichment(self):
+        """create_blocks passes skip_table_enrichment to converter."""
+        processor = _make_processor()
+        mock_blocks_container = MagicMock()
+
+        with patch("app.modules.parsers.pdf.docling_processor.DoclingDocToBlocksConverter") as MockBlockConverter:
+            mock_converter_instance = MagicMock()
+            mock_converter_instance.convert = AsyncMock(return_value=mock_blocks_container)
+            MockBlockConverter.return_value = mock_converter_instance
+
+            mock_doc = MagicMock()
+            result = await processor.create_blocks(mock_doc, skip_table_enrichment=True)
+            mock_converter_instance.convert.assert_awaited_once_with(
+                mock_doc, page_number=None, skip_table_enrichment=True
+            )
+            assert result is mock_blocks_container
 
     @pytest.mark.asyncio
     async def test_create_blocks_passes_logger_and_config(self):
@@ -236,78 +260,3 @@ class TestDoclingProcessorCreateBlocks:
             await processor.create_blocks(MagicMock())
             call_kwargs = mock_converter_instance.convert.call_args
             assert call_kwargs.kwargs.get("page_number") is None
-
-
-# ---------------------------------------------------------------------------
-# DoclingProcessor.load_document — Legacy combined method
-# ---------------------------------------------------------------------------
-class TestDoclingProcessorLoadDocument:
-    """Tests for DoclingProcessor.load_document() — legacy combined method."""
-
-    @pytest.mark.asyncio
-    async def test_load_document_calls_parse_then_create(self):
-        """load_document calls parse_document then create_blocks."""
-        processor = _make_processor()
-        mock_doc = MagicMock()
-        mock_blocks = MagicMock()
-
-        processor.parse_document = AsyncMock(return_value=mock_doc)
-        processor.create_blocks = AsyncMock(return_value=mock_blocks)
-
-        result = await processor.load_document("test.pdf", b"content")
-        processor.parse_document.assert_awaited_once_with("test.pdf", b"content")
-        processor.create_blocks.assert_awaited_once_with(mock_doc, page_number=None)
-        assert result is mock_blocks
-
-    @pytest.mark.asyncio
-    async def test_load_document_with_page_number(self):
-        """load_document passes page_number to create_blocks."""
-        processor = _make_processor()
-        mock_doc = MagicMock()
-        mock_blocks = MagicMock()
-
-        processor.parse_document = AsyncMock(return_value=mock_doc)
-        processor.create_blocks = AsyncMock(return_value=mock_blocks)
-
-        result = await processor.load_document("test.pdf", b"content", page_number=3)
-        processor.create_blocks.assert_awaited_once_with(mock_doc, page_number=3)
-
-    @pytest.mark.asyncio
-    async def test_load_document_propagates_parse_error(self):
-        """If parse_document fails, load_document propagates the error."""
-        processor = _make_processor()
-        processor.parse_document = AsyncMock(
-            side_effect=ValueError("Failed to parse document: failure")
-        )
-        processor.create_blocks = AsyncMock()
-
-        with pytest.raises(ValueError, match="Failed to parse"):
-            await processor.load_document("bad.pdf", b"bad content")
-        processor.create_blocks.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_load_document_propagates_create_blocks_error(self):
-        """If create_blocks fails, load_document propagates the error."""
-        processor = _make_processor()
-        mock_doc = MagicMock()
-
-        processor.parse_document = AsyncMock(return_value=mock_doc)
-        processor.create_blocks = AsyncMock(
-            side_effect=RuntimeError("Block creation failed")
-        )
-
-        with pytest.raises(RuntimeError, match="Block creation failed"):
-            await processor.load_document("test.pdf", b"content")
-
-    @pytest.mark.asyncio
-    async def test_load_document_default_page_number_none(self):
-        """Default page_number for load_document is None."""
-        processor = _make_processor()
-        mock_doc = MagicMock()
-
-        processor.parse_document = AsyncMock(return_value=mock_doc)
-        processor.create_blocks = AsyncMock(return_value=MagicMock())
-
-        await processor.load_document("test.pdf", b"content")
-        call_kwargs = processor.create_blocks.call_args
-        assert call_kwargs.kwargs.get("page_number") is None

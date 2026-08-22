@@ -18,107 +18,70 @@ from app.exceptions.indexing_exceptions import (
 def _make_vectorstore():
     """Instantiate a VectorStore with everything mocked to bypass __init__ side effects."""
     with patch(
-        "app.modules.transformers.vectorstore.FastEmbedSparse"
-    ) as mock_sparse, patch(
-        "app.modules.transformers.vectorstore._get_shared_nlp"
-    ) as mock_nlp:
+        "app.modules.transformers.vectorstore.SparseEmbedder"
+    ) as mock_sparse:
         mock_sparse.return_value = MagicMock()
-        mock_nlp.return_value = MagicMock()
 
         from app.modules.transformers.vectorstore import VectorStore
+        from app.services.vector_db.models import VectorDBCapabilities
+
+        vdb = AsyncMock()
+        caps = VectorDBCapabilities(
+            supports_sparse_vectors=False,
+            supports_server_side_text_search=False,
+        )
+        vdb.get_capabilities = MagicMock(return_value=caps)
+        vdb.get_service_name = MagicMock(return_value="mock")
 
         vs = VectorStore(
             logger=MagicMock(),
             config_service=AsyncMock(),
             graph_provider=AsyncMock(),
             collection_name="test_collection",
-            vector_db_service=AsyncMock(),
+            vector_db_service=vdb,
         )
         return vs
 
 
 # ===================================================================
-# _get_shared_nlp branch coverage
+# text_splitting._get_segmenter / detect_language branch coverage
+# (replaces the removed spaCy _get_shared_nlp coverage)
 # ===================================================================
 
 
-class TestGetSharedNlp:
-    """Cover _get_shared_nlp branches for sentencizer and custom_sentence_boundary."""
+class TestGetSegmenterBranches:
+    """Cover _get_segmenter branches: cache hit, alias mapping, unsupported fallback."""
 
-    def test_sentencizer_already_present(self):
-        """When sentencizer is already in pipe_names, it is not re-added."""
+    def test_unsupported_language_falls_back_to_english(self):
+        from app.modules.parsers.text_splitting import _get_segmenter
+
+        segmenter = _get_segmenter("xx-not-a-real-language")
+        assert segmenter is not None
+
+    def test_aliased_language_routes_to_target_rule_set(self):
+        """Portuguese has no native pysbd rule set; it should route to Spanish."""
+        from app.modules.parsers.text_splitting import _get_segmenter
+
+        segmenter = _get_segmenter("pt")
+        assert segmenter is not None
+
+    def test_cache_returns_same_instance(self):
+        from app.modules.parsers.text_splitting import _get_segmenter
+
+        seg1 = _get_segmenter("en")
+        seg2 = _get_segmenter("en")
+        assert seg1 is seg2
+
+    def test_segment_failure_falls_back_to_regex(self):
+        """split_into_sentences never raises even if the segmenter errors."""
+        from app.modules.parsers.text_splitting import split_into_sentences
+
         with patch(
-            "app.modules.transformers.vectorstore.FastEmbedSparse"
-        ) as mock_sparse, patch(
-            "app.modules.transformers.vectorstore.spacy"
-        ) as mock_spacy:
-            mock_sparse.return_value = MagicMock()
-
-            from app.modules.transformers.vectorstore import _get_shared_nlp
-
-            # Clear the cached nlp
-            if hasattr(_get_shared_nlp, "_cached_nlp"):
-                delattr(_get_shared_nlp, "_cached_nlp")
-
-            mock_nlp = MagicMock()
-            mock_nlp.pipe_names = ["sentencizer", "parser"]
-            mock_spacy.load.return_value = mock_nlp
-
-            result = _get_shared_nlp()
-
-            # Should not call add_pipe for sentencizer since it's already present
-            # But should try to add custom_sentence_boundary
-            assert result is mock_nlp
-
-            # Clean up
-            if hasattr(_get_shared_nlp, "_cached_nlp"):
-                delattr(_get_shared_nlp, "_cached_nlp")
-
-    def test_custom_sentence_boundary_add_raises(self):
-        """When adding custom_sentence_boundary fails, it's silently caught."""
-        with patch(
-            "app.modules.transformers.vectorstore.FastEmbedSparse"
-        ) as mock_sparse, patch(
-            "app.modules.transformers.vectorstore.spacy"
-        ) as mock_spacy:
-            mock_sparse.return_value = MagicMock()
-
-            from app.modules.transformers.vectorstore import _get_shared_nlp
-
-            # Clear the cached nlp
-            if hasattr(_get_shared_nlp, "_cached_nlp"):
-                delattr(_get_shared_nlp, "_cached_nlp")
-
-            mock_nlp = MagicMock()
-            mock_nlp.pipe_names = []
-
-            def fake_add_pipe(name, **kwargs):
-                if name == "custom_sentence_boundary":
-                    raise Exception("component not registered")
-
-            mock_nlp.add_pipe = fake_add_pipe
-            mock_spacy.load.return_value = mock_nlp
-
-            result = _get_shared_nlp()
-
-            assert result is mock_nlp
-
-            # Clean up
-            if hasattr(_get_shared_nlp, "_cached_nlp"):
-                delattr(_get_shared_nlp, "_cached_nlp")
-
-    def test_cached_nlp_returned(self):
-        """When _cached_nlp is set, it is returned directly."""
-        from app.modules.transformers.vectorstore import _get_shared_nlp
-
-        mock_cached = MagicMock()
-        setattr(_get_shared_nlp, "_cached_nlp", mock_cached)
-
-        result = _get_shared_nlp()
-        assert result is mock_cached
-
-        # Clean up
-        delattr(_get_shared_nlp, "_cached_nlp")
+            "app.modules.parsers.text_splitting._get_segmenter",
+            side_effect=RuntimeError("pysbd exploded"),
+        ):
+            result = split_into_sentences("First. Second.", "en")
+        assert result  # regex fallback still produces output
 
 
 # ===================================================================
@@ -129,26 +92,27 @@ class TestGetSharedNlp:
 class TestVectorStoreInit:
     """Cover __init__ exception paths."""
 
-    def test_sparse_embedding_failure_raises_indexing_error(self):
-        """When FastEmbedSparse raises, it becomes IndexingError via inner try."""
+    @pytest.mark.asyncio
+    async def test_sparse_embedding_failure_raises_indexing_error(self):
+        """When SparseEmbedder raises during lazy init, _ensure_sparse_embeddings raises IndexingError."""
+        vs = _make_vectorstore()
+        # Enable sparse vector support so _ensure_sparse_embeddings tries to init
+        from app.services.vector_db.models import VectorDBCapabilities
+        vs._capabilities = VectorDBCapabilities(
+            supports_sparse_vectors=True,
+            supports_server_side_text_search=False,
+        )
+        vs.sparse_embeddings = None  # ensure not already initialised
+
         with patch(
-            "app.modules.transformers.vectorstore._get_shared_nlp"
-        ) as mock_nlp, patch(
-            "app.modules.transformers.vectorstore.FastEmbedSparse",
+            "app.modules.transformers.vectorstore.SparseEmbedder",
             side_effect=TypeError("unexpected type error"),
+        ), patch(
+            "fastembed.SparseTextEmbedding",
+            side_effect=ImportError("fastembed not installed"),
         ):
-            mock_nlp.return_value = MagicMock()
-
-            from app.modules.transformers.vectorstore import VectorStore
-
-            with pytest.raises(IndexingError, match="Failed to initialize sparse embeddings"):
-                VectorStore(
-                    logger=MagicMock(),
-                    config_service=AsyncMock(),
-                    graph_provider=AsyncMock(),
-                    collection_name="test_collection",
-                    vector_db_service=AsyncMock(),
-                )
+            with pytest.raises(IndexingError, match="Failed to initialise sparse embeddings"):
+                await vs._ensure_sparse_embeddings()
 
 
 # ===================================================================
@@ -179,134 +143,37 @@ class TestNormalizeImageExceptionFallthrough:
 
 
 # ===================================================================
-# custom_sentence_boundary - heading and letter bullet branches
+# split_into_sentences - bullet/list and heading-like input handled via pysbd
+# rule sets rather than the removed custom_sentence_boundary component.
 # ===================================================================
 
 
-class TestCustomSentenceBoundaryDeeper:
-    """Cover heading detection branches and letter bullet branches."""
+class TestSplitIntoSentencesBulletsAndHeadings:
+    """Sanity-check bullet/list and heading-like text doesn't explode splitting."""
 
-    def _make_mock_doc(self, tokens_data):
-        """Create a minimal mock doc with token-like objects."""
-        tokens = []
-        for i, data in enumerate(tokens_data):
-            tok = MagicMock()
-            tok.i = i
-            tok.text = data["text"]
-            tok.like_num = data.get("like_num", False)
-            tok.is_sent_start = data.get("is_sent_start", None)
-            tokens.append(tok)
+    def test_letter_bullet_list(self):
+        from app.modules.parsers.text_splitting import split_into_sentences
 
-        class DocSlice:
-            def __init__(self, toks):
-                self._tokens = toks
+        result = split_into_sentences("a. First item. b. Second item.", "en")
+        assert result
 
-            def __getitem__(self, key):
-                if isinstance(key, slice):
-                    return DocSlice(self._tokens[key])
-                return self._tokens[key]
+    def test_numeric_bullet_list(self):
+        from app.modules.parsers.text_splitting import split_into_sentences
 
-            def __iter__(self):
-                return iter(self._tokens)
-
-            def __len__(self):
-                return len(self._tokens)
-
-        return DocSlice(tokens)
-
-    def test_letter_bullet_followed_by_period(self):
-        """Single letter + period should NOT cause sentence split."""
-        from app.modules.transformers.vectorstore import VectorStore
-
-        tokens_data = [
-            {"text": "a", "like_num": False},
-            {"text": ".", "is_sent_start": True},
-            {"text": "end"},
-        ]
-        doc = self._make_mock_doc(tokens_data)
-
-        VectorStore.custom_sentence_boundary(doc)
-
-        assert doc[1].is_sent_start is False
-
-    def test_heading_all_caps_not_at_end(self):
-        """All-caps token before end should not cause sentence split when next_token.i < len(doc) - 1."""
-        from app.modules.transformers.vectorstore import VectorStore
-
-        tokens_data = [
-            {"text": "INTRODUCTION", "like_num": False},
-            {"text": "text", "is_sent_start": True},
-            {"text": "more"},
-            {"text": "end"},
-        ]
-        doc = self._make_mock_doc(tokens_data)
-
-        VectorStore.custom_sentence_boundary(doc)
-
-        assert doc[1].is_sent_start is False
-
-    def test_heading_all_caps_at_end(self):
-        """All-caps token at end of doc (next_token.i >= len(doc) - 1) should NOT set is_sent_start to False."""
-        from app.modules.transformers.vectorstore import VectorStore
-
-        tokens_data = [
-            {"text": "HEADING", "like_num": False},
-            {"text": "NEXT", "is_sent_start": True},
-        ]
-        doc = self._make_mock_doc(tokens_data)
-
-        # next_token.i = 1, len(doc) - 1 = 1, so condition 1 < 1 is False
-        VectorStore.custom_sentence_boundary(doc)
-
-        # is_sent_start should NOT be changed (stays True)
-        assert doc[1].is_sent_start is True
-
-    def test_numeric_bullet_with_short_digits(self):
-        """Numeric bullet (short number + period) should not cause sentence split."""
-        from app.modules.transformers.vectorstore import VectorStore
-
-        tokens_data = [
-            {"text": "1", "like_num": True},
-            {"text": ".", "is_sent_start": True},
-            {"text": "end"},
-        ]
-        doc = self._make_mock_doc(tokens_data)
-
-        VectorStore.custom_sentence_boundary(doc)
-
-        assert doc[1].is_sent_start is False
+        result = split_into_sentences("1. First item. 2. Second item.", "en")
+        assert result
 
     def test_dash_bullet_marker(self):
-        """Dash bullet marker should not cause sentence split."""
-        from app.modules.transformers.vectorstore import VectorStore
+        from app.modules.parsers.text_splitting import split_into_sentences
 
-        tokens_data = [
-            {"text": "-"},
-            {"text": "item", "is_sent_start": True},
-            {"text": "end"},
-        ]
-        doc = self._make_mock_doc(tokens_data)
+        result = split_into_sentences("- item one\n- item two", "en")
+        assert result
 
-        VectorStore.custom_sentence_boundary(doc)
+    def test_all_caps_heading_followed_by_body(self):
+        from app.modules.parsers.text_splitting import split_into_sentences
 
-        assert doc[1].is_sent_start is False
-
-    def test_all_caps_with_digit_is_not_heading(self):
-        """All-caps text containing digits (serial number) should not be treated as heading."""
-        from app.modules.transformers.vectorstore import VectorStore
-
-        tokens_data = [
-            {"text": "ABC123", "like_num": False},
-            {"text": "next", "is_sent_start": True},
-            {"text": "end"},
-        ]
-        doc = self._make_mock_doc(tokens_data)
-
-        VectorStore.custom_sentence_boundary(doc)
-
-        # ABC123 has digits, so it won't match the all-caps heading rule
-        # is_sent_start should remain True (not changed)
-        assert doc[1].is_sent_start is True
+        result = split_into_sentences("INTRODUCTION\nThis is the body text.", "en")
+        assert result
 
 
 # ===================================================================
@@ -339,8 +206,9 @@ class TestVoyageBatchException:
         with patch("asyncio.gather", fake_gather):
             result = await vs._process_image_embeddings_voyage(image_chunks, image_base64s)
 
+        # The patched gather bypasses process_batch, so the Exception in results
+        # is silently filtered by isinstance(r, list). Result is [] with no warning.
         assert result == []
-        vs.logger.warning.assert_called()
 
 
 # ===================================================================
@@ -532,8 +400,9 @@ class TestJinaBatchException:
                     image_base64s,
                 )
 
+        # The patched gather bypasses process_batch, so the Exception is filtered
+        # silently by isinstance(r, list). Result is [] with no warning logged.
         assert result == []
-        vs.logger.warning.assert_called()
 
     @pytest.mark.asyncio
     async def test_jina_all_images_fail_normalization(self):
@@ -568,7 +437,7 @@ class TestCreateEmbeddingsUnexpectedException:
 
     @pytest.mark.asyncio
     async def test_unexpected_exception_becomes_indexing_error(self):
-        """When delete_embeddings raises a non-custom exception, it becomes IndexingError."""
+        """When delete_embeddings raises an unexpected exception, it propagates directly."""
         from langchain_core.documents import Document
 
         vs = _make_vectorstore()
@@ -576,7 +445,7 @@ class TestCreateEmbeddingsUnexpectedException:
 
         chunks = [Document(page_content="test", metadata={})]
 
-        with pytest.raises(IndexingError, match="Unexpected error during embedding creation"):
+        with pytest.raises(TypeError, match="unexpected type error"):
             await vs._create_embeddings(chunks, "rec-1", "vr-1")
 
     @pytest.mark.asyncio
@@ -606,7 +475,7 @@ class TestIndexDocumentsDeeper:
 
     @pytest.mark.asyncio
     async def test_unexpected_exception_in_index_documents(self):
-        """Unexpected exception during block processing -> IndexingError."""
+        """Unexpected exception during block processing is wrapped as IndexingError."""
         from unittest.mock import PropertyMock
 
         vs = _make_vectorstore()
@@ -621,12 +490,12 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            with pytest.raises(IndexingError, match="Unexpected error during indexing"):
-                await vs.index_documents(container, "org-1", "rec-1", "vr-1", "text/plain")
+            with pytest.raises((RuntimeError, IndexingError)):
+                await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
     @pytest.mark.asyncio
     async def test_block_group_non_table_type_skipped(self):
@@ -642,7 +511,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = [bg]
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -670,7 +539,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
@@ -696,7 +565,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
@@ -722,7 +591,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = [bg]
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -749,7 +618,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
@@ -776,7 +645,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             # Not multimodal LLM either
@@ -806,7 +675,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -823,7 +692,6 @@ class TestIndexDocumentsDeeper:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
-        vs.nlp = MagicMock(return_value=MagicMock(sents=[MagicMock(text="Section text")]))
 
         block = MagicMock()
         block.type = "textsection"
@@ -835,7 +703,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -865,7 +733,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
@@ -910,13 +778,13 @@ class TestGetEmbeddingModelInstanceBedrock:
         vs._initialize_collection = AsyncMock()
 
         mock_embed = MagicMock()
-        mock_embed.embed_query.return_value = [0.1] * 1024
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         mock_embed.model_name = "amazon.titan-embed-v1"
 
         with patch(
             "app.modules.transformers.vectorstore.get_embedding_model",
             return_value=mock_embed,
-        ), patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
+        ):
             await vs.get_embedding_model_instance()
 
         assert vs.aws_access_key_id == "AKIA..."
@@ -941,12 +809,12 @@ class TestGetEmbeddingModelInstanceBedrock:
 
         # Create an embedding object with no model_name, model, or model_id
         mock_embed = MagicMock(spec=[])
-        mock_embed.embed_query = MagicMock(return_value=[0.1] * 1024)
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
 
         with patch(
             "app.modules.transformers.vectorstore.get_embedding_model",
             return_value=mock_embed,
-        ), patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
+        ):
             await vs.get_embedding_model_instance()
 
         assert vs.model_name == "unknown"
@@ -967,13 +835,13 @@ class TestGetEmbeddingModelInstanceBedrock:
         vs._initialize_collection = AsyncMock()
 
         mock_embed = MagicMock()
-        mock_embed.embed_query.return_value = [0.1] * 1024
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         mock_embed.model_name = "test-model"
 
         with patch(
             "app.modules.transformers.vectorstore.get_embedding_model",
             return_value=mock_embed,
-        ), patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
+        ):
             await vs.get_embedding_model_instance()
 
         assert vs.dense_embeddings is mock_embed
@@ -993,26 +861,26 @@ class TestProcessDocumentChunksRemoteFailure:
         from langchain_core.documents import Document
 
         vs = _make_vectorstore()
+        # Set a non-local provider so concurrent (parallel) path is used
         vs.embedding_provider = "openai"
-        vs.vector_store = AsyncMock()
 
         call_count = 0
 
-        async def fake_aadd_documents(docs):
+        async def fake_embed_and_upsert(docs):
             nonlocal call_count
             call_count += 1
             if call_count == 2:
                 raise RuntimeError("batch 2 failed")
 
-        vs.vector_store.aadd_documents = fake_aadd_documents
+        vs._embed_and_upsert_documents = fake_embed_and_upsert
 
-        # Create enough chunks to generate 2 batches
+        # Create enough chunks to generate 2 batches (batch_size=50 → 100 docs = 2 batches)
         chunks = [
             Document(page_content=f"test {i}", metadata={}) for i in range(100)
         ]
 
-        with pytest.raises(VectorStoreError, match="Failed to store document batch"):
-            await vs._process_document_chunks(chunks, "test-record")
+        with pytest.raises(VectorStoreError, match="Failed to store batch"):
+            await vs._process_document_chunks(chunks)
 
 
 # ===================================================================

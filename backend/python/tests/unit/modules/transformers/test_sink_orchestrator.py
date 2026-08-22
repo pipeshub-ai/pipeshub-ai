@@ -40,6 +40,7 @@ def _make_orchestrator(
     vector_store.apply = AsyncMock(return_value=vector_result)
     graph_provider = AsyncMock()
     graph_provider.get_document = AsyncMock(return_value=graph_doc)
+    graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
 
     orch = SinkOrchestrator(
         graphdb=graphdb,
@@ -79,14 +80,15 @@ class TestApply:
             await orch.apply(ctx)
 
     @pytest.mark.asyncio
-    async def test_completed_skips_vector_and_graph(self):
+    async def test_completed_skips_vector_still_enriches(self):
+        """index() skips vector when already COMPLETED; enrich() still runs."""
         orch = _make_orchestrator(graph_doc={"indexingStatus": "COMPLETED"})
         ctx = _make_ctx()
 
         await orch.apply(ctx)
 
         orch.vector_store.apply.assert_not_awaited()
-        orch.graphdb.apply.assert_not_awaited()
+        orch.graphdb.apply.assert_awaited_once_with(ctx)
 
     @pytest.mark.asyncio
     async def test_not_completed_runs_vector_and_graph(self):
@@ -116,15 +118,17 @@ class TestApply:
         orch.graphdb.apply.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_vector_store_returns_false_skips_graph(self):
-        """When vector_store.apply returns exactly False, graphdb must be skipped."""
+    async def test_vector_store_returns_false_fails_pipeline(self):
+        from app.exceptions.indexing_exceptions import IndexingError
+
         orch = _make_orchestrator(
             graph_doc={"indexingStatus": "QUEUED"},
             vector_result=False,
         )
         ctx = _make_ctx()
 
-        await orch.apply(ctx)
+        with pytest.raises(IndexingError, match="did not index"):
+            await orch.apply(ctx)
 
         orch.vector_store.apply.assert_awaited_once()
         orch.graphdb.apply.assert_not_awaited()
@@ -152,3 +156,16 @@ class TestApply:
         orch.graph_provider.get_document.assert_awaited_once_with(
             "my-record-id", "records"
         )
+
+    @pytest.mark.asyncio
+    async def test_failed_completed_status_write_is_non_fatal(self):
+        orch = _make_orchestrator(
+            graph_doc={"indexingStatus": "IN_PROGRESS"},
+            vector_result=True,
+        )
+        orch.graph_provider.batch_upsert_nodes.return_value = False
+
+        await orch.index(_make_ctx())
+
+        orch.vector_store.apply.assert_awaited_once()
+        orch.graph_provider.batch_upsert_nodes.assert_awaited()

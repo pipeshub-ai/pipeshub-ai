@@ -3,16 +3,22 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
 import { UserGroups } from '../../../src/modules/user_management/schema/userGroup.schema';
+import { Users } from '../../../src/modules/user_management/schema/users.schema';
 import {
   resolveRoleRecipientUserIds,
   resolveNotificationRecipientUserIds,
 } from '../../../src/modules/notification/utils/notification-recipient.resolver';
 
-/** Build a stub chain for UserGroups.find(...).select(...).lean() */
 function stubUserGroupsFind(groups: { users?: unknown[] }[]): sinon.SinonStub {
   const lean = sinon.stub().resolves(groups);
   const select = sinon.stub().returns({ lean });
   return sinon.stub(UserGroups, 'find').returns({ select } as any);
+}
+
+function stubUsersFind(users: { _id: mongoose.Types.ObjectId }[]): sinon.SinonStub {
+  const lean = sinon.stub().resolves(users);
+  const select = sinon.stub().returns({ lean });
+  return sinon.stub(Users, 'find').returns({ select } as any);
 }
 
 describe('notification/notification-recipient.resolver', () => {
@@ -22,9 +28,6 @@ describe('notification/notification-recipient.resolver', () => {
     sinon.restore();
   });
 
-  // ---------------------------------------------------------------------------
-  // resolveRoleRecipientUserIds
-  // ---------------------------------------------------------------------------
   describe('resolveRoleRecipientUserIds', () => {
     it('returns empty array for empty roles list', async () => {
       const findStub = stubUserGroupsFind([]);
@@ -51,87 +54,92 @@ describe('notification/notification-recipient.resolver', () => {
       expect(findStub.called).to.be.false;
     });
 
-    it('resolves users for a supported role (admin)', async () => {
+    it('resolves users for admin via User.role', async () => {
       const user1 = new mongoose.Types.ObjectId();
       const user2 = new mongoose.Types.ObjectId();
-      stubUserGroupsFind([{ users: [user1, user2] }]);
+      const findStub = stubUsersFind([{ _id: user1 }, { _id: user2 }]);
+      stubUserGroupsFind([]);
 
       const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
       expect(result.map((id) => id.toString())).to.have.members([
         user1.toString(),
         user2.toString(),
       ]);
+      expect(findStub.firstCall.args[0]).to.deep.equal({
+        orgId,
+        role: 'admin',
+        isDeleted: { $ne: true },
+      });
     });
 
-    it('resolves users for all four supported role types', async () => {
-      const user = new mongoose.Types.ObjectId();
-      const findStub = stubUserGroupsFind([{ users: [user] }]);
+    it('returns empty when no users have role=admin (no admin-group fallback)', async () => {
+      const user1 = new mongoose.Types.ObjectId();
+      stubUsersFind([]);
+      stubUserGroupsFind([{ users: [user1] }]);
 
-      for (const role of ['admin', 'standard', 'everyone', 'custom']) {
+      const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
+      expect(result).to.deep.equal([]);
+    });
+
+    it('resolves users for standard/everyone/custom group types', async () => {
+      const user = new mongoose.Types.ObjectId();
+
+      for (const role of ['standard', 'everyone', 'custom']) {
         sinon.restore();
         stubUserGroupsFind([{ users: [user] }]);
         const result = await resolveRoleRecipientUserIds(orgId, [role]);
         expect(result).to.have.length(1);
         expect(result[0].toString()).to.equal(user.toString());
       }
-      void findStub; // suppress unused-variable warning
     });
 
-    it('deduplicates users appearing in multiple groups for the same role', async () => {
+    it('deduplicates users across admin role and group roles', async () => {
       const shared = new mongoose.Types.ObjectId();
-      const other = new mongoose.Types.ObjectId();
-      stubUserGroupsFind([{ users: [shared, other] }, { users: [shared] }]);
-
-      const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
-      expect(result.map((id) => id.toString())).to.have.members([
-        shared.toString(),
-        other.toString(),
-      ]);
-    });
-
-    it('deduplicates users across different roles', async () => {
-      const shared = new mongoose.Types.ObjectId();
-      const lean1 = sinon.stub().resolves([{ users: [shared] }]);
-      const lean2 = sinon.stub().resolves([{ users: [shared] }]);
-      let callCount = 0;
-      const select = sinon.stub().callsFake(() => {
-        return { lean: callCount++ === 0 ? lean1 : lean2 };
-      });
-      sinon.stub(UserGroups, 'find').returns({ select } as any);
+      stubUsersFind([{ _id: shared }]);
+      stubUserGroupsFind([{ users: [shared] }]);
 
       const result = await resolveRoleRecipientUserIds(orgId, ['admin', 'standard']);
       expect(result).to.have.length(1);
       expect(result[0].toString()).to.equal(shared.toString());
     });
 
-    it('normalizes role casing and trims whitespace', async () => {
+    it('normalizes role casing and trims whitespace for admin', async () => {
       const user = new mongoose.Types.ObjectId();
-      const findStub = stubUserGroupsFind([{ users: [user] }]);
+      const findStub = stubUsersFind([{ _id: user }]);
+      stubUserGroupsFind([]);
 
       const result = await resolveRoleRecipientUserIds(orgId, ['  Admin  ', 'ADMIN']);
       expect(result).to.have.length(1);
       expect(findStub.calledOnce).to.be.true;
     });
 
-    it('filters invalid ObjectIds out of group.users', async () => {
+    it('filters invalid ObjectIds out of group.users for non-admin roles', async () => {
       const valid = new mongoose.Types.ObjectId();
       stubUserGroupsFind([{ users: [valid, 'not-an-oid', null as unknown as string] }]);
 
-      const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
+      const result = await resolveRoleRecipientUserIds(orgId, ['standard']);
       expect(result).to.have.length(1);
       expect(result[0].toString()).to.equal(valid.toString());
     });
 
-    it('returns empty array when a group has no users field', async () => {
+    it('returns empty array when admin users and groups are empty', async () => {
+      stubUsersFind([]);
       stubUserGroupsFind([{}]);
       const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
       expect(result).to.deep.equal([]);
     });
+
+    it('does not include admin-group members when resolving admin role', async () => {
+      const roleAdmin = new mongoose.Types.ObjectId();
+      const groupAdmin = new mongoose.Types.ObjectId();
+      stubUsersFind([{ _id: roleAdmin }]);
+      stubUserGroupsFind([{ users: [groupAdmin] }]);
+
+      const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
+      expect(result.map((id) => id.toString())).to.have.members([roleAdmin.toString()]);
+    });
   });
 
-  // ---------------------------------------------------------------------------
-  // resolveNotificationRecipientUserIds
-  // ---------------------------------------------------------------------------
   describe('resolveNotificationRecipientUserIds', () => {
     it('resolves direct recipientUserIds when no roles are given', async () => {
       const findStub = stubUserGroupsFind([]);
@@ -145,7 +153,8 @@ describe('notification/notification-recipient.resolver', () => {
 
     it('resolves role recipients when no direct ids are given', async () => {
       const user = new mongoose.Types.ObjectId();
-      stubUserGroupsFind([{ users: [user] }]);
+      stubUsersFind([{ _id: user }]);
+      stubUserGroupsFind([]);
 
       const result = await resolveNotificationRecipientUserIds(orgId, [], ['admin']);
       expect(result.map((id) => id.toString())).to.include(user.toString());
@@ -154,7 +163,8 @@ describe('notification/notification-recipient.resolver', () => {
     it('merges and deduplicates direct ids and role-resolved ids', async () => {
       const shared = new mongoose.Types.ObjectId();
       const roleOnly = new mongoose.Types.ObjectId();
-      stubUserGroupsFind([{ users: [shared, roleOnly] }]);
+      stubUsersFind([{ _id: shared }, { _id: roleOnly }]);
+      stubUserGroupsFind([]);
 
       const result = await resolveNotificationRecipientUserIds(
         orgId,

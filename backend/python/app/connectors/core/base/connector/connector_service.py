@@ -26,6 +26,17 @@ INITIAL_NOTIFICATION_BACKOFF = 3600 * 1000 # 1 hour in ms
 MAX_NOTIFICATION_BACKOFF = 604800 * 1000 # 7 days in ms
 
 
+class ConnectorInitError(Exception):
+    """Raised from a connector's ``init()`` to surface a specific, user-facing
+    reason for a setup failure.
+
+    The API layer shows ``str(error)`` to the user instead of the generic
+    "Failed to initialize connector" message. Connectors that don't raise it
+    just return ``False`` and get the generic message, as before. Background
+    callers (factory, event service) already treat any exception from ``init()``
+    as a failure, so raising it there is safe."""
+
+
 class BaseConnector(ABC):
     """Base abstract class for all connectors"""
     logger: Logger

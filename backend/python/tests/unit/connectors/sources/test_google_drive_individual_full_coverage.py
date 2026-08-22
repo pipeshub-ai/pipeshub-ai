@@ -809,7 +809,7 @@ class TestConvertToPdf:
             mock_exec.return_value = mock_proc
 
             result = await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
-            assert result == "/tmp/test.pdf"
+            assert result == os.path.join("/tmp", "test.pdf")
 
     @pytest.mark.asyncio
     async def test_convert_nonzero_return_code(self, connector):

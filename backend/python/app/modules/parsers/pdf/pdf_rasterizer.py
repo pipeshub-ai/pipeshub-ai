@@ -9,16 +9,39 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import logging
 import multiprocessing
 import os
+import threading
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from functools import lru_cache
 from io import BytesIO
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import numpy as np
 import pdfplumber
 from PIL import Image
+
+if TYPE_CHECKING:
+    from app.services.resource_governor import ResourceGovernor
+
+_logger = logging.getLogger(__name__)
+_pool_lock = threading.Lock()
+
+# Wired by each service's lifespan (see parsing_main.py/indexing_main.py/
+# docling_main.py) once a ResourceGovernor is constructed for that process.
+# Mirrors the module-level singleton in services/docling/docling_service.py —
+# this module has no DI path back to whichever governor its caller's process
+# owns, since it's a leaf shared by the Parsing, Indexing and Docling
+# services alike.
+_resource_governor: "ResourceGovernor | None" = None
+
+
+def set_resource_governor(governor: "ResourceGovernor | None") -> None:
+    """Wire an initialized ResourceGovernor so a worker OOM-kill can trigger
+    its fast incident path instead of waiting for the next periodic sample."""
+    globals()["_resource_governor"] = governor
 
 
 def _get_pdf_raster_worker_count() -> int:
@@ -80,6 +103,27 @@ def _render_all_pages_impl(
     return result
 
 
+def _render_batch_impl(
+    pdf_bytes: Optional[bytes],
+    pdf_path: Optional[str],
+    page_numbers: List[int],
+    resolution: float,
+) -> Dict[int, Tuple[np.ndarray, float]]:
+    """Render only the requested 1-based *page_numbers* from a PDF."""
+    if pdf_path is not None:
+        ctx = pdfplumber.open(pdf_path)
+    else:
+        ctx = pdfplumber.open(BytesIO(pdf_bytes))
+
+    result: Dict[int, Tuple[np.ndarray, float]] = {}
+    with ctx as pdf:
+        for page_number in page_numbers:
+            result[page_number] = _page_to_rgb_array(
+                pdf.pages[page_number - 1], resolution
+            )
+    return result
+
+
 def _worker_render_all_from_path(
     pdf_path: str,
     resolution: float,
@@ -92,6 +136,22 @@ def _worker_render_all_from_bytes(
     resolution: float,
 ) -> Dict[int, Tuple[np.ndarray, float]]:
     return _render_all_pages_impl(pdf_bytes, None, resolution)
+
+
+def _worker_render_batch_from_path(
+    pdf_path: str,
+    page_numbers: List[int],
+    resolution: float,
+) -> Dict[int, Tuple[np.ndarray, float]]:
+    return _render_batch_impl(None, pdf_path, page_numbers, resolution)
+
+
+def _worker_render_batch_from_bytes(
+    pdf_bytes: bytes,
+    page_numbers: List[int],
+    resolution: float,
+) -> Dict[int, Tuple[np.ndarray, float]]:
+    return _render_batch_impl(pdf_bytes, None, page_numbers, resolution)
 
 
 def _worker_render_page_from_path(
@@ -113,7 +173,24 @@ def _worker_render_page_from_bytes(
 
 
 def _run_in_pool(fn, *args):
-    return _get_pdf_raster_pool().submit(fn, *args).result()
+    try:
+        return _get_pdf_raster_pool().submit(fn, *args).result()
+    except BrokenProcessPool:
+        _logger.warning(
+            "PDF rasterization process pool broke (worker likely OOM-killed); "
+            "recreating pool"
+        )
+        with _pool_lock:
+            _get_pdf_raster_pool.cache_clear()
+        if _resource_governor is not None:
+            # A worker OOM-kill is a hard proof of memory exhaustion the
+            # periodic sampler may not see for several seconds — react now
+            # rather than let admission keep granting new heavy-parse slots
+            # at the limit that just caused this kill.
+            _resource_governor.report_memory_incident(
+                "pdf_rasterizer worker OOM-killed (BrokenProcessPool)"
+            )
+        raise
 
 
 def render_all_pages_from_path_sync(
@@ -153,6 +230,28 @@ def render_page_from_bytes_sync(
         pdf_bytes,
         page_number,
         resolution,
+    )
+
+
+def render_batch_from_path_sync(
+    pdf_path: str,
+    page_numbers: List[int],
+    resolution: float = 72,
+) -> Dict[int, Tuple[np.ndarray, float]]:
+    """Render a subset of pages (1-based) from a PDF on disk."""
+    return _run_in_pool(
+        _worker_render_batch_from_path, pdf_path, page_numbers, resolution
+    )
+
+
+def render_batch_from_bytes_sync(
+    pdf_bytes: bytes,
+    page_numbers: List[int],
+    resolution: float = 72,
+) -> Dict[int, Tuple[np.ndarray, float]]:
+    """Render a subset of pages (1-based) from in-memory PDF bytes."""
+    return _run_in_pool(
+        _worker_render_batch_from_bytes, pdf_bytes, page_numbers, resolution
     )
 
 

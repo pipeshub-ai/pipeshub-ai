@@ -110,7 +110,9 @@ class TestValidateUuidFormat:
         _validate_uuid_format("550e8400-e29b-41d4-a716-446655440000", "test")
 
     def test_knowledge_base_app_id(self):
-        _validate_uuid_format("knowledgeBase_org-123", "test")
+        """KB apps now use UUID format, not knowledgeBase_ prefix"""
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440072"
+        _validate_uuid_format(kb_uuid, "test")
 
     def test_invalid_format(self):
         with pytest.raises(HTTPException):

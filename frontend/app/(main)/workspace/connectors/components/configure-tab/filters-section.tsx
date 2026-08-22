@@ -10,19 +10,22 @@ import {
   Badge,
   DropdownMenu,
   Switch,
-  Tooltip,
   IconButton,
   Checkbox,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { HelpTooltip } from '@/app/components/ui/help-tooltip';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { FilterDropdown } from '@/app/components/ui/filter-dropdown';
 import { DateRangePicker } from '@/app/components/ui/date-range-picker';
 import type { DateFilterType } from '@/app/components/ui/date-range-picker';
+import { TagInput } from '@/app/(main)/workspace/components/tag-input';
+import type { TagItem } from '@/app/(main)/workspace/components/tag-input';
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import type { FilterSchemaField } from '../../types';
 import { isMeaningfulFilterRow } from '../../utils/sync-filter-save-guards';
+import { MANUAL_INDEXING_TOOLTIP_TEXT } from '../../utils/manual-indexing-tooltip';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 
 type FilterSection = 'sync' | 'indexing';
@@ -282,6 +285,16 @@ function isListLikeField(field: FilterSchemaField): boolean {
   return ft === 'list' || ft === 'multiselect';
 }
 
+/**
+ * LIST filters with option_source_type=MANUAL have no predefined/dynamic options for the
+ * user to pick from — the value IS whatever the user types (e.g. arbitrary folder/drive IDs).
+ * These get a free-text tag input instead of the dropdown used by static/dynamic list filters.
+ */
+function isFreeTextListField(field: FilterSchemaField): boolean {
+  const ft = String(field.filterType ?? '').toLowerCase();
+  return ft === 'list' && field.optionSourceType === 'manual';
+}
+
 /** API may return list values as string[] or { id, label }[] (Confluence / legacy). */
 function listFilterIds(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
@@ -312,12 +325,22 @@ function listFilterLabelsById(raw: unknown): Record<string, string> {
   return map;
 }
 
-/** Scope GitLab repository picker based on the current `group_ids` sync filter row. */
-function groupPathsForProjectOptionsScope(
-  syncValues: Record<string, unknown> | undefined
+/**
+ * Repository pickers that narrow to a parent container the user already picked,
+ * keyed by the child filter name -> the parent filter supplying the scope.
+ */
+const OPTION_SCOPE_PARENT_FIELD: Record<string, string> = {
+  project_ids: 'group_ids', // GitLab: projects under the selected groups
+  repo_ids: 'org_ids', // GitHub: repos under the selected orgs
+};
+
+/** Scope a repository picker based on the parent container currently selected. */
+function groupPathsForOptionsScope(
+  syncValues: Record<string, unknown> | undefined,
+  parentFieldName: string
 ): { include?: string[]; exclude?: string[] } | undefined {
   if (!syncValues) return undefined;
-  const raw = syncValues.group_ids;
+  const raw = syncValues[parentFieldName];
   if (raw === undefined || raw === null) return undefined;
   if (!isFilterRowValue(raw)) return undefined;
   const op = String(raw.operator || '')
@@ -418,9 +441,9 @@ function ConnectorFilterMultiSelect({
   onValueChange: (v: unknown) => void;
   connectorId: string | null;
   portalContainer: HTMLElement | null;
-  /** When loading project_ids options, limit to repos under these GitLab group paths (sync filter). */
+  /** Limit repository options to those under these parent containers (GitLab groups / GitHub orgs). */
   optionContextGroupPaths?: string[];
-  /** When loading project_ids options, exclude repos under these GitLab group paths (sync filter, NOT_IN). */
+  /** Exclude repository options under these parent containers (sync filter, NOT_IN). */
   optionExcludeContextGroupPaths?: string[];
 }) {
   const selectedIds = useMemo(() => listFilterIds(value), [value]);
@@ -477,14 +500,14 @@ function ConnectorFilterMultiSelect({
               : { page: pageRef.current + 1 }),
         };
         if (
-          field.name === 'project_ids' &&
+          OPTION_SCOPE_PARENT_FIELD[field.name] &&
           optionContextGroupPaths &&
           optionContextGroupPaths.length > 0
         ) {
           params.contextGroupPath = optionContextGroupPaths;
         }
         if (
-          field.name === 'project_ids' &&
+          OPTION_SCOPE_PARENT_FIELD[field.name] &&
           optionExcludeContextGroupPaths &&
           optionExcludeContextGroupPaths.length > 0
         ) {
@@ -627,6 +650,58 @@ function ConnectorFilterMultiSelect({
 }
 
 // ========================================
+// Free-text list (LIST + MANUAL: user types/pastes arbitrary values, e.g. IDs)
+// ========================================
+
+function tagItemsFromIds(ids: string[]): TagItem[] {
+  return ids.map((id) => ({ id, value: id }));
+}
+
+function ConnectorFilterTagInput({
+  field,
+  value,
+  onValueChange,
+}: {
+  field: FilterSchemaField;
+  value: unknown;
+  onValueChange: (v: unknown) => void;
+}) {
+  // Tags live in local state (not re-derived from `value` on every render) so that
+  // transient per-tag UI state (isHighlighted for backspace-to-delete, isEditing for
+  // click-to-edit) survives across renders — mirrors invite-users-sidebar's TagInput usage.
+  const [tags, setTags] = useState<TagItem[]>(() => tagItemsFromIds(listFilterIds(value)));
+
+  // Re-sync only when the persisted value diverges from what we last committed (e.g. the
+  // filter row was reset/reloaded externally). Our own commits round-trip to the same ids,
+  // so this intentionally does not fire on every isHighlighted/isEditing-only local change.
+  useEffect(() => {
+    const incomingIds = listFilterIds(value);
+    const currentIds = tags.map((t) => t.value);
+    const sameContent =
+      incomingIds.length === currentIds.length &&
+      incomingIds.every((id, i) => id === currentIds[i]);
+    if (!sameContent) {
+      setTags(tagItemsFromIds(incomingIds));
+    }
+    // Only re-sync in response to external `value` changes, not our own local tag edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  const handleTagsChange = (next: TagItem[]) => {
+    setTags(next);
+    onValueChange(next.map((t) => t.value));
+  };
+
+  return (
+    <TagInput
+      tags={tags}
+      onTagsChange={handleTagsChange}
+      placeholder={`Add ${field.displayName.toLowerCase()}…`}
+    />
+  );
+}
+
+// ========================================
 // Manual indexing (legacy UI: own section, not under “Indexing filters”)
 // ========================================
 
@@ -646,25 +721,6 @@ function ManualIndexingSection({ field }: { field: FilterSchemaField }) {
 
   const row = getRow(field, raw);
   const checked = row.value === true || row.value === 'true';
-
-  // Tooltip body is a <p>; only phrasing content is valid (no div/Flex inside).
-  const tooltipContent = (
-    <Text
-      as="span"
-      size="1"
-      style={{
-        display: 'block',
-        maxWidth: 300,
-        whiteSpace: 'pre-line',
-        color: 'var(--gray-12)',
-        lineHeight: 1.55,
-      }}
-    >
-      {`OFF (default): Records are automatically indexed based on the indexing filters below.
-
-ON: No records are automatically indexed. You manually choose which records to index from the knowledge base.`}
-    </Text>
-  );
 
   return (
     <Box
@@ -695,7 +751,7 @@ ON: No records are automatically indexed. You manually choose which records to i
               <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
                 {field.displayName}
               </Text>
-              <Tooltip content={tooltipContent}>
+              <HelpTooltip content={MANUAL_INDEXING_TOOLTIP_TEXT}>
                 <IconButton
                   type="button"
                   size="1"
@@ -706,7 +762,7 @@ ON: No records are automatically indexed. You manually choose which records to i
                 >
                   <MaterialIcon name="info" size={16} color="var(--gray-10)" />
                 </IconButton>
-              </Tooltip>
+              </HelpTooltip>
             </Flex>
           </Flex>
           {field.description ? (
@@ -1115,7 +1171,7 @@ function FilterFieldRow({
   onChange: (section: FilterSection, name: string, value: unknown) => void;
   onClear: () => void;
   allowClear?: boolean;
-  /** Full sync filter form values (used to scope GitLab project_ids by selected group_ids). */
+  /** Full sync filter form values (used to scope a repo picker by its parent container filter). */
   allSyncValues?: Record<string, unknown>;
 }) {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
@@ -1135,10 +1191,12 @@ function FilterFieldRow({
   }, [field.operators, field.defaultOperator, row.operator]);
 
   const listLike = isListLikeField(field);
+  const freeTextList = isFreeTextListField(field);
   const isBooleanField = field.filterType === 'boolean';
+  const optionsScopeParentField = OPTION_SCOPE_PARENT_FIELD[field.name];
   const projectOptionsScope =
-    section === 'sync' && field.name === 'project_ids'
-      ? groupPathsForProjectOptionsScope(allSyncValues)
+    section === 'sync' && optionsScopeParentField
+      ? groupPathsForOptionsScope(allSyncValues, optionsScopeParentField)
       : undefined;
 
   const commit = (next: FilterRowValue) => {
@@ -1297,7 +1355,13 @@ function FilterFieldRow({
                   ? field.displayName
                   : 'Value'}
             </Text>
-            {listLike ? (
+            {freeTextList ? (
+              <ConnectorFilterTagInput
+                field={field}
+                value={row.value}
+                onValueChange={(v) => commit({ ...row, value: v })}
+              />
+            ) : listLike ? (
               <ConnectorFilterMultiSelect
                 field={field}
                 value={row.value}

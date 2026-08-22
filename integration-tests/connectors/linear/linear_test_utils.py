@@ -17,6 +17,9 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 from app.config.constants.arangodb import ProgressStatus  # type: ignore[import-not-found]
+from app.connectors.sources.linear.connector import (  # type: ignore[import-not-found]
+    PLACEHOLDER_SWEEP_MAX_DEPTH,
+)
 from app.models.entities import Record  # type: ignore[import-not-found]
 from app.sources.external.linear.linear import (
     LinearDataSource,  # type: ignore[import-not-found]
@@ -189,21 +192,6 @@ async def count_linear_team_projects(
     return total
 
 
-async def fetch_first_issue_in_team(
-    datasource: LinearDataSource,
-    team_id: str,
-) -> Optional[Dict[str, Any]]:
-    """Return the first issue (by updatedAt DESC) in the given team, or None."""
-    response = await _api_call_with_retry(
-        datasource.issues,
-        first=1,
-        filter={"team": {"id": {"eq": team_id}}},
-        context=f"fetch_first_issue_in_team({team_id})",
-    )
-    nodes = (response.data or {}).get("issues", {}).get("nodes", [])
-    return nodes[0] if nodes else None
-
-
 # ---------------------------------------------------------------------------
 # FILE extraction (mirrors LinearConnector._extract_file_urls_from_markdown)
 # ---------------------------------------------------------------------------
@@ -365,100 +353,6 @@ def _issue_team_id(issue_data: Dict[str, Any]) -> Optional[str]:
     return str(team_id) if team_id else None
 
 
-async def count_linear_scope_links(
-    datasource: LinearDataSource,
-    team_ids: List[str],
-) -> int:
-    """Count LINK records the connector would create: issue attachments + project external links."""
-    team_set = set(team_ids)
-    link_ids: Set[str] = set()
-
-    for attachment in await _paginate_attachments(datasource):
-        issue = attachment.get("issue") or {}
-        team = (issue.get("team") or {})
-        if team.get("id") in team_set and attachment.get("id"):
-            link_ids.add(str(attachment["id"]))
-
-    for project in await fetch_unique_projects_for_teams(datasource, team_ids):
-        project_id = project.get("id")
-        if not project_id:
-            continue
-        resp = await datasource.project(id=project_id)
-        if not resp.success:
-            continue
-        proj = (resp.data or {}).get("project") or {}
-        for link in (proj.get("externalLinks") or {}).get("nodes", []):
-            if link.get("id"):
-                link_ids.add(str(link["id"]))
-
-    return len(link_ids)
-
-
-async def count_linear_scope_webpages(
-    datasource: LinearDataSource,
-    team_ids: List[str],
-) -> int:
-    """Count WEBPAGE records: issue-attached documents + project documents."""
-    team_set = set(team_ids)
-    document_ids: Set[str] = set()
-
-    for document in await _paginate_documents(datasource):
-        doc_id = document.get("id")
-        if not doc_id:
-            continue
-        issue = document.get("issue")
-        if issue:
-            team = (issue.get("team") or {})
-            if team.get("id") in team_set:
-                document_ids.add(str(doc_id))
-
-    for project in await fetch_unique_projects_for_teams(datasource, team_ids):
-        project_id = project.get("id")
-        if not project_id:
-            continue
-        resp = await datasource.project(id=project_id)
-        if not resp.success:
-            continue
-        proj = (resp.data or {}).get("project") or {}
-        for doc in (proj.get("documents") or {}).get("nodes", []):
-            if doc.get("id"):
-                document_ids.add(str(doc["id"]))
-
-    return len(document_ids)
-
-
-async def count_linear_scope_files(
-    datasource: LinearDataSource,
-    team_ids: List[str],
-) -> int:
-    """Count unique FILE URLs extracted from issue/project markdown (connector parity)."""
-    file_urls: Set[str] = set()
-
-    for team_id in team_ids:
-        for issue in await _paginate_team_issues(datasource, team_id):
-            description = issue.get("description") or ""
-            for file_info in extract_file_urls_from_markdown(description, exclude_images=True):
-                file_urls.add(file_info["url"])
-            comments = (issue.get("comments") or {}).get("nodes", [])
-            for comment in comments:
-                body = comment.get("body") or ""
-                for file_info in extract_file_urls_from_markdown(body, exclude_images=True):
-                    file_urls.add(file_info["url"])
-
-    for project in await fetch_unique_projects_for_teams(datasource, team_ids):
-        project_id = project.get("id")
-        if not project_id:
-            continue
-        resp = await datasource.project(id=project_id)
-        if not resp.success:
-            continue
-        content = ((resp.data or {}).get("project") or {}).get("content") or ""
-        for file_info in extract_file_urls_from_markdown(content, exclude_images=True):
-            file_urls.add(file_info["url"])
-
-    return len(file_urls)
-
-
 async def fetch_first_attachment_in_teams(
     datasource: LinearDataSource,
     team_ids: List[str],
@@ -571,43 +465,6 @@ async def fetch_first_file_in_teams(
     return None
 
 
-async def assert_linear_dependent_counts_match_graph(
-    datasource: LinearDataSource,
-    graph_provider: GraphProviderProtocol,
-    connector_id: str,
-    team_ids: List[str],
-    *,
-    phase: str,
-) -> None:
-    """Assert graph FILE/LINK/WEBPAGE counts match API-derived connector expectations."""
-    expected_links = await count_linear_scope_links(datasource, team_ids)
-    expected_webpages = await count_linear_scope_webpages(datasource, team_ids)
-    expected_files = await count_linear_scope_files(datasource, team_ids)
-
-    graph_links = await graph_provider.count_records_by_type(connector_id, "LINK")
-    graph_webpages = await graph_provider.count_records_by_type(connector_id, "WEBPAGE")
-    graph_files = await graph_provider.count_records_by_type(connector_id, "FILE")
-
-    mismatches: List[str] = []
-    if graph_links != expected_links:
-        mismatches.append(
-            f"LINK: graph={graph_links}, API-expected={expected_links}"
-        )
-    if graph_webpages != expected_webpages:
-        mismatches.append(
-            f"WEBPAGE: graph={graph_webpages}, API-expected={expected_webpages}"
-        )
-    if graph_files != expected_files:
-        mismatches.append(
-            f"FILE: graph={graph_files}, API-expected={expected_files}"
-        )
-    if mismatches:
-        raise AssertionError(
-            f"{phase}: dependent record count mismatch for connector {connector_id}: "
-            + "; ".join(mismatches)
-        )
-
-
 async def fetch_first_project_in_team(
     datasource: LinearDataSource,
     team_id: str,
@@ -626,6 +483,62 @@ async def fetch_first_project_in_team(
 # ---------------------------------------------------------------------------
 # Issue lookups
 # ---------------------------------------------------------------------------
+
+
+async def resolve_issue_by_identifier(
+    datasource: LinearDataSource,
+    identifier: str,
+) -> Optional[Dict[str, Any]]:
+    """Return the issue JSON for a human identifier (``ENG-2``) or a UUID.
+
+    Linear's ``issue(id:)`` accepts either form.
+    """
+    resp = await datasource.issue(id=identifier)
+    if not resp.success:
+        return None
+    issue = (resp.data or {}).get("issue")
+    return issue if issue and issue.get("id") else None
+
+
+async def fetch_ancestor_chain(
+    datasource: LinearDataSource,
+    issue_id: str,
+    *,
+    max_depth: int = PLACEHOLDER_SWEEP_MAX_DEPTH,
+) -> List[Dict[str, Any]]:
+    """Return ancestor issues for ``issue_id``, nearest parent first.
+
+    Walked one hop at a time: ``issue(id:)`` exposes only a single level of
+    ``parent``, so reaching the grandparent needs a second call. Returns the full
+    issue nodes rather than ids so callers can read ``updatedAt`` without a second
+    round-trip per ancestor. ``max_depth`` mirrors the connector's own sweep cap so
+    the walk cannot claim ancestors the sweep would never reach.
+    """
+    chain: List[Dict[str, Any]] = []
+    seen: Set[str] = {issue_id}
+
+    resp = await _api_call_with_retry(
+        datasource.issue, id=issue_id,
+        context=f"fetch_ancestor_chain({issue_id})",
+    )
+    current = (resp.data or {}).get("issue") or {}
+
+    for _ in range(max_depth):
+        parent_id = (current.get("parent") or {}).get("id")
+        if not parent_id or parent_id in seen:
+            break
+        seen.add(parent_id)
+
+        resp = await _api_call_with_retry(
+            datasource.issue, id=parent_id,
+            context=f"fetch_ancestor_chain({parent_id})",
+        )
+        current = (resp.data or {}).get("issue") or {}
+        if not current.get("id"):
+            break
+        chain.append(current)
+
+    return chain
 
 
 async def get_linear_issue_updated_ms(

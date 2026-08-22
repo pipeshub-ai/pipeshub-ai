@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import mimetypes
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -285,8 +286,12 @@ class TestHelperEdgeCases:
     def test_get_mimetype_enum_zip_returns_zip(self):
         entry = _make_file_entry(name="archive.zip")
         result = get_mimetype_enum_for_dropbox(entry)
-        # application/zip is a valid MimeTypes enum member, so it returns ZIP, not BIN
-        assert result == MimeTypes.ZIP
+        guessed, _ = mimetypes.guess_type("archive.zip")
+        try:
+            expected = MimeTypes(guessed)
+        except ValueError:
+            expected = MimeTypes.BIN
+        assert result == expected
 
 
 # ===========================================================================

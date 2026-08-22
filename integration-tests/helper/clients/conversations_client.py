@@ -71,9 +71,12 @@ class ConversationsClient(APIClient):
         """Start conversation stream (POST /stream)."""
         options, payload = _request_options(kwargs)
         _sse_headers(options, stream=stream)
+        body = _merge_json_body(query=query, json=json, payload=payload)
+        if json is None:
+            body.setdefault("chatMode", "internal_search")
         return self.post(
             "/stream",
-            json=_merge_json_body(query=query, json=json, payload=payload),
+            json=body,
             **options,
         )
 
@@ -89,9 +92,12 @@ class ConversationsClient(APIClient):
         """Add message via SSE stream."""
         options, payload = _request_options(kwargs)
         _sse_headers(options, stream=stream)
+        body = _merge_json_body(query=query, json=json, payload=payload)
+        if json is None:
+            body.setdefault("chatMode", "internal_search")
         return self.post(
             f"/{conversation_id}/messages/stream",
-            json=_merge_json_body(query=query, json=json, payload=payload),
+            json=body,
             **options,
         )
 
@@ -278,9 +284,12 @@ class AgentConversationsClient(APIClient):
         """Start agent conversation stream (POST /{agentKey}/conversations/stream)."""
         options, payload = _request_options(kwargs)
         _sse_headers(options, stream=stream)
+        body = _merge_json_body(query=query, json=json, payload=payload)
+        if json is None:
+            body.setdefault("chatMode", "quick")
         return self.post(
             f"/{agent_key}/conversations/stream",
-            json=_merge_json_body(query=query, json=json, payload=payload),
+            json=body,
             **options,
         )
 
@@ -297,9 +306,12 @@ class AgentConversationsClient(APIClient):
         """Add message via SSE stream."""
         options, payload = _request_options(kwargs)
         _sse_headers(options, stream=stream)
+        body = _merge_json_body(query=query, json=json, payload=payload)
+        if json is None:
+            body.setdefault("chatMode", "quick")
         return self.post(
             f"/{agent_key}/conversations/{conversation_id}/messages/stream",
-            json=_merge_json_body(query=query, json=json, payload=payload),
+            json=body,
             **options,
         )
 
@@ -318,6 +330,8 @@ class AgentConversationsClient(APIClient):
         _sse_headers(options, stream=stream)
         body = dict(json) if json is not None else {}
         body.update(payload)
+        if json is None:
+            body.setdefault("chatMode", "quick")
         return self.post(
             f"/{agent_key}/conversations/{conversation_id}/message/{message_id}/regenerate",
             json=body,

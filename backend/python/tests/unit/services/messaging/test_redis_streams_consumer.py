@@ -199,13 +199,13 @@ class TestProcessMessage:
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        result = await consumer._process_message(
+        result = await consumer._process_message_with_classification(
             "test-stream",
             "1-0",
             {"value": json.dumps({"eventType": "TEST", "payload": {"id": 1}})},
         )
 
-        assert result is True
+        assert result == (True, False)
         handler.assert_awaited_once()
         called_msg = handler.call_args[0][0]
         assert isinstance(called_msg, StreamMessage)
@@ -217,11 +217,11 @@ class TestProcessMessage:
         consumer.message_handler = handler
 
         inner = json.dumps({"eventType": "test", "payload": {"key": "val"}})
-        result = await consumer._process_message(
+        result = await consumer._process_message_with_classification(
             "s", "1-0", {"value": json.dumps(inner)}
         )
 
-        assert result is True
+        assert result == (True, False)
         called_msg = handler.call_args[0][0]
         assert isinstance(called_msg, StreamMessage)
         assert called_msg.payload == {"key": "val"}
@@ -229,18 +229,18 @@ class TestProcessMessage:
     @pytest.mark.asyncio
     async def test_returns_false_for_invalid_json(self, consumer):
         consumer.message_handler = AsyncMock()
-        result = await consumer._process_message(
+        result = await consumer._process_message_with_classification(
             "s", "1-0", {"value": "not-json{{{"}
         )
-        assert result is False
+        assert result == (False, True)
 
     @pytest.mark.asyncio
     async def test_returns_false_when_no_handler(self, consumer):
         consumer.message_handler = None
-        result = await consumer._process_message(
+        result = await consumer._process_message_with_classification(
             "s", "1-0", {"value": json.dumps({"eventType": "test", "payload": {"k": "v"}})}
         )
-        assert result is False
+        assert result == (False, True)
 
     @pytest.mark.asyncio
     async def test_processes_empty_dict_message_fails(self, consumer):
@@ -248,19 +248,19 @@ class TestProcessMessage:
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        result = await consumer._process_message("s", "1-0", {"value": "{}"})
+        result = await consumer._process_message_with_classification("s", "1-0", {"value": "{}"})
 
         # StreamMessage(**{}) will fail validation (missing eventType, payload)
-        assert result is False
+        assert result[0] is False
         handler.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_returns_false_on_handler_exception(self, consumer):
         consumer.message_handler = AsyncMock(side_effect=Exception("handler error"))
-        result = await consumer._process_message(
+        result = await consumer._process_message_with_classification(
             "s", "1-0", {"value": json.dumps({"eventType": "test", "payload": {"k": "v"}})}
         )
-        assert result is False
+        assert result[0] is False
 
     @pytest.mark.asyncio
     async def test_skips_message_without_value_field(self, consumer):
@@ -268,9 +268,9 @@ class TestProcessMessage:
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        result = await consumer._process_message("s", "1-0", {"_init": "1"})
+        result = await consumer._process_message_with_classification("s", "1-0", {"_init": "1"})
 
-        assert result is True
+        assert result == (True, False)
         handler.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -279,9 +279,9 @@ class TestProcessMessage:
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        result = await consumer._process_message("s", "1-0", {})
+        result = await consumer._process_message_with_classification("s", "1-0", {})
 
-        assert result is True
+        assert result == (True, False)
         handler.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -289,9 +289,9 @@ class TestProcessMessage:
         """When JSON parses to None (literal null), message should be skipped."""
         consumer.message_handler = AsyncMock(return_value=True)
 
-        result = await consumer._process_message("s", "1-0", {"value": "null"})
+        result = await consumer._process_message_with_classification("s", "1-0", {"value": "null"})
 
-        assert result is False
+        assert result == (False, True)
         consumer.message_handler.assert_not_awaited()
 
 
@@ -689,7 +689,7 @@ class TestDrainPending:
 
 
 class TestExceedsMaxRetries:
-    """Tests for _exceeds_max_retries() — dead-letter logic for poison messages."""
+    """Tests for _should_dead_letter() — dead-letter logic for poison messages."""
 
     @pytest.mark.asyncio
     async def test_under_limit_returns_false(self, consumer):
@@ -702,7 +702,7 @@ class TestExceedsMaxRetries:
 
         with patch("app.services.messaging.redis_streams.consumer.messaging_env") as mock_env:
             mock_env.max_delivery_attempts = 10
-            result = await consumer._exceeds_max_retries("test-topic", "1-0")
+            result = await consumer._should_dead_letter("test-topic", "1-0")
 
         assert result is False
         mock_redis.xack.assert_not_awaited()
@@ -719,7 +719,7 @@ class TestExceedsMaxRetries:
 
         with patch("app.services.messaging.redis_streams.consumer.messaging_env") as mock_env:
             mock_env.max_delivery_attempts = 10
-            result = await consumer._exceeds_max_retries("test-topic", "1-0")
+            result = await consumer._should_dead_letter("test-topic", "1-0")
 
         assert result is True
         mock_redis.xack.assert_awaited_once_with("test-topic", consumer.config.group_id, "1-0")
@@ -736,7 +736,7 @@ class TestExceedsMaxRetries:
 
         with patch("app.services.messaging.redis_streams.consumer.messaging_env") as mock_env:
             mock_env.max_delivery_attempts = 10
-            result = await consumer._exceeds_max_retries("test-topic", "1-0")
+            result = await consumer._should_dead_letter("test-topic", "1-0")
 
         assert result is True
         mock_redis.xack.assert_awaited_once()
@@ -750,7 +750,7 @@ class TestExceedsMaxRetries:
 
         with patch("app.services.messaging.redis_streams.consumer.messaging_env") as mock_env:
             mock_env.max_delivery_attempts = 10
-            result = await consumer._exceeds_max_retries("test-topic", "1-0")
+            result = await consumer._should_dead_letter("test-topic", "1-0")
 
         assert result is False
 
@@ -763,13 +763,13 @@ class TestExceedsMaxRetries:
 
         with patch("app.services.messaging.redis_streams.consumer.messaging_env") as mock_env:
             mock_env.max_delivery_attempts = 10
-            result = await consumer._exceeds_max_retries("test-topic", "1-0")
+            result = await consumer._should_dead_letter("test-topic", "1-0")
 
         assert result is False
 
     @pytest.mark.asyncio
     async def test_drain_phase1_skips_poison_message(self, consumer):
-        """Phase 1 should skip processing when _exceeds_max_retries returns True."""
+        """Phase 1 should skip processing when _should_dead_letter returns True."""
         mock_redis = AsyncMock()
         pending_msg = {
             "value": json.dumps({"eventType": "POISON", "payload": {"id": 1}})
@@ -783,7 +783,7 @@ class TestExceedsMaxRetries:
         consumer.running = True
         consumer.message_handler = AsyncMock(return_value=True)
 
-        with patch.object(consumer, "_exceeds_max_retries", new_callable=AsyncMock, return_value=True):
+        with patch.object(consumer, "_should_dead_letter", new_callable=AsyncMock, return_value=True):
             await consumer._drain_pending()
 
         # Handler should never be called — message was skipped
@@ -863,7 +863,7 @@ class TestExceedsMaxRetries:
 
     @pytest.mark.asyncio
     async def test_drain_phase2_skips_poison_message(self, consumer):
-        """Phase 2 should skip processing when _exceeds_max_retries returns True."""
+        """Phase 2 should skip processing when _should_dead_letter returns True."""
         mock_redis = AsyncMock()
         own_msg = {
             "value": json.dumps({"eventType": "OWN_POISON", "payload": {"id": 2}})
@@ -882,7 +882,7 @@ class TestExceedsMaxRetries:
         consumer.running = True
         consumer.message_handler = AsyncMock(return_value=True)
 
-        with patch.object(consumer, "_exceeds_max_retries", new_callable=AsyncMock, return_value=True):
+        with patch.object(consumer, "_should_dead_letter", new_callable=AsyncMock, return_value=True):
             await consumer._drain_pending()
 
         consumer.message_handler.assert_not_awaited()
@@ -948,7 +948,7 @@ class TestConsumeLoop:
 
         with patch.object(
             consumer,
-            "_process_message",
+            "_process_message_with_classification",
             new_callable=AsyncMock,
             side_effect=Exception("process blew up"),
         ):

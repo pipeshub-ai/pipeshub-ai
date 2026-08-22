@@ -31,6 +31,8 @@ from app.models.blocks import (
 )
 from app.utils.time_conversion import parse_timestamp, string_to_datetime
 
+from app.models.blocks import wire_block_group_parent_children
+
 from .common.utils import parse_item_id_from_url
 from .models import GitlabLiterals, RecordUpdate
 
@@ -99,7 +101,6 @@ class IssuesSync:
         record_updates_batch: list[RecordUpdate] = []
         attachment_records_cnt = 0
         issues_enabled = self._issues_indexing_enabled()
-        comments_enabled = self._comments_indexing_enabled()
 
         for issue in issue_batch:
             record_update = await self._process_issue_incident_task_to_ticket(issue)
@@ -123,12 +124,12 @@ class IssuesSync:
                     record_updates_batch.extend(file_record_updates)
                     attachment_records_cnt += len(file_record_updates)
 
-            # Note attachments
+            # Note attachments follow the parent issue's indexing flag
             attachment_records = await c.attachments.make_files_records_from_notes(
                 issue, record_update.record
             )
             if attachment_records:
-                if not issues_enabled or not comments_enabled:
+                if not issues_enabled:
                     for ru in attachment_records:
                         ru.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                 record_updates_batch.extend(attachment_records)
@@ -284,14 +285,14 @@ class IssuesSync:
         block_groups.append(bg_0)
         block_group_number += 1
 
-        if self._comments_indexing_enabled():
-            comments_bg, remaining_records = await c.comments.build_comment_blocks(
-                issue_url=record.weburl, parent_index=bg_0.index, record=record
-            )
-            block_groups.extend(comments_bg)
-            block_group_number += len(comments_bg)
-            list_remaining_records.extend(remaining_records)
+        comments_bg, remaining_records = await c.comments.build_comment_blocks(
+            issue_url=record.weburl, parent_index=bg_0.index, record=record
+        )
+        block_groups.extend(comments_bg)
+        block_group_number += len(comments_bg)
+        list_remaining_records.extend(remaining_records)
 
+        wire_block_group_parent_children(block_groups)
         blocks_container = BlocksContainer(blocks=[], block_groups=block_groups)
         await self.process_new_records(list_remaining_records)
         return blocks_container.model_dump_json(indent=2).encode(GitlabLiterals.UTF_8.value)
@@ -336,9 +337,3 @@ class IssuesSync:
         from app.connectors.core.registry.filters import IndexingFilterKey
         return c.indexing_filters.is_enabled(IndexingFilterKey.ISSUES)
 
-    def _comments_indexing_enabled(self) -> bool:
-        c = self.c
-        if not c.indexing_filters:
-            return True
-        from app.connectors.core.registry.filters import IndexingFilterKey
-        return c.indexing_filters.is_enabled(IndexingFilterKey.COMMENTS)

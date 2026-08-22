@@ -2,7 +2,8 @@ import ssl
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from app.config.constants.service import KafkaConfig as KafkaConstants, config_node_constants
+from app.config.constants.service import KafkaConfig as KafkaConstants
+from app.config.constants.service import config_node_constants
 from app.connectors.services.event_service import EventService
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
@@ -172,8 +173,13 @@ class KafkaUtils:
     @staticmethod
     async def create_record_message_handler(
         app_container: IndexingAppContainer,
+        producer: Any = None,
     ) -> IndexingMessageHandler:
         """Create a message handler for record events.
+
+        `producer` is used to publish follow-up events (e.g. re-triggering the
+        next queued duplicate); pass the same producer used for retries so we
+        don't spin up a second Kafka connection.
 
         Returns an async generator function that yields PipelineEvent during processing.
         """
@@ -186,6 +192,7 @@ class KafkaUtils:
             logger=logger,
             config_service=config_service,
             event_processor=event_processor,
+            producer=producer,
         )
 
         async def handle_record_message(message: StreamMessage) -> AsyncGenerator[PipelineEvent, None]:
@@ -200,6 +207,14 @@ class KafkaUtils:
                 if not payload:
                     logger.error("Missing payload in message")
                     return
+
+                # Pass retry context to handler so it knows whether to update DB status on failure
+                # Convert payload to dict if it's not already, then add is_final_failure
+                if not isinstance(payload, dict):
+                    payload = dict(payload)
+                else:
+                    payload = payload.copy()  # Don't mutate original
+                payload["is_final_failure"] = message.is_final_failure
 
                 logger.info(f"Processing record event: {event_type}")
                 async for event in record_event_service.process_event(event_type, payload):

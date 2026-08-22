@@ -18,6 +18,7 @@ import { AllRecordsMode } from './all-records-mode';
 import { SidebarLoadMoreButton } from './sidebar-load-more-button';
 import { convertToTreeNode } from './section';
 import { isKbCollectionsHubApp } from '../utils/all-records-transformer';
+import { findNodeInCategorized } from '../utils/find-node';
 import { FolderTreeItem, CollectionItem } from './section-element';
 import type {
   PageViewMode,
@@ -185,18 +186,10 @@ function KBSidebarContent({
     void loadMoreAppChildPage(appId);
   }, []);
 
-  const kbCollectionsHubAppId = useMemo(
-    () => appNodes.find((n) => isKbCollectionsHubApp(n))?.id,
-    [appNodes]
-  );
-  const collectionsRootLoadMoreHasNext =
-    kbCollectionsHubAppId != null &&
-    appChildrenPagination.get(kbCollectionsHubAppId)?.hasNext === true;
+  const collectionsRootLoadMoreHasNext = appRootListPagination?.hasNext === true;
   const handleCollectionsRootLoadMore = useCallback(() => {
-    if (kbCollectionsHubAppId) {
-      void loadMoreAppChildPage(kbCollectionsHubAppId);
-    }
-  }, [kbCollectionsHubAppId]);
+    void loadMoreRootAppList();
+  }, []);
 
   // Local state for secondary panel (replaces store-based MoreCollections)
   const [isSecondaryPanelOpen, setIsSecondaryPanelOpen] = useState(false);
@@ -313,9 +306,16 @@ function KBSidebarContent({
       const appNode = appNodes.find((a) => a.id === appId);
       const isKbApp = appNode ? isKbCollectionsHubApp(appNode) : false;
       const appChildren = appChildrenCache.get(appId) || [];
-      const connectorTreePanel = !isKbApp ? connectorAppTrees.get(appId) : undefined;
+      // connectorAppTrees is populated for BOTH KB and connector apps.
+      const connectorTreePanel = connectorAppTrees.get(appId);
+      // Find the app's own node within the categorized tree and use its
+      // children — NOT the whole forest, which would include the app's own
+      // root node and render it as a duplicate child of itself.
       const categorizedTree = isKbApp
-        ? [...(sharedTree || []), ...(privateTree || [])]
+        ? (findNodeInCategorized(
+            { shared: sharedTree || [], private: privateTree || [] },
+            appId
+          ).node?.children as EnhancedFolderTreeNode[] | undefined)
         : undefined;
       const hierarchicalPanelTree = categorizedTree ?? connectorTreePanel;
 
@@ -517,9 +517,7 @@ function KBSidebarContent({
           onDelete={onSidebarDelete}
           collectionsRootLoadMoreHasNext={collectionsRootLoadMoreHasNext}
           onCollectionsRootLoadMore={handleCollectionsRootLoadMore}
-          collectionsRootLoadMoreLoading={
-            kbCollectionsHubAppId != null && loadingAppIds.has(kbCollectionsHubAppId)
-          }
+          collectionsRootLoadMoreLoading={loadingRootAppListMore}
         />
       ) : (
         <AllRecordsMode

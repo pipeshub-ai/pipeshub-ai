@@ -1301,7 +1301,10 @@ def test_validate_host_path_not_a_directory(tmp_path: Path):
 
 def test_validate_host_path_resolves_user_expansion(tmp_path: Path, monkeypatch):
     """``~`` must be expanded before the existence check."""
+    import sys
     monkeypatch.setenv("HOME", str(tmp_path))
+    if sys.platform == "win32":
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
     ok, detail = validate_host_path("~")
     assert ok is True
     assert Path(detail).resolve() == tmp_path.resolve()

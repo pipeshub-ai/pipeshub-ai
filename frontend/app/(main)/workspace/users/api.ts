@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { USER_ROLES } from '../constants';
 import type {
   User,
   UserByIdsDoc,
@@ -78,6 +79,17 @@ export const UsersApi = {
   },
 
   /**
+   * Update a user (admin or self). Pass `{ role: 'admin' | 'member' }` to change org role.
+   * PUT /api/v1/users/:userId
+   */
+  async updateUser(
+    userId: string,
+    payload: { role?: string; fullName?: string; [key: string]: unknown }
+  ): Promise<void> {
+    await apiClient.put(`${BASE_URL}/${userId}`, payload);
+  },
+
+  /**
    * Unblock a user. PUT /api/v1/users/:userId/unblock (admin)
    */
   async unblockUser(userId: string): Promise<void> {
@@ -127,12 +139,32 @@ export const UsersApi = {
    * Invite users by email, optionally adding them to groups.
    * POST /api/v1/users/bulk/invite
    */
-  async inviteUsers(emails: string[], groupIds?: string[]): Promise<void> {
-    const payload: { emails: string[]; groupIds?: string[] } = { emails };
+  async inviteUsers(emails: string[], groupIds?: string[], role?: string): Promise<void> {
+    const payload: { emails: string[]; groupIds?: string[]; role?: string } = { emails };
     if (groupIds && groupIds.length > 0) {
       payload.groupIds = groupIds;
     }
+    if (role) {
+      payload.role =
+        role === USER_ROLES.ADMIN || role === 'admin' ? 'admin' : 'member';
+    }
     await apiClient.post(`${BASE_URL}/bulk/invite`, payload);
+  },
+
+  /**
+   * Invite users from an uploaded CSV/Excel file. The server parses the file,
+   * responds immediately, and notifies the uploader when the batch finishes.
+   * POST /api/v1/users/bulk/invite/upload
+   */
+  async inviteUsersFromFile(file: File, groupIds?: string[]): Promise<void> {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (groupIds && groupIds.length > 0) {
+      formData.append('groupIds', JSON.stringify(groupIds));
+    }
+    await apiClient.post(`${BASE_URL}/bulk/invite/upload`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
   },
 
   /**

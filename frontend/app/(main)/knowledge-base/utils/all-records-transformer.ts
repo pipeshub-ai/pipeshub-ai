@@ -211,26 +211,24 @@ export function buildKbLookup(flatCollections: Array<{ id: string; name: string;
 /**
  * Filter items by size range (client-side)
  */
-export function filterBySize(items: KnowledgeHubNode[], sizeRanges?: string[]): KnowledgeHubNode[] {
-  if (!sizeRanges || sizeRanges.length === 0) return items;
+export function filterBySize(items: KnowledgeHubNode[], sizeRange?: string): KnowledgeHubNode[] {
+  if (!sizeRange) return items;
 
   return items.filter((item) => {
     if (item.sizeInBytes === null || item.sizeInBytes === undefined) return false;
 
     const sizeInBytes = item.sizeInBytes;
 
-    return sizeRanges.some((range) => {
-      switch (range) {
-        case 'lt1mb':
-          return sizeInBytes < 1024 * 1024;
-        case '1to10mb':
-          return sizeInBytes >= 1024 * 1024 && sizeInBytes < 10 * 1024 * 1024;
-        case '10to100mb':
-          return sizeInBytes >= 10 * 1024 * 1024 && sizeInBytes < 100 * 1024 * 1024;
-        default:
-          return false;
-      }
-    });
+    switch (sizeRange) {
+      case 'lt1mb':
+        return sizeInBytes < 1024 * 1024;
+      case '1to10mb':
+        return sizeInBytes >= 1024 * 1024 && sizeInBytes < 10 * 1024 * 1024;
+      case '10to100mb':
+        return sizeInBytes >= 10 * 1024 * 1024 && sizeInBytes < 100 * 1024 * 1024;
+      default:
+        return false;
+    }
   });
 }
 
@@ -244,8 +242,8 @@ export function applyClientSideFilters(
   let filtered = items;
 
   // Size filter
-  if (filter.sizeRanges && filter.sizeRanges.length > 0) {
-    filtered = filterBySize(filtered, filter.sizeRanges);
+  if (filter.sizeRange) {
+    filtered = filterBySize(filtered, filter.sizeRange);
   }
 
   return filtered;

@@ -49,7 +49,7 @@ const DEFAULTS = {
 };
 
 // Valid enum values for parsing
-const VALID_RECORD_TYPES = new Set<string>(['FILE', 'WEBPAGE', 'MESSAGE', 'EMAIL', 'TICKET']);
+const VALID_RECORD_TYPES = new Set<string>(['FILE', 'WEBPAGE', 'MESSAGE', 'EMAIL', 'TICKET', 'ARTIFACT']);
 /** Must match `IndexingStatus` in ./types — used so URL round-trip keeps filter state */
 const VALID_INDEXING_STATUS = new Set<string>([
   'COMPLETED',
@@ -116,8 +116,7 @@ function serializeCommonFilterParams(
   const is = joinArray(filter.indexingStatus);
   if (is) params[PARAM.INDEXING_STATUS] = is;
 
-  const sz = joinArray(filter.sizeRanges);
-  if (sz) params[PARAM.SIZE_RANGES] = sz;
+  if (filter.sizeRange) params[PARAM.SIZE_RANGES] = filter.sizeRange;
 
   if (filter.createdAfter) params[PARAM.CREATED_AFTER] = filter.createdAfter;
   if (filter.createdBefore) params[PARAM.CREATED_BEFORE] = filter.createdBefore;
@@ -191,7 +190,7 @@ export function serializeAllRecordsParams(
 function parseCommonFilter(searchParams: URLSearchParams): {
   recordTypes?: RecordType[];
   indexingStatus?: IndexingStatus[];
-  sizeRanges?: SizeRange[];
+  sizeRange?: SizeRange;
   createdAfter?: string;
   createdBefore?: string;
   createdDateType?: DateFilterType;
@@ -208,7 +207,7 @@ function parseCommonFilter(searchParams: URLSearchParams): {
   if (indexingStatus) result.indexingStatus = indexingStatus;
 
   const sizeRanges = parseCommaSeparated<SizeRange>(searchParams.get(PARAM.SIZE_RANGES), VALID_SIZE_RANGES);
-  if (sizeRanges) result.sizeRanges = sizeRanges;
+  if (sizeRanges && sizeRanges.length > 0) result.sizeRange = sizeRanges[0];
 
   const ca = searchParams.get(PARAM.CREATED_AFTER);
   if (ca) result.createdAfter = ca;

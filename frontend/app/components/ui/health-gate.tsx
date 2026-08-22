@@ -20,6 +20,7 @@ import {
 } from '@/lib/store/services-health-store';
 import { toast } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 
 const CRITICAL_APP_SERVICES = new Set(['query', 'connector']);
 const NON_CRITICAL_TOAST_INTERVAL = 60 * 60 * 1000; // 1 hour
@@ -127,6 +128,7 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
   const startBackgroundPolling = useServicesHealthStore((s) => s.startBackgroundPolling);
   const stopBackgroundPolling = useServicesHealthStore((s) => s.stopBackgroundPolling);
   const retryServerConnection = useServicesHealthStore((s) => s.retryServerConnection);
+  const fetchFeatureFlags = useFeatureFlagsStore((s) => s.fetchFlags);
   const apiServerReachable = useServicesHealthStore(selectApiServerReachable);
   const backgroundCheckFailed = useServicesHealthStore(selectBackgroundCheckFailed);
   const appServices = useServicesHealthStore(selectAppServices);
@@ -141,6 +143,7 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
   // ── Start background polling on mount ────────────────────────────────────
   useEffect(() => {
     startBackgroundPolling();
+    fetchFeatureFlags();
     return () => {
       stopBackgroundPolling();
       if (criticalToastIdRef.current) {
@@ -148,7 +151,7 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
         criticalToastIdRef.current = null;
       }
     };
-  }, [startBackgroundPolling, stopBackgroundPolling]);
+  }, [startBackgroundPolling, stopBackgroundPolling, fetchFeatureFlags]);
 
   // ── Refresh data on server recovery to clear stale state ────────────────
   useEffect(() => {
@@ -159,8 +162,9 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
     if (wasUnreachableRef.current) {
       wasUnreachableRef.current = false;
       router.refresh();
+      void fetchFeatureFlags();
     }
-  }, [apiServerReachable, router]);
+  }, [apiServerReachable, router, fetchFeatureFlags]);
 
   // ── Fast retry when server is unreachable ────────────────────────────────
   useEffect(() => {

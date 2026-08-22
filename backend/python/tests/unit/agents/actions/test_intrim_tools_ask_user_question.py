@@ -79,10 +79,10 @@ def test_missing_user_intent_raises() -> None:
         AskUserQuestionInput.model_validate(raw)
 
 
-def test_ask_user_question_returns_structured_json_for_ui() -> None:
+async def test_ask_user_question_returns_structured_json_for_ui() -> None:
     """Tool output must match the shape persisted by Node and consumed by the frontend."""
     tools = InternalTools()
-    result_json = tools.ask_user_question(
+    result_json = await tools.ask_user_question(
         user_intent="User wants to pick a Slack channel for the message.",
         questions=[
             AskUserQuestionItemInput(

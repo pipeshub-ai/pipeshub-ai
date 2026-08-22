@@ -161,7 +161,9 @@ export class ConfigService {
   // Kafka Configuration (supports standard Kafka and AWS MSK with SASL/SCRAM)
   public async getKafkaConfig(): Promise<KafkaConfig> {
     return this.getEncryptedConfig<KafkaConfig>(configPaths.broker.kafka, {
-      brokers: process.env.KAFKA_BROKERS!.split(','),
+      brokers: process.env.KAFKA_BROKERS
+        ? process.env.KAFKA_BROKERS.split(',')
+        : [],
       ssl: process.env.KAFKA_SSL === 'true',
       ...(process.env.KAFKA_USERNAME && {
         sasl: {
@@ -738,8 +740,8 @@ export class ConfigService {
     }
 
     // Node.js owns messageBrokerType and kvStoreType — always overwrite from env
-    config.messageBrokerType = (process.env.MESSAGE_BROKER || 'kafka').toLowerCase();
-    config.kvStoreType = (process.env.KV_STORE_TYPE || 'etcd').toLowerCase();
+    config.messageBrokerType = (process.env.MESSAGE_BROKER || 'redis').toLowerCase();
+    config.kvStoreType = (process.env.KV_STORE_TYPE || 'redis').toLowerCase();
 
     // dataStoreType and vectorDbType are owned by Python — never set defaults here
 

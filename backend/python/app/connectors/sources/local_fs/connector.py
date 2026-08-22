@@ -35,6 +35,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
@@ -250,6 +251,7 @@ class LocalFsApp(App):
     )
     .with_categories(["Storage", "Local"])
     .with_scopes([ConnectorScope.PERSONAL.value])
+    .with_permission_model(PermissionModel.APP_LEVEL)
     .configure(
         lambda builder: builder.with_icon(LOCAL_FS_ICON_PATH)
         .with_realtime_support(False)

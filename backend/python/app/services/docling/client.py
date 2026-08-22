@@ -1,385 +1,237 @@
-import asyncio
-import base64
-import json
-import os
-from typing import Optional
+from __future__ import annotations
 
+import asyncio
+import os
+from typing import TYPE_CHECKING, Optional
+
+from app.models.blocks import BlocksContainer
+from app.services.base_client import BaseServiceClient, ServiceCallError
+from app.services.messaging.backpressure import get_default_backpressure_coordinator
+
+if TYPE_CHECKING:
+    from app.services.messaging.backpressure import BackpressureCoordinator
 import httpx
+from docling_core.types.doc.document import DoclingDocument
 
 from app.config.constants.http_status_code import HttpStatusCode
-from app.models.blocks import BlocksContainer
 from app.utils.logger import create_logger
+from app.utils.pdf_utils import PAGE_BATCH_SIZE, get_pdf_page_count
 from app.utils.request_context import inject_request_headers
 
+MAX_PDF_BYTES = 100 * 1024 * 1024
 
-class DoclingClient:
-    """Client for communicating with the Docling processing service"""
 
-    def __init__(self, service_url: Optional[str] = None, timeout: float = 2400.0) -> None:
-        self.service_url = (service_url or os.getenv("DOCLING_SERVICE_URL", "http://localhost:8081")).rstrip('/')
+class DoclingClient(BaseServiceClient):
+    """Client for communicating with the Docling processing service.
 
+    Extends :class:`BaseServiceClient` for its retry/circuit-breaker/429
+    handling; failures are swallowed here (logged, ``None`` returned) so the
+    ``Optional[...]`` contract callers (e.g. ``DoclingServiceParser``) already
+    depend on is unchanged.
+    """
+
+    def __init__(
+        self,
+        service_url: Optional[str] = None,
+        timeout: float = 2450.0,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
+        backpressure_coordinator: "BackpressureCoordinator | None" = None,
+    ) -> None:
+        # 2400s (Docling's own internal PDF_PROCESSING_TIMEOUT_SECONDS) plus a
+        # margin for the resource governor's admission-gate wait on the
+        # Docling side (see docling_service.py's DOCLING_GATE_TIMEOUT_SECONDS)
+        # — without this margin, a request that legitimately queues for
+        # admission and then runs to Docling's own timeout could have its
+        # response arrive after this client already gave up.
+        super().__init__(
+            service_url=service_url or os.getenv("DOCLING_SERVICE_URL", "http://localhost:8081"),
+            service_name="DoclingService",
+            read_timeout=timeout,
+            write_timeout=60.0,  # PDF uploads
+            max_retries=max_retries,
+            retry_delay=retry_delay,
+            backpressure_coordinator=backpressure_coordinator or get_default_backpressure_coordinator(),
+        )
         self.timeout = timeout
-        self.logger = create_logger(__name__)
-        self.max_retries = 3
-        self.retry_delay = 1.0  # seconds
 
-    async def process_pdf(self, record_name: str, pdf_binary: bytes, org_id: Optional[str] = None) -> Optional[BlocksContainer]:
-        """
-        Process PDF using the external Docling service with retry logic
-
-        Args:
-            record_name: Name of the record/document
-            pdf_binary: Binary PDF data
-            org_id: Optional organization ID
-
-        Returns:
-            BlocksContainer if successful, None if failed
-        """
-
-        # Validate pdf_binary type
+    def _validate_pdf_binary(self, pdf_binary: bytes) -> bool:
         if not isinstance(pdf_binary, bytes):
             self.logger.error(f"❌ Invalid pdf_binary type: expected bytes, got {type(pdf_binary).__name__}")
-            return None
+            return False
 
+        if len(pdf_binary) > MAX_PDF_BYTES:
+            self.logger.error(f"❌ PDF too large for processing: {len(pdf_binary)} bytes (max: {MAX_PDF_BYTES} bytes)")
+            return False
 
-        # Validate payload size
-        if len(pdf_binary) > 100 * 1024 * 1024:  # 100MB limit
-            self.logger.error(f"❌ PDF too large for processing: {len(pdf_binary)} bytes (max: 100MB)")
-            return None
+        return True
 
-        # Configure httpx with proper connection settings
+    async def _sleep_before_retry(self, attempt: int) -> bool:
+        """Back off before the next attempt; returns False once retries are exhausted."""
+        if attempt >= self.max_retries - 1:
+            return False
+
+        delay = self.retry_delay * (2 ** attempt)
+        self.logger.info(f"🔄 Retrying in {delay} seconds...")
+        await asyncio.sleep(delay)
+        return True
+
+    async def _post_with_retry(
+        self,
+        path: str,
+        description: str,
+        *,
+        json_body: dict | None = None,
+        data: dict | None = None,
+        files: dict | None = None,
+        write_timeout: float = 30.0,
+    ) -> dict | None:
+        """POST to the Docling service with exponential backoff and return the decoded JSON body.
+
+        Transport errors and non-2xx responses are retried; an HTTP 200 carrying an
+        application-level failure is handed back to the caller to interpret.
+        """
         timeout_config = httpx.Timeout(
-            connect=30.0,  # Connection timeout
-            read=self.timeout,  # Read timeout
-            write=30.0,  # Write timeout
-            pool=30.0  # Pool timeout
+            connect=30.0,
+            read=self.timeout,
+            write=write_timeout,
+            pool=30.0
         )
 
-        # Use connection pooling and keep-alive
         limits = httpx.Limits(
             max_keepalive_connections=5,
             max_connections=10,
             keepalive_expiry=30.0
         )
 
-        # Create client once and reuse for all retry attempts
+        headers = inject_request_headers({
+            "Connection": "keep-alive",
+            "Keep-Alive": "timeout=30"
+        })
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
+
         async with httpx.AsyncClient(
             timeout=timeout_config,
             limits=limits,
-            http2=True  # Enable HTTP/2 for better performance
+            http2=True
         ) as client:
             for attempt in range(self.max_retries):
+                self.logger.info(f"🚀 {description} (attempt {attempt + 1}/{self.max_retries})")
                 try:
-                    # Encode PDF binary to base64
-                    pdf_base64 = base64.b64encode(pdf_binary).decode('utf-8')
-
-                    # Prepare request payload
-                    payload = {
-                        "record_name": record_name,
-                        "pdf_binary": pdf_base64,
-                        "org_id": org_id
-                    }
-
-                    self.logger.info(f"🚀 Sending PDF processing request for: {record_name} (attempt {attempt + 1}/{self.max_retries})")
-
                     response = await client.post(
-                        f"{self.service_url}/process-pdf",
-                        json=payload,
-                        headers=inject_request_headers({
-                            "Content-Type": "application/json",
-                            "Connection": "keep-alive",
-                            "Keep-Alive": "timeout=30"
-                        })
+                        f"{self.service_url}{path}",
+                        json=json_body,
+                        data=data,
+                        files=files,
+                        headers=headers,
                     )
-
-                    if response.status_code == HttpStatusCode.SUCCESS.value:
-                        # Parse JSON response in thread pool to avoid blocking
-                        result = await asyncio.to_thread(response.json)
-                        if result.get("success"):
-                            # Run heavy JSON parsing and object creation in thread pool
-                            block_containers = await asyncio.to_thread(
-                                self._parse_blocks_container,
-                                result["block_containers"]
-                            )
-                            return block_containers
-                        else:
-                            error_msg = result.get("error", "Unknown error")
-                            self.logger.error(f"❌ Docling service returned error for {record_name}: {error_msg}")
-                            return None
-                    else:
-                        self.logger.error(f"❌ Docling service HTTP error {response.status_code}: {response.text}")
-
-                        # Check if it's a service unavailable error
-                        if response.status_code in [502, 503, 504]:
-                            self.logger.warning(f"⚠️ Service temporarily unavailable (HTTP {response.status_code})")
-
-                        if attempt < self.max_retries - 1:
-                            delay = self.retry_delay * (2 ** attempt)
-                            self.logger.info(f"🔄 Retrying in {delay} seconds...")
-                            await asyncio.sleep(delay)
-                            continue
-                        return None
-
-                except httpx.TimeoutException as e:
-                    self.logger.error(f"❌ Timeout processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
-                    if attempt < self.max_retries - 1:
-                        delay = self.retry_delay * (2 ** attempt)
-                        self.logger.info(f"🔄 Retrying in {delay} seconds...")
-                        await asyncio.sleep(delay)
-                        continue
-                    return None
-                except httpx.ConnectError as e:
-                    self.logger.error(f"❌ Connection error processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
-                    self.logger.warning("⚠️ Service appears to be down (connection refused)")
-
-                    if attempt < self.max_retries - 1:
-                        delay = self.retry_delay * (2 ** attempt)
-                        self.logger.info(f"🔄 Service may be starting up. Retrying in {delay} seconds...")
-                        await asyncio.sleep(delay)
-                        continue
-                    return None
-                except httpx.WriteError as e:
-                    # Handle the specific "write could not complete without blocking" error
-                    self.logger.error(f"❌ Write error processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
-                    if "write could not complete without blocking" in str(e):
-                        self.logger.warning("⚠️ Network buffer issue detected, retrying with exponential backoff...")
-                        if attempt < self.max_retries - 1:
-                            # Exponential backoff for write errors
-                            delay = self.retry_delay * (2 ** attempt)
-                            self.logger.info(f"🔄 Retrying in {delay} seconds...")
-                            await asyncio.sleep(delay)
-                            continue
-                    return None
-                except httpx.RequestError as e:
-                    self.logger.error(f"❌ Request error processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
-                    if attempt < self.max_retries - 1:
-                        delay = self.retry_delay * (2 ** attempt)
-                        self.logger.info(f"🔄 Retrying in {delay} seconds...")
-                        await asyncio.sleep(delay)
-                        continue
-                    return None
                 except Exception as e:
-                    self.logger.error(f"❌ Unexpected error processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
-                    self.logger.exception(e)  # Log full traceback for debugging
-                    if attempt < self.max_retries - 1:
-                        delay = self.retry_delay * (2 ** attempt)
-                        self.logger.info(f"🔄 Retrying in {delay} seconds...")
-                        await asyncio.sleep(delay)
-                        continue
-                    return None
+                    self.logger.error(f"❌ {description} failed (attempt {attempt + 1}): {str(e)}")
+                    if not await self._sleep_before_retry(attempt):
+                        break
+                    continue
 
-            self.logger.error(f"❌ Failed to process PDF {record_name} after {self.max_retries} attempts")
-            return None
+                if response.status_code == HttpStatusCode.SUCCESS.value:
+                    return await asyncio.to_thread(response.json)
 
-    def _parse_blocks_container(self, block_containers_data) -> BlocksContainer:
-        """
-        Create BlocksContainer object from dictionary or JSON string.
-        This method runs in a thread pool to avoid blocking the event loop.
-        """
-        try:
-            # Handle both dict and JSON string cases
-            if isinstance(block_containers_data, str):
-                block_containers_dict = json.loads(block_containers_data)
-            else:
-                block_containers_dict = block_containers_data
+                self.logger.error(f"❌ {description} returned HTTP {response.status_code}: {response.text}")
+                if not await self._sleep_before_retry(attempt):
+                    break
 
-            return BlocksContainer(**block_containers_dict)
-        except Exception as e:
-            self.logger.error(f"❌ Failed to parse blocks container: {str(e)}")
-            raise
+        self.logger.error(f"❌ {description} failed after {self.max_retries} attempts")
+        return None
 
-    async def parse_pdf(self, record_name: str, pdf_binary: bytes) -> Optional[str]:
+    async def parse_pdf(
+        self,
+        record_name: str,
+        pdf_binary: bytes,
+        page_range: tuple[int, int] | None = None,
+    ) -> Optional[str]:
         """
         Parse PDF using the external Docling service (phase 1 - no block creation).
 
         Args:
             record_name: Name of the record/document
             pdf_binary: Binary PDF data
+            page_range: Optional 1-based inclusive (start, end) page range.
 
         Returns:
             Serialized parse result (JSON-encoded document) if successful, None if failed
         """
-        # Validate pdf_binary type
-        if not isinstance(pdf_binary, bytes):
-            self.logger.error(f"❌ Invalid pdf_binary type: expected bytes, got {type(pdf_binary).__name__}")
+        if not self._validate_pdf_binary(pdf_binary):
             return None
 
-        # Validate payload size
-        if len(pdf_binary) > 100 * 1024 * 1024:  # 100MB limit
-            self.logger.error(f"❌ PDF too large for processing: {len(pdf_binary)} bytes (max: 100MB)")
+        form_data: dict = {"record_name": record_name}
+        if page_range is not None:
+            form_data["start_page"] = str(page_range[0])
+            form_data["end_page"] = str(page_range[1])
+
+        try:
+            response = await self._post_multipart(
+                "/parse-pdf",
+                files={"file": (record_name, pdf_binary, "application/pdf")},
+                data=form_data,
+                operation=f"parse_pdf({record_name})",
+            )
+        except ServiceCallError as exc:
+            self.logger.error(f"❌ Parsing PDF {record_name} failed: {exc}")
             return None
 
-        # Configure httpx with proper connection settings (shorter timeout for parsing)
-        timeout_config = httpx.Timeout(
-            connect=30.0,
-            read=self.timeout,  # 40 minutes for parsing
-            write=30.0,
-            pool=30.0
-        )
-
-        limits = httpx.Limits(
-            max_keepalive_connections=5,
-            max_connections=10,
-            keepalive_expiry=30.0
-        )
-
-        async with httpx.AsyncClient(
-            timeout=timeout_config,
-            limits=limits,
-            http2=True
-        ) as client:
-            for attempt in range(self.max_retries):
-                try:
-                    pdf_base64 = base64.b64encode(pdf_binary).decode('utf-8')
-                    payload = {
-                        "record_name": record_name,
-                        "pdf_binary": pdf_base64
-                    }
-
-                    self.logger.info(f"🚀 Sending PDF parse request for: {record_name} (attempt {attempt + 1}/{self.max_retries})")
-
-                    response = await client.post(
-                        f"{self.service_url}/parse-pdf",
-                        json=payload,
-                        headers=inject_request_headers({
-                            "Content-Type": "application/json",
-                            "Connection": "keep-alive",
-                            "Keep-Alive": "timeout=30"
-                        })
-                    )
-
-                    if response.status_code == HttpStatusCode.SUCCESS.value:
-                        result = await asyncio.to_thread(response.json)
-                        if result.get("success"):
-                            return result["parse_result"]
-                        else:
-                            error_msg = result.get("error", "Unknown error")
-                            self.logger.error(f"❌ Docling service returned error for {record_name}: {error_msg}")
-                            return None
-                    else:
-                        self.logger.error(f"❌ Docling service HTTP error {response.status_code}: {response.text}")
-                        if response.status_code in [502, 503, 504]:
-                            self.logger.warning(f"⚠️ Service temporarily unavailable (HTTP {response.status_code})")
-                        if attempt < self.max_retries - 1:
-                            delay = self.retry_delay * (2 ** attempt)
-                            self.logger.info(f"🔄 Retrying in {delay} seconds...")
-                            await asyncio.sleep(delay)
-                            continue
-                        return None
-
-                except (httpx.TimeoutException, httpx.ConnectError, httpx.WriteError, httpx.RequestError) as e:
-                    self.logger.error(f"❌ Error parsing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
-                    if attempt < self.max_retries - 1:
-                        delay = self.retry_delay * (2 ** attempt)
-                        self.logger.info(f"🔄 Retrying in {delay} seconds...")
-                        await asyncio.sleep(delay)
-                        continue
-                    return None
-                except Exception as e:
-                    self.logger.error(f"❌ Unexpected error parsing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
-                    self.logger.exception(e)
-                    if attempt < self.max_retries - 1:
-                        delay = self.retry_delay * (2 ** attempt)
-                        self.logger.info(f"🔄 Retrying in {delay} seconds...")
-                        await asyncio.sleep(delay)
-                        continue
-                    return None
-
-            self.logger.error(f"❌ Failed to parse PDF {record_name} after {self.max_retries} attempts")
+        try:
+            result = await asyncio.to_thread(response.json)
+        except ValueError:
+            self.logger.error(
+                f"❌ Docling service returned non-JSON body for {record_name} (status {response.status_code})"
+            )
+            return None
+        if not result.get("success"):
+            self.logger.error(f"❌ Docling service returned error for {record_name}: {result.get('error', 'Unknown error')}")
             return None
 
-    async def create_blocks(self, parse_result: str, page_number: int = None) -> Optional[BlocksContainer]:
-        """
-        Create blocks from parse result using the external Docling service (phase 2).
+        return result["parse_result"]
 
-        Args:
-            parse_result: Serialized parse result from parse_pdf
-            page_number: Optional page number for page-specific processing
+    async def parse_pdf_batched(
+        self, record_name: str, pdf_binary: bytes, batch_size: int = PAGE_BATCH_SIZE
+    ) -> Optional[DoclingDocument]:
+        """Parse a PDF via the Docling service, splitting it into page-range batches
+        to cap Docling's peak memory usage, then concatenate the results into a
+        single DoclingDocument.
 
         Returns:
-            BlocksContainer if successful, None if failed
+            DoclingDocument if successful, None if failed
         """
-        # Configure httpx with longer timeout for block creation (involves LLM calls)
-        timeout_config = httpx.Timeout(
-            connect=30.0,
-            read=self.timeout,  # Full timeout for LLM processing
-            write=30.0,
-            pool=30.0
-        )
-
-        limits = httpx.Limits(
-            max_keepalive_connections=5,
-            max_connections=10,
-            keepalive_expiry=30.0
-        )
-
-        async with httpx.AsyncClient(
-            timeout=timeout_config,
-            limits=limits,
-            http2=True
-        ) as client:
-            for attempt in range(self.max_retries):
-                try:
-                    payload = {
-                        "parse_result": parse_result,
-                        "page_number": page_number
-                    }
-
-                    self.logger.info(f"🚀 Sending create blocks request (attempt {attempt + 1}/{self.max_retries})")
-
-                    response = await client.post(
-                        f"{self.service_url}/create-blocks",
-                        json=payload,
-                        headers=inject_request_headers({
-                            "Content-Type": "application/json",
-                            "Connection": "keep-alive",
-                            "Keep-Alive": "timeout=30"
-                        })
-                    )
-
-                    if response.status_code == HttpStatusCode.SUCCESS.value:
-                        result = await asyncio.to_thread(response.json)
-                        if result.get("success"):
-                            block_containers = await asyncio.to_thread(
-                                self._parse_blocks_container,
-                                result["block_containers"]
-                            )
-                            return block_containers
-                        else:
-                            error_msg = result.get("error", "Unknown error")
-                            self.logger.error(f"❌ Docling service returned error: {error_msg}")
-                            return None
-                    else:
-                        self.logger.error(f"❌ Docling service HTTP error {response.status_code}: {response.text}")
-                        if response.status_code in [502, 503, 504]:
-                            self.logger.warning(f"⚠️ Service temporarily unavailable (HTTP {response.status_code})")
-                        if attempt < self.max_retries - 1:
-                            delay = self.retry_delay * (2 ** attempt)
-                            self.logger.info(f"🔄 Retrying in {delay} seconds...")
-                            await asyncio.sleep(delay)
-                            continue
-                        return None
-
-                except (httpx.TimeoutException, httpx.ConnectError, httpx.WriteError, httpx.RequestError) as e:
-                    self.logger.error(f"❌ Error creating blocks (attempt {attempt + 1}): {str(e)}")
-                    if attempt < self.max_retries - 1:
-                        delay = self.retry_delay * (2 ** attempt)
-                        self.logger.info(f"🔄 Retrying in {delay} seconds...")
-                        await asyncio.sleep(delay)
-                        continue
-                    return None
-                except Exception as e:
-                    self.logger.error(f"❌ Unexpected error creating blocks (attempt {attempt + 1}): {str(e)}")
-                    self.logger.exception(e)
-                    if attempt < self.max_retries - 1:
-                        delay = self.retry_delay * (2 ** attempt)
-                        self.logger.info(f"🔄 Retrying in {delay} seconds...")
-                        await asyncio.sleep(delay)
-                        continue
-                    return None
-
-            self.logger.error(f"❌ Failed to create blocks after {self.max_retries} attempts")
+        if not self._validate_pdf_binary(pdf_binary):
             return None
+
+        try:
+            page_count = await asyncio.to_thread(get_pdf_page_count, pdf_binary)
+        except Exception as e:
+            self.logger.error(f"❌ Failed to read page count for {record_name}: {str(e)}")
+            return None
+
+        if page_count <= batch_size:
+            serialized = await self.parse_pdf(record_name, pdf_binary)
+            if serialized is None:
+                return None
+            return await asyncio.to_thread(DoclingDocument.model_validate_json, serialized)
+
+        self.logger.info(
+            f"Parsing '{record_name}' ({page_count} pages) in batches of {batch_size} pages"
+        )
+        docs: list[DoclingDocument] = []
+        for start in range(1, page_count + 1, batch_size):
+            end = min(start + batch_size - 1, page_count)
+            serialized = await self.parse_pdf(record_name, pdf_binary, page_range=(start, end))
+            if serialized is None:
+                return None
+            docs.append(await asyncio.to_thread(DoclingDocument.model_validate_json, serialized))
+            self.logger.info(f"Parsed pages {start}-{end} of {page_count} for '{record_name}'")
+
+        merged = await asyncio.to_thread(DoclingDocument.concatenate, docs)
+        # concatenate() names the result by joining every input name with " + ".
+        merged.name = record_name
+        return merged
 
     async def _check_service_health(self, client: httpx.AsyncClient) -> bool:
         """

@@ -178,6 +178,11 @@ export function logoutAndRedirect(): void {
   window.location.href = '/login';
 }
 
+export function requestElectronServerUrlChange(): void {
+  if (typeof window === 'undefined' || !isElectron()) return;
+  clearElectronLogoutServerState();
+  window.dispatchEvent(new CustomEvent(ELECTRON_SERVER_URL_NAVIGATION_EVENT));
+}
 /**
  * Workspace menu logout: web → same as session-expiry logout; Electron → clear
  * server URL ack (keep last URL for pre-fill), then route through ServerUrlGuard's
@@ -186,6 +191,7 @@ export function logoutAndRedirect(): void {
 export function logoutFromWorkspaceMenu(): void {
   if (typeof window !== 'undefined' && isElectron()) {
     useAuthStore.getState().logout();
+    requestElectronServerUrlChange();
     clearElectronLogoutServerState();
     window.dispatchEvent(new CustomEvent(ELECTRON_SERVER_URL_NAVIGATION_EVENT));
     return;

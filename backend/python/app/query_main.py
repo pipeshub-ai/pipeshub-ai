@@ -1,6 +1,7 @@
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -21,14 +22,16 @@ from app.api.routes.health import router as health_router
 from app.api.routes.search import router as search_router
 from app.api.routes.ai_models_registry import router as ai_models_registry_router
 from app.api.routes.speech import router as speech_router
+from app.api.routes.skills import router as skills_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.containers.query import QueryAppContainer
 from app.health.health import Health
-from app.services.messaging.config import get_message_broker_type
+from app.services.messaging.config import MessageBrokerType, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.telemetry.setup import setup_telemetry
+from app.utils.llm_api_mode_store import get_llm_api_mode_store
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 container = QueryAppContainer.init("query_service")
@@ -53,6 +56,13 @@ async def initialize_container(container: QueryAppContainer) -> bool:
         # Store the resolved graph_provider in the container to avoid coroutine reuse
         container._graph_provider = graph_provider
         logger.info("✅ Graph Database Provider initialized and connected")
+
+        # Load previously-learned LLM API-mode facts (Responses vs. Chat
+        # Completions) before any request can build a model — see
+        # `app/utils/llm_api_mode_store.py`. Best-effort: a failed load
+        # just means the heuristic-only path is used until the next
+        # `llmConfigured` event refreshes it.
+        await get_llm_api_mode_store(container.config_service()).load()
 
         return True
 
@@ -82,12 +92,19 @@ async def start_kafka_consumers(app_container: QueryAppContainer) -> list:
     broker_type = get_message_broker_type()
 
     try:
+        # Create RetryManager for persistent failure retry tracking
+        redis_config = await MessagingUtils._get_redis_config(app_container)
+        retry_manager = MessagingFactory.create_retry_manager(logger, redis_config)
+        await retry_manager.initialize()
+        logger.info("✅ RetryManager initialized for %s consumer", broker_type.value)
+
         logger.info(f"🚀 Starting AI Config Consumer (broker: {broker_type})...")
         aiconfig_config = await MessagingUtils.create_aiconfig_consumer_config(app_container)
         aiconfig_consumer = MessagingFactory.create_consumer(
             broker_type=broker_type,
             logger=logger,
-            config=aiconfig_config
+            config=aiconfig_config,
+            retry_manager=retry_manager
         )
         aiconfig_message_handler = await KafkaUtils.create_aiconfig_message_handler(app_container)
         await aiconfig_consumer.start(aiconfig_message_handler)
@@ -151,6 +168,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
+    # KB uploads made through chat index in this process, so it invalidates too.
+    try:
+        from app.services.cache.invalidation_hooks import (
+            init_accessible_records_invalidator,
+        )
+        init_accessible_records_invalidator(
+            logger, await app_container.accessible_records_cache(), graph_provider
+        )
+    except Exception as e:
+        logger.warning(f"❌ Failed to register accessible-records invalidator: {e}")
+
     # Start all message consumers centrally
     try:
         consumers = await start_kafka_consumers(app_container)
@@ -188,22 +216,58 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         app.state.embedding_warmup_task = asyncio.create_task(_warmup_embedding_model())
 
+        # For OpenSearch: pre-load the k-NN HNSW graphs into the OS page cache
+        # so that the first search after a restart or force-merge is not blocked
+        # by mmap I/O. This is a best-effort operation — a non-OpenSearch provider
+        # or a missing collection (first run, no data yet) simply skips silently.
+        async def _warmup_knn_index() -> None:
+            try:
+                from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
+                vector_db_svc = await container.vector_db_service()
+                if not hasattr(vector_db_svc, "warmup"):
+                    return
+                collection_exists = await vector_db_svc.collection_exists(VECTOR_DB_COLLECTION_NAME)
+                if not collection_exists:
+                    logger.info(
+                        f"k-NN warmup skipped — collection '{VECTOR_DB_COLLECTION_NAME}' "
+                        "does not exist yet"
+                    )
+                    return
+                logger.info(
+                    f"🔥 Warming up k-NN index for collection '{VECTOR_DB_COLLECTION_NAME}'"
+                )
+                await vector_db_svc.warmup(VECTOR_DB_COLLECTION_NAME)
+                logger.info("✅ k-NN index warmup complete")
+            except Exception as warmup_error:
+                logger.warning(
+                    f"k-NN index warmup failed (non-fatal, search will still work): {warmup_error}"
+                )
+
+        app.state.knn_warmup_task = asyncio.create_task(_warmup_knn_index())
+
     # Initialize toolset registry for agent tool execution.
     # auto_discover_toolsets() imports ~20 heavy SDK modules (Google, Microsoft,
     # Slack, …) synchronously. Offload to a worker thread so the event loop
     # stays responsive and the lifespan completes faster.
     logger.info("🔄 Initializing in-memory toolset registry for agents...")
     from app.agents.registry.toolset_registry import get_toolset_registry
-    from app.agents.tools.registry import _global_tools_registry
 
     toolset_registry = get_toolset_registry()
     await asyncio.to_thread(toolset_registry.auto_discover_toolsets)
     app.state.toolset_registry = toolset_registry
     logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
 
-    # Log tool count from in-memory registry
-    tool_count = len(_global_tools_registry.list_tools())
-    logger.info(f"✅ {tool_count} tools available from in-memory registry")
+    # Initialize MCP catalog registry (mirrors the toolset registry above) — needed
+    # by `get_assistant_agent`'s `mcpServers` resolution and by the agent-loop
+    # runtime's `MCPToolProvider`/`MCPAccessResolver`. Lightweight (no heavy SDK
+    # imports, unlike the toolset registry), so no `to_thread` offload needed.
+    logger.info("🔄 Initializing in-memory MCP server registry for agents...")
+    from app.agents.mcp.registry import get_mcp_registry
+
+    mcp_registry = get_mcp_registry()
+    mcp_registry.auto_discover_templates()
+    app.state.mcp_registry = mcp_registry
+    logger.info(f"✅ Loaded {len(mcp_registry.list_templates())} MCP server templates in memory")
 
     yield
     # Shutdown
@@ -212,14 +276,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
 
-    # Cancel embedding warmup task if it is still running.
-    warmup_task: asyncio.Task | None = getattr(app.state, "embedding_warmup_task", None)
-    if warmup_task is not None and not warmup_task.done():
-        warmup_task.cancel()
-        try:
-            await warmup_task
-        except (asyncio.CancelledError, Exception):
-            pass
+    # Cancel background warmup tasks if still running.
+    for _warmup_attr in ("embedding_warmup_task", "knn_warmup_task"):
+        warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
+        if warmup_task is not None and not warmup_task.done():
+            warmup_task.cancel()
+            try:
+                await warmup_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     # Stop all message consumers
     try:
@@ -241,6 +306,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ PDF rasterization process pool shut down")
     except Exception as e:
         logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
+
+    try:
+        from app.modules.transformers.blob_storage import (
+            close_shared_redis,
+            close_shared_session,
+        )
+        await close_shared_session()
+        await close_shared_redis()
+        logger.info("✅ Blob storage session closed")
+    except Exception as e:
+        logger.error(f"❌ Error closing blob storage session: {e}")
+
+    try:
+        accessible_records_cache = await app_container.accessible_records_cache()
+        await accessible_records_cache.close()
+        logger.info("✅ Accessible-records cache closed")
+    except Exception as e:
+        logger.error(f"❌ Error closing accessible-records cache: {e}")
 
 
 # Create FastAPI app with lifespan
@@ -304,12 +387,12 @@ async def health_check() -> JSONResponse:
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
-    except Exception as e:
+    except Exception:
+        logging.getLogger(__name__).error("Health check failed", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
                 "status": "unhealthy",
-                "error": str(e),
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -341,6 +424,7 @@ app.include_router(search_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(speech_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")
+app.include_router(skills_router, prefix="/api/v1/skills")
 app.include_router(toolsets_router)
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(ai_models_registry_router, prefix="/api/v1")

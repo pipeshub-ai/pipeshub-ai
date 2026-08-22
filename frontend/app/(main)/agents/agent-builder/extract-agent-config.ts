@@ -4,6 +4,8 @@ import type {
   AgentFormPayload,
   AgentWebSearchAttachment,
   KnowledgeReference,
+  McpServerReference,
+  SkillReference,
   ToolsetReference,
 } from './types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
@@ -204,20 +206,12 @@ export function extractAgentConfigFromFlow(
       if (connectedKnowledgeNodeIds.has(node.id)) {
         const kbId = cfg.kbId as string | undefined;
         if (kbId) {
-          const kbConnectorInstanceId =
-            (cfg.connectorInstanceId as string) || (cfg.kbConnectorId as string);
-          if (!kbConnectorInstanceId) {
-            console.warn(`KB node ${kbId} missing connectorInstanceId. Using KB ID as fallback.`);
-          }
-          const filters = {
-            recordGroups: [kbId],
-            records: (cfg.selectedRecords as string[]) || (cfg.filters as { records?: string[] })?.records || [],
-            ...((cfg.filters as object) || {}),
-          };
-          if (!filters.recordGroups.includes(kbId)) {
-            filters.recordGroups = [kbId, ...filters.recordGroups];
-          }
-          addKnowledgeSource(kbConnectorInstanceId || kbId, filters, 'knowledge');
+          // Each collection is its own knowledge entry keyed by kbId as connectorId,
+          // so multiple collections never collapse into a single connector entry on save.
+          const nodeFilters = (cfg.filters as Record<string, unknown>) || {};
+          const records =
+            (cfg.selectedRecords as string[]) || (nodeFilters.records as string[]) || [];
+          addKnowledgeSource(kbId, { ...nodeFilters, records }, 'knowledge');
         }
       }
     } else if (nt.startsWith('app-') && nt !== 'app-group') {
@@ -272,25 +266,14 @@ export function extractAgentConfigFromFlow(
     const cfg = kbGroupNode.data.config ?? {};
     const selectedKBs = cfg.selectedKBs as string[] | undefined;
     if (isKBGroupConnected && selectedKBs) {
-      const kbConnectorIds = (cfg.kbConnectorIds as Record<string, string>) || {};
-      const sharedConnectorId =
-        (cfg.connectorInstanceId as string) || (cfg.kbConnectorId as string);
       selectedKBs.forEach((kbId) => {
-        let connectorId = kbConnectorIds[kbId] || sharedConnectorId;
-        if (!connectorId) {
-          console.warn(`KB group: KB ${kbId} missing connectorId. Using KB ID as fallback.`);
-          connectorId = kbId;
-        }
-        const kbSpecificFilters = (cfg.kbFilters as Record<string, { records?: string[] }>)?.[kbId] || {};
-        const filters = {
-          ...kbSpecificFilters,
-          recordGroups: [kbId],
-          records: kbSpecificFilters.records || [],
-        };
-        if (!filters.recordGroups.includes(kbId)) {
-          filters.recordGroups = [kbId, ...filters.recordGroups];
-        }
-        addKnowledgeSource(connectorId, filters, 'knowledge');
+        const kbSpecificFilters = (cfg.kbFilters as Record<string, Record<string, unknown>>)?.[kbId] || {};
+        // Key each collection by its own kbId so collections stay separate entries.
+        addKnowledgeSource(
+          kbId,
+          { ...kbSpecificFilters, records: (kbSpecificFilters.records as string[]) || [] },
+          'knowledge'
+        );
       });
     }
   }
@@ -320,6 +303,49 @@ export function extractAgentConfigFromFlow(
       }
     }
   }
+
+  const skillNames = new Set<string>();
+  if (agentCoreNode) {
+    edges.forEach((edge) => {
+      if (edge.target !== agentCoreNode.id || edge.targetHandle !== 'skills') return;
+      const sourceNode = nodes.find((n) => n.id === edge.source);
+      const st = sourceNode?.data?.type ?? '';
+      if (!st.startsWith('skill-')) return;
+      const skillName = (sourceNode!.data.config?.skillName as string) || st.slice('skill-'.length);
+      if (skillName) skillNames.add(skillName);
+    });
+  }
+  const skills: SkillReference[] = Array.from(skillNames).map((name) => ({ name }));
+
+  const mcpServersByInstanceId = new Map<string, McpServerReference>();
+  if (agentCoreNode) {
+    edges.forEach((edge) => {
+      if (edge.target !== agentCoreNode.id || edge.targetHandle !== 'mcpServers') return;
+      const sourceNode = nodes.find((n) => n.id === edge.source);
+      const st = sourceNode?.data?.type ?? '';
+      if (!st.startsWith('mcp-')) return;
+      const cfg = (sourceNode!.data.config || {}) as Record<string, unknown>;
+      const instanceId = (cfg.instanceId as string) || st.slice('mcp-'.length);
+      if (!instanceId || mcpServersByInstanceId.has(instanceId)) return;
+      const name = (cfg.name as string) || (cfg.displayName as string) || sourceNode!.data.label || '';
+      if (!name) return;
+      const toolsCfg = (cfg.tools as { name?: string; fullName?: string; description?: string }[]) || [];
+      mcpServersByInstanceId.set(instanceId, {
+        instanceId,
+        name,
+        displayName: (cfg.displayName as string) || undefined,
+        typeId: (cfg.typeId as string) || undefined,
+        tools: toolsCfg
+          .filter((tool) => tool.name)
+          .map((tool) => ({
+            name: tool.name!,
+            fullName: tool.fullName || `${name}.${tool.name}`,
+            description: tool.description || '',
+          })),
+      });
+    });
+  }
+  const mcpServers: McpServerReference[] = Array.from(mcpServersByInstanceId.values());
 
   const toolsets: ToolsetReference[] = toolsetsInternal.map((ts) => ({
     id: ts.instanceId || ts.name,
@@ -353,8 +379,13 @@ export function extractAgentConfigFromFlow(
     instructions: agentCoreNode
       ? (coreCfg.instructions as string | undefined)
       : currentAgent?.instructions,
+    defaultReasoningEffort: agentCoreNode
+      ? ((coreCfg.defaultReasoningEffort as AgentFormPayload['defaultReasoningEffort']) ?? null)
+      : (currentAgent?.defaultReasoningEffort ?? null),
     toolsets,
     knowledge,
+    skills,
+    mcpServers,
     models,
     webSearch,
     tags: currentAgent?.tags?.length ? currentAgent.tags : ['flow-based', 'visual-workflow'],

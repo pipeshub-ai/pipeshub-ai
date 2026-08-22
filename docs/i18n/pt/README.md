@@ -44,7 +44,7 @@
   <a href="https://www.npmjs.com/package/@pipeshub-ai/sdk"><img src="https://img.shields.io/npm/v/@pipeshub-ai/sdk?logo=npm&amp;logoColor=white&amp;label=node%20sdk" alt="Node.js SDK" /></a>
   <a href="https://pypi.org/project/pipeshub-sdk/"><img src="https://img.shields.io/pypi/v/pipeshub-sdk?logo=python&amp;logoColor=white&amp;label=python%20sdk" alt="Python SDK" /></a>
   <a href="https://github.com/pipeshub-ai/pipeshub-sdk-go"><img src="https://img.shields.io/github/v/release/pipeshub-ai/pipeshub-sdk-go?logo=go&amp;logoColor=white&amp;label=go%20sdk" alt="Go SDK" /></a>
-  <a href="https://www.npmjs.com/package/pipeshub"><img src="https://img.shields.io/npm/v/pipeshub?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
+  <a href="https://www.npmjs.com/package/@pipeshub-ai/mcp"><img src="https://img.shields.io/npm/v/@pipeshub-ai/mcp?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
 </p>
 
 </div>
@@ -122,7 +122,6 @@
 |-----------|-------------|
 | FastAPI | Framework web Python de alto desempenho |
 | LangChain | Framework para pipelines de LLM |
-| LangGraph | Grafo de estados para fluxos de trabalho de LLM |
 | Qdrant | Mecanismo de busca por similaridade vetorial |
 | Neo4j / ArangoDB | Banco de dados de grafos |
 | Kafka / Redis Streams | Plataforma distribuída de streaming de eventos |
@@ -265,7 +264,7 @@ Observação: Use HTTPS para implantações na nuvem. O HTTP pode causar bloquei
 
 ### Quais provedores de LLM o PipesHub suporta?
 
-O PipesHub é "Use seu próprio modelo" — você pode usar qualquer provedor de LLM. Implante na sua VPC com os modelos de sua preferência. O stack tecnológico inclui LangChain e LangGraph para pipelines e fluxos de trabalho de LLM.
+O PipesHub é "Use seu próprio modelo" — você pode usar qualquer provedor de LLM. Implante na sua VPC com os modelos de sua preferência. O stack tecnológico inclui LangChain para pipelines e fluxos de trabalho de LLM.
 
 ### O que é o recurso de recuperação por grafo de conhecimento?
 

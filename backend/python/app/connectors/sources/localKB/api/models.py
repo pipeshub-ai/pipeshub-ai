@@ -53,7 +53,8 @@ class CreateKnowledgeBaseRequest(BaseModel):
 
 class UpdateKnowledgeBaseRequest(BaseModel):
     """Request model for updating a knowledge base"""
-    groupName: Optional[str] = Field(None, description="Name of the knowledge base", min_length=1, max_length=255)
+    name: Optional[str] = Field(None, description="Name of the knowledge base", min_length=1, max_length=255)
+    description: Optional[str] = Field(None, description="Description of the knowledge base", max_length=2000)
 
 
 class CreateFolderRequest(BaseModel):
@@ -160,7 +161,7 @@ class KnowledgeBaseResponse(BaseModel):
     """Response model for knowledge base information"""
     id: str = Field(..., description="Knowledge base ID")
     name: str = Field(..., description="Knowledge base name")
-    connectorId: Optional[str] = Field(None, description="KB connector instance ID (e.g., 'knowledgeBase_orgId')")
+    connectorId: Optional[str] = Field(None, description="KB connector instance ID (UUID of the KB app)")
     createdAtTimestamp: int = Field(..., description="Creation timestamp")
     updatedAtTimestamp: int = Field(..., description="Update timestamp")
     createdBy: str = Field(..., description="Created by user ID")

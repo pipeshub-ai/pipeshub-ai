@@ -15,13 +15,14 @@ import { ConfigurationManagerService } from '../services/cm.service';
 import { TeamsController } from '../controller/teams.controller';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
 import * as messageBrokerFactory from '../../../libs/services/message-broker.factory';
+import { NotificationProducer } from '../../notification/service/notification.producer';
 
 const loggerConfig = {
   service: 'User Manager Container',
 };
 export class UserManagerContainer {
-  private static instance: Container;
-  private static logger: Logger = Logger.getInstance(loggerConfig);
+  protected static instance: Container;
+  protected static logger: Logger = Logger.getInstance(loggerConfig);
 
   static async initialize(
     configurationManagerConfig: ConfigurationManagerConfig,
@@ -42,7 +43,7 @@ export class UserManagerContainer {
     this.instance = container;
     return container;
   }
-  private static async initializeServices(
+  protected static async initializeServices(
     container: Container,
     appConfig: AppConfig,
   ): Promise<void> {
@@ -91,6 +92,14 @@ export class UserManagerContainer {
         .bind<EntitiesEventProducer>('EntitiesEventProducer')
         .toConstantValue(entityEventsService);
 
+      const notificationProducer = new NotificationProducer(
+        messageProducer,
+        container.get('Logger'),
+      );
+      container
+        .bind<NotificationProducer>('NotificationProducer')
+        .toConstantValue(notificationProducer);
+
       // Rebind controllers
       container.bind<OrgController>('OrgController').toDynamicValue(() => {
         return new OrgController(
@@ -112,6 +121,7 @@ export class UserManagerContainer {
           container.get<AuthService>('AuthService'),
           container.get('Logger'),
           container.get<EntitiesEventProducer>('EntitiesEventProducer'),
+          container.get<NotificationProducer>('NotificationProducer'),
         );
       });
 

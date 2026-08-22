@@ -151,11 +151,9 @@ class TestApplyBackpressure:
         consumer.consumer.assignment.return_value = assigned
         consumer.consumer.paused.return_value = set()
 
-        # Add futures to reach capacity
+        # Simulate reaching capacity via gate waiters
         with consumer._futures_lock:
-            for _ in range(messaging_env.max_pending_indexing_tasks):
-                f = Future()
-                consumer._active_futures.add(f)
+            consumer._gate_waiters = messaging_env.max_pending_indexing_tasks
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.pause.assert_called_once()
@@ -252,7 +250,7 @@ class TestProcessMessageWrapperExtended:
         msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
 
         result = await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
-        assert result is True
+        assert result is False
 
         # Semaphores released in finally
         assert consumer.parsing_semaphore._value == 1

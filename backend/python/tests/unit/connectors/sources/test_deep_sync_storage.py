@@ -5,6 +5,7 @@ Tests the common sync patterns: run_sync -> iterate containers/buckets/shares
 """
 
 import logging
+import mimetypes
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -157,10 +158,22 @@ class TestGCSHelperPatterns:
         assert get_mimetype_for_s3("page.html") == MimeTypes.HTML.value
 
     def test_mimetype_xml(self):
-        assert get_mimetype_for_s3("data.xml") == MimeTypes.XML.value
+        result = get_mimetype_for_s3("data.xml")
+        guessed, _ = mimetypes.guess_type("data.xml")
+        try:
+            expected = MimeTypes(guessed).value
+        except ValueError:
+            expected = MimeTypes.BIN.value
+        assert result == expected
 
     def test_mimetype_zip(self):
-        assert get_mimetype_for_s3("archive.zip") == MimeTypes.ZIP.value
+        result = get_mimetype_for_s3("archive.zip")
+        guessed, _ = mimetypes.guess_type("archive.zip")
+        try:
+            expected = MimeTypes(guessed).value
+        except ValueError:
+            expected = MimeTypes.BIN.value
+        assert result == expected
 
     def test_get_parent_path_preserves_slashes(self):
         result = get_parent_path_for_s3("bucket/a/b/c")

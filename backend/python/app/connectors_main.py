@@ -1,6 +1,8 @@
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 
 import asyncio
+import logging
+import os
 import traceback
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -15,17 +17,25 @@ from app.api.middlewares.request_context import RequestContextMiddleware
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
+from app.agents.mcp.registry import get_mcp_registry
+from app.agents.registry.toolset_registry import get_toolset_registry
 from app.api.routes.entity import router as entity_router
+from app.api.routes.mcp_servers import router as mcp_servers_router
 from app.api.routes.toolsets import router as toolsets_router
-from app.config.constants.arangodb import AccountType
+from app.config.constants.arangodb import AccountType, CollectionNames
+from app.config.constants.service import config_node_constants
 from app.connectors.api.router import router
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector_registry import (
     ConnectorRegistry,
 )
-from app.connectors.core.sync.task_manager import sync_task_manager
+from app.connectors.core.registry.oauth_config_registry import get_oauth_config_registry
+from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
 from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.connectors.sources.localKB.api.knowledge_hub_router import knowledge_hub_router
 from app.containers.connector import (
@@ -36,6 +46,7 @@ from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -74,9 +85,6 @@ async def refresh_toolset_tokens(app_container: ConnectorAppContainer) -> bool:
     logger.info("🔄 Triggering initial toolset token refresh...")
 
     try:
-        from app.connectors.core.base.token_service.startup_service import (
-            startup_service,
-        )
         toolset_refresh_service = startup_service.get_toolset_token_refresh_service()
 
         if not toolset_refresh_service:
@@ -158,6 +166,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                         connector_id=connector_id,
                         scope=scope,
                         created_by=created_by,
+                        org_id=org_id,
                         notification_service=app_container.connector_notification_service(),
                     )
                 except Exception as e:
@@ -248,13 +257,20 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_prov
     broker_type = get_message_broker_type()
 
     try:
+        # Create RetryManager for persistent failure retry tracking
+        redis_config = await MessagingUtils._get_redis_config(app_container)
+        retry_manager = MessagingFactory.create_retry_manager(logger, redis_config)
+        await retry_manager.initialize()
+        logger.info("✅ RetryManager initialized for %s consumers", broker_type.value)
+
         # 1. Create Entity Consumer
         logger.info(f"🚀 Starting Entity Consumer (broker: {broker_type})...")
         entity_config = await MessagingUtils.create_entity_consumer_config(app_container)
         entity_consumer = MessagingFactory.create_consumer(
             broker_type=broker_type,
             logger=logger,
-            config=entity_config
+            config=entity_config,
+            retry_manager=retry_manager
         )
         entity_message_handler = await KafkaUtils.create_entity_message_handler(app_container, graph_provider)
         await entity_consumer.start(entity_message_handler)
@@ -267,7 +283,8 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_prov
         sync_consumer = MessagingFactory.create_consumer(
             broker_type=broker_type,
             logger=logger,
-            config=sync_config
+            config=sync_config,
+            retry_manager=retry_manager
         )
         sync_message_handler = await KafkaUtils.create_sync_message_handler(app_container, graph_provider)
         await sync_consumer.start(sync_message_handler)
@@ -323,12 +340,17 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
     logger = container.logger()
 
     try:
-        # Cancel all running connector sync tasks first so they can clean up
+        # Cancel all running connector sync/reindex tasks first so they can clean up
         # gracefully before the database and messaging connections are torn down
         try:
             await sync_task_manager.cancel_all()
         except Exception as e:
             logger.warning(f"Error cancelling sync tasks at shutdown: {e}")
+
+        try:
+            await reindex_task_manager.cancel_all()
+        except Exception as e:
+            logger.warning(f"Error cancelling reindex tasks at shutdown: {e}")
 
         # Stop message consumers
         await stop_kafka_consumers(container)
@@ -356,9 +378,6 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
 
 async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60) -> None:
     """Periodically refresh the connector_active gauge; best-effort, never fatal."""
-    from app.config.constants.arangodb import CollectionNames
-    from app.telemetry.modules.connector_metrics import set_connector_active
-
     while True:
         try:
             docs = await graph_provider.get_all_documents(CollectionNames.APPS.value)
@@ -393,6 +412,31 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = app_container.logger()
     graph_provider = data_store.graph_provider
 
+    # Shared KB entities processor: routes KB (Collections) CRUD through the same
+    # DataSourceEntitiesProcessor connectors use. Initialized once (sets up the Kafka
+    # producer). Org-agnostic — kb_service sets record.org_id from the request org.
+    kb_entities_processor = DataSourceEntitiesProcessor(
+        logger, data_store, app_container.config_service()
+    )
+    await kb_entities_processor.initialize()
+    app.state.kb_entities_processor = kb_entities_processor
+    logger.info("✅ KB entities processor initialized")
+
+    # Sync completion and KB deletes happen here; both drop the query service's
+    # cached accessible-record maps.
+    try:
+        from app.services.cache.accessible_records_cache import AccessibleRecordsCache
+        from app.services.cache.invalidation_hooks import (
+            init_accessible_records_invalidator,
+        )
+        accessible_records_cache = await AccessibleRecordsCache.create(
+            logger, app_container.config_service()
+        )
+        app.state.accessible_records_cache = accessible_records_cache
+        init_accessible_records_invalidator(logger, accessible_records_cache, graph_provider)
+    except Exception as e:
+        logger.warning(f"❌ Failed to register accessible-records invalidator: {e}")
+
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
     except Exception as e:
@@ -416,23 +460,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Initialize toolset registry (in-memory, fast tool lookup)
     logger.info("🔄 Initializing in-memory toolset registry...")
-    from app.agents.registry.toolset_registry import get_toolset_registry
-    from app.agents.tools.registry import _global_tools_registry
-
     toolset_registry = get_toolset_registry()
     toolset_registry.auto_discover_toolsets()
     app.state.toolset_registry = toolset_registry
     logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
 
-    # Log tool count from in-memory registry
-    tool_count = len(_global_tools_registry.list_tools())
-    logger.info(f"✅ {tool_count} tools available from in-memory registry")
+    # Initialize MCP server catalog registry (in-memory, mirrors the toolset registry)
+    logger.info("🔄 Initializing in-memory MCP server registry...")
+    mcp_registry = get_mcp_registry()
+    mcp_registry.auto_discover_templates()
+    app.state.mcp_registry = mcp_registry
+    logger.info(f"✅ Loaded {len(mcp_registry.list_templates())} MCP server templates in memory")
 
     # Initialize OAuth config registry (completely independent, no connector registry needed)
     # Note: OAuth registry is populated when connectors are registered above
-    from app.connectors.core.registry.oauth_config_registry import (
-        get_oauth_config_registry,
-    )
     oauth_registry = get_oauth_config_registry()
     app.state.oauth_config_registry = oauth_registry
     logger.info("✅ OAuth config registry initialized")
@@ -442,6 +483,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Start messaging producer first
     try:
         await start_messaging_producer(app_container)
+        startup_service.set_messaging_producer(app_container.messaging_producer)
         logger.info("✅ Messaging producer started successfully")
     except Exception as e:
         logger.error(f"❌ Failed to start messaging producer: {str(e)}")
@@ -492,6 +534,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
+    try:
+        accessible_records_cache = getattr(app.state, "accessible_records_cache", None)
+        if accessible_records_cache is not None:
+            await accessible_records_cache.close()
+            logger.info("✅ Accessible-records cache closed")
+    except Exception as e:
+        logger.error(f"❌ Error closing accessible-records cache: {e}")
     # Shutdown all container resources
     try:
         await shutdown_container_resources(app_container)
@@ -513,6 +562,7 @@ app = FastAPI(
 EXCLUDE_PATHS = [
     "/health",          # Basic health check endpoint
     "/health/graph-db", # Graph DB connectivity probe (called by Node.js health route)
+    "/health/vector-db", # Vector DB connectivity probe (called by Node.js health route)
     "/drive/webhook",   # Google Drive webhook (has its own WebhookAuthVerifier)
     "/gmail/webhook",   # Gmail webhook (uses Google Pub/Sub authentication)
     "/admin/webhook",   # Admin webhook (has its own WebhookAuthVerifier)
@@ -593,12 +643,12 @@ async def health_check() -> JSONResponse:
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
-    except Exception as e:
+    except Exception:
+        logging.getLogger(__name__).error("Health check failed", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
                 "status": "fail",
-                "error": str(e),
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -613,16 +663,11 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
     performing its own probes (which fail for managed deployments like Neo4j
     Aura that don't expose HTTP discovery ports 7474/7473).
     """
-    import asyncio
-    import os
-
     data_store = os.getenv("DATA_STORE", "arangodb").lower()
 
     # ── ArangoDB ──────────────────────────────────────────────────────────────
     if data_store == "arangodb":
         try:
-            from app.config.constants.service import config_node_constants
-
             container = request.app.container  # type: ignore[attr-defined]
             config_service = container.config_service()
             arangodb_config = await config_service.get_config(
@@ -707,9 +752,76 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
     )
 
 
+@router.get("/health/vector-db")
+async def vector_db_health_check(request: Request) -> JSONResponse:
+    """Probe the configured vector database.
+
+    Uses VECTOR_DB_TYPE to determine which provider to check (qdrant, opensearch,
+    or redis). Called by the Node.js health endpoint so it doesn't need to know
+    which vector DB is deployed.
+
+    The provider is created once and cached on app.state for subsequent calls.
+    """
+    from app.services.vector_db.models import HealthStatus
+    from app.services.vector_db.vector_db_provider_factory import VectorDBProviderFactory
+    from app.utils.logger import create_logger
+
+    vector_db_type = os.getenv("VECTOR_DB_TYPE", "qdrant").lower().strip()
+
+    try:
+        # Reuse cached provider to avoid re-creating on every health check call
+        provider = getattr(request.app.state, "_vector_db_health_provider", None)
+        if provider is None:
+            logger = create_logger("vector_db_health")
+            container = request.app.container  # type: ignore[attr-defined]
+            config_service = container.config_service()
+            provider = await VectorDBProviderFactory.create_provider(
+                logger=logger,
+                config_service=config_service,
+            )
+            request.app.state._vector_db_health_provider = provider
+
+        result = await provider.health_check()
+
+        if result.status == HealthStatus.HEALTHY:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "healthy",
+                    "provider": vector_db_type,
+                    "version": result.server_version,
+                    "latency_ms": result.latency_ms,
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
+        else:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "unhealthy",
+                    "provider": vector_db_type,
+                    "error": result.message or f"{vector_db_type} health check failed",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
+    except Exception as e:
+        # Clear cached provider so next call retries connection
+        request.app.state._vector_db_health_provider = None
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "provider": vector_db_type,
+                "error": f"Vector DB ({vector_db_type}) health check failed: {str(e)}",
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
+
+
 # Include routes - more specific routes first
 app.include_router(entity_router)
 app.include_router(toolsets_router)
+app.include_router(mcp_servers_router)
 app.include_router(kb_router)
 app.include_router(knowledge_hub_router)
 app.include_router(router)
@@ -727,8 +839,28 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     )
 
 
-def run(host: str = "0.0.0.0", port: int = 8088, workers: int = 1, reload: bool = True) -> None:
-    """Run the application"""
+def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, reload: bool = True) -> None:
+    """Run the application.
+
+    ``workers`` defaults to ``CONNECTOR_UVICORN_WORKERS`` (default ``1``,
+    matching docling/indexing/parsing's own env-var pattern). Raising this
+    above 1 gives the single-threaded event loop more headroom to serve
+    concurrent ``/stream/record`` requests during a large sync instead of
+    queuing behind it — but every uvicorn worker is a separate OS process,
+    and this service's cross-request dedup (``sync_task_manager`` /
+    ``reindex_task_manager`` in
+    ``app.connectors.core.sync.task_manager``) is an in-memory dict keyed
+    per process, not shared across workers. With >1 worker, a duplicate
+    sync/reindex request landing on a different worker than the in-flight
+    one will not be recognised as a duplicate and can run concurrently.
+    Only raise this if that is an acceptable tradeoff for your deployment,
+    or once that dedup is moved to a shared store (Redis lock/lease).
+    """
+    if workers is None:
+        try:
+            workers = max(1, int(os.getenv("CONNECTOR_UVICORN_WORKERS", "1")))
+        except ValueError:
+            workers = 1
     if reload and workers > 1:
         workers = 1
     uvicorn.run(

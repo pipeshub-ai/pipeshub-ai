@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 import pytest
 
-from app.config.constants.arangodb import Connectors, OriginTypes
+from app.config.constants.arangodb import Connectors, OriginTypes, RecordRelations
 from app.models.blocks import BlockType, GroupType
 from app.models.entities import (
     FileRecord,
@@ -38,7 +38,10 @@ from app.utils.chat_helpers import (
     create_block_from_metadata,
     create_record_instance_from_dict,
     context_includes_jira_tickets,
+    enrich_records_with_graph_context,
     enrich_virtual_record_id_to_result_with_fk_children,
+    build_parent_info,
+    build_record_relations_info,
     extract_bounding_boxes,
     extract_start_end_text,
     generate_text_fragment_url,
@@ -47,6 +50,7 @@ from app.utils.chat_helpers import (
     get_message_content as _get_message_content,
     get_record,
     record_to_message_content as _record_to_message_content,
+    record_to_text,
 )
 
 # ---------------------------------------------------------------------------
@@ -69,6 +73,14 @@ def get_message_content(*args, **kwargs):
     """Backward-compatible wrapper: return only message content list."""
     content, _ = _get_message_content(*args, **kwargs)
     return content
+
+
+def get_json_message_content(flattened, vr_map, **kwargs):
+    """Backward-compatible wrapper for the old json-mode get_message_content:
+    flattens build_message_content_array's list-of-lists into a single list.
+    """
+    parts, _ = build_message_content_array(flattened, vr_map, **kwargs)
+    return [item for sublist in parts for item in sublist]
 
 
 def record_to_message_content(*args, **kwargs):
@@ -1184,7 +1196,7 @@ class TestGetMessageContent:
             _make_flattened_result(block_index=1, content="Text B"),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "user info", "my query", mode="no_tools")
+        result = get_message_content(flattened, vr_map, "user info", "my query")
         assert isinstance(result, list)
         assert len(result) == 1
         assert result[0]["type"] == "text"
@@ -1195,7 +1207,7 @@ class TestGetMessageContent:
             _make_flattened_result(block_index=0, block_type=BlockType.IMAGE.value, content="data:image/png;base64,abc"),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "query", mode="no_tools")
+        result = get_message_content(flattened, vr_map, "", "query")
         # The image should be skipped, so no block content about image
         text = result[0]["text"]
         assert "data:image" not in text
@@ -1209,7 +1221,7 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "query", mode="no_tools")
+        result = get_message_content(flattened, vr_map, "", "query")
         text = result[0]["text"]
         assert "Table: Table summary here" in text
 
@@ -1219,7 +1231,7 @@ class TestGetMessageContent:
             _make_flattened_result(block_index=0, content="Same"),  # dup
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "query", mode="no_tools")
+        result = get_message_content(flattened, vr_map, "", "query")
         text = result[0]["text"]
         # Should only appear once in chunks
         assert text.count("Same") == 1
@@ -1230,39 +1242,22 @@ class TestGetMessageContent:
             _make_flattened_result(block_index=1, content="Second block"),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
         assert len(result) > 1
-        # First element should have the instructions
         assert result[0]["type"] == "text"
         # Should contain record context and block content
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "First block" in combined
 
-    def test_json_mode_includes_jira_fetch_rule_for_jira_ticket(self):
-        flattened = [_make_flattened_result(block_index=0, content="Ticket body")]
-        vr_map = {
-            "vr-jira": _make_record_blob(
-                virtual_record_id="vr-jira",
-                record_type=RecordType.TICKET.value,
-                connector_name=Connectors.JIRA.value,
-                context_metadata="Record ID: rec-jira",
-            ),
-        }
-        flattened[0]["virtual_record_id"] = "vr-jira"
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
-        instructions = result[0]["text"]
-        assert "story points" in instructions
-        assert "Jira tickets" in instructions
-        assert "<jira_tickets_in_context>" not in instructions
-
     def test_json_mode_no_jira_fetch_rule_without_jira_ticket(self):
         flattened = [_make_flattened_result(block_index=0, content="Doc body")]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
-        instructions = result[0]["text"]
-        assert "Jira tickets" not in instructions
+        result = get_json_message_content(flattened, vr_map)
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "Jira tickets" not in combined
 
     def test_no_tools_mode_omits_jira_fetch_rule_even_with_jira_ticket(self):
         flattened = [_make_flattened_result(block_index=0, content="Ticket body")]
@@ -1274,7 +1269,7 @@ class TestGetMessageContent:
             ),
         }
         flattened[0]["virtual_record_id"] = "vr-jira"
-        result = get_message_content(flattened, vr_map, "user", "query", mode="no_tools")
+        result = get_message_content(flattened, vr_map, "user", "query")
         text = result[0]["text"]
         assert "Jira tickets" not in text
         assert "fetch_full_record" not in text
@@ -1318,9 +1313,9 @@ class TestGetMessageContent:
     def test_json_mode_record_summary_only_includes_record_metadata(self):
         record = _make_record_blob()
         record["context_metadata"] = (
-            "Record ID       : rec-1\n"
-            "Name            : Policy Doc\n"
-            "Summary         : High-level overview"
+            "Record ID: rec-1\n"
+            "Name: Policy Doc\n"
+            "Summary: High-level overview"
         )
         flattened = [
             _make_flattened_result(
@@ -1330,30 +1325,12 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": record}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
-        assert "Record ID       : rec-1" in combined
+        assert "Record ID: rec-1" in combined
         assert "Policy Doc" in combined
         assert "High-level overview" in combined
-
-    def test_json_mode_uses_virtual_map_records_when_flattened_empty(self):
-        flattened = []
-        record = _make_record_blob(
-            virtual_record_id="vr-attachment",
-            record_type="SQL_TABLE",
-            block_containers={
-                "blocks": [_make_text_block(index=0, data="Attachment block text")],
-                "block_groups": [],
-            },
-        )
-        vr_map = {"vr-attachment": record}
-
-        result = get_message_content(flattened, vr_map, "user", "explain", mode="json")
-
-        texts = [item["text"] for item in result if item.get("type") == "text"]
-        combined = " ".join(texts)
-        assert "Attachment block text" in combined
 
     def test_json_mode_image_block_data_uri(self):
         flattened = [
@@ -1364,12 +1341,9 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(
+        result = get_json_message_content(
             flattened,
             vr_map,
-            "",
-            "query",
-            mode="json",
             is_multimodal_llm=True,
             from_tool=False,
         )
@@ -1387,10 +1361,10 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "query", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
-        assert "image description" in combined
+        assert "(image)" in combined
 
     def test_json_mode_table_block_with_child_results(self):
         flattened = [
@@ -1402,7 +1376,7 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "Table sum" in combined
@@ -1417,7 +1391,7 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         # Table blocks are rendered even when child_results is empty; the
@@ -1433,7 +1407,7 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "table_row" not in combined
@@ -1448,7 +1422,7 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
 
     def test_json_mode_record_numbering_increments(self):
@@ -1460,7 +1434,7 @@ class TestGetMessageContent:
             _make_flattened_result(virtual_record_id="vr-2", block_index=0, content="B"),
         ]
         vr_map = {"vr-1": rec1, "vr-2": rec2}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "A" in combined  # content of first record
@@ -1472,7 +1446,7 @@ class TestGetMessageContent:
             _make_flattened_result(block_index=5, content="Unique"),  # dup
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert combined.count("Unique") == 1
@@ -1482,20 +1456,9 @@ class TestGetMessageContent:
             _make_flattened_result(virtual_record_id="vr-1", block_index=0, content="A"),
         ]
         vr_map = {"vr-1": None}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
-        # Should still return a list (with instructions) but the None record is skipped
+        result = get_json_message_content(flattened, vr_map)
+        # Should still return a list but the None record is skipped
         assert isinstance(result, list)
-
-    def test_json_mode_ends_with_closing_tags(self):
-        flattened = [
-            _make_flattened_result(block_index=0, content="data"),
-        ]
-        vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
-        texts = [item["text"] for item in result if item.get("type") == "text"]
-        combined = " ".join(texts)
-        assert "</record>" in combined
-        assert "</context>" in combined
 
     def test_json_mode_unknown_block_type_skipped(self):
         flattened = [
@@ -1506,31 +1469,18 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "custom content" not in combined
 
-    def test_json_mode_sql_tool_section_included_when_has_sql_connector_true(self):
-        """When has_sql_connector=True, the execute_sql_query tool block is rendered."""
-        flattened = [
-            _make_flattened_result(block_index=0, content="data"),
-        ]
-        vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(
-            flattened, vr_map, "", "q", mode="json", has_sql_connector=True
-        )
-        texts = [item["text"] for item in result if item.get("type") == "text"]
-        combined = " ".join(texts)
-        assert "execute_sql_query" in combined
-
     def test_json_mode_sql_tool_section_excluded_when_has_sql_connector_false(self):
-        """Default has_sql_connector=False must suppress the execute_sql_query block."""
+        """execute_sql_query tool instructions are not part of build_message_content_array output."""
         flattened = [
             _make_flattened_result(block_index=0, content="data"),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "execute_sql_query" not in combined
@@ -1565,9 +1515,9 @@ class TestRecordToMessageContent:
         text = _all_text(result)
         assert "First paragraph" in text
         assert "Second paragraph" in text
-        # New format uses Block Index, not R-labels
-        assert "Block Index: 0" in text
-        assert "Block Index: 1" in text
+        # Full-record blocks are sequential — compact ref-only format, no index.
+        assert "[ref1]" in text
+        assert "[ref2]" in text
 
     def test_block_web_url_in_output(self):
         """Citation refs map to block preview URLs (frontend_url + record id + block index)."""
@@ -1577,7 +1527,7 @@ class TestRecordToMessageContent:
         record["block_containers"]["blocks"] = [_make_text_block(index=0, data="Data")]
         content, ref_mapper = _record_to_message_content(record)
         text = _all_text(content)
-        assert "Citation ID:" in text
+        assert "[ref1]" in text
         assert "ref1" in text
         preview_url = ref_mapper.ref_to_url["ref1"]
         assert "rec-xyz" in preview_url
@@ -1600,7 +1550,7 @@ class TestRecordToMessageContent:
         record["block_containers"]["block_groups"] = [table_group]
         result = record_to_message_content(record)
         text = _all_text(result)
-        assert "* Block Group Type: table" in text
+        assert "[Table #0" in text
         assert "Row 0" in text
         assert "Row 1" in text
 
@@ -1614,7 +1564,7 @@ class TestRecordToMessageContent:
         record["block_containers"]["block_groups"] = [table_group]
         result = record_to_message_content(record)
         text = _all_text(result)
-        assert text.count("* Block Group Type: table") == 1
+        assert text.count("[Table #0") == 1
 
     def test_text_block_with_parent_index_renders_group(self):
         block = _make_text_block(index=0, data="Item in list", parent_index=0)
@@ -1689,6 +1639,93 @@ class TestRecordToMessageContent:
         result = record_to_message_content(record)
         text = _all_text(result)
         assert "grouped" not in text
+
+
+# ===================================================================
+# record_to_text
+# ===================================================================
+class TestRecordToText:
+    """record_to_text renders a record into a single plain-text string, faithful to
+    record_to_message_content but without the Citation ID / Block Index scaffolding."""
+
+    # Only the two fields the endpoint drops — Block Type / Block Group Index stay.
+    _SCAFFOLDING = ("Block Index", "Citation ID")
+
+    def _assert_clean(self, text: str) -> None:
+        for marker in self._SCAFFOLDING:
+            assert marker not in text, f"unexpected scaffolding {marker!r} in output"
+
+    def test_returns_string(self):
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [_make_text_block(index=0, data="Hello")]
+        assert isinstance(record_to_text(record), str)
+
+    def test_text_blocks_and_context_metadata(self):
+        record = _make_record_blob(context_metadata="Record ID       : rec-1\nType: FILE")
+        record["block_containers"]["blocks"] = [
+            _make_text_block(index=0, data="First paragraph"),
+            _make_text_block(index=1, data="Second paragraph"),
+        ]
+        text = record_to_text(record)
+        assert "Record ID       : rec-1" in text
+        assert "First paragraph" in text
+        assert "Second paragraph" in text
+        assert "* Block Content: First paragraph" in text
+        self._assert_clean(text)
+
+    def test_images_omitted(self):
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [
+            _make_image_block(index=0),
+            _make_text_block(index=1, data="visible text"),
+        ]
+        text = record_to_text(record)
+        assert "data:image" not in text
+        assert "visible text" in text
+
+    def test_table_rows_rendered_once(self):
+        row0 = _make_table_row_block(index=0, row_text="Row 0", parent_index=0)
+        row1 = _make_table_row_block(index=1, row_text="Row 1", parent_index=0)
+        table_group = _make_table_group(index=0, children_block_indices=[0, 1])
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [row0, row1]
+        record["block_containers"]["block_groups"] = [table_group]
+        text = record_to_text(record)
+        assert "Row 0" in text
+        assert "Row 1" in text
+        self._assert_clean(text)
+
+    def test_list_group_rendered(self):
+        block = _make_text_block(index=0, data="Item in list", parent_index=0)
+        group = _make_list_group(index=0, children_block_indices=[0])
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [block]
+        record["block_containers"]["block_groups"] = [group]
+        text = record_to_text(record)
+        assert "Item in list" in text
+        self._assert_clean(text)
+
+    def test_fk_footer_for_sql_table(self):
+        record = _make_record_blob(record_type="SQL_TABLE")
+        record["fk_parent_record_ids"] = [
+            {"parentTable": "orders", "record_id": "rec-9", "sourceColumn": "order_id", "targetColumn": "id"}
+        ]
+        record["fk_child_record_ids"] = [
+            {"childTable": "line_items", "record_id": "rec-7", "sourceColumn": "id", "targetColumn": "order_id"}
+        ]
+        text = record_to_text(record)
+        assert "Foreign Key Related Tables:" in text
+        assert "Parent Table: orders" in text
+        assert "Child Table: line_items" in text
+
+    def test_empty_record_has_header_and_metadata_only(self):
+        record = _make_record_blob(context_metadata="Record ID       : rec-1")
+        record["block_containers"]["blocks"] = []
+        text = record_to_text(record)
+        assert "<record>" in text
+        assert "Record ID       : rec-1" in text
+        assert "* Block Content:" not in text
+        self._assert_clean(text)
 
 
 # ===================================================================
@@ -3333,7 +3370,7 @@ class TestRecordToMessageContentEdgeCases:
         result = record_to_message_content(record)
         text = _all_text(result)
         assert "R0" in text
-        assert "* Block Group Type: table" in text
+        assert "[Table #0" in text
 
     def test_block_group_dedup_for_parent_index_blocks(self):
         """Multiple blocks with same parent_index should only render group once."""
@@ -3907,21 +3944,55 @@ class TestRecordToMessageContentDeeper:
         result = record_to_message_content(record)
         assert isinstance(result, list)
 
-    def test_other_block_type(self):
-        """Standalone non-handled block types are skipped (not emitted as text)."""
+    def test_top_level_code_block_is_rendered_with_its_symbol(self):
+        """A code block belongs to no group, so before it had its own branch it
+        fell to `else: continue` and a file with no classes reached the model
+        empty."""
+        record = {
+            "virtual_record_id": "vr-1",
+            "context_metadata": "Test",
+            "file_path": "src/app.py",
+            "block_containers": {
+                "blocks": [
+                    {"index": 0, "type": "code", "data": {"text": "print('hello')"},
+                     "parent_index": None,
+                     "code_metadata": {"qualified_name": "statements:L1"}},
+                ],
+                "block_groups": [],
+            },
+        }
+        text = _all_text(record_to_message_content(record))
+        assert "print('hello')" in text
+        assert "src/app.py#statements:L1" in text
+
+    def test_rendered_code_block_omits_the_bm25_subtokens(self):
         record = {
             "virtual_record_id": "vr-1",
             "context_metadata": "Test",
             "block_containers": {
                 "blocks": [
-                    {"index": 0, "type": "code", "data": "print('hello')", "parent_index": None},
+                    {"index": 0, "type": "code", "parent_index": None,
+                     "data": {"text": "def go(): pass", "subtokens": "go pass padding"}},
                 ],
                 "block_groups": [],
             },
         }
-        result = record_to_message_content(record)
-        text = _all_text(result)
-        assert "print('hello')" not in text
+        text = _all_text(record_to_message_content(record))
+        assert "def go(): pass" in text
+        assert "padding" not in text
+
+    def test_unhandled_block_type_is_still_skipped(self):
+        record = {
+            "virtual_record_id": "vr-1",
+            "context_metadata": "Test",
+            "block_containers": {
+                "blocks": [
+                    {"index": 0, "type": "divider", "data": "---", "parent_index": None},
+                ],
+                "block_groups": [],
+            },
+        }
+        assert "---" not in _all_text(record_to_message_content(record))
 
 
 # ===================================================================
@@ -3940,11 +4011,11 @@ class TestGetMessageContentDeeper:
             "record_name": "TestDoc",
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(flattened, vr_map, "user data", "query", mode="no_tools")
+        result = get_message_content(flattened, vr_map, "user data", "query")
         assert isinstance(result, list)
 
     def test_standard_mode_with_image_block(self):
-        """Lines 1273-1287: Standard mode with image blocks."""
+        """Standard (tool/json-array) mode with image blocks."""
         flattened = [{
             "virtual_record_id": "vr-1",
             "block_index": 0,
@@ -3952,11 +4023,9 @@ class TestGetMessageContentDeeper:
             "content": _VALID_MINIMAL_PNG_DATA_URI,
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(
+        result = get_json_message_content(
             flattened,
             vr_map,
-            "user",
-            "query",
             is_multimodal_llm=True,
             from_tool=False,
         )
@@ -3966,7 +4035,7 @@ class TestGetMessageContentDeeper:
         assert has_image
 
     def test_standard_mode_with_non_base64_image(self):
-        """Lines 1283-1287: Standard mode with image description (not base64)."""
+        """Standard mode with image description (not base64)."""
         flattened = [{
             "virtual_record_id": "vr-1",
             "block_index": 0,
@@ -3974,13 +4043,13 @@ class TestGetMessageContentDeeper:
             "content": "A photo of a sunset",
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
-        assert any("image description" in t for t in text_parts)
+        assert any("(image)" in t for t in text_parts)
 
     def test_standard_mode_with_table_with_rows(self):
-        """Lines 1288-1301: Standard mode with table block type and child results."""
+        """Standard mode with table block type and child results."""
         flattened = [{
             "virtual_record_id": "vr-1",
             "block_index": 0,
@@ -3989,7 +4058,7 @@ class TestGetMessageContentDeeper:
             "content": ("Table Summary", [{"content": "Row 1", "block_index": 0}]),
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
 
     def test_standard_mode_with_table_no_rows(self):
@@ -4002,7 +4071,7 @@ class TestGetMessageContentDeeper:
             "content": ("Table Summary", []),
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         combined = " ".join(text_parts)
@@ -4010,7 +4079,7 @@ class TestGetMessageContentDeeper:
         assert "Table Summary" in combined
 
     def test_standard_mode_table_row_type(self):
-        """Lines 1312-1316: Standard mode with table_row block type."""
+        """Standard mode with table_row block type."""
         flattened = [{
             "virtual_record_id": "vr-1",
             "block_index": 0,
@@ -4018,14 +4087,14 @@ class TestGetMessageContentDeeper:
             "content": "Row content here",
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         combined = " ".join(text_parts)
         assert "Row content here" not in combined
 
     def test_standard_mode_group_type(self):
-        """Lines 1317-1321: Standard mode with group type block."""
+        """Standard mode with group type block."""
         flattened = [{
             "virtual_record_id": "vr-1",
             "block_index": 0,
@@ -4033,11 +4102,11 @@ class TestGetMessageContentDeeper:
             "content": "List item content",
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
 
     def test_standard_mode_unknown_type(self):
-        """Lines 1322-1326: Standard mode with unknown block type."""
+        """Standard mode with unknown block type."""
         flattened = [{
             "virtual_record_id": "vr-1",
             "block_index": 0,
@@ -4045,14 +4114,14 @@ class TestGetMessageContentDeeper:
             "content": "Custom content",
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         combined = " ".join(text_parts)
         assert "Custom content" not in combined
 
     def test_standard_mode_duplicate_block_skipped(self):
-        """Line 1327-1328: Duplicate block IDs are skipped."""
+        """Duplicate block IDs are skipped."""
         flattened = [
             {"virtual_record_id": "vr-1", "block_index": 0,
              "block_type": "text", "content": "Text 1"},
@@ -4060,14 +4129,14 @@ class TestGetMessageContentDeeper:
              "block_type": "text", "content": "Text 1 duplicate"},
         ]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         # Only one occurrence of the block
         text_count = sum(1 for t in text_parts if "Text 1" in t)
         assert text_count == 1
 
     def test_multiple_records(self):
-        """Lines 1247-1252: Multiple virtual records generate </record> tags."""
+        """Multiple virtual records generate </record> tags."""
         flattened = [
             {"virtual_record_id": "vr-1", "block_index": 0,
              "block_type": "text", "content": "Content 1"},
@@ -4078,20 +4147,20 @@ class TestGetMessageContentDeeper:
             "vr-1": {"context_metadata": "Record 1"},
             "vr-2": {"context_metadata": "Record 2"},
         }
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         # Should have </record> between records
         has_close_tag = any("</record>" in t for t in text_parts)
         assert has_close_tag
 
     def test_null_record_skipped(self):
-        """Line 1255-1256: None record is skipped."""
+        """None record is skipped."""
         flattened = [
             {"virtual_record_id": "vr-1", "block_index": 0,
              "block_type": "text", "content": "Content"},
         ]
         vr_map = {"vr-1": None}
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
 
 
@@ -4999,6 +5068,897 @@ class TestEnrichVirtualRecordIdFKChildren:
 
 
 # ===================================================================
+# enrich_records_with_graph_context (unified enrichment)
+# ===================================================================
+class TestEnrichRecordsWithGraphContext:
+    """Unified graph context enrichment: dependent parents + record relations."""
+
+    def _make_graph_provider(
+        self,
+        vrid_map=None,
+        docs_by_id=None,
+        outgoing_by_type=None,
+        incoming_by_type=None,
+    ):
+        outgoing_by_type = outgoing_by_type or {}
+        incoming_by_type = incoming_by_type or {}
+        docs_by_id = docs_by_id or {}
+        gp = AsyncMock()
+
+        async def _parent(record_id, relation_type):
+            return outgoing_by_type.get(relation_type, [])
+
+        async def _child(record_id, relation_type):
+            return incoming_by_type.get(relation_type, [])
+
+        gp.get_parent_record_ids_by_relation_type = AsyncMock(side_effect=_parent)
+        gp.get_child_record_ids_by_relation_type = AsyncMock(side_effect=_child)
+
+        async def _relations_batch(record_ids, relation_types, transaction=None):
+            return {
+                rid: {
+                    "parents": [
+                        {**e, "relationType": rt}
+                        for rt in relation_types for e in outgoing_by_type.get(rt, [])
+                    ],
+                    "children": [
+                        {**e, "relationType": rt}
+                        for rt in relation_types for e in incoming_by_type.get(rt, [])
+                    ],
+                }
+                for rid in record_ids
+            }
+
+        gp.get_record_relations_batch = AsyncMock(side_effect=_relations_batch)
+
+        async def _get_document(record_id, collection=None, *args, **kwargs):
+            if record_id in docs_by_id:
+                return docs_by_id[record_id]
+            return {
+                "id": record_id,
+                "_key": record_id,
+                "recordName": f"Name-{record_id}",
+                "recordType": "TICKET",
+                "connectorName": "JIRA",
+                "connectorId": "conn-1",
+                "externalRecordId": f"ext-{record_id}",
+            }
+
+        gp.get_document = AsyncMock(side_effect=_get_document)
+
+        # The enrichment path resolves base and type-specific docs one query per
+        # collection rather than one per record. Delegate through the attribute
+        # so tests that override `get_document` after construction stay
+        # authoritative for both call shapes.
+        async def _get_nodes_by_field_in(collection, field_name, field_values, *args, **kwargs):
+            docs = [await gp.get_document(rid, collection) for rid in field_values]
+            return [d for d in docs if isinstance(d, dict) and (d.get("id") or d.get("_key"))]
+
+        gp.get_nodes_by_field_in = AsyncMock(side_effect=_get_nodes_by_field_in)
+        gp.get_virtual_record_ids_for_record_ids = AsyncMock(return_value=vrid_map or {})
+        return gp
+
+    def _dependent_file_record(self, vrid="vr-attach", record_id="rec-attach", **overrides):
+        rec = _make_record_blob(
+            virtual_record_id=vrid,
+            record_type="FILE",
+            id=record_id,
+            connector_name="JIRA",
+        )
+        rec.update(overrides)
+        return rec
+
+    def _ticket_record(self, vrid="vr-ticket", record_id="rec-ticket", **overrides):
+        rec = _make_record_blob(
+            virtual_record_id=vrid,
+            record_type=RecordType.TICKET.value,
+            id=record_id,
+            connector_name=Connectors.JIRA.value,
+            record_name="[PST-9] Test ticket",
+        )
+        rec.update(overrides)
+        return rec
+
+    def _virtual_to_record_map_entry(self, **overrides):
+        entry = {
+            "isDependentNode": True,
+            "parentNodeId": "rec-issue-1",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "mimeType": "application/json",
+            "recordType": "FILE",
+            "id": "rec-attach",
+        }
+        entry.update(overrides)
+        return entry
+
+    # --- Dependent parent tests ---
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_graph_provider(self):
+        vr_map = {"vr-attach": self._dependent_file_record()}
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=None, flattened_results=flattened,
+        )
+        assert "parent_node_relation" not in flattened[0]
+
+    @pytest.mark.asyncio
+    async def test_skips_unsupported_connector(self):
+        rec = self._dependent_file_record(connector_name="GOOGLE DRIVE")
+        vr_map = {"vr-attach": rec}
+        gp = self._make_graph_provider()
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+        )
+        gp.get_document.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_not_dependent_node(self):
+        rec = self._dependent_file_record()
+        vr_map = {"vr-attach": rec}
+        gp = self._make_graph_provider()
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry(isDependentNode=False)}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+        )
+        # Not dependent and has no record_id on main result -> no edge queries
+        assert "parent_node_relation" not in flattened[0]
+
+    @pytest.mark.asyncio
+    async def test_skips_when_parent_node_id_missing(self):
+        rec = self._dependent_file_record()
+        vr_map = {"vr-attach": rec}
+        gp = self._make_graph_provider()
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry(parentNodeId=None)}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+        )
+        assert "parent_node_relation" not in flattened[0]
+
+    @pytest.mark.asyncio
+    async def test_annotates_flattened_results_with_parent_metadata(self):
+        rec = self._dependent_file_record()
+        vr_map = {"vr-attach": rec}
+        base_doc = {
+            "id": "rec-issue-1",
+            "_key": "rec-issue-1",
+            "orgId": "org-1",
+            "recordName": "PROJ-123",
+            "recordType": "TICKET",
+            "webUrl": "https://jira.example/browse/PROJ-123",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "mimeType": "application/json",
+            "externalRecordId": "ext-123",
+            "version": 1,
+            "origin": "CONNECTOR",
+        }
+        ticket_doc = {
+            "status": "In Progress",
+            "priority": "High",
+            "assignee": "Alice",
+            "labels": ["migration"],
+        }
+
+        async def _get_document(record_id, collection=None, *args, **kwargs):
+            if collection == "records":
+                return base_doc
+            if collection == "tickets":
+                return ticket_doc
+            return {}
+
+        gp = self._make_graph_provider(vrid_map={"rec-issue-1": "vr-issue-1"})
+        gp.get_document = AsyncMock(side_effect=_get_document)
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+        )
+        rel = flattened[0]["parent_node_relation"]
+        assert rel["record_id"] == "rec-issue-1"
+        assert "context_metadata" in rel
+        assert "PROJ-123" in rel["context_metadata"]
+        assert "In Progress" in rel["context_metadata"]
+
+    @pytest.mark.asyncio
+    async def test_reuses_parent_from_doc_index(self):
+        rec = self._dependent_file_record()
+        vr_map = {"vr-attach": rec}
+        parent_base_doc = {
+            "id": "rec-issue-1",
+            "_key": "rec-issue-1",
+            "orgId": "org-1",
+            "recordName": "PROJ-123",
+            "recordType": "TICKET",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "mimeType": "application/json",
+            "externalRecordId": "ext-123",
+            "version": 1,
+            "origin": "CONNECTOR",
+        }
+        gp = self._make_graph_provider(vrid_map={"rec-issue-1": "vr-issue-1"})
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {
+            "vr-attach": self._virtual_to_record_map_entry(),
+            "vr-issue-1": parent_base_doc,
+        }
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+        )
+        assert "context_metadata" in flattened[0]["parent_node_relation"]
+
+    @pytest.mark.asyncio
+    async def test_dedupes_same_parent_for_multiple_dependents(self):
+        rec1 = self._dependent_file_record(vrid="vr-a1", record_id="rec-a1")
+        rec2 = self._dependent_file_record(vrid="vr-a2", record_id="rec-a2")
+        vr_map = {"vr-a1": rec1, "vr-a2": rec2}
+        base_doc = {
+            "id": "rec-issue-1",
+            "_key": "rec-issue-1",
+            "orgId": "org-1",
+            "recordName": "PROJ-1",
+            "recordType": "TICKET",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "mimeType": "application/json",
+            "externalRecordId": "ext-1",
+            "version": 1,
+            "origin": "CONNECTOR",
+        }
+        gp = self._make_graph_provider(docs_by_id={"rec-issue-1": base_doc}, vrid_map={})
+        flattened = [
+            {"virtual_record_id": "vr-a1", "block_index": 0},
+            {"virtual_record_id": "vr-a2", "block_index": 0},
+        ]
+        vtr_map = {
+            "vr-a1": self._virtual_to_record_map_entry(id="rec-a1"),
+            "vr-a2": self._virtual_to_record_map_entry(id="rec-a2"),
+        }
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+        )
+        assert flattened[0]["parent_node_relation"]["record_id"] == "rec-issue-1"
+        assert flattened[1]["parent_node_relation"]["record_id"] == "rec-issue-1"
+
+    @pytest.mark.asyncio
+    async def test_includes_summary_from_blob_when_indexed(self):
+        rec = self._dependent_file_record()
+        vr_map = {"vr-attach": rec}
+        base_doc = {
+            "id": "rec-issue-1",
+            "_key": "rec-issue-1",
+            "recordName": "PROJ-99",
+            "recordType": "TICKET",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "externalRecordId": "ext-99",
+        }
+        gp = self._make_graph_provider(
+            vrid_map={"rec-issue-1": "vr-parent-1"},
+            docs_by_id={"rec-issue-1": base_doc},
+        )
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value={
+            "record_name": "PROJ-99",
+            "semantic_metadata": {"summary": "This ticket tracks the login bug fix."},
+        })
+
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+            blob_store=blob_store, org_id="org-1",
+        )
+        rel = flattened[0]["parent_node_relation"]
+        assert rel["record_id"] == "rec-issue-1"
+        assert "This ticket tracks the login bug fix." in rel["context_metadata"]
+        # lookup_result is pre-resolved in one batched call by the caller; the
+        # fetch resolves the id itself only when the batch had no entry.
+        blob_store.get_record_from_storage.assert_awaited_once()
+        args, kwargs = blob_store.get_record_from_storage.await_args
+        assert args == ("vr-parent-1", "org-1")
+        assert set(kwargs) <= {"lookup_result"}
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_graph_when_not_indexed(self):
+        rec = self._dependent_file_record()
+        vr_map = {"vr-attach": rec}
+        base_doc = {
+            "id": "rec-issue-1",
+            "_key": "rec-issue-1",
+            "recordName": "PROJ-50",
+            "recordType": "TICKET",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "externalRecordId": "ext-50",
+        }
+        gp = self._make_graph_provider(vrid_map={}, docs_by_id={"rec-issue-1": base_doc})
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=None)
+
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+            blob_store=blob_store, org_id="org-1",
+        )
+        rel = flattened[0]["parent_node_relation"]
+        assert rel["record_id"] == "rec-issue-1"
+        assert "PROJ-50" in rel["context_metadata"]
+        blob_store.get_record_from_storage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_in_context_parent_uses_short_form(self):
+        rec = self._dependent_file_record()
+        parent_record = _make_record_blob(
+            virtual_record_id="vr-parent-1",
+            record_type=RecordType.TICKET.value,
+            id="rec-issue-1",
+            connector_name=Connectors.JIRA.value,
+            record_name="PROJ-77",
+        )
+        vr_map = {"vr-attach": rec, "vr-parent-1": parent_record}
+        gp = self._make_graph_provider(vrid_map={"rec-issue-1": "vr-parent-1"})
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=None)
+
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
+        doc_index = {"rec-issue-1": {"recordName": "PROJ-77", "id": "rec-issue-1"}}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+            blob_store=blob_store, org_id="org-1", doc_index=doc_index,
+        )
+        rel = flattened[0]["parent_node_relation"]
+        assert rel["record_id"] == "rec-issue-1"
+        assert "context_metadata" not in rel
+        assert rel["record_name"] == "PROJ-77"
+        blob_store.get_record_from_storage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_parent_not_annotated(self):
+        """If parent record can't be resolved (deleted), no annotation is added."""
+        rec = self._dependent_file_record()
+        vr_map = {"vr-attach": rec}
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value=None)
+        gp.get_virtual_record_ids_for_record_ids = AsyncMock(return_value={})
+        gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
+        gp.get_child_record_ids_by_relation_type = AsyncMock(return_value=[])
+
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+        )
+        assert "parent_node_relation" not in flattened[0]
+
+    # --- Record relation tests ---
+
+    @pytest.mark.asyncio
+    async def test_relation_skips_dependent_node(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        vtr_map = {
+            "vr-ticket": {
+                "isDependentNode": True,
+                "parentNodeId": "rec-parent",
+                "connectorName": Connectors.JIRA.value,
+            }
+        }
+        gp = self._make_graph_provider()
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp,
+            flattened_results=[{"virtual_record_id": "vr-ticket", "block_index": 0}],
+            virtual_to_record_map=vtr_map,
+        )
+        assert "record_relations" not in rec
+
+    @pytest.mark.asyncio
+    async def test_queries_both_relation_types_in_one_batch(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        gp = self._make_graph_provider()
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=[],
+        )
+        gp.get_record_relations_batch.assert_awaited_once()
+        from app.utils.chat_helpers import RECORD_RELATION_ENRICHMENT_TYPES
+        requested = set(gp.get_record_relations_batch.await_args.args[1])
+        assert requested == {rel.value for rel in RECORD_RELATION_ENRICHMENT_TYPES}
+        assert gp.get_parent_record_ids_by_relation_type.await_count == 0
+        assert gp.get_child_record_ids_by_relation_type.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_stores_minimal_related_records(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.ATTACHMENT.value: [{"record_id": "rec-file-1"}],
+                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-sub-1"}],
+            },
+        )
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=[],
+        )
+        relations = rec["record_relations"]
+        assert len(relations) == 2
+        by_id = {r["record_id"]: r for r in relations}
+        assert by_id["rec-file-1"]["record_name"] == "Name-rec-file-1"
+        assert by_id["rec-file-1"]["labels"] == ["ATTACHMENT"]
+        assert by_id["rec-sub-1"]["labels"] == ["CHILD"]
+
+    @pytest.mark.asyncio
+    async def test_dedupes_merged_labels_for_same_record_id(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.ATTACHMENT.value: [{"record_id": "rec-dup"}],
+                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-dup"}],
+            },
+        )
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=[],
+        )
+        relations = rec["record_relations"]
+        assert len(relations) == 1
+        assert set(relations[0]["labels"]) == {"ATTACHMENT", "CHILD"}
+
+    @pytest.mark.asyncio
+    async def test_excludes_deleted_targets(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.ATTACHMENT.value: [{"record_id": "rec-deleted"}],
+            },
+            docs_by_id={
+                "rec-deleted": {
+                    "id": "rec-deleted",
+                    "_key": "rec-deleted",
+                    "recordName": "gone",
+                    "isDeleted": True,
+                },
+            },
+        )
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=[],
+        )
+        assert "record_relations" not in rec
+
+    @pytest.mark.asyncio
+    async def test_returns_all_relations_without_cap(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        many = [{"record_id": f"rec-{i}"} for i in range(25)]
+        gp = self._make_graph_provider(
+            outgoing_by_type={RecordRelations.ATTACHMENT.value: many},
+        )
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=[],
+        )
+        assert len(rec["record_relations"]) == 25
+
+    @pytest.mark.asyncio
+    async def test_related_record_gets_context_metadata(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-child-1"}],
+            },
+            docs_by_id={
+                "rec-child-1": {
+                    "id": "rec-child-1",
+                    "_key": "rec-child-1",
+                    "recordName": "[PST-10] Subtask",
+                    "recordType": "TICKET",
+                    "connectorName": "JIRA",
+                    "connectorId": "conn-1",
+                    "externalRecordId": "ext-child",
+                    "webUrl": "https://jira.example/browse/PST-10",
+                },
+            },
+            vrid_map={},
+        )
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=[],
+            blob_store=None, org_id="org-1",
+        )
+        relations = rec["record_relations"]
+        assert len(relations) == 1
+        assert "context_metadata" in relations[0]
+        assert "[PST-10] Subtask" in relations[0]["context_metadata"]
+
+    @pytest.mark.asyncio
+    async def test_related_record_indexed_includes_summary(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-child-1"}],
+            },
+            docs_by_id={
+                "rec-child-1": {
+                    "id": "rec-child-1",
+                    "_key": "rec-child-1",
+                    "recordName": "[PST-10] Subtask",
+                    "recordType": "TICKET",
+                    "connectorName": "JIRA",
+                    "connectorId": "conn-1",
+                    "externalRecordId": "ext-child",
+                },
+            },
+            vrid_map={"rec-child-1": "vr-child-1"},
+        )
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value={
+            "record_name": "[PST-10] Subtask",
+            "record_type": "TICKET",
+            "semantic_metadata": {"summary": "This subtask adds test evidence."},
+        })
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=[],
+            blob_store=blob_store, org_id="org-1",
+        )
+        relations = rec["record_relations"]
+        assert len(relations) == 1
+        ctx = relations[0]["context_metadata"]
+        assert "Summary" in ctx
+        assert "This subtask adds test evidence." in ctx
+
+    @pytest.mark.asyncio
+    async def test_related_record_not_indexed_no_summary(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-child-1"}],
+            },
+            docs_by_id={
+                "rec-child-1": {
+                    "id": "rec-child-1",
+                    "_key": "rec-child-1",
+                    "recordName": "[PST-10] Subtask",
+                    "recordType": "TICKET",
+                    "connectorName": "JIRA",
+                    "connectorId": "conn-1",
+                    "externalRecordId": "ext-child",
+                },
+            },
+            vrid_map={},
+        )
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=[],
+            blob_store=None, org_id="org-1",
+        )
+        relations = rec["record_relations"]
+        assert len(relations) == 1
+        ctx = relations[0]["context_metadata"]
+        assert "[PST-10] Subtask" in ctx
+        assert "Summary" not in ctx
+
+    # --- Combined test: dependent parent + relation-eligible in same batch ---
+
+    @pytest.mark.asyncio
+    async def test_combined_dependent_and_relation_in_same_batch(self):
+        """Both a dependent record and a relation-eligible record in one call."""
+        attach_rec = self._dependent_file_record(vrid="vr-attach", record_id="rec-attach")
+        ticket_rec = self._ticket_record(vrid="vr-ticket", record_id="rec-ticket")
+        vr_map = {"vr-attach": attach_rec, "vr-ticket": ticket_rec}
+
+        parent_doc = {
+            "id": "rec-issue-1",
+            "_key": "rec-issue-1",
+            "recordName": "PROJ-1",
+            "recordType": "TICKET",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "externalRecordId": "ext-1",
+        }
+        related_doc = {
+            "id": "rec-related",
+            "_key": "rec-related",
+            "recordName": "Related Task",
+            "recordType": "TICKET",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "externalRecordId": "ext-related",
+        }
+        gp = self._make_graph_provider(
+            docs_by_id={"rec-issue-1": parent_doc, "rec-related": related_doc},
+            outgoing_by_type={
+                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-related"}],
+            },
+            vrid_map={},
+        )
+        flattened = [
+            {"virtual_record_id": "vr-attach", "block_index": 0},
+            {"virtual_record_id": "vr-ticket", "block_index": 0},
+        ]
+        vtr_map = {
+            "vr-attach": self._virtual_to_record_map_entry(),
+            "vr-ticket": {"isDependentNode": False, "connectorName": "JIRA"},
+        }
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+        )
+        # Dependent parent was annotated
+        assert flattened[0]["parent_node_relation"]["record_id"] == "rec-issue-1"
+        # Relation-eligible got relations
+        assert len(ticket_rec["record_relations"]) == 1
+        assert ticket_rec["record_relations"][0]["record_id"] == "rec-related"
+
+class TestBuildParentInfo:
+    def test_returns_empty_when_no_relation(self):
+        assert build_parent_info({}) == ""
+
+    def test_renders_parent_metadata_only(self):
+        text = build_parent_info({
+            "parent_node_relation": {
+                "record_id": "rec-1",
+                "context_metadata": "Record ID       : rec-1\nName            : PROJ-1",
+            }
+        })
+        assert "PROJ-1" in text
+        assert "rec-1" in text
+        assert "This record depends on:" in text
+        assert "fetch_full_record" not in text
+
+    def test_renders_short_form_for_in_context_parent(self):
+        text = build_parent_info({
+            "parent_node_relation": {
+                "record_id": "rec-issue-1",
+                "record_name": "PROJ-77",
+            }
+        })
+        assert "PROJ-77" in text
+        assert "rec-issue-1" in text
+        assert "This record depends on:" in text
+
+
+class TestBuildMessageContentArrayParentInfo:
+    def test_parent_info_once_per_record_not_per_block(self):
+        record = _make_record_blob(
+            virtual_record_id="vr-attach",
+            record_name="Asana Disaster Recovery Summary Report.pdf",
+        )
+        vr_map = {"vr-attach": record}
+        parent_metadata = (
+            "Record ID       : parent-rec-1\n"
+            "Name            : [PST-9] Jira Connector Indexing Progress Not Advancing"
+        )
+        flat = [
+            {
+                **_make_flattened_result(
+                    virtual_record_id="vr-attach",
+                    block_index=0,
+                    content="Block one",
+                ),
+                "parent_node_relation": {
+                    "record_id": "parent-rec-1",
+                    "context_metadata": parent_metadata,
+                },
+            },
+            {
+                **_make_flattened_result(
+                    virtual_record_id="vr-attach",
+                    block_index=1,
+                    content="Block two",
+                ),
+                "parent_node_relation": {
+                    "record_id": "parent-rec-1",
+                    "context_metadata": parent_metadata,
+                },
+            },
+        ]
+        contents, _ = build_message_content_array(flat, vr_map)
+        texts = [item["text"] for group in contents for item in group if item.get("type") == "text"]
+        combined = "\n".join(texts)
+        assert combined.count("* This record depends on:") == 1
+        assert combined.count("parent-rec-1") == 1
+        assert "Block one" in combined
+        assert "Block two" in combined
+        assert combined.index("* This record depends on:") < combined.index("Block one")
+        assert combined.index("* This record depends on:") < combined.index("Record blocks (sorted):")
+
+
+class TestBuildRecordRelationsInfo:
+    def test_returns_empty_when_no_relations(self):
+        assert build_record_relations_info({}) == ""
+        assert build_record_relations_info({"record_relations": []}) == ""
+
+    def test_renders_minimal_record_id_name_and_labels(self):
+        text = build_record_relations_info({
+            "record_relations": [
+                {
+                    "record_id": "rec-1",
+                    "record_name": "screenshot.png",
+                    "labels": ["ATTACHMENT"],
+                },
+                {
+                    "record_id": "rec-2",
+                    "record_name": "[PST-9-1] Subtask",
+                    "labels": ["CHILD"],
+                },
+            ],
+        })
+        assert "* Related records:" in text
+        # Grouped by label: each label a single heading, records listed underneath.
+        assert "ATTACHMENT:" in text
+        assert "CHILD:" in text
+        assert "- Record ID: rec-1 | Name: screenshot.png" in text
+        assert "- Record ID: rec-2 | Name: [PST-9-1] Subtask" in text
+        # Label heading appears once, not inline on every row.
+        assert text.count("ATTACHMENT") == 1
+        assert text.count("CHILD") == 1
+
+    def test_renders_rich_context_metadata_when_present(self):
+        context = (
+            "Record ID: rec-task-1\n"
+            "Name: [PST-10] Add test evidence\n"
+            "Connector: JIRA\n"
+            "Type: TICKET\n"
+            "Summary: Task requesting addition of test evidence\n"
+            "Ticket Information:\n"
+            "* Status: DONE\n"
+            "* Priority: MEDIUM"
+        )
+        text = build_record_relations_info({
+            "record_relations": [
+                {
+                    "record_id": "rec-task-1",
+                    "record_name": "[PST-10] Add test evidence",
+                    "labels": ["CHILD"],
+                    "context_metadata": context,
+                },
+            ],
+        })
+        assert "* Related records:" in text
+        assert "CHILD:" in text
+        assert "Record ID: rec-task-1" in text
+        assert "Status: DONE" in text
+        assert "Summary: Task requesting addition of test evidence" in text
+
+    def test_mixed_rich_and_minimal_entries(self):
+        text = build_record_relations_info({
+            "record_relations": [
+                {
+                    "record_id": "rec-rich",
+                    "record_name": "Rich",
+                    "labels": ["CHILD"],
+                    "context_metadata": "Record ID       : rec-rich\nName            : Rich",
+                },
+                {
+                    "record_id": "rec-minimal",
+                    "record_name": "Minimal",
+                    "labels": ["ATTACHMENT"],
+                },
+            ],
+        })
+        assert "CHILD:" in text
+        assert "ATTACHMENT:" in text
+        assert "- Record ID: rec-minimal | Name: Minimal" in text
+
+    def test_groups_many_records_under_one_label_heading(self):
+        text = build_record_relations_info({
+            "record_relations": [
+                {"record_id": "rec-1", "record_name": "Sub 1", "labels": ["CHILD"]},
+                {"record_id": "rec-2", "record_name": "Sub 2", "labels": ["CHILD"]},
+                {"record_id": "rec-3", "record_name": "Sub 3", "labels": ["CHILD"]},
+            ],
+        })
+        # One CHILD heading, all three records listed underneath.
+        assert text.count("CHILD:") == 1
+        assert "- Record ID: rec-1 | Name: Sub 1" in text
+        assert "- Record ID: rec-2 | Name: Sub 2" in text
+        assert "- Record ID: rec-3 | Name: Sub 3" in text
+
+
+class TestToLlmLinkedContext:
+    """Verify to_llm_linked_context produces summary-only output."""
+
+    def test_includes_summary_excludes_topics(self):
+        from app.models.blocks import SemanticMetadata
+        sem = SemanticMetadata(
+            summary="A brief summary of this ticket.",
+            topics=["auth", "login"],
+            category="Security",
+            sub_categories=["OAuth"],
+        )
+        record = TicketRecord(
+            id="rec-1",
+            record_name="Auth Bug",
+            record_type=RecordType.TICKET,
+            connector_name=Connectors.JIRA,
+            external_record_id="ext-1",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_id="conn-1",
+            semantic_metadata=sem,
+            status="Open",
+            priority="High",
+        )
+        ctx = record.to_llm_linked_context()
+        assert "Summary: A brief summary of this ticket." in ctx
+        assert "Topics" not in ctx
+        assert "Category" not in ctx
+        assert "Sub-categories" not in ctx
+        assert "Status: Open" in ctx
+        assert "Priority: High" in ctx
+
+    def test_no_summary_when_semantic_metadata_none(self):
+        record = TicketRecord(
+            id="rec-2",
+            record_name="No Meta",
+            record_type=RecordType.TICKET,
+            connector_name=Connectors.JIRA,
+            external_record_id="ext-2",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_id="conn-1",
+            semantic_metadata=None,
+            status="Done",
+        )
+        ctx = record.to_llm_linked_context()
+        assert "Summary" not in ctx
+        assert "Status: Done" in ctx
+
+
+class TestBuildMessageContentArrayRecordRelations:
+    def test_related_records_once_per_record_not_per_block(self):
+        record = _make_record_blob(
+            virtual_record_id="vr-ticket",
+            record_name="[PST-9] Test ticket",
+            record_relations=[
+                {
+                    "record_id": "rec-file-1",
+                    "record_name": "screenshot.png",
+                    "labels": ["ATTACHMENT"],
+                },
+            ],
+        )
+        vr_map = {"vr-ticket": record}
+        flat = [
+            _make_flattened_result(
+                virtual_record_id="vr-ticket",
+                block_index=0,
+                content="Block one",
+            ),
+            _make_flattened_result(
+                virtual_record_id="vr-ticket",
+                block_index=1,
+                content="Block two",
+            ),
+        ]
+        contents, _ = build_message_content_array(flat, vr_map)
+        texts = [item["text"] for group in contents for item in group if item.get("type") == "text"]
+        combined = "\n".join(texts)
+        assert combined.count("* Related records:") == 1
+        assert combined.count("rec-file-1") == 1
+        assert combined.index("* Related records:") < combined.index("Block one")
+
+
+# ===================================================================
 # get_flattened_results — new branches
 # ===================================================================
 class TestGetFlattenedResultsNewBranches:
@@ -5150,7 +6110,7 @@ class TestGetFlattenedResultsNewBranches:
     @pytest.mark.asyncio
     async def test_record_summary_vector_hit_is_flattened(self):
         record = _make_record_blob()
-        record["context_metadata"] = "Record ID       : rec-1\nSummary         : Doc overview"
+        record["context_metadata"] = "Record ID: rec-1\nSummary: Doc overview"
         record["block_containers"]["blocks"] = []
         blob_store = self._make_blob_store(record)
         vr_map = {"vr-1": record}
@@ -5343,40 +6303,6 @@ class TestBuildMessageContentArraySummaryCitation:
 # ===================================================================
 class TestGetMessageContentSqlTableOnlyInMap:
 
-    def test_appends_sql_table_when_virtual_id_only_in_result_map(self):
-        flattened = [_make_flattened_result(
-            virtual_record_id="vr-main",
-            block_index=0,
-            content="chunk from retrieval",
-        )]
-        sql_extra = _make_record_blob(
-            virtual_record_id="vr-sql-only",
-            id="rec-sql",
-            record_type=RecordType.SQL_TABLE.value,
-            context_metadata="ONLY_IN_MAP_SQL_MARKER",
-            block_containers={"blocks": [], "block_groups": []},
-        )
-        main = _make_record_blob(virtual_record_id="vr-main")
-        vr_map = {"vr-main": main, "vr-sql-only": sql_extra}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
-        texts = [item["text"] for item in result if item.get("type") == "text"]
-        combined = " ".join(texts)
-        assert "ONLY_IN_MAP_SQL_MARKER" in combined
-
-    def test_skips_non_sql_record_only_in_result_map(self):
-        flattened = [_make_flattened_result()]
-        extra = _make_record_blob(
-            virtual_record_id="vr-file-only-map",
-            record_type="FILE",
-            context_metadata="SHOULD_NOT_APPEAR_FOR_FILEONLY",
-            block_containers={"blocks": [], "block_groups": []},
-        )
-        vr_map = {"vr-1": _make_record_blob(), "vr-file-only-map": extra}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
-        texts = [item["text"] for item in result if item.get("type") == "text"]
-        combined = " ".join(texts)
-        assert "SHOULD_NOT_APPEAR_FOR_FILEONLY" not in combined
-
     def test_no_tools_mode_does_not_append_sql_only_in_map(self):
         flattened = [_make_flattened_result()]
         sql_extra = _make_record_blob(
@@ -5386,7 +6312,7 @@ class TestGetMessageContentSqlTableOnlyInMap:
             block_containers={"blocks": [], "block_groups": []},
         )
         vr_map = {"vr-1": _make_record_blob(), "vr-sql-map-only": sql_extra}
-        result = get_message_content(flattened, vr_map, "", "query", mode="no_tools")
+        result = get_message_content(flattened, vr_map, "", "query")
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "NO_TOOLS_SKIP_ME" not in combined
@@ -5432,7 +6358,7 @@ class TestGetMessageContentFKRelations:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "FK Relations" in combined
@@ -5446,17 +6372,17 @@ class TestGetMessageContentFKRelations:
         # context_metadata is what drives record rendering; simulate what
         # Record.to_llm_context produces for a POSTGRES connector.
         context_metadata = (
-            "Record ID       : rec-1\n"
-            "Name            : Test Record\n"
-            "Connector       : POSTGRES\n"
-            "Connector ID    : conn-pg\n"
+            "Record ID: rec-1\n"
+            "Name: Test Record\n"
+            "Connector: POSTGRES\n"
+            "Connector ID: conn-pg\n"
         )
         vr_map = {"vr-1": _make_record_blob(
             connector_name="POSTGRES",
             connector_id="conn-pg",
             context_metadata=context_metadata,
         )}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "POSTGRES" in combined
@@ -5472,7 +6398,7 @@ class TestGetMessageContentFKRelations:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "FK Relations" not in combined
@@ -5504,7 +6430,7 @@ class TestGetMessageContentFKRelations:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "CREATE TABLE users" in combined
@@ -5659,3 +6585,23 @@ class TestCreateRecordInstanceFromDictMessage:
     def test_org_id_propagated(self):
         from app.utils.chat_helpers import create_record_instance_from_dict
         assert create_record_instance_from_dict(_ch_record_dict(org_id="org-99"), _ch_graph_doc()).org_id == "org-99"
+
+
+class TestRecordIdShortenerShortenIfKnown:
+    def test_shorten_if_known_returns_short_label_for_mapped_id(self):
+        from app.utils.chat_helpers import RecordIdShortener
+        s = RecordIdShortener()
+        s.get_or_create_short_id("rec-abc-123")  # creates R1
+        assert s.shorten_if_known("rec-abc-123") == "R1"
+
+    def test_shorten_if_known_returns_full_id_for_unmapped_id(self):
+        from app.utils.chat_helpers import RecordIdShortener
+        s = RecordIdShortener()
+        assert s.shorten_if_known("rec-never-seen") == "rec-never-seen"
+
+    def test_shorten_if_known_does_not_mint_new_label(self):
+        from app.utils.chat_helpers import RecordIdShortener
+        s = RecordIdShortener()
+        s.shorten_if_known("rec-unknown")
+        # Counter should still be 0 — no label minted
+        assert s.get_or_create_short_id("rec-first") == "R1"

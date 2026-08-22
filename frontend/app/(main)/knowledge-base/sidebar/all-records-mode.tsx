@@ -11,6 +11,7 @@ import { KBSectionHeader } from './section-header';
 import { AppSection, appSectionKey } from './section';
 import { SidebarLoadMoreButton } from './sidebar-load-more-button';
 import { isKbCollectionsHubApp } from '../utils/all-records-transformer';
+import { findNodeInCategorized } from '../utils/find-node';
 import { ConnectorItemComponent, MoreConnectorItem } from './section-element';
 import type {
   Connector,
@@ -167,11 +168,21 @@ export function AllRecordsMode({
         const appChildren = appChildrenCache.get(app.id) || [];
         const childPageMeta = appChildrenPagination?.get(app.id);
         const appChildListHasMore = childPageMeta?.hasNext === true;
-        const connectorTree = !isKbApp ? connectorAppTrees.get(app.id) : undefined;
-        // For the KB app, pass the categorized tree (shared + private) so that
-        // sub-folder children populated by handleNodeExpand are visible in the tree.
+        // connectorAppTrees is populated for BOTH KB and connector apps (see
+        // fetch-app-direct-children.ts) as soon as this app's chevron is
+        // expanded here in All Records mode.
+        const connectorTree = connectorAppTrees.get(app.id);
+        // For KB apps, prefer the categorized tree when it's already populated
+        // (e.g. the user previously browsed this KB in Collections mode, which
+        // can merge in deeper/nested data) — find its own node within the
+        // categorized tree and use its children, NOT the whole forest, which
+        // would include the app's own root node and render it as a duplicate
+        // child of itself. Falls back to connectorTree via `??` below.
         const categorizedTree = isKbApp
-          ? [...(kbSharedTree || []), ...(kbPrivateTree || [])]
+          ? findNodeInCategorized(
+              { shared: kbSharedTree || [], private: kbPrivateTree || [] },
+              app.id
+            ).node?.children as EnhancedFolderTreeNode[] | undefined
           : undefined;
         const sectionKey = appSectionKey(app.id);
         const isAppExpanded = expandedSections.has(sectionKey);
@@ -193,7 +204,7 @@ export function AllRecordsMode({
             isLoading={loadingAppIds.has(app.id)}
             onFolderSelect={(nodeType, nodeId) => {
               // For KB root-level collections, also update the selection state
-              if (isKbApp && (nodeType === 'kb' || nodeType === 'recordGroup')) {
+              if (isKbApp && (nodeType === 'kb' || nodeType === 'app')) {
                 const namedNode =
                   categorizedTree?.find((n) => n.id === nodeId) ||
                   appChildren.find((c) => c.id === nodeId);

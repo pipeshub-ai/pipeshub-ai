@@ -641,28 +641,26 @@ def _make_topic_partition(topic="test-topic", partition=0):
 class TestStartProcessingTask:
     @pytest.mark.asyncio
     async def test_no_worker_loop_logs_error(self, consumer, caplog):
-        """Logs error when worker_loop is None."""
+        """Raises (instead of logging-and-returning) when worker_loop is
+        None, so the caller's except-block runs __finish_partition and
+        undoes __reserve_partition's pause — see fix-consumer-lifecycle."""
         consumer.worker_loop = None
 
         msg = _make_message()
-        tp = _make_topic_partition()
-        with caplog.at_level(logging.ERROR):
+        _make_topic_partition()
+        with pytest.raises(RuntimeError, match="Worker loop not initialized"):
             await consumer._IndexingKafkaConsumer__start_processing_task(msg)
-
-        assert "Worker loop not initialized" in caplog.text
 
     @pytest.mark.asyncio
     async def test_not_running_skips(self, consumer, caplog):
-        """Skips processing when consumer is stopping."""
+        """Raises when the consumer is stopping, for the same reason."""
         consumer.worker_loop = MagicMock()
         consumer.running = False
 
         msg = _make_message()
-        tp = _make_topic_partition()
-        with caplog.at_level(logging.WARNING):
+        _make_topic_partition()
+        with pytest.raises(RuntimeError, match="Consumer is stopping"):
             await consumer._IndexingKafkaConsumer__start_processing_task(msg)
-
-        assert "stopping" in caplog.text.lower()
 
     @pytest.mark.asyncio
     async def test_submits_to_worker_loop(self, logger, plain_config):

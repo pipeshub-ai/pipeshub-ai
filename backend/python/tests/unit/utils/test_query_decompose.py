@@ -110,6 +110,29 @@ class TestParseDecompositionResponse:
         result = svc._parse_decomposition_response(resp)
         assert result["operation"] == "none"
 
+    def test_response_with_list_content_blocks(self):
+        """Gemini-style list content is coerced before JSON parsing (no '.strip' crash)."""
+        svc = _make_service()
+        resp = MagicMock()
+        resp.content = [
+            {"type": "text", "text": '{"queries": [{"query": "q1", "confidence": '},
+            {"type": "text", "text": '"High"}], "reason": "list", "operation": "none"}'},
+        ]
+        result = svc._parse_decomposition_response(resp)
+        assert result["operation"] == "none"
+        assert len(result["queries"]) == 1
+
+    def test_response_with_list_content_and_think_tags(self):
+        """List content with </think> tags is coerced then split."""
+        svc = _make_service()
+        resp = MagicMock()
+        resp.content = [
+            "<think>reasoning here</think>",
+            '{"queries": [{"query": "q1", "confidence": "High"}], "reason": "r", "operation": "none"}',
+        ]
+        result = svc._parse_decomposition_response(resp)
+        assert result["operation"] == "none"
+
     def test_strips_markdown_code_blocks(self):
         """Markdown code fences around JSON are stripped."""
         svc = _make_service()

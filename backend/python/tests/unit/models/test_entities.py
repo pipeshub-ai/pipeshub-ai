@@ -175,6 +175,13 @@ class TestRecord:
         assert arango["webUrl"] == "https://example.com"
         assert arango["isDeleted"] is False
         assert arango["isArchived"] is False
+        assert arango["parsingStatus"] == ProgressStatus.NOT_STARTED.value
+
+    def test_to_arango_base_record_parsing_status_round_trips(self):
+        rec = Record(**_record_kwargs(id="rec-1", org_id="org-1"))
+        rec.parsing_status = ProgressStatus.IN_PROGRESS.value
+        arango = rec.to_arango_base_record()
+        assert arango["parsingStatus"] == ProgressStatus.IN_PROGRESS.value
 
     def test_from_arango_base_record(self):
         arango_doc = {
@@ -193,6 +200,7 @@ class TestRecord:
             "updatedAtTimestamp": 1704153600000,
             "sourceCreatedAtTimestamp": None,
             "sourceLastModifiedTimestamp": None,
+            "parsingStatus": "IN_PROGRESS",
             "indexingStatus": "QUEUED",
             "extractionStatus": "NOT_STARTED",
             "previewRenderable": True,
@@ -203,6 +211,25 @@ class TestRecord:
         assert rec.record_name == "Test Record"
         assert rec.record_type == RecordType.FILE
         assert rec.connector_name == Connectors.GOOGLE_DRIVE
+        assert rec.parsing_status == ProgressStatus.IN_PROGRESS.value
+
+    def test_from_arango_base_record_defaults_parsing_status_when_absent(self):
+        """Records persisted before parsingStatus existed should default to
+        NOT_STARTED rather than raising or leaving the field unset."""
+        arango_doc = {
+            "_key": "rec-1",
+            "orgId": "org-1",
+            "recordName": "Test",
+            "recordType": "FILE",
+            "externalRecordId": "ext-1",
+            "version": 1,
+            "origin": "UPLOAD",
+            "connectorId": "conn-1",
+            "createdAtTimestamp": 1704067200000,
+            "updatedAtTimestamp": 1704067200000,
+        }
+        rec = Record.from_arango_base_record(arango_doc)
+        assert rec.parsing_status == ProgressStatus.NOT_STARTED.value
 
     def test_from_arango_base_record_unknown_connector(self):
         """Unknown connector name should fall back to KNOWLEDGE_BASE."""
@@ -1692,16 +1719,16 @@ class TestRecordToLlmContextEdgeCases:
         assert "https://app.example.com/path/to/doc" in ctx
 
     def test_to_llm_context_weburl_without_http_no_frontend(self):
-        """Weburl not starting with http without frontend_url falls back to localhost."""
+        """Weburl not starting with http without frontend_url is omitted."""
         rec = Record(**_record_kwargs(weburl="/path/to/doc"))
         ctx = rec.to_llm_context(frontend_url=None)
-        assert "http://localhost:3000/path/to/doc" in ctx
+        assert "Web URL:" not in ctx
 
     def test_to_llm_context_relative_weburl_without_frontend_url(self):
-        """Relative weburl like /record/<id> should be prefixed with localhost fallback."""
+        """Relative weburl like /record/<id> is dropped when no frontend host is known."""
         rec = Record(**_record_kwargs(weburl="/record/abc"))
         ctx = rec.to_llm_context()
-        assert "Web URL         : http://localhost:3000/record/abc" in ctx
+        assert "Web URL:" not in ctx
 
     def test_to_llm_context_frontend_url_with_trailing_slash(self):
         """Trailing slash on frontend_url should not produce a double slash."""
@@ -1714,7 +1741,7 @@ class TestRecordToLlmContextEdgeCases:
         """Absolute weburl should pass through untouched regardless of frontend_url."""
         rec = Record(**_record_kwargs(weburl="https://example.com/doc"))
         ctx = rec.to_llm_context(frontend_url=None)
-        assert "Web URL         : https://example.com/doc" in ctx
+        assert "Web URL: https://example.com/doc" in ctx
         assert "localhost" not in ctx
 
 
@@ -2725,8 +2752,7 @@ class TestFileRecordToLlmFullContext:
 
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]), \
              patch("app.agents.actions.util.parse_file.LlmTextContent", LlmTextContent):
-            from jinja2 import Template
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 mock_tpl.return_value.render = MagicMock(return_value="TABLE_RENDERED")
                 items = rec.to_llm_full_context()
 
@@ -2742,8 +2768,7 @@ class TestFileRecordToLlmFullContext:
         rec = _make_file_record_with_blocks(blocks=[row0, row1], block_groups=[group])
 
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]):
-            from jinja2 import Template
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 captured = {}
 
                 def _render(**kwargs):
@@ -2799,7 +2824,7 @@ class TestFileRecordToLlmFullContextExtended:
         group = BlockGroup(index=0, type=GroupType.TABLE, children=children)
         rec = _make_file_record_with_blocks(blocks=[row], block_groups=[group])
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]):
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 mock_tpl.return_value.render = MagicMock(return_value="STR_ROW")
                 items = rec.to_llm_full_context()
         assert any("STR_ROW" in i.text for i in items)
@@ -2811,7 +2836,7 @@ class TestFileRecordToLlmFullContextExtended:
         group = BlockGroup(index=0, type=GroupType.TABLE, children=children)
         rec = _make_file_record_with_blocks(blocks=[row0, row1], block_groups=[group])
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]):
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 mock_tpl.return_value.render = MagicMock(return_value="TBL")
                 items = rec.to_llm_full_context()
         texts = " ".join(i.text for i in items)
@@ -2845,7 +2870,7 @@ class TestFileRecordToLlmFullContextExtended:
         rec.virtual_record_id = "vr-1"
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.LIST.value]), \
              patch("app.utils.chat_helpers.build_group_blocks", return_value=[{"content": "GROUP_BODY"}]):
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 mock_tpl.return_value.render = MagicMock(return_value="GROUP_RENDERED")
                 items = rec.to_llm_full_context()
         assert any("GROUP_RENDERED" in i.text for i in items)
@@ -2880,12 +2905,21 @@ class TestFileRecordToLlmFullContextExtended:
         with pytest.raises(RuntimeError, match="Error in record_to_message_content"):
             rec.to_llm_full_context()
 
-    def test_unsupported_block_type_hits_else_continue(self):
+    def test_top_level_code_block_is_rendered(self):
+        # Code belongs to no group, so before it had its own branch it fell to
+        # `else: continue` and never reached the model.
         block = Block(type=BlockType.CODE, data="print(1)", parent_index=None)
         rec = _make_file_record_with_blocks(blocks=[block])
         with patch("app.utils.chat_helpers.valid_group_labels", []):
             items = rec.to_llm_full_context()
-        assert not any("print(1)" in i.text for i in items)
+        assert any("print(1)" in i.text for i in items)
+
+    def test_unsupported_block_type_hits_else_continue(self):
+        block = Block(type=BlockType.DIVIDER, data="---", parent_index=None)
+        rec = _make_file_record_with_blocks(blocks=[block])
+        with patch("app.utils.chat_helpers.valid_group_labels", []):
+            items = rec.to_llm_full_context()
+        assert not any("---" in i.text for i in items)
 
     def test_parent_block_skips_duplicate_seen_group(self):
         b1 = Block(type=BlockType.TEXT, data="first", parent_index=0)
@@ -2894,7 +2928,7 @@ class TestFileRecordToLlmFullContextExtended:
         rec = _make_file_record_with_blocks(blocks=[b1, b2], block_groups=[group])
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.LIST.value]), \
              patch("app.utils.chat_helpers.build_group_blocks", return_value=[{"content": "G"}]):
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 mock_tpl.return_value.render = MagicMock(return_value="ONCE")
                 items = rec.to_llm_full_context()
         assert " ".join(i.text for i in items).count("ONCE") == 1
@@ -3373,40 +3407,6 @@ def _make_msg(**overrides) -> MessageRecord:
 def _slack_ts_iso(ts: str) -> str:
     dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
     return dt.isoformat().replace("+00:00", "Z")
-
-
-class TestParseJsonField:
-    """_parse_json_field module-level helper."""
-
-    @pytest.fixture
-    def fn(self):
-        from app.models.entities import _parse_json_field
-        return _parse_json_field
-
-    def test_none_returns_default(self, fn):
-        assert fn(None, []) == []
-        assert fn(None, None) is None
-
-    def test_valid_json_string_parsed(self, fn):
-        assert fn('[{"name":"thumbsup"}]', []) == [{"name": "thumbsup"}]
-
-    def test_already_parsed_list_returned_directly(self, fn):
-        data = [{"name": "wave"}]
-        assert fn(data, []) is data
-
-    def test_invalid_json_string_returns_default(self, fn):
-        assert fn("not valid json", []) == []
-
-    def test_dict_string_parsed(self, fn):
-        result = fn('{"key": "value"}', None)
-        assert result == {"key": "value"}
-
-    def test_already_parsed_dict_returned_directly(self, fn):
-        d = {"a": 1}
-        assert fn(d, None) is d
-
-    def test_empty_string_returns_default(self, fn):
-        assert fn("", []) == []
 
 
 class TestRecordGroupTypeSlackThread:

@@ -12,10 +12,77 @@ import {
   SearchResultItem,
   type ModelInfo,
   type PendingAskUserQuestion,
+  type AgentCapabilities,
+  DEFAULT_AGENT_CAPABILITIES,
+  normalizeReasoningEffort,
 } from './types';
 import type { RecordDetailsResponse } from '@/knowledge-base/types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
 import type { AgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
+
+// ── localStorage helpers for agent capabilities ──────────────────────
+
+const LS_AGENT_CAPS_KEY = 'pipeshub-agent-capabilities';
+
+function lsGetAgentCapabilities(agentId?: string): AgentCapabilities {
+  if (typeof window === 'undefined') return { ...DEFAULT_AGENT_CAPABILITIES };
+  try {
+    const key = agentId ? `${LS_AGENT_CAPS_KEY}:${agentId}` : LS_AGENT_CAPS_KEY;
+    const raw = localStorage.getItem(key);
+    if (!raw) return { ...DEFAULT_AGENT_CAPABILITIES };
+    const parsed = JSON.parse(raw) as Partial<AgentCapabilities>;
+    return {
+      internalSearch: typeof parsed.internalSearch === 'boolean' ? parsed.internalSearch : true,
+      webSearch: typeof parsed.webSearch === 'boolean' ? parsed.webSearch : true,
+      deepSearch: typeof parsed.deepSearch === 'boolean' ? parsed.deepSearch : false,
+    };
+  } catch {
+    return { ...DEFAULT_AGENT_CAPABILITIES };
+  }
+}
+
+function lsSetAgentCapabilities(caps: AgentCapabilities, agentId?: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const key = agentId ? `${LS_AGENT_CAPS_KEY}:${agentId}` : LS_AGENT_CAPS_KEY;
+    localStorage.setItem(key, JSON.stringify(caps));
+  } catch {
+    // Storage unavailable — silently ignore
+  }
+}
+
+const LS_REASONING_EFFORT_KEY = 'pipeshub-reasoning-effort';
+const REASONING_EFFORT_VALUES = ['none', 'low', 'medium', 'high', 'max'] as const;
+
+function lsGetReasoningEffort(ctxKey: string): import('./types').ReasoningEffort | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(`${LS_REASONING_EFFORT_KEY}:${ctxKey}`);
+    if (!raw) return null;
+    return (REASONING_EFFORT_VALUES as readonly string[]).includes(raw)
+      ? normalizeReasoningEffort(raw as import('./types').ReasoningEffort)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function lsSetReasoningEffort(
+  ctxKey: string,
+  effort: import('./types').ReasoningEffort | null,
+): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const key = `${LS_REASONING_EFFORT_KEY}:${ctxKey}`;
+    if (effort === null) {
+      localStorage.removeItem(key);
+    } else {
+      localStorage.setItem(key, effort);
+    }
+  } catch {
+    // Storage unavailable — silently ignore
+  }
+}
 
 /**
  * File preview state for citation preview in chat.
@@ -69,6 +136,33 @@ export interface ChatPreviewFile {
    * able to save the file locally.
    */
   showDownload?: boolean;
+  /**
+   * Artifact registry version currently loaded into `url`/`blob`. Undefined
+   * for previews that aren't version-tracked artifacts (citations, plain KB
+   * records) — the version switcher only renders when this is set.
+   */
+  version?: number;
+  /**
+   * Highest version known to exist for this artifact (see `MessageList`'s
+   * `latestArtifactVersions`). Drives the version-switcher dropdown's range;
+   * equal to `version` when this IS the latest (no older versions to jump
+   * back to, so the switcher stays non-interactive).
+   */
+  latestVersion?: number;
+  /**
+   * Re-fetches this artifact at `version` and replaces `url`/`blob`/`version`
+   * in place via `setPreviewFile`. Bound by the caller (`chat-response.tsx`)
+   * to whatever record/stream logic produced this preview in the first
+   * place — the preview shell itself has no knowledge of artifacts.
+   */
+  onVersionChange?: (version: number) => void | Promise<void>;
+  /**
+   * True while `onVersionChange` is in flight. Kept separate from `isLoading`
+   * so the previously-loaded content stays visible (and the switcher shows a
+   * small spinner) instead of the whole panel flashing to a loading skeleton
+   * on every version switch.
+   */
+  isSwitchingVersion?: boolean;
 }
 
 /**
@@ -157,6 +251,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     streamingQuestion: '',
     currentStatusMessage: null,
     streamingCitationMaps: null,
+    streamingParts: [],
     userScrollOverride: false,
     savedScrollTop: null,
     savedScrollWasStreaming: false,
@@ -240,6 +335,15 @@ interface ChatState {
     instanceId?: string;
     iconPath?: string;
   }>;
+  /** Attached MCP server groups for the MCP tab — same row shape as `agentChatToolGroups`. */
+  agentChatMcpGroups: Array<{
+    label: string;
+    fullNames: string[];
+    toolDescriptions?: Record<string, string>;
+    toolsetSlug: string;
+    instanceId?: string;
+    iconPath?: string;
+  }>;
   /** Default knowledge scope derived from the agent graph (used to reset UI). */
   agentKnowledgeDefaults: { apps: string[]; kb: string[] };
   /**
@@ -250,6 +354,8 @@ interface ChatState {
   agentKnowledgeScope: { apps: string[]; kb: string[] } | null;
   /** Resolved agent name for the top chat header when `agentId` is in the URL */
   agentContextDisplayName: string | null;
+  /** Whether the current scoped agent was configured with a web search provider. */
+  agentHasWebSearch: boolean;
   /** MongoDB user ID of the agent creator from GET agent `createdBy` */
   agentContextCreatedBy: string | null;
   /** Access flags (canEdit / showViewAgent / …) for the agent in context — drives the chat header menu */
@@ -280,6 +386,22 @@ interface ChatState {
   }>;
   universalAgentToolsLoading: boolean;
   universalAgentToolsError: string | null;
+  /** Every tool fullName from my-mcp-servers (authenticated only) — kept separate from the
+   * toolset catalog because the two load independently (paginated vs. one-shot); combine via
+   * `getUniversalCombinedCatalog()` when computing "select all" semantics. */
+  universalAgentMcpCatalogFullNames: string[];
+  /** MCP server groups for universal agent MCP tab (from GET /api/v1/mcp-servers/my-mcp-servers). */
+  universalAgentMcpGroups: Array<{
+    label: string;
+    fullNames: string[];
+    toolDescriptions?: Record<string, string>;
+    toolsetSlug: string;
+    instanceId: string;
+    iconPath?: string;
+    isAuthenticated: boolean;
+  }>;
+  universalAgentMcpLoading: boolean;
+  universalAgentMcpError: string | null;
 
   // ── Global settings (apply to all chats) ──
   settings: ChatSettings;
@@ -386,11 +508,22 @@ interface ChatState {
       instanceId?: string;
       iconPath?: string;
     }>;
+    /** Attached MCP server groups for the MCP tab. */
+    mcpGroups: Array<{
+      label: string;
+      fullNames: string[];
+      toolDescriptions?: Record<string, string>;
+      toolsetSlug: string;
+      instanceId?: string;
+      iconPath?: string;
+    }>;
     connectors: Array<{ id: string; label: string; connectorKind: string }>;
     kbIds: string[];
     knowledgeCollectionRows: Array<{ id: string; name: string; sourceType?: string }>;
     knowledgeDefaults: { apps: string[]; kb: string[] };
     deprecatedToolNames: string[];
+    /** Whether the agent was built with a web search provider. */
+    hasWebSearch?: boolean;
   } | null) => void;
   setAgentKnowledgeScope: (scope: { apps: string[]; kb: string[] } | null) => void;
   setAgentContextDisplayName: (name: string | null) => void;
@@ -414,6 +547,21 @@ interface ChatState {
   } | null) => void;
   setUniversalAgentToolsLoading: (loading: boolean) => void;
   setUniversalAgentToolsError: (error: string | null) => void;
+  /** Populate universal agent MCP groups from my-mcp-servers. Pass null to clear. */
+  hydrateUniversalAgentMcpResources: (payload: {
+    mcpGroups: Array<{
+      label: string;
+      fullNames: string[];
+      toolDescriptions?: Record<string, string>;
+      toolsetSlug: string;
+      instanceId: string;
+      iconPath?: string;
+      isAuthenticated: boolean;
+    }>;
+    mcpCatalogFullNames: string[];
+  } | null) => void;
+  setUniversalAgentMcpLoading: (loading: boolean) => void;
+  setUniversalAgentMcpError: (error: string | null) => void;
 
   addPendingConversation: (slotId: string) => void;
   updatePendingConversationTitle: (slotId: string, title: string) => void;
@@ -442,6 +590,27 @@ interface ChatState {
   setSelectedModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
   setDefaultModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
   setAvailableModelsForCtx: (ctxKey: string, models: import('./types').AvailableLlmModel[]) => void;
+  /**
+   * Set the reasoning effort override for a context (assistant or agent) and
+   * persist it to localStorage under `pipeshub-reasoning-effort:{ctxKey}`.
+   * `null` means "use the model's own default" — clears any explicit choice.
+   */
+  setReasoningEffortForCtx: (ctxKey: string, effort: import('./types').ReasoningEffort | null) => void;
+  /**
+   * Load a context's persisted reasoning effort from localStorage into the
+   * in-memory store, if it hasn't been loaded yet this session. Call once
+   * when a context's model selector mounts.
+   */
+  hydrateReasoningEffortForCtx: (ctxKey: string) => void;
+  /** Update universal agent mode capability toggles and persist to localStorage. */
+  setAgentCapabilities: (caps: Partial<import('./types').AgentCapabilities>) => void;
+  /**
+   * Per-scoped-agent capability overrides (keyed by agentId).
+   * Allows temporarily disabling a capability the agent has configured.
+   * Stored in localStorage under `pipeshub-agent-capabilities:{agentId}`.
+   */
+  scopedAgentCapabilities: Record<string, import('./types').AgentCapabilities>;
+  setScopedAgentCapabilities: (agentId: string, caps: Partial<import('./types').AgentCapabilities>) => void;
 
   // ── Search actions ──
   setSearchResults: (results: SearchResultItem[], searchId: string | null, query: string) => void;
@@ -498,9 +667,18 @@ const initialState = {
     instanceId?: string;
     iconPath?: string;
   }>,
+  agentChatMcpGroups: [] as Array<{
+    label: string;
+    fullNames: string[];
+    toolDescriptions?: Record<string, string>;
+    toolsetSlug: string;
+    instanceId?: string;
+    iconPath?: string;
+  }>,
   agentKnowledgeDefaults: { apps: [] as string[], kb: [] as string[] },
   agentKnowledgeScope: null as { apps: string[]; kb: string[] } | null,
   agentContextDisplayName: null as string | null,
+  agentHasWebSearch: false,
   agentContextCreatedBy: null as string | null,
   agentContextAccess: null as AgentSidebarRowMenuAccess | null,
   agentDeprecatedToolNames: [] as string[],
@@ -518,19 +696,35 @@ const initialState = {
   }>,
   universalAgentToolsLoading: false,
   universalAgentToolsError: null as string | null,
+  universalAgentMcpCatalogFullNames: [] as string[],
+  universalAgentMcpGroups: [] as Array<{
+    label: string;
+    fullNames: string[];
+    toolDescriptions?: Record<string, string>;
+    toolsetSlug: string;
+    instanceId: string;
+    iconPath?: string;
+    isAuthenticated: boolean;
+  }>,
+  universalAgentMcpLoading: false,
+  universalAgentMcpError: null as string | null,
 
   settings: {
     mode: 'chat' as ChatMode,
-    queryMode: 'chat' as QueryMode,
-    agentStrategy: 'auto' as AgentStrategy,
+    queryMode: 'agent' as QueryMode,
+    agentStrategy: 'quick' as AgentStrategy,
     filters: {
       apps: [] as string[],
       kb: [] as string[],
     },
+    agentCapabilities: lsGetAgentCapabilities(),
     selectedModels: {} as Record<string, import('./types').ModelOverride | null>,
     defaultModels: {} as Record<string, import('./types').ModelOverride | null>,
     availableModels: {} as Record<string, { models: import('./types').AvailableLlmModel[]; fetchedAt: number }>,
+    reasoningEffort: {} as Record<string, import('./types').ReasoningEffort | null>,
   },
+
+  scopedAgentCapabilities: {} as Record<string, AgentCapabilities>,
 
   previewFile: null as ChatPreviewFile | null,
   previewMode: 'sidebar' as 'sidebar' | 'fullscreen',
@@ -744,6 +938,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           agentChatKbIds: [],
           agentKnowledgeCollectionRows: [],
           agentChatToolGroups: [],
+          agentChatMcpGroups: [],
           agentKnowledgeDefaults: { apps: [], kb: [] },
           agentKnowledgeScope: null,
           agentContextDisplayName: null,
@@ -769,6 +964,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         agentChatKbIds: [],
         agentKnowledgeCollectionRows: [],
         agentChatToolGroups: [],
+        agentChatMcpGroups: [],
         agentKnowledgeDefaults: { apps: [], kb: [] },
         agentKnowledgeScope: null,
         agentContextDisplayName: null,
@@ -838,11 +1034,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ? {
             agentToolCatalogFullNames: payload.toolCatalogFullNames,
             agentChatToolGroups: payload.toolGroups,
+            agentChatMcpGroups: payload.mcpGroups,
             agentChatConnectors: payload.connectors,
             agentChatKbIds: payload.kbIds,
             agentKnowledgeCollectionRows: payload.knowledgeCollectionRows,
             agentKnowledgeDefaults: payload.knowledgeDefaults,
             agentDeprecatedToolNames: payload.deprecatedToolNames,
+            agentHasWebSearch: payload.hasWebSearch ?? false,
             agentKnowledgeScope: null,
             agentStreamTools: null,
             collectionNamesCache: (() => {
@@ -866,11 +1064,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         : {
             agentToolCatalogFullNames: [],
             agentChatToolGroups: [],
+            agentChatMcpGroups: [],
             agentChatConnectors: [],
             agentChatKbIds: [],
             agentKnowledgeCollectionRows: [],
             agentKnowledgeDefaults: { apps: [], kb: [] },
             agentDeprecatedToolNames: [],
+            agentHasWebSearch: false,
             agentKnowledgeScope: null,
             agentStreamTools: null,
           }
@@ -907,6 +1107,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setUniversalAgentToolsLoading: (loading) => set({ universalAgentToolsLoading: loading }),
 
   setUniversalAgentToolsError: (error) => set({ universalAgentToolsError: error }),
+
+  hydrateUniversalAgentMcpResources: (payload) =>
+    set(
+      payload
+        ? {
+            universalAgentMcpGroups: payload.mcpGroups,
+            universalAgentMcpCatalogFullNames: payload.mcpCatalogFullNames,
+            universalAgentMcpLoading: false,
+            universalAgentMcpError: null,
+          }
+        : {
+            universalAgentMcpGroups: [],
+            universalAgentMcpCatalogFullNames: [],
+            universalAgentMcpLoading: false,
+            universalAgentMcpError: null,
+          }
+    ),
+
+  setUniversalAgentMcpLoading: (loading) => set({ universalAgentMcpLoading: loading }),
+
+  setUniversalAgentMcpError: (error) => set({ universalAgentMcpError: error }),
 
   moveConversationToTop: (conversationId) =>
     set((state) => {
@@ -1106,6 +1327,45 @@ export const useChatStore = create<ChatState>((set, get) => ({
     },
   })),
 
+  setReasoningEffortForCtx: (ctxKey, effort) => set((state) => {
+    lsSetReasoningEffort(ctxKey, effort);
+    return {
+      settings: {
+        ...state.settings,
+        reasoningEffort: { ...state.settings.reasoningEffort, [ctxKey]: effort },
+      },
+    };
+  }),
+
+  hydrateReasoningEffortForCtx: (ctxKey) => set((state) => {
+    if (state.settings.reasoningEffort[ctxKey] !== undefined) return state;
+    return {
+      settings: {
+        ...state.settings,
+        reasoningEffort: {
+          ...state.settings.reasoningEffort,
+          [ctxKey]: lsGetReasoningEffort(ctxKey),
+        },
+      },
+    };
+  }),
+
+  setAgentCapabilities: (caps) => set((state) => {
+    const next: AgentCapabilities = { ...state.settings.agentCapabilities, ...caps };
+    lsSetAgentCapabilities(next);
+    return { settings: { ...state.settings, agentCapabilities: next } };
+  }),
+
+  setScopedAgentCapabilities: (agentId, caps) => set((state) => {
+    const current: AgentCapabilities = state.scopedAgentCapabilities[agentId]
+      ?? lsGetAgentCapabilities(agentId);
+    const next: AgentCapabilities = { ...current, ...caps };
+    lsSetAgentCapabilities(next, agentId);
+    return {
+      scopedAgentCapabilities: { ...state.scopedAgentCapabilities, [agentId]: next },
+    };
+  }),
+
   // ── Search actions ──────────────────────────────────────────────
 
   setSearchResults: (results, searchId, query) =>
@@ -1163,6 +1423,37 @@ export function getEffectiveModel(
   return selectedModels[ctxKey] ?? defaultModels[ctxKey] ?? null;
 }
 
+/**
+ * Whether `model` is flagged `isReasoning` in the model catalog fetched for
+ * `ctxKey`. Used to gate the client-side `DEFAULT_REASONING_EFFORT` fallback —
+ * sending an effort value for a non-reasoning model is harmless server-side
+ * (the LLM factory ignores it), but omitting it keeps outgoing payloads clean
+ * for models that don't support the concept at all.
+ */
+export function isModelReasoningCapable(
+  ctxKey: string,
+  model: import('./types').ModelOverride | null,
+): boolean {
+  if (!model) return false;
+  const models = useChatStore.getState().settings.availableModels[ctxKey]?.models ?? [];
+  return Boolean(
+    models.find((m) => m.modelKey === model.modelKey && m.modelName === model.modelName)
+      ?.isReasoning,
+  );
+}
+
+/**
+ * Union of the universal agent mode's toolset + MCP catalogs. The two load independently
+ * (toolsets are paginated via my-toolsets, MCP servers load in one shot via my-mcp-servers)
+ * so they're kept as separate store fields — this is the single source of truth for "every
+ * tool fullName currently selectable", used by `toggleTool`/`setGroupToolsEnabled` in
+ * `universal-agent-resources-panel.tsx` to diff the explicit selection against "everything".
+ */
+export function getUniversalCombinedCatalog(): string[] {
+  const state = useChatStore.getState();
+  return [...state.universalAgentToolCatalogFullNames, ...state.universalAgentMcpCatalogFullNames];
+}
+
 // ── Store-write diff subscriber (debug only) ────────────────────
 // Logs which top-level fields changed per set() call. This lets us
 // correlate store writes with component re-renders in the debug output.
@@ -1180,6 +1471,7 @@ if (typeof window !== 'undefined') {
     'agentChatKbIds',
     'agentKnowledgeCollectionRows',
     'agentChatToolGroups',
+    'agentChatMcpGroups',
     'agentKnowledgeDefaults',
     'agentKnowledgeScope',
     'agentContextDisplayName',
@@ -1190,7 +1482,12 @@ if (typeof window !== 'undefined') {
     'universalAgentToolGroups',
     'universalAgentToolsLoading',
     'universalAgentToolsError',
+    'universalAgentMcpCatalogFullNames',
+    'universalAgentMcpGroups',
+    'universalAgentMcpLoading',
+    'universalAgentMcpError',
     'settings', 'previewFile', 'previewMode', 'expansionViewMode',
+    'scopedAgentCapabilities',
     'collectionNamesCache', 'collectionMetaCache', 'conversationsVersion',
     'searchResults', 'searchQuery', 'searchId', 'isSearching', 'searchError',
   ] as const;

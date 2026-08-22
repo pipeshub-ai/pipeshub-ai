@@ -26,8 +26,6 @@ Targets additional coverage for:
 - _create_knowledge_edges: batch create edges failure
 - _create_toolset_edges: empty toolsets
 - _create_toolset_edges: batch upsert returns None
-- _select_agent_graph_for_query: quick mode
-- stream_response: various paths
 """
 
 import json
@@ -41,29 +39,34 @@ from fastapi import HTTPException
 
 class TestFilterKnowledgeByEnabledSourcesExtended:
     def test_kb_with_string_filters_json(self):
+        """A KB-typed entry is matched via filters["kb"] against its OWN connectorId."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
 
         knowledge = [
             {
-                "connectorId": "knowledgeBase_1",
+                "connectorId": "kb-app-id-1",
+                "type": "KB",
                 "filters": json.dumps({"recordGroups": ["rg-1"]}),
             }
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg-1"]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["kb-app-id-1"]})
         assert len(result) == 1
 
     def test_kb_with_invalid_json_string_filters(self):
+        """KB entries with invalid filters are still included if their connectorId matches filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
 
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440100"
         knowledge = [
             {
-                "connectorId": "knowledgeBase_1",
-                "filters": "not-valid-json",
+                "connectorId": kb_uuid,
+                "type": "KB",
+                "filters": "not-valid-json",  # Invalid filters don't matter now
             }
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg-1"]})
-        # Invalid JSON => filters_data becomes {}, no record groups => not included
-        assert len(result) == 0
+        # KB entries are matched via filters["kb"], never filters["apps"]
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
+        assert len(result) == 1
 
     def test_non_dict_entries_skipped(self):
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
@@ -73,29 +76,34 @@ class TestFilterKnowledgeByEnabledSourcesExtended:
         assert len(result) == 0
 
     def test_kb_with_filtersParsed_key(self):
+        """KB entries with filtersParsed are included if connectorId matches filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
 
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440100"
         knowledge = [
             {
-                "connectorId": "knowledgeBase_1",
-                "filtersParsed": {"recordGroups": ["rg-1"]},
+                "connectorId": kb_uuid,
+                "type": "KB",
+                "filtersParsed": {"recordGroups": ["rg-1"]},  # Ignored in new architecture
             }
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg-1"]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
 
     def test_kb_with_non_dict_filters_data(self):
-        """When filters_data is not a dict (e.g. a list), record_groups defaults to []."""
+        """KB entries with non-dict filters are still included if connectorId matches filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
 
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440100"
         knowledge = [
             {
-                "connectorId": "knowledgeBase_1",
-                "filters": ["not", "a", "dict"],
+                "connectorId": kb_uuid,
+                "type": "KB",
+                "filters": ["not", "a", "dict"],  # Invalid filters don't matter now
             }
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg-1"]})
-        assert len(result) == 0
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
+        assert len(result) == 1
 
     def test_app_connector_not_in_enabled_apps_skipped(self):
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
@@ -105,18 +113,45 @@ class TestFilterKnowledgeByEnabledSourcesExtended:
         assert len(result) == 0
 
     def test_kb_connector_no_record_groups_not_included_without_match(self):
-        """KB with empty record groups not included when enabled_kbs has items."""
+        """KB entries are included if connectorId matches filters["kb"], regardless of recordGroups"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
 
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440100"
         knowledge = [
             {
-                "connectorId": "knowledgeBase_1",
-                "filters": {"recordGroups": []},
+                "connectorId": kb_uuid,
+                "type": "KB",
+                "filters": {"recordGroups": []},  # Ignored in new architecture
             }
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg-1"]})
-        # Empty record groups with no match => not included
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
+        assert len(result) == 1
+
+    def test_kb_entry_not_matched_by_apps_filter(self):
+        """Regression: a KB entry's id living in filters["apps"] must NOT
+        match it — KB entries are only ever enabled via filters["kb"]."""
+        from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440101"
+        knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
         assert len(result) == 0
+
+    def test_mixed_kb_and_app_both_kept(self):
+        """Regression: configuring an app connector must not drop KB entries —
+        each entry is checked against the enabled-set matching its own type."""
+        from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440102"
+        knowledge = [
+            {"connectorId": "confluence-app", "type": "confluence"},
+            {"connectorId": kb_uuid, "type": "KB"},
+        ]
+        result = _filter_knowledge_by_enabled_sources(
+            knowledge, {"apps": ["confluence-app"], "kb": [kb_uuid]},
+        )
+        ids = {k["connectorId"] for k in result}
+        assert ids == {"confluence-app", kb_uuid}
 
 
 # ============================================================================
@@ -667,23 +702,6 @@ class TestCreateToolsetEdges:
         )
         assert created == []
         assert len(failed) == 1
-
-
-# ============================================================================
-# _select_agent_graph_for_query: quick mode
-# ============================================================================
-
-
-class TestSelectAgentGraphQuickMode:
-    @pytest.mark.asyncio
-    async def test_quick_mode(self):
-        from app.api.routes.agent import _select_agent_graph_for_query, agent_graph
-
-        query_info = {"chatMode": "quick"}
-        # chatMode="quick" is not handled explicitly, falls to default
-        result = await _select_agent_graph_for_query(query_info, MagicMock(), MagicMock())
-        # "quick" is not "deep" or "verification" or "auto", so hits default
-        assert result is agent_graph
 
 
 # ============================================================================

@@ -44,7 +44,7 @@
   <a href="https://www.npmjs.com/package/@pipeshub-ai/sdk"><img src="https://img.shields.io/npm/v/@pipeshub-ai/sdk?logo=npm&amp;logoColor=white&amp;label=node%20sdk" alt="Node.js SDK" /></a>
   <a href="https://pypi.org/project/pipeshub-sdk/"><img src="https://img.shields.io/pypi/v/pipeshub-sdk?logo=python&amp;logoColor=white&amp;label=python%20sdk" alt="Python SDK" /></a>
   <a href="https://github.com/pipeshub-ai/pipeshub-sdk-go"><img src="https://img.shields.io/github/v/release/pipeshub-ai/pipeshub-sdk-go?logo=go&amp;logoColor=white&amp;label=go%20sdk" alt="Go SDK" /></a>
-  <a href="https://www.npmjs.com/package/pipeshub"><img src="https://img.shields.io/npm/v/pipeshub?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
+  <a href="https://www.npmjs.com/package/@pipeshub-ai/mcp"><img src="https://img.shields.io/npm/v/@pipeshub-ai/mcp?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
 </p>
 
 </div>
@@ -122,7 +122,6 @@
 |-----------|-------------|
 | FastAPI | Framework web Python ad alte prestazioni |
 | LangChain | Framework per pipeline di LLM |
-| LangGraph | Grafo di stati per i flussi di lavoro di LLM |
 | Qdrant | Motore di ricerca per similarità vettoriale |
 | Neo4j / ArangoDB | Database a grafo |
 | Kafka / Redis Streams | Piattaforma distribuita di streaming di eventi |
@@ -265,7 +264,7 @@ Nota: Usa HTTPS per i deployment sul cloud. L'HTTP può causare blocchi di sicur
 
 ### Quali provider di LLM supporta PipesHub?
 
-PipesHub adotta il principio "Porta il tuo modello" — puoi usare qualsiasi provider di LLM. Distribuisci nella tua VPC con i modelli che preferisci. Lo stack tecnologico include LangChain e LangGraph per le pipeline e i flussi di lavoro di LLM.
+PipesHub adotta il principio "Porta il tuo modello" — puoi usare qualsiasi provider di LLM. Distribuisci nella tua VPC con i modelli che preferisci. Lo stack tecnologico include LangChain per le pipeline e i flussi di lavoro di LLM.
 
 ### Che cos'è la funzionalità di recupero tramite grafo della conoscenza?
 

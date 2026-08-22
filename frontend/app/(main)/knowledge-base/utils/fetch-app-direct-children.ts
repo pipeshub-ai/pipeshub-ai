@@ -1,8 +1,7 @@
 import { KnowledgeHubApi } from '../api';
 import { SIDEBAR_PAGINATION_PAGE_SIZE } from '../constants';
 import { useKnowledgeBaseStore } from '../store';
-import { buildConnectorAppSidebarTree, categorizeNodes } from './tree-builder';
-import { isKbCollectionsHubApp } from './all-records-transformer';
+import { buildConnectorAppSidebarTree } from './tree-builder';
 
 /** expandedSections key for an app row in All Records sidebar */
 export function appSectionKey(appId: string): string {
@@ -20,8 +19,6 @@ async function runFetchAppDirectChildren(appId: string): Promise<void> {
     cacheAppChildren,
     setAppChildPagination,
     setAppLoading,
-    setNodes,
-    setCategorizedNodes,
     setConnectorAppTree,
     addNodes,
   } = useKnowledgeBaseStore.getState();
@@ -49,15 +46,12 @@ async function runFetchAppDirectChildren(appId: string): Promise<void> {
         : { hasNext: false, nextPage: 1 }
     );
 
-    const isKbApp = isKbCollectionsHubApp(app);
-    if (isKbApp) {
-      setNodes(response.items);
-      const categorized = categorizeNodes(response.items, `apps/${appId}`);
-      setCategorizedNodes(categorized);
-    } else {
-      addNodes(response.items);
-      setConnectorAppTree(appId, buildConnectorAppSidebarTree(appId, response.items));
-    }
+    // Build a hierarchical tree from the fetched children for BOTH KB and
+    // connector apps — KB apps used to be skipped here, which left
+    // connectorAppTrees (and thus the All Records sidebar's rendered tree)
+    // empty for KB apps even though their children were fetched correctly.
+    addNodes(response.items);
+    setConnectorAppTree(appId, buildConnectorAppSidebarTree(appId, response.items));
   } catch (error) {
     console.error(`Error fetching children for app ${app.name}:`, error);
     throw error;

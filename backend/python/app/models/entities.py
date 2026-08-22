@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional,Dict, List, Literal, TypeVar
 from uuid import uuid4
-from jinja2 import Template
 from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
 )
@@ -24,10 +23,28 @@ from app.models.blocks import (
     BlocksContainer,
     SemanticMetadata,
 )
+from app.utils.jinja_templates import compiled_template
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Type variable for enum classes (must be after Enum import)
 EnumType = TypeVar('EnumType', bound=Enum)
+
+
+def resolve_weburl(weburl: str | None, frontend_url: str | None) -> str | None:
+    """Normalize a record's weburl into an absolute URL.
+
+    Relative paths are prefixed with *frontend_url*; already-absolute URLs
+    pass through unchanged.  Returns ``None`` when *weburl* is falsy, or when
+    a relative path cannot be resolved — a guessed host would produce a link
+    that does not work in the deployment.
+    """
+    if not weburl:
+        return None
+    if weburl.startswith("http"):
+        return weburl
+    if not frontend_url:
+        return None
+    return f"{frontend_url.rstrip('/')}/{weburl.lstrip('/')}"
 
 
 class LlmTextContent(BaseModel):
@@ -35,20 +52,6 @@ class LlmTextContent(BaseModel):
 
     type: Literal["text"]
     text: str
-def _parse_json_field(value: Any, default: Any) -> Any:
-    """
-    Parse JSON string field to Python object, with fallback to default.
-    Handles both JSON strings and already-parsed objects for backward compatibility.
-    """
-    if value is None:
-        return default
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except (json.JSONDecodeError, TypeError):
-            return default
-    # Already parsed (backward compatibility)
-    return value
 
 
 class RecordGroupType(str, Enum):
@@ -226,6 +229,7 @@ class Record(BaseModel):
     size_in_bytes: int | None = Field(default=None, description="Size of the record content in bytes")
     mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
+    parsing_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Parsing status for the record (parse phase, ahead of indexing/extraction)")
     indexing_status: str = Field(default=ProgressStatus.QUEUED.value, description="Indexing status for the record")
     extraction_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Extraction status for the record")
     reason: str | None = Field(default=None, description="Reason for the record status")
@@ -234,17 +238,19 @@ class Record(BaseModel):
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record update")
     source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record creation in the source system")
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record update in the source system")
+    processing_started_at: int | None = Field(default=None, description="Epoch ms when parse/index processing began for the current attempt; null when idle")
 
     # Source information
     weburl: str | None = None
     signed_url: str | None = None
     fetch_signed_url: str | None = None
+    storage_document_id: str | None = Field(default=None, description="Storage service document ID for stored content (e.g. web crawl HTML)")
     preview_renderable: bool | None = True
     is_shared: bool | None = False
-    is_shared_with_me: bool | None = False
-    shared_with_me_record_group_id: str | None = None
+    shared_with_me_record_group_ids: list[str] = Field(default_factory=list)
     hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
     is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
+    is_placeholder: bool = Field(default=False, description="Stub parent created for a not-yet-synced or out-of-scope ancestor; reconciled when the real record syncs")
 
     # Processing flags
     is_vlm_ocr_processed: bool | None = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
@@ -263,6 +269,17 @@ class Record(BaseModel):
     is_dependent_node: bool = Field(default=False, description="True for dependent records, False for root records")
     parent_node_id: str | None = Field(default=None, description="Internal record ID of the parent node")
 
+    # Runtime-only; injected at retrieval for to_llm_context. Not persisted (exclude=True).
+    location: str | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Runtime-only Location trail for LLM context (not stored in DB), e.g. "
+            "'Confluence (App ID: <id>) -> Software Development (Record Group ID: <id>) "
+            "-> Agent Loop Implementation (Record ID: <id>)'."
+        ),
+    )
+
     def _format_timestamp(self, epoch_ms: int | None) -> str:
         if epoch_ms is None:
             return "N/A"
@@ -274,34 +291,39 @@ class Record(BaseModel):
             return f"{name} ({email})"
         return name or email or "N/A"
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         lines = [
-            f"Record ID       : {self.id}",
-            f"Name            : {self.record_name}",
-            f"Connector       : {self.connector_name.value}",
-            f"Type            : {self.record_type.value}",
-            f"External ID     : {self.external_record_id}",
-            f"Created At      : {self._format_timestamp(self.source_created_at)}",
-            f"Last Updated At : {self._format_timestamp(self.source_updated_at)}",
-            f"Connector ID    : {self.connector_id if self.connector_id else 'N/A'}",
-            f"connector Name  : {self.connector_name.value if self.connector_name else 'N/A'}",
+            f"Record ID: {self.id}",
+            f"Name: {self.record_name}",
+            f"Connector: {self.connector_name.value}",
+            f"Type: {self.record_type.value}",
+            f"External ID: {self.external_record_id}",
+            f"Created At: {self._format_timestamp(self.source_created_at)}",
+            f"Last Updated At: {self._format_timestamp(self.source_updated_at)}",
+            f"Connector ID: {self.connector_id if self.connector_id else 'N/A'}",
+            f"External Parent ID: {self.parent_external_record_id if self.parent_external_record_id else 'N/A'}",
         ]
+        if self.location:
+            lines.append(f"Location: {self.location}")
         if self.mime_type:
-            lines.append(f"MIME Type       : {self.mime_type}")
+            lines.append(f"MIME Type: {self.mime_type}")
 
-        if self.weburl:
-            if not self.weburl.startswith("http"):
-                base_url = frontend_url or "http://localhost:3000"
-                weburl = f"{base_url.rstrip('/')}{self.weburl}"
-            else:
-                weburl = self.weburl
-
-            lines.append(f"Web URL         : {weburl}")
+        if not self.hide_weburl:
+            weburl = resolve_weburl(self.weburl, frontend_url)
+            if weburl:
+                lines.append(f"Web URL: {weburl}")
 
         if self.semantic_metadata:
-            lines.extend(self.semantic_metadata.to_llm_context())
+            if include_full_semantic:
+                lines.extend(self.semantic_metadata.to_llm_context())
+            elif self.semantic_metadata.summary:
+                lines.append(f"Summary: {self.semantic_metadata.summary}")
 
         return "\n".join(lines)
+
+    def to_llm_linked_context(self, frontend_url: str | None = None) -> str:
+        """Returns metadata + type-specific fields + Summary only (no Topics/Category)."""
+        return self.to_llm_context(frontend_url, include_full_semantic=False)
 
     def to_arango_base_record(self) -> dict:
         return {
@@ -324,6 +346,8 @@ class Record(BaseModel):
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
+            "processingStartedAt": self.processing_started_at,
+            "parsingStatus": self.parsing_status,
             "indexingStatus": self.indexing_status,
             "extractionStatus": self.extraction_status,
             "reason": self.reason,
@@ -339,6 +363,8 @@ class Record(BaseModel):
             "parentNodeId": self.parent_node_id,
             "hideWeburl": self.hide_weburl,
             "isInternal": self.is_internal,
+            "isPlaceholder": self.is_placeholder,
+            "storageDocumentId": self.storage_document_id,
         }
 
     @staticmethod
@@ -375,7 +401,9 @@ class Record(BaseModel):
             updated_at=arango_base_record.get("updatedAtTimestamp"),
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp"),
+            processing_started_at=arango_base_record.get("processingStartedAt"),
             virtual_record_id=arango_base_record.get("virtualRecordId"),
+            parsing_status=arango_base_record.get("parsingStatus", ProgressStatus.NOT_STARTED.value),
             indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.QUEUED.value),
             extraction_status=arango_base_record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
             preview_renderable=arango_base_record.get("previewRenderable", True),
@@ -385,9 +413,11 @@ class Record(BaseModel):
             parent_node_id=arango_base_record.get("parentNodeId"),
             hide_weburl=arango_base_record.get("hideWeburl", False),
             is_internal=arango_base_record.get("isInternal", False),
+            is_placeholder=arango_base_record.get("isPlaceholder", False),
             md5_hash=arango_base_record.get("md5Checksum"),
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),
+            storage_document_id=arango_base_record.get("storageDocumentId"),
         )
 
     def to_kafka_record(self) -> dict:
@@ -405,9 +435,9 @@ class FileRecord(Record):
     sha1_hash: str | None = None
     sha256_hash: str | None = None
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted file-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -433,7 +463,12 @@ class FileRecord(Record):
         """
 
         try:
-            from app.utils.chat_helpers import valid_group_labels, build_group_blocks
+            from app.utils.chat_helpers import (
+                _safe_stringify_content,
+                build_group_blocks,
+                format_code_locator,
+                valid_group_labels,
+            )
 
             content: list[LlmTextContent] = []
             context_metadata = f"record/{self.id}"
@@ -463,6 +498,19 @@ class FileRecord(Record):
                     content.append(LlmTextContent(
                         type="text",
                         text=f"* Block Type: {block_type}\n* Block Content: {data}\n\n",
+                    ))
+                elif block_type == BlockType.CODE.value and block.parent_index is None:
+                    # Top-level code belongs to no group, so without this branch a
+                    # file with no classes renders as an empty record.
+                    qname = block.code_metadata.qualified_name if block.code_metadata else None
+                    locator = format_code_locator(getattr(self, "file_path", "") or "", qname or "")
+                    header = f"* Symbol: {locator}\n" if locator else ""
+                    content.append(LlmTextContent(
+                        type="text",
+                        text=(
+                            f"* Block Type: {block_type}\n{header}"
+                            f"* Block Content: {_safe_stringify_content(data)}\n\n"
+                        ),
                     ))
                 elif block_type == BlockType.TABLE_ROW.value:
                     block_group_index = block.parent_index
@@ -498,7 +546,7 @@ class FileRecord(Record):
                                     })
 
                             if child_results:
-                                template = Template(agent_block_group_prompt)
+                                template = compiled_template(agent_block_group_prompt)
                                 rendered_form = template.render(
                                     block_group_index=block_group_index,
                                     label=GroupType.TABLE.value,
@@ -513,7 +561,7 @@ class FileRecord(Record):
                     block_group_id = f"{self.virtual_record_id or ''}-{parent_index}"
                     if block_group_id in seen_block_groups:
                         continue
-                    template = Template(agent_block_group_prompt)
+                    template = compiled_template(agent_block_group_prompt)
                     if parent_index >= len(block_groups):
                         continue
                     block_group = block_groups[parent_index]
@@ -531,6 +579,7 @@ class FileRecord(Record):
                         block_group_index=parent_index,
                         label=block_group_type,
                         blocks=group_blocks,
+                        file_path=getattr(self, "file_path", "") or "",
                     )
                     content.append(LlmTextContent(
                         type="text",
@@ -594,6 +643,7 @@ class FileRecord(Record):
             is_dependent_node=arango_base_record.get("isDependentNode", False),
             parent_node_id=arango_base_record.get("parentNodeId"),
             is_internal=arango_base_record.get("isInternal", False),
+            is_placeholder=arango_base_record.get("isPlaceholder", False),
             is_file=arango_base_file_record.get("isFile", True),
             size_in_bytes=size if (size := arango_base_record.get("sizeInBytes")) is not None else arango_base_file_record.get("sizeInBytes"),
             extension=arango_base_file_record.get("extension"),
@@ -605,6 +655,7 @@ class FileRecord(Record):
             crc32_hash=arango_base_file_record.get("crc32Hash"),
             sha1_hash=arango_base_file_record.get("sha1Hash"),
             sha256_hash=arango_base_file_record.get("sha256Hash"),
+            storage_document_id=arango_base_record.get("storageDocumentId"),
         )
 
     def to_kafka_record(self) -> dict:
@@ -632,6 +683,7 @@ class FileRecord(Record):
             "externalGroupId": self.external_record_group_id,
             "parentExternalRecordId": self.parent_external_record_id,
             "isFile": self.is_file,
+            "storageDocumentId": self.storage_document_id,
         }
 
 class MessageRecord(Record):
@@ -664,16 +716,13 @@ class MessageRecord(Record):
     # Used by the processor to create INVOLVED_IN entity relations
     involved_user_source_ids: list[str] = Field(default_factory=list)
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted message-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
-        if self.author_email:
-            specific_lines.append(f"* Author Email: {self.author_email}")
-        if self.author_id:
-            specific_lines.append(f"* Author ID: {self.author_id}")
+
         if self.thread_id:
             specific_lines.append(f"* Thread ID: {self.thread_id}")
         if self.start_ts:
@@ -790,9 +839,9 @@ class MailRecord(Record):
     conversation_index: str | None = None
     label_ids: list[str] | None = None
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted email-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -945,6 +994,7 @@ class WebpageRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
+            is_placeholder=record_doc.get("isPlaceholder", False),
         )
 
 class LinkRecord(Record):
@@ -962,9 +1012,9 @@ class LinkRecord(Record):
     is_public: LinkPublicStatus = Field(description="Link public accessibility status")
     linked_record_id: str | None = Field(default=None, description="Internal record ID of linked record with same weburl")
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted link-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -1066,9 +1116,9 @@ class CommentRecord(Record):
     resolution_status: str | None = None
     comment_selection: str | None = None
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted comment-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -1162,9 +1212,9 @@ class TicketRecord(Record):
     assignee_source_id: list[str] | None = Field(default_factory=list) # this means reporters  source ids in the connector system
     reporter_source_id:str | None=None
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted ticket-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -1302,6 +1352,7 @@ class TicketRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
+            is_placeholder=record_doc.get("isPlaceholder", False),
             status=TicketRecord._safe_enum_parse(ticket_doc.get("status"), Status),
             priority=TicketRecord._safe_enum_parse(ticket_doc.get("priority"), Priority),
             type=TicketRecord._safe_enum_parse(ticket_doc.get("type"), ItemType),
@@ -1346,9 +1397,9 @@ class ProjectRecord(Record):
     lead_name: str | None = None
     lead_email: str | None = None
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted project-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -1410,6 +1461,7 @@ class ProjectRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
+            is_placeholder=record_doc.get("isPlaceholder", False),
             status=project_doc.get("status"),
             priority=project_doc.get("priority"),
             lead_id=project_doc.get("leadId"),
@@ -1518,9 +1570,11 @@ class ProductRecord(Record):
     def to_llm_context(
         self,
         frontend_url: str | None = None,
+        *,
+        include_full_semantic: bool = True,
     ) -> str:
         """Returns formatted product-specific metadata for LLM context."""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -1684,9 +1738,11 @@ class DealRecord(Record):
     def to_llm_context(
         self,
         frontend_url: str | None = None,
+        *,
+        include_full_semantic: bool = True,
     ) -> str:
         """Returns formatted deal/opportunity-specific metadata for LLM context."""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -2230,6 +2286,23 @@ class LifecycleStatus(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class ArtifactVisibility(str, Enum):
+    """Controls whether an artifact is surfaced to the user.
+
+    VISIBLE (default) — artifact is delivered via live SSE event and
+    persisted ``::artifact`` marker so the frontend renders a download card.
+
+    STAGING — artifact is saved to blob storage and the registry (durable,
+    lineage-tracked, readable by the agent via ``retrieve_artifact_content``
+    and usable as ``run_code`` input) but suppressed from SSE events and
+    markers so the user never sees it.  Use for intermediate/pipeline
+    artifacts that are only meaningful to the agent itself.  A STAGING
+    artifact can later be promoted to VISIBLE via ``promote_artifact``.
+    """
+    VISIBLE = "VISIBLE"
+    STAGING = "STAGING"
+
+
 class ArtifactType(str, Enum):
     """Type of artifact produced by sandbox code execution."""
     CODE_OUTPUT = "CODE_OUTPUT"
@@ -2239,7 +2312,42 @@ class ArtifactType(str, Enum):
     SPREADSHEET = "SPREADSHEET"
     PRESENTATION = "PRESENTATION"
     DATA_FILE = "DATA_FILE"
+    # Source code (LLM/agent-authored, e.g. the `run_code` program that
+    # produced other artifacts) — first-class so `DERIVED_FROM` lineage
+    # edges always point at a real, versioned, fetchable artifact rather
+    # than a copy of the code embedded only in conversation history. See
+    # `app/services/artifact_registry/`.
+    CODE = "CODE"
+    TOOL_RESULT = "TOOL_RESULT"
     OTHER = "OTHER"
+
+
+def serialize_artifact_versions(versions: list[dict]) -> str:
+    """JSON-encode the `versions` registryVersion->storageVersion bookkeeping
+    list before it hits a graph doc, so it round-trips identically through
+    ArangoDB (native nested storage — this is just belt-and-suspenders there)
+    and Neo4j, whose driver rejects list-of-map node properties outright
+    (only primitives/arrays-of-primitives are storable). See
+    `deserialize_artifact_versions` for the inverse, and
+    `neo4j_provider._extract_legacy_record_group_ids` for the same
+    stringified-JSON-property pattern used elsewhere in this codebase."""
+    return json.dumps(versions or [])
+
+
+def deserialize_artifact_versions(raw: Any) -> list[dict]:
+    """Inverse of `serialize_artifact_versions`. Also accepts a native list
+    unchanged — defensive for in-memory graph-provider test doubles that
+    store whatever Python value they were given without a real DB
+    round-trip."""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 class ArtifactRecord(Record):
@@ -2251,6 +2359,29 @@ class ArtifactRecord(Record):
     conversation_id: str | None = Field(default=None, description="Conversation that produced this artifact")
     is_temporary: bool = Field(default=False, description="Whether this artifact is eligible for automatic cleanup")
     expires_at: int | None = Field(default=None, description="Epoch ms timestamp for auto-cleanup of temporary artifacts")
+    visibility: ArtifactVisibility = Field(
+        default=ArtifactVisibility.VISIBLE,
+        description="VISIBLE artifacts are surfaced to the user; STAGING artifacts are saved but suppressed from SSE events and markers",
+    )
+    # Logical identity within a conversation — stable across versions, used
+    # to match a re-run's output file name against an EXISTING artifact
+    # instead of a new one (see `VersionManager.resolve_by_logical_name`).
+    # Defaults to `record_name` when not set explicitly.
+    logical_name: str | None = Field(default=None, description="Stable logical name unique within the conversation, used to identify successive versions of the same artifact")
+    # SHA-256 of the CURRENT version's content — enables cheap dedup: a
+    # re-run producing byte-identical content skips the version bump
+    # entirely (see `VersionManager.add_version`).
+    content_hash: str | None = Field(default=None, description="SHA-256 hex digest of the current version's content")
+    result_schema: dict | None = Field(default=None, description="JSON Schema describing the tool result structure, for TOOL_RESULT artifacts")
+    # Explicit registryVersion -> storageVersion bookkeeping, one entry per
+    # version that has been given a durable blob index (see
+    # `VersionManager.add_version`). Never derive this mapping
+    # arithmetically from `version` — Node's `versionHistory` numbering can
+    # shift (lazy v0, out-of-band `isDocumentChanged` snapshots), so each
+    # entry records what actually happened at write time. Each entry:
+    # {"registryVersion": int, "storageVersion": int, "contentHash": str,
+    #  "sizeBytes": int, "createdAt": int}.
+    versions: list[dict] = Field(default_factory=list, description="Explicit per-version storage index bookkeeping")
 
     def to_arango_artifact_record(self) -> dict:
         """Return artifact sub-record for the ``artifacts`` collection."""
@@ -2269,6 +2400,11 @@ class ArtifactRecord(Record):
             "conversationId": self.conversation_id,
             "isTemporary": self.is_temporary,
             "expiresAt": self.expires_at,
+            "visibility": self.visibility.value,
+            "logicalName": self.logical_name or self.record_name,
+            "contentHash": self.content_hash,
+            "resultSchema": self.result_schema,
+            "versions": serialize_artifact_versions(self.versions) if self.versions else None,
         }
 
     @staticmethod
@@ -2291,6 +2427,12 @@ class ArtifactRecord(Record):
             artifact_type = ArtifactType(artifact_type_raw) if artifact_type_raw else ArtifactType.OTHER
         except ValueError:
             artifact_type = ArtifactType.OTHER
+
+        visibility_raw = artifact_doc.get("visibility")
+        try:
+            visibility = ArtifactVisibility(visibility_raw) if visibility_raw else ArtifactVisibility.VISIBLE
+        except ValueError:
+            visibility = ArtifactVisibility.VISIBLE
 
         return ArtifactRecord(
             id=record_doc.get("id", record_doc.get("_key")),
@@ -2323,6 +2465,11 @@ class ArtifactRecord(Record):
             conversation_id=artifact_doc.get("conversationId"),
             is_temporary=artifact_doc.get("isTemporary", False),
             expires_at=artifact_doc.get("expiresAt"),
+            visibility=visibility,
+            logical_name=artifact_doc.get("logicalName"),
+            content_hash=artifact_doc.get("contentHash"),
+            result_schema=artifact_doc.get("resultSchema"),
+            versions=deserialize_artifact_versions(artifact_doc.get("versions")),
         )
 
         
@@ -2402,6 +2549,12 @@ class CodeFileRecord(Record):
 
     file_path: str | None = None
     file_hash: str | None = None
+    extension: str | None = None
+    language: str | None = None
+    # source | test | config | build | migration | script | type_definition |
+    # generated. Classified by the connector from the path alone; the resolver
+    # reads it instead of re-deriving "is this a test?" from the path.
+    file_role: str | None = None
 
     def to_kafka_record(self) -> dict:
         return {
@@ -2412,6 +2565,7 @@ class CodeFileRecord(Record):
             "connectorName": self.connector_name.value,
             "connectorId": self.connector_id,
             "mimeType": self.mime_type,
+            "extension": self.extension,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "origin": self.origin.value,
@@ -2420,6 +2574,8 @@ class CodeFileRecord(Record):
             "sourceLastModifiedTimestamp": self.source_updated_at,
             "filePath": self.file_path,
             "fileHash": self.file_hash,
+            "language": self.language,
+            "fileRole": self.file_role,
         }
 
     def to_arango_record(self) -> dict:
@@ -2429,6 +2585,9 @@ class CodeFileRecord(Record):
             "name": self.record_name,
             "filePath": self.file_path,
             "fileHash": self.file_hash,
+            "extension": self.extension,
+            "language": self.language,
+            "fileRole": self.file_role,
         }
 
     @staticmethod
@@ -2441,6 +2600,13 @@ class CodeFileRecord(Record):
             connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
         except ValueError:
             connector_name = Connectors.KNOWLEDGE_BASE
+        extension = arango_base_code_file_record.get("extension")
+        if not extension:
+            # Older code-file docs omitted extension; derive from name for reindex.
+            name = arango_base_record.get("recordName") or ""
+            base = name.rsplit("/", 1)[-1]
+            if "." in base:
+                extension = base.rsplit(".", 1)[-1].lower()
         return CodeFileRecord(
             id=arango_base_record.get("id", arango_base_record.get("_key")),
             org_id=arango_base_record["orgId"],
@@ -2462,7 +2628,9 @@ class CodeFileRecord(Record):
             updated_at=arango_base_record.get("updatedAtTimestamp"),
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp"),
+            processing_started_at=arango_base_record.get("processingStartedAt"),
             virtual_record_id=arango_base_record.get("virtualRecordId"),
+            parsing_status=arango_base_record.get("parsingStatus", ProgressStatus.NOT_STARTED.value),
             indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.QUEUED.value),
             extraction_status=arango_base_record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
             preview_renderable=arango_base_record.get("previewRenderable", True),
@@ -2472,11 +2640,15 @@ class CodeFileRecord(Record):
             parent_node_id=arango_base_record.get("parentNodeId"),
             hide_weburl=arango_base_record.get("hideWeburl", False),
             is_internal=arango_base_record.get("isInternal", False),
+            is_placeholder=arango_base_record.get("isPlaceholder", False),
             md5_hash=arango_base_record.get("md5Checksum"),
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),
             file_path=arango_base_code_file_record.get("filePath"),
             file_hash=arango_base_code_file_record.get("fileHash"),
+            extension=extension,
+            language=arango_base_code_file_record.get("language"),
+            file_role=arango_base_code_file_record.get("fileRole"),
         )
 
 
@@ -2845,6 +3017,7 @@ class AppMetadata(BaseModel):
     updated_at_timestamp: int = Field(description="Epoch timestamp in milliseconds of app update")
     status: str | None = Field(default=None, description="Current sync status")
     is_locked: bool | None = Field(default=None, description="Whether the app is locked")
+    permission_model: str | None = Field(default=None, description="How the connector's records derive per-user visibility (PermissionModel: APP_LEVEL or RECORD_LEVEL)")
 
     @staticmethod
     def from_db_document(doc: dict[str, Any]) -> "AppMetadata":
@@ -2866,6 +3039,7 @@ class AppMetadata(BaseModel):
             updated_at_timestamp=doc.get("updatedAtTimestamp", 0),
             status=doc.get("status"),
             is_locked=doc.get("isLocked"),
+            permission_model=doc.get("permissionModel"),
         )
 
 class MeetingRecord(Record):
@@ -2896,8 +3070,8 @@ class MeetingRecord(Record):
                     "Available only when cloud recording exists for the meeting.",
     )
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
-        base = super().to_llm_context(frontend_url=frontend_url)
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
         specific_lines = []
         if self.host_email:

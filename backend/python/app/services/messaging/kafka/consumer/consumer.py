@@ -2,11 +2,12 @@ import asyncio
 import json
 import ssl
 from logging import Logger
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
+from aiokafka import AIOKafkaConsumer  # type: ignore
 
-from app.services.messaging.config import MessageHandler, StreamMessage
+from app.services.messaging.config import MessageHandler, StreamMessage, messaging_env
+from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.utils.request_context import (
@@ -15,25 +16,32 @@ from app.utils.request_context import (
     set_context,
 )
 
-# Concurrency control settings
-MAX_CONCURRENT_TASKS = 5  # Maximum number of messages to process concurrently
+if TYPE_CHECKING:
+    from app.services.messaging.retry_manager import RetryManager
+
 
 class KafkaMessagingConsumer(IMessagingConsumer):
-    """Kafka implementation of messaging consumer"""
+    """Kafka implementation of messaging consumer.
 
-    def __init__(self,
-                logger: Logger,
-                kafka_config: KafkaConsumerConfig) -> None:
+    Uses Redis-based RetryManager for persistent retry tracking across restarts.
+    Messages are processed sequentially; failed messages are not committed and
+    will be redelivered by Kafka when no new messages arrive (idle-based retry).
+    """
+
+    def __init__(
+        self,
+        logger: Logger,
+        kafka_config: KafkaConsumerConfig,
+        retry_manager: Optional["RetryManager"] = None,
+    ) -> None:
         self.logger = logger
         self.consumer: Optional[AIOKafkaConsumer] = None
         self.running = False
         self.kafka_config = kafka_config
         self.processed_messages: dict[str, list[int]] = {}
         self.consume_task = None
-        self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
         self.message_handler = None
-        self.active_tasks: set[asyncio.Task] = set()
-        self.max_concurrent_tasks = MAX_CONCURRENT_TASKS
+        self.retry_manager = retry_manager
 
     @staticmethod
     def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> dict[str, Any]:
@@ -136,8 +144,13 @@ class KafkaMessagingConsumer(IMessagingConsumer):
         """Check if consumer is running"""
         return self.running
 
-    async def __process_message(self, message) -> bool:
-        """Process incoming Kafka messages using the provided handler"""
+    async def __process_message(self, message) -> tuple[bool, Optional[Exception]]:
+        """Process incoming Kafka messages using the provided handler.
+
+        Returns:
+            Tuple of (success, exception) where exception is set on failure
+            for classification by the caller.
+        """
         message_id = None
         try:
             message_id = f"{message.topic}-{message.partition}-{message.offset}"
@@ -145,7 +158,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
 
             if self.__is_message_processed(message_id):
                 self.logger.info(f"Message {message_id} already processed, skipping")
-                return True
+                return True, None
 
             # Message decoding and parsing
             message_value = message.value
@@ -172,19 +185,19 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                             f"JSON parsing failed for message {message_id}: {str(e)}\n"
                             f"Raw message: {message_value[:1000]}..."
                         )
-                        return False
+                        return False, e
                 else:
                     self.logger.error(
                         f"Unexpected message value type for {message_id}: {type(message_value)}"
                     )
-                    return False
+                    return False, ValueError(f"Unexpected message type: {type(message_value)}")
 
             except UnicodeDecodeError as e:
                 self.logger.error(
                     f"Failed to decode message {message_id}: {str(e)}\n"
                     f"Raw bytes: {message_value[:100]}..."
                 )
-                return False
+                return False, e
 
             # Carry the producer's trace id into consumer-side logs.
             if self.message_handler and parsed_message:
@@ -193,37 +206,43 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                 token = set_context(ctx.root_id)
                 try:
                     stream_message = StreamMessage(**parsed_message)
-                    return await self.message_handler(stream_message)
+                    result = await self.message_handler(stream_message)
+                    return result, None
                 except Exception as e:
                     self.logger.error(
                         f"Error in message handler for {message_id}: {str(e)}",
                         exc_info=True,
                     )
-                    return False
+                    return False, e
                 finally:
                     reset_context(token)
             else:
                 self.logger.error(f"No message handler available for {message_id}")
-                return False
+                return False, ValueError("No message handler available")
 
         except Exception as e:
             self.logger.error(
                 f"Unexpected error processing message {message_id if message_id else 'unknown'}: {str(e)}",
                 exc_info=True,
             )
-            return False
-        finally:
-            if message_id:
-                self.__mark_message_processed(message_id)
+            return False, e
 
     async def __consume_loop(self) -> None:
-        """Main consumption loop"""
+        """Main consumption loop with Redis-based retry tracking.
+
+        New messages are processed first. When getmany() returns empty (idle),
+        Kafka will redeliver uncommitted messages on the next poll, enabling
+        retry of failed messages without blocking new ones.
+        """
         try:
             self.logger.info("Starting Kafka consumer loop")
             while self.running:
                 try:
                     # Get messages asynchronously with timeout
-                    message_batch = await self.consumer.getmany(timeout_ms=1000, max_records=1) # type: ignore
+                    message_batch = await self.consumer.getmany(
+                        timeout_ms=messaging_env.message_timeout_ms,
+                        max_records=messaging_env.message_batch_size_simple,
+                    )  # type: ignore
 
                     if not message_batch:
                         await asyncio.sleep(0.1)
@@ -233,17 +252,77 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                     for topic_partition, messages in message_batch.items():
                         for message in messages:
                             try:
-                                self.logger.info(f"Received message: topic={message.topic}, partition={message.partition}, offset={message.offset}")
-                                success = await self.__process_message(message)
+                                self.logger.info(
+                                    f"Received message: topic={message.topic}, "
+                                    f"partition={message.partition}, offset={message.offset}"
+                                )
+                                message_id = f"{message.topic}-{message.partition}-{message.offset}"
+
+                                success, exc = await self.__process_message(message)
+
+                                should_commit = False
                                 if success:
-                                    # Commit the offset for this message
-                                    # Tells Kafka that this message has been successfully processed
-                                    await self.consumer.commit({topic_partition: message.offset + 1}) # type: ignore
-                                    self.logger.info(
-                                        f"Committed offset for topic-partition {message.topic}-{message.partition} at offset {message.offset}"
-                                    )
+                                    should_commit = True
+                                    self.logger.info(f"Message {message_id} processed successfully")
+                                    # Clear retry tracking on success
+                                    if self.retry_manager:
+                                        await self.retry_manager.clear(message_id)
                                 else:
-                                    self.logger.warning(f"Failed to process message at offset {message.offset}")
+                                    # Classify exception to determine commit behavior
+                                    error_type = MessageErrorType.TRANSIENT
+                                    if exc:
+                                        error_type = MessageErrorClassifier.classify_by_exception(exc)
+
+                                    if error_type == MessageErrorType.TERMINAL:
+                                        # Terminal error: commit immediately (no retry)
+                                        should_commit = True
+                                        self.logger.warning(
+                                            f"Terminal error for {message_id}: {type(exc).__name__}. "
+                                            "Committing without retry."
+                                        )
+                                        if self.retry_manager:
+                                            await self.retry_manager.clear(message_id)
+                                    elif self.retry_manager:
+                                        # Transient error: check retry count
+                                        count, should_dead_letter = await self.retry_manager.increment_and_check(
+                                            message_id, messaging_env.max_delivery_attempts
+                                        )
+                                        if should_dead_letter:
+                                            should_commit = True
+                                            self.logger.warning(
+                                                f"Dead-lettering {message_id} after {count} attempts"
+                                            )
+                                            await self.retry_manager.clear(message_id)
+                                        else:
+                                            self.logger.warning(
+                                                f"Message {message_id} failed (attempt {count}/"
+                                                f"{messaging_env.max_delivery_attempts}), will retry"
+                                            )
+                                    else:
+                                        # No retry manager: always commit to avoid infinite loop
+                                        should_commit = True
+                                        self.logger.warning(
+                                            f"Message {message_id} failed, no retry manager, committing"
+                                        )
+
+                                if should_commit:
+                                    await self.consumer.commit(
+                                        {topic_partition: message.offset + 1}
+                                    )  # type: ignore
+                                    self.logger.info(
+                                        f"Committed offset for {message.topic}-{message.partition} "
+                                        f"at offset {message.offset}"
+                                    )
+                                    # Mark as processed only when we commit (prevents skipped retries)
+                                    self.__mark_message_processed(message_id)
+                                else:
+                                    # Transient failure - stop processing this partition to prevent cumulative commits
+                                    self.logger.warning(
+                                        f"Partition {message.topic}-{message.partition} processing "
+                                        f"stopped at offset {message.offset} due to retryable failure. "
+                                        f"Subsequent messages in this batch will be retried."
+                                    )
+                                    break  # Exit inner loop for this partition, prevent cumulative commit
 
                             except Exception as e:
                                 self.logger.error(f"Error processing individual message: {e}")
@@ -277,39 +356,3 @@ class KafkaMessagingConsumer(IMessagingConsumer):
         if topic_partition not in self.processed_messages:
             self.processed_messages[topic_partition] = []
         self.processed_messages[topic_partition].append(offset)
-
-
-    async def __process_message_wrapper(self, message, topic_partition: TopicPartition) -> None:
-        """Wrapper to handle async task cleanup and semaphore release"""
-        # Extract message identifiers for logging
-        topic = message.topic
-        partition = message.partition
-        offset = message.offset
-        message_id = f"{topic}-{partition}-{offset}"
-        try:
-            success = await self.__process_message(message)
-            if success:
-                if self.consumer:
-                    await self.consumer.commit({topic_partition: message.offset + 1})
-                    self.logger.info(
-                        f"Committed offset for {message_id} in background task."
-                    )
-            else:
-                self.logger.warning(
-                    f"Processing failed for {message_id}, offset will not be committed."
-                )
-        except Exception as e:
-            self.logger.error(f"Error in process_message_wrapper for {message_id}: {e}")
-        finally:
-            # Release the semaphore to allow a new task to start
-            self.semaphore.release()
-
-    def __cleanup_completed_tasks(self) -> None:
-        """Remove completed tasks from the active tasks set"""
-        done_tasks = {task for task in self.active_tasks if task.done()}
-        self.active_tasks -= done_tasks
-
-        # Check for exceptions in completed tasks
-        for task in done_tasks:
-            if task.exception():
-                self.logger.error(f"Task completed with exception: {task.exception()}")

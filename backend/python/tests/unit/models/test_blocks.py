@@ -6,6 +6,7 @@ from app.models.blocks import (
     Block,
     BlockGroup,
     BlockGroupChildren,
+    BlocksContainer,
     BlockSubType,
     BlockType,
     CitationMetadata,
@@ -642,22 +643,21 @@ class TestSemanticMetadata:
         meta = SemanticMetadata(sub_category_level_1="Sub1")
         result = meta.to_llm_context()
         assert len(result) == 1
-        assert "Sub-categories" in result[0]
-        assert "Level 1" in result[0]
+        assert "Category" in result[0]
         assert "Sub1" in result[0]
 
     def test_to_llm_context_sub_category_level_2_without_level_1(self):
-        """Level 2 appears even without level 1 (it's a separate if)."""
+        """Level 2 is included in the category path even without level 1."""
         meta = SemanticMetadata(sub_category_level_2="Sub2")
         result = meta.to_llm_context()
         assert len(result) == 1
-        assert "Level 2" in result[0]
+        assert "Sub2" in result[0]
 
     def test_to_llm_context_sub_category_level_3(self):
         meta = SemanticMetadata(sub_category_level_3="Sub3")
         result = meta.to_llm_context()
         assert len(result) == 1
-        assert "Level 3" in result[0]
+        assert "Sub3" in result[0]
 
     def test_to_llm_context_all_fields(self):
         meta = SemanticMetadata(
@@ -669,8 +669,10 @@ class TestSemanticMetadata:
             sub_category_level_3="REST",
         )
         result = meta.to_llm_context()
-        # summary(1) + topics(1) + categories(1) + sub1(1) + sub2(1) + sub3(1) = 6
-        assert len(result) == 6
+        # summary(1) + topics(1) + category path(1) = 3
+        assert len(result) == 3
+        category_line = result[2]
+        assert "Engineering > Backend > API > REST" in category_line
 
 
 # ============================================================================
@@ -708,6 +710,18 @@ class TestCitationMetadata:
         meta = CitationMetadata()
         assert meta.bounding_boxes is None
 
+    def test_explicit_none_bounding_boxes(self):
+        """Explicit None must survive validation (e.g. JSON round-trip)."""
+        meta = CitationMetadata(bounding_boxes=None)
+        assert meta.bounding_boxes is None
+
+    def test_bounding_boxes_json_round_trip_with_null(self):
+        """model_dump JSON with null bounding_boxes must rehydrate cleanly."""
+        meta = CitationMetadata(page_number=1, bounding_boxes=None)
+        restored = CitationMetadata(**meta.model_dump(mode="json"))
+        assert restored.page_number == 1
+        assert restored.bounding_boxes is None
+
     def test_all_optional_fields(self):
         meta = CitationMetadata(
             section_title="Introduction",
@@ -734,3 +748,77 @@ class TestCitationMetadata:
         assert meta.sheet_name == "Sheet1"
         assert meta.slide_number == 4
         assert meta.duration_ms == 60000
+
+
+class TestBlocksContainerExtend:
+    """Merging page/batch results: every reference in the model is positional,
+    so an index left unshifted silently re-parents content onto the wrong
+    group instead of failing loudly."""
+
+    @staticmethod
+    def _batch() -> BlocksContainer:
+        """One group owning two blocks, indices local to the batch."""
+        return BlocksContainer(
+            block_groups=[
+                BlockGroup(
+                    index=0,
+                    type=GroupType.TEXT_SECTION,
+                    children=BlockGroupChildren(block_ranges=[IndexRange(start=0, end=1)]),
+                )
+            ],
+            blocks=[
+                Block(index=0, type=BlockType.TEXT, parent_index=0),
+                Block(index=1, type=BlockType.TEXT, parent_index=0),
+            ],
+        )
+
+    def test_indices_stay_equal_to_list_position(self):
+        merged = BlocksContainer()
+        merged.extend(self._batch())
+        merged.extend(self._batch())
+
+        assert [b.index for b in merged.blocks] == [0, 1, 2, 3]
+        assert [g.index for g in merged.block_groups] == [0, 1]
+
+    def test_parent_and_children_references_follow_their_targets(self):
+        merged = BlocksContainer()
+        merged.extend(self._batch())
+        merged.extend(self._batch())
+
+        # Second batch's blocks must re-parent onto the second group, not the first.
+        assert [b.parent_index for b in merged.blocks] == [0, 0, 1, 1]
+        assert merged.block_groups[0].children.block_ranges[0] == IndexRange(start=0, end=1)
+        assert merged.block_groups[1].children.block_ranges[0] == IndexRange(start=2, end=3)
+
+    def test_parent_block_index_shifts_by_the_block_offset(self):
+        """Fragments split from an image-bearing block point at a *block*, so
+        this offsets by the block count, not the group count."""
+        second = self._batch()
+        second.blocks[1].parent_block_index = 0
+
+        merged = BlocksContainer()
+        merged.extend(self._batch())
+        merged.extend(second)
+
+        assert merged.blocks[3].parent_block_index == 2
+
+    def test_source_container_is_consumed(self):
+        """Items are re-parented rather than copied, so a caller merging many
+        batches never holds two copies of one batch."""
+        batch = self._batch()
+        blocks_before = batch.blocks
+
+        merged = BlocksContainer()
+        merged.extend(batch)
+
+        assert batch.blocks == []
+        assert batch.block_groups == []
+        assert merged.blocks[0] is blocks_before[0]
+
+    def test_extending_with_empty_container_is_a_noop(self):
+        merged = BlocksContainer()
+        merged.extend(self._batch())
+        merged.extend(BlocksContainer())
+
+        assert len(merged.blocks) == 2
+        assert len(merged.block_groups) == 1

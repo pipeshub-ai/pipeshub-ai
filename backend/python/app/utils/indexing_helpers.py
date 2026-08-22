@@ -2,10 +2,10 @@ import base64
 import json
 from typing import Any, Dict, List, Optional, Tuple
 
-from jinja2 import Template
 from pydantic import BaseModel, Field
 
-from app.modules.parsers.excel.prompt_template import RowDescriptions, row_text_prompt
+from app.modules.parsers.excel.prompt_template import RowDescriptions
+from app.utils.jinja_templates import compiled_template
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
@@ -51,7 +51,7 @@ async def get_table_summary_n_headers(config, table_data) -> Optional[TableSumma
     """
     try:
         # Get LLM
-        llm, _ = await get_llm_for_role(config, "indexing")
+        llm, _ = await get_llm_for_role(config, "indexing", reasoning_effort="low")
 
         # Convert table data to text representation
         if isinstance(table_data, list):
@@ -84,7 +84,7 @@ async def get_table_summary_n_headers(config, table_data) -> Optional[TableSumma
             table_data_str = str(table_data)
 
         # Prepare prompt
-        template = Template(table_summary_prompt_template)
+        template = compiled_template(table_summary_prompt_template)
         rendered_form = template.render(table_data=table_data_str)
         messages = [
             {
@@ -108,51 +108,7 @@ async def get_table_summary_n_headers(config, table_data) -> Optional[TableSumma
         raise e
 
 
-async def get_rows_text(
-    config, table_data: dict, table_summary: str, column_headers: list[str]
-) -> Tuple[List[str], List[List[dict]]]:
-    """Convert multiple rows into natural language text using context from summaries in a single prompt"""
-    table = table_data.get("grid")
-    if table:
-        try:
-            # Skip first row if column_headers provided (first row is header)
-            if column_headers:
-                table_rows = table[1:]
-            else:
-                table_rows = table
 
-            rows_data = [
-                {
-                    column_headers[i] if column_headers and i<len(column_headers) else f"Column_{i+1}": (
-                        cell.get("text", "") if isinstance(cell, dict) else cell
-                    )
-                    for i, cell in enumerate(row)
-                }
-                for row in table_rows
-            ]
-
-            # Get natural language text from LLM with retry
-            messages = row_text_prompt.format_messages(
-                table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2)
-            )
-            llm, _ = await get_llm_for_role(config, "indexing")
-
-            # Default to string representations of rows
-            descriptions = [str(row) for row in rows_data]
-
-            # Use centralized utility with reflection
-            parsed_response = await invoke_with_structured_output_and_reflection(
-                llm, messages, RowDescriptions
-            )
-
-            if parsed_response is not None and parsed_response.descriptions:
-                descriptions = parsed_response.descriptions
-
-            return descriptions, table_rows
-        except Exception:
-            raise
-    else:
-        return [], []
 
 
 def generate_simple_row_text(row_data: Dict[str, Any]) -> str:
@@ -181,9 +137,8 @@ def format_rows_with_index(rows: list[dict]) -> str:
     """Format rows with explicit numbering for clarity."""
     numbered_rows = []
     for i, row in enumerate(rows, 1):
-        numbered_rows.append(f"Row {i}: {json.dumps(row, indent=2)}")
+        numbered_rows.append(f"Row {i}: {json.dumps(row, indent=2, ensure_ascii=False)}")
     return "\n".join(numbered_rows)
-
 
 
 

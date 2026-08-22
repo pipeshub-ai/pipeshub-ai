@@ -37,6 +37,11 @@ from app.connectors.core.base.token_service.oauth_service import (
 from app.connectors.core.registry.auth_builder import OAuthScopeType
 from app.containers.connector import ConnectorAppContainer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.notification.types import (
+    NotificationOrigin,
+    NotificationSeverity,
+    NotificationType,
+)
 from app.utils.oauth_config import extract_oauth_error_message, get_oauth_config
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -1972,7 +1977,8 @@ async def get_authenticated_toolsets(
 
         authenticated_toolsets.append({
             "instanceId": inst.get("_id"),
-            "name": inst.get("instanceName"),
+            "name": toolset_type,
+            "instanceName": inst.get("instanceName"),
             "toolsetType": toolset_type,
             "authType": inst.get("authType", "NONE"),
             "displayName": meta.get("display_name", toolset_type) if meta else toolset_type,
@@ -2279,6 +2285,93 @@ async def get_instance_oauth_authorization_url(
         await oauth_provider.close()
 
 
+async def _notify_toolset_auth_error(
+    notification_service: Any,
+    org_id: str,
+    user_id: str,
+    toolset_type: str,
+    message: str,
+    title: str | None = None,
+) -> None:
+    """Publish a user-visible auth-error notification for the toolset setup.
+    ``title`` defaults to a per-toolset heading; callers may override it.
+    Best-effort: never raises."""
+    if not notification_service:
+        return
+    try:
+        resolved_title = title or f"{(toolset_type or 'Toolset').capitalize()} action needs attention"
+        await notification_service.publish_notification(
+            org_id=str(org_id or ""),
+            origin=NotificationOrigin.AI,
+            type=NotificationType.TOOLSET_AUTH_ERROR,
+            severity=NotificationSeverity.ERROR,
+            title=resolved_title,
+            message=message,
+            recipient_user_ids=[user_id] if user_id else None,
+        )
+    except Exception as e:
+        logger.warning("Failed to publish toolset multi-site notification: %s", e)
+
+
+async def _validate_toolset_oauth_setup(
+    *,
+    toolset_type: str,
+    access_token: str,
+    oauth_cfg: dict,
+    config_service: Any,
+    notification_service: Any,
+    org_id: str,
+    user_id: str,
+    instance_id: str,
+    base_url: str,
+) -> dict[str, Any] | None:
+    """Run the toolset factory's optional setup validation after OAuth.
+
+    Returns an error-response dict to return from the callback when the factory rejects
+    the just-authenticated setup (e.g. a multi-site OAuth app) — after notifying the user
+    and logging — otherwise ``None`` to continue. Best-effort: a lookup or validation
+    failure is logged and treated as valid, never blocking OAuth completion. The route
+    stays generic; the factory decides what (if anything) makes a setup unusable."""
+    # Lazy imports: toolsets → factories → clients → toolsets is a circular dependency.
+    from app.agents.tools.factories.base import ToolsetAuthError
+
+    setup_error_msg = None
+    setup_error_title = None
+    try:
+        from app.agents.tools.factories.registry import ClientFactoryRegistry
+        factory = ClientFactoryRegistry.get_factory((toolset_type or "").lower())
+        if factory is not None:
+            await factory.test_connection(
+                access_token=access_token,
+                auth_config=oauth_cfg.get("config") or {},
+                config_service=config_service,
+                logger=logger,
+            )
+    except ToolsetAuthError as e:
+        setup_error_msg = str(e)
+        setup_error_title = e.title  # factory-supplied notification heading
+    except Exception as e:
+        logger.warning("Toolset %s setup validation skipped: %s", toolset_type, e)
+
+    if not setup_error_msg:
+        return None
+
+    await _notify_toolset_auth_error(
+        notification_service, org_id, user_id, toolset_type, setup_error_msg,
+        title=setup_error_title,
+    )
+    logger.error(
+        "❌ Toolset %s (%s): setup validation failed, not marking authenticated: %s",
+        instance_id, toolset_type, setup_error_msg,
+    )
+    return {
+        "success": False,
+        "error": "toolset_setup_error",
+        "error_message": setup_error_msg,
+        "redirect_url": f"{base_url}/tools?oauth_error=toolset_setup_error",
+    }
+
+
 @router.get("/oauth/callback", response_model=None, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def handle_toolset_oauth_callback(
@@ -2287,7 +2380,8 @@ async def handle_toolset_oauth_callback(
     state: str | None = Query(None),
     error: str | None = Query(None),
     base_url: str | None = Query(None),
-    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
+    notification_service: Any = Depends(Provide[ConnectorAppContainer.connector_notification_service]),
 ) -> dict[str, Any] | RedirectResponse:
     """Handle OAuth callback for toolset instance authentication."""
     base_url = base_url or "http://localhost:3001"
@@ -2368,6 +2462,24 @@ async def handle_toolset_oauth_callback(
 
         if not token or not token.access_token:
             raise OAuthConfigError("Failed to exchange authorization code for access token")
+
+        # Optional setup validation: reject an unusable, just-authenticated setup (e.g.
+        # a multi-site OAuth app) with an actionable error + notification, instead of a
+        # cryptic failure the first time the agent uses the tool. Best-effort — never
+        # blocks OAuth completion.
+        setup_error_response = await _validate_toolset_oauth_setup(
+            toolset_type=toolset_type,
+            access_token=token.access_token,
+            oauth_cfg=oauth_cfg,
+            config_service=config_service,
+            notification_service=notification_service,
+            org_id=org_id,
+            user_id=user_id,
+            instance_id=instance_id,
+            base_url=base_url,
+        )
+        if setup_error_response is not None:
+            return setup_error_response
 
         # Update auth record (user or agent depending on flow)
         try:
@@ -2955,28 +3067,34 @@ async def _resolve_agent_with_permission(
 async def _require_agent_edit_access(
     agent_key: str,
     request: Request,
+    feature_name: str = "toolsets",
+    settings_path: str = "Settings → Toolsets",
 ) -> dict:
     """
     Verify the caller has edit access to a service-account agent.
     Used by write endpoints (credential configure / OAuth) that require both
     ``can_edit`` rights and ``isServiceAccount`` on the agent.
     Returns the full agent document on success.
+
+    ``feature_name``/``settings_path`` only affect the error text — reused as-is
+    by ``app.api.routes.mcp_servers`` for MCP server agent-key credentials, which
+    need the identical ``can_edit`` + ``isServiceAccount`` guard.
     """
     agent = await _resolve_agent_with_permission(agent_key, request)
 
     if not agent.get("can_edit", False):
         raise HTTPException(
             status_code=HttpStatusCode.FORBIDDEN.value,
-            detail="You do not have permission to manage toolsets for this agent.",
+            detail=f"You do not have permission to manage {feature_name} for this agent.",
         )
 
     # Per-agent credentials only apply to service account agents.
-    # Regular agents use per-user credentials via Settings → Toolsets.
+    # Regular agents use per-user credentials via Settings.
     if not agent.get("isServiceAccount", False):
         raise HTTPException(
             status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail="Per-agent toolset credentials only apply to service account agents. "
-                   "For regular agents, configure credentials in Settings → Toolsets.",
+            detail=f"Per-agent {feature_name} credentials only apply to service account agents. "
+                   f"For regular agents, configure credentials in {settings_path}.",
         )
     return agent
 

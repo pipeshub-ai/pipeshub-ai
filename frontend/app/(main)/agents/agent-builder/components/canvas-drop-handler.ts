@@ -8,6 +8,12 @@ import {
   findMergeTargetToolsetNode,
   normalizeToolsetTypeKey,
 } from '../sidebar-toolset-utils';
+import { NODE_TYPES_WITHOUT_INPUT_HANDLES } from './node-constants';
+import {
+  collectActiveMcpInstanceIdsFromNodes,
+  collectActiveMcpTypeIdsFromNodes,
+  isMcpTypeIdConflict,
+} from '../sidebar-mcp-utils';
 import { applyAutoConnectToEdges } from '../connection-rules';
 import { resolvePremiumDropPosition } from '../drop-position';
 
@@ -387,6 +393,67 @@ export function handleFlowCanvasDrop(
     return;
   }
 
+  if (type === 'mcp-server' || type.startsWith('mcp-')) {
+    const mcpInstanceId = event.dataTransfer.getData('instanceId');
+    const mcpName = event.dataTransfer.getData('name');
+    const mcpDisplayName = event.dataTransfer.getData('displayName') || mcpName;
+    const mcpTypeId = event.dataTransfer.getData('typeId');
+    const mcpIsAuthenticated = event.dataTransfer.getData('isAuthenticated') === 'true';
+    const mcpToolsStr = event.dataTransfer.getData('tools');
+
+    if (!mcpInstanceId || !mcpName) return;
+
+    if (!mcpIsAuthenticated) {
+      onError?.(
+        t('agentBuilder.toolsetNotReadyNotify', {
+          name: mcpDisplayName,
+          reason: t('agentBuilder.notAuthenticatedReason'),
+        })
+      );
+      return;
+    }
+
+    if (
+      collectActiveMcpInstanceIdsFromNodes(nodes).has(mcpInstanceId) ||
+      isMcpTypeIdConflict(collectActiveMcpTypeIdsFromNodes(nodes), mcpInstanceId, mcpTypeId || undefined)
+    ) {
+      onError?.(t('agentBuilder.mcpServerAlreadyAttachedNotify', { name: mcpDisplayName }));
+      return;
+    }
+
+    const mcpTools = mcpToolsStr
+      ? parseJson<{ name: string; fullName: string; description?: string }[]>(mcpToolsStr, [])
+      : [];
+
+    const mcpNodeType = `mcp-${mcpInstanceId}`;
+    const mcpNodeId = `${mcpNodeType}-${Date.now()}`;
+    appendNodeWithAutoConnect({
+      id: mcpNodeId,
+      type: 'flowNode',
+      position: place(mcpNodeType),
+      data: {
+        id: mcpNodeId,
+        type: mcpNodeType,
+        label: normalizeDisplayName(mcpDisplayName),
+        description: t('agentBuilder.mcpServerWithToolCount', { count: mcpTools.length }),
+        icon: 'hub',
+        category: 'mcp-server',
+        config: {
+          instanceId: mcpInstanceId,
+          name: mcpName,
+          displayName: mcpDisplayName,
+          typeId: mcpTypeId || undefined,
+          tools: mcpTools,
+          isAuthenticated: mcpIsAuthenticated,
+        },
+        inputs: [],
+        outputs: ['output'],
+        isConfigured: true,
+      },
+    });
+    return;
+  }
+
   if (type === 'web-search') {
     const existingWebSearch = nodes.find((n) => n.data?.type === 'web-search');
     if (existingWebSearch) {
@@ -587,6 +654,57 @@ export function handleFlowCanvasDrop(
     return;
   }
 
+  // Check for duplicates: prevent adding the same connector app or KB multiple times.
+  // For individual connector apps (type starts with 'app-'), check connectorInstanceId.
+  // For individual KBs (type starts with 'kb-' but not 'kb-group'), check kbId.
+  if (template.type.startsWith('app-') && connectorId) {
+    const duplicate = nodes.find(
+      (n) =>
+        n.data?.type?.startsWith('app-') &&
+        n.data.config?.connectorInstanceId === connectorId
+    );
+    if (duplicate) {
+      const connector = findConnector();
+      onError?.(
+        t('agentBuilder.dropDuplicateConnector', {
+          name: connector?.name || connectorName || template.label,
+        })
+      );
+      return;
+    }
+  }
+
+  // Check for duplicate KB nodes
+  const kbId = event.dataTransfer.getData('kbId') || template.defaultConfig?.kbId;
+  if (template.type.startsWith('kb-') && !template.type.startsWith('kb-group') && kbId) {
+    const duplicate = nodes.find(
+      (n) =>
+        n.data?.type?.startsWith('kb-') &&
+        !n.data.type.startsWith('kb-group') &&
+        n.data.config?.kbId === kbId
+    );
+    if (duplicate) {
+      onError?.(
+        t('agentBuilder.dropDuplicateKB', {
+          name: template.label,
+        })
+      );
+      return;
+    }
+  }
+
+  // Check for duplicate skill nodes (each skill is dragged individually, unlike KB-group's multi-select).
+  if (template.type.startsWith('skill-')) {
+    const skillName = template.defaultConfig?.skillName as string | undefined;
+    const duplicate =
+      skillName &&
+      nodes.some((n) => n.data?.type?.startsWith('skill-') && n.data.config?.skillName === skillName);
+    if (duplicate) {
+      onError?.(t('agentBuilder.dropDuplicateSkill', { name: template.label }));
+      return;
+    }
+  }
+
   const fallbackId = `${type}-${Date.now()}`;
   appendNodeWithAutoConnect({
     id: fallbackId,
@@ -595,7 +713,12 @@ export function handleFlowCanvasDrop(
     data: {
       id: fallbackId,
       type: template.type,
-      label: normalizeDisplayName(template.label),
+      // Model names (e.g. "gpt-5.4-mini") already have their own official
+      // casing — normalizeDisplayName's snake_case title-casing would mangle
+      // them (-> "Gpt-5.4-mini"), so only apply it to identifier-style labels.
+      label: NODE_TYPES_WITHOUT_INPUT_HANDLES.LLM_MODELS(template.type)
+        ? template.label
+        : normalizeDisplayName(template.label),
       description: template.description,
       icon: template.icon,
       config: {
@@ -615,7 +738,11 @@ export function handleFlowCanvasDrop(
       inputs: template.inputs,
       outputs: template.outputs,
       isConfigured:
-        template.type.startsWith('app-') || template.type.startsWith('tool-group-') ? true : false,
+        template.type.startsWith('app-') ||
+        template.type.startsWith('tool-group-') ||
+        template.type.startsWith('skill-')
+          ? true
+          : false,
     },
   });
 }

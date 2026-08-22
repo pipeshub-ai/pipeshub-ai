@@ -31,7 +31,19 @@ from googleapiclient.http import HttpRequest, MediaIoBaseDownload
 from jose import JWTError
 from pydantic import BaseModel, ValidationError
 
-from app.api.middlewares.auth import require_scopes
+from app.agents.actions.knowledge_graph.catalog import ConnectorCatalog
+from app.agents.actions.knowledge_graph.identifiers import _BARE_ISSUE_KEY, _is_url
+from app.agents.actions.knowledge_graph.navigator import GraphNavigator
+from app.agents.actions.knowledge_graph.ops.time_range import (
+    parse_time_range,
+    time_range_to_kh_filters,
+)
+from app.agents.actions.knowledge_graph.resolver import RecordResolver
+from app.agents.actions.knowledge_graph.views import (
+    render_lookup_result,
+    render_navigation_view,
+)
+from app.api.middlewares.auth import is_request_admin, require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppStatus,
@@ -39,14 +51,16 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
     DefaultEndpoints,
     OAuthScopes,
+    TokenScopes,
     config_node_constants,
 )
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthToken,
@@ -63,6 +77,7 @@ from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
 from app.connectors.sources.local_fs.connector import LocalFsConnector
 from app.connectors.sources.local_fs.file_events import (
     _normalize_connector_type_value,
@@ -78,9 +93,12 @@ from app.connectors.services.kafka_service import KafkaService
 from app.containers.connector import ConnectorAppContainer
 from app.core.signed_url import SignedUrlHandler
 from app.models.entities import Record, RecordType
+from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.api_call import make_api_call
+from app.utils.chat_helpers import record_to_text
+from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import extract_oauth_error_message, fetch_oauth_config_by_id, get_oauth_config
@@ -92,6 +110,9 @@ logger = create_logger("connector_service")
 router = APIRouter()
 
 OAUTH_INSTANCE_NAME = "oauthInstanceName"
+
+# Mirrors the cap the agent's knowledgegraph__lookup_record tool applies.
+MAX_LOOKUP_IDENTIFIERS = 10
 
 def get_mime_type_from_record(record: Record) -> str:
     """
@@ -155,6 +176,13 @@ def get_pdf_conversion_info(
         file_extension = record_name.rsplit(".", 1)[-1].lower()
 
     resolved_mime = mime_type if mime_type else get_mime_type_from_record(record)
+    if file_extension not in _PDF_CONVERTIBLE_EXTENSIONS:
+        if resolved_mime == MimeTypes.PPT.value:
+            file_extension = "ppt"
+        elif resolved_mime in {MimeTypes.PPTX.value, MimeTypes.GOOGLE_SLIDES.value}:
+            # Google Slides exports are returned as OOXML presentations by the
+            # connector, so LibreOffice needs a .pptx suffix to detect them.
+            file_extension = "pptx"
     needs_conversion = (
         file_extension in _PDF_CONVERTIBLE_EXTENSIONS
         or resolved_mime in _PDF_CONVERTIBLE_MIME_TYPES
@@ -163,11 +191,42 @@ def get_pdf_conversion_info(
     return needs_conversion, record_name, file_extension
 
 
+async def _recover_artifact_version(
+    record: Record,
+    org_id: str,
+    config_service: ConfigurationService,
+    graph_provider: IGraphDBProvider | None,
+    record_version: int,
+    version: int,
+) -> int | None:
+    """Best-effort mapping for an artifact whose `versions` bookkeeping was
+    lost — see `versioning.recover_and_persist_version_mapping`. Returns
+    None (caller 404s) when the storage history cannot verify the layout."""
+    if graph_provider is None:
+        return None
+    from app.modules.transformers.blob_storage import BlobStorage
+    from app.services.artifact_registry.versioning import (
+        recover_and_persist_version_mapping,
+    )
+
+    return await recover_and_persist_version_mapping(
+        graph_provider=graph_provider,
+        blob_store=BlobStorage(logger, config_service),
+        artifact_id=record.id,
+        org_id=org_id,
+        document_id=record.external_record_id,
+        current_version=record_version,
+        version=version,
+    )
+
+
 async def _stream_artifact_from_storage(
     record: Record,
     org_id: str,
     config_service: ConfigurationService,
     convert_to: str | None = None,
+    version: int | None = None,
+    graph_provider: IGraphDBProvider | None = None,
 ) -> Response | StreamingResponse:
     """Fetch an ARTIFACT record's content from blob storage and return it.
 
@@ -178,12 +237,56 @@ async def _stream_artifact_from_storage(
     (or Google Slides) file, the buffer is converted to PDF via LibreOffice
     before being returned — mirroring the behaviour of the non-artifact
     streaming path so the frontend PDF renderer can preview it.
+
+    ``version`` is a REGISTRY version number (what the frontend/marker
+    knows about), mapped to the storage layer's ``versionHistory`` index via
+    ``resolve_storage_version`` — the SAME mapping decision
+    ``ArtifactRegistryService._resolve_storage_version`` uses, not
+    reimplemented here. ``record`` (an ``ArtifactRecord`` from
+    ``get_record_by_id``) already carries both ``.version`` and
+    ``.versions`` from the merged records+artifacts graph docs, so no extra
+    graph fetch is needed.
     """
     external_id = record.external_record_id
     if not external_id:
         raise HTTPException(
             status_code=HttpStatusCode.NOT_FOUND.value,
             detail="Artifact record has no storage document ID",
+        )
+
+    storage_version: int | None = None
+    if version is not None:
+        from app.services.artifact_registry.versioning import (
+            VersionMappingNotFoundError,
+            resolve_storage_version,
+        )
+
+        record_version = getattr(record, "version", 1)
+        record_versions = getattr(record, "versions", []) or []
+        logger.info(
+            "Version-pinned stream: requested_version=%s record_version=%s "
+            "versions_count=%d versions=%r",
+            version, record_version, len(record_versions), record_versions,
+        )
+        try:
+            storage_version = resolve_storage_version(
+                record_version, record_versions, version,
+            )
+        except VersionMappingNotFoundError as e:
+            # A card already on screen pinning an older version must not go
+            # dead just because a later bump lost its graph write — recover
+            # the mapping from the storage history when its length proves
+            # the layout, and repair the graph while we are here.
+            storage_version = await _recover_artifact_version(
+                record, org_id, config_service, graph_provider, record_version, version,
+            )
+            if storage_version is None:
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value, detail=str(e),
+                ) from e
+        logger.info(
+            "Version-pinned stream: resolved storage_version=%s for registry version=%s",
+            storage_version, version,
         )
 
     endpoints = await config_service.get_config(
@@ -194,6 +297,9 @@ async def _stream_artifact_from_storage(
     )
 
     buffer_url = f"{storage_url}/api/v1/document/internal/{external_id}/buffer"
+    if storage_version is not None:
+        buffer_url = f"{buffer_url}?version={storage_version}"
+    logger.info("Version-pinned stream: final buffer_url=%s", buffer_url)
 
     jwt_payload = {
         "orgId": org_id,
@@ -234,58 +340,203 @@ async def _stream_artifact_from_storage(
     return Response(content=buffer or b"", media_type=mime)
 
 
-async def _stream_google_api_request(request: HttpRequest, error_context: str = "download") -> AsyncGenerator[bytes, None]:
-    """
-    Helper function to stream data from a Google API request using MediaIoBaseDownload.
+async def get_graph_provider(request: Request) -> IGraphDBProvider:
+    """Return graph DB provider from app state (set at startup)."""
+    return request.app.state.graph_provider
 
-    Args:
-        request: Google API request object (from files().get_media() or files().export_media())
-        error_context: Context string for error messages (e.g., "PDF export", "file export")
-    Yields:
-        bytes: Chunks of data from the download
-    """
-    buffer = io.BytesIO()
-    try:
-        downloader = MediaIoBaseDownload(buffer, request)
-        done = False
 
-        while not done:
+async def get_kafka_service(request: Request) -> KafkaService:
+    container: ConnectorAppContainer = request.app.container
+    return container.kafka_service()
+
+
+async def _resolve_record_content_response(
+    *,
+    record: Record,
+    org_id: str,
+    user_id: str,
+    is_admin: bool,
+    convert_to: str | None,
+    version: int | None,
+    request: Request,
+    config_service: ConfigurationService,
+    graph_provider: IGraphDBProvider,
+) -> Response | StreamingResponse:
+    """Shared dispatch: UPLOAD/ARTIFACT/ATTACHMENTS → blob storage;
+    CONNECTOR → lazy-init connector + stream_record.
+
+    Used by `stream_record`, `stream_record_internal`, `download_file`, and the
+    new agent-facing internal content endpoint, so the routing decision lives
+    in exactly one place.
+    """
+    if record.record_type == RecordType.ARTIFACT or record.connector_name in (
+        Connectors.ATTACHMENTS, Connectors.CODING_SANDBOX,
+    ):
+        return await _stream_artifact_from_storage(
+            record, org_id, config_service, convert_to=convert_to, version=version,
+            graph_provider=graph_provider,
+        )
+
+    connector_id = record.connector_id
+    connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    if not connector_instance:
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
+        )
+
+    container: ConnectorAppContainer = request.app.container
+    connector_registry: ConnectorRegistry = request.app.state.connector_registry
+
+    connector_obj = await _get_streaming_connector(
+        container=container,
+        connector_id=connector_id,
+        connector_instance=connector_instance,
+        connector_registry=connector_registry,
+        graph_provider=graph_provider,
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=is_admin,
+        logger=logger,
+    )
+
+    if connector_obj.get_app_name() in (
+        Connectors.GOOGLE_DRIVE_WORKSPACE, Connectors.GOOGLE_MAIL_WORKSPACE,
+    ):
+        buffer = await connector_obj.stream_record(record, user_id)
+    else:
+        buffer = await connector_obj.stream_record(record)
+
+    if convert_to == MimeTypes.PDF.value:
+        needs_conversion, record_name, file_extension = get_pdf_conversion_info(record)
+        if needs_conversion:
             try:
-                _, done = downloader.next_chunk()
-
-                buffer.seek(0)
-                chunk = buffer.read()
-
-                if chunk:  # Only yield if we have data
-                    yield chunk
-
-                # Clear buffer for next chunk
-                buffer.seek(0)
-                buffer.truncate(0)
-
-                # Yield control back to event loop
-                await asyncio.sleep(0)
-
-            except HttpError as http_error:
-                logger.error(f"HTTP error during {error_context}: {str(http_error)}")
+                return await convert_buffer_to_pdf_stream(buffer, record_name, file_extension)
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error("Error converting connector record to PDF: %s", str(e), exc_info=True)
                 raise HTTPException(
                     status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail=f"Error during {error_context}: {str(http_error)}",
-                ) from http_error
-            except Exception as chunk_error:
-                logger.error(f"Error during {error_context} chunk: {str(chunk_error)}")
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail=f"Error during {error_context}",
-                ) from chunk_error
-    except Exception as stream_error:
-        logger.error(f"Error in {error_context} stream: {str(stream_error)}")
+                    detail="Failed to convert file to PDF",
+                ) from e
+
+    return buffer
+
+
+@router.get("/api/v1/internal/records/{record_id}/content", response_model=None)
+@inject
+async def get_record_content_internal(
+    request: Request,
+    record_id: str,
+    version: int | None = Query(None, ge=0, description="Registry version (ARTIFACT records only)"),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
+) -> Response | StreamingResponse:
+    """ACL-enforcing record-content endpoint for the agent (query service).
+
+    Auth: Bearer <scoped JWT carrying orgId, userId, scopes=["record:content"]>.
+    - Requires `userId` — the endpoint refuses a JWT without it to avoid
+      silently degrading into an admin path.
+    - Runs `check_record_access_with_details` independently (never trusts the
+      caller) and rejects on org mismatch rather than widening.
+    - Builds the connector with `is_admin=False` — the agent acts as the
+      requesting user.
+
+    This route must NOT share auth logic with the indexing admin path
+    (`/api/v1/internal/stream/record/{id}/`) which runs `is_admin=True`.
+    """
+    try:
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="Missing or invalid Authorization header",
+            )
+
+        token = auth_header.split(" ")[1]
+        secret_keys = await config_service.get_config(config_node_constants.SECRET_KEYS.value)
+        jwt_secret = (secret_keys or {}).get("scopedJwtSecret")
+        if not jwt_secret:
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Service misconfiguration: missing JWT secret",
+            )
+
+        payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
+
+        scopes = payload.get("scopes", [])
+        if TokenScopes.RECORD_CONTENT.value not in scopes:
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail=f"Token is missing required scope: {TokenScopes.RECORD_CONTENT.value}",
+            )
+
+        org_id = payload.get("orgId")
+        user_id = payload.get("userId")
+        if not org_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="Token missing orgId",
+            )
+        if not user_id:
+            # Deliberate: a JWT without userId must not silently become an admin read.
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Token missing userId — this endpoint requires a user-bound token",
+            )
+
+        record = await graph_provider.get_record_by_id(record_id)
+        if not record:
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+
+        # Org mismatch: reject rather than widen (unlike the admin path).
+        if record.org_id and record.org_id != org_id:
+            logger.warning(
+                "get_record_content_internal: org mismatch record=%s record_org=%s token_org=%s",
+                record_id, record.org_id, org_id,
+            )
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Record does not belong to your organization",
+            )
+
+        # Independent ACL check — never trust the caller.
+        access = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
+        if not access:
+            logger.warning(
+                "get_record_content_internal: access denied user=%s record=%s", user_id, record_id,
+            )
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="You do not have permission to access this record",
+            )
+
+        return await _resolve_record_content_response(
+            record=record,
+            org_id=org_id,
+            user_id=user_id,
+            is_admin=False,
+            convert_to=None,
+            version=version,
+            request=request,
+            config_service=config_service,
+            graph_provider=graph_provider,
+        )
+
+    except JWTError as e:
+        logger.error("JWT validation error in get_record_content_internal: %s", str(e))
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Invalid or expired token"
+        ) from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Unexpected error in get_record_content_internal: %s", str(e), exc_info=True)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=f"Error setting up {error_context} stream",
-        ) from stream_error
-    finally:
-        buffer.close()
+            detail=f"Error fetching record content: {e}",
+        ) from e
 
 
 class ReindexFailedRequest(BaseModel):
@@ -322,7 +573,7 @@ async def get_validated_connector_instance(
     # Extract user information
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
 
     # Validate authentication
     if not user_id or not org_id:
@@ -376,15 +627,6 @@ async def get_validated_connector_instance(
     return instance
 
 
-async def get_graph_provider(request: Request) -> IGraphDBProvider:
-    """Return graph DB provider from app state (set at startup)."""
-    return request.app.state.graph_provider
-
-async def get_kafka_service(request: Request) -> KafkaService:
-    container: ConnectorAppContainer = request.app.container
-    return container.kafka_service()
-
-
 _LOCK_STATUS_MESSAGES: dict[str, str] = {
     AppStatus.FULL_SYNCING.value: "A full sync is in progress. Please wait and try again.",
     AppStatus.SYNCING.value: "A sync is already in progress. Please wait and try again.",
@@ -423,7 +665,7 @@ async def require_connector_not_locked(
     connector_registry = request.app.state.connector_registry
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
 
     instance = await connector_registry.get_connector_instance(
         connector_id=connector_id,
@@ -794,36 +1036,17 @@ async def download_file(
                 detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
             )
 
-        # Handle KB separately - fetch from storage service
-        container: ConnectorAppContainer = request.app.container
-        connector_registry: ConnectorRegistry = request.app.state.connector_registry
-        try:
-            connector_obj = await _get_streaming_connector(
-                container=container,
-                connector_id=connector_id,
-                connector_instance=connector_instance,
-                connector_registry=connector_registry,
-                graph_provider=graph_provider,
-                user_id=user_id,
-                org_id=org_id,
-                is_admin=False,
-                logger=logger,
-            )
-
-            if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
-                buffer = await connector_obj.stream_record(record, user_id)
-            else:
-                buffer = await connector_obj.stream_record(record)
-
-            return buffer
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error downloading file: {str(e)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Error downloading file: {str(e)}"
-            ) from e
+        return await _resolve_record_content_response(
+            record=record,
+            org_id=org_id,
+            user_id=user_id,
+            is_admin=False,
+            convert_to=None,
+            version=None,
+            request=request,
+            config_service=request.app.container.config_service(),
+            graph_provider=graph_provider,
+        )
 
     except HTTPException as e:
         logger.error("HTTPException: %s", str(e))
@@ -839,6 +1062,7 @@ async def stream_record(
     request: Request,
     record_id: str,
     convertTo: str = Query(None, description="Convert file to this format"),
+    version: int | None = Query(None, ge=0, description="Registry version to pin the artifact's content to (ARTIFACT records only)"),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> dict | StreamingResponse | None:
@@ -883,76 +1107,18 @@ async def stream_record(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record"
             )
-        if record.record_type == RecordType.ARTIFACT or record.connector_name == Connectors.ATTACHMENTS:
-            return await _stream_artifact_from_storage(
-                record, org_id, config_service, convert_to=convertTo
-            )
-
-        connector_name = record.connector_name.value.lower().replace(" ", "")
-        connector_id = record.connector_id
-        logger.info(f"Connector: {connector_name} connector_id: {connector_id}")
-
-        # Check if the connector still exists in the graph (not deleted)
-        connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
-        if not connector_instance:
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
-            )
-
-        container: ConnectorAppContainer = request.app.container
-        connector_registry: ConnectorRegistry = request.app.state.connector_registry
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
-
-        try:
-            logger.info("Stream Record called at router")
-            logger.info(f"Connector: {connector_name} connector_id: {connector_id}")
-            connector_obj = await _get_streaming_connector(
-                container=container,
-                connector_id=connector_id,
-                connector_instance=connector_instance,
-                connector_registry=connector_registry,
-                graph_provider=graph_provider,
-                user_id=user_id,
-                org_id=org_id,
-                is_admin=is_admin,
-                logger=logger,
-            )
-
-            # Get the buffer from connector (without passing convertTo)
-            if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
-                buffer = await connector_obj.stream_record(record, user_id)
-            else:
-                buffer = await connector_obj.stream_record(record)
-
-            # Handle conversion after getting the buffer
-            if convertTo == MimeTypes.PDF.value:
-                needs_conversion, record_name, file_extension = (
-                    get_pdf_conversion_info(record)
-                )
-
-                if needs_conversion:
-                    try:
-                        return await convert_buffer_to_pdf_stream(buffer, record_name, file_extension)
-                    except HTTPException:
-                        raise
-                    except Exception as e:
-                        logger.error(f"Error converting file to PDF: {str(e)}", exc_info=True)
-                        raise HTTPException(
-                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                            detail="Failed to convert file to PDF"
-                        ) from e
-
-            return buffer
-        except HTTPException:
-            # Re-raise HTTPExceptions from connectors unchanged so the original
-            # status code (403, 404, etc.) is preserved and reaches the client.
-            raise
-        except Exception as e:
-            logger.error(f"Error downloading file: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Error downloading file: {str(e)}"
-            ) from e
+        is_admin = is_request_admin(request)
+        return await _resolve_record_content_response(
+            record=record,
+            org_id=org_id,
+            user_id=user_id,
+            is_admin=is_admin,
+            convert_to=convertTo,
+            version=version,
+            request=request,
+            config_service=config_service,
+            graph_provider=graph_provider,
+        )
 
     except HTTPException as e:
         raise e
@@ -1067,9 +1233,13 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
         HTTPException: If conversion fails or output file is not found
     """
     pdf_path = os.path.join(temp_dir, f"{Path(file_path).stem}.pdf")
+    libreoffice_profile_uri = Path(
+        os.path.join(temp_dir, ".libreoffice-profile")
+    ).as_uri()
 
     conversion_cmd = [
         "soffice",
+        f"-env:UserInstallation={libreoffice_profile_uri}",
         "--headless",
         "--convert-to",
         "pdf",
@@ -1110,10 +1280,20 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
             )
 
         if not os.path.exists(pdf_path):
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="PDF conversion failed - output file not found"
+            # LibreOffice may normalize or rename the output basename (for
+            # example, names containing unsupported characters). Accept the
+            # generated PDF instead of failing solely on the expected name.
+            pdf_files = sorted(
+                entry
+                for entry in os.listdir(temp_dir)
+                if entry.lower().endswith(".pdf")
             )
+            if not pdf_files:
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="PDF conversion failed - output file not found"
+                )
+            pdf_path = os.path.join(temp_dir, pdf_files[0])
 
         return pdf_path
 
@@ -1147,7 +1327,15 @@ async def convert_buffer_to_pdf_stream(
         HTTPException: If conversion fails
     """
     with tempfile.TemporaryDirectory() as temp_dir:
-        temp_file_name = record_name if record_name else f"file.{file_extension or 'tmp'}"
+        safe_record_name = Path(record_name).name if record_name else "file"
+        normalized_extension = (file_extension or "").lower().lstrip(".")
+        if (
+            normalized_extension in _PDF_CONVERTIBLE_EXTENSIONS
+            and Path(safe_record_name).suffix.lower().lstrip(".")
+            not in _PDF_CONVERTIBLE_EXTENSIONS
+        ):
+            safe_record_name = f"{safe_record_name}.{normalized_extension}"
+        temp_file_name = safe_record_name
         temp_file_path = os.path.join(temp_dir, temp_file_name)
 
         # Write buffer content to temporary file
@@ -1317,13 +1505,11 @@ async def get_records(
             }
         }
     except Exception as e:
-        logger.error(f"❌ Failed to list all records: {str(e)}")
-        return {
-            "records": [],
-            "pagination": {"page": page, "limit": limit, "totalCount": 0, "totalPages": 0},
-            "filters": {"applied": {}, "available": {}},
-            "error": str(e),
-        }
+        logger.error(f"❌ Failed to list all records: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Failed to retrieve records",
+        ) from e
 
 @router.get("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 @inject
@@ -1356,6 +1542,289 @@ async def get_record_by_id(
     except Exception as e:
         logger.error(f"Error checking record access: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to check record access") from e
+
+@router.get(
+    "/api/v1/records/{record_id}/content",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))],
+)
+@inject
+async def get_record_content(
+    record_id: str,
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict:
+    """
+    Fetch the full parsed content and metadata of a record, with permission scoping.
+    """
+    container = request.app.container
+    logger = container.logger()
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+
+    try:
+        access_check = await graph_provider.check_record_access_with_details(
+            user_id=user_id,
+            org_id=org_id,
+            record_id=record_id,
+        )
+        if not access_check:
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="You do not have permission to access this record",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking record access for {record_id}: {str(e)}")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to check record access") from e
+
+    try:
+        result = await _fetch_multiple_records_impl(
+            record_ids=[record_id],
+            virtual_record_id_to_result={},
+            graph_provider=graph_provider,
+            org_id=org_id,
+            user_id=user_id,
+        )
+    except Exception as e:
+        logger.error(f"Error fetching record content for {record_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to fetch record content") from e
+
+    if not result.get("ok") or not result.get("records"):
+        return {"content": "No record found"}
+
+    try:
+        content = record_to_text(result["records"][0])
+    except Exception as e:
+        logger.error(f"Error formatting record content for {record_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to format record content") from e
+
+    return {"content": content}
+
+
+async def _knowledge_graph_context(
+    request: Request,
+    graph_provider: IGraphDBProvider,
+) -> tuple[str, str, str, ConnectorCatalog]:
+    """Resolve (user_id, org_id, user_key, catalog) for the knowledge-graph endpoints.
+
+    The catalog is built from a fresh dict per request: ConnectorCatalog.build
+    caches into the dict it is given, so a shared one would serve one user's
+    connectors to another. An empty dict carries no agent scope, so build()
+    falls through to the user-scoped get_knowledge_hub_filter_options path.
+    """
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+
+    try:
+        user = await graph_provider.get_user_by_user_id(user_id=user_id)
+    except Exception as e:
+        request.app.container.logger().error(f"Error resolving user {user_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Failed to resolve user",
+        ) from e
+
+    user_key = (user.get("_key") or user.get("id")) if user else None
+    if not user_key:
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="User not found")
+
+    catalog = await ConnectorCatalog.build(
+        {},
+        graph_provider=graph_provider,
+        user_key=user_key,
+        org_id=org_id,
+    )
+    return user_id, org_id, user_key, catalog
+
+
+@router.get(
+    "/api/v1/knowledge-graph/navigate",
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ, OAuthScopes.CONNECTOR_READ))],
+)
+async def knowledge_graph_navigate(
+    request: Request,
+    node_id: str | None = Query(
+        None,
+        description=(
+            "App / record group / record / folder id to open. Omit for the root "
+            "listing of connected apps. A URL or issue key (e.g. PA-1787) is "
+            "resolved to its record id first."
+        ),
+    ),
+    page: int = Query(1, ge=1, description="Page number (1-based)."),
+    limit: int = Query(50, ge=50, le=200, description="Children per page."),
+    depth: int = Query(
+        1,
+        ge=1,
+        le=3,
+        description="Levels of descendants returned in one call, flattened with a level per row.",
+    ),
+    node_types: list[str] | None = Query(
+        None,
+        description="Repeat per type to filter children: recordGroup, record, folder.",
+    ),
+    created_after: str | None = Query(None, description="ISO 8601 date or datetime with a timezone offset."),
+    created_before: str | None = Query(None, description="ISO 8601 date or datetime with a timezone offset."),
+    modified_after: str | None = Query(None, description="ISO 8601 date or datetime with a timezone offset."),
+    modified_before: str | None = Query(None, description="ISO 8601 date or datetime with a timezone offset."),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict:
+    """
+    Walk the knowledge graph hierarchy: App -> RecordGroup -> Record -> Child.
+
+    HTTP counterpart of the agent's knowledgegraph__navigate tool — same
+    normalisation, same underlying GraphNavigator call, and the same rendered
+    view in `text` alongside the structured fields.
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    # Same parser knowledgegraph__search and navigate() use: rejects
+    # timezone-naive datetimes, inverted ranges, and a future created_after.
+    time_range, time_error = parse_time_range(
+        created_after=created_after,
+        created_before=created_before,
+        modified_after=modified_after,
+        modified_before=modified_before,
+    )
+    if time_error is not None:
+        try:
+            detail = json.loads(time_error).get("message", time_error)
+        except (json.JSONDecodeError, AttributeError):
+            detail = time_error
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=detail)
+    created_at, updated_at = time_range_to_kh_filters(time_range)
+
+    user_id, org_id, user_key, catalog = await _knowledge_graph_context(request, graph_provider)
+    connector_ids = catalog.connector_ids()
+
+    node_id = node_id.strip() if node_id else None
+    if node_id and (_is_url(node_id) or _BARE_ISSUE_KEY.match(node_id)):
+        resolver = RecordResolver(
+            graph_provider=graph_provider,
+            catalog=catalog,
+            org_id=org_id,
+            user_id=user_id,
+            user_key=user_key,
+            folder_mime_types=FOLDER_MIME_TYPES,
+            agent_connector_ids=connector_ids,
+        )
+        resolved = await resolver.resolve_many([node_id])
+        if resolved.matches:
+            node_id = resolved.matches[0].id
+
+    navigator = GraphNavigator(
+        graph_provider=graph_provider,
+        user_id=user_id,
+        user_key=user_key,
+        org_id=org_id,
+    )
+
+    try:
+        view = await navigator.navigate(
+            node_id=node_id,
+            name_filter=None,
+            page=page,
+            limit=limit,
+            connector_ids=None,
+            record_group_ids=None,
+            depth=depth,
+            created_at=created_at,
+            updated_at=updated_at,
+            node_types=node_types,
+            app_names={c.id: c.name for c in catalog.connectors},
+        )
+    except Exception as e:
+        logger.error(f"Error navigating knowledge graph for node_id={node_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Failed to navigate knowledge graph",
+        ) from e
+
+    return {**view.model_dump(), "text": render_navigation_view(view, page)}
+
+
+@router.get(
+    "/api/v1/knowledge-graph/lookup",
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ, OAuthScopes.CONNECTOR_READ))],
+)
+async def knowledge_graph_lookup(
+    request: Request,
+    identifiers: list[str] = Query(
+        ...,
+        description=(
+            "Repeat per identifier: a URL, an issue key (e.g. PA-1787), or a bare "
+            "external system id. Maximum 10."
+        ),
+    ),
+    connector_name: str | None = Query(
+        None,
+        description=(
+            "Connector hint (e.g. JIRA, CONFLUENCE, GOOGLE_DRIVE) that prioritises "
+            "resolution order. Cannot widen beyond accessible connectors."
+        ),
+    ),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict:
+    """
+    Resolve URLs, issue keys, or external IDs to Record IDs.
+
+    HTTP counterpart of the agent's knowledgegraph__lookup_record tool.
+    Resolution spans every connector the caller can access. Zero matches is a
+    200 with an empty `matches` and the inputs echoed in
+    `not_found_identifiers` — not-found and no-access are deliberately
+    indistinguishable.
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    idents = [i.strip() for i in identifiers if i and i.strip()]
+    if not idents:
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="At least one non-blank identifier is required",
+        )
+    if len(idents) > MAX_LOOKUP_IDENTIFIERS:
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail=f"At most {MAX_LOOKUP_IDENTIFIERS} identifiers per request",
+        )
+
+    user_id, org_id, user_key, catalog = await _knowledge_graph_context(request, graph_provider)
+
+    if catalog.is_empty():
+        # No accessible connectors — skip a resolution pass that cannot match.
+        return {
+            "matches": [],
+            "ambiguous": False,
+            "not_found_identifiers": idents,
+            "searched_connectors": {},
+            "text": "Not found or no access.",
+        }
+
+    resolver = RecordResolver(
+        graph_provider=graph_provider,
+        catalog=catalog,
+        org_id=org_id,
+        user_id=user_id,
+        user_key=user_key,
+        folder_mime_types=FOLDER_MIME_TYPES,
+        agent_connector_ids=catalog.connector_ids(),
+        connector_name_hint=connector_name,
+    )
+
+    try:
+        result = await resolver.resolve_many(idents)
+    except Exception as e:
+        logger.error(f"Error resolving {len(idents)} identifiers: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Failed to resolve identifiers",
+        ) from e
+
+    return {**result.model_dump(), "text": render_lookup_result(result)}
+
 
 @router.delete("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE, OAuthScopes.KB_DELETE))])
 @inject
@@ -1395,6 +1864,11 @@ async def delete_record(
                 except Exception as e:
                     logger.error(f"❌ Failed to publish deletion event: {str(e)}")
 
+            # This route deletes directly, bypassing the processor's cascade
+            # path, so it owns its own cache invalidation.
+            if result.get("isKb") and result.get("connectorId"):
+                await notify_kb_records_changed(result["connectorId"], result.get("orgId"))
+
             logger.info(f"✅ Successfully deleted record {record_id}")
             return {
                 "success": True,
@@ -1433,6 +1907,56 @@ def _parse_reindex_body(request_body: dict | None) -> tuple[int, list[str] | Non
             detail="statusFilters must be an array of strings",
         )
     return depth, raw_filters if raw_filters else None
+
+
+def _parse_status_filters(request_body: dict | None) -> list[str] | None:
+    """Parse optional statusFilters from a reindex request body (no depth)."""
+    if not request_body:
+        return None
+    raw_filters = request_body.get("statusFilters")
+    if raw_filters is None:
+        return None
+    if not isinstance(raw_filters, list) or not all(isinstance(s, str) for s in raw_filters):
+        raise HTTPException(
+            status_code=400,
+            detail="statusFilters must be an array of strings",
+        )
+    return raw_filters if raw_filters else None
+
+
+def _build_reindex_event(
+    *,
+    event_type: str,
+    org_id: str,
+    connector_id: str,
+    connector_name: str | None = None,
+    record_id: str | None = None,
+    record_group_id: str | None = None,
+    depth: int | None = None,
+    user_key: str | None = None,
+    status_filters: list[str] | None = None,
+) -> dict:
+    """Build the {eventType, topic, payload} envelope for a '*.reindex' sync-event.
+
+    Shared by the record-group and connector-wide reindex routes so the payload
+    shape stays consistent (single-record reindex builds its own payload inside
+    reindex_single_record, which has a KB depth==0 'newRecord' special-case that
+    doesn't fit this generic shape).
+    """
+    payload: dict[str, Any] = {"orgId": org_id, "connectorId": connector_id}
+    if connector_name is not None:
+        payload["connector"] = connector_name
+    if record_id is not None:
+        payload["recordId"] = record_id
+    if record_group_id is not None:
+        payload["recordGroupId"] = record_group_id
+    if depth is not None:
+        payload["depth"] = depth
+    if user_key is not None:
+        payload["userKey"] = user_key
+    if status_filters:
+        payload["statusFilters"] = status_filters
+    return {"eventType": event_type, "topic": "sync-events", "payload": payload}
 
 
 @router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked_for_record)])
@@ -1491,6 +2015,14 @@ async def reindex_single_record(
                     }
                     await kafka_service.publish_event(event_data["topic"], event)
                     logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                    # Only the single-record path owns this record's status; the
+                    # sync-events paths hand off to the reindex handler instead.
+                    if event_data["topic"] == "record-events":
+                        await graph_provider.compare_and_set_indexing_status(
+                            [record_id],
+                            ProgressStatus.NOT_STARTED.value,
+                            ProgressStatus.QUEUED.value,
+                        )
                 except Exception as e:
                     logger.error(f"❌ Failed to publish event: {str(e)}")
 
@@ -1529,8 +2061,55 @@ async def get_connector_stats_endpoint(
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 )-> dict[str, Any]:
     try:
-        result = await graph_provider.get_connector_stats(org_id, connector_id)
         logger = request.app.container.logger()
+        connector_registry = request.app.state.connector_registry
+        user_id = request.state.user.get("userId")
+        user_org_id = request.state.user.get("orgId")
+        is_admin = is_request_admin(request)
+
+        if not user_id or not user_org_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
+        # Verify org_id matches user's org (unless admin)
+        if not is_admin and org_id != user_org_id:
+            raise HTTPException(status_code=403, detail="Insufficient permissions to access stats for this organization")
+
+        # Resolve the target once, then gate access by what the user can already
+        # see — so anyone who can view a connector/collection can view its stats:
+        #  - KB collections: any OWNER/WRITER/READER role on the collection
+        #  - Connectors: same visibility rule as the connector listing
+        app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        if not app_doc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Connector instance {connector_id} not found",
+            )
+
+        if app_doc.get("type") == Connectors.KNOWLEDGE_BASE.value:
+            user = await graph_provider.get_user_by_user_id(user_id=user_id)
+            if not user:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"User not found for user_id: {user_id}",
+                )
+            user_role = await graph_provider.get_user_kb_permission(connector_id, user.get("_key"))
+            if user_role not in ("OWNER", "WRITER", "READER"):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Insufficient KB permissions for connector {connector_id}. Required: OWNER, WRITER, or READER",
+                )
+        else:
+            can_view = await connector_registry.can_user_view_connector(
+                connector_id, app_doc, user_id, is_admin=is_admin
+            )
+            if not can_view:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Insufficient permissions to access stats for connector {connector_id}",
+                )
+
+        # Fetch stats from graph provider
+        result = await graph_provider.get_connector_stats(org_id, connector_id)
         if result["success"]:
              return {"success": True, "data": result["data"]}
         else:
@@ -1595,24 +2174,25 @@ async def reindex_record_group(
             connector_normalized = connector_name.replace(" ", "").lower()
             event_type = f"{connector_normalized}.reindex"
 
-            payload = {
-                "orgId": org_id,
-                "recordGroupId": record_group_id,
-                "depth": depth,
-                "connectorId": connector_id,
-                "userKey": user_key,
-            }
-            if status_filters:
-                payload["statusFilters"] = status_filters
+            event_data = _build_reindex_event(
+                event_type=event_type,
+                org_id=org_id,
+                connector_id=connector_id,
+                connector_name=connector_normalized,
+                record_group_id=record_group_id,
+                depth=depth,
+                user_key=user_key,
+                status_filters=status_filters,
+            )
 
             # Publish event directly using KafkaService
             timestamp = get_epoch_timestamp_in_ms()
             event = {
-                "eventType": event_type,
+                "eventType": event_data["eventType"],
                 "timestamp": timestamp,
-                "payload": payload
+                "payload": event_data["payload"]
             }
-            await kafka_service.publish_event("sync-events", event)
+            await kafka_service.publish_event(event_data["topic"], event)
             logger.info(f"✅ Published {event_type} event for record group {record_group_id}")
 
             return {
@@ -1620,7 +2200,8 @@ async def reindex_record_group(
                 "message": f"Reindex initiated for record group {record_group_id} with depth {depth}",
                 "recordGroupId": record_group_id,
                 "depth": depth,
-                "connector": connector_id,
+                "connectorId": connector_id,
+                "connector": connector_normalized,
                 "eventPublished": True
             }
         except Exception as event_error:
@@ -1638,6 +2219,143 @@ async def reindex_record_group(
             status_code=500,
             detail=f"Internal server error while reindexing record group: {str(e)}"
         ) from e
+
+
+@router.post("/api/v1/connectors/{connector_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked)])
+@inject
+async def reindex_connector(
+    connector_id: str,
+    request: Request,
+    kafka_service: KafkaService = Depends(get_kafka_service),
+) -> dict:
+    """
+    Reindex all records for a connector instance (connector-wide reindex).
+
+    This covers both external connectors (reindex by status, e.g. FAILED) and
+    KB app instances (a KB is itself a connector instance; omitting
+    statusFilters means "reindex everything" for a KB — see event_service.py's
+    _handle_reindex status-filter defaulting).
+
+    Request Body (optional):
+        statusFilters: list[str] - indexing statuses to reindex (e.g. ["FAILED"]).
+                       Omit to reindex everything.
+    """
+    try:
+        container = request.app.container
+        logger = container.logger()
+        connector_registry = request.app.state.connector_registry
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        is_admin = is_request_admin(request)
+
+        if not user_id or not org_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
+        request_body: dict | None = None
+        try:
+            request_body = await request.json()
+        except (json.JSONDecodeError, TypeError):
+            request_body = None
+        status_filters = _parse_status_filters(request_body)
+
+        instance = await connector_registry.get_connector_instance(
+            connector_id=connector_id,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin,
+        )
+        
+        # KB permission fallback: if instance not found via registry, check if it's a
+        # KB collection and the user has OWNER/WRITER/READER role
+        if not instance:
+            graph_provider = request.app.state.graph_provider
+            app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+            
+            if app_doc and app_doc.get("type") == Connectors.KNOWLEDGE_BASE.value:
+                # This is a KB collection, check KB permissions
+                user = await graph_provider.get_user_by_user_id(user_id=user_id)
+                if not user:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"User not found for user_id: {user_id}",
+                    )
+                user_key = user.get("_key")
+                
+                user_role = await graph_provider.get_user_kb_permission(connector_id, user_key)
+                if user_role in ("OWNER", "WRITER", "READER"):
+                    # Build minimal instance dict from app doc to continue
+                    instance = {
+                        "type": app_doc.get("type"),
+                        "isActive": app_doc.get("isActive", False),
+                        "name": app_doc.get("name", connector_id),
+                    }
+                else:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Insufficient KB permissions for connector {connector_id}. Required: OWNER, WRITER, or READER",
+                    )
+        
+        if not instance:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Connector instance {connector_id} not found or access denied",
+            )
+        if not instance.get("isActive", False):
+            raise HTTPException(
+                status_code=409,
+                detail=f"The connector '{instance.get('name', connector_id)}' is currently disabled. Enable it and try again.",
+            )
+
+        connector_type = instance.get("type", "")
+        connector_normalized = connector_type.replace(" ", "").lower()
+        event_type = f"{connector_normalized}.reindex"
+
+        logger.info(
+            f"🔄 Attempting to reindex connector {connector_id} ({connector_normalized}), "
+            f"status_filters={status_filters}"
+        )
+
+        event_data = _build_reindex_event(
+            event_type=event_type,
+            org_id=org_id,
+            connector_id=connector_id,
+            connector_name=connector_normalized,
+            status_filters=status_filters,
+        )
+
+        try:
+            timestamp = get_epoch_timestamp_in_ms()
+            event = {
+                "eventType": event_data["eventType"],
+                "timestamp": timestamp,
+                "payload": event_data["payload"],
+            }
+            await kafka_service.publish_event(event_data["topic"], event)
+            logger.info(f"✅ Published {event_type} event for connector {connector_id}")
+        except Exception as event_error:
+            logger.error(f"❌ Failed to publish reindex event: {str(event_error)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to publish reindex event: {str(event_error)}",
+            ) from event_error
+
+        return {
+            "success": True,
+            "message": f"Reindex initiated for connector {connector_id}",
+            "connectorId": connector_id,
+            "connector": connector_normalized,
+            "eventPublished": True,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error reindexing connector {connector_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error while reindexing connector: {str(e)}"
+        ) from e
+
 
 _MAX_AGENT_NAMES_DISPLAY = 3
 
@@ -1880,7 +2598,7 @@ async def get_connector_registry(
             # If we can't get account type, log but don't fail (fail-open)
             logger.debug(f"Could not get account type: {e}")
 
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         result = await connector_registry.get_all_registered_connectors(
             is_admin=is_admin,
             scope=scope,
@@ -2148,7 +2866,7 @@ async def get_connector_instances(
     logger = container.logger()
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
     try:
         logger.info("Getting connector instances")
         if not user_id or not org_id:
@@ -2300,7 +3018,7 @@ async def get_configured_connector_instances(
     logger = container.logger()
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
     try:
         logger.info("Getting configured connector instances")
         if not user_id or not org_id:
@@ -2682,7 +3400,7 @@ async def create_connector_instance(
         # ============================================================
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         if not user_id or not org_id:
             raise HTTPException(
@@ -2959,7 +3677,7 @@ async def get_connector_instance(
     logger.info("Getting connector instance")
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
 
     try:
         if not user_id or not org_id:
@@ -3051,7 +3769,7 @@ async def get_connector_instance_config(
     try:
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         if not user_id or not org_id:
             logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
@@ -3177,7 +3895,7 @@ async def submit_connector_file_event_uploads(
     connector_registry = request.app.state.connector_registry
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
     payload, files_by_field = await _parse_local_fs_uploaded_file_event_batch_request(request)
 
     if not user_id or not org_id:
@@ -3286,7 +4004,7 @@ async def submit_connector_file_events(
     connector_registry = request.app.state.connector_registry
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
     payload = await _parse_local_fs_file_event_batch_request(request)
 
     if not user_id or not org_id:
@@ -3396,7 +4114,7 @@ async def update_connector_instance_auth_config(
         # Extract user info for later use
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         connector_type = instance.get("type", "")
 
         body = await request.json()
@@ -3740,7 +4458,7 @@ async def update_connector_instance_filters_sync_config(
         # Extract user info for later use
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         body = await request.json()
 
@@ -3884,7 +4602,7 @@ async def update_connector_instance_config(
 
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         connector_type = instance.get("type", "")
 
         body = await request.json()
@@ -4154,7 +4872,7 @@ async def update_connector_instance_name(
     try:
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         if not user_id or not org_id:
             logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
@@ -4273,7 +4991,7 @@ def _get_user_context(request: Request) -> dict[str, Any]:
     """
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
 
     if not user_id or not org_id:
         raise HTTPException(
@@ -4700,7 +5418,7 @@ async def get_oauth_authorization_url(
         # ============================================================
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         if not user_id or not org_id:
             raise HTTPException(
@@ -4904,7 +5622,7 @@ async def handle_oauth_callback(
         # ============================================================
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         if not user_id or not org_id:
             raise HTTPException(
@@ -5090,7 +5808,7 @@ async def handle_oauth_callback(
         }
 
     except Exception as e:
-        logger.error(f"Error handling OAuth callback: {e}")
+        logger.error(f"Error handling OAuth callback: {e}", exc_info=True)
 
         # Update instance authentication status on error
         if connector_id:
@@ -5918,6 +6636,7 @@ async def _ensure_connector_initialized(
             )
         scope = connector_doc.get(ConnectorRequestKeys.SCOPE, ConnectorScope.PERSONAL.value)
         created_by = connector_doc.get("createdBy", "")
+        org_id = connector_doc.get("orgId")
 
         # Create connector using factory
         connector = await ConnectorFactory.create_connector(
@@ -5928,6 +6647,7 @@ async def _ensure_connector_initialized(
             connector_id=connector_id,
             scope=scope,
             created_by=created_by,
+            org_id=org_id,
             notification_service=container.connector_notification_service(),
         )
 
@@ -5940,7 +6660,19 @@ async def _ensure_connector_initialized(
 
         # Initialize connector
         logger.info(f"Calling init() for connector {connector_id}")
-        is_initialized = await connector.init()
+        try:
+            is_initialized = await connector.init()
+        except ConnectorInitError as init_error:
+            # Connector surfaced a specific, actionable reason (e.g. multi-site OAuth
+            # ambiguity). Show it to the user instead of the generic message.
+            error_msg = str(init_error)
+            logger.error(f"❌ {error_msg}")
+            with contextlib.suppress(Exception):
+                await connector.cleanup()
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=error_msg
+            ) from init_error
 
         if not is_initialized:
             error_msg = "Failed to initialize connector. Please check your credentials and configuration."
@@ -6070,7 +6802,7 @@ async def toggle_connector_instance(
             )
         org_id = user_info["orgId"]
         user_id = user_info["userId"]
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         if not user_id or not org_id:
             logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
@@ -6293,7 +7025,7 @@ async def delete_connector_instance(
         # 1. Validate user context
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         if not user_id or not org_id:
             logger.error("User not authenticated for connector deletion")
@@ -6579,7 +7311,7 @@ async def get_active_agent_instances(
         connector_registry = request.app.state.connector_registry
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         if not user_id or not org_id:
             logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(

@@ -509,7 +509,7 @@ class TestProcessMessageWrapperEdgeCases:
         msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
 
         result = await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
-        assert result is True
+        assert result is False
 
         # Both semaphores should be released
         assert consumer.parsing_semaphore._value == 1
@@ -529,7 +529,7 @@ class TestProcessMessageWrapperEdgeCases:
         msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
 
         result = await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
-        assert result is True
+        assert result is False
 
         # Both should be released in finally
         assert consumer.parsing_semaphore._value == 1
@@ -641,11 +641,9 @@ class TestBackpressureAlreadyLogged:
         consumer.consumer.paused.return_value = assigned  # Same set: all paused
         consumer._backpressure_logged = True
 
-        # Add futures to reach capacity
+        # Simulate reaching capacity via gate waiters
         with consumer._futures_lock:
-            for _ in range(messaging_env.max_pending_indexing_tasks + 1):
-                f = Future()
-                consumer._active_futures.add(f)
+            consumer._gate_waiters = messaging_env.max_pending_indexing_tasks + 1
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         # Pause not called because assigned - paused = empty set

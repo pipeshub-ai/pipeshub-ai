@@ -23,7 +23,20 @@ describe('notification/container/notification.container', () => {
 })
 
 describe('NotificationContainer - coverage', () => {
+  const originalMessageBroker = process.env.MESSAGE_BROKER
+
+  beforeEach(() => {
+    // These tests only provide a `kafka` config on appConfig, so pin the
+    // broker type explicitly rather than relying on the process-wide default.
+    process.env.MESSAGE_BROKER = 'kafka'
+  })
+
   afterEach(() => {
+    if (originalMessageBroker === undefined) {
+      delete process.env.MESSAGE_BROKER
+    } else {
+      process.env.MESSAGE_BROKER = originalMessageBroker
+    }
     sinon.restore()
   })
 

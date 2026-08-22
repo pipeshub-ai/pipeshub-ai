@@ -60,6 +60,7 @@ describe('oauth_provider/types/oauth.types', () => {
     it('should allow creating conforming objects', () => {
       const tokens: import('../../../../src/modules/oauth_provider/types/oauth.types').GeneratedTokens = {
         accessToken: 'access-token-value',
+        accessTokenId: 'access-token-id',
         tokenType: 'Bearer',
         expiresIn: 3600,
         scope: 'read write',

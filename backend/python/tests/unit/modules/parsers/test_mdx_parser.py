@@ -1,5 +1,7 @@
 """Unit tests for app.modules.parsers.markdown.mdx_parser — MDX-to-Markdown conversion."""
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from app.modules.parsers.markdown.mdx_parser import MDXParser
@@ -7,7 +9,7 @@ from app.modules.parsers.markdown.mdx_parser import MDXParser
 
 @pytest.fixture
 def parser():
-    return MDXParser()
+    return MDXParser(md_parser=MagicMock())
 
 
 # ---------------------------------------------------------------------------

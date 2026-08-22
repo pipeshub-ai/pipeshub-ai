@@ -53,7 +53,10 @@ import {
   getConnectorSchema,
   getActiveAgentInstances,
   getConnectorStats,
-  reindexFailedRecords,
+  getRecordContent,
+  navigateKnowledgeGraph,
+  lookupRecord,
+  reindexConnector,
   resyncConnectorRecords,
 } from '../controllers/connector.controllers';
 import { RecordRelationService } from '../../knowledge_base/services/kb.relation.service';
@@ -338,14 +341,14 @@ const resyncConnectorSchema = z.object({
 });
 
 /**
- * Schema for reindexing failed records
+ * Schema for reindexing connector records
  */
-const reindexFailedRecordSchema = z.object({
+export const reindexConnectorSchema = z.object({
   params: z.object({ connectorId: z.string().min(1) }),
   body: z.object({
-    app: z.string().min(1),
-    statusFilters: z.array(z.string()).optional(),
-  }),
+      statusFilters: z.array(z.string()).optional(),
+    })
+    .optional(),
 });
 
 /**
@@ -353,6 +356,61 @@ const reindexFailedRecordSchema = z.object({
  */
 const getConnectorStatsSchema = z.object({
   params: z.object({ connectorId: z.string().min(1) }),
+});
+
+/**
+ * Schema for getting a record's full parsed content
+ */
+const getRecordContentSchema = z.object({
+  params: z.object({ recordId: z.string().min(1) }),
+});
+
+/**
+ * Schema for walking the knowledge graph hierarchy
+ */
+const navigateKnowledgeGraphSchema = z.object({
+  query: z.object({
+    // Deliberately not `.uuid()`: a URL or an issue key (PA-1787) is resolved
+    // to its record before navigating, so those must be accepted here.
+    nodeId: z.string().min(1).max(2048).optional(),
+    page: z
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .optional(),
+    // Floor of 50 matches GraphNavigator._MIN_LIMIT — anything lower would be
+    // silently raised, so reject it here rather than ignore it.
+    limit: z
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(50).max(200))
+      .optional(),
+    depth: z
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(3))
+      .optional(),
+    nodeTypes: z
+      .union([z.string(), z.array(z.string())])
+      .optional()
+      .transform((val) => {
+        if (val === undefined || val === null) return undefined;
+        return Array.isArray(val) ? val : [val];
+      }),
+    createdAfter: z.string().min(1).optional(),
+    createdBefore: z.string().min(1).optional(),
+    modifiedAfter: z.string().min(1).optional(),
+    modifiedBefore: z.string().min(1).optional(),
+  }),
+});
+
+/**
+ * Schema for resolving URLs / issue keys / external IDs to Record IDs
+ */
+const lookupRecordSchema = z.object({
+  query: z.object({
+    identifiers: z
+      .union([z.string().min(1).max(2048), z.array(z.string().min(1).max(2048))])
+      .transform((val) => (Array.isArray(val) ? val : [val]))
+      .refine((val) => val.length >= 1 && val.length <= 10, {
+        message: 'Provide between 1 and 10 identifiers',
+      }),
+    connectorName: z.string().min(1).optional(),
+  }),
 });
 
 // ============================================================================
@@ -493,6 +551,38 @@ export function createConnectorRouter(
     getConfiguredConnectorInstances(config)
   );
 
+  // ============================================================================
+  // Knowledge Graph Routes
+  //
+  // `/navigate` is a single segment, so it must stay above `/:connectorId`
+  // below or Express matches it as a connector id. `/record/lookup` is kept
+  // alongside it so the ordering constraint reads as one block.
+  // ============================================================================
+
+  /**
+   * GET /navigate
+   * Walk the knowledge graph hierarchy: App -> RecordGroup -> Record -> Child
+   */
+  router.get(
+    '/navigate',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ, OAuthScopeNames.CONNECTOR_READ),
+    ValidationMiddleware.validate(navigateKnowledgeGraphSchema),
+    navigateKnowledgeGraph(config),
+  );
+
+  /**
+   * GET /record/lookup
+   * Resolve URLs, issue keys, or external IDs to Record IDs
+   */
+  router.get(
+    '/record/lookup',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ, OAuthScopeNames.CONNECTOR_READ),
+    ValidationMiddleware.validate(lookupRecordSchema),
+    lookupRecord(config),
+  );
+
   /**
    * GET /instances/:connectorId
    * Get a specific connector instance
@@ -534,15 +624,29 @@ export function createConnectorRouter(
   );
 
   /**
-   * POST /:connectorId/reindex-failed
-   * Reindex failed (and optionally filtered) records for a connector
+   * GET /record/:recordId/content
+   * Get full parsed content + metadata for a record
+   */
+  router.get(
+    '/record/:recordId/content',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    ValidationMiddleware.validate(getRecordContentSchema),
+    getRecordContent(config),
+  );
+
+  /**
+   * POST /:connectorId/reindex
+   * Reindex all records for a connector instance (optionally filtered by status).
+   * Covers both external connectors and KB app instances (a KB is itself a
+   * connector instance).
    */
   router.post(
-    '/:connectorId/reindex-failed',
+    '/:connectorId/reindex',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONNECTOR_WRITE, OAuthScopeNames.KB_WRITE),
-    ValidationMiddleware.validate(reindexFailedRecordSchema),
-    reindexFailedRecords(recordRelationService, config),
+    requireScopes(OAuthScopeNames.CONNECTOR_SYNC, OAuthScopeNames.KB_WRITE),
+    ValidationMiddleware.validate(reindexConnectorSchema),
+    reindexConnector(config),
   );
 
   /**

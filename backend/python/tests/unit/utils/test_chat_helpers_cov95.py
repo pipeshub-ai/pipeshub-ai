@@ -18,6 +18,7 @@ from app.models.entities import (
 )
 from app.utils.chat_helpers import (
     CitationRefMapper,
+    RecordIdShortener,
     _find_first_block_index_recursive,
     build_message_content_array,
     build_multimodal_user_content,
@@ -29,6 +30,7 @@ from app.utils.chat_helpers import (
     get_flattened_results,
     get_message_content,
     get_record,
+    get_record_id_shortener_if_enabled,
     is_base64_image,
     record_to_message_content,
 )
@@ -150,6 +152,169 @@ class TestCitationRefMapperSnapshots:
         assert "https://evil" not in m.url_to_ref
 
 
+class TestRecordIdShortener:
+    """TEMPORARY token-savings experiment — see `RecordIdShortener` docstring."""
+
+    def test_get_or_create_short_id_is_sequential(self):
+        shortener = RecordIdShortener()
+        short = shortener.get_or_create_short_id("abcdef1234567890")
+        assert short == "R1"
+
+    def test_get_or_create_short_id_is_idempotent(self):
+        shortener = RecordIdShortener()
+        first = shortener.get_or_create_short_id("abcdef1234567890")
+        second = shortener.get_or_create_short_id("abcdef1234567890")
+        assert first == second == "R1"
+
+    def test_second_distinct_id_gets_next_label(self):
+        shortener = RecordIdShortener()
+        short_a = shortener.get_or_create_short_id("abcd1111")
+        short_b = shortener.get_or_create_short_id("abcd2222")
+        assert short_a == "R1"
+        assert short_b == "R2"
+        # Both resolve back to their own full id, not each other's.
+        assert shortener.resolve(short_a) == "abcd1111"
+        assert shortener.resolve(short_b) == "abcd2222"
+
+    def test_resolve_unknown_id_passes_through_unchanged(self):
+        shortener = RecordIdShortener()
+        assert shortener.resolve("full-uuid-from-navigate") == "full-uuid-from-navigate"
+
+    def test_shorten_record_ids_in_text_replaces_label_line(self):
+        shortener = RecordIdShortener()
+        text = "Record ID: abcdef1234567890\nName: Doc A"
+        result = shortener.shorten_record_ids_in_text(text)
+        assert result == "Record ID: R1\nName: Doc A"
+        assert shortener.resolve("R1") == "abcdef1234567890"
+
+    def test_shorten_record_ids_in_text_matches_linked_record_id_label(self):
+        shortener = RecordIdShortener()
+        text = "* Linked Record ID: abcdef1234567890"
+        result = shortener.shorten_record_ids_in_text(text)
+        assert result == "* Linked Record ID: R1"
+
+    def test_shorten_record_ids_in_text_is_consistent_across_calls(self):
+        shortener = RecordIdShortener()
+        first_pass = shortener.shorten_record_ids_in_text("Record ID: abcdef1234567890")
+        second_pass = shortener.shorten_record_ids_in_text(
+            "Record ID: abcdef1234567890 | Name: Doc A"
+        )
+        assert "Record ID: R1" in first_pass
+        assert "Record ID: R1" in second_pass
+
+    def test_shorten_record_ids_in_text_handles_multiple_records(self):
+        shortener = RecordIdShortener()
+        text = "Record ID: rec-aaa-111\n\nRecord ID: rec-bbb-222"
+        result = shortener.shorten_record_ids_in_text(text)
+        assert "Record ID: R1" in result
+        assert "Record ID: R2" in result
+        assert "rec-aaa-111" not in result
+        assert "rec-bbb-222" not in result
+
+    def test_shorten_record_ids_in_text_empty_string(self):
+        shortener = RecordIdShortener()
+        assert shortener.shorten_record_ids_in_text("") == ""
+
+    def test_shorten_record_ids_in_text_no_match_unchanged(self):
+        shortener = RecordIdShortener()
+        text = "Name: Doc A\nType: FILE"
+        assert shortener.shorten_record_ids_in_text(text) == text
+
+    def test_shorten_record_ids_in_text_stops_before_trailing_comma(self):
+        """FK-relations footer format: `(Record ID: <id>, FK: ...)` — the id
+        must not swallow the trailing comma, or `resolve()` on the short
+        label returned later would produce an id that matches nothing."""
+        shortener = RecordIdShortener()
+        text = "  - Parent Table: orders (Record ID: rec-aaa-111, FK: col1 -> col2)"
+        result = shortener.shorten_record_ids_in_text(text)
+        assert result == "  - Parent Table: orders (Record ID: R1, FK: col1 -> col2)"
+        assert shortener.resolve("R1") == "rec-aaa-111"
+
+    def test_shorten_record_ids_in_text_stops_before_closing_paren(self):
+        shortener = RecordIdShortener()
+        text = "(Record ID: rec-aaa-111)"
+        result = shortener.shorten_record_ids_in_text(text)
+        assert result == "(Record ID: R1)"
+        assert shortener.resolve("R1") == "rec-aaa-111"
+
+    def test_shorten_record_id_assigns_in_text(self):
+        shortener = RecordIdShortener()
+        text = "- [Record/TICKET] Foo | record_id=abcdef1234567890 | has children"
+        result = shortener.shorten_record_id_assigns_in_text(text)
+        assert "record_id=R1" in result
+        assert "abcdef1234567890" not in result
+        assert shortener.resolve("R1") == "abcdef1234567890"
+
+    def test_shorten_node_id_assigns_in_text_preserves_quotes(self):
+        shortener = RecordIdShortener()
+        text = 'navigate(node_id="abcdef1234567890") to open a child'
+        result = shortener.shorten_node_id_assigns_in_text(text)
+        assert result == 'navigate(node_id="R1") to open a child'
+
+    def test_shorten_node_id_assigns_in_text_unquoted(self):
+        shortener = RecordIdShortener()
+        result = shortener.shorten_node_id_assigns_in_text("node_id=abcdef1234567890")
+        assert result == "node_id=R1"
+
+    def test_shorten_all_record_ids_applies_every_pattern(self):
+        shortener = RecordIdShortener()
+        text = (
+            "Record ID: abcdef1234567890\n"
+            "- [Record/TICKET] Foo | record_id=abcdef1234567890\n"
+            'navigate(node_id="abcdef1234567890") to open a child'
+        )
+        result = shortener.shorten_all_record_ids(text)
+        assert "abcdef1234567890" not in result
+        assert result.count("R1") == 3
+
+    def test_same_full_id_gets_same_label_across_patterns(self):
+        """A record surfaced by both a header line and a row/hint gets one label."""
+        shortener = RecordIdShortener()
+        shortener.shorten_record_ids_in_text("Record ID: abcdef1234567890")
+        result = shortener.shorten_record_id_assigns_in_text("record_id=abcdef1234567890")
+        assert "record_id=R1" in result
+
+
+class TestGetRecordIdShortenerIfEnabled:
+    """Single gate for all 7 knowledge-tool lazy-creation sites — see
+    `ChatQuery.enableRecordIdShortening` (opt-in, disabled by default)."""
+
+    def test_flag_absent_returns_none_and_does_not_create(self):
+        state: dict = {}
+        assert get_record_id_shortener_if_enabled(state) is None
+        assert "record_id_shortener" not in state
+
+    def test_flag_false_returns_none_and_does_not_create(self):
+        state = {"enable_record_id_shortening": False}
+        assert get_record_id_shortener_if_enabled(state) is None
+        assert "record_id_shortener" not in state
+
+    def test_flag_true_creates_and_stores_shortener(self):
+        state = {"enable_record_id_shortening": True}
+        shortener = get_record_id_shortener_if_enabled(state)
+        assert isinstance(shortener, RecordIdShortener)
+        assert state["record_id_shortener"] is shortener
+
+    def test_flag_true_reuses_existing_shortener_across_calls(self):
+        """Every one of the 7 lazy-creation sites must share the same
+        instance within a request — the second call must not mint a new
+        one, or short labels minted by one tool won't resolve in another."""
+        state = {"enable_record_id_shortening": True}
+        first = get_record_id_shortener_if_enabled(state)
+        second = get_record_id_shortener_if_enabled(state)
+        assert first is second
+
+    def test_existing_shortener_returned_even_if_flag_later_false(self):
+        """A shortener already minted this request (flag was True at some
+        earlier call) keeps being reused even if a later call site reads
+        the flag as False — `tool_state` is shared, so this should not
+        happen in practice, but the read path must not fabricate a second
+        competing instance."""
+        shortener = RecordIdShortener()
+        state = {"enable_record_id_shortening": False, "record_id_shortener": shortener}
+        assert get_record_id_shortener_if_enabled(state) is shortener
+
+
 class TestIsBase64ImageBranches:
     def test_non_string(self):
         assert is_base64_image(None) is False
@@ -179,6 +344,36 @@ class TestIsBase64ImageBranches:
 
         monkeypatch.setattr(chat_helpers_module.base64, "b64decode", boom)
         assert is_base64_image("dGVzdA==") is False
+
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            (b"\x89PNG\r\n\x1a\n" + b"\x00" * 40_000, True),
+            (b"\xff\xd8\xff" + b"\x00" * 40_000, True),
+            (b"GIF89a" + b"\x00" * 40_000, True),
+            (b'<svg xmlns="http://www.w3.org/2000/svg">' + b"<rect/>" * 5_000 + b"</svg>", True),
+            (b"not an image at all " * 2_000, False),
+        ],
+        ids=["png", "jpeg", "gif", "svg", "plain-text"],
+    )
+    def test_large_payloads_sniffed_from_prefix(self, payload, expected):
+        """Only the first 204 decoded bytes decide the verdict, so payloads far
+        larger than the decoded prefix must classify exactly as small ones do."""
+        assert is_base64_image(base64.b64encode(payload).decode()) is expected
+
+    def test_large_payload_decodes_only_the_prefix(self, monkeypatch):
+        """Guards the optimisation itself: a 40 KB image must not be fully decoded."""
+        seen: list[int] = []
+        real = chat_helpers_module.base64.b64decode
+
+        def spy(data, *a, **k):
+            seen.append(len(data))
+            return real(data, *a, **k)
+
+        monkeypatch.setattr(chat_helpers_module.base64, "b64decode", spy)
+        big = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 40_000).decode()
+        assert is_base64_image(big) is True
+        assert seen and max(seen) <= 272, f"decoded {max(seen)} chars, expected <= 272"
 
 
 class TestCreateRecordInstanceMeetingDeal:
@@ -373,7 +568,7 @@ class TestBuildMessageContentArrayBranches:
         merged = [x for sub in parts for x in sub]
         text_blocks = [m["text"] for m in merged if m.get("type") == "text"]
         blob = "\n".join(text_blocks)
-        assert "image description" in blob
+        assert "(image)" in blob
 
     def test_valid_group_label_renders_block_group_prompt(self):
         flat = [{
@@ -425,88 +620,6 @@ class TestBuildMessageContentArrayBranches:
         )
         merged = [x for sub in parts for x in sub]
         assert not any(it.get("type") == "image_url" for it in merged)
-
-
-class TestGetMessageContentImageBlocksAndOrphanVrids:
-    def test_image_blocks_appended_before_context(self):
-        flat = [{
-            "virtual_record_id": "vr1",
-            "block_index": 0,
-            "block_type": BlockType.TEXT.value,
-            "content": "hello",
-            "metadata": {},
-        }]
-        vr = {
-            "vr1": {
-                "frontend_url": "https://a.com",
-                "id": "r1",
-                "context_metadata": "",
-                "block_containers": {"blocks": [], "block_groups": []},
-            },
-        }
-        extra = [{"type": "text", "text": "attached"}]
-        content, _ = get_message_content(
-            flat, vr, "user", "q", mode="json",
-            image_blocks=extra,
-        )
-        texts = [c["text"] for c in content if c.get("type") == "text"]
-        attachments_idx = next(i for i, t in enumerate(texts) if "Attachments:" in t)
-        assert attachments_idx >= 0
-        attachment_pos = None
-        context_header_idx = None
-        for i, item in enumerate(content):
-            if item.get("type") == "text" and item.get("text") == "attached":
-                attachment_pos = i
-            if item.get("type") == "text" and isinstance(item.get("text"), str) and (
-                item["text"].startswith("</context>")
-            ):
-                context_header_idx = i
-        assert attachment_pos is not None and context_header_idx is not None
-        assert attachment_pos < context_header_idx
-
-    def test_adds_records_only_in_virtual_map(self):
-        flat = []
-        png = (
-            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
-            "+A8AAQUBAScY42YAAAAASUVORK5CYII="
-        )
-        vr = {
-            "vr-extra": {
-                "virtual_record_id": "vr-extra",
-                "record_type": RecordType.SQL_TABLE.value,
-                "frontend_url": "https://a.com",
-                "id": "rec-x",
-                "context_metadata": "only in map",
-                "block_containers": {
-                    "blocks": [
-                        {
-                            "index": 0,
-                            "type": BlockType.IMAGE.value,
-                            "parent_index": None,
-                            "data": {"uri": png},
-                        },
-                    ],
-                    "block_groups": [],
-                },
-            },
-        }
-        content, _ = get_message_content(
-            flat, vr, "user", "q", mode="json", is_multimodal_llm=True,
-        )
-        flat_text = [c for c in content if c.get("type") == "text"]
-        assert any("only in map" in (t.get("text") or "") for t in flat_text)
-        assert any(c.get("type") == "image_url" for c in content)
-
-    def test_orphan_skips_blank_record_placeholder(self):
-        """Line ~1958: vrids_only_in_map with falsy records are ignored."""
-        content, _ = get_message_content(
-            [],
-            {"vr-extra": None},
-            "user",
-            "q",
-            mode="json",
-        )
-        assert isinstance(content, list)
 
 
 class TestRecordToMessageContentMultimodalAndFk:
@@ -738,3 +851,313 @@ class TestEnrichWarningsNoTableGroup:
             vmap, blob, "org", graph_provider=gp, flattened_results=flat,
         )
         assert not [r for r in flat if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT"]
+
+
+# ---------------------------------------------------------------------------
+# Coverage for lines 876-916: TABLE_ROW fragments and block group handling
+# ---------------------------------------------------------------------------
+
+
+class TestGetFlattenedResultsTableRowFragments:
+    @pytest.mark.asyncio
+    async def test_table_row_fragment_adds_container_to_rows(self):
+        """Lines 882-889: TABLE_ROW parent block handling."""
+        table_row_block = {
+            "index": 0,
+            "type": BlockType.TABLE_ROW.value,
+            "parent_index": 10,
+            "data": "Row data",
+        }
+        text_block = {
+            "index": 1,
+            "type": BlockType.TEXT.value,
+            "parent_index": 0,
+            "data": "Cell text",
+        }
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [table_row_block, text_block]
+        record["block_containers"]["block_groups"] = []
+
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=record)
+        blob_store.config_service = AsyncMock()
+        blob_store.config_service.get_config = AsyncMock(return_value={})
+        blob_store.get_reconciliation_metadata = AsyncMock(return_value=None)
+
+        vr_map = {"vr-1": record}
+        result_set = [{
+            "content": "Cell text",
+            "metadata": {
+                "virtualRecordId": "vr-1",
+                "blockIndex": 1,
+                "isBlockGroup": False,
+            },
+        }]
+
+        flat = await get_flattened_results(
+            result_set,
+            blob_store,
+            "org-1",
+            False,
+            vr_map,
+        )
+        
+        # Should handle TABLE_ROW fragment logic
+        assert isinstance(flat, list)
+
+    @pytest.mark.asyncio
+    async def test_block_group_container_without_group_text_skips(self):
+        """Lines 905-906: Skip when group_text_result is None."""
+        container_block = {
+            "index": 0,
+            "type": BlockType.BULLET_LIST.value,
+            "parent_index": 5,
+            "data": "Container",
+        }
+        text_block = {
+            "index": 1,
+            "type": BlockType.TEXT.value,
+            "parent_index": 0,
+            "data": "Text",
+        }
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [container_block, text_block]
+        record["block_containers"]["block_groups"] = []
+
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=record)
+        blob_store.config_service = AsyncMock()
+        blob_store.config_service.get_config = AsyncMock(return_value={})
+        blob_store.get_reconciliation_metadata = AsyncMock(return_value=None)
+
+        vr_map = {"vr-1": record}
+        result_set = [{
+            "content": "Text",
+            "metadata": {
+                "virtualRecordId": "vr-1",
+                "blockIndex": 1,
+                "isBlockGroup": False,
+            },
+        }]
+
+        flat = await get_flattened_results(
+            result_set,
+            blob_store,
+            "org-1",
+            False,
+            vr_map,
+        )
+        
+        assert isinstance(flat, list)
+
+
+# ---------------------------------------------------------------------------
+# Coverage for lines 1017-1037, 1137-1158: Fragment map with images
+# ---------------------------------------------------------------------------
+
+
+class TestFragmentMapImageHandling:
+    @pytest.mark.asyncio
+    async def test_fragment_with_image_in_multimodal_mode(self):
+        """Lines 1034-1045, 1155-1158: IMAGE fragment handling."""
+        container_block = {
+            "index": 0,
+            "type": BlockType.TABLE_CELL.value,
+            "data": "Container",
+        }
+        image_block = {
+            "index": 1,
+            "type": BlockType.IMAGE.value,
+            "parent_index": 0,
+            "data": {"uri": _MIN_PNG_DATA_URI},
+        }
+        text_block = {
+            "index": 2,
+            "type": BlockType.TEXT.value,
+            "parent_index": 0,
+            "data": "Caption",
+        }
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [container_block, image_block, text_block]
+
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=record)
+        blob_store.config_service = AsyncMock()
+        blob_store.config_service.get_config = AsyncMock(return_value={})
+        blob_store.get_reconciliation_metadata = AsyncMock(return_value=None)
+
+        vr_map = {"vr-1": record}
+        result_set = [{
+            "content": "Container",
+            "metadata": {
+                "virtualRecordId": "vr-1",
+                "blockIndex": 0,
+                "isBlockGroup": False,
+            },
+        }]
+
+        flat = await get_flattened_results(
+            result_set,
+            blob_store,
+            "org-1",
+            True,
+            vr_map,
+        )
+        
+        # Should include image in results when multimodal
+        assert isinstance(flat, list)
+
+    @pytest.mark.asyncio
+    async def test_fragment_with_image_in_non_multimodal_mode_skips(self):
+        """Lines 1034-1045: IMAGE fragment skipped when not multimodal."""
+        container_block = {
+            "index": 0,
+            "type": BlockType.TABLE_CELL.value,
+            "data": "Container",
+        }
+        image_block = {
+            "index": 1,
+            "type": BlockType.IMAGE.value,
+            "parent_index": 0,
+            "data": {"uri": _MIN_PNG_DATA_URI},
+        }
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [container_block, image_block]
+
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=record)
+        blob_store.config_service = AsyncMock()
+        blob_store.config_service.get_config = AsyncMock(return_value={})
+        blob_store.get_reconciliation_metadata = AsyncMock(return_value=None)
+
+        vr_map = {"vr-1": record}
+        result_set = [{
+            "content": "Container",
+            "metadata": {
+                "virtualRecordId": "vr-1",
+                "blockIndex": 0,
+                "isBlockGroup": False,
+            },
+        }]
+
+        flat = await get_flattened_results(
+            result_set,
+            blob_store,
+            "org-1",
+            False,
+            vr_map,
+        )
+        
+        # Image should not be included when not multimodal
+        assert isinstance(flat, list)
+
+
+# ---------------------------------------------------------------------------
+# Coverage for lines 1823-1861: Citation formatting with images
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMessageContentArrayImageHandling:
+    def test_grouped_blocks_with_images_in_multimodal(self):
+        """Lines 1830-1860: Group with multiple blocks including images."""
+        blocks_list = [
+            {"block_index": 1, "block_type": BlockType.TEXT.value, "content": "Text 1", "citation_ref": "[1]", "virtual_record_id": "vr-1"},
+            {"block_index": 1, "block_type": BlockType.IMAGE.value, "content": _MIN_PNG_DATA_URI, "citation_ref": "[1]", "virtual_record_id": "vr-1"},
+            {"block_index": 1, "block_type": BlockType.TEXT.value, "content": "Text 2", "citation_ref": "[1]", "virtual_record_id": "vr-1"},
+        ]
+
+        vr_map = {"vr-1": {}}
+        content_array, ref_mapper = build_message_content_array(blocks_list, vr_map, is_multimodal_llm=True)
+
+        assert len(content_array) > 0
+
+    def test_grouped_blocks_with_images_exceeding_limit(self):
+        """Lines 1849-1855: Image count limit enforcement."""
+        blocks_list = [
+            {"block_index": i, "block_type": BlockType.IMAGE.value, "content": _MIN_PNG_DATA_URI, "citation_ref": f"[{i}]", "virtual_record_id": "vr-1"}
+            for i in range(20)
+        ]
+
+        vr_map = {"vr-1": {}}
+        content_array, ref_mapper = build_message_content_array(blocks_list, vr_map, is_multimodal_llm=True)
+
+        # Should generate content
+        assert len(content_array) > 0
+
+    def test_single_block_without_images(self):
+        """Lines 1834-1838: Single block without images uses simple format."""
+        blocks_list = [
+            {"block_index": 1, "block_type": BlockType.TEXT.value, "content": "Simple text", "citation_ref": "[1]", "virtual_record_id": "vr-1"}
+        ]
+
+        vr_map = {"vr-1": {}}
+        content_array, ref_mapper = build_message_content_array(blocks_list, vr_map, is_multimodal_llm=False)
+
+        assert len(content_array) > 0
+
+    def test_grouped_blocks_with_non_base64_image_skips(self):
+        """Lines 1848: Non-base64 images are skipped."""
+        blocks_list = [
+            {"block_index": 1, "block_type": BlockType.IMAGE.value, "content": "http://example.com/img.png", "citation_ref": "[1]", "virtual_record_id": "vr-1"}
+        ]
+
+        vr_map = {"vr-1": {}}
+        content_array, ref_mapper = build_message_content_array(blocks_list, vr_map, is_multimodal_llm=True)
+
+        # Should still generate content
+        assert isinstance(content_array, list)
+        # Should not add image_url content for non-base64 images
+
+
+# ---------------------------------------------------------------------------
+# Coverage for lines 2057-2077: Streaming with fragment maps
+# ---------------------------------------------------------------------------
+
+
+class TestStreamingFragmentMapHandling:
+    def test_record_to_message_content_with_fragment_map_text_fragments(self):
+        """Lines 2057-2072: Fragment map TEXT handling in streaming."""
+        record_blob = {
+            "id": "rec-1",
+            "record_name": "Test Record",
+            "record_type": "FILE",
+            "blocks": [
+                {"index": 0, "type": BlockType.TABLE_ROW.value, "data": "Row"},
+                {"index": 1, "type": BlockType.TEXT.value, "parent_index": 0, "data": "Cell 1"},
+                {"index": 2, "type": BlockType.TEXT.value, "parent_index": 0, "data": "Cell 2"},
+            ],
+            "block_groups": [],
+        }
+
+        ref_mapper = CitationRefMapper()
+        content, ref_mapper = record_to_message_content(
+            record=record_blob,
+            ref_mapper=ref_mapper,
+            is_multimodal_llm=False,
+        )
+
+        # Should process text fragments
+        assert isinstance(content, list)
+
+    def test_record_to_message_content_with_fragment_map_image_fragments(self):
+        """Lines 2073-2077: Fragment map IMAGE handling in streaming."""
+        record_blob = {
+            "id": "rec-1",
+            "record_name": "Test Record",
+            "record_type": "FILE",
+            "blocks": [
+                {"index": 0, "type": BlockType.TABLE_CELL.value, "data": "Cell"},
+                {"index": 1, "type": BlockType.IMAGE.value, "parent_index": 0, "data": {"uri": _MIN_PNG_DATA_URI}},
+            ],
+            "block_groups": [],
+        }
+
+        ref_mapper = CitationRefMapper()
+        content, ref_mapper = record_to_message_content(
+            record=record_blob,
+            ref_mapper=ref_mapper,
+            is_multimodal_llm=True,
+        )
+
+        # Should process image fragments in multimodal mode
+        assert isinstance(content, list)

@@ -10,6 +10,21 @@ from typing import Any, Dict, Optional
 from app.modules.agents.qna.chat_state import ChatState
 
 
+class ToolsetAuthError(Exception):
+    """Raised by a toolset client factory to surface a specific, user-facing reason
+    a freshly authenticated OAuth setup is unusable (e.g. the token reaches multiple
+    sites). Generic callers — the tool wrapper and the OAuth callback — show
+    ``str(error)`` to the user and skip marking the toolset authenticated. Factories
+    that never raise it are unaffected.
+
+    ``title`` is an optional notification heading the factory supplies, so the generic
+    OAuth callback passes it straight through — no provider naming lives in the route."""
+
+    def __init__(self, message: str, *, title: str | None = None) -> None:
+        super().__init__(message)
+        self.title = title
+
+
 class ClientFactory(ABC):
     """
     Abstract factory for creating tool clients.
@@ -98,3 +113,21 @@ class ClientFactory(ABC):
                 self.create_client(config_service, logger, toolset_config, state)
             )
             return future.result()
+
+    async def test_connection(
+        self,
+        *,
+        access_token: str,
+        auth_config: dict[str, Any],
+        config_service: object,
+        logger: object | None,
+    ) -> None:
+        """Optionally validate a freshly authenticated OAuth setup for this toolset.
+
+        ``auth_config`` is the toolset's merged auth/config dict (per-user/instance
+        auth overlaid on the shared OAuth-app config) — the factory inspects whatever
+        fields it needs. Override to raise ``ToolsetAuthError`` (with a user-facing
+        message) when the setup is unusable — e.g. the OAuth token can reach multiple
+        sites and none is selected. Default: no-op, so toolsets that don't implement
+        it are unaffected."""
+        return

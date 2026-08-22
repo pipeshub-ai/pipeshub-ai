@@ -325,7 +325,7 @@ describe('Knowledge Base Utils', () => {
       const publish = sinon.stub()
 
       const counts = await processUploadsInBackground(
-        [makePlaceholder()], 'org-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
+        [makePlaceholder()], 'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
       )
 
       expect(ConnectorServiceCommand.prototype.execute.calledOnce).to.be.true
@@ -346,7 +346,7 @@ describe('Knowledge Base Utils', () => {
           makePlaceholder({ key: 'key-fail', filePath: '/uploads/fail.pdf', upload: () => Promise.reject(new Error('Upload timeout')) }),
           makePlaceholder({ key: 'key-ok', filePath: '/uploads/ok.pdf' }),
         ],
-        'org-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
+        'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
       )
 
       expect(failed(publish).some((e: any) => e.stage === 'upload')).to.be.true
@@ -362,7 +362,7 @@ describe('Knowledge Base Utils', () => {
 
       const counts = await processUploadsInBackground(
         [makePlaceholder({ filePath: '/uploads/fail.pdf', upload: () => Promise.reject(new Error('Upload failed')) })],
-        'org-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
+        'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
       )
 
       expect(failed(publish)).to.have.length(1)
@@ -377,7 +377,7 @@ describe('Knowledge Base Utils', () => {
       const publish = sinon.stub()
 
       const counts = await processUploadsInBackground(
-        [], 'org-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
+        [], 'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
       )
 
       expect(counts).to.deep.equal({ succeeded: 0, failed: 0 })
@@ -393,7 +393,7 @@ describe('Knowledge Base Utils', () => {
       const publish = sinon.stub()
 
       const counts = await processUploadsInBackground(
-        [makePlaceholder()], 'org-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
+        [makePlaceholder()], 'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
       )
 
       expect(failed(publish)).to.have.length(1)
@@ -410,7 +410,7 @@ describe('Knowledge Base Utils', () => {
       const publish = sinon.stub()
 
       const counts = await processUploadsInBackground(
-        [makePlaceholder()], 'org-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
+        [makePlaceholder()], 'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
       )
 
       expect(failed(publish)).to.have.length(0)
@@ -566,7 +566,7 @@ describe('Knowledge Base Utils - coverage', () => {
 
       const counts = await processUploadsInBackground(
         results,
-        'org-1', Date.now(),
+        'org-1', 'kb-1', Date.now(),
         PY_URL,
         { Authorization: 'Bearer test' },
         mockLogger,
@@ -586,7 +586,7 @@ describe('Knowledge Base Utils - coverage', () => {
 
       const counts = await processUploadsInBackground(
         results,
-        'org-1', Date.now(),
+        'org-1', 'kb-1', Date.now(),
         PY_URL,
         {},
         mockLogger,
@@ -609,7 +609,7 @@ describe('Knowledge Base Utils - coverage', () => {
 
         const counts = await processUploadsInBackground(
           results,
-          'org-1', Date.now(),
+          'org-1', 'kb-1', Date.now(),
           PY_URL,
           {},
           mockLogger,
@@ -633,7 +633,7 @@ describe('Knowledge Base Utils - coverage', () => {
 
         const counts = await processUploadsInBackground(
           results,
-          'org-1', Date.now(),
+          'org-1', 'kb-1', Date.now(),
           PY_URL,
           {},
           mockLogger,
@@ -656,7 +656,7 @@ describe('Knowledge Base Utils - coverage', () => {
 
         const counts = await processUploadsInBackground(
           results,
-          'org-1', Date.now(),
+          'org-1', 'kb-1', Date.now(),
           PY_URL,
           {},
           mockLogger,
@@ -679,7 +679,7 @@ describe('Knowledge Base Utils - coverage', () => {
 
         const counts = await processUploadsInBackground(
           results,
-          'org-1', Date.now(),
+          'org-1', 'kb-1', Date.now(),
           PY_URL,
           {},
           mockLogger,
@@ -703,7 +703,7 @@ describe('Knowledge Base Utils - coverage', () => {
 
         const counts = await processUploadsInBackground(
           results,
-          'org-1', Date.now(),
+          'org-1', 'kb-1', Date.now(),
           PY_URL,
           {},
           mockLogger,
@@ -737,7 +737,7 @@ describe('Knowledge Base Utils - coverage', () => {
 
         const counts = await processUploadsInBackground(
           results,
-          'org-1', Date.now(),
+          'org-1', 'kb-1', Date.now(),
           PY_URL,
           {},
           mockLogger,
@@ -773,7 +773,7 @@ describe('Knowledge Base Utils - coverage', () => {
 
         const counts = await processUploadsInBackground(
           results,
-          'org-1', Date.now(),
+          'org-1', 'kb-1', Date.now(),
           PY_URL,
           {},
           mockLogger,
@@ -801,7 +801,7 @@ describe('Knowledge Base Utils - coverage', () => {
 
         const counts = await processUploadsInBackground(
           results,
-          'org-1', Date.now(),
+          'org-1', 'kb-1', Date.now(),
           PY_URL,
           {},
           mockLogger,
@@ -830,7 +830,7 @@ describe('Knowledge Base Utils - coverage', () => {
 
         const counts = await processUploadsInBackground(
           results,
-          'org-1', Date.now(),
+          'org-1', 'kb-1', Date.now(),
           PY_URL,
           {},
           mockLogger,
@@ -855,7 +855,7 @@ describe('Knowledge Base Utils - coverage', () => {
 
         const counts = await processUploadsInBackground(
           results,
-          'org-1', Date.now(),
+          'org-1', 'kb-1', Date.now(),
           PY_URL,
           {},
           mockLogger,
@@ -879,7 +879,7 @@ describe('Knowledge Base Utils - coverage', () => {
 
         const counts = await processUploadsInBackground(
           results,
-          'org-1', Date.now(),
+          'org-1', 'kb-1', Date.now(),
           PY_URL,
           {},
           mockLogger,
@@ -893,7 +893,7 @@ describe('Knowledge Base Utils - coverage', () => {
       it('handles empty placeholderResults array', async () => {
         const counts = await processUploadsInBackground(
           [],
-          'org-1', Date.now(),
+          'org-1', 'kb-1', Date.now(),
           PY_URL,
           {},
           mockLogger,
@@ -922,7 +922,7 @@ describe('Knowledge Base Utils - coverage', () => {
 
         const counts = await processUploadsInBackground(
           results,
-          'org-1', Date.now(),
+          'org-1', 'kb-1', Date.now(),
           PY_URL,
           {},
           mockLogger,

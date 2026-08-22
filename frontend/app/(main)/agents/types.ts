@@ -3,6 +3,7 @@ import type {
   ConversationMessage,
   ConversationPagination,
   ModelInfo,
+  ReasoningEffort,
   SharedWithEntry,
   ConversationsListResponse,
 } from '@/chat/types';
@@ -42,6 +43,8 @@ export interface AgentListRecord {
   name: string;
   description: string;
   models: string[];
+  /** True when `models` is empty; the agent uses the organization's default LLM at chat time. */
+  usesOrgDefault?: boolean;
   startMessage: string;
   systemPrompt: string;
   tags: string[];
@@ -125,12 +128,41 @@ export interface AgentToolset {
   type: string;
 }
 
+/** Tool nested under `mcpServers[].tools[]` — the attach-time snapshot, no live schema. */
+export interface AgentMcpTool {
+  _key?: string;
+  name: string;
+  fullName: string;
+  description?: string;
+}
+
+/**
+ * Attached MCP server instance on a single agent — mirrors `AgentToolset` but keyed by
+ * `instanceId` only (no logical "type" grouping: an agent may attach several distinct
+ * instances, never two of the same `typeId`). See `linked_mcp_servers` in
+ * `arango_http_provider.py`'s `get_agent`.
+ */
+export interface AgentMcpServer {
+  _key: string;
+  name: string;
+  displayName?: string;
+  typeId?: string | null;
+  instanceId: string;
+  tools: AgentMcpTool[];
+}
+
 /**
  * `agent` object from GET /api/v1/agents/:id (success payload).
  * Optional fields are omitted by some API versions or edge records.
  */
 export interface AgentDetail {
   models: AgentConfiguredModel[];
+  /**
+   * True when `models` is empty and the agent falls back to the
+   * organization's default LLM at chat time. Derived by the backend from
+   * `models.length === 0` — not a separately persisted field.
+   */
+  usesOrgDefault?: boolean;
   /** Often `""` when unset */
   instructions?: string;
   startMessage: string;
@@ -150,7 +182,10 @@ export interface AgentDetail {
   _key: string;
   _id: string;
   toolsets: AgentToolset[];
+  mcpServers?: AgentMcpServer[];
   knowledge: unknown[];
+  /** Skills explicitly assigned to this agent (`AGENT_HAS_SKILL` edges) — see `skills.py`'s `linked_skills`. */
+  skills?: AgentSkillReference[];
   /** Optional web-search provider attached to this agent. */
   webSearch?: {
     provider: string;
@@ -165,6 +200,8 @@ export interface AgentDetail {
   can_delete: boolean;
   can_share: boolean;
   can_view: boolean;
+  /** Agent-level fallback used when a chat request omits its own reasoningEffort. */
+  defaultReasoningEffort?: ReasoningEffort | null;
 }
 
 // ── Builder catalog rows (tool list + KB) ───────────────────────
@@ -184,6 +221,23 @@ export interface KnowledgeBaseForBuilder {
   id: string;
   name: string;
   connectorId: string;
+}
+
+/** Skill row for agent builder palette — subset of `SkillMetadata` (see `workspace/skills/personal/types.ts`). */
+export interface SkillForBuilder {
+  name: string;
+  description: string;
+  category: string | null;
+}
+
+/** Skill entry as embedded on `AgentDetail.skills` (GET /agents/:id enrichment). */
+export interface AgentSkillReference {
+  name: string;
+  description?: string;
+  category?: string | null;
+  subcategory?: string | null;
+  version?: string;
+  status?: string;
 }
 
 // ── Knowledge Hub App Nodes (for agent builder apps palette) ─────

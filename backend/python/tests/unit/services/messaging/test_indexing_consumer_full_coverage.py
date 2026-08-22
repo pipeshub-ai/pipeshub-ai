@@ -178,14 +178,16 @@ class TestStartProcessingTask:
     async def test_no_worker_loop(self, consumer):
         consumer.worker_loop = None
         msg = _make_message()
-        await consumer._IndexingKafkaConsumer__start_processing_task(msg)
+        with pytest.raises(RuntimeError, match="Worker loop not initialized"):
+            await consumer._IndexingKafkaConsumer__start_processing_task(msg)
 
     @pytest.mark.asyncio
     async def test_not_running(self, consumer):
         consumer.worker_loop = MagicMock()
         consumer.running = False
         msg = _make_message()
-        await consumer._IndexingKafkaConsumer__start_processing_task(msg)
+        with pytest.raises(RuntimeError, match="Consumer is stopping"):
+            await consumer._IndexingKafkaConsumer__start_processing_task(msg)
 
     @pytest.mark.asyncio
     async def test_submits_to_worker(self, consumer):
@@ -279,9 +281,7 @@ class TestApplyBackpressure:
         assigned = {MagicMock(), MagicMock()}
         consumer.consumer.assignment.return_value = assigned
         consumer.consumer.paused.return_value = set()
-        for _ in range(messaging_env.max_pending_indexing_tasks + 1):
-            f = Future()
-            consumer._active_futures.add(f)
+        consumer._gate_waiters = messaging_env.max_pending_indexing_tasks + 1
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.pause.assert_called()
         assert consumer._backpressure_logged is True
@@ -371,10 +371,13 @@ class TestStop:
 class TestCleanup:
     @pytest.mark.asyncio
     async def test_cleanup_with_consumer(self, consumer):
-        consumer.consumer = AsyncMock()
+        mock_consumer = AsyncMock()
+        consumer.consumer = mock_consumer
         with patch.object(consumer, '_IndexingKafkaConsumer__stop_worker_thread'):
             await consumer.cleanup()
-            consumer.consumer.stop.assert_awaited_once()
+            # cleanup() nulls consumer.consumer after stopping it, so assert
+            # against the captured reference rather than the (now None) attribute.
+            mock_consumer.stop.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_cleanup_without_consumer(self, consumer):

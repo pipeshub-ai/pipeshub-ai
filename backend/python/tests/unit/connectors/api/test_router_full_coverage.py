@@ -682,18 +682,24 @@ class TestEnsureConnectorInitializedDocNotFound:
 class TestGetConnectorStatsException:
     @pytest.mark.asyncio
     async def test_generic_exception_after_success(self):
-        """Line 1542 — exception in result parsing after logger is set."""
+        """When stats lookup returns success=False, raises 404."""
         from app.connectors.api.router import get_connector_stats_endpoint
         gp = AsyncMock()
-        gp.get_connector_stats = AsyncMock(return_value={"success": True, "data": None})
+        gp.get_document = AsyncMock(return_value={"type": "Slack"})
+        gp.get_connector_stats = AsyncMock(return_value={"success": False})
+
+        registry = AsyncMock()
+        registry.can_user_view_connector = AsyncMock(return_value=True)
+
         req = MagicMock()
         req.app.container.logger.return_value = MagicMock()
-
-        # result["data"] is None so accessing it won't raise, but
-        # we make the result dict trigger an exception on the return
-        bad_result = MagicMock()
-        bad_result.__getitem__ = MagicMock(side_effect=[True, RuntimeError("serialize")])
-        gp.get_connector_stats = AsyncMock(return_value={"success": False})
+        req.app.state.connector_registry = registry
+        req.state.user = MagicMock()
+        req.state.user.get = lambda k, default=None: {
+            "userId": "user-1", "orgId": "o1",
+        }.get(k, default)
+        req.headers = MagicMock()
+        req.headers.get = lambda k, default=None: default
 
         with pytest.raises(HTTPException) as exc:
             await get_connector_stats_endpoint(
@@ -776,6 +782,19 @@ class TestGetPdfConversionInfo:
         record.mime_type = "application/vnd.google-apps.presentation"
         needs, name, ext = get_pdf_conversion_info(record)
         assert needs is True
+        assert ext == "pptx"
+
+    def test_pptx_mime_infers_missing_extension(self):
+        from app.connectors.api.router import get_pdf_conversion_info
+        record = MagicMock()
+        record.record_name = "Quarterly review"
+        record.mime_type = (
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        )
+        needs, name, ext = get_pdf_conversion_info(record)
+        assert needs is True
+        assert name == "Quarterly review"
+        assert ext == "pptx"
 
 
 # ============================================================================
@@ -788,8 +807,8 @@ class TestGetAllOAuthConfigsExceptionInFetch:
     async def test_exception_result_logged(self):
         from app.connectors.api.router import get_all_oauth_configs
         request = MagicMock()
-        request.state.user.get = lambda k, d=None: {"userId": "u1", "orgId": "o1"}.get(k, d)
-        request.headers.get = lambda k, d=None: {"X-Is-Admin": "true"}.get(k, d)
+        request.state.user.get = lambda k, d=None: {"userId": "u1", "orgId": "o1", "role": "admin"}.get(k, d)
+        request.headers.get = lambda k, d=None: {}.get(k, d)
         request.app.state.connector_registry.get_all_connector_names.return_value = ["GOOGLE_DRIVE"]
 
         cs = AsyncMock()
@@ -822,8 +841,8 @@ class TestUpdateOAuthConfigNameBranch:
         configs = [existing]
 
         request = MagicMock()
-        request.state.user.get = lambda k, d=None: {"userId": "u1", "orgId": "o1"}.get(k, d)
-        request.headers.get = lambda k, d=None: {"X-Is-Admin": "true"}.get(k, d)
+        request.state.user.get = lambda k, d=None: {"userId": "u1", "orgId": "o1", "role": "admin"}.get(k, d)
+        request.headers.get = lambda k, d=None: {}.get(k, d)
         request.json = AsyncMock(return_value={
             "oauthInstanceName": "NewName",
             "config": {"clientId": "new-id"},
@@ -857,8 +876,8 @@ class TestUpdateOAuthConfigNameBranch:
         configs = [existing]
 
         request = MagicMock()
-        request.state.user.get = lambda k, d=None: {"userId": "u1", "orgId": "o1"}.get(k, d)
-        request.headers.get = lambda k, d=None: {"X-Is-Admin": "true"}.get(k, d)
+        request.state.user.get = lambda k, d=None: {"userId": "u1", "orgId": "o1", "role": "admin"}.get(k, d)
+        request.headers.get = lambda k, d=None: {}.get(k, d)
         request.json = AsyncMock(return_value={})
 
         cs = AsyncMock()
@@ -879,3 +898,201 @@ class TestUpdateOAuthConfigNameBranch:
         assert result["success"] is True
         saved = cs.set_config.call_args[0][1]
         assert saved[0]["oauthInstanceName"] == "Keep"
+
+
+# ============================================================================
+# reindex_connector — KB collection permission fallback (lines ~1732–1770)
+# ============================================================================
+
+
+class TestReindexConnectorKbAuth:
+    """Test KB collection reindex authorization fallback.
+    
+    When connector_registry.get_connector_instance returns None for a KB collection,
+    the endpoint should check KB permissions and allow OWNER/WRITER/READER.
+    """
+
+    @pytest.mark.asyncio
+    async def test_kb_reindex_creator_success(self):
+        """KB creator can reindex via registry path (baseline)."""
+        from app.connectors.api.router import reindex_connector
+        
+        request = MagicMock()
+        request.state.user.get = lambda k, d=None: {"userId": "u1", "orgId": "o1", "role": "member"}.get(k, d)
+        request.headers.get = lambda k, d="": {}.get(k, d)
+        request.json = AsyncMock(return_value={})
+        request.app.container.logger = MagicMock(return_value=MagicMock())
+        
+        registry = AsyncMock()
+        registry.get_connector_instance = AsyncMock(return_value={
+            "type": "KB",
+            "isActive": True,
+            "name": "My KB",
+        })
+        request.app.state.connector_registry = registry
+        
+        kafka = AsyncMock()
+        kafka.publish_event = AsyncMock()
+        
+        with patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=123):
+            result = await reindex_connector(
+                connector_id="kb1",
+                request=request,
+                kafka_service=kafka,
+            )
+        
+        assert result["success"] is True
+        assert kafka.publish_event.called
+
+    @pytest.mark.asyncio
+    async def test_kb_reindex_writer_success(self):
+        """WRITER on shared KB can reindex via permission fallback."""
+        from app.connectors.api.router import reindex_connector
+        
+        request = MagicMock()
+        request.state.user.get = lambda k, d=None: {"userId": "u2", "orgId": "o1", "role": "member"}.get(k, d)
+        request.headers.get = lambda k, d="": {}.get(k, d)
+        request.json = AsyncMock(return_value={})
+        request.app.container.logger = MagicMock(return_value=MagicMock())
+        
+        registry = AsyncMock()
+        registry.get_connector_instance = AsyncMock(return_value=None)  # not creator
+        request.app.state.connector_registry = registry
+        
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={
+            "_id": "kb1",
+            "type": "KB",
+            "isActive": True,
+            "name": "Shared KB",
+        })
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "u2"})
+        graph_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
+        request.app.state.graph_provider = graph_provider
+        
+        kafka = AsyncMock()
+        kafka.publish_event = AsyncMock()
+        
+        with patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=123):
+            result = await reindex_connector(
+                connector_id="kb1",
+                request=request,
+                kafka_service=kafka,
+            )
+        
+        assert result["success"] is True
+        assert kafka.publish_event.called
+        graph_provider.get_user_kb_permission.assert_called_once_with("kb1", "u2")
+
+    @pytest.mark.asyncio
+    async def test_kb_reindex_reader_success(self):
+        """READER on shared KB can reindex via permission fallback."""
+        from app.connectors.api.router import reindex_connector
+        
+        request = MagicMock()
+        request.state.user.get = lambda k, d=None: {"userId": "u3", "orgId": "o1", "role": "member"}.get(k, d)
+        request.headers.get = lambda k, d="": {}.get(k, d)
+        request.json = AsyncMock(return_value={})
+        request.app.container.logger = MagicMock(return_value=MagicMock())
+        
+        registry = AsyncMock()
+        registry.get_connector_instance = AsyncMock(return_value=None)  # not creator
+        request.app.state.connector_registry = registry
+        
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={
+            "_id": "kb1",
+            "type": "KB",
+            "isActive": True,
+            "name": "Shared KB",
+        })
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "u3"})
+        graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
+        request.app.state.graph_provider = graph_provider
+        
+        kafka = AsyncMock()
+        kafka.publish_event = AsyncMock()
+        
+        with patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=123):
+            result = await reindex_connector(
+                connector_id="kb1",
+                request=request,
+                kafka_service=kafka,
+            )
+        
+        assert result["success"] is True
+        assert kafka.publish_event.called
+
+    @pytest.mark.asyncio
+    async def test_kb_reindex_no_permission_denied(self):
+        """User with no KB role cannot reindex."""
+        from app.connectors.api.router import reindex_connector
+        
+        request = MagicMock()
+        request.state.user.get = lambda k, d=None: {"userId": "u4", "orgId": "o1", "role": "member"}.get(k, d)
+        request.headers.get = lambda k, d="": {}.get(k, d)
+        request.json = AsyncMock(return_value={})
+        request.app.container.logger = MagicMock(return_value=MagicMock())
+        
+        registry = AsyncMock()
+        registry.get_connector_instance = AsyncMock(return_value=None)
+        request.app.state.connector_registry = registry
+        
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={
+            "_id": "kb1",
+            "type": "KB",
+            "isActive": True,
+            "name": "Private KB",
+        })
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "u4"})
+        graph_provider.get_user_kb_permission = AsyncMock(return_value=None)  # no role
+        request.app.state.graph_provider = graph_provider
+        
+        kafka = AsyncMock()
+        
+        with pytest.raises(HTTPException) as exc:
+            await reindex_connector(
+                connector_id="kb1",
+                request=request,
+                kafka_service=kafka,
+            )
+        
+        assert exc.value.status_code == 403
+        assert "Insufficient KB permissions" in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_non_kb_connector_registry_miss_404(self):
+        """Non-KB connector not found in registry → 404 (no KB fallback)."""
+        from app.connectors.api.router import reindex_connector
+        
+        request = MagicMock()
+        request.state.user.get = lambda k, d=None: {"userId": "u5", "orgId": "o1", "role": "member"}.get(k, d)
+        request.headers.get = lambda k, d="": {}.get(k, d)
+        request.json = AsyncMock(return_value={})
+        request.app.container.logger = MagicMock(return_value=MagicMock())
+        
+        registry = AsyncMock()
+        registry.get_connector_instance = AsyncMock(return_value=None)
+        request.app.state.connector_registry = registry
+        
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={
+            "_id": "conn1",
+            "type": "GOOGLE_DRIVE",  # not KB
+            "isActive": True,
+            "name": "GDrive",
+        })
+        request.app.state.graph_provider = graph_provider
+        
+        kafka = AsyncMock()
+        
+        with pytest.raises(HTTPException) as exc:
+            await reindex_connector(
+                connector_id="conn1",
+                request=request,
+                kafka_service=kafka,
+            )
+        
+        assert exc.value.status_code == 404
+        assert "not found or access denied" in exc.value.detail

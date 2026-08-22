@@ -164,7 +164,9 @@
       "usernameLabel": "उपयोगकर्ता नाम",
       "usernamePlaceholder": "जैसे: user@gmail.com",
       "passwordLabel": "पासवर्ड",
-      "passwordPlaceholder": "पासवर्ड दर्ज करें"
+      "passwordPlaceholder": "पासवर्ड दर्ज करें",
+      "saveSuccessFallback": "SMTP कॉन्फ़िगरेशन सहेजा गया।",
+      "saveErrorFallback": "SMTP कॉन्फ़िगरेशन सहेजा नहीं जा सका।"
     },
     "nav": {
       "prev": "पिछला",
@@ -188,8 +190,8 @@
     "collections": "कलेक्शन",
     "allRecords": "सभी रिकॉर्ड",
     "workspace": "वर्कस्पेस",
-    "shared": "शेयर किए गए",
-    "private": "निजी",
+    "shared": "मेरे साथ साझा किया गया",
+    "private": "मेरे कलेक्शन",
     "connectors": "कनेक्टर्स",
     "bots": "बॉट्स",
     "moreConnectors": "अधिक कनेक्टर्स",
@@ -376,6 +378,9 @@
     "continue": "जारी रखें",
     "confirm": "पुष्टि करें",
     "cancel": "रद्द करें",
+    "save": "सहेजें",
+    "saving": "सहेजा जा रहा है...",
+    "create": "बनाएँ",
     "more": "अधिक",
     "less": "कम",
     "viewAll": "सभी देखें",
@@ -484,6 +489,10 @@
     "listening": "सुन रहे हैं...",
     "voiceInputNotSupported": "इस ब्राउज़र में वॉइस इनपुट समर्थित नहीं है",
     "voiceError": "माइक्रोफ़ोन तक पहुँच नहीं हो सकी",
+    "noModelsAvailable": "अभी तक कोई AI मॉडल कॉन्फ़िगर नहीं किया गया है",
+    "failedToLoadModels": "AI मॉडल लोड करने में विफल",
+    "failedToLoadAgentConfig": "इस एजेंट का मॉडल कॉन्फ़िगरेशन लोड करने में विफल",
+    "openModels": "मॉडल खोलें",
     "connectorsCollectionsTitle": "कनेक्टर्स और संग्रह",
     "connectorsTooltip": "कनेक्टर्स और संग्रह",
     "connectorsDefaultScopeHint": "डिफ़ॉल्ट रूप से सभी कनेक्टर्स और संग्रहों में खोज की जाती है। यदि आप दायरा सीमित करना चाहते हैं, तो नीचे विशिष्ट कनेक्टर्स या संग्रह चुनें।",
@@ -621,7 +630,7 @@
       "agent": {
         "label": "एजेंट",
         "toolbarLabel": "एजेंट",
-        "description": "टूल के साथ बहु-चरण एजेंट—टूलबार में रणनीति चुनें"
+        "description": "एजेंट जो जटिल कार्यों को पूरा करने के लिए योजना बना सकता और टूल का उपयोग कर सकता है"
       }
     },
     "agentStrategy": {
@@ -637,10 +646,10 @@
           "short": "त्वरित",
           "hint": "तेज़ उत्तर और कम पुनरावृत्ति। सीधे कार्यों के लिए उपयुक्त।"
         },
-        "verify": {
-          "label": "सत्यापन",
-          "short": "सत्यापन",
-          "hint": "अंतिम उत्तर से पहले तथ्यों और चरणों पर अतिरिक्त जाँच।"
+        "plan-execute": {
+          "label": "योजना और क्रियान्वयन",
+          "short": "योजना और क्रियान्वयन",
+          "hint": "पहले सभी चरणों की योजना बनाता है, फिर उन्हें क्रम में क्रियान्वित करता है।"
         },
         "deep": {
           "label": "गहरा",
@@ -765,7 +774,8 @@
     "dark": "डार्क",
     "documentation": "डॉक्यूमेंटेशन",
     "darkMode": "डार्क मोड",
-    "lightMode": "लाइट मोड"
+    "lightMode": "लाइट मोड",
+    "organisations": "संगठन"
   },
   "workspace": {
     "users": {
@@ -854,13 +864,26 @@
         "groupLabel": "समूह (वैकल्पिक)",
         "groupPlaceholder": "समूह चुनें",
         "groupSearchPlaceholder": "समूह खोजें...",
-        "importCsv": "CSV आयात करें",
+        "import": "आयात करें",
+        "importFormatTitle": "CSV या Excel — कोई भी लेआउट काम करता है",
+        "importHintHeader": "हेडर पंक्ति वैकल्पिक — अतिरिक्त कॉलम अनदेखे किए जाते हैं",
+        "importHintLimit": "प्रति फ़ाइल 1000 उपयोगकर्ता तक (.csv, .xlsx, .xls)",
         "cancel": "रद्द करें",
         "send": "आमंत्रण भेजें",
         "successTitle": "आमंत्रण भेजे गए",
         "successDescription": "{{email}} को आमंत्रित किया गया है",
         "invalidEmail": "अमान्य ईमेल पता",
-        "errorGeneric": "आमंत्रण भेजने में विफल। कृपया पुनः प्रयास करें।"
+        "errorGeneric": "आमंत्रण भेजने में विफल। कृपया पुनः प्रयास करें।",
+        "importNoEmails": "फ़ाइल में कोई ईमेल पता नहीं मिला",
+        "importTooMany": "फ़ाइल {{max}} उपयोगकर्ताओं की सीमा से अधिक है",
+        "importAllDuplicates": "फ़ाइल के सभी पते पहले से सूची में हैं",
+        "importLoaded": "{{count}} पता/पते जोड़े गए",
+        "importLoadedDescription": "सूची जाँचें, फिर आमंत्रण भेजें दबाएँ।",
+        "importSkipped": "{{invalid}} अमान्य, {{duplicate}} डुप्लिकेट पते",
+        "importSkippedDescription": "अमान्य प्रविष्टियाँ चिह्नित हैं — भेजने से पहले हटाएँ।",
+        "importFailed": "आयात विफल",
+        "importFailedDescription": "फ़ाइल पढ़ी नहीं जा सकी। मान्य CSV या Excel फ़ाइल अपलोड करें।",
+        "adminGroupWarning": "यहाँ आमंत्रित सभी लोग पूर्ण संगठन एडमिन बन जाएंगे — फ़ाइल से आयात किया गया हर पता भी। एडमिन उपयोगकर्ता, समूह और संगठन सेटिंग्स प्रबंधित कर सकते हैं।"
       }
     },
     "groups": {
@@ -1194,6 +1217,19 @@
       "configInfoImageGeneration": "अपना इमेज जनरेशन मॉडल कॉन्फ़िगर करें। शुरू करने के लिए अपनी {{providerName}} API क्रेडेंशियल दर्ज करें।",
       "configInfoFallback": "अपने अनुप्रयोग में एआई क्षमताएँ सक्षम करने के लिए अपना {{capLabel}} मॉडल कॉन्फ़िगर करें। शुरू करने के लिए अपनी {{providerName}} API क्रेडेंशियल दर्ज करें।",
       "configInfoPlaceholderProvider": "प्रदाता",
+      "downloadDialogTitle": "एम्बेडिंग मॉडल डाउनलोड हो रहा है",
+      "downloadDialogDescription": "\"{{modelName}}\" डाउनलोड हो रहा है। मॉडल के आकार और आपके कनेक्शन के आधार पर इसमें कुछ मिनट लग सकते हैं।",
+      "downloadDialogHint": "आप इस डायलॉग को बंद कर सकते हैं — डाउनलोड बैकग्राउंड में जारी रहता है। मॉडल तैयार होने पर फिर से सेव करें।",
+      "downloadStatusChecking": "स्थानीय कैश जाँचा जा रहा है...",
+      "downloadStatusDownloading": "मॉडल डाउनलोड हो रहा है...",
+      "downloadStatusLoading": "मॉडल को मेमोरी में लोड किया जा रहा है...",
+      "downloadStatusReady": "मॉडल तैयार है",
+      "downloadStatusFailed": "डाउनलोड विफल",
+      "downloadProgressBytes": "{{total}} में से {{downloaded}}",
+      "downloadErrorFallback": "एम्बेडिंग मॉडल डाउनलोड करने में विफल। कृपया पुन: प्रयास करें।",
+      "downloadPrepareError": "मॉडल तैयारी शुरू करने में विफल। कृपया पुन: प्रयास करें।",
+      "downloadRetry": "पुनः प्रयास करें",
+      "downloadClose": "बंद करें",
       "chipDefault": "डिफ़ॉल्ट",
       "actionEdit": "संपादित करें",
       "actionSetDefault": "डिफ़ॉल्ट सेट करें",
@@ -1287,6 +1323,7 @@
         "labs": "Labs",
         "authentication": "प्रमाणीकरण",
         "connectors": "कनेक्टर्स",
+        "mcpServers": "MCP सर्वर",
         "actions": "कार्रवाइयाँ",
         "bots": "बॉट्स",
         "services": "सेवाएँ",
@@ -1298,11 +1335,16 @@
         "profile": "प्रोफ़ाइल",
         "yourConnectors": "आपके व्यक्तिगत कनेक्टर्स",
         "yourActions": "आपकी कार्रवाइयाँ",
+        "yourSkills": "आपके Skills",
+        "yourMcpServers": "आपके MCP सर्वर",
         "archivedChats": "संग्रहीत चैट",
         "users": "उपयोगकर्ता",
         "groups": "समूह",
         "teams": "टीमें",
-        "webSearch": "वेब खोज"
+        "webSearch": "वेब खोज",
+        "tenants": "किरायेदार",
+        "superOrgs": "संगठन",
+        "oauthApps": "OAuth Apps"
       }
     },
     "actions": {
@@ -1584,7 +1626,8 @@
         "google": "Configure Google Authentication",
         "microsoft": "Configure Microsoft Authentication",
         "samlSso": "Configure SAML SSO",
-        "oauth": "Configure OAuth 2.0"
+        "oauth": "Configure OAuth 2.0",
+        "github": "GitHub प्रमाणीकरण कॉन्फ़िगर करें"
       },
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
@@ -1855,6 +1898,149 @@
         "syncing": "Syncing Records...",
         "synced": "Records Synced",
         "failed": "Sync Failed"
+      }
+    },
+    "mcpServers": {
+      "searchPlaceholder": "MCP सर्वर खोजें...",
+      "loading": "MCP सर्वर लोड हो रहे हैं…",
+      "noResults": "आपकी खोज से कोई MCP सर्वर मेल नहीं खाता",
+      "addServer": "सर्वर जोड़ें",
+      "custom": "कस्टम",
+      "sharedAuth": "साझा एडमिन प्रमाणीकरण",
+      "toolsCount_one": "{{count}} टूल",
+      "toolsCount_other": "{{count}} टूल्स",
+      "cta": {
+        "manage": "प्रबंधित करें",
+        "delete": "हटाएं",
+        "reauthenticate": "फिर से प्रमाणित करें",
+        "disconnect": "डिस्कनेक्ट करें",
+        "connect": "कनेक्ट करें",
+        "addInstance": "इंस्टेंस जोड़ें"
+      },
+      "status": {
+        "ready": "तैयार",
+        "notConnected": "कनेक्ट नहीं है",
+        "needsAuth": "प्रमाणीकरण आवश्यक"
+      },
+      "team": {
+        "title": "MCP सर्वर",
+        "subtitle": "अपनी टीम के एजेंट क्या कर सकते हैं, इसका विस्तार करने के लिए Model Context Protocol सर्वर कनेक्ट करें।",
+        "emptyTitle": "अभी तक कोई MCP सर्वर नहीं है",
+        "emptyDescription": "शुरू करने के लिए कैटलॉग से एक सर्वर जोड़ें या एक कस्टम सर्वर कॉन्फ़िगर करें।"
+      },
+      "personal": {
+        "title": "MCP सर्वर",
+        "subtitle": "अपने व्यवस्थापक द्वारा उपलब्ध कराए गए MCP सर्वर से प्रमाणित करें।",
+        "emptyTitle": "कोई MCP सर्वर उपलब्ध नहीं है",
+        "emptyDescription": "आपके व्यवस्थापक ने अभी तक कोई MCP सर्वर नहीं जोड़ा है।"
+      },
+      "details": {
+        "breadcrumbLabel": "MCP सर्वर",
+        "refreshAll": "सभी को रीफ्रेश करें",
+        "addInstance": "एक और इंस्टेंस जोड़ें",
+        "configuration": "कॉन्फ़िगरेशन",
+        "transport": "ट्रांसपोर्ट",
+        "tools": "टूल्स",
+        "discoverTools": "टूल्स खोजें",
+        "discoveredTools_one": "{{count}} टूल उपलब्ध",
+        "discoveredTools_other": "{{count}} टूल्स उपलब्ध",
+        "discovering": "टूल्स खोजे जा रहे हैं…",
+        "discoveryError": "टूल खोज विफल",
+        "discoveryNeedsAuth": "टूल खोजने के लिए प्रमाणित करें",
+        "retry": "पुनः प्रयास करें",
+        "noInstances": "कोई इंस्टेंस कॉन्फ़िगर नहीं किया गया",
+        "authBannerTitle": "प्रमाणीकरण आवश्यक",
+        "authBannerDescription": "इस MCP सर्वर को प्रमाणित करें ताकि आपकी टीम के एजेंट इसका उपयोग कर सकें।",
+        "authBannerAuthenticatedTitle": "कनेक्टेड",
+        "authBannerAuthenticatedDescription": "आप इस MCP सर्वर को फिर से प्रमाणित या डिस्कनेक्ट कर सकते हैं।"
+      },
+      "deleteDialog": {
+        "title": "MCP सर्वर हटाएं?",
+        "body": "\"{{name}}\" नाम का सर्वर स्थायी रूप से हटा दिया जाएगा। इसका उपयोग करने वाले टीम सदस्यों की पहुंच समाप्त हो जाएगी।"
+      },
+      "toasts": {
+        "loadError": "MCP सर्वर लोड करने में विफल",
+        "deleted": "MCP सर्वर हटाया गया",
+        "deleteError": "MCP सर्वर हटाने में विफल",
+        "updated": "MCP सर्वर अपडेट किया गया",
+        "created": "MCP सर्वर बनाया गया",
+        "saveError": "MCP सर्वर सहेजने में विफल",
+        "authenticated": "सफलतापूर्वक प्रमाणित",
+        "authenticateError": "प्रमाणीकरण विफल",
+        "disconnected": "सफलतापूर्वक डिस्कनेक्ट किया गया",
+        "disconnectError": "डिस्कनेक्ट करने में विफल",
+        "credentialsSaveError": "सर्वर सहेजा गया, लेकिन प्रमाण-पत्र सहेजने में विफल। आप उन्हें बाद में \"प्रबंधित करें\" से जोड़ सकते हैं।",
+        "discoveryError": "टूल खोजने में विफल"
+      },
+      "authDialog": {
+        "title": "{{name}} के साथ प्रमाणित करें",
+        "description": "इस MCP सर्वर को कनेक्ट करने के लिए अपना प्रमाण-पत्र दर्ज करें।"
+      },
+      "form": {
+        "name": "नाम",
+        "description": "विवरण",
+        "transport": "ट्रांसपोर्ट",
+        "command": "कमांड",
+        "args": "आर्गुमेंट्स",
+        "argsPlaceholder": "एक आर्गुमेंट जोड़ें",
+        "requiredEnv": "आवश्यक env",
+        "requiredEnvPlaceholder": "एक env वेरिएबल नाम जोड़ें (जैसे API_KEY)",
+        "url": "URL",
+        "authMode": "प्रमाणीकरण मोड",
+        "headerName": "हेडर नाम",
+        "authorizationUrl": "प्रमाणीकरण URL",
+        "dcrHint": "खाली छोड़ें — यदि सर्वर समर्थन करता है तो PipesHub स्वचालित रूप से डायनामिक क्लाइंट पंजीकरण का पता लगाएगा और उसका उपयोग करेगा",
+        "tokenUrl": "टोकन URL",
+        "scopes": "स्कोप्स",
+        "scopesPlaceholder": "एक स्कोप जोड़ें",
+        "useAdminAuth": "सभी उपयोगकर्ताओं के लिए साझा एडमिन प्रमाणीकरण का उपयोग करें",
+        "headerValue": "{{headerName}}",
+        "apiToken": "API टोकन",
+        "credentialsHeading": "प्रमाण-पत्र (वैकल्पिक)",
+        "credentialsHint": "अभी प्रमाण-पत्र जोड़ें, या छोड़ दें और बाद में \"कनेक्शन और टूल्स\" टैब से कनेक्ट करें।",
+        "leaveBlankToKeep": "मौजूदा मान बनाए रखने के लिए खाली छोड़ें।",
+        "multiEnvIncomplete": "हर आवश्यक पर्यावरण चर भरें, या बाद में कनेक्ट करने के लिए सभी को खाली छोड़ दें।",
+        "oauthPairRequired": "क्लाइंट ID और क्लाइंट सीक्रेट दोनों दर्ज करें, या दोनों खाली छोड़ दें।",
+        "connectAfterCreateHint": "इस सर्वर को सहेजें, फिर इसे कनेक्ट करने के लिए \"प्रबंधित करें\" फिर से खोलें।"
+      },
+      "configPanel": {
+        "editTitle": "MCP सर्वर संपादित करें",
+        "createTitle": "MCP सर्वर जोड़ें",
+        "tabs": {
+          "configuration": "कॉन्फ़िगरेशन",
+          "connection": "कनेक्शन और टूल्स"
+        }
+      },
+      "oauthConfig": {
+        "saved": "OAuth ऐप सहेजा गया",
+        "saveError": "OAuth ऐप सहेजने में विफल",
+        "title": "OAuth ऐप कॉन्फ़िगर करें",
+        "description": "PipesHub स्वचालित रूप से पता लगाता है कि यह सर्वर डायनामिक क्लाइंट पंजीकरण का समर्थन करता है या नहीं। क्लाइंट प्रमाण-पत्र केवल तभी आवश्यक हैं जब यह समर्थित न हो।",
+        "alreadyConfigured": "इस सर्वर के लिए एक OAuth ऐप पहले से ही कॉन्फ़िगर है।",
+        "clientId": "क्लाइंट ID",
+        "clientIdPlaceholder": "क्लाइंट ID दर्ज करें",
+        "clientSecret": "क्लाइंट सीक्रेट",
+        "clientSecretPlaceholder": "क्लाइंट सीक्रेट दर्ज करें",
+        "dcrProbing": "जाँच की जा रही है कि क्या यह सर्वर स्वचालित रूप से पंजीकरण कर सकता है…",
+        "dcrSupportedHint": "यह सर्वर स्वचालित पंजीकरण का समर्थन करता है। PipesHub स्वयं को पंजीकृत करेगा और किसी क्लाइंट प्रमाण-पत्र की आवश्यकता नहीं है।",
+        "dcrUnsupportedHint": "इस सर्वर के लिए मैन्युअल रूप से पंजीकृत OAuth ऐप आवश्यक है। नीचे दिए गए कॉलबैक URL के साथ एक बनाएं, फिर उसकी क्लाइंट ID और सीक्रेट दर्ज करें।",
+        "dcrUnknownHint": "स्वचालित पंजीकरण समर्थन की पुष्टि नहीं हो सकी। यदि समर्थित नहीं है, तो नीचे दिए गए कॉलबैक URL के साथ एक OAuth ऐप पंजीकृत करें और उसकी क्लाइंट ID व सीक्रेट दर्ज करें।",
+        "callbackUrlLabel": "कॉलबैक URL",
+        "copyCallbackUrl": "कॉलबैक URL कॉपी करें",
+        "callbackUrlCopied": "कॉलबैक URL कॉपी हो गया",
+        "providerDocsLink": "प्रदाता सेटअप दस्तावेज़ देखें"
+      },
+      "oauth": {
+        "completingTitle": "साइन-इन पूरा हो रहा है…",
+        "processingHint": "कृपया प्रतीक्षा करें जब तक हम आपका खाता कनेक्ट कर रहे हैं।",
+        "successTitle": "सफलतापूर्वक कनेक्ट हुआ",
+        "successBody": "आप इस विंडो को बंद करके PipesHub पर लौट सकते हैं।",
+        "failedTitle": "कनेक्शन विफल",
+        "retryHint": "कुछ गड़बड़ हो गई। कृपया इस विंडो को बंद करें और फिर से प्रयास करें।",
+        "providerError": "प्रदाता ने एक त्रुटि लौटाई: {{error}}",
+        "noCode": "कोई प्रमाणीकरण कोड नहीं मिला।",
+        "noState": "कोई state पैरामीटर नहीं मिला।",
+        "backendRejected": "सर्वर ने प्रमाणीकरण अनुरोध को अस्वीकार कर दिया।"
       }
     },
     "bots": {
@@ -2166,6 +2352,252 @@
       "discardMessage": "If you discard, your edits won't be saved",
       "discardConfirm": "Discard",
       "discardCancel": "Continue Editing"
+    },
+    "services": {
+      "pageTitle": "सेवाएँ",
+      "pageSubtitle": "प्लेटफ़ॉर्म सेवाओं की स्वास्थ्य स्थिति की निगरानी करें",
+      "infraSection": "इन्फ्रास्ट्रक्चर सेवाएँ",
+      "infraSubtitle": "प्लेटफ़ॉर्म को संचालित करने वाले मूल इन्फ्रास्ट्रक्चर घटक",
+      "appSection": "एप्लिकेशन सेवाएँ",
+      "appSubtitle": "खोज, अनुक्रमण और दस्तावेज़ प्रसंस्करण के लिए Python माइक्रोसर्विसेज",
+      "checkNow": "अभी जाँचें",
+      "checking": "जाँच हो रही है…",
+      "lastChecked": "अंतिम जाँच: {{time}}",
+      "loading": "सेवा स्थिति लोड हो रही है…",
+      "policyTitle": "सेवा स्वास्थ्य नीति",
+      "policyDescription": "क्वेरी और कनेक्टर सेवाएँ महत्वपूर्ण हैं — एप्लिकेशन लोड होने से पहले उनकी प्रतीक्षा करेगा। इंडेक्सिंग, डॉकलिंग, पार्सिंग और एक्सट्रैक्शन सेवाएँ गैर-अवरोधक हैं और केवल पृष्ठभूमि प्रसंस्करण को प्रभावित करती हैं।",
+      "allHealthy": "सभी सेवाएँ सही हैं",
+      "someUnhealthy": "कुछ सेवाएँ सही नहीं हैं",
+      "fetchFailed": "सेवा स्वास्थ्य जाँचने में विफल",
+      "statusHealthy": "स्वस्थ",
+      "statusUnhealthy": "अस्वस्थ",
+      "statusUnknown": "अज्ञात",
+      "infra": {
+        "redis": {
+          "label": "Redis",
+          "descriptionWithKvStore": "कैशिंग, दर सीमा, और कॉन्फ़िगरेशन",
+          "description": "कैशिंग और दर सीमा"
+        },
+        "mongodb": {
+          "label": "MongoDB",
+          "description": "सत्र और उपयोगकर्ता मेटाडेटा"
+        },
+        "messageBroker": {
+          "label": "संदेश ब्रोकर",
+          "description": "वितरित इवेंट स्ट्रीमिंग"
+        },
+        "etcd": {
+          "label": "etcd",
+          "description": "वितरित कॉन्फ़िगरेशन"
+        },
+        "graphDb": {
+          "label": "ग्राफ डेटाबेस",
+          "description": "ज्ञान ग्राफ"
+        },
+        "vectorDb": {
+          "label": "वेक्टर डेटाबेस",
+          "description": "हाइब्रिड खोज — कीवर्ड और सिमेंटिक"
+        }
+      },
+      "app": {
+        "query": {
+          "label": "क्वेरी सेवा",
+          "description": "RAG, सिमेंटिक खोज, और LLM एकीकरण"
+        },
+        "connector": {
+          "label": "कनेक्टर सेवा",
+          "description": "OAuth, टोकन रिफ्रेश, और डेटा स्रोत एकीकरण"
+        },
+        "indexing": {
+          "label": "इंडेक्सिंग सेवा",
+          "description": "दस्तावेज़ पार्सिंग, एम्बेडिंग जनरेशन, और चंकिंग"
+        },
+        "docling": {
+          "label": "डॉकलिंग सेवा",
+          "description": "उन्नत दस्तावेज़ पार्सिंग और OCR"
+        },
+        "parsing": {
+          "label": "पार्सिंग सेवा",
+          "description": "दस्तावेज़ों को इंडेक्सिंग के लिए संरचित ब्लॉकों में पार्स करती है"
+        },
+        "extraction": {
+          "label": "एक्सट्रैक्शन सेवा",
+          "description": "LLM-आधारित दस्तावेज़ वर्गीकरण और मेटाडेटा निष्कर्षण"
+        }
+      }
+    },
+    "tenants": {
+      "title": "किरायेदार",
+      "subtitle": "कार्यस्थान में किरायेदार संगठन बनाएं और प्रबंधित करें",
+      "createTenant": "किरायेदार बनाएं",
+      "searchPlaceholder": "किरायेदार खोजें...",
+      "emptyTitle": "अभी तक कोई किरायेदार नहीं बनाया गया",
+      "emptyDescription": "किरायेदार अलग संगठन हैं जिन्हें आप इस प्लेटफ़ॉर्म पर प्रबंधित करते हैं।",
+      "noFilterResults": "कोई किरायेदार लागू फ़िल्टर से मेल नहीं खाता",
+      "noFilterResultsHint": "ऊपर दिए गए फ़िल्टर समायोजित करने या हटाने का प्रयास करें",
+      "noSearchResults": "कोई किरायेदार आपकी खोज से मेल नहीं खाता",
+      "listDeleteDescription": "यह किरायेदार और उसके सभी उपयोगकर्ताओं को स्थायी रूप से हटा देगा।",
+      "columns": {
+        "name": "नाम",
+        "domain": "डोमेन",
+        "contactEmail": "संपर्क ईमेल",
+        "accountType": "खाता प्रकार",
+        "createdOn": "बनाया गया"
+      },
+      "actions": {
+        "tenantDetails": "विवरण",
+        "viewUsers": "उपयोगकर्ता देखें",
+        "viewUserGroups": "उपयोगकर्ता समूह",
+        "delete": "हटाएं",
+        "deleteError": "किरायेदार हटाने में विफल",
+        "deleteSuccess": "किरायेदार हटाया गया",
+        "deleteSystemTooltip": "यह किरायेदार हटाया नहीं जा सकता"
+      },
+      "groups": {
+        "title": "उपयोगकर्ता समूह",
+        "subtitle": "इस किरायेदार के उपयोगकर्ता समूह प्रबंधित करें",
+        "backToTenants": "किरायेदारों पर वापस जाएं",
+        "emptyTitle": "अभी तक कोई उपयोगकर्ता समूह नहीं",
+        "emptyDescription": "शुरू करने के लिए एक उपयोगकर्ता समूह बनाएं।",
+        "noSearchResults": "कोई समूह आपकी खोज से मेल नहीं खाता",
+        "noSearchResultsHint": "ऊपर दी गई खोज समायोजित करने या हटाने का प्रयास करें"
+      },
+      "create": {
+        "title": "किरायेदार बनाएं",
+        "accountTypeLabel": "खाता प्रकार",
+        "registeredNameLabel": "पंजीकृत नाम",
+        "registeredNamePlaceholder": "जैसे Acme Corporation",
+        "shortNameLabel": "संक्षिप्त नाम",
+        "shortNamePlaceholder": "जैसे Acme",
+        "contactEmailLabel": "संपर्क ईमेल",
+        "contactEmailPlaceholder": "जैसे admin@acme.com",
+        "submit": "किरायेदार बनाएं",
+        "cancel": "रद्द करें",
+        "successTitle": "किरायेदार बनाया गया!",
+        "successDescription": "किरायेदार सफलतापूर्वक बनाया गया है",
+        "errorGeneric": "किरायेदार बनाने में विफल",
+        "inheritanceTitle": "कॉन्फ़िगरेशन इनहेरिटेंस",
+        "inheritanceDescription": "अपने संगठन की सेटिंग्स इनहेरिट करने के लिए सक्षम करें। किरायेदार को अपनी सेटिंग्स प्रबंधित करने देने के लिए अक्षम करें।",
+        "inheritance": {
+          "aiModels": "AI मॉडल",
+          "aiModelsHintOn": "किरायेदार तुरंत तैयार होगा (AI सेटअप की आवश्यकता नहीं)",
+          "aiModelsHintOff": "किरायेदार को अपने AI मॉडल कॉन्फ़िगर करने होंगे",
+          "smtp": "मेल (SMTP)",
+          "authentication": "प्रमाणीकरण",
+          "prompts": "सिस्टम प्रॉम्प्ट",
+          "platformSettings": "प्लेटफ़ॉर्म सेटिंग्स",
+          "connectors": "कनेक्टर",
+          "toolsets": "टूलसेट"
+        }
+      },
+      "invite": {
+        "title": "उपयोगकर्ता आमंत्रित करें",
+        "send": "आमंत्रण भेजें",
+        "cancel": "रद्द करें",
+        "tenantLabel": "किरायेदार",
+        "emailLabel": "आमंत्रित करें",
+        "emailPlaceholder": "एक या अधिक ईमेल पते दर्ज करें",
+        "groupLabel": "उपयोगकर्ता समूह में जोड़ें",
+        "groupPlaceholder": "उपयोगकर्ता समूह खोजें या चुनें",
+        "successTitle": "आमंत्रण भेजा गया!",
+        "successDescription": "{{email}} को आमंत्रित किया गया है",
+        "errorGeneric": "आमंत्रण भेजने में विफल"
+      },
+      "detail": {
+        "registeredNameLabel": "पंजीकृत नाम",
+        "shortNameLabel": "संक्षिप्त नाम",
+        "contactEmailLabel": "संपर्क ईमेल",
+        "domainLabel": "डोमेन",
+        "accountTypeLabel": "खाता प्रकार",
+        "inheritanceTitle": "कॉन्फ़िगरेशन इनहेरिटेंस",
+        "inheritanceDescription": "सक्षम होने पर, किरायेदार अपनी सेटिंग्स के बजाय आपके संगठन की सेटिंग्स का उपयोग करता है।"
+      },
+      "edit": {
+        "edit": "किरायेदार संपादित करें",
+        "save": "संपादन सहेजें",
+        "cancel": "रद्द करें",
+        "deleteButton": "किरायेदार हटाएं",
+        "deleteTitle": "'{{name}}' किरायेदार हटाएं",
+        "deleteDescription": "क्या आप वाकई इस किरायेदार को हटाना चाहते हैं?",
+        "deleteConfirmInputLabel": "पुष्टि करने के लिए \"{{name}}\" टाइप करें",
+        "deleteSuccess": "किरायेदार हटाया गया",
+        "deleteSuccessDescription": "किरायेदार हटा दिया गया है",
+        "deleteError": "किरायेदार हटाने में विफल",
+        "deleting": "हटाया जा रहा है...",
+        "saveSuccess": "किरायेदार अपडेट किया गया!",
+        "saveSuccessDescription": "किरायेदार सफलतापूर्वक अपडेट किया गया",
+        "saveError": "किरायेदार अपडेट करने में विफल"
+      }
+    },
+    "oauthApps": {
+      "title": "OAuth ऐप्स",
+      "subtitle": "कनेक्टर्स और एक्शन्स के लिए OAuth क्रेडेंशियल प्रबंधित करें। \u00abडिफ़ॉल्ट\u00bb के रूप में चिह्नित ऐप्स स्वचालित रूप से नए कनेक्शन के लिए उपयोग की जाती हैं, जब तक ओवरराइड न किया जाए।",
+      "addButton": "OAuth ऐप जोड़ें",
+      "tabs": {
+        "connectors": "कनेक्टर्स",
+        "toolsets": "एक्शन्स"
+      },
+      "typeSelector": {
+        "connectorLabel": "कनेक्टर प्रकार",
+        "toolsetLabel": "एक्शन प्रकार",
+        "loading": "लोड हो रहा है\u2026"
+      },
+      "scope": {
+        "team": "टीम",
+        "personal": "व्यक्तिगत"
+      },
+      "loading": "लोड हो रहा है\u2026",
+      "search": {
+        "placeholder": "ऐप्स खोजें\u2026"
+      },
+      "empty": {
+        "title": "{{typeLabel}} के लिए कोई OAuth ऐप नहीं",
+        "connectorDescription": "इस प्रकार के कनेक्टर्स को आपके क्रेडेंशियल से प्रमाणित करने के लिए एक OAuth ऐप जोड़ें।",
+        "connectorDescriptionPersonal": "इस कनेक्टर प्रकार को आपकी ओर से प्रमाणित करने के लिए एक OAuth ऐप जोड़ें।",
+        "toolsetDescription": "इस प्रकार के एक्शन्स को आपके क्रेडेंशियल से प्रमाणित करने के लिए एक OAuth ऐप जोड़ें।",
+        "noSearchResults": "आपकी खोज से मेल खाता कोई OAuth ऐप नहीं है।",
+        "addButton": "OAuth ऐप जोड़ें"
+      },
+      "form": {
+        "titleCreate": "{{typeName}} के लिए OAuth ऐप जोड़ें",
+        "titleEdit": "OAuth ऐप संपादित करें",
+        "redirectUriTitle": "रीडायरेक्ट / कॉलबैक URL",
+        "redirectUriDescription": "इस URL को अपने पहचान प्रदाता की OAuth ऐप कॉन्फ़िगरेशन में दर्ज करें।",
+        "copied": "कॉपी किया गया!",
+        "copy": "कॉपी करें",
+        "nameLabel": "नाम",
+        "namePlaceholder": "जैसे {{typeName}} प्रोडक्शन",
+        "nameRequired": "नाम आवश्यक है।",
+        "credentialsTitle": "क्रेडेंशियल्स",
+        "fieldRequired": "{{fieldName}} आवश्यक है।",
+        "settingsTitle": "सेटिंग्स",
+        "isDefaultLabel": "डिफ़ॉल्ट के रूप में सेट करें",
+        "isDefaultDescription": "इस प्रकार के नए कनेक्शन के लिए इस ऐप को डिफ़ॉल्ट रूप से उपयोग करें।",
+        "allowChildOverrideLabel": "चाइल्ड ओवरराइड अनुमति दें",
+        "allowChildOverrideDescription": "चाइल्ड संगठनों को इस प्रकार के लिए अपनी OAuth ऐप कॉन्फ़िगर करने की अनुमति दें।",
+        "cancelButton": "रद्द करें",
+        "createButton": "बनाएं",
+        "saveButton": "परिवर्तन सहेजें",
+        "savingLabel": "सहेजा जा रहा है\u2026",
+        "schemaError": "इस प्रकार के लिए स्कीमा लोड करने में विफल।",
+        "genericError": "एक त्रुटि हुई। कृपया पुनः प्रयास करें।"
+      },
+      "delete": {
+        "title": "\u00ab{{name}}\u00bb हटाएं?",
+        "message": "यह OAuth ऐप स्थायी रूप से हटा दी जाएगी। इसे वर्तमान में उपयोग करने वाले कनेक्टर इंस्टेंस काम करना बंद कर सकते हैं।",
+        "confirmLabel": "हटाएं",
+        "forceDeleteButton": "जबरन हटाएं",
+        "forceTitle": "\u00ab{{name}}\u00bb को जबरन हटाएं?",
+        "forceMessage": "यह OAuth ऐप अभी उपयोग में है। इसे जबरन हटाने से यह ऐप हट जाएगी और इस पर निर्भर मौजूदा कनेक्टर कनेक्शन टूट सकते हैं। यह क्रिया पूर्ववत नहीं की जा सकती।",
+        "forceConfirmLabel": "जबरन हटाएं",
+        "successMessage": "OAuth ऐप \u00ab{{name}}\u00bb हटा दी गई।"
+      },
+      "errors": {
+        "loadTypes": "उपलब्ध OAuth ऐप प्रकार लोड करने में विफल।",
+        "loadConnectors": "कनेक्टर OAuth ऐप्स लोड करने में विफल।",
+        "loadToolsets": "एक्शन OAuth ऐप्स लोड करने में विफल।",
+        "deleteGeneric": "OAuth ऐप हटाने में विफल।"
+      }
     }
   },
   "filePreview": {
@@ -2245,9 +2677,11 @@
     "startMessageLabel": "प्रारंभ संदेश",
     "modelSection": "मॉडल",
     "toolsetsSection": "टूलसेट",
+    "mcpServersSection": "MCP सर्वर",
     "inputSection": "इनपुट",
     "responseSection": "प्रतिक्रिया",
     "connectModel": "मॉडल कनेक्ट करें",
+    "usingOrgDefault": "संगठन के डिफ़ॉल्ट मॉडल का उपयोग किया जा रहा है",
     "optional": "वैकल्पिक",
     "connectChatInput": "चैट इनपुट कनेक्ट करें",
     "toChatOutput": "चैट आउटपुट से",
@@ -2323,6 +2757,12 @@
     "toolsetCredentialsTitle": "एजेंट टूलसेट क्रेडेंशियल",
     "toolsetCredentialsBadge": "सर्विस एजेंट",
     "toolsetCredentialsDesc": "क्रेडेंशियल केवल इस एजेंट पर लागू होते हैं। एजेंट के माध्यम से इस टूलसेट के सभी आह्वान इन क्रेडेंशियल का उपयोग करते हैं।",
+    "mcpCredentialsTitle": "MCP सर्वर क्रेडेंशियल",
+    "mcpCredentialsDesc": "इस MCP सर्वर को प्रमाणित करें ताकि एजेंट इसके टूल का उपयोग कर सके।",
+    "mcpServerDefaultName": "MCP सर्वर",
+    "mcpAuthUpdatedNotify": "MCP प्रमाणीकरण अपडेट हो गया।",
+    "mcpAuthSaveError": "MCP क्रेडेंशियल सहेजने में विफल।",
+    "mcpAuthRemoveError": "MCP क्रेडेंशियल हटाने में विफल।",
     "loadingSchema": "स्कीमा लोड हो रहा है…",
     "fillRequiredFields": "कृपया सभी आवश्यक फ़ील्ड भरें।",
     "fieldRequired": "{{field}} आवश्यक है",
@@ -2423,6 +2863,8 @@
     "dropConnectorMustEnableApp": "\"{{app}}\" के लिए कनेक्टर को एजेंटों के लिए कॉन्फ़िगर और सक्षम किया जाना चाहिए।",
     "dropEnableConnectorToolGroup": "अपना टूल समूह जोड़ने से पहले इस कनेक्टर को एजेंटों के लिए सक्षम करें।",
     "dropOnlyOneToolGroup": "केवल एक {{type}} टूल समूह की अनुमति है। पहले मौजूदा नोड हटाएं।",
+    "dropDuplicateConnector": "{{name}} पहले से ही इस एजेंट में जोड़ा गया है",
+    "dropDuplicateKB": "{{name}} पहले से ही इस एजेंट में जोड़ा गया है",
     "toolsetStatusAuthenticated": "प्रमाणित और उपयोग के लिए तैयार",
     "toolsetStatusNeedsAuth": "कॉन्फ़िगर किया गया — प्रमाणित करने के लिए साइन इन करें",
     "toolsetStatusRegistry": "रजिस्ट्री सूची — आपके वर्कस्पेस के लिए कॉन्फ़िगर नहीं",
@@ -2609,6 +3051,16 @@
       "savingToastDescription": "इसमें कुछ सेकंड लगेंगे",
       "successToast": "खाता सफलतापूर्वक बनाया गया!",
       "failToast": "साइन अप विफल हुआ। कृपया पुनः प्रयास करें।",
+      "createWorkspaceTitle": "नया कार्यक्षेत्र बनाएं",
+      "createWorkspaceSubtitle": "अपने संगठन के लिए एक नया कार्यक्षेत्र सेट करें।",
+      "fullNameLabel": "पूरा नाम*",
+      "fullNamePlaceholder": "अपना पूरा नाम दर्ज करें",
+      "verificationSentToast": "अपना इनबॉक्स जाँचें",
+      "verificationSentDescription": "आपके ईमेल पर एक सत्यापन लिंक भेजा गया है। अपने संगठन को सक्रिय करने के लिए उस पर क्लिक करें।",
+      "accountCreatedToast": "खाता बनाया गया",
+      "accountCreatedDescription": "आपका संगठन तैयार है। आप अभी साइन इन कर सकते हैं।",
+      "emailFailedToast": "संगठन बनाया गया",
+      "emailFailedDescription": "हम सत्यापन ईमेल नहीं भेज सके। कृपया सहायता से संपर्क करें।",
       "errors": {
         "firstNameRequired": "पहला नाम आवश्यक है।",
         "lastNameRequired": "अंतिम नाम आवश्यक है।",
@@ -2618,7 +3070,8 @@
         "passwordRequired": "पासवर्ड आवश्यक है।",
         "confirmPasswordRequired": "कृपया अपना पासवर्ड पुष्ट करें।",
         "passwordsMismatch": "पासवर्ड मेल नहीं खाते।",
-        "emailAlreadyExists": "इस ईमेल से पहले से एक खाता मौजूद है।"
+        "emailAlreadyExists": "इस ईमेल से पहले से एक खाता मौजूद है।",
+        "fullNameRequired": "पूरा नाम आवश्यक है।"
       },
       "confirmDialog": {
         "title": "PipesHub अनुमतियाँ कैसे असाइन करता है",
@@ -2628,7 +3081,9 @@
         "emailNotePre": "सुनिश्चित करें कि जिस ईमेल से आपने पंजीकरण किया —",
         "emailNotePost": "— वही आपके संगठन के ऐप्स में उपयोग की जाती है, ताकि आपकी अनुमतियाँ सही तरीके से पहचानी जा सकें।",
         "cancelButton": "रद्द करें",
-        "signUpButton": "साइन अप करें"
+        "signUpButton": "साइन अप करें",
+        "verificationNoteTitle": "सत्यापन आवश्यक है",
+        "verificationNoteBody": "ऊपर दिए गए ईमेल पर एक सत्यापन लिंक भेजा जाएगा। सत्यापन के बाद ही आपका संगठन सुलभ होगा।"
       }
     },
     "login": {
@@ -2638,7 +3093,11 @@
       "emailVerifyFailedDescription": "लिंक अमान्य या समयाप्त हो सकता है।",
       "samlErrorTitle": "SAML से लॉगइन में त्रुटि",
       "samlSignInFailedTitle": "साइन-इन विफल",
-      "samlSignInFailedDescription": "SAML SSO पूरा नहीं हो सका। कृपया पुनः प्रयास करें।"
+      "samlSignInFailedDescription": "SAML SSO पूरा नहीं हो सका। कृपया पुनः प्रयास करें।",
+      "orgEmailVerifiedTitle": "संगठन सत्यापित",
+      "orgEmailVerifiedDescription": "आपका संगठन अब सक्रिय है। जारी रखने के लिए साइन इन करें।",
+      "orgEmailVerifyFailedTitle": "सत्यापन विफल",
+      "orgEmailVerifyFailedDescription": "लिंक अमान्य या समयाप्त हो सकता है। कृपया पुनः साइन अप करें।"
     },
     "common": {
       "signIn": "साइन इन",

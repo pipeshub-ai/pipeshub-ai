@@ -118,6 +118,13 @@ export const googleAuthConfigSchema = z.object({
   }),
 });
 
+export const githubAuthConfigSchema = z.object({
+  body: z.object({
+    clientId: z.string().min(1, { message: 'GitHub client ID is required' }),
+    clientSecret: z.string().min(1, { message: 'GitHub client secret is required' }),
+  }),
+});
+
 export const oauthConfigSchema = z.object({
   body: z.object({
     providerName: z.string().min(1, { message: 'Provider name is required' }),
@@ -531,9 +538,11 @@ export const aiModelsConfigSchema = z.object({
       tts: z.array(modelConfigurationSchema).optional(),
       stt: z.array(modelConfigurationSchema).optional(),
       customSystemPrompt: z.string().optional().nullable(),
+      customSystemPromptWebSearch: z.string().optional().nullable(),
+      customSystemPromptAgent: z.string().optional().nullable(),
     })
     .strict({
-      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, and customSystemPrompt',
+      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, customSystemPrompt, customSystemPromptWebSearch, and customSystemPromptAgent',
     })
     .refine(
       (data) => {

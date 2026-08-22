@@ -6,7 +6,7 @@ Covers:
 - __handle_user_deleted (exception)
 - __handle_app_enabled (exception, multiple apps)
 - __handle_app_disabled (cancel sync success, cancel sync exception)
-- __handle_user_added (immediate sync skipping calendar, existing user path)
+- __handle_user_added (existing user path; immediate sync commented out)
 - __get_or_create_knowledge_base (empty userId/orgId, KB app returns None, exception)
 - __create_kb_connector_app_instance (no metadata, existing app, connector creation failure)
 - __create_user_kb_app_relation (edge exists via _to format)
@@ -253,47 +253,6 @@ class TestHandleAppDisabledExtended:
 
 
 # ===================================================================
-# __handle_user_added - immediate sync paths
-# ===================================================================
-
-class TestHandleUserAddedImmediateSync:
-
-    @pytest.mark.asyncio
-    async def test_immediate_sync_skips_calendar(self):
-        svc = _make_service()
-        svc.graph_provider.get_user_by_email = AsyncMock(return_value=None)
-        svc.graph_provider.get_document = AsyncMock(
-            return_value={"accountType": "ENTERPRISE"}
-        )
-        svc.graph_provider.batch_upsert_nodes = AsyncMock()
-        svc.graph_provider.batch_create_edges = AsyncMock()
-        svc.graph_provider.get_org_apps = AsyncMock(
-            return_value=[
-                {"name": "Calendar"},
-                {"name": "Gmail"},
-            ]
-        )
-        svc._EntityEventService__get_or_create_knowledge_base = AsyncMock(return_value={})
-        svc._EntityEventService__create_user_kb_app_relation = AsyncMock(return_value=True)
-        svc._EntityEventService__handle_sync_event = AsyncMock(return_value=True)
-
-        result = await svc.process_event(
-            "userAdded",
-            {
-                "userId": "u1",
-                "orgId": "org-1",
-                "email": "user@test.com",
-                "syncAction": "immediate",
-            },
-        )
-        assert result is True
-        # Only Gmail should trigger sync, Calendar skipped
-        assert svc._EntityEventService__handle_sync_event.await_count == 1
-        call_kwargs = svc._EntityEventService__handle_sync_event.call_args[1]
-        assert call_kwargs["event_type"] == "gmail.user"
-
-
-# ===================================================================
 # __handle_org_created - BUSINESS account type
 # ===================================================================
 
@@ -330,6 +289,7 @@ class TestOrgCreatedBusinessAccount:
 # __get_or_create_knowledge_base - edge cases
 # ===================================================================
 
+@pytest.mark.skip(reason="Method __create_kb_connector_app_instance removed - KB creation now per-user, not per-org")
 class TestGetOrCreateKBEdgeCases:
 
     @pytest.mark.asyncio
@@ -391,6 +351,7 @@ class TestGetOrCreateKBEdgeCases:
 # __create_kb_connector_app_instance - edge cases
 # ===================================================================
 
+@pytest.mark.skip(reason="Method __create_kb_connector_app_instance removed - KB creation now per-user, not per-org")
 class TestCreateKbConnectorAppInstanceEdgeCases:
 
     @pytest.mark.asyncio

@@ -8,17 +8,14 @@ import type { AgentStrategy } from '@/chat/types';
 
 /** Canonical strategy order for dropdowns and mode panels — single source of truth. */
 export const AGENT_STRATEGIES: readonly AgentStrategy[] = [
-  'auto',
   'quick',
-  'verify',
-  'deep',
 ];
 
 /** Material Icons names (outlined set) per strategy */
 export const AGENT_STRATEGY_ICONS: Record<AgentStrategy, string> = {
   auto: 'auto_awesome',
   quick: 'bolt',
-  verify: 'fact_check',
+  'plan-execute': 'checklist',
   deep: 'psychology',
 };
 

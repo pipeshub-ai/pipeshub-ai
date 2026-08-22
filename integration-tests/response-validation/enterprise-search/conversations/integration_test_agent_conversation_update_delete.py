@@ -29,6 +29,13 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
+from helper.agui_sse import (
+    is_root_error,
+    is_root_finished,
+    iter_sse_envelopes,
+    run_error_message,
+    run_finished_result,
+)
 from helper.clients.conversations_client import AgentConversationsClient
 from openapi_search_validator import assert_matches_component_schema
 from openapi_schema_validator import (
@@ -37,14 +44,12 @@ from openapi_schema_validator import (
     assert_response_matches_openapi_ref,
 )
 
-_SSE_MAX_EVENTS = 10_000
-_SSEEnvelope = dict[str, str]
 
 # Rich optional-field body for offline OpenAPI request validation. Omits `filters`
 # because `Filters.apps` / `Filters.kb` use a oneOf that jsonschema rejects for
 # typical test ids (documented OpenAPI/schema quirk; live gateway still accepts them).
 _RICH_REGENERATE_REQUEST_OPENAPI_PAYLOAD: dict[str, Any] = {
-    "chatMode": "auto",
+    "chatMode": "quick",
     "modelKey": "model-key",
     "modelName": "model-name",
     "modelFriendlyName": "Model Friendly Name",
@@ -65,51 +70,6 @@ def _response_json(resp: requests.Response) -> dict[str, Any]:
     return data
 
 
-def _iter_sse_envelopes(
-    resp: requests.Response,
-    *,
-    max_events: int = _SSE_MAX_EVENTS,
-) -> Iterator[_SSEEnvelope]:
-    event_name: str | None = None
-    data_lines: list[str] = []
-
-    def flush() -> _SSEEnvelope | None:
-        nonlocal event_name, data_lines
-        if event_name is None:
-            return None
-        env = {"event": event_name, "data": "\n".join(data_lines)}
-        event_name = None
-        data_lines = []
-        return env
-
-    emitted = 0
-    for raw in resp.iter_lines(decode_unicode=True):
-        if raw is None:
-            continue
-        line = raw.rstrip("\r")
-        if line == "":
-            env = flush()
-            if env is not None:
-                yield env
-                emitted += 1
-                if emitted >= max_events:
-                    raise AssertionError(f"SSE exceeded max_events={max_events}")
-            continue
-
-        if line.startswith(":"):
-            continue
-        if line.startswith("event:"):
-            event_name = line[len("event:") :].strip()
-            continue
-        if line.startswith("data:"):
-            data_lines.append(line[len("data:") :].lstrip())
-            continue
-
-    env = flush()
-    if env is not None:
-        yield env
-
-
 class AgentConversationsTestBase:
     """Shared agent_conversations_client fixture and stream helpers."""
 
@@ -127,7 +87,10 @@ class AgentConversationsTestBase:
             if stream_override
             else max(self.timeout, 120)
         )
-        self.primary_agent = agent_session["primary_agent"]
+        # Nothing here asserts on KB content, and a knowledge-free agent cannot register
+        # the retrieval toolset — so every conversation this file seeds costs one LLM
+        # turn instead of two.
+        self.agent_key = agent_session["workhorse_agent"]
         self.secondary_agents = list(agent_session["secondary_agents"])
 
     @pytest.fixture
@@ -160,23 +123,23 @@ class AgentConversationsTestBase:
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
-            for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+            for envelope in iter_sse_envelopes(resp):
+                payload = json.loads(envelope["data"])
+                if is_root_error(envelope["event"], payload):
+                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
+                if not is_root_finished(envelope["event"], payload):
                     continue
 
-                payload = json.loads(envelope["data"])
-                conversation = payload.get("conversation") or {}
+                result = run_finished_result(payload)
+                conversation = result.get("conversation") or {}
                 conversation_id = conversation.get("_id")
                 assert isinstance(conversation_id, str) and conversation_id, (
-                    f"complete payload missing conversation._id: {payload!r}"
+                    f"RUN_FINISHED result missing conversation._id: {result!r}"
                 )
                 created_conversations.append((agent_key, conversation_id))
                 return conversation_id
 
-        raise AssertionError("agent conversation stream ended without a complete event")
+        raise AssertionError("agent conversation stream ended without a RUN_FINISHED event")
 
     def _get_conversation_messages(
         self,
@@ -290,7 +253,7 @@ class TestAgentConversationTitleUpdate(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-title-happy-{uuid4().hex}",
             created_conversations=created_conversations,
         )
@@ -303,7 +266,7 @@ class TestAgentConversationTitleUpdate(AgentConversationsTestBase):
         )
 
         resp = self.conversations.update_title(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             json=payload,
             timeout=self.timeout,
@@ -322,7 +285,7 @@ class TestAgentConversationTitleUpdate(AgentConversationsTestBase):
         assert_response_matches_openapi_operation(body, "updateAgentConversationTitle", status_code="200")
 
         get_resp = self.conversations.get_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -364,14 +327,14 @@ class TestAgentConversationTitleUpdate(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-title-query-{label}-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         new_title = f"query-rename-{uuid4().hex}"
 
         resp = self.conversations.update_title(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             title=new_title,
             params=params,
@@ -408,7 +371,7 @@ class TestAgentConversationTitleUpdate(AgentConversationsTestBase):
         conversation_id: str,
     ) -> None:
         resp = self.conversations.update_title(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             title="x",
             timeout=self.timeout,
@@ -425,7 +388,7 @@ class TestAgentConversationTitleUpdate(AgentConversationsTestBase):
 
     def test_patch_agent_conversation_title_nonexistent_conversation_returns_404(self) -> None:
         resp = self.conversations.update_title(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             title="x",
             timeout=self.timeout,
@@ -440,18 +403,15 @@ class TestAgentConversationTitleUpdate(AgentConversationsTestBase):
 
     def test_patch_agent_conversation_title_for_other_agent_key_returns_404(
         self,
-        created_conversations: list[tuple[str, str]],
+        readonly_agent_conversation: dict[str, str],
     ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"agent-title-wrong-agent-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
+        # A rejected write leaves the conversation untouched, so the shared read-only
+        # one is enough here.
         other_agent_key = self.secondary_agents[0]
 
         resp = self.conversations.update_title(
             other_agent_key,
-            conversation_id,
+            readonly_agent_conversation["conversation_id"],
             title="wrong-agent-title",
             timeout=self.timeout,
         )
@@ -476,17 +436,11 @@ class TestAgentConversationTitleUpdate(AgentConversationsTestBase):
         self,
         label: str,
         payload: dict[str, Any],
-        created_conversations: list[tuple[str, str]],
     ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"agent-title-invalid-body-{label}-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
-
+        # A placeholder id is fine since validation runs before the lookup.
         resp = self.conversations.update_title(
-            self.primary_agent,
-            conversation_id,
+            self.agent_key,
+            "0" * 24,
             json=payload,
             timeout=self.timeout,
         )
@@ -536,13 +490,13 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-delete-happy-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
         resp = self.conversations.delete_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -557,7 +511,7 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
         assert_response_matches_openapi_operation(body, "deleteAgentConversationById", status_code="200")
 
         get_resp = self.conversations.get_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -587,13 +541,13 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-delete-query-{label}-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
         resp = self.conversations.delete_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             params=params,
             timeout=self.timeout,
@@ -621,7 +575,7 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
         conversation_id: str,
     ) -> None:
         resp = self.conversations.delete_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -634,7 +588,7 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
         self,
     ) -> None:
         resp = self.conversations.delete_conversation(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             timeout=self.timeout,
         )
@@ -645,13 +599,12 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
 
     def test_delete_agent_conversation_for_other_agent_key_is_a_no_op(
         self,
-        created_conversations: list[tuple[str, str]],
+        readonly_agent_conversation: dict[str, str],
     ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"agent-delete-wrong-agent-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
+        """Doubles as the canary for the shared read-only conversation: if this delete
+        ever stops being a no-op, this fails before any other borrower sees it gone.
+        """
+        conversation_id = readonly_agent_conversation["conversation_id"]
         other_agent_key = self.secondary_agents[0]
 
         delete_resp = self.conversations.delete_conversation(
@@ -665,7 +618,7 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
         self._assert_delete_success(delete_body, expect_conversation=False)
 
         get_resp = self.conversations.get_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -676,13 +629,13 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-delete-twice-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
         first_delete = self.conversations.delete_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -695,7 +648,7 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
         )
 
         second_delete = self.conversations.delete_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -707,7 +660,7 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
 
     def test_delete_agent_conversation_without_auth_returns_401(self) -> None:
         resp = self.conversations.delete_conversation(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             auth=False,
             timeout=self.timeout,
@@ -741,13 +694,13 @@ class TestAgentConversationArchive(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-archive-happy-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
         resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -781,13 +734,13 @@ class TestAgentConversationArchive(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-archive-query-{label}-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
         resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             params=params,
             timeout=self.timeout,
@@ -811,7 +764,7 @@ class TestAgentConversationArchive(AgentConversationsTestBase):
         conversation_id: str,
     ) -> None:
         resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -824,7 +777,7 @@ class TestAgentConversationArchive(AgentConversationsTestBase):
         self,
     ) -> None:
         resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             timeout=self.timeout,
         )
@@ -832,18 +785,15 @@ class TestAgentConversationArchive(AgentConversationsTestBase):
 
     def test_post_archive_agent_conversation_for_other_agent_key_returns_404(
         self,
-        created_conversations: list[tuple[str, str]],
+        readonly_agent_conversation: dict[str, str],
     ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"agent-archive-wrong-agent-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
+        # The 404 means nothing was archived, so the shared conversation stays clean for
+        # the not-archived test below.
         other_agent_key = self.secondary_agents[0]
 
         resp = self.conversations.archive_conversation(
             other_agent_key,
-            conversation_id,
+            readonly_agent_conversation["conversation_id"],
             timeout=self.timeout,
         )
         assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
@@ -853,20 +803,20 @@ class TestAgentConversationArchive(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-archive-twice-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
         first_resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
         assert first_resp.status_code == 200, f"{first_resp.status_code}: {first_resp.text}"
 
         second_resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -876,7 +826,7 @@ class TestAgentConversationArchive(AgentConversationsTestBase):
 
     def test_post_archive_agent_conversation_without_auth_returns_401(self) -> None:
         resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             auth=False,
             timeout=self.timeout,
@@ -910,19 +860,19 @@ class TestAgentConversationUnarchive(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-unarchive-happy-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         archive_resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
         assert archive_resp.status_code == 200, f"{archive_resp.status_code}: {archive_resp.text}"
 
         resp = self.conversations.unarchive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -956,19 +906,19 @@ class TestAgentConversationUnarchive(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-unarchive-query-{label}-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         archive_resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
         assert archive_resp.status_code == 200, f"{archive_resp.status_code}: {archive_resp.text}"
 
         resp = self.conversations.unarchive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             params=params,
             timeout=self.timeout,
@@ -992,7 +942,7 @@ class TestAgentConversationUnarchive(AgentConversationsTestBase):
         conversation_id: str,
     ) -> None:
         resp = self.conversations.unarchive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -1005,7 +955,7 @@ class TestAgentConversationUnarchive(AgentConversationsTestBase):
         self,
     ) -> None:
         resp = self.conversations.unarchive_conversation(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             timeout=self.timeout,
         )
@@ -1016,12 +966,12 @@ class TestAgentConversationUnarchive(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-unarchive-wrong-agent-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         archive_resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -1037,24 +987,19 @@ class TestAgentConversationUnarchive(AgentConversationsTestBase):
 
     def test_post_unarchive_agent_conversation_not_archived_returns_400(
         self,
-        created_conversations: list[tuple[str, str]],
+        readonly_agent_conversation: dict[str, str],
     ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"agent-unarchive-active-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
-
+        # Borrows the shared conversation precisely because nothing ever archives it.
         resp = self.conversations.unarchive_conversation(
-            self.primary_agent,
-            conversation_id,
+            self.agent_key,
+            readonly_agent_conversation["conversation_id"],
             timeout=self.timeout,
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
 
     def test_post_unarchive_agent_conversation_without_auth_returns_401(self) -> None:
         resp = self.conversations.unarchive_conversation(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             auth=False,
             timeout=self.timeout,
@@ -1068,10 +1013,12 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
     def _setup_regenerate(
         self,
         reasoning_multimodal_llm_model: Any,
+        session_kb: dict[str, str],
     ) -> None:
         self.org_id = self.conversations._client.org_id
         self.reasoning_model_key = reasoning_multimodal_llm_model.model_key
         self.reasoning_model_name = reasoning_multimodal_llm_model.model_name
+        self.kb_id = session_kb["kb_id"]  # Add KB ID for filter tests
 
     def _post_regenerate_stream(
         self,
@@ -1093,7 +1040,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         ) as resp:
             status_code = resp.status_code
             content_type = (resp.headers.get("Content-Type") or "").lower()
-            for envelope in _iter_sse_envelopes(resp):
+            for envelope in iter_sse_envelopes(resp):
                 assert_matches_component_schema(
                     envelope,
                     "AgentRegenerateSSEEvent",
@@ -1106,7 +1053,9 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
                 envelopes.append(
                     {"event": envelope["event"], "data": parsed_data}
                 )
-                if envelope["event"] in {"complete", "error"}:
+                if is_root_finished(envelope["event"], parsed_data) or is_root_error(
+                    envelope["event"], parsed_data
+                ):
                     break
 
         return status_code, content_type, envelopes
@@ -1124,21 +1073,23 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             f"expected text/event-stream, got Content-Type={content_type!r}"
         )
         assert envelopes, "expected at least one SSE event"
-        complete_event = next(
-            (event for event in envelopes if event["event"] == "complete"),
+        finished_event = next(
+            (e for e in envelopes if is_root_finished(e["event"], e["data"])),
             None,
         )
-        assert complete_event is not None, f"expected complete event, got: {envelopes!r}"
-        payload = complete_event["data"]
-        assert isinstance(payload, dict), f"expected dict complete payload, got: {payload!r}"
-        conversation = payload.get("conversation") or {}
+        assert finished_event is not None, (
+            f"expected RUN_FINISHED event, got: {envelopes!r}"
+        )
+        result = run_finished_result(finished_event["data"])
+        assert result, f"expected dict RUN_FINISHED result, got: {finished_event['data']!r}"
+        conversation = result.get("conversation") or {}
         assert conversation.get("_id") == expected_conversation_id, (
-            f"conversation id mismatch: expected {expected_conversation_id!r}, got {payload!r}"
+            f"conversation id mismatch: expected {expected_conversation_id!r}, got {result!r}"
         )
         messages = conversation.get("messages") or []
-        assert messages, f"expected messages in complete payload: {payload!r}"
+        assert messages, f"expected messages in RUN_FINISHED result: {result!r}"
         last_message = messages[-1]
-        assert isinstance(last_message, dict), f"expected dict last message, got: {payload!r}"
+        assert isinstance(last_message, dict), f"expected dict last message, got: {result!r}"
         assert last_message.get("messageType") == "bot_response", (
             f"expected last message bot_response, got: {last_message!r}"
         )
@@ -1146,7 +1097,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         assert isinstance(content, str) and content.strip(), (
             f"expected non-empty bot content, got: {last_message!r}"
         )
-        return payload
+        return result
 
     def _assert_sse_error(
         self,
@@ -1162,15 +1113,15 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         )
         assert envelopes, "expected at least one SSE event"
         error_event = next(
-            (event for event in envelopes if event["event"] == "error"),
+            (e for e in envelopes if is_root_error(e["event"], e["data"])),
             None,
         )
-        assert error_event is not None, f"expected error event, got: {envelopes!r}"
+        assert error_event is not None, f"expected RUN_ERROR event, got: {envelopes!r}"
         payload = error_event["data"]
-        assert isinstance(payload, dict), f"expected dict error payload, got: {payload!r}"
-        message = payload.get("message") or payload.get("error") or payload.get("details") or ""
-        assert expected_substring.lower() in str(message).lower(), (
-            f"expected {expected_substring!r} in error payload, got: {payload!r}"
+        assert isinstance(payload, dict), f"expected dict RUN_ERROR payload, got: {payload!r}"
+        message = run_error_message(payload)
+        assert expected_substring.lower() in message.lower(), (
+            f"expected {expected_substring!r} in RUN_ERROR payload, got: {payload!r}"
         )
         return payload
 
@@ -1179,17 +1130,17 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-regenerate-happy-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         message_id, _ = self._conversation_last_bot_and_user_message_ids(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
         )
 
         assert_request_body_matches_openapi_operation(
-            {},
+            {"chatMode": "quick"},
             "regenerateAgentConversationMessage",
         )
         assert_request_body_matches_openapi_operation(
@@ -1198,10 +1149,10 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         )
 
         status_code, content_type, envelopes = self._post_regenerate_stream(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             message_id,
-            payload={},
+            payload={"chatMode": "quick"},
         )
 
         self._assert_sse_complete(
@@ -1221,7 +1172,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
                         "apps": ["123e4567-e89b-12d3-a456-426614174000"],
                         "kb": ["knowledgeBase_placeholder"],
                     },
-                    "chatMode": "auto",
+                    "chatMode": "quick",
                     "modelKey": "model-key",
                     "modelName": "model-name",
                     "modelFriendlyName": "Model Friendly Name",
@@ -1230,12 +1181,19 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
                     "tools": ["web_search", "calculator"],
                 },
             ),
-            ("chatMode only", {"chatMode": "auto"}),
-            ("currentTime only", {"currentTime": "2026-05-27T10:30:00+05:30"}),
-            ("tools only", {"tools": ["web_search"]}),
+            ("chatMode only", {"chatMode": "quick"}),
+            (
+                "currentTime only",
+                {
+                    "chatMode": "quick",
+                    "currentTime": "2026-05-27T10:30:00+05:30",
+                },
+            ),
+            ("tools only", {"chatMode": "quick", "tools": ["web_search"]}),
             (
                 "filters only",
                 {
+                    "chatMode": "quick",
                     "filters": {
                         "apps": ["123e4567-e89b-12d3-a456-426614174001"],
                         "kb": ["knowledgeBase_placeholder"],
@@ -1244,7 +1202,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             ),
             (
                 "unknown extra keys",
-                {"chatMode": "auto", "ignoredField": "ignored-value"},
+                {"chatMode": "quick", "ignoredField": "ignored-value"},
             ),
         ],
     )
@@ -1255,17 +1213,17 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-regenerate-body-{label}-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         message_id, _ = self._conversation_last_bot_and_user_message_ids(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
         )
         request_payload = json.loads(json.dumps(payload).replace(
             "knowledgeBase_placeholder",
-            f"knowledgeBase_{self.org_id}",
+            self.kb_id,  # Use actual KB UUID instead of knowledgeBase_orgId
         ))
         if request_payload.get("modelKey") == "model-key":
             request_payload["modelKey"] = self.reasoning_model_key
@@ -1278,7 +1236,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             )
 
         status_code, content_type, envelopes = self._post_regenerate_stream(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             message_id,
             payload=request_payload,
@@ -1305,10 +1263,10 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         conversation_id: str,
     ) -> None:
         resp = self.conversations.regenerate_message(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             "0" * 24,
-            json={},
+            json={"chatMode": "quick"},
             stream=False,
             timeout=self.timeout,
         )
@@ -1331,10 +1289,10 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         message_id: str,
     ) -> None:
         resp = self.conversations.regenerate_message(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             message_id,
-            json={},
+            json={"chatMode": "quick"},
             stream=False,
             timeout=self.timeout,
         )
@@ -1346,42 +1304,71 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
     @pytest.mark.parametrize(
         ("label", "payload"),
         [
+            ("missing chatMode", {}),
             ("empty chatMode", {"chatMode": ""}),
-            ("empty modelKey", {"modelKey": ""}),
-            ("empty modelName", {"modelName": ""}),
-            ("empty modelFriendlyName", {"modelFriendlyName": ""}),
-            ("empty timezone", {"timezone": ""}),
-            ("invalid currentTime", {"currentTime": "not-an-iso-datetime"}),
-            ("currentTime without offset", {"currentTime": "2026-05-27T10:30:00"}),
-            ("tools not array", {"tools": "web_search"}),
-            ("tools has empty string", {"tools": ["web_search", ""]}),
-            ("filters not object", {"filters": "invalid"}),
-            ("filters.apps not array", {"filters": {"apps": "invalid"}}),
-            ("filters.kb not array", {"filters": {"kb": "invalid"}}),
-            ("filters.apps invalid entry", {"filters": {"apps": ["not-a-valid-app-id"]}}),
-            ("filters.kb invalid entry", {"filters": {"kb": ["not-a-valid-kb-id"]}}),
+            ("auto chatMode", {"chatMode": "auto"}),
+            ("deep chatMode", {"chatMode": "deep"}),
+            ("planExecute chatMode", {"chatMode": "planExecute"}),
+            ("verification chatMode", {"chatMode": "verification"}),
+            ("empty modelKey", {"chatMode": "quick", "modelKey": ""}),
+            ("empty modelName", {"chatMode": "quick", "modelName": ""}),
+            (
+                "empty modelFriendlyName",
+                {"chatMode": "quick", "modelFriendlyName": ""},
+            ),
+            ("empty timezone", {"chatMode": "quick", "timezone": ""}),
+            (
+                "invalid currentTime",
+                {"chatMode": "quick", "currentTime": "not-an-iso-datetime"},
+            ),
+            (
+                "currentTime without offset",
+                {
+                    "chatMode": "quick",
+                    "currentTime": "2026-05-27T10:30:00",
+                },
+            ),
+            ("tools not array", {"chatMode": "quick", "tools": "web_search"}),
+            (
+                "tools has empty string",
+                {"chatMode": "quick", "tools": ["web_search", ""]},
+            ),
+            ("filters not object", {"chatMode": "quick", "filters": "invalid"}),
+            (
+                "filters.apps not array",
+                {"chatMode": "quick", "filters": {"apps": "invalid"}},
+            ),
+            (
+                "filters.kb not array",
+                {"chatMode": "quick", "filters": {"kb": "invalid"}},
+            ),
+            (
+                "filters.apps invalid entry",
+                {
+                    "chatMode": "quick",
+                    "filters": {"apps": ["not-a-valid-app-id"]},
+                },
+            ),
+            (
+                "filters.kb invalid entry",
+                {
+                    "chatMode": "quick",
+                    "filters": {"kb": ["not-a-valid-kb-id"]},
+                },
+            ),
         ],
     )
     def test_post_agent_conversation_regenerate_rejects_invalid_body(
         self,
         label: str,
         payload: dict[str, Any],
-        created_conversations: list[tuple[str, str]],
     ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"agent-regenerate-invalid-body-{label}-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
-        message_id, _ = self._conversation_last_bot_and_user_message_ids(
-            self.primary_agent,
-            conversation_id,
-        )
-
+        # Placeholder ids are fine since validation runs before the lookup; the test
+        # below pins that ordering against a real conversation.
         resp = self.conversations.regenerate_message(
-            self.primary_agent,
-            conversation_id,
-            message_id,
+            self.agent_key,
+            "0" * 24,
+            "0" * 24,
             json=payload,
             stream=False,
             timeout=self.timeout,
@@ -1391,14 +1378,32 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             f"[{label}] Expected validation details"
         )
 
+    def test_post_agent_conversation_regenerate_validates_body_before_lookup(
+        self,
+        readonly_agent_conversation: dict[str, str],
+    ) -> None:
+        """The 400-body cases above use placeholder ids, so none of them would notice if
+        ValidationMiddleware were wired after the controller. This one would: real
+        conversation, real bot messageId, still a validation error rather than a stream.
+        """
+        resp = self.conversations.regenerate_message(
+            self.agent_key,
+            readonly_agent_conversation["conversation_id"],
+            readonly_agent_conversation["bot_message_id"],
+            json={"chatMode": "auto"},
+            stream=False,
+            timeout=self.timeout,
+        )
+        self._assert_validation_error(resp)
+
     def test_post_agent_conversation_regenerate_nonexistent_conversation_emits_sse_error(
         self,
     ) -> None:
         status_code, content_type, envelopes = self._post_regenerate_stream(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             "0" * 24,
-            payload={},
+            payload={"chatMode": "quick"},
         )
 
         self._assert_sse_error(
@@ -1410,24 +1415,17 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
 
     def test_post_agent_conversation_regenerate_for_other_agent_key_emits_sse_error(
         self,
-        created_conversations: list[tuple[str, str]],
+        readonly_agent_conversation: dict[str, str],
     ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"agent-regenerate-wrong-agent-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
-        message_id, _ = self._conversation_last_bot_and_user_message_ids(
-            self.primary_agent,
-            conversation_id,
-        )
+        # Errors on the agentKey filter before any write, so the shared conversation
+        # keeps its [user_query, bot_response] shape.
         other_agent_key = self.secondary_agents[0]
 
         status_code, content_type, envelopes = self._post_regenerate_stream(
             other_agent_key,
-            conversation_id,
-            message_id,
-            payload={},
+            readonly_agent_conversation["conversation_id"],
+            readonly_agent_conversation["bot_message_id"],
+            payload={"chatMode": "quick"},
         )
 
         self._assert_sse_error(
@@ -1439,23 +1437,15 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
 
     def test_post_agent_conversation_regenerate_non_last_message_id_emits_sse_error(
         self,
-        created_conversations: list[tuple[str, str]],
+        readonly_agent_conversation: dict[str, str],
     ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"agent-regenerate-non-last-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
-        _last_bot_id, user_query_id = self._conversation_last_bot_and_user_message_ids(
-            self.primary_agent,
-            conversation_id,
-        )
-
+        # Depends on the shared conversation staying at [user_query, bot_response]: the
+        # user query is only "not the last message" while nothing has appended to it.
         status_code, content_type, envelopes = self._post_regenerate_stream(
-            self.primary_agent,
-            conversation_id,
-            user_query_id,
-            payload={},
+            self.agent_key,
+            readonly_agent_conversation["conversation_id"],
+            readonly_agent_conversation["user_message_id"],
+            payload={"chatMode": "quick"},
         )
 
         self._assert_sse_error(
@@ -1469,6 +1459,19 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
 @pytest.mark.integration
 class TestAgentConversationRegenerateOpenApiRequestContract:
     """Offline OpenAPI request-body checks not covered by live gateway negatives."""
+
+    def test_requires_quick_chat_mode(self) -> None:
+        assert_request_body_matches_openapi_operation(
+            {"chatMode": "quick"},
+            "regenerateAgentConversationMessage",
+        )
+
+        for payload in ({}, {"chatMode": "auto"}):
+            with pytest.raises(AssertionError):
+                assert_request_body_matches_openapi_operation(
+                    payload,
+                    "regenerateAgentConversationMessage",
+                )
 
     def test_rejects_extra_top_level_property(self) -> None:
         payload = {"chatMode": "answer", "unexpectedTopLevelField": "x"}

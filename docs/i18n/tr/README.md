@@ -44,7 +44,7 @@
   <a href="https://www.npmjs.com/package/@pipeshub-ai/sdk"><img src="https://img.shields.io/npm/v/@pipeshub-ai/sdk?logo=npm&amp;logoColor=white&amp;label=node%20sdk" alt="Node.js SDK" /></a>
   <a href="https://pypi.org/project/pipeshub-sdk/"><img src="https://img.shields.io/pypi/v/pipeshub-sdk?logo=python&amp;logoColor=white&amp;label=python%20sdk" alt="Python SDK" /></a>
   <a href="https://github.com/pipeshub-ai/pipeshub-sdk-go"><img src="https://img.shields.io/github/v/release/pipeshub-ai/pipeshub-sdk-go?logo=go&amp;logoColor=white&amp;label=go%20sdk" alt="Go SDK" /></a>
-  <a href="https://www.npmjs.com/package/pipeshub"><img src="https://img.shields.io/npm/v/pipeshub?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
+  <a href="https://www.npmjs.com/package/@pipeshub-ai/mcp"><img src="https://img.shields.io/npm/v/@pipeshub-ai/mcp?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
 </p>
 
 </div>
@@ -122,7 +122,6 @@
 |-----------|-------------|
 | FastAPI | Yüksek performanslı Python web çerçevesi |
 | LangChain | LLM ardışık düzenleri için çerçeve |
-| LangGraph | LLM iş akışları için durum grafiği |
 | Qdrant | Vektör benzerliği arama motoru |
 | Neo4j / ArangoDB | Grafik veritabanı |
 | Kafka / Redis Streams | Dağıtık olay akışı platformu |
@@ -265,7 +264,7 @@ Not: Bulut dağıtımları için HTTPS kullanın. HTTP, ön uçta güvenlik enge
 
 ### PipesHub hangi LLM sağlayıcılarını destekler?
 
-PipesHub "Kendi Modelini Getir" yaklaşımını benimser — herhangi bir LLM sağlayıcısını kullanabilirsiniz. Tercih ettiğiniz modellerle kendi VPC'nizde dağıtım yapın. Teknoloji yığını, LLM ardışık düzenleri ve iş akışları için LangChain ve LangGraph içerir.
+PipesHub "Kendi Modelini Getir" yaklaşımını benimser — herhangi bir LLM sağlayıcısını kullanabilirsiniz. Tercih ettiğiniz modellerle kendi VPC'nizde dağıtım yapın. Teknoloji yığını, LLM ardışık düzenleri ve iş akışları için LangChain içerir.
 
 ### Bilgi Grafiği ile Erişim özelliği nedir?
 

@@ -291,9 +291,9 @@ export const ConnectorsApi = {
       limit?: number;
       search?: string;
       cursor?: string;
-      /** GitLab: scope project_ids options to repos under these group namespace paths */
+      /** Scope repository options to those under these parent containers (GitLab groups / GitHub orgs) */
       contextGroupPath?: string[];
-      /** GitLab: exclude project_ids options under these group namespace paths */
+      /** Exclude repository options under these parent containers */
       excludeContextGroupPath?: string[];
     }
   ): Promise<FilterOptionsResponse> {
@@ -354,16 +354,15 @@ export const ConnectorsApi = {
     return data;
   },
 
-  /** Reindex failed (and optionally filtered) records for a connector */
-  async reindexFailedConnector(
-    connectorId: string,
-    app: string,
-    statusFilters?: string[]
-  ) {
+  /**
+   * Reindex all records for a connector instance, optionally filtered by
+   * indexing status. Omitting statusFilters reindexes everything for a KB
+   * connector; other connector types default server-side to FAILED-only.
+   */
+  async reindexConnector(connectorId: string, statusFilters?: string[]) {
     const { data } = await apiClient.post(
-      `${BASE_URL}/${connectorId}/reindex-failed`,
+      `${BASE_URL}/${connectorId}/reindex`,
       {
-        app,
         ...(statusFilters?.length ? { statusFilters } : {}),
       }
     );

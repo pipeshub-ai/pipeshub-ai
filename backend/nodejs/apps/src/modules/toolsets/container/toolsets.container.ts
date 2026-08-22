@@ -3,7 +3,7 @@ import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { Logger } from '../../../libs/services/logger.service';
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
-import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { AuthMiddleware } from '../../../config';
 import { EntitiesEventProducer } from '../../tokens_manager/services/entity_event.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { IMessageProducer } from '../../../libs/types/messaging.types';

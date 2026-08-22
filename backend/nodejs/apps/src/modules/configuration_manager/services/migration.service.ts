@@ -7,10 +7,12 @@ import {
 } from '../config/config';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { configPaths } from '../paths/paths';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { ScheduledJobsBackfillMigration } from './migrations/scheduled_jobs_backfill.migration';
+import { ChatKbFiltersMigration } from './migrations/chat_kb_filters.migration';
+import { AdminRoleMigration } from './migrations/admin_role.migration';
 import { Org } from '../../user_management/schema/org.schema';
 
 export interface MigrationDependencies {
@@ -37,7 +39,57 @@ export class MigrationService {
     this.logger.info('Running migration...');
     // await this.aiModelsMigration();  NO LONGER NEEDED
     await this.connectorSyncScheduleMigration(deps.scheduler, deps.appConfig);
+    await this.chatKbFiltersMigration();
+    await this.adminRoleMigration();
     this.logger.info('✅ Migration completed');
+  }
+
+  async adminRoleMigration(): Promise<void> {
+    this.logger.info('Migrating admin group membership to user.role');
+    try {
+      const result = await new AdminRoleMigration(
+        this.logger,
+        this.keyValueStoreService,
+      ).run();
+
+      if (result.errored > 0) {
+        this.logger.warn(
+          '⚠️  Admin-role migration finished with errors — will retry on next boot',
+          result,
+        );
+      } else {
+        this.logger.info('✅ Admin role migrated', result);
+      }
+    } catch (error) {
+      this.logger.error('Admin-role migration failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async chatKbFiltersMigration(): Promise<void> {
+    this.logger.info('Migrating chat KB filters');
+    try {
+      const result = await new ChatKbFiltersMigration(
+        this.logger,
+        this.keyValueStoreService,
+        this.configManagerConfig.algorithm,
+        this.configManagerConfig.secretKey,
+      ).run();
+
+      if (result.errored > 0) {
+        this.logger.warn(
+          '⚠️  Chat KB-filters migration finished with errors — will retry on next boot',
+          result,
+        );
+      } else {
+        this.logger.info('✅ Chat KB filters migrated', result);
+      }
+    } catch (error) {
+      this.logger.error('Chat KB-filters migration failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
   }
 
   async connectorSyncScheduleMigration(
@@ -111,7 +163,7 @@ export class MigrationService {
     let isDefault = true;
     for (const llmConfig of llmConfigs) {
       if (!llmConfig.modelKey) {
-        const modelKey = uuidv4();
+        const modelKey = randomUUID();
         llmConfig.modelKey = modelKey;
         llmConfig.isDefault = isDefault;
         llmConfig.isMultiModel = false;
@@ -123,7 +175,7 @@ export class MigrationService {
     isDefault = true;
     for (const embeddingConfig of embeddingConfigs) {
       if (!embeddingConfig.modelKey) {
-        const modelKey = uuidv4();
+        const modelKey = randomUUID();
         embeddingConfig.modelKey = modelKey;
         embeddingConfig.isDefault = isDefault;
         embeddingConfig.isMultiModel = false;

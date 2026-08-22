@@ -27,9 +27,6 @@
   <a href="https://github.com/pipeshub-ai/pipeshub-ai/pulls">
     <img src="https://img.shields.io/github/issues-pr/pipeshub-ai/pipeshub-ai" alt="GitHub pull requests">
   </a>
-  <a href="https://github.com/pipeshub-ai/pipeshub-ai/stargazers">
-    <img src="https://img.shields.io/github/stars/pipeshub-ai/pipeshub-ai" alt="GitHub Repo stars">
-  </a>
   <br/>
   <a href="https://x.com/PipesHub"><img src="https://img.shields.io/twitter/follow/PipesHub?style=social" alt="Twitter"></a>
   <a href="https://www.linkedin.com/company/pipeshub"><img src="https://img.shields.io/badge/LinkedIn-PipesHub-blue?logo=linkedin&amp;logoColor=white" alt="LinkedIn"></a>
@@ -39,7 +36,7 @@
   <a href="https://www.npmjs.com/package/@pipeshub-ai/sdk"><img src="https://img.shields.io/npm/v/@pipeshub-ai/sdk?logo=npm&amp;logoColor=white&amp;label=node%20sdk" alt="Node.js SDK" /></a>
   <a href="https://pypi.org/project/pipeshub-sdk/"><img src="https://img.shields.io/pypi/v/pipeshub-sdk?logo=python&amp;logoColor=white&amp;label=python%20sdk" alt="Python SDK" /></a>
   <a href="https://github.com/pipeshub-ai/pipeshub-sdk-go"><img src="https://img.shields.io/github/v/release/pipeshub-ai/pipeshub-sdk-go?logo=go&amp;logoColor=white&amp;label=go%20sdk" alt="Go SDK" /></a>
-  <a href="https://www.npmjs.com/package/pipeshub"><img src="https://img.shields.io/npm/v/pipeshub?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
+  <a href="https://www.npmjs.com/package/@pipeshub-ai/mcp"><img src="https://img.shields.io/npm/v/@pipeshub-ai/mcp?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
 </p>
 
 **Translations:** [Français](docs/i18n/fr/README.md) · [Deutsch](docs/i18n/de/README.md) · [简体中文](docs/i18n/zh-CN/README.md) · [日本語](docs/i18n/ja/README.md) · [Русский](docs/i18n/ru/README.md) · [עברית](docs/i18n/he/README.md) · [한국어](docs/i18n/ko/README.md) · [Español](docs/i18n/es/README.md) · [Português](docs/i18n/pt/README.md) · [Türkçe](docs/i18n/tr/README.md) · [Tiếng Việt](docs/i18n/vi/README.md) · [Italiano](docs/i18n/it/README.md)
@@ -48,21 +45,26 @@
 
 <h2 id="about-pipeshub">PipesHub - Explainable & Extensible</h2>
 
-<strong>[PipesHub](https://www.pipeshub.com/)</strong> is an open-source, self-hosted AI-native execution layer that connects enterprise knowledge, delivers explainable search with citations, and automates workflows across your systems.
-
+<strong>[PipesHub](https://www.pipeshub.com/)</strong> is the open-source Context Layer for Enterprise AI. Connect enterprise knowledge across your organization, preserve access permissions, generate trustworthy citations, and build AI agents, enterprise search, RAG applications, MCP servers, and agentic workflows on a single governed context layer.
 
 ## Features
 
 - 📝 **Explainable Answers:** PipesHub delivers grounded answers with precise block citations to the original documents.
 - 🔒 **Permission-Aware Search:** Enforces source-level access controls so users only see what they're authorized to.
 - 🕸️ **Knowledge Graph Retrieval:** Graph-backed retrieval that captures relationships across enterprise data.
-- 🔌 **Enterprise Connectors:** 30+ connectors with real-time and scheduled indexing out of the box.
+- 🔌 **Enterprise Connectors:** 50+ connectors with real-time and scheduled indexing out of the box.
 - 🔍 **Unified Search, Deep Research, and Agents:** Search, Q&A, deep research, web search, and AI agents on one context layer.
 - 📊 **Artifacts and Code Execution:** Generate reports, charts, and dashboards in a safe execution sandbox.
 - 🎙️ **Multimodal Support:** Image, diagram, and scanned-file understanding plus voice-based interaction.
 - 🤖 **No-Code Agents and Actions:** Build agents visually and execute actions across enterprise tools.
 - 🧠 **Bring Your Own Model, Fully Self-Hostable:** Any LLM provider, deployed in your VPC — data never leaves your infrastructure.
 - 🛠️ **Developer-First and Extensible:** APIs, SDKs, MCP tools, custom connectors, and independently scalable services.
+
+## PipesHub Cloud
+
+Prefer a fully managed PipesHub without running your own infrastructure? PipesHub Cloud is coming soon.
+
+👉 **[Join the Cloud Waitlist](https://pipeshub.com/cloud-waitlist)** to get early access.
 
 ## PipesHub in Action
 
@@ -115,20 +117,22 @@
 
 ### Backend
 
-| Technology | Description |
-|-----------|-------------|
-| FastAPI | High-performance Python web framework |
-| LangChain | Framework for LLM pipelines |
-| LangGraph | State graph for LLM workflows |
-| Qdrant | Vector similarity search engine |
-| Neo4j / ArangoDB | Graph database |
-| Kafka / Redis Streams | Distributed event streaming platform |
-| Redis | Caching |
-| Redis / etcd3 | Distributed key-value configuration store |
-| Celery | Distributed task queue system |
-| Docling | Document parsing and extraction toolkit |
-| pdfplumber | PDF processing library |
-| pandas | Data analysis and manipulation |
+| Category | Technologies |
+|----------|--------------|
+| GraphDB | Neo4j / ArangoDB |
+| VectorDB | Qdrant / OpenSearch / Redis |
+| Document Store | MongoDB |
+| Blob Storage | Local filesystem / S3 / Azure Blob |
+| Message Broker | Kafka / Redis Streams |
+| Cache | Redis |
+| KV Store | Redis / etcd |
+| Task Queue | Celery |
+| Web Framework | FastAPI |
+| LLM Interface | LangChain (multi-provider model access) |
+| Embeddings | sentence-transformers / fastembed |
+| Document Parsing | pdfplumber, selectolax, markdown-it, openpyxl, csv (default) — or Docling, opt-in via `PARSER_BACKEND` |
+| Document Conversion | LibreOffice, CairoSVG |
+| Data Analysis | pandas |
 
 ## 🚀 Deployment Guide
 
@@ -198,6 +202,25 @@ Use PipesHub with any MCP-compatible client to bring your enterprise context int
 
 **Repository:** [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/)
 
+### Connecting an Omnigent agent
+
+First, mint a long-lived credential: **workspace → Developer settings →
+Personal Access Tokens → New token**. Pick an expiry (30/90/365 days, or
+never) — this runs as *you*, so results respect your own per-user
+permissions, unlike an OAuth app's client-credentials flow.
+
+Three ways to connect, from least to most setup:
+
+1. **Attach in the Omnigent web UI (fastest, no clone).** Open a session's
+   info panel → Manage MCP Servers → add PipesHub's URL and an
+   `Authorization: Bearer <token>` header → restart the session.
+2. **Run the packaged example agent.** A ready-made agent bundle (tuned
+   prompt + instructions) ships with Omnigent:
+   `PIPESHUB_MCP_URL=... PIPESHUB_MCP_TOKEN=... omnigent run examples/pipeshub/`.
+3. **Use the connect kit** in [`integrations/omnigent/`](integrations/omnigent/)
+   (`setup.sh` / `run.sh`) for CI, service accounts, or password/OAuth
+   client-credentials auth instead of a personal token.
+
 ## SDKs
 
 PipesHub provides developer SDKs for Python, TypeScript, and Go to help you integrate quickly. Check the respective SDK repository README for setup and usage details.
@@ -253,7 +276,7 @@ PipesHub is fully open-source (Apache 2.0) and self-hostable — your data never
 
 ### What connectors does PipesHub support?
 
-PipesHub has 30+ enterprise connectors with real-time and scheduled indexing. It supports file formats like PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, images, audio, and video.
+PipesHub has 50+ enterprise connectors with real-time and scheduled indexing. It supports file formats like PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, images, audio, and video.
 
 ### How do I deploy PipesHub?
 
@@ -271,7 +294,7 @@ Note: Use HTTPS for cloud deployments. HTTP may cause frontend security blocks.
 
 ### What LLM providers does PipesHub support?
 
-PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models. The tech stack includes LangChain and LangGraph for LLM pipelines and workflows.
+PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models. The tech stack includes LangChain for LLM pipelines and workflows.
 
 ### What is the Knowledge Graph Retrieval feature?
 
@@ -323,8 +346,12 @@ PipesHub supports image, diagram, and scanned-file understanding, plus voice-bas
 </p>
 
 <p>
-<a href="https://star-history.com/#pipeshub-ai/pipeshub-ai&amp;Date">
-<img src="https://api.star-history.com/svg?repos=pipeshub-ai/pipeshub-ai&amp;type=Date" alt="Star History" width="600"/>
+<a href="https://www.star-history.com/?repos=pipeshub-ai%2Fpipeshub-ai">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pipeshub-ai/pipeshub-ai&amp;type=date&amp;theme=dark&amp;legend=top-left&amp;sealed_token=msbcJ843ZmXCld8-zgduwH9hV6yn69hyfrnwfkcWiRqe7htnO6pSbQJrkxdoarzriLW6aGAETT-iQ3m7yWN3BacAyPyHfNIiPGabl6r6CbXFjcvJ7n1NZw" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pipeshub-ai/pipeshub-ai&amp;type=date&amp;legend=top-left&amp;sealed_token=msbcJ843ZmXCld8-zgduwH9hV6yn69hyfrnwfkcWiRqe7htnO6pSbQJrkxdoarzriLW6aGAETT-iQ3m7yWN3BacAyPyHfNIiPGabl6r6CbXFjcvJ7n1NZw" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pipeshub-ai/pipeshub-ai&amp;type=date&amp;legend=top-left&amp;sealed_token=msbcJ843ZmXCld8-zgduwH9hV6yn69hyfrnwfkcWiRqe7htnO6pSbQJrkxdoarzriLW6aGAETT-iQ3m7yWN3BacAyPyHfNIiPGabl6r6CbXFjcvJ7n1NZw" width="600" />
+ </picture>
 </a>
 </p>
 

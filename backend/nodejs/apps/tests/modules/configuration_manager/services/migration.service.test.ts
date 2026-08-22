@@ -1,3 +1,4 @@
+/// <reference types="mocha" />
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
@@ -53,7 +54,7 @@ describe('MigrationService', () => {
   })
 
   describe('runMigration', () => {
-    it('should call connectorSyncScheduleMigration', async () => {
+    it('should call connectorSyncScheduleMigration, chatKbFiltersMigration and adminRoleMigration', async () => {
       const service = new MigrationService(mockLogger, mockKeyValueStore)
       const mockScheduler = {
         scheduleJob: sinon.stub().resolves(),
@@ -63,12 +64,18 @@ describe('MigrationService', () => {
       const mockAppConfig = {
         connectorBackend: 'http://localhost:8088',
       }
-      // Stub connectorSyncScheduleMigration so it doesn't make real HTTP calls
-      sinon.stub(service, 'connectorSyncScheduleMigration' as any).resolves()
+      // Stub migrations so they don't make real HTTP calls or DB queries
+      const connectorStub = sinon.stub(service, 'connectorSyncScheduleMigration' as any).resolves()
+      const chatStub = sinon.stub(service, 'chatKbFiltersMigration' as any).resolves()
+      const adminStub = sinon.stub(service, 'adminRoleMigration' as any).resolves()
 
       await service.runMigration({ scheduler: mockScheduler as any, appConfig: mockAppConfig as any })
 
       expect(mockLogger.info.calledWith('Running migration...')).to.be.true
+      expect(connectorStub.calledOnce).to.be.true
+      expect(chatStub.calledOnce).to.be.true
+      expect(adminStub.calledOnce).to.be.true
+      expect(mockLogger.info.calledWith('✅ Migration completed')).to.be.true
     })
   })
 
@@ -127,6 +134,71 @@ describe('MigrationService', () => {
       const setArg = mockEncService.encrypt.firstCall.args[0]
       const parsed = JSON.parse(setArg)
       expect(parsed.llm[0].modelKey).to.equal('existing-key')
+    })
+  })
+
+  describe('chatKbFiltersMigration', () => {
+    let chatKbFiltersMigrationStub: sinon.SinonStub
+
+    beforeEach(() => {
+      // Mock the ChatKbFiltersMigration class
+      const ChatKbFiltersMigration = require('../../../../src/modules/configuration_manager/services/migrations/chat_kb_filters.migration').ChatKbFiltersMigration
+      chatKbFiltersMigrationStub = sinon.stub(ChatKbFiltersMigration.prototype, 'run')
+    })
+
+    afterEach(() => {
+      chatKbFiltersMigrationStub.restore()
+    })
+
+    it('should run chat KB-filters migration successfully', async () => {
+      chatKbFiltersMigrationStub.resolves({
+        conversationsUpdated: 5,
+        messagesUpdated: 12,
+        errored: 0,
+      })
+
+      const service = new MigrationService(mockLogger, mockKeyValueStore)
+      await service.chatKbFiltersMigration()
+
+      expect(chatKbFiltersMigrationStub.calledOnce).to.be.true
+      expect(mockLogger.info.calledWith('Migrating chat KB filters')).to.be.true
+      expect(mockLogger.info.calledWith('✅ Chat KB filters migrated', sinon.match.object)).to.be.true
+    })
+
+    it('should warn when migration finishes with errors', async () => {
+      chatKbFiltersMigrationStub.resolves({
+        conversationsUpdated: 3,
+        messagesUpdated: 8,
+        errored: 2,
+      })
+
+      const service = new MigrationService(mockLogger, mockKeyValueStore)
+      await service.chatKbFiltersMigration()
+
+      expect(mockLogger.warn.calledWith(
+        '⚠️  Chat KB-filters migration finished with errors — will retry on next boot',
+        sinon.match.object,
+      )).to.be.true
+    })
+
+    it('should catch and log migration errors', async () => {
+      chatKbFiltersMigrationStub.rejects(new Error('DB connection failed'))
+
+      const service = new MigrationService(mockLogger, mockKeyValueStore)
+      await service.chatKbFiltersMigration()
+
+      expect(mockLogger.error.calledWith('Chat KB-filters migration failed', sinon.match.object)).to.be.true
+    })
+
+    it('should handle non-Error exceptions', async () => {
+      chatKbFiltersMigrationStub.rejects(42)
+
+      const service = new MigrationService(mockLogger, mockKeyValueStore)
+      await service.chatKbFiltersMigration()
+
+      expect(mockLogger.error.calledOnce).to.be.true
+      expect(mockLogger.error.firstCall.args[0]).to.equal('Chat KB-filters migration failed')
+      expect(mockLogger.error.firstCall.args[1].error).to.equal('Unknown error')
     })
   })
 })

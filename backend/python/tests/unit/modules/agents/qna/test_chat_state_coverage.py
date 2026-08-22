@@ -5,7 +5,7 @@ Targets uncovered helper functions:
 - _build_tool_to_toolset_map
 - _extract_tools_from_toolsets
 - _extract_knowledge_connector_ids
-- _extract_kb_record_groups
+- _extract_kb_app_ids
 - _build_web_search_tool_config
 - cleanup_state_after_retrieval
 - cleanup_old_tool_results
@@ -16,7 +16,7 @@ import pytest
 from app.modules.agents.qna.chat_state import (
     _build_tool_to_toolset_map,
     _build_web_search_tool_config,
-    _extract_kb_record_groups,
+    _extract_kb_app_ids,
     _extract_knowledge_connector_ids,
     _extract_tools_from_toolsets,
     cleanup_old_tool_results,
@@ -138,9 +138,11 @@ class TestExtractKnowledgeConnectorIds:
         assert result == ["conn1"]
 
     def test_kb_prefix_excluded(self):
+        """KB apps have type=KB and are not extracted as regular connectors"""
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440102"
         knowledge = [
             {"connectorId": "conn1"},
-            {"connectorId": "knowledgeBase_kb1"},
+            {"connectorId": kb_uuid, "type": "KB"},
         ]
         result = _extract_knowledge_connector_ids(knowledge)
         assert result == ["conn1"]
@@ -166,47 +168,42 @@ class TestExtractKnowledgeConnectorIds:
 
 
 # ---------------------------------------------------------------------------
-# _extract_kb_record_groups
+# _extract_kb_app_ids
 # ---------------------------------------------------------------------------
 
-class TestExtractKbRecordGroups:
+class TestExtractKbAppIds:
     def test_empty_input(self):
-        assert _extract_kb_record_groups([]) == []
-        assert _extract_kb_record_groups(None) == []
+        assert _extract_kb_app_ids([]) == []
+        assert _extract_kb_app_ids(None) == []
 
-    def test_dict_filters_with_record_groups(self):
-        knowledge = [{"filters": {"recordGroups": ["rg1", "rg2"]}}]
-        result = _extract_kb_record_groups(knowledge)
-        assert result == ["rg1", "rg2"]
+    def test_kb_entries_use_connector_id(self):
+        knowledge = [{"type": "KB", "connectorId": "kb1"}, {"type": "KB", "connectorId": "kb2"}]
+        result = _extract_kb_app_ids(knowledge)
+        assert result == ["kb1", "kb2"]
 
-    def test_string_filters_parsed_as_json(self):
-        import json
-        knowledge = [{"filters": json.dumps({"recordGroups": ["rg1"]})}]
-        result = _extract_kb_record_groups(knowledge)
-        assert result == ["rg1"]
-
-    def test_invalid_json_filters_handled(self):
-        knowledge = [{"filters": "not valid json"}]
-        result = _extract_kb_record_groups(knowledge)
+    def test_non_kb_type_excluded(self):
+        knowledge = [{"type": "SLACK", "connectorId": "conn1"}]
+        result = _extract_kb_app_ids(knowledge)
         assert result == []
 
-    def test_no_record_groups_key(self):
-        knowledge = [{"filters": {"other": "data"}}]
-        result = _extract_kb_record_groups(knowledge)
+    def test_missing_type_excluded(self):
+        knowledge = [{"connectorId": "conn1"}]
+        result = _extract_kb_app_ids(knowledge)
         assert result == []
 
     def test_multiple_knowledge_items(self):
         knowledge = [
-            {"filters": {"recordGroups": ["rg1"]}},
-            {"filters": {"recordGroups": ["rg2", "rg3"]}},
+            {"type": "KB", "connectorId": "kb1"},
+            {"type": "SLACK", "connectorId": "conn1"},
+            {"type": "KB", "connectorId": "kb2"},
         ]
-        result = _extract_kb_record_groups(knowledge)
-        assert result == ["rg1", "rg2", "rg3"]
+        result = _extract_kb_app_ids(knowledge)
+        assert result == ["kb1", "kb2"]
 
-    def test_empty_record_groups(self):
-        knowledge = [{"filters": {"recordGroups": []}}]
-        result = _extract_kb_record_groups(knowledge)
-        assert result == []
+    def test_legacy_record_groups_field_ignored(self):
+        knowledge = [{"type": "KB", "connectorId": "kb1", "filters": {"recordGroups": ["stale"]}}]
+        result = _extract_kb_app_ids(knowledge)
+        assert result == ["kb1"]
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,30 @@ import type {
 /** Must match backend `MIN_SEARCH_QUERY_LENGTH` in `knowledge_hub_router.py`. */
 export const KB_MIN_SEARCH_QUERY_LENGTH = 2;
 
+/** Filters that require flattened/search mode on the knowledge-hub nodes API. */
+export function hasKnowledgeHubFlatteningFilters(
+  filter: Pick<
+    KnowledgeBaseFilter,
+    | 'recordTypes'
+    | 'indexingStatus'
+    | 'sizeRange'
+    | 'createdAfter'
+    | 'createdBefore'
+    | 'updatedAfter'
+    | 'updatedBefore'
+  >,
+  searchQuery?: string
+): boolean {
+  const q = searchQuery?.trim();
+  if (q && q.length >= KB_MIN_SEARCH_QUERY_LENGTH) return true;
+  if (filter.recordTypes?.length) return true;
+  if (filter.indexingStatus?.length) return true;
+  if (filter.sizeRange) return true;
+  if (filter.createdAfter || filter.createdBefore) return true;
+  if (filter.updatedAfter || filter.updatedBefore) return true;
+  return false;
+}
+
 /**
  * Size range buckets in bytes
  * All ranges include both gte and lte bounds to match API format: "gte:X,lte:Y"
@@ -25,26 +49,20 @@ const SIZE_RANGES: Record<SizeRange, { gte: number; lte: number }> = {
 };
 
 /**
- * Converts size ranges array to API format
+ * Converts a single size range to API format
  *
- * Example: ['lt1mb', '10to100mb'] -> "gte:0,lte:1048576|gte:10485760,lte:104857600"
- * Multiple ranges are joined with "|" (OR logic)
- * Each range always includes both bounds in "gte:X,lte:Y" format
+ * Example: 'lt1mb' -> "gte:0,lte:1048576"
  *
- * @param sizeRanges Array of size range identifiers
+ * @param sizeRange Size range identifier
  * @returns API-formatted size filter string or undefined
  */
-export function convertSizeRangesToApiFormat(sizeRanges: SizeRange[]): string | undefined {
-  if (!sizeRanges || sizeRanges.length === 0) {
+export function convertSizeRangeToApiFormat(sizeRange?: SizeRange): string | undefined {
+  if (!sizeRange) {
     return undefined;
   }
 
-  const rangeStrings = sizeRanges.map((range) => {
-    const { gte, lte } = SIZE_RANGES[range];
-    return `gte:${gte},lte:${lte}`;
-  });
-
-  return rangeStrings.join('|');
+  const { gte, lte } = SIZE_RANGES[sizeRange];
+  return `gte:${gte},lte:${lte}`;
 }
 
 /**
@@ -184,9 +202,9 @@ export function buildFilterParams(
     params.kbIds = filter.kbIds.join(',');
   }
 
-  // Size ranges
-  if (filter.sizeRanges?.length) {
-    params.size = convertSizeRangesToApiFormat(filter.sizeRanges);
+  // Size range
+  if (filter.sizeRange) {
+    params.size = convertSizeRangeToApiFormat(filter.sizeRange);
   }
 
   // Date ranges (with date type support)
@@ -265,9 +283,9 @@ export function buildAllRecordsFilterParams(
     params.connectorIds = filter.connectorIds.join(',');
   }
 
-  // Size ranges
-  if (filter.sizeRanges?.length) {
-    params.size = convertSizeRangesToApiFormat(filter.sizeRanges);
+  // Size range
+  if (filter.sizeRange) {
+    params.size = convertSizeRangeToApiFormat(filter.sizeRange);
   }
 
   // Date ranges (with date type support)

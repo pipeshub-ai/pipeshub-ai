@@ -1,6 +1,7 @@
 """Users API client for integration tests."""
 
-from typing import Any
+import json
+from typing import Any, Optional
 
 import requests
 
@@ -56,6 +57,7 @@ class UsersClient(APIClient):
         self,
         email: str,
         full_name: str,
+        role: str = "member",
         **kwargs: Any,
     ) -> requests.Response:
         """Create a new user.
@@ -63,9 +65,16 @@ class UsersClient(APIClient):
         Args:
             email: User's email address
             full_name: User's full name (fullName in API)
+            role: Org role — ``admin`` or ``member``. Optional; omitted/default is ``member``.
             **kwargs: Additional fields (firstName, lastName, designation, etc.)
         """
-        return self.post("/", json={"email": email, "fullName": full_name, **kwargs})
+        payload: dict[str, Any] = {
+            "email": email,
+            "fullName": full_name,
+            "role": role,
+            **kwargs,
+        }
+        return self.post("/", json=payload)
 
     def update_user(self, user_id: str, **kwargs: Any) -> requests.Response:
         """Update user by ID.
@@ -127,3 +136,32 @@ class UsersClient(APIClient):
     def unblock_user(self, user_id: str) -> requests.Response:
         """Unblock a blocked user."""
         return self.put(f"/{user_id}/unblock")
+
+    def invite_bulk(
+        self,
+        emails: list[str],
+        group_ids: Optional[list[str]] = None,
+    ) -> requests.Response:
+        """Invite users from an email list (POST /bulk/invite)."""
+        body: dict[str, Any] = {"emails": emails}
+        if group_ids is not None:
+            body["groupIds"] = group_ids
+        return self.post("/bulk/invite", json=body)
+
+    def invite_bulk_upload(
+        self,
+        file_bytes: bytes,
+        filename: str = "invites.csv",
+        content_type: str = "text/csv",
+        group_ids: Optional[list[str]] = None,
+    ) -> requests.Response:
+        """Invite users from an uploaded CSV/Excel file (POST /bulk/invite/upload).
+
+        groupIds travels as a multipart form field (JSON-encoded), matching how
+        the controller parses req.body.groupIds.
+        """
+        files = {"file": (filename, file_bytes, content_type)}
+        data: dict[str, str] = {}
+        if group_ids is not None:
+            data["groupIds"] = json.dumps(group_ids)
+        return self.post("/bulk/invite/upload", files=files, data=data)

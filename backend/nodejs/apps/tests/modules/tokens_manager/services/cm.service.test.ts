@@ -1171,15 +1171,15 @@ describe('tokens_manager/services/cm.service', () => {
         expect(result.kvStoreType).to.equal('etcd')
       })
 
-      it('should default messageBrokerType to kafka when env not set', async () => {
+      it('should default messageBrokerType and kvStoreType to redis when env not set', async () => {
         mockKvStore.get.resolves(null)
         delete process.env.MESSAGE_BROKER
         delete process.env.KV_STORE_TYPE
 
         const result = await configService.getDeploymentConfig()
 
-        expect(result.messageBrokerType).to.equal('kafka')
-        expect(result.kvStoreType).to.equal('etcd')
+        expect(result.messageBrokerType).to.equal('redis')
+        expect(result.kvStoreType).to.equal('redis')
       })
 
       it('should write merged config back to KV store', async () => {

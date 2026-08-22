@@ -136,6 +136,7 @@ _OPTIONAL_PACKAGES = [
     "cv2",
     "spacy",
     "openpyxl",
+    "pdfplumber",
     "celery",
     "aiokafka",
     "github",
@@ -145,7 +146,18 @@ _OPTIONAL_PACKAGES = [
     "msgraph",
     "msgraph_core",
     "slack_sdk",
+    "selectolax",
+    "trafilatura",
 ]
+
+# docling_parse embeds a native C extension (pdf_parsers) that terminates the
+# process with STATUS_ENTRYPOINT_NOT_FOUND on some Windows builds.  Python's
+# exception system cannot intercept a fatal OS-level exit, so _ensure_module()
+# would crash rather than mock.  Register the entire docling_parse namespace as
+# a mock *before* _ensure_module("docling") runs, so the MockFinder intercepts
+# every ``from docling_parse.xxx import ...`` before the native DLL is touched.
+_MOCK_PACKAGE_NAMES.add("docling_parse")
+_mock_finder.load_module("docling_parse")
 
 for _pkg in _OPTIONAL_PACKAGES:
     _ensure_module(_pkg)
@@ -191,6 +203,19 @@ def _inject_document_stub() -> None:
 _inject_document_stub()
 
 
+@pytest.fixture(autouse=True)
+def _reset_default_backpressure_coordinator():
+    """ParsingClient/DoclingClient default to a process-wide
+    BackpressureCoordinator singleton when the caller doesn't pass one
+    explicitly (see app.services.messaging.backpressure) — without a reset,
+    a 429 signalled in one test's client would leak a pause into unrelated
+    tests constructed later in the same worker process."""
+    from app.services.messaging.backpressure import set_default_backpressure_coordinator
+    set_default_backpressure_coordinator(None)
+    yield
+    set_default_backpressure_coordinator(None)
+
+
 @pytest.fixture
 def logger():
     """Provide a silent logger for tests."""
@@ -213,9 +238,23 @@ def mock_graph_provider():
 @pytest.fixture
 def mock_vector_db_service():
     """Mock IVectorDBService."""
+    from unittest.mock import MagicMock as _MagicMock
     service = AsyncMock()
-    service.filter_collection = AsyncMock(return_value=MagicMock())
+    service.filter_collection = AsyncMock(return_value=_MagicMock())
     service.query_nearest_points = AsyncMock(return_value=[])
+    # get_capabilities and get_service_name are synchronous in the interface
+    try:
+        from app.services.vector_db.models import VectorDBCapabilities
+        caps = VectorDBCapabilities(
+            supports_sparse_vectors=False,
+            supports_server_side_text_search=False,
+        )
+    except Exception:
+        caps = _MagicMock()
+        caps.supports_sparse_vectors = False
+        caps.supports_server_side_text_search = False
+    service.get_capabilities = _MagicMock(return_value=caps)
+    service.get_service_name = _MagicMock(return_value="mock")
     return service
 
 

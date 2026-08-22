@@ -42,6 +42,17 @@ def _make_processor():
     proc = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
     proc.org_id = "org-1"
     proc.messaging_producer = AsyncMock()
+    # Default: every record exists, every publish is acked, every CAS wins.
+    # Tests that care override these.
+    data_store_provider.get_existing_record_keys = AsyncMock(
+        side_effect=lambda ids: set(ids)
+    )
+    data_store_provider.compare_and_set_indexing_status = AsyncMock(
+        side_effect=lambda ids, expected, new_status: list(ids)
+    )
+    proc.messaging_producer.send_messages = AsyncMock(
+        side_effect=lambda topic, messages: [True] * len(messages)
+    )
     return proc
 
 
@@ -155,8 +166,8 @@ class TestInitialize:
         mock_producer.initialize.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_initialize_no_orgs_raises(self):
-        """Initialize raises when no organizations found."""
+    async def test_initialize_no_orgs_warns_and_returns(self):
+        """Initialize logs a warning and returns when no organizations found."""
         logger = MagicMock()
         data_store = MagicMock()
         config_svc = AsyncMock()
@@ -183,8 +194,11 @@ class TestInitialize:
             mock_producer = AsyncMock()
             MockFactory.create_producer.return_value = mock_producer
 
-            with pytest.raises(Exception, match="No organizations found"):
-                await proc.initialize()
+            await proc.initialize()
+
+        assert proc.org_id == ""
+        logger.warning.assert_called_once()
+        assert "No organizations found" in logger.warning.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_initialize_bootstrap_servers_as_list(self):
@@ -416,7 +430,7 @@ class TestOnNewRecords:
         await proc.on_new_records([])
 
         proc.logger.warning.assert_called()
-        proc.messaging_producer.send_message.assert_not_awaited()
+        proc.messaging_producer.send_messages.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_publishes_events(self):
@@ -434,7 +448,10 @@ class TestOnNewRecords:
 
         await proc.on_new_records([(record, [])])
 
-        proc.messaging_producer.send_message.assert_awaited()
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        topic, messages = proc.messaging_producer.send_messages.await_args.args
+        assert topic == "record-events"
+        assert [key for key, _ in messages] == ["rec-1"]
 
     @pytest.mark.asyncio
     async def test_auto_index_off_skips_publish(self):
@@ -453,7 +470,7 @@ class TestOnNewRecords:
 
         await proc.on_new_records([(record, [])])
 
-        proc.messaging_producer.send_message.assert_not_awaited()
+        proc.messaging_producer.send_messages.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
@@ -467,6 +484,92 @@ class TestOnNewRecords:
 
         with pytest.raises(RuntimeError, match="tx error"):
             await proc.on_new_records([(_make_record(), [])])
+
+
+class TestUnchangedRecordsAreNotRepublished:
+    """A re-synced record whose content did not change must not re-embed.
+
+    The old behaviour reset every previously-COMPLETED record to NOT_STARTED
+    and published a newRecord event regardless of revision, so every full
+    re-sync (force-push fallback, first sync after a filter change, ...)
+    re-indexed the entire already-indexed set — and clobbered AUTO_INDEX_OFF
+    on manually-indexed records.
+    """
+
+    @staticmethod
+    def _proc_with_existing(existing) -> tuple:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_external_id.return_value = existing
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = ctx
+        return proc, tx_store
+
+    @staticmethod
+    def _existing(revision: str, status: str):
+        existing = _make_record(version=1)
+        existing.id = "existing-id"
+        existing.external_revision_id = revision
+        existing.indexing_status = status
+        return existing
+
+    @pytest.mark.asyncio
+    async def test_unchanged_completed_record_publishes_nothing(self):
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.COMPLETED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-1"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_not_awaited()
+        assert record.indexing_status == ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_changed_completed_record_is_requeued_and_published(self):
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.COMPLETED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-2"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        assert record.indexing_status == ProgressStatus.NOT_STARTED.value
+
+    @pytest.mark.asyncio
+    async def test_content_change_does_not_override_manual_indexing(self):
+        """AUTO_INDEX_OFF (manual-only) survives a content change on a record
+        that was previously indexed — no auto re-index behind the admin's back."""
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.COMPLETED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-2"
+        record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_not_awaited()
+        assert record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    @pytest.mark.asyncio
+    async def test_turning_indexing_on_still_backfills_auto_index_off_records(self):
+        """A record stored AUTO_INDEX_OFF whose connector filter is later enabled
+        arrives with a normal status and must still be published for indexing."""
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.AUTO_INDEX_OFF.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-1"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
 
 
 # ===========================================================================
@@ -535,9 +638,14 @@ class TestOnRecordContentUpdate:
 
         await proc.on_record_content_update(record)
 
-        # Should have called batch_upsert_nodes for status reset
-        tx_store.batch_upsert_nodes.assert_awaited()
+        # Status is promoted to QUEUED only after the event is on the topic, via a
+        # conditional swap - never written ahead of the publish.
         proc.messaging_producer.send_message.assert_awaited()
+        proc.data_store_provider.compare_and_set_indexing_status.assert_awaited_once_with(
+            ["rec-1"],
+            ProgressStatus.NOT_STARTED.value,
+            ProgressStatus.QUEUED.value,
+        )
 
 
 # ===========================================================================
@@ -578,9 +686,14 @@ class TestOnRecordMetadataUpdate:
 class TestOnRecordDeleted:
     @pytest.mark.asyncio
     async def test_deletes_record(self):
-        """Calls delete_record_by_key within a transaction."""
         proc = _make_processor()
         tx_store = _make_tx_store()
+        tx_store.delete_single_record = AsyncMock(
+            return_value={
+                "success": True,
+                "eventData": {"payloads": [{"recordId": "rec-1", "virtualRecordId": "v1"}]},
+            }
+        )
 
         ctx = AsyncMock()
         ctx.__aenter__ = AsyncMock(return_value=tx_store)
@@ -589,7 +702,9 @@ class TestOnRecordDeleted:
 
         await proc.on_record_deleted("rec-1")
 
-        tx_store.delete_record_by_key.assert_awaited_once_with("rec-1")
+        tx_store.delete_single_record.assert_awaited_once_with("rec-1")
+        proc.messaging_producer.send_message.assert_awaited_once()
+        assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"
 
 
 # ===========================================================================
@@ -605,7 +720,7 @@ class TestReindexExistingRecords:
 
         await proc.reindex_existing_records([])
 
-        proc.messaging_producer.send_message.assert_not_awaited()
+        proc.messaging_producer.send_messages.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_publishes_reindex_events(self):
@@ -625,7 +740,10 @@ class TestReindexExistingRecords:
 
         await proc.reindex_existing_records([record1, record2])
 
-        assert proc.messaging_producer.send_message.call_count == 2
+        # Both records must go out in a single batched call, not one send each.
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        _topic, messages = proc.messaging_producer.send_messages.await_args.args
+        assert len(messages) == 2
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
@@ -638,7 +756,7 @@ class TestReindexExistingRecords:
         ctx.__aexit__ = AsyncMock(return_value=False)
         proc.data_store_provider.transaction.return_value = ctx
 
-        proc.messaging_producer.send_message = AsyncMock(
+        proc.messaging_producer.send_messages = AsyncMock(
             side_effect=RuntimeError("kafka error")
         )
 
@@ -654,68 +772,39 @@ class TestReindexExistingRecords:
 # ===========================================================================
 
 
-class TestResetIndexingStatusToQueued:
+class TestMarkQueuedAfterPublish:
     @pytest.mark.asyncio
-    async def test_resets_status(self):
-        """Resets indexing status to QUEUED."""
+    async def test_swaps_not_started_to_queued(self):
+        """Promotes published records NOT_STARTED -> QUEUED in one bulk call."""
         proc = _make_processor()
-        tx_store = _make_tx_store()
 
-        mock_record = MagicMock()
-        mock_record.indexing_status = ProgressStatus.COMPLETED.value
-        tx_store.get_record_by_key.return_value = mock_record
+        await proc._mark_queued_after_publish(["rec-1", "rec-2"])
 
-        await proc._reset_indexing_status_to_queued("rec-1", tx_store)
-
-        tx_store.batch_upsert_nodes.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_skips_if_already_queued(self):
-        """Does not reset if already QUEUED."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-
-        mock_record = {"indexingStatus": ProgressStatus.QUEUED.value}
-        tx_store.get_record_by_key.return_value = mock_record
-
-        await proc._reset_indexing_status_to_queued("rec-1", tx_store)
-
-        tx_store.batch_upsert_nodes.assert_not_awaited()
+        proc.data_store_provider.compare_and_set_indexing_status.assert_awaited_once_with(
+            ["rec-1", "rec-2"],
+            ProgressStatus.NOT_STARTED.value,
+            ProgressStatus.QUEUED.value,
+        )
 
     @pytest.mark.asyncio
-    async def test_resets_empty_status_to_queued(self):
-        """Resets EMPTY to QUEUED so manual reindex can re-run indexing."""
+    async def test_empty_list_is_a_noop(self):
+        """No records published means no status write at all."""
         proc = _make_processor()
-        tx_store = _make_tx_store()
 
-        mock_record = MagicMock()
-        mock_record.indexing_status = ProgressStatus.EMPTY.value
-        tx_store.get_record_by_key.return_value = mock_record
+        await proc._mark_queued_after_publish([])
 
-        await proc._reset_indexing_status_to_queued("rec-1", tx_store)
-
-        tx_store.batch_upsert_nodes.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_record_not_found_logs_warning(self):
-        """Logs warning when record not found."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-        tx_store.get_record_by_key.return_value = None
-
-        await proc._reset_indexing_status_to_queued("missing", tx_store)
-
-        proc.logger.warning.assert_called()
+        proc.data_store_provider.compare_and_set_indexing_status.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_logged_not_raised(self):
-        """Errors are logged but do not propagate."""
+        """A failed status write must not fail the publish - the event is already sent."""
         proc = _make_processor()
-        tx_store = _make_tx_store()
-        tx_store.get_record_by_key.side_effect = RuntimeError("db error")
+        proc.data_store_provider.compare_and_set_indexing_status.side_effect = RuntimeError("db error")
 
         # Should not raise
-        await proc._reset_indexing_status_to_queued("rec-1", tx_store)
+        await proc._mark_queued_after_publish(["rec-1"])
+
+        proc.logger.error.assert_called()
 
         proc.logger.error.assert_called()
 
@@ -1479,8 +1568,7 @@ class TestLinkRecordToGroup:
         tx_store = _make_tx_store()
         record = _make_record()
         record.id = "rec-1"
-        record.is_shared_with_me = True
-        record.shared_with_me_record_group_id = "shared-ext-group"
+        record.shared_with_me_record_group_ids = ["shared-ext-group"]
         record.inherit_permissions = True
 
         shared_group = MagicMock()
@@ -2278,7 +2366,7 @@ class TestInternalRecordSkip:
 
         await proc.on_new_records([(record, [])])
 
-        proc.messaging_producer.send_message.assert_not_awaited()
+        proc.messaging_producer.send_messages.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_reindex_skips_internal(self):
@@ -2296,7 +2384,7 @@ class TestInternalRecordSkip:
 
         await proc.reindex_existing_records([record])
 
-        proc.messaging_producer.send_message.assert_not_awaited()
+        proc.messaging_producer.send_messages.assert_not_awaited()
 
 
 # ===========================================================================

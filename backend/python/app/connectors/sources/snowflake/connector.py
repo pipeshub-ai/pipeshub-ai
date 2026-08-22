@@ -21,6 +21,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
     RecordRelations,
 )
 from app.connectors.core.constants import IconPaths
@@ -188,6 +189,7 @@ class SyncStats:
     .with_description("Sync databases, tables, views, stages and files from Snowflake")\
     .with_categories(["Database", "Data Warehouse"])\
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         # Option 1: Personal Access Token (PAT) authentication
         AuthBuilder.type(AuthType.ACCESS_KEY).fields([

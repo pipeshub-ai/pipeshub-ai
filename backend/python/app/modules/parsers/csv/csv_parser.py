@@ -1,10 +1,14 @@
 import asyncio
 import csv
+import io
 import json
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TextIO, Tuple, Union
 
+from app.config.configuration_service import ConfigurationService
+from app.services.parsing.interface import ParseResult
+from app.utils.llm import get_llm_for_role
 from langchain_core.language_models.chat_models import BaseChatModel
 from tenacity import (
     retry,
@@ -30,6 +34,7 @@ from app.modules.parsers.excel.prompt_template import (
     row_text_prompt_for_csv,
     table_summary_prompt,
 )
+from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
 from app.utils.logger import create_logger
 from app.utils.streaming import (
@@ -50,7 +55,7 @@ MAX_HEADER_DETECTION_ROWS = 10  # CSV uses 6 rows (vs Excel's 4)
 
 class CSVParser:
     def __init__(
-        self, delimiter: str = ",", quotechar: str = '"', encoding: str = "utf-8"
+        self, config_service: ConfigurationService, delimiter: str = ",", quotechar: str = '"', encoding: str = "utf-8"
     ) -> None:
         """
         Initialize the CSV parser with configurable parameters.
@@ -67,14 +72,192 @@ class CSVParser:
         self.table_summary_prompt = table_summary_prompt
         self.excel_header_detection_prompt = excel_header_detection_prompt
         self.csv_header_generation_prompt = csv_header_generation_prompt
+        self.config_service = config_service
 
         # Configure retry parameters
         self.max_retries = 3
         self.min_wait = 1  # seconds
         self.max_wait = 10  # seconds
 
+    async def parse(
+        self,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None = None,
+    ) -> ParseResult:
+            llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
 
+            # Try different encodings to decode binary data
+            encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
+            all_rows = None
+            for encoding in encodings:
+                try:
+                    # Decode binary data to string
+                    csv_text = content.decode(encoding)
 
+                    # Create string stream from decoded text
+                    csv_stream = io.StringIO(csv_text)
+
+                    # Read raw rows for table detection (sync CSV scan; keep
+                    # large files off the event loop).
+                    all_rows = await asyncio.to_thread(self.read_raw_rows, csv_stream)
+                    break
+                except UnicodeDecodeError:
+                    continue
+                except Exception as e:
+                    continue
+
+            if all_rows is None or not all_rows:
+                return ParseResult(
+                    block_container=BlocksContainer(blocks=[], block_groups=[]),
+                    metadata={
+                        "record_name": record_name,
+                    },
+                )
+
+            # Detect multiple tables
+            tables = await asyncio.to_thread(self.find_tables_in_csv, all_rows)
+
+            block_containers = await self.get_blocks_from_csv_with_multiple_tables(tables, llm)
+
+            return ParseResult(
+                block_container=block_containers,
+                metadata={
+                    "record_name": record_name,
+                },
+            )
+
+    async def parse_to_blocks_lightweight(
+        self,
+        content: bytes,
+        max_rows: int = 500,
+    ) -> BlocksContainer:
+        """Parse CSV/TSV bytes into blocks without LLM enrichment.
+
+        Assumes the first non-empty row of each detected table is a header row.
+        Caps data rows at ``max_rows`` across all tables to keep chat context bounded.
+        """
+        encodings = ["utf-8", "utf-8-sig", "latin1", "cp1252", "iso-8859-1"]
+        all_rows: list[list[str]] | None = None
+        for encoding in encodings:
+            try:
+                csv_text = content.decode(encoding)
+                csv_stream = io.StringIO(csv_text)
+                all_rows = await asyncio.to_thread(self.read_raw_rows, csv_stream)
+                break
+            except UnicodeDecodeError:
+                continue
+
+        if not all_rows:
+            return BlocksContainer(blocks=[], block_groups=[])
+
+        tables = await asyncio.to_thread(self.find_tables_in_csv, all_rows)
+        return self._build_basic_block_container_from_tables(tables, max_rows=max_rows)
+
+    def _build_basic_block_container_from_tables(
+        self,
+        tables: List[Dict[str, Any]],
+        max_rows: int = 500,
+    ) -> BlocksContainer:
+        """Build TABLE → TABLE_ROW blocks from detected CSV tables without LLM calls."""
+        blocks: List[Block] = []
+        block_groups: List[BlockGroup] = []
+        rows_emitted = 0
+
+        for table_idx, table in enumerate(tables):
+            if rows_emitted >= max_rows:
+                break
+
+            raw_rows = table.get("raw_rows") or []
+            if not raw_rows:
+                continue
+
+            column_count = len(raw_rows[0])
+            if column_count <= 0:
+                continue
+
+            # Lightweight path: treat the first row as headers.
+            headers = [
+                (v if v and v != "null" else f"Column_{i + 1}")
+                for i, v in enumerate(raw_rows[0])
+            ]
+            # Pad/truncate to column_count.
+            if len(headers) < column_count:
+                headers.extend(f"Column_{i + 1}" for i in range(len(headers), column_count))
+            headers = self._deduplicate_headers(headers[:column_count])
+
+            data_rows = raw_rows[1:]
+            remaining = max_rows - rows_emitted
+            data_rows = data_rows[:remaining]
+            start_row = int(table.get("start_row") or 1)
+
+            tg_idx = len(block_groups)
+            block_groups.append(
+                BlockGroup(
+                    index=tg_idx,
+                    name=None,
+                    type=GroupType.TABLE,
+                    parent_index=None,
+                    table_metadata=TableMetadata(
+                        num_of_rows=len(data_rows),
+                        num_of_cols=column_count,
+                        num_of_cells=len(data_rows) * column_count,
+                    ),
+                    data={
+                        "table_summary": "",
+                        "column_headers": headers,
+                        "table_number": table_idx + 1,
+                    },
+                    format=DataFormat.JSON,
+                )
+            )
+
+            row_indices: List[int] = []
+            for idx, row in enumerate(data_rows):
+                row_dict = {
+                    headers[i]: self._parse_value(row[i]) if i < len(row) else None
+                    for i in range(column_count)
+                }
+                # Skip entirely empty rows.
+                if all(value is None or value == "" or value == "null" for value in row_dict.values()):
+                    continue
+
+                bi = len(blocks)
+                line_number = start_row + 1 + idx  # +1 skips the header row
+                blocks.append(
+                    Block(
+                        index=bi,
+                        type=BlockType.TABLE_ROW,
+                        format=DataFormat.JSON,
+                        data={
+                            "row_natural_language_text": generate_simple_row_text(row_dict),
+                            "row_number": line_number,
+                            "row_end_number": line_number,
+                            "row_count": 1,
+                        },
+                        parent_index=tg_idx,
+                    )
+                )
+                row_indices.append(bi)
+
+            block_groups[tg_idx].children = BlockGroupChildren.from_indices(
+                block_indices=row_indices
+            )
+            # Update metadata with actual emitted row count (after empty-row skips).
+            if block_groups[tg_idx].table_metadata is not None:
+                block_groups[tg_idx].table_metadata.num_of_rows = len(row_indices)
+                block_groups[tg_idx].table_metadata.num_of_cells = (
+                    len(row_indices) * column_count
+                )
+            rows_emitted += len(row_indices)
+
+        logger.info(
+            "Lightweight CSV parsing complete: %d blocks, %d block groups (max_rows=%d)",
+            len(blocks),
+            len(block_groups),
+            max_rows,
+        )
+        return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
     def _parse_value(self, value: str) -> int | float | bool | str | None:
         """
@@ -631,9 +814,11 @@ class CSVParser:
             # Use getattr to safely access .content attribute
             content = getattr(response, 'content', None)  # type: ignore
             if content is not None:
-                if '</think>' in content:
-                    content = content.split('</think>')[-1]
-                return content
+                # Gemini and similar return content as a list of blocks, not a string.
+                summary = coerce_message_content_to_text(content)
+                if '</think>' in summary:
+                    summary = summary.split('</think>')[-1]
+                return summary
             elif isinstance(response, str):
                 if '</think>' in response:
                     return response.split('</think>')[-1]

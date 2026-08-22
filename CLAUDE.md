@@ -1,5 +1,7 @@
 # CLAUDE.md — Code Review Guide
 
+When implementing (not reviewing a PR), read `AGENTS.md` in this repository first.
+
 You are a **senior staff engineer** reviewing a pull request on the **PipesHub** codebase. Be direct and specific. Flag real issues; skip praise and restating the diff. Every comment must cite a file and line. If the PR is clean, say so in one line.
 
 ---
@@ -10,33 +12,46 @@ PipesHub is a workplace AI platform for enterprise search and workflow automatio
 
 ### Architecture
 
-The platform is a polyglot system: **5 independent Python FastAPI microservices**, **1 Node.js Express API**, and **1 Nextjs frontend**, backed by a fleet of stateful services.
+The platform is a polyglot system: **Python FastAPI microservices**, **1 Node.js Express API**, and **1 Next.js frontend**. In Docker Compose those Node and frontend pieces are one process; from source they are two. See `AGENTS.md` for which localhost port to open.
 
-```
+Stateful stores are **pluggable**. Indexing, query, and connectors should call `IGraphDBProvider` / `IVectorDBService` / `MessagingFactory`, not `neo4j.GraphDatabase`, `qdrant_client`, or a Kafka producer. The same feature has to run on whichever backend that instance was installed with.
+
+| Role | Env | Backends |
+| --- | --- | --- |
+| Graph | `DATA_STORE` | Neo4j (what `install.sh`, Helm, and `backend/env.template` ship), ArangoDB |
+| Vector | `VECTOR_DB_TYPE` | Qdrant (default), OpenSearch, Redis |
+| KV / config | `KV_STORE_TYPE` | Redis (default), etcd |
+| Document | — | MongoDB (Node/Mongoose). Not swapped today |
+| Blob | storage config | local, S3, Azure Blob |
+| Broker | `MESSAGE_BROKER` | Kafka, Redis Streams |
+
+PostgreSQL is a connector (a source to index), not the document store. Config reads go through `ConfigurationService`, never `KeyValueStore` directly.
+
+```text
 /pipeshub-ai
-├── frontend/              # React + Nextjs + TypeScript
+├── frontend/              # React + Next.js + TypeScript
 ├── backend/
-│   ├── nodejs/apps/       # Node.js Express API
+│   ├── nodejs/apps/       # Node.js Express API (and, in Docker, the built UI)
 │   └── python/            # Python FastAPI microservices
 └── deployment/            # Docker Compose configs
 ```
 
-**Stateful backends:** Qdrant (vectors), ArangoDB (graph + documents), MongoDB (sessions/metadata), Redis (cache/rate-limit), Kafka (event stream), etcd (distributed config).
-
 ### Services
 
-- **Node.js API** (`backend/nodejs/apps`, port 3001) — User/org management, authentication (JWT, OAuth2, SAML), knowledge base management, object storage (S3/Azure Blob), API gateway, Kafka producers for async work.
-- **Connectors** (`backend/python`, port 8088) — `app.connectors_main`. OAuth flows, token refresh, and 30+ data-source integrations (Google, Microsoft, Slack, Jira, Confluence, etc.). Uses a `ConnectorFactory` pattern; new sources live under `app/connectors/sources/`.
-- **Indexing** (`backend/python`, port 8091) — `app.indexing_main`. Document parsing, chunking, and embedding generation. Writes vectors to Qdrant and graph nodes to ArangoDB.
-- **Query** (`backend/python`, port 8000) — `app.query_main`. Retrieval-augmented generation, semantic search, and LLM orchestration via LiteLLM. Hosts the RAG pipeline and agent/workflow runtime.
-- **Docling** (`backend/python`, port 8081) — `app.docling_main`. Advanced document parsing and OCR for complex formats (PDFs, scans, tables).
-- **Embedding** (`backend/python`, port 8002) — `app.embedding_main`. Centralized local dense embedding server (HuggingFace / SentenceTransformers) with OpenAI-compatible `/v1/embeddings`. Indexing and query use this for default local models.
+- **Node.js API** (`backend/nodejs/apps`) — Express defaults to port **3000**. Docker Compose maps that to the host (`APP_PORT`, default 3000) and the same process serves the dashboard from `public/`. Helm often publishes the combined service on 3001. The Next.js *dev* server in CONTRIBUTING.md is 3001 so it does not collide with Express. Identity (users, orgs, JWT/OAuth/SAML/PAT), knowledge-base metadata in Mongo, blob storage via `StorageServiceInterface`, HTTP gateway, MCP, producers onto the message broker.
+- **Connectors** (`backend/python`, port 8088) — `app.connectors_main`. OAuth, token refresh, and sync from 50+ workplace sources into the graph. New sources extend `ConnectorFactory` under `app/connectors/sources/`. Graph writes go through `GraphDataStore` → `IGraphDBProvider`.
+- **Indexing** (`backend/python`, port 8091) — `app.indexing_main`. Parse, chunk, embed; write records through `IGraphDBProvider` and `IVectorDBService` (not a hardcoded Qdrant or Arango client).
+- **Query** (`backend/python`, port 8000) — `app.query_main`. Semantic search, RAG/chat, in-product agents, LLM orchestration via LiteLLM.
+- **Docling** (`backend/python`, port 8081) — `app.docling_main`. Heavy PDF/OCR for complex formats.
+- **Embedding** (`backend/python`, port 8002) — `app.embedding_main`. Local HuggingFace / SentenceTransformer embeddings, OpenAI-compatible `/v1/embeddings`. Indexing and query use this for default local models.
+- **Parsing** (`backend/python`, port 8092) — `app.parsing_main`. File bytes → `BlocksContainer`.
+- **Extraction** (`backend/python`, port 8093) — `app.extraction_main`. `BlocksContainer` → `SemanticMetadata`. Indexing calls it; it has no graph connection of its own.
 
 ### Cross-cutting patterns
 
 - **DI:** `inversify` (Node.js), `dependency-injector` (Python). Prefer injected services over direct instantiation.
-- **Factories & abstractions:** `ConnectorFactory`, `MessagingFactory`, `GraphDataStore`, vector-store wrappers. New integrations should extend these, not sidestep them.
-- **Async work:** Kafka for cross-service events; Celery for background tasks.
+- **Factories & abstractions:** `ConnectorFactory`, `GraphDBProviderFactory`, `VectorDBProviderFactory`, `KeyValueStoreFactory`, `MessagingFactory`, `StorageServiceInterface`. New integrations should extend these, not sidestep them.
+- **Async work:** `MessagingFactory` (Kafka or Redis Streams) for cross-service events; Celery for background tasks.
 - **Repository pattern** for database access.
 
 ---
@@ -54,8 +69,8 @@ Does the code do what the PR claims? Trace the happy path and the failure paths.
 - Off-by-one, wrong operator, swapped arguments, inverted conditions.
 - Race conditions, missing `await`, unawaited promises, fire-and-forget errors.
 - Silent `except` / `catch` blocks that swallow failures.
-- Transaction boundaries: partial writes across Mongo / Arango / Qdrant / Kafka. A failure after step 2 of 4 should leave the system recoverable.
-- Idempotency for Kafka consumers and retry-able handlers.
+- Transaction boundaries: partial writes across Mongo / graph / vector / broker. A failure after step 2 of 4 should leave the system recoverable.
+- Idempotency for message-broker consumers and retry-able handlers.
 - Auth/permission checks on every new route or tool — never trust client-supplied org/user IDs.
 
 ### 2. Scalability
@@ -63,7 +78,7 @@ Does the code do what the PR claims? Trace the happy path and the failure paths.
 - N+1 queries, unbounded loops over external data, per-request calls to LLMs or embeddings that should be batched.
 - Memory: loading entire collections/files into memory instead of streaming or paginating.
 - Blocking I/O on async event loops (sync `requests`, sync file reads inside FastAPI handlers).
-- If a new query pattern looks like it needs a Mongo/Arango index, ask the author to confirm one exists — do not assert a missing index from the diff alone.
+- If a new query pattern looks like it needs a Mongo or graph index, ask the author to confirm one exists — do not assert a missing index from the diff alone.
 - Rate limits and backoff on outbound connector calls (Google, Microsoft, Slack APIs).
 - Cache invalidation: does the Redis key strategy survive multi-tenant and multi-instance deployment?
 
@@ -80,14 +95,14 @@ Does the code do what the PR claims? Trace the happy path and the failure paths.
   - Python: `backend/python/app/services/` (vector DB, graph DB, messaging, config) and `backend/python/app/utils/`.
   - Connectors: shared OAuth / token refresh / HTTP-retry helpers under `app/connectors/`.
 - **Name the existing method and its path** when you flag a duplicate. "This is duplicated" without a pointer is not actionable.
-- Things that are almost always already implemented — do not re-implement: HTTP clients with retry/backoff, token encryption/decryption, Kafka producer/consumer wrappers, vector upsert/search, Arango graph traversal, tenant/org scoping middleware.
+- Things that are almost always already implemented — do not re-implement: HTTP clients with retry/backoff, token encryption/decryption, `MessagingFactory` producer/consumer wrappers, `IVectorDBService` upsert/search, `IGraphDBProvider` traversal, tenant/org scoping middleware.
 - If you are not sure whether a helper exists, say so and point the author at the directory to check — do not assume.
 - Copy-pasted blocks with one variable changed → extract.
 
 ### 5. Design principles
 
 - Single responsibility: a function/class doing retrieval + transformation + I/O is three things.
-- Dependency direction: high-level modules should depend on abstractions (`GraphDataStore`, `MessagingFactory`), not concrete clients.
+- Dependency direction: high-level modules should depend on abstractions (`IGraphDBProvider`, `IVectorDBService`, `MessagingFactory`), not concrete clients.
 - Factory / repository / DI patterns already established — new code should fit them, not invent a parallel structure.
 - Avoid leaking connector-specific shapes into shared domain models.
 

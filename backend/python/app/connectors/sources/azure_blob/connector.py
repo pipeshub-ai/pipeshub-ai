@@ -23,6 +23,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
@@ -288,6 +289,7 @@ class AzureBlobDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
     .with_description("Sync files and folders from Azure Blob Storage")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.CONNECTION_STRING).fields([
             AuthField(

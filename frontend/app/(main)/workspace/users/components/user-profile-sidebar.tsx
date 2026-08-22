@@ -3,7 +3,7 @@
 import React from 'react';
 import { Flex, Text, Avatar, Box } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { WorkspaceRightPanel } from '../../components';
 import { useUsersStore } from '../store';
 
@@ -95,9 +95,6 @@ export function UserProfileSidebar() {
         ? 'var(--amber-11)'
         : 'var(--slate-11)';
 
-  // Count of groups (excluding "everyone")
-  const groupsCount = profileUser.groupCount ?? 0;
-
   return (
     <WorkspaceRightPanel
       open={isProfilePanelOpen}
@@ -147,10 +144,6 @@ export function UserProfileSidebar() {
         <ProfileField
           label={t('workspace.users.profile.companyDesignation')}
           value="-"
-        />
-        <ProfileField
-          label={t('workspace.users.profile.groupsCount')}
-          value={String(groupsCount)}
         />
         <ProfileField
           label={t('workspace.users.profile.teamsCount')}
