@@ -2899,7 +2899,7 @@ class TestGetFlattenedResults:
 
     @pytest.mark.asyncio
     async def test_image_from_retrieval_service(self):
-        """For from_retrieval_service, image blocks get image_N content."""
+        """Multimodal retrieval preserves image content for downstream chat."""
         img_block = _make_image_block(index=0, uri="data:image/png;base64,abc")
         record = _make_record_blob()
         record["block_containers"]["blocks"] = [img_block]
@@ -2920,7 +2920,7 @@ class TestGetFlattenedResults:
         )
         image_results = [r for r in results if r.get("block_type") == BlockType.IMAGE.value]
         assert len(image_results) == 1
-        assert image_results[0]["content"] == "image_0"
+        assert image_results[0]["content"] == "data:image/png;base64,abc"
 
     @pytest.mark.asyncio
     async def test_table_with_range_based_children(self):

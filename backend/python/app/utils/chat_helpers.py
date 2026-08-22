@@ -1933,7 +1933,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         elif block_type == BlockType.IMAGE.value:
             data = block.get("data")
             if data:
-                if from_retrieval_service:
+                if from_retrieval_service and not is_multimodal_llm:
                     result["content"] = f"image_{image_index}"
                     image_index += 1
                 else:
