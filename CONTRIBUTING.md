@@ -258,7 +258,9 @@ You can use the built-in health check script to instantly verify the status of t
 ```bash
 ./scripts/check_system_health.sh
 ```
-This script will ping the Node.js API, Next.js UI, and all Python microservices on their respective local ports, explicitly highlighting any offline components to save you time digging through terminal logs.
+This script will ping the Node.js API, Next.js UI, and all core Python microservices on their respective local ports, explicitly highlighting any offline components to save you time digging through terminal logs. 
+
+*(Note: The Parsing and Extraction services are only checked if you run the script with `USE_PARSING_SERVICE=true`).*
 
 ## Project Architecture
 
