@@ -1957,8 +1957,18 @@ class GoogleDriveTeamConnector(BaseConnector):
         """Handle different types of record updates (new, updated, deleted)."""
         try:
             if record_update.is_deleted:
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=record_update.external_record_id
+                )
+                if existing_record is None:
+                    self.logger.debug(
+                        f"Received delete for untracked external id {record_update.external_record_id}; nothing to delete"
+                    )
+                    return
+                self.logger.info("Deleting record: %s", existing_record.record_name)
                 await self.data_entities_processor.on_record_deleted(
-                    record_id=record_update.external_record_id
+                    record_id=existing_record.id
                 )
             elif record_update.is_new:
                 self.logger.info(f"New record detected: {record_update.record.record_name}")
