@@ -11,15 +11,25 @@ from __future__ import annotations
 
 import re
 import threading
+from typing import Any
 
 import pysbd
 import pysbd.languages
 from lingua import Language as LinguaLanguage
 from lingua import LanguageDetector, LanguageDetectorBuilder
 
-# Rule-based sentence segmentation (pysbd) has a soft practical limit far below
-# spaCy's 1M-char max_length; keep blocks well under what any downstream
-# sentence splitter can process in bounded time.
+try:
+    from yasbd import BoundaryDetector, get_supported_langs
+
+    _YASBD_SUPPORTED = frozenset(get_supported_langs())
+    _HAS_YASBD = True
+except ImportError:  # pragma: no cover
+    _YASBD_SUPPORTED = frozenset()
+    _HAS_YASBD = False
+
+# Rule-based sentence segmentation (yasbd / pysbd) has a soft practical limit
+# far below spaCy's 1M-char max_length; keep blocks well under what any
+# downstream sentence splitter can process in bounded time.
 MAX_TEXT_BLOCK_CHARS = 50_000
 
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+")
@@ -87,7 +97,27 @@ _LANGUAGE_ALIASES = {
 _SEGMENTER_CACHE = threading.local()
 
 
-def _get_segmenter(language: str) -> "pysbd.Segmenter":
+def _get_yasbd_segmenter(language: str) -> Any | None:
+    if not _HAS_YASBD:
+        return None
+    lang = language.lower()
+    if lang not in _YASBD_SUPPORTED:
+        lang = _LANGUAGE_ALIASES.get(lang, "en")
+        if lang not in _YASBD_SUPPORTED:
+            lang = "en"
+    if not hasattr(_SEGMENTER_CACHE, "yasbd_cache"):
+        _SEGMENTER_CACHE.yasbd_cache = {}
+    segmenter = _SEGMENTER_CACHE.yasbd_cache.get(lang)
+    if segmenter is None:
+        try:
+            segmenter = BoundaryDetector(lang=lang)
+            _SEGMENTER_CACHE.yasbd_cache[lang] = segmenter
+        except Exception:  # pragma: no cover
+            return None
+    return segmenter
+
+
+def _get_segmenter(language: str) -> pysbd.Segmenter:
     lang = _LANGUAGE_ALIASES.get(language, language)
     if lang not in _PYSBD_SUPPORTED:
         lang = "en"
@@ -105,11 +135,27 @@ def _get_segmenter(language: str) -> "pysbd.Segmenter":
 def split_into_sentences(text: str, language: str = "en") -> list[str]:
     """Split *text* into sentences using rule-based segmentation.
 
-    Falls back to a regex splitter if pysbd raises on pathological input —
-    indexing must never fail solely because sentence sub-chunking errored.
+    Uses yasbd-lib for enhanced multilingual sentence boundary detection (39+
+    languages, streaming support, improved accuracy) with fallback to pysbd
+    and regex splitters for resiliency.
     """
     if not text or not text.strip():
         return []
+
+    if _HAS_YASBD:
+        try:
+            yasbd_seg = _get_yasbd_segmenter(language)
+            if yasbd_seg is not None:
+                results = [
+                    s
+                    for s in yasbd_seg.segment(text, preserve_whitespace=True)
+                    if s and s.strip()
+                ]
+                if results:
+                    return results
+        except Exception:  # pragma: no cover
+            pass
+
     try:
         segmenter = _get_segmenter(language)
         return [s for s in segmenter.segment(text) if s and s.strip()]
