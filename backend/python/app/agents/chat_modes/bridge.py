@@ -392,6 +392,39 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     async def _produce() -> None:
         agent: Any = None
         try:
+            # A corpus-wide census ("how many documents do we have", "list all
+            # the files") is answered from the permission-filtered record set
+            # rather than by a model reading a sample of passages. A sample
+            # cannot say how many records exist, and a model asked to count from
+            # one produces a number with no passage to attribute it to, taking
+            # the citations off the rest of the answer with it (#2975).
+            #
+            # Questions carrying a constraint the census cannot apply -- "about
+            # onboarding", "in this folder", "updated last week" -- are rejected
+            # by the classifier and stay on the agent path, where retrieval can
+            # actually honour them. No-op for everything else.
+            from app.modules.agents.enumeration.run import (
+                EnumerationFinalizationError,
+                try_answer_enumeration,
+            )
+            try:
+                if policy.has_knowledge and await try_answer_enumeration(
+                    query=query_info.get("query", ""), context=context,
+                    retrieval_service=retrieval_service, graph_provider=graph_provider,
+                    filters=query_info.get("filters"),
+                    event_sink=context.event_sink, log=log,
+                ):
+                    return
+            except EnumerationFinalizationError:
+                # Past the point where an answer may already have reached the
+                # client. Running the agent now would send a second answer to
+                # the same question, so let this surface as a request failure.
+                raise
+            except Exception as exc:  # noqa: BLE001
+                # Anything before finalisation is safe to retry: nothing was
+                # emitted and no state was kept. Never let this path break chat.
+                log.warning("enumeration path failed, falling back to agent: %s", exc, exc_info=True)
+
             factory = PipesHubAgentFactory()
             prefetch_task = (
                 asyncio.ensure_future(
