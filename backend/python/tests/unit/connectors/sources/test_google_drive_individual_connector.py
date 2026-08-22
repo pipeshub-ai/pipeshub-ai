@@ -1374,7 +1374,10 @@ class TestPerformFullSync:
             "nextPageToken": "next-token-12345678901234567890",
         }
         page2 = {"files": [_make_file_metadata(file_id="f2")]}
-        connector.drive_data_source.files_list = AsyncMock(side_effect=[page1, page2])
+        connector.drive_data_source.files_list = AsyncMock(
+            # Trailing empty page is consumed by the shared-with-me seed sweep.
+            side_effect=[page1, page2, {"files": []}]
+        )
 
         async def mock_gen(files, uid, email, did):
             for f in files:

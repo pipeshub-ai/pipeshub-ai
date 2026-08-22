@@ -342,6 +342,7 @@ async def fetch_folder_children(
     get_data_source: DriveDataSourceProvider,
     *,
     fields: str,
+    drive_scoped: bool = True,
 ) -> AsyncGenerator[List[dict], None]:
     """
     Recursively fetch all descendants (files and folders) of a folder that
@@ -352,19 +353,25 @@ async def fetch_folder_children(
     folders. Children already present in `changes_ids` (the current
     changes_list page) are skipped so they aren't processed twice: they
     are already flowing through the regular changes loop.
+
+    `drive_scoped=False` skips resolving driveId, leaving the query on the default
+    user corpus. Callers walking a shared drive they are not a member of need that:
+    corpora=drive requires membership, while the user corpus still resolves children
+    of a folder the caller holds an individual grant on.
     """
     # Resolve driveId once so shared-drive subtrees use corpora=drive.
     root_drive_id: Optional[str] = None
-    try:
-        data_source = await get_data_source()
-        probe = await data_source.files_get(
-            fileId=folder_id,
-            fields="driveId",
-            supportsAllDrives=True,
-        )
-        root_drive_id = (probe or {}).get("driveId") or None
-    except Exception:
-        root_drive_id = None
+    if drive_scoped:
+        try:
+            data_source = await get_data_source()
+            probe = await data_source.files_get(
+                fileId=folder_id,
+                fields="driveId",
+                supportsAllDrives=True,
+            )
+            root_drive_id = (probe or {}).get("driveId") or None
+        except Exception:
+            root_drive_id = None
 
     queue: List[str] = [folder_id]
     drive_ids: Dict[str, Optional[str]] = {folder_id: root_drive_id}

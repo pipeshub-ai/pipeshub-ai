@@ -339,7 +339,10 @@ class TestPerformFullSync:
         page2 = {
             "files": [_make_file_metadata(file_id="f2")],
         }
-        connector.drive_data_source.files_list = AsyncMock(side_effect=[page1, page2])
+        connector.drive_data_source.files_list = AsyncMock(
+            # Trailing empty page is consumed by the shared-with-me seed sweep.
+            side_effect=[page1, page2, {"files": []}]
+        )
 
         async def mock_gen(files, uid, email, did):
             for f in files:
@@ -443,6 +446,8 @@ class TestPerformFullSync:
             side_effect=[
                 {"files": page1_files, "nextPageToken": "page2-token-1234567890123456"},
                 {"files": []},
+                # Consumed by the shared-with-me seed sweep.
+                {"files": []},
             ]
         )
 
@@ -456,7 +461,7 @@ class TestPerformFullSync:
         connector._process_drive_items_generator = mock_gen
         await connector._perform_full_sync("key", "org1", "u1", "u@t.com", "d1")
         calls = connector.drive_data_source.files_list.call_args_list
-        assert len(calls) == 2
+        assert len(calls) == 3
         assert "pageToken" in calls[1].kwargs.get("pageToken", "") or "pageToken" in str(calls[1])
 
 
@@ -1649,3 +1654,53 @@ class TestDateFilterEdgeCases:
         )
         meta = _make_file_metadata(modified_time=None)
         assert connector._pass_date_filters(meta) is True
+
+
+class TestSyncSharedWithMe:
+    """Shared drive items reaching the user through an individual grant."""
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
+    async def test_keeps_only_shared_drive_items(self, mock_refresh, connector):
+        mock_refresh.return_value = None
+        personal_share = _make_file_metadata(file_id="personal-share")
+        shared_drive_item = _make_file_metadata(file_id="shared-drive-item")
+        shared_drive_item["driveId"] = "some-drive"
+
+        connector.drive_data_source.files_list = AsyncMock(
+            return_value={"files": [personal_share, shared_drive_item]}
+        )
+
+        seen = []
+
+        async def mock_gen(files, uid, email, did):
+            seen.extend(f["id"] for f in files)
+            for _ in files:
+                update = MagicMock()
+                update.is_deleted = False
+                update.is_updated = False
+                yield MagicMock(), [], update
+
+        connector._process_drive_items_generator = mock_gen
+
+        total = await connector._sync_shared_with_me("u1", "u@t.com", "d1")
+
+        # The personal-drive share is already covered by the full-sync listing.
+        assert seen == ["shared-drive-item"]
+        assert total == 1
+        assert connector.drive_data_source.files_list.await_args.kwargs["q"] == (
+            "sharedWithMe = true and trashed = false"
+        )
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
+    async def test_page_with_no_shared_drive_items_skips_processing(self, mock_refresh, connector):
+        mock_refresh.return_value = None
+        connector.drive_data_source.files_list = AsyncMock(
+            return_value={"files": [_make_file_metadata()]}
+        )
+        connector._process_drive_items_generator = MagicMock(
+            side_effect=AssertionError("generator must not run for an empty page")
+        )
+
+        assert await connector._sync_shared_with_me("u1", "u@t.com", "d1") == 0

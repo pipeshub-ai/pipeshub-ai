@@ -281,6 +281,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._tracked_folder_ids: set = set()
         self._folder_scope_lock = asyncio.Lock()
 
+        # Shared drives that have a record group, from the org-wide domain-admin listing.
+        # Decides where a shared-with-me item is filed, not whether it syncs: membership is
+        # per-user and lives alongside the user being synced.
+        self._synced_drive_ids: set = set()
+
         # Google clients and data sources (initialized in init())
         self.admin_client: Optional[GoogleClient] = None
         self.drive_client: Optional[GoogleClient] = None
@@ -407,6 +412,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._expanded_folder_ids = set()
             self._blocked_folder_ids = set()
             self._tracked_folder_ids = set(self._folder_seed_ids)
+            self._synced_drive_ids = set()
             if self._folder_seed_ids:
                 self.logger.info(
                     f"📁 Folder filter active with {len(self._folder_seed_ids)} seed folder(s)"
@@ -422,7 +428,10 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             # Step 3: Sync record groups (drives) for users
             self.logger.info("Syncing record groups...")
-            await self._sync_record_groups()
+            all_drives = await self._sync_record_groups()
+            self._synced_drive_ids = {
+                drive_id for drive in all_drives if (drive_id := drive.get("id"))
+            }
 
             # Step 4: Settle the folder filter scope across all users before any of
             # them syncs files, so nobody filters against a half-resolved scope
@@ -962,6 +971,22 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.info("Anyone with link permission found for file")
                 return ([fallback_permission], True, list(individually_shared_emails))
 
+        # A successful but empty ACL means this user cannot enumerate permissions: a
+        # viewer on a shared drive item gets 200 with an empty list rather than the 403
+        # handled above. Record the access they demonstrably have instead of leaving a
+        # record nobody can see. is_fallback=True keeps this from replacing a real ACL
+        # that another user's sync already learned.
+        if not permissions and user_email:
+            self.logger.info(
+                f"Empty permission list for file {resource_id}; "
+                f"falling back to read access for {user_email}"
+            )
+            return (
+                [Permission(email=user_email, type=PermissionType.READ, entity_type=EntityType.USER)],
+                True,
+                list(individually_shared_emails),
+            )
+
         return (permissions, False, list(individually_shared_emails))
 
     async def _create_and_sync_shared_drive_record_group(self, drive: Dict) -> None:
@@ -1188,7 +1213,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         batch_count: int,
         total_counter: int,
         drive_data_source: Optional[GoogleDriveDataSource] = None,
-        tracked_folder_ids: Optional[set] = None
+        tracked_folder_ids: Optional[set] = None,
+        *,
+        force_shared_with_me: bool = False
     ) -> Tuple[List, int, int]:
         """
         Process a batch of files from a drive (shared or user drive).
@@ -1204,6 +1231,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             batch_count: Current batch count
             total_counter: Total counter for tracking processed items
             tracked_folder_ids: Folder scope for this run, or None to sync everything
+            force_shared_with_me: Forwarded to `_process_drive_item`; set by the
+                shared-with-me paths.
 
         Returns:
             Tuple of (batch_records, batch_count, total_counter)
@@ -1215,7 +1244,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             drive_id=drive_id,
             is_shared_drive=is_shared_drive,
             drive_data_source=drive_data_source,
-            tracked_folder_ids=tracked_folder_ids
+            tracked_folder_ids=tracked_folder_ids,
+            force_shared_with_me=force_shared_with_me
         ):
             if update.is_deleted:
                 await self._handle_record_updates(update)
@@ -1640,6 +1670,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         tracked_folder_ids: Optional[set] = None,
         *,
         bypass_folder_filter: bool = False,
+        force_shared_with_me: bool = False,
     ) -> Optional[RecordUpdate]:
         """
         Process a single Google Drive file and detect changes.
@@ -1654,6 +1685,10 @@ class GoogleDriveTeamConnector(BaseConnector):
             bypass_folder_filter: Skip the folder-scope check. Only the placeholder
                 sweep sets this: the ancestors it backfills are by definition
                 outside the tracked subtree and would otherwise be rejected.
+            force_shared_with_me: Treat the item as shared-with-me regardless of the
+                `shared` flag. Drive leaves `shared` unpopulated on shared drive items,
+                so the shared-with-me paths would otherwise misclassify every item they
+                fetch.
 
         Returns:
             RecordUpdate object or None if entry should be skipped
@@ -1715,12 +1750,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             is_file = mime_type != MimeTypes.GOOGLE_DRIVE_FOLDER.value
 
             # Determine indexing status - shared files are not indexed by default
-            is_shared = metadata.get("shared", False)
+            is_shared = metadata.get("shared", False) or force_shared_with_me
 
             # Check if file is shared with me (user is not owner and file is shared)
             owners = metadata.get("owners", [])
             owner_emails = [owner.get("emailAddress") for owner in owners if owner.get("emailAddress")]
-            is_shared_with_me = is_shared and user_email not in owner_emails
+            is_shared_with_me = force_shared_with_me or (is_shared and user_email not in owner_emails)
 
             if not is_shared_drive and not is_shared_with_me:
                 if existing_record and existing_record.external_record_group_id is None:
@@ -1874,6 +1909,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         tracked_folder_ids: Optional[set] = None,
         *,
         bypass_folder_filter: bool = False,
+        force_shared_with_me: bool = False,
     ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
         """
         Process Google Drive files and yield records with their permissions.
@@ -1888,6 +1924,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             tracked_folder_ids: Folder scope for this run, or None to sync everything
             bypass_folder_filter: Forwarded to `_process_drive_item`; set only by
                 the placeholder sweep.
+            force_shared_with_me: Forwarded to `_process_drive_item`; set by the
+                shared-with-me paths.
         """
         for file_metadata in files:
             try:
@@ -1900,6 +1938,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     drive_data_source=drive_data_source,
                     tracked_folder_ids=tracked_folder_ids,
                     bypass_folder_filter=bypass_folder_filter,
+                    force_shared_with_me=force_shared_with_me,
                 )
                 if record_update and record_update.record:
                     files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
@@ -2168,13 +2207,26 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Folder scope was settled across all users before any file sync started.
             tracked_folder_ids = self._tracked_folder_ids if self._folder_seed_ids else None
 
+            # Drives this user belongs to. sync_shared_drives walks these for them, so
+            # their items must not also arrive through the shared-with-me path. Kept
+            # per-user rather than run-wide: one member of a drive must not suppress
+            # another user's individual grant into it. Unfiltered on purpose, so a drive
+            # excluded by the DRIVE_IDS filter is not pulled back in this way either.
+            user_drives = await self._list_user_shared_drives(user_drive_data_source)
+            member_drive_ids = {
+                member_drive_id
+                for drive in user_drives
+                if (member_drive_id := drive.get("id"))
+            }
+
             # 4-7. Sync personal drive
             await self.sync_personal_drive(
                 user=user,
                 user_drive_data_source=user_drive_data_source,
                 user_permission_id=user_permission_id,
                 drive_id=drive_id,
-                tracked_folder_ids=tracked_folder_ids
+                tracked_folder_ids=tracked_folder_ids,
+                member_drive_ids=member_drive_ids
             )
 
             # 8. Sync shared drives that the user is a member of
@@ -2182,7 +2234,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 user=user,
                 user_drive_data_source=user_drive_data_source,
                 user_permission_id=user_permission_id,
-                tracked_folder_ids=tracked_folder_ids
+                tracked_folder_ids=tracked_folder_ids,
+                user_drives=user_drives
             )
 
             # 9. Backfill placeholder ancestors that out-of-scope sync filters left
@@ -2207,7 +2260,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         user_drive_data_source: GoogleDriveDataSource,
         user_permission_id: str,
         drive_id: str,
-        tracked_folder_ids: Optional[set] = None
+        tracked_folder_ids: Optional[set] = None,
+        member_drive_ids: Optional[set] = None
     ) -> None:
         """
         Synchronizes personal "My Drive" files for a given user.
@@ -2219,7 +2273,11 @@ class GoogleDriveTeamConnector(BaseConnector):
             user_permission_id: User's permission ID from Google Drive
             drive_id: Drive ID
             tracked_folder_ids: Folder scope for this run, or None to sync everything
+            member_drive_ids: Shared drives this user belongs to, which sync_shared_drives
+                covers for them
         """
+        member_drive_ids = member_drive_ids or set()
+
         # 4. Generate sync point key
         sync_point_key = generate_record_sync_point_key(
             RecordType.DRIVE.value,
@@ -2299,6 +2357,18 @@ class GoogleDriveTeamConnector(BaseConnector):
                 batch_records, f"user {user.email}"
             )
 
+            # Seed shared-drive items shared individually with this user. Runs before the
+            # page token is stored so a failure here replays on the next run instead of
+            # being skipped for good; afterwards changes_list carries the deltas.
+            await self.sync_shared_with_me(
+                user=user,
+                user_drive_data_source=user_drive_data_source,
+                user_permission_id=user_permission_id,
+                drive_id=drive_id,
+                tracked_folder_ids=tracked_folder_ids,
+                member_drive_ids=member_drive_ids
+            )
+
             # Save start page token to sync point after initial sync
             await self.drive_delta_sync_point.update_sync_point(
                 sync_point_key,
@@ -2322,7 +2392,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                     "includeRemoved": True,
                     "restrictToMyDrive": False,  # Include shared files
                     "supportsAllDrives": True,
-                    "includeItemsFromAllDrives": False,  # Exclude shared drives, only get "shared with me" files
+                    # Shared drive items are needed for individual grants out of drives this
+                    # connector never enumerates; everything else they pull in is dropped below.
+                    "includeItemsFromAllDrives": True,
                     "fields": DRIVE_WORKSPACE_SYNC_CHANGES_LIST_FIELDS,
                 }
 
@@ -2343,7 +2415,12 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                 # Extract files from changes
                 files = []
+                shared_with_me_files = []
                 for change in changes:
+                    # Shared drive metadata changes carry a `drive` object and no fileId.
+                    if change.get("changeType", "file") != "file":
+                        continue
+
                     is_removed = change.get("removed", False)
                     file_metadata = change.get("file")
 
@@ -2353,6 +2430,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                             external_record_id=change.get("fileId")
                         )
 
+                        # A removal means this user permanently lost the item, so drop the
+                        # access edge wherever the record is filed. Deleting only their
+                        # direct USER edge leaves group- and drive-derived access intact,
+                        # and stale access is the worse way to be wrong here.
                         if existing_record and existing_record.id:
                             self.logger.info(f"Removing permission from record {existing_record.record_name} for user {user.email}")
 
@@ -2362,7 +2443,20 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 )
 
                     if file_metadata:
-                        files.extend(await self._apply_folder_scope_to_change(
+                        item_drive_id = file_metadata.get("driveId")
+                        if item_drive_id:
+                            # Membership means sync_shared_drives already walks this drive  
+                            # for this user. Everything else arrived through an individual
+                            # grant - including the descendants of a shared folder, which
+                            # carry no sharedWithMeTime of their own, so that field cannot
+                            # be used to filter here.
+                            if item_drive_id in member_drive_ids:
+                                continue
+                            target = shared_with_me_files
+                        else:
+                            target = files
+
+                        target.extend(await self._apply_folder_scope_to_change(
                             file_metadata,
                             tracked_folder_ids,
                             changes_ids,
@@ -2383,6 +2477,20 @@ class GoogleDriveTeamConnector(BaseConnector):
                         total_counter=total_changes,
                         drive_data_source=user_drive_data_source,
                         tracked_folder_ids=tracked_folder_ids
+                    )
+
+                if shared_with_me_files:
+                    batch_records, batch_count, total_changes = await self._process_shared_with_me_items(
+                        items=shared_with_me_files,
+                        user=user,
+                        user_permission_id=user_permission_id,
+                        personal_drive_id=drive_id,
+                        context_name=f"shared with me for user {user.email}",
+                        batch_records=batch_records,
+                        batch_count=batch_count,
+                        total_counter=total_changes,
+                        drive_data_source=user_drive_data_source,
+                        tracked_folder_ids=tracked_folder_ids,
                     )
 
                 # Get next page token
@@ -2418,12 +2526,237 @@ class GoogleDriveTeamConnector(BaseConnector):
             else:
                 self.logger.info("Sync point not updated (token unchanged)")
 
+    async def _process_shared_with_me_items(
+        self,
+        items: List[dict],
+        user: AppUser,
+        user_permission_id: str,
+        personal_drive_id: str,
+        context_name: str,
+        batch_records: List,
+        batch_count: int,
+        total_counter: int,
+        drive_data_source: GoogleDriveDataSource,
+        tracked_folder_ids: Optional[set] = None,
+    ) -> Tuple[List, int, int]:
+        """
+        Process shared-with-me items, grouped by the record group they belong to.
+
+        An item in a drive this run enumerates keeps that drive as its record group, so an
+        individual grant does not detach it from where sync_shared_drives filed it - it
+        just gains the grantee's 0S: group as well. An item in a drive nobody enumerates
+        has no record group to attach to and syncs standalone.
+        """
+        groups: Dict[Tuple[bool, str], List[dict]] = {}
+        for item in items:
+            item_drive_id = item.get("driveId")
+            if item_drive_id and item_drive_id in self._synced_drive_ids:
+                key = (True, item_drive_id)
+            else:
+                key = (False, personal_drive_id)
+            groups.setdefault(key, []).append(item)
+
+        for (is_shared_drive, group_drive_id), group_items in groups.items():
+            batch_records, batch_count, total_counter = await self._process_drive_files_batch(
+                files=group_items,
+                user_id=user_permission_id,
+                user_email=user.email,
+                drive_id=group_drive_id,
+                is_shared_drive=is_shared_drive,
+                context_name=context_name,
+                batch_records=batch_records,
+                batch_count=batch_count,
+                total_counter=total_counter,
+                drive_data_source=drive_data_source,
+                tracked_folder_ids=tracked_folder_ids,
+                force_shared_with_me=True
+            )
+
+        return batch_records, batch_count, total_counter
+
+    async def _expand_shared_folders(
+        self,
+        items: List[dict],
+        seen_ids: set,
+        drive_data_source: GoogleDriveDataSource,
+    ) -> List[dict]:
+        """
+        Walk the subtree under every folder in `items`, returning the descendants.
+
+        Drive sets sharedWithMeTime only on the item actually shared, and its `q` has no
+        recursive parent operator, so a shared folder arrives with none of its contents.
+        `seen_ids` is mutated as descendants are found, so overlapping shares and items
+        already in flight are processed once.
+        """
+        folder_mime = MimeTypes.GOOGLE_DRIVE_FOLDER.value
+        provider = static_data_source_provider(drive_data_source)
+        descendants: List[dict] = []
+
+        for item in items:
+            folder_id = item.get("id")
+            if not folder_id or item.get("mimeType") != folder_mime:
+                continue
+
+            self.logger.info(f"Shared folder {item.get('name')}; fetching descendants")
+
+            # drive_scoped=False keeps the walk on the user corpus: corpora=drive needs
+            # membership of the shared drive, which is exactly what this path lacks.
+            found: List[dict] = []
+            try:
+                async for child_batch in fetch_folder_children(
+                    folder_id,
+                    seen_ids,
+                    provider,
+                    fields=DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
+                    drive_scoped=False,
+                ):
+                    found.extend(child_batch)
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to list children of shared folder {folder_id}: {e}"
+                )
+                continue
+
+            seen_ids.update(child_id for child in found if (child_id := child.get("id")))
+            descendants.extend(found)
+
+        return descendants
+
+    async def sync_shared_with_me(
+        self,
+        user: AppUser,
+        user_drive_data_source: GoogleDriveDataSource,
+        user_permission_id: str,
+        drive_id: str,
+        tracked_folder_ids: Optional[set] = None,
+        member_drive_ids: Optional[set] = None
+    ) -> None:
+        """
+        Seed items that live in a shared drive and were shared individually with this user.
+
+        Neither existing path reaches them: the personal-drive listing runs with Drive's
+        defaults, which drop every shared drive item regardless of how access was granted,
+        and sync_shared_drives only covers drives the user is a member of. A file shared out
+        of a shared drive this connector never enumerates - typically one in another
+        Workspace tenant - arrives through neither.
+
+        Full sync only. changes_list carries the deltas afterwards, so this does not repeat
+        on every run; each item costs a permissions_list call.
+
+        Args:
+            user: AppUser object containing email, source_user_id, etc.
+            user_drive_data_source: GoogleDriveDataSource instance for the user
+            user_permission_id: User's permission ID from Google Drive
+            drive_id: The user's personal drive ID
+            tracked_folder_ids: Folder scope for this run, or None to sync everything
+            member_drive_ids: Shared drives this user belongs to, which sync_shared_drives
+                covers for them
+        """
+        member_drive_ids = member_drive_ids or set()
+        self.logger.info(f"Syncing shared with me items for user {user.email}")
+
+        context_name = f"shared with me for user {user.email}"
+        batch_records: List = []
+        batch_count = 0
+        total_files = 0
+        current_page_token: Optional[str] = None
+
+        while True:
+            list_params = {
+                "q": "sharedWithMe = true and trashed = false",
+                "supportsAllDrives": True,
+                "includeItemsFromAllDrives": True,
+                "fields": DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
+            }
+
+            if current_page_token:
+                list_params["pageToken"] = current_page_token
+
+            self.logger.info(
+                f"📥 Fetching shared with me page for {user.email} "
+                f"(token: {current_page_token[:20] if current_page_token else 'initial'}...)"
+            )
+            files_response = await user_drive_data_source.files_list(**list_params)
+
+            # No driveId means a personal-drive share, already returned by the caller's
+            # own listing. A drive this user belongs to is walked by sync_shared_drives.
+            files = [
+                file_metadata
+                for file_metadata in files_response.get("files", [])
+                if file_metadata.get("driveId")
+                and file_metadata["driveId"] not in member_drive_ids
+            ]
+
+            # A shared folder arrives without its contents; pull its subtree in behind it.
+            page_ids = {file_id for f in files if (file_id := f.get("id"))}
+            files.extend(
+                await self._expand_shared_folders(files, page_ids, user_drive_data_source)
+            )
+
+            if files:
+                batch_records, batch_count, total_files = await self._process_shared_with_me_items(
+                    items=files,
+                    user=user,
+                    user_permission_id=user_permission_id,
+                    personal_drive_id=drive_id,
+                    context_name=context_name,
+                    batch_records=batch_records,
+                    batch_count=batch_count,
+                    total_counter=total_files,
+                    drive_data_source=user_drive_data_source,
+                    tracked_folder_ids=tracked_folder_ids,
+                )
+
+            # Paging is driven by the token alone: an empty page here only means everything
+            # on it was filtered out, not that the listing is exhausted.
+            current_page_token = files_response.get("nextPageToken")
+            if not current_page_token:
+                break
+
+        await self._process_remaining_batch_records(batch_records, context_name)
+
+        self.logger.info(
+            f"✅ Synced {total_files} shared with me item(s) for user {user.email}"
+        )
+
+    async def _list_user_shared_drives(
+        self, user_drive_data_source: GoogleDriveDataSource
+    ) -> List[Dict]:
+        """List every shared drive this user is a member of, before any filtering."""
+        all_user_drives: List[Dict] = []
+        page_token: Optional[str] = None
+
+        while True:
+            try:
+                drives_response = await user_drive_data_source.drives_list(
+                    pageSize=100,
+                    pageToken=page_token
+                )
+
+                drives_data = drives_response.get("drives", [])
+                if not drives_data:
+                    break
+
+                all_user_drives.extend(drives_data)
+
+                page_token = drives_response.get("nextPageToken")
+                if not page_token:
+                    break
+
+            except Exception as e:
+                should_break = await self._handle_drive_error(e, "shared drives list", "", "drives_list")
+                if should_break:
+                    break
+
+        return all_user_drives
+
     async def sync_shared_drives(
         self,
         user: AppUser,
         user_drive_data_source: GoogleDriveDataSource,
         user_permission_id: str,
-        tracked_folder_ids: Optional[set] = None
+        tracked_folder_ids: Optional[set] = None,
+        user_drives: Optional[List[Dict]] = None
     ) -> set:
         """
         Synchronizes shared drives that the user is a member of.
@@ -2434,6 +2767,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             user_drive_data_source: GoogleDriveDataSource instance for the user
             user_permission_id: User's permission ID from Google Drive
             tracked_folder_ids: Folder scope for this run, or None to sync everything
+            user_drives: Membership listing already fetched by the caller, to avoid a
+                second drives_list call
 
         Returns:
             The ids of the shared drives this user reached, for the placeholder sweep.
@@ -2441,35 +2776,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         self.logger.info(f"Syncing shared drives for user {user.email}")
         synced_drive_ids: set = set()
         try:
-            # List all shared drives the user has access to
-            all_user_drives: List[Dict] = []
-            page_token: Optional[str] = None
+            if user_drives is None:
+                user_drives = await self._list_user_shared_drives(user_drive_data_source)
 
-            while True:
-                try:
-                    # Fetch shared drives with pagination
-                    drives_response = await user_drive_data_source.drives_list(
-                        pageSize=100,
-                        pageToken=page_token
-                    )
-
-                    drives_data = drives_response.get("drives", [])
-                    if not drives_data:
-                        break
-
-                    all_user_drives.extend(drives_data)
-
-                    # Check for next page
-                    page_token = drives_response.get("nextPageToken")
-                    if not page_token:
-                        break
-
-                except Exception as e:
-                    should_break = await self._handle_drive_error(e, "shared drives list", "", "drives_list")
-                    if should_break:
-                        break
-
-            all_user_drives = [d for d in all_user_drives if self._pass_drive_ids_filter(d.get("id", ""))]
+            all_user_drives = [d for d in user_drives if self._pass_drive_ids_filter(d.get("id", ""))]
 
             if not all_user_drives:
                 self.logger.info(f"No shared drives found for user {user.email}")
@@ -3341,8 +3651,13 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.warning(f"File {file_id} not found at source")
                 return None
 
-            # Determine if it's a shared drive (check if driveId is present in metadata)
-            is_shared_drive = 'driveId' in file_metadata
+            # An item in a shared drive that carries no record group reached us through an
+            # individual grant out of a drive this connector never enumerates. Re-deriving
+            # that shape from metadata would drop its shared-with-me group: `shared` is unset
+            # on shared drive items, and a reader cannot list permissions to rebuild it from
+            # permissionDetails.
+            in_shared_drive = 'driveId' in file_metadata
+            is_shared_with_me = in_shared_drive and record_group_id is None
 
             # Use existing logic to detect changes and transform to FileRecord
             record_update = await self._process_drive_item(
@@ -3350,8 +3665,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                 user_id,
                 user_email,
                 record_group_id,
-                is_shared_drive=is_shared_drive,
-                drive_data_source=user_drive_data_source
+                is_shared_drive=in_shared_drive and not is_shared_with_me,
+                drive_data_source=user_drive_data_source,
+                force_shared_with_me=is_shared_with_me
             )
 
             if not record_update or record_update.is_deleted:
