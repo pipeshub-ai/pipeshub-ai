@@ -229,6 +229,12 @@ async def get_services(request: Request) -> dict[str, Any]:
     }
 
 
+def sa_forces_org_sharing() -> bool:
+    """Whether service account agents are always forced to share with the org.
+    """
+    return True
+
+
 def _get_user_context(request: Request) -> dict[str, Any]:
     """Extract user context from request"""
     user = getattr(request.state, "user", {})
@@ -1562,38 +1568,6 @@ async def get_agent_template(request: Request, template_id: str) -> JSONResponse
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-@router.post("/share-template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
-async def share_agent_template(request: Request, template_id: str) -> JSONResponse:
-    """Share an agent template"""
-    try:
-        services = await get_services(request)
-        user_context = _get_user_context(request)
-
-        body = _parse_request_body(await request.body())
-        user_ids = body.get("userIds", [])
-        team_ids = body.get("teamIds", [])
-
-        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        template = await services["graph_provider"].get_template(template_id, user_doc["_key"])
-
-        if not template:
-            raise AgentTemplateNotFoundError(template_id)
-
-        result = await services["graph_provider"].share_agent_template(template_id, user_doc["_key"], user_ids, team_ids)
-        if not result:
-            raise HTTPException(status_code=500, detail="Failed to share agent template")
-
-        return JSONResponse(
-            status_code=200,
-            content={"status": "success", "message": "Agent template shared successfully"}
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        services["logger"].error(f"Error sharing template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
 @router.post("/template/{template_id}/clone", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def clone_agent_template(request: Request, template_id: str) -> JSONResponse:
     """Clone an agent template"""
@@ -1711,9 +1685,10 @@ async def create_agent(request: Request) -> JSONResponse:
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
         is_service_account = bool(body.get("isServiceAccount", False))
-        # Service account agents must always be org-wide so internal calls can access them
-        # without requiring individual user permission edges.
-        share_with_org = True if is_service_account else bool(body.get("shareWithOrg", False))
+        if sa_forces_org_sharing() and is_service_account:
+            share_with_org = True
+        else:
+            share_with_org = bool(body.get("shareWithOrg", False))
 
         # Create agent document
         agent_key = str(uuid.uuid4())
@@ -2365,10 +2340,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 raise InvalidRequestError(
                     "A service account agent cannot be converted back to a regular agent."
                 )
-            # When converting to a service account, ensure org-wide sharing is enabled.
-            # Service account agents must always have an ORG permission edge so that
-            # internal calls (e.g. from Slack) can access them via the org admin user.
-            if requested_is_sa and not current_is_sa:
+            if sa_forces_org_sharing() and requested_is_sa and not current_is_sa:
                 body["shareWithOrg"] = True
 
         # Handle shareWithOrg flag changes
@@ -2395,8 +2367,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 logger.info(f"Created org permission edge for agent {agent_id}")
 
             elif not new_share_with_org and current_share_with_org:
-                # Service account agents must always be org-shared — reject the request.
-                if bool(agent.get("isServiceAccount", False)):
+                if sa_forces_org_sharing() and bool(agent.get("isServiceAccount", False)):
                     raise InvalidRequestError(
                         "Cannot disable org-wide sharing for a service account agent. "
                         "Service account agents must always be shared across the organisation."
@@ -3045,144 +3016,6 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
 
 
 # ============================================================================
-# Agent Sharing & Permissions
-# ============================================================================
-
-@router.post("/{agent_id}/share", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
-async def share_agent(request: Request, agent_id: str) -> JSONResponse:
-    """Share an agent"""
-    try:
-        services = await get_services(request)
-        user_context = _get_user_context(request)
-        org_key = user_context["orgId"]
-
-        body = _parse_request_body(await request.body())
-        user_ids = body.get("userIds", [])
-        team_ids = body.get("teamIds", [])
-
-        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-
-        perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
-        if not perm:
-            raise AgentNotFoundError(agent_id)
-
-        if not perm.get("can_share", False):
-            raise PermissionDeniedError("share this agent")
-
-        result = await services["graph_provider"].share_agent(agent_id, user_doc["_key"], org_key, user_ids, team_ids)
-        if not result:
-            raise HTTPException(status_code=500, detail="Failed to share agent")
-
-        return JSONResponse(
-            status_code=200,
-            content={"status": "success", "message": "Agent shared successfully"}
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        services["logger"].error(f"Error sharing agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.post("/{agent_id}/unshare", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
-async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
-    """Unshare an agent"""
-    try:
-        services = await get_services(request)
-        user_context = _get_user_context(request)
-        org_key = user_context["orgId"]
-
-        body = _parse_request_body(await request.body())
-        user_ids = body.get("userIds", [])
-        team_ids = body.get("teamIds", [])
-
-        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-
-        perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
-        if not perm:
-            raise AgentNotFoundError(agent_id)
-
-        if not perm.get("can_share", False):
-            raise PermissionDeniedError("unshare this agent")
-
-        result = await services["graph_provider"].unshare_agent(agent_id, user_doc["_key"], org_key, user_ids, team_ids)
-        if not result:
-            raise HTTPException(status_code=500, detail="Failed to unshare agent")
-
-        return JSONResponse(
-            status_code=200,
-            content={"status": "success", "message": "Agent unshared successfully"}
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        services["logger"].error(f"Error unsharing agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.get("/{agent_id}/permissions", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
-async def get_agent_permissions(request: Request, agent_id: str) -> JSONResponse:
-    """Get all permissions for an agent"""
-    try:
-        services = await get_services(request)
-        user_context = _get_user_context(request)
-        org_key = user_context["orgId"]
-
-        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        permissions = await services["graph_provider"].get_agent_permissions(agent_id, user_doc["_key"], org_key)
-
-        # if permissions is None:
-            # raise PermissionDeniedError("view permissions for this agent")
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": "Agent permissions retrieved successfully",
-                "permissions": permissions,
-            }
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        services["logger"].error(f"Error getting permissions: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.put("/{agent_id}/permissions", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
-async def update_agent_permission(request: Request, agent_id: str) -> JSONResponse:
-    """Update permission role for a user on an agent"""
-    try:
-        services = await get_services(request)
-        user_context = _get_user_context(request)
-        org_key = user_context["orgId"]
-
-        body = _parse_request_body(await request.body())
-        user_ids = body.get("userIds", [])
-        team_ids = body.get("teamIds", [])
-        role = body.get("role")
-
-        if not role:
-            raise InvalidRequestError("Role is required")
-
-        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        result = await services["graph_provider"].update_agent_permission(agent_id, user_doc["_key"], org_key, user_ids, team_ids, role)
-
-        if not result:
-            raise HTTPException(status_code=500, detail="Failed to update agent permission")
-
-        return JSONResponse(
-            status_code=200,
-            content={"status": "success", "message": "Agent permission updated successfully"}
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        services["logger"].error(f"Error updating permission: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-# ============================================================================
 # Agent Chat Endpoints
 # ============================================================================
 
@@ -3400,7 +3233,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         llm = llm_result[0]
         llm_config = llm_result[1]
-        ai_models_config = llm_result[2] if len(llm_result) > 2 else {}
         is_multimodal_llm = llm_config.get("isMultimodal", False)
 
         # Get and filter toolsets — gated on the `ENABLE_ACTIONS` platform flag:
@@ -3414,6 +3246,30 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             if await is_actions_enabled(config_service)
             else []
         )
+        # Fetch system prompts from dedicated key; fall back to legacy aiModels blob for OSS
+        # deployments that haven't migrated yet.
+        system_prompts_config: dict = {}
+        try:
+            sp_raw = await services["config_service"].get_config(
+                config_node_constants.SYSTEM_PROMPTS.value
+            )
+            if sp_raw:
+                system_prompts_config = sp_raw
+            else:
+                ai_raw = await services["config_service"].get_config(
+                    config_node_constants.AI_MODELS.value
+                )
+                if ai_raw:
+                    system_prompts_config = {
+                        k: ai_raw[k]
+                        for k in ("customSystemPrompt", "customSystemPromptWebSearch", "customSystemPromptAgent")
+                        if k in ai_raw
+                    }
+        except Exception:
+            pass
+
+        # Get and filter toolsets
+        agent_toolsets = agent.get("toolsets", [])
         if chat_query.tools is not None:
             enabled_tools_set = set(chat_query.tools)
             filtered_toolsets = []
@@ -3618,23 +3474,25 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             import asyncio as _asyncio  # noqa: F401 — may not have run yet if named_toolsets was empty above
 
             from app.agents.mcp import service as mcp_service
+            from app.edition_config import build_mcp_fallback_config_services, get_mcp_instance_resolved
 
             async def _fetch_mcp_server_config(
                 mcp_server: dict,
-            ) -> tuple[dict, dict[str, Any] | None, dict[str, Any] | None]:
-                """Return (mcp_server, instance_or_None, effective_auth) without raising."""
+            ) -> tuple[dict, dict[str, Any] | None, dict[str, Any] | None, list | None]:
+                """Return (mcp_server, instance_or_None, effective_auth, fallback_config_services) without raising."""
                 instance_id = mcp_server["instanceId"]
                 try:
-                    instance = await mcp_service.get_instance(org_key, instance_id, services["config_service"])
+                    instance = await get_mcp_instance_resolved(instance_id, services["config_service"])
                     if not instance:
-                        return mcp_server, None, None
+                        return mcp_server, None, None, None
                     effective_auth = await mcp_service.resolve_effective_user_auth(
                         instance, credential_lookup_id, services["config_service"],
                     )
-                    return mcp_server, instance, effective_auth
+                    fallbacks = await build_mcp_fallback_config_services(instance, services["config_service"])
+                    return mcp_server, instance, effective_auth, fallbacks
                 except Exception as exc:
                     logger.warning(f"Failed to load MCP server config for instance '{instance_id}': {exc}")
-                    return mcp_server, None, None
+                    return mcp_server, None, None, None
 
             mcp_fetch_results = await _asyncio.gather(*[_fetch_mcp_server_config(m) for m in named_mcp_servers])
 
@@ -3642,7 +3500,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             missing_mcp_server_display_names: list[str] = []          # instance no longer exists
             unauthenticated_mcp_server_display_names: list[str] = []  # instance exists, auth incomplete
 
-            for mcp_server, instance, effective_auth in mcp_fetch_results:
+            for mcp_server, instance, effective_auth, fallbacks in mcp_fetch_results:
                 instance_id = mcp_server["instanceId"]
                 display_name = mcp_server.get("displayName") or mcp_server.get("name") or instance_id
 
@@ -3652,13 +3510,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     continue
 
                 if mcp_service.is_effective_auth_authenticated(effective_auth):
-                    # `ownerId` is `credential_lookup_id` (mirrors the toolset config
-                    # loading above) — the agent-loop runtime's `MCPSessionManager`
-                    # needs it to persist a refreshed OAuth token back to the SAME
-                    # etcd credential record this was resolved from (see
-                    # `app/agents/agent_loop/mcp_session.py`).
                     mcp_server_configs[instance_id] = {
                         "instance": instance, "auth": effective_auth or {}, "ownerId": credential_lookup_id,
+                        "fallbackConfigServices": fallbacks,
                     }
                     configured_mcp_servers.append(mcp_server)
                 else:
@@ -3795,7 +3649,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         # org-level Agent custom instructions; real Agent Builder IDs skip this.
         is_placeholder = agent_id == "agentIdPlaceholder"
         custom_instructions = (
-            resolve_custom_instructions(ai_models_config or {}, resolve_agent_policy(caps))
+            resolve_custom_instructions(system_prompts_config, resolve_agent_policy(caps))
             if is_placeholder
             else None
         )
@@ -3893,6 +3747,7 @@ async def get_assistant_agent(
         Dictionary containing assistant agent configuration with toolsets and knowledge sources
     """
     from app.agents.mcp.service import get_authenticated_mcp_servers, is_mcp_enabled
+    from app.edition_config import resolve_mcp_instances_with_inheritance
     from app.api.routes.toolsets import get_authenticated_toolsets, is_actions_enabled
 
     # Get authenticated toolsets using the helper method — skipped entirely when
@@ -3920,10 +3775,11 @@ async def get_assistant_agent(
     # etcd/graph round-trip on every assistant chat.
     if await is_mcp_enabled(config_service):
         try:
+            mcp_instances = await resolve_mcp_instances_with_inheritance(config_service)
             authenticated_mcp_servers_list = await get_authenticated_mcp_servers(
                 owner_id=user_id,
-                org_id=org_id,
                 config_service=config_service,
+                instances=mcp_instances,
             )
         except Exception as e:
             logger.error(f"Error fetching authenticated MCP servers: {e}", exc_info=True)

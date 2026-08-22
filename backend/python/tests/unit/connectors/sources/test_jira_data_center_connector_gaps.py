@@ -594,8 +594,7 @@ class TestBuildIssueRecordsAndCommentsGaps:
         conn = _make_connector()
         conn.data_source = MagicMock()
         conn.site_url = "https://jira.example"
-        tx = MagicMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=None)
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         issue = {
             "id": "100",
@@ -624,7 +623,6 @@ class TestBuildIssueRecordsAndCommentsGaps:
                 [issue],
                 "pid",
                 [],
-                tx,
                 is_new_project=True,
             )
 
@@ -774,8 +772,7 @@ class TestRemainingQuickGaps:
     async def test_fetch_issue_attachments_skips_missing_id(self):
         conn = _make_connector()
         conn.site_url = "https://jira.example"
-        tx = MagicMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=None)
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         fields = {"attachment": [{"filename": "no-id.png", "mimeType": "image/png"}]}
 
         records = await conn._fetch_issue_attachments(
@@ -785,6 +782,5 @@ class TestRemainingQuickGaps:
             [],
             "proj",
             RecordGroupType.PROJECT,
-            tx,
         )
         assert records == []

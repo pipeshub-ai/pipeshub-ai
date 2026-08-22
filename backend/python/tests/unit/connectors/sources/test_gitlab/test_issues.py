@@ -181,9 +181,7 @@ class TestProcessIssueToTicket:
         existing = MagicMock()
         existing.record_name = "Old Title"
         existing.id = "existing-id-1"
-        _, ctx = await self._make_tx_context(existing)
-        c.data_store_provider = MagicMock()
-        c.data_store_provider.transaction = MagicMock(return_value=ctx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         issues_sync = IssuesSync(c)
 
         result = await issues_sync._process_issue_incident_task_to_ticket(_make_issue(title="New Title"))
@@ -193,8 +191,9 @@ class TestProcessIssueToTicket:
 
     async def test_exception_returns_none(self) -> None:
         c = make_mock_connector()
-        c.data_store_provider = MagicMock()
-        c.data_store_provider.transaction = MagicMock(side_effect=Exception("DB error"))
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=Exception("DB error")
+        )
         issues_sync = IssuesSync(c)
 
         result = await issues_sync._process_issue_incident_task_to_ticket(_make_issue())

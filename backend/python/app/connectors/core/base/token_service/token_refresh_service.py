@@ -52,6 +52,9 @@ class TokenRefreshService:
         self._refresh_lock = asyncio.Lock()  # Prevent concurrent refresh operations
         self._processing_connectors: set = set()  # Track connectors currently being processed to prevent recursion
         self._invalid_refresh_failures: dict[str, int] = {}  # Consecutive refresh-token rejections per connector
+        # Per-connector lock: Atlassian-style rotating RTs are single-use.
+        # refresh_now / delayed / immediate must not POST the same RT twice.
+        self._connector_refresh_locks: dict[str, asyncio.Lock] = {}
 
     def set_messaging_producer(self, producer: IMessagingProducer) -> None:
         """Attach the messaging producer; it starts after this service at app startup."""
@@ -262,9 +265,10 @@ class TokenRefreshService:
         Enrich OAuth config with missing infrastructure fields from registry.
         Modifies oauth_flow_config in-place.
         """
-        # Check if enrichment is needed
         needs_enrichment = (
-            OAuthConfigKeys.TOKEN_ACCESS_TYPE not in oauth_flow_config
+            not oauth_flow_config.get(AuthFieldKeys.TOKEN_URL)
+            or not oauth_flow_config.get(AuthFieldKeys.AUTHORIZE_URL)
+            or OAuthConfigKeys.TOKEN_ACCESS_TYPE not in oauth_flow_config
             or OAuthConfigKeys.ADDITIONAL_PARAMS not in oauth_flow_config
             or OAuthConfigKeys.SCOPE_PARAMETER_NAME not in oauth_flow_config
             or OAuthConfigKeys.TOKEN_RESPONSE_PATH not in oauth_flow_config
@@ -282,7 +286,12 @@ class TokenRefreshService:
             if not registry_oauth_config:
                 return
 
-            # Add missing optional fields from registry
+            if not oauth_flow_config.get(AuthFieldKeys.TOKEN_URL) and registry_oauth_config.token_url:
+                oauth_flow_config[AuthFieldKeys.TOKEN_URL] = registry_oauth_config.token_url
+            if not oauth_flow_config.get(AuthFieldKeys.AUTHORIZE_URL) and registry_oauth_config.authorize_url:
+                oauth_flow_config[AuthFieldKeys.AUTHORIZE_URL] = registry_oauth_config.authorize_url
+            if not oauth_flow_config.get(AuthFieldKeys.REDIRECT_URI) and registry_oauth_config.redirect_uri:
+                oauth_flow_config[AuthFieldKeys.REDIRECT_URI] = registry_oauth_config.redirect_uri
             if (
                 OAuthConfigKeys.TOKEN_ACCESS_TYPE not in oauth_flow_config
                 and registry_oauth_config.token_access_type
@@ -514,6 +523,25 @@ class TokenRefreshService:
 
         return oauth_flow_config
 
+    def _lock_for_connector(self, connector_id: str) -> asyncio.Lock:
+        lock = self._connector_refresh_locks.get(connector_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._connector_refresh_locks[connector_id] = lock
+        return lock
+
+    def _adopt_already_rotated_token(
+        self, config: dict, requested_refresh_token: str
+    ) -> tuple[Optional[OAuthToken], str]:
+        """If store already rotated the RT, reuse the live token instead of POSTing the consumed one."""
+        credentials = config.get("credentials") or {}
+        stored_rt = credentials.get("refresh_token") or requested_refresh_token
+        if stored_rt != requested_refresh_token and credentials.get("access_token"):
+            live = OAuthToken.from_dict(credentials)
+            if not live.is_expired:
+                return live, stored_rt
+        return None, stored_rt
+
     # ============================================================================
     # Core Token Refresh Logic
     # ============================================================================
@@ -523,8 +551,12 @@ class TokenRefreshService:
         connector_id: str,
         connector_type: str,
         refresh_token: str,
+        org_id: str | None = None,
     ) -> OAuthToken:
-        """Public entry point for an on-demand OAuth token refresh."""
+        """Public entry point for an on-demand OAuth token refresh.
+
+        ``org_id`` is accepted for EE call-site compatibility and ignored on OSS.
+        """
         try:
             return await self._perform_token_refresh(
                 connector_id, connector_type, refresh_token
@@ -654,50 +686,51 @@ class TokenRefreshService:
             ValueError: If config or credentials are missing
             Exception: If refresh fails
         """
-        # 1. Load connector config
         config_key = f"/services/connectors/{connector_id}/config"
-        config = await self.configuration_service.get_config(config_key)
+        async with self._lock_for_connector(connector_id):
+            config = await self.configuration_service.get_config(config_key)
+            if not config:
+                raise ValueError(f"No config found for connector {connector_id}")
 
-        if not config:
-            raise ValueError(f"No config found for connector {connector_id}")
+            adopted, refresh_token = self._adopt_already_rotated_token(config, refresh_token)
+            if adopted is not None:
+                self.logger.info(
+                    f"Using already-rotated token for connector {connector_id}, skipping refresh"
+                )
+                self._invalid_refresh_failures.pop(connector_id, None)
+                return adopted
 
-        auth_config = config.get('auth', {})
+            auth_config = config.get('auth', {})
+            oauth_flow_config = await self._build_complete_oauth_config(
+                connector_id,
+                connector_type,
+                auth_config
+            )
+            oauth_config = get_oauth_config(oauth_flow_config)
 
-        # 2. Build complete OAuth configuration
-        oauth_flow_config = await self._build_complete_oauth_config(
-            connector_id,
-            connector_type,
-            auth_config
-        )
+            from app.connectors.core.base.token_service.oauth_service import OAuthProvider
+            oauth_provider = OAuthProvider(
+                config=oauth_config,
+                configuration_service=self.configuration_service,
+                credentials_path=config_key
+            )
 
-        # 3. Create OAuth config object
-        oauth_config = get_oauth_config(oauth_flow_config)
+            try:
+                self.logger.info(f"🔄 Refreshing token for connector {connector_id}")
+                new_token = await oauth_provider.refresh_access_token(refresh_token)
+                self.logger.info(f"✅ Successfully refreshed token for connector {connector_id}")
 
-        # 4. Create OAuth provider
-        from app.connectors.core.base.token_service.oauth_service import OAuthProvider
-        oauth_provider = OAuthProvider(
-            config=oauth_config,
-            configuration_service=self.configuration_service,
-            credentials_path=config_key
-        )
+                latest = await self.configuration_service.get_config(config_key)
+                if not latest:
+                    latest = config
+                latest['credentials'] = new_token.to_dict()
+                await self.configuration_service.set_config(config_key, latest)
+                self.logger.info(f"💾 Updated stored credentials for connector {connector_id}")
 
-        try:
-            # 5. Perform the token refresh
-            self.logger.info(f"🔄 Refreshing token for connector {connector_id}")
-            new_token = await oauth_provider.refresh_access_token(refresh_token)
-            self.logger.info(f"✅ Successfully refreshed token for connector {connector_id}")
-
-            # 6. Update stored credentials
-            config['credentials'] = new_token.to_dict()
-            await self.configuration_service.set_config(config_key, config)
-            self.logger.info(f"💾 Updated stored credentials for connector {connector_id}")
-
-            self._invalid_refresh_failures.pop(connector_id, None)
-
-            return new_token
-        finally:
-            # Always clean up OAuth provider
-            await oauth_provider.close()
+                self._invalid_refresh_failures.pop(connector_id, None)
+                return new_token
+            finally:
+                await oauth_provider.close()
 
     def _is_connector_being_processed(self, connector_id: str) -> bool:
         """Check if connector is currently being processed."""

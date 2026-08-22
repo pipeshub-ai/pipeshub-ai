@@ -1206,17 +1206,13 @@ class ZoomConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "ZoomConnector":
         """Factory method — creates the connector instance without calling init().
 
         init() is called lazily inside run_sync() and test_connection_and_access().
         """
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service,
-        )
-        await data_entities_processor.initialize()
         return cls(
             logger=logger,
             data_entities_processor=data_entities_processor,

@@ -8,6 +8,7 @@ import { MailModel } from '../schema/mailInfo.schema';
 import {
   accountCreation,
   appUserInvite,
+  domainLimitReached,
   loginWithOTPRequest,
   orgEmailVerification,
   resetEmail,
@@ -80,6 +81,10 @@ export class MailController {
       case EmailTemplateType.OrgEmailVerification:
         emailContent = orgEmailVerification(templateData);
         return emailContent;
+
+      case EmailTemplateType.DomainLimitReached:
+        emailContent = domainLimitReached(templateData);
+        return emailContent;  
 
       default:
         throw 'Unknown Template';

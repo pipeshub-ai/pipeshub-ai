@@ -253,6 +253,9 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
 
             if encrypted_value is not None:
                 try:
+                    if isinstance(encrypted_value, (dict, list, int, float)):
+                        return encrypted_value
+                        
                     # Determine if value needs decryption
                     UNENCRYPTED_KEYS = [
                         config_node_constants.ENDPOINTS.value,

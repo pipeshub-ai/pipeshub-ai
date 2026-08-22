@@ -88,6 +88,7 @@ def connector():
         dep.on_record_metadata_update = AsyncMock()
         dep.on_record_content_update = AsyncMock()
         dep.on_updated_record_permissions = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -127,7 +128,7 @@ class TestIndividualInit:
         result = await connector.init()
         assert result is False
 
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_returns_false_when_oauth_config_not_found(self, mock_fetch, connector):
         mock_fetch.return_value = None
         connector.config_service.get_config = AsyncMock(return_value={
@@ -137,7 +138,7 @@ class TestIndividualInit:
         result = await connector.init()
         assert result is False
 
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_raises_when_incomplete_credentials(self, mock_fetch, connector):
         mock_fetch.return_value = {"config": {}}
         connector.config_service.get_config = AsyncMock(return_value={
@@ -164,7 +165,7 @@ class TestProcessDriveItemExtended:
         existing.version = 0
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = ProgressStatus.COMPLETED.value
-        connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         metadata = _make_file_metadata(parents=["new-parent"])
         result = await connector._process_drive_item(
             metadata=metadata, user_id="u1", user_email="user@example.com", drive_id="drive-1",
@@ -183,7 +184,7 @@ class TestProcessDriveItemExtended:
         existing.version = 0
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = ProgressStatus.COMPLETED.value
-        connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         metadata = _make_file_metadata(parents=None)
         result = await connector._process_drive_item(
             metadata=metadata, user_id="u1", user_email="user@example.com", drive_id="new-drive",
@@ -224,8 +225,9 @@ class TestProcessDriveItemExtended:
 
     async def test_process_error_returns_none(self, connector):
         """Exception during processing returns None."""
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = MagicMock(side_effect=Exception("db error"))
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=Exception("db error")
+        )
         metadata = _make_file_metadata()
         result = await connector._process_drive_item(
             metadata=metadata, user_id="u1", user_email="user@example.com", drive_id="drive-1",
@@ -312,7 +314,7 @@ class TestHandleRecordUpdates:
         existing.id = "record-1"
         existing.record_name = "deleted.txt"
         existing.mime_type = "text/plain"
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         update = MagicMock()
         update.is_deleted = True
         update.is_new = False
@@ -372,7 +374,7 @@ class TestHandleRecordUpdates:
         existing = MagicMock(spec=FileRecord)
         existing.id = "record-1"
         existing.record_name = "deleted.txt"
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         update = MagicMock()
         update.is_deleted = True
         update.external_record_id = "ext-1"

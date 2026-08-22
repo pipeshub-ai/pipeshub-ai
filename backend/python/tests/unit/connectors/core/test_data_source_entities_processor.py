@@ -2653,6 +2653,7 @@ class TestInitialize:
     async def test_initialize_sets_org_id(self):
         """initialize() sets org_id from the first organization in DB."""
         proc = _make_processor()
+        proc.org_id = ""  # Clear so DB lookup path is exercised
         tx_store = _make_tx_store()
         tx_store.get_all_orgs.return_value = [{"_key": "my-org", "id": "my-org"}]
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -2690,6 +2691,7 @@ class TestInitialize:
     async def test_initialize_fallback_to_key(self):
         """initialize() falls back to _key when id not present."""
         proc = _make_processor()
+        proc.org_id = ""  # Clear so DB lookup path is exercised
         tx_store = _make_tx_store()
         tx_store.get_all_orgs.return_value = [{"_key": "org-fallback"}]
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)

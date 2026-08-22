@@ -650,11 +650,9 @@ class NextcloudConnector(BaseConnector):
                 except ValueError as e:
                     self.logger.debug(f"Failed to parse last_modified timestamp '{last_modified_str}': {e}, using current timestamp")
 
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    external_id=file_id,
-                    connector_id=self.connector_id
-                )
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, file_id
+            )
 
             # Detect changes
             is_new = existing_record is None
@@ -890,28 +888,25 @@ class NextcloudConnector(BaseConnector):
         """Nextcloud single-parent: remove existing PARENT_CHILD edges so records don't appear in both old and new location."""
         if not records_with_permissions:
             return
-        async with self.data_store_provider.transaction() as tx_store:
-            for record, _ in records_with_permissions:
-                deleted = await tx_store.delete_parent_child_edge_to_record(record.id)
-                if deleted:
-                    self.logger.debug(
-                        "Removed %d existing PARENT_CHILD edge(s) to %s (Nextcloud single-parent)",
-                        deleted, record.id,
-                    )
+        for record, _ in records_with_permissions:
+            deleted = await self.data_entities_processor.delete_parent_child_edge_to_record(record.id)
+            if deleted:
+                self.logger.debug(
+                    "Removed %d existing PARENT_CHILD edge(s) to %s (Nextcloud single-parent)",
+                    deleted, record.id,
+                )
 
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
         """Handle record updates (modified or deleted records). Follows Box connector pattern."""
         try:
             if record_update.is_deleted:
-                async with self.data_store_provider.transaction() as tx_store:
-                    existing_record = await tx_store.get_record_by_external_id(
-                        external_id=record_update.external_record_id,
-                        connector_id=self.connector_id
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, record_update.external_record_id
+                )
+                if existing_record:
+                    await self.data_entities_processor.on_record_deleted(
+                        record_id=existing_record.id
                     )
-                    if existing_record:
-                        await self.data_entities_processor.on_record_deleted(
-                            record_id=existing_record.id
-                        )
 
             elif record_update.is_updated:
                 records_batch = [(record_update.record, record_update.new_permissions or [])]
@@ -1194,11 +1189,9 @@ class NextcloudConnector(BaseConnector):
             user_email = self.current_user_email or f"{user_id}@nextcloud.local"
 
             # Get existing record group
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_group = await tx_store.get_record_group_by_external_id(
-                    self.connector_id,
-                    self.current_user_id
-                )
+            existing_group = await self.data_entities_processor.get_record_group_by_external_id(
+                self.connector_id, self.current_user_id
+            )
 
             if not existing_group:
                 self.logger.warning("⚠️ [Incremental Sync] Record group not found. Falling back to full sync.")
@@ -1380,20 +1373,17 @@ class NextcloudConnector(BaseConnector):
         try:
             for file_id in file_ids:
                 try:
-                    async with self.data_store_provider.transaction() as tx_store:
-                        # Find record by external ID
-                        record = await tx_store.get_record_by_external_id(
-                            self.connector_id,
-                            str(file_id)
-                        )
+                    record = await self.data_entities_processor.get_record_by_external_id(
+                        self.connector_id, str(file_id)
+                    )
 
-                        if record:
-                            self.logger.info(f"Deleting record: {record.record_name} (ID: {file_id})")
-                            await self.data_entities_processor.on_record_deleted(
-                                record_id=record.id
-                            )
-                        else:
-                            self.logger.debug(f"Record not found for deletion: {file_id}")
+                    if record:
+                        self.logger.info(f"Deleting record: {record.record_name} (ID: {file_id})")
+                        await self.data_entities_processor.on_record_deleted(
+                            record_id=record.id
+                        )
+                    else:
+                        self.logger.debug(f"Record not found for deletion: {file_id}")
 
                 except Exception as e:
                     self.logger.error(f"Error deleting record {file_id}: {e}", exc_info=True)
@@ -1460,11 +1450,9 @@ class NextcloudConnector(BaseConnector):
 
                                         if parent_file_id:
                                             # Check if parent exists in DB by external_id (file_id)
-                                            async with self.data_store_provider.transaction() as tx_store:
-                                                parent_record = await tx_store.get_record_by_external_id(
-                                                    external_id=parent_file_id,
-                                                    connector_id=self.connector_id
-                                                )
+                                            parent_record = await self.data_entities_processor.get_record_by_external_id(
+                                                self.connector_id, parent_file_id
+                                            )
 
                                             # If parent exists, just cache it
                                             if parent_record:
@@ -1585,11 +1573,10 @@ class NextcloudConnector(BaseConnector):
             )
 
         # Get file record and path (path may be stored or derived from parent-child graph)
-        async with self.data_store_provider.transaction() as tx_store:
-            file_record = await tx_store.get_file_record_by_id(record.id)
-            path = None
-            if file_record:
-                path = await tx_store.get_record_path(record.id)
+        file_record = await self.data_entities_processor.get_file_record_by_id(record.id)
+        path = None
+        if file_record:
+            path = await self.data_entities_processor.get_record_path(record.id)
         # Fallback: root-level or when graph path unavailable, use record name (WebDAV path = single segment)
         if file_record and (path is None or path.strip() == ""):
             path = record.record_name or file_record.record_name
@@ -1866,12 +1853,11 @@ class NextcloudConnector(BaseConnector):
 
         for record in record_results:
             try:
-                async with self.data_store_provider.transaction() as tx_store:
-                    user_with_permission = await tx_store.get_first_user_with_permission_to_node(record.id, CollectionNames.RECORDS.value)
-                    file_record = await tx_store.get_file_record_by_id(record.id)
-                    path = None
-                    if file_record:
-                        path = await tx_store.get_record_path(record.id)
+                user_with_permission = await self.data_entities_processor.get_first_user_with_permission_to_node(record.id, CollectionNames.RECORDS.value)
+                file_record = await self.data_entities_processor.get_file_record_by_id(record.id)
+                path = None
+                if file_record:
+                    path = await self.data_entities_processor.get_record_path(record.id)
 
                 if file_record and (path is None or path.strip() == ""):
                     path = record.record_name or file_record.record_name
@@ -1955,12 +1941,10 @@ class NextcloudConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "BaseConnector":
         """Factory method to create a NextcloudConnector instance."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
         return NextcloudConnector(
             logger,
             data_entities_processor,

@@ -390,7 +390,7 @@ class TestJiraBuildFromToolset:
     @pytest.mark.asyncio
     async def test_api_token(self, log):
         cs = AsyncMock()
-        with patch("app.sources.client.jira.jira.get_toolset_by_id", return_value={
+        with patch("app.edition_config.get_toolset_by_id", return_value={
             "auth": {"baseUrl": "https://jira.example.com"},
         }):
             config = {
@@ -417,7 +417,7 @@ class TestJiraBuildFromToolset:
     @pytest.mark.asyncio
     async def test_api_token_instance_not_found(self, log):
         cs = AsyncMock()
-        with patch("app.sources.client.jira.jira.get_toolset_by_id", return_value=None):
+        with patch("app.edition_config.get_toolset_by_id", return_value=None):
             config = {"isAuthenticated": True, "authType": "API_TOKEN", "instanceId": "inst1"}
             with pytest.raises(ValueError, match="not found"):
                 await JiraClient.build_from_toolset(config, log, cs)
@@ -431,7 +431,7 @@ class TestJiraBuildFromToolset:
     @pytest.mark.asyncio
     async def test_api_token_missing_base_url(self, log):
         cs = AsyncMock()
-        with patch("app.sources.client.jira.jira.get_toolset_by_id", return_value={
+        with patch("app.edition_config.get_toolset_by_id", return_value={
             "auth": {"baseUrl": ""},
         }):
             config = {
@@ -446,7 +446,7 @@ class TestJiraBuildFromToolset:
     @pytest.mark.asyncio
     async def test_api_token_dc_pat_toolset_without_email(self, log):
         cs = AsyncMock()
-        with patch("app.sources.client.jira.jira.get_toolset_by_id", return_value={
+        with patch("app.edition_config.get_toolset_by_id", return_value={
             "auth": {"baseUrl": "https://jira.company.com"},
         }):
             config = {

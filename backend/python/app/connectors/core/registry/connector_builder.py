@@ -21,7 +21,7 @@ from app.connectors.core.registry.filters import (
     MultiselectOperator,
     OptionSourceType,
 )
-from app.connectors.core.registry.oauth_config_registry import get_oauth_config_registry
+from app.edition_services import get_oauth_config_registry
 from app.connectors.core.registry.types import AuthField, CustomField, DocumentationLink
 
 

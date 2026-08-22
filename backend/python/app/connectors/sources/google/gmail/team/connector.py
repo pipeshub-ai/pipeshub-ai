@@ -1024,12 +1024,11 @@ class GoogleGmailTeamConnector(BaseConnector):
                                     # Create SIBLING relation if there was a previous message
                                     if previous_message_id:
                                         try:
-                                            async with self.data_store_provider.transaction() as tx_store:
-                                                await tx_store.create_record_relation(
-                                                    previous_message_id,
-                                                    mail_record.id,
-                                                    RecordRelations.SIBLING.value
-                                                )
+                                            await self.data_entities_processor.create_record_relation(
+                                                previous_message_id,
+                                                mail_record.id,
+                                                RecordRelations.SIBLING.value
+                                            )
                                         except Exception as relation_error:
                                             self.logger.error(f"Error creating sibling relation: {relation_error}")
 
@@ -1463,12 +1462,11 @@ class GoogleGmailTeamConnector(BaseConnector):
                         # Create SIBLING relation if there was a previous message
                         if previous_message_record_id:
                             try:
-                                async with self.data_store_provider.transaction() as tx_store:
-                                    await tx_store.create_record_relation(
-                                        previous_message_record_id,
-                                        mail_record.id,
-                                        RecordRelations.SIBLING.value
-                                    )
+                                await self.data_entities_processor.create_record_relation(
+                                    previous_message_record_id,
+                                    mail_record.id,
+                                    RecordRelations.SIBLING.value
+                                )
                             except Exception as relation_error:
                                 self.logger.error(f"Error creating sibling relation: {relation_error}")
 
@@ -1555,21 +1553,16 @@ class GoogleGmailTeamConnector(BaseConnector):
         """
         try:
             # Find and delete associated attachment records first
-            async with self.data_store_provider.transaction() as tx_store:
-                # Get all attachment records with this message as parent
-                attachment_records = await tx_store.get_records_by_parent(
-                    connector_id=self.connector_id,
-                    parent_external_record_id=message_id,
-                    record_type=RecordTypes.FILE.value
-                )
+            attachment_records = await self.data_entities_processor.get_records_by_parent(
+                self.connector_id, message_id, RecordTypes.FILE.value
+            )
 
-                # Delete each attachment record
-                for attachment_record in attachment_records:
-                    try:
-                        await self.data_entities_processor.on_record_deleted(attachment_record.id)
-                        self.logger.debug(f"Deleted attachment record {attachment_record.id} for message {message_id}")
-                    except Exception as attach_error:
-                        self.logger.error(f"Error deleting attachment {attachment_record.id}: {attach_error}")
+            for attachment_record in attachment_records:
+                try:
+                    await self.data_entities_processor.on_record_deleted(attachment_record.id)
+                    self.logger.debug(f"Deleted attachment record {attachment_record.id} for message {message_id}")
+                except Exception as attach_error:
+                    self.logger.error(f"Error deleting attachment {attachment_record.id}: {attach_error}")
 
             # Delete the main message record
             await self.data_entities_processor.on_record_deleted(record_id)
@@ -3326,15 +3319,10 @@ class GoogleGmailTeamConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> BaseConnector:
         """Create a new instance of the Google Gmail workspace connector."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-        await data_entities_processor.initialize()
-
         return GoogleGmailTeamConnector(
             logger,
             data_entities_processor,

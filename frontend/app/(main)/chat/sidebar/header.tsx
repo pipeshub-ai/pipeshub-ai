@@ -1,7 +1,7 @@
 'use client';
 
 import { Flex, IconButton, Tooltip } from '@radix-ui/themes';
-import Link from 'next/link';
+import { Link } from '@/lib/navigation';
 import { HEADER_ELEMENT_SIZE } from '@/app/components/sidebar';
 import { UserAvatar } from '@/app/components/ui/user-avatar';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';

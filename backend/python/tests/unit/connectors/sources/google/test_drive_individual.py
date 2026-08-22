@@ -106,6 +106,7 @@ def connector():
         logger = _make_logger()
         dep = AsyncMock()
         dep.org_id = "org-123"
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
         dep.on_new_records = AsyncMock()
         dep.on_new_app_users = AsyncMock()
         dep.on_new_record_groups = AsyncMock()
@@ -198,6 +199,7 @@ class TestProcessDriveItem:
         existing.extraction_status = ProgressStatus.COMPLETED.value
 
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         metadata = _make_file_metadata(parents=None)
         result = await connector._process_drive_item(
@@ -224,6 +226,7 @@ class TestProcessDriveItem:
         existing.extraction_status = ProgressStatus.COMPLETED.value
 
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         metadata = _make_file_metadata(name="new_name.txt")
         result = await connector._process_drive_item(
@@ -247,6 +250,7 @@ class TestProcessDriveItem:
         existing.extraction_status = ProgressStatus.COMPLETED.value
 
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         metadata = _make_file_metadata(head_revision_id="rev-1")
         result = await connector._process_drive_item(
@@ -459,6 +463,7 @@ class TestHandleRecordUpdates:
         existing.id = "existing-id"
         existing.record_name = "test.txt"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         update = RecordUpdate(
             record=None,
@@ -610,6 +615,7 @@ class TestIncrementalSync:
         existing.id = "existing-id"
         existing.record_name = "deleted-file-1"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         connector.drive_data_source.changes_list = AsyncMock(return_value={
             "changes": [

@@ -1226,16 +1226,13 @@ class TestRunIncrementalSync:
 # ===========================================================================
 
 class TestCreateConnector:
-    @patch("app.connectors.sources.google.gmail.team.connector.DataSourceEntitiesProcessor")
     @patch("app.connectors.sources.google.gmail.team.connector.SyncPoint")
-    async def test_create_connector(self, mock_sp, mock_dep_cls, connector):
+    async def test_create_connector(self, mock_sp, connector):
         from app.connectors.sources.google.gmail.team.connector import GoogleGmailTeamConnector
 
-        mock_dep = AsyncMock()
-        mock_dep.org_id = "org-1"
-        mock_dep.initialize = AsyncMock()
-        mock_dep_cls.return_value = mock_dep
         mock_sp.return_value = AsyncMock()
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
         result = await GoogleGmailTeamConnector.create_connector(
             logger=_make_logger(),
@@ -1244,5 +1241,6 @@ class TestCreateConnector:
             connector_id="test-conn-1",
             scope="personal",
             created_by="test-user-id",
+            data_entities_processor=processor,
         )
         assert result is not None

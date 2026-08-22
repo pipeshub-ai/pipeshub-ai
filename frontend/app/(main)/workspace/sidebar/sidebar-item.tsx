@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
+import { Link } from '@/lib/navigation';
 import { ELEMENT_HEIGHT } from '@/app/components/sidebar';
 
 interface WorkspaceSidebarItemProps {

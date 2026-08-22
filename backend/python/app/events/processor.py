@@ -122,6 +122,16 @@ class Processor:
         # but block construction (incl. LLM table enrichment) always happens here.
         self.docling_processor = DoclingProcessor(logger=self.logger, config=self.config_service)
 
+    async def _get_llm_for_role(self, role: str, *, reasoning_effort: str | None = None):
+        """Resolve LLM for a role."""
+        return await get_llm_for_role(
+            self.config_service, role, reasoning_effort=reasoning_effort
+        )
+
+    def _convert_record(self, record_dict: dict) -> Record:
+        """Map a record document to a Record model."""
+        return convert_record_dict_to_record(record_dict)
+
     def _create_transform_context(
         self,
         record,
@@ -153,7 +163,7 @@ class Processor:
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
-            _ , config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
+            _ , config = await self._get_llm_for_role("indexing", reasoning_effort="low")
             is_multimodal_llm = config.get("isMultimodal")
 
             embedding_config = await get_embedding_model_config(self.config_service)
@@ -198,7 +208,7 @@ class Processor:
                 raise Exception(f"Unsupported extension: {extension}")
 
             block_containers = parser.parse_image(content, extension)
-            record = convert_record_dict_to_record(record)
+            record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
@@ -290,7 +300,7 @@ class Processor:
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
 
-            record = convert_record_dict_to_record(record)
+            record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
@@ -342,7 +352,7 @@ class Processor:
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
 
-            record = convert_record_dict_to_record(record)
+            record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
@@ -509,7 +519,7 @@ class Processor:
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                     return
 
-                record = convert_record_dict_to_record(record)
+                record = self._convert_record(record)
                 record.block_containers = combined_block_containers
                 record.virtual_record_id = virtual_record_id
                 record.is_vlm_ocr_processed = True
@@ -587,7 +597,7 @@ class Processor:
                 self.logger.error(f"❌ Record {recordId} not found in database")
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
-            record = convert_record_dict_to_record(record)
+            record = self._convert_record(record)
             record.block_containers = BlocksContainer(blocks=blocks, block_groups=block_groups)
             record.virtual_record_id = virtual_record_id
 
@@ -669,7 +679,7 @@ class Processor:
                 # Must yield indexing_complete to release indexing semaphore properly
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
-            record = convert_record_dict_to_record(record)
+            record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
@@ -752,7 +762,7 @@ class Processor:
                 return
 
             # Convert to Record entity and attach blocks
-            record = convert_record_dict_to_record(record)
+            record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
@@ -1277,7 +1287,7 @@ class Processor:
 
         try:
             self.logger.debug("📊 Processing Excel content")
-            llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
+            llm, _ = await self._get_llm_for_role("indexing", reasoning_effort="low")
             parser = self.parsers[ExtensionTypes.XLSX.value]
             if not excel_binary:
                 self.logger.info(f"No Excel binary found for record: {recordName}")
@@ -1303,7 +1313,7 @@ class Processor:
                 # Must yield indexing_complete to release indexing semaphore properly
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
-            record = convert_record_dict_to_record(record)
+            record = self._convert_record(record)
             record.block_containers = blocks_containers
             record.virtual_record_id = virtual_record_id
 
@@ -1379,7 +1389,7 @@ class Processor:
             else:
                 parser = self.parsers[extension]
 
-            llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
+            llm, _ = await self._get_llm_for_role("indexing", reasoning_effort="low")
 
             # Try different encodings to decode binary data
             encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
@@ -1434,7 +1444,7 @@ class Processor:
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
-            record = convert_record_dict_to_record(record)
+            record = self._convert_record(record)
             record.virtual_record_id = virtual_record_id
 
             # Signal parsing complete after delimited file is parsed (before LLM block creation)
@@ -1571,7 +1581,7 @@ class Processor:
                 self.logger.error(f"❌ Record {recordId} not found in database")
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
-            record = convert_record_dict_to_record(record)
+            record = self._convert_record(record)
 
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
@@ -1691,7 +1701,7 @@ class Processor:
                 # Must yield indexing_complete to release indexing semaphore properly
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
-            record = convert_record_dict_to_record(record)
+            record = self._convert_record(record)
 
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
@@ -1905,7 +1915,7 @@ class Processor:
                 self.logger.error(f"❌ Record {recordId} not found in database")
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
-            record = convert_record_dict_to_record(record)
+            record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
@@ -2022,7 +2032,7 @@ class Processor:
                     "Record not found in database", doc_id=recordId
                 )
             
-            record = convert_record_dict_to_record(record)
+            record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
@@ -2096,7 +2106,7 @@ class Processor:
                     "Record not found in database", doc_id=recordId
                 )
 
-            record = convert_record_dict_to_record(record)
+            record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 

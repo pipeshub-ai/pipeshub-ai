@@ -2,9 +2,12 @@ import ssl
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from app.config.constants.service import KafkaConfig as KafkaConstants
-from app.config.constants.service import config_node_constants
-from app.connectors.services.event_service import EventService
+from app.config.constants.service import KafkaConfig as KafkaConstants, config_node_constants
+from app.edition_services import (
+    EntityEventService,
+    EventService,
+    RecordEventHandler,
+)
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
 from app.containers.query import QueryAppContainer
@@ -21,8 +24,6 @@ from app.services.messaging.kafka.config.kafka_config import (
     KafkaProducerConfig,
 )
 from app.services.messaging.kafka.handlers.ai_config import AiConfigEventService
-from app.services.messaging.kafka.handlers.entity import EntityEventService
-from app.services.messaging.kafka.handlers.record import RecordEventHandler
 
 
 class KafkaUtils:

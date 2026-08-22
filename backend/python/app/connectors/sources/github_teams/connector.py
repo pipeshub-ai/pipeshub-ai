@@ -400,12 +400,10 @@ class GitHubTeamsConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "BaseConnector":
         """Factory method to create and return an initialized GitHubTeamsConnector."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
         return GitHubTeamsConnector(
             logger, data_entities_processor, data_store_provider,
             config_service, connector_id, scope, created_by,

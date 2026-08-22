@@ -4,7 +4,7 @@ Layout (namespaced under /services/mcp, per-instance/org-scoped — avoids the
 single-list read-modify-write race a single `/services/mcp-instances` list key
 would create under concurrent admin writes):
 
-  /services/mcp/instances/{orgId}/{instanceId}                    -> MCPServerConfig (no secrets)
+  /services/mcp/instances/{instanceId}                            -> MCPServerConfig (no secrets)
   /services/mcp/credentials/{instanceId}/{userId}                 -> per-user/admin auth record
   /services/mcp/credentials/{instanceId}/{userId}/oauth-tokens    -> OAuthTokens
   /services/mcp/credentials/{instanceId}/{userId}/dcr-client      -> legacy per-owner DCRClient
@@ -30,14 +30,14 @@ def normalize_mcp_type(type_id: str) -> str:
     return type_id.lower().strip().replace(" ", "_").replace("-", "_")
 
 
-def get_mcp_instances_prefix(org_id: str) -> str:
-    """Prefix to list every instance for an org: /services/mcp/instances/{orgId}/"""
-    return f"{MCP_ROOT}/instances/{org_id}/"
+def get_mcp_instances_prefix() -> str:
+    """Prefix to list every instance for the current org scope: /services/mcp/instances/"""
+    return f"{MCP_ROOT}/instances/"
 
 
-def get_mcp_instance_path(org_id: str, instance_id: str) -> str:
-    """Single instance metadata key: /services/mcp/instances/{orgId}/{instanceId}"""
-    return f"{MCP_ROOT}/instances/{org_id}/{instance_id}"
+def get_mcp_instance_path(instance_id: str) -> str:
+    """Single instance metadata key: /services/mcp/instances/{instanceId}"""
+    return f"{MCP_ROOT}/instances/{instance_id}"
 
 
 def get_mcp_credentials_path(instance_id: str, user_id: str) -> str:

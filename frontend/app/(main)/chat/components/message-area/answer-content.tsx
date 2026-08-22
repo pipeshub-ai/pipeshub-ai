@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useRef } from 'react';
+import { withCurrentOrgId } from '@/lib/navigation';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -1051,7 +1052,7 @@ export function createMarkdownComponents(
     ),
     a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
       <a
-        href={href}
+        href={href ? withCurrentOrgId(href) : href}
         target="_blank"
         rel="noopener noreferrer"
         style={{

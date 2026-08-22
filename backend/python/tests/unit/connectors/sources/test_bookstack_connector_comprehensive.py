@@ -45,6 +45,10 @@ def mock_data_entities_processor():
     proc.on_record_content_update = AsyncMock()
     proc.on_updated_record_permissions = AsyncMock()
     proc.on_user_removed = AsyncMock(return_value=True)
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_user_by_user_id = AsyncMock(return_value=MagicMock(email="test@example.com"))
+    proc.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-db-1"))
+    proc.delete_edges_between_collections = AsyncMock()
     return proc
 
 
@@ -407,15 +411,7 @@ class TestProcessBookstackPageComprehensive:
         existing.external_revision_id = "3"
         existing.version = 1
 
-        mock_tx = AsyncMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield mock_tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         connector.bookstack_base_url = "https://bookstack.example.com"
         connector.data_source = AsyncMock()

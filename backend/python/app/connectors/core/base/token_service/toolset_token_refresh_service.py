@@ -570,8 +570,8 @@ class ToolsetTokenRefreshService:
                     auth_config[key] = value
 
             self.logger.debug(
-                f"✅ Fetched OAuth credentials for token refresh from centralized config. "
-                f"Fields: {list(oauth_creds.keys())}"
+                "✅ Fetched OAuth credentials for token refresh from centralized config. "
+                f"Field count: {len(oauth_creds)}"
             )
 
         except Exception as e:

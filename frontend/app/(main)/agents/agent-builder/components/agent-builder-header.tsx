@@ -49,6 +49,8 @@ export function AgentBuilderHeader(props: {
   onRequestDeleteAgent?: () => void;
   /** MongoDB user ID from agent.createdBy — resolved via by-ids for display. */
   createdBy?: string | null;
+  onShare?: () => void;
+  hideShareControls?: boolean;
 }) {
   const router = useRouter();
   const { t } = useTranslation();
@@ -72,6 +74,8 @@ export function AgentBuilderHeader(props: {
     canDeleteAgent = false,
     onRequestDeleteAgent,
     createdBy = null,
+    onShare,
+    hideShareControls = false,
   } = props;
 
   const [agentMenuTriggerHovered, setAgentMenuTriggerHovered] = useState(false);
@@ -282,35 +286,44 @@ export function AgentBuilderHeader(props: {
             </DropdownMenu.Content>
           </DropdownMenu.Root>
         ) : null}
-        <Tooltip
-          content={
-            isServiceAccount
-              ? t('agentBuilder.serviceAccountShareTooltip')
-              : t('agentBuilder.shareWithOrgTooltip')
-          }
-        >
-          <Flex
-            align="center"
-            gap="2"
-            px="2"
-            py="1"
-            style={{
-              borderRadius: 'var(--radius-2)',
-              border: '1px solid var(--gray-5)',
-              background: 'var(--gray-2)',
-            }}
+        {!hideShareControls && (onShare ? (
+          <Button variant="outline" size="2" onClick={onShare}>
+            <Flex align="center" gap="2">
+              <MaterialIcon name="person_add" size={16} />
+              <Text size="2">{t('agentBuilder.share')}</Text>
+            </Flex>
+          </Button>
+        ) : (
+          <Tooltip
+            content={
+              isServiceAccount
+                ? t('agentBuilder.serviceAccountShareTooltip')
+                : t('agentBuilder.shareWithOrgTooltip')
+            }
           >
-            <MaterialIcon name="groups" size={18} color="var(--olive-11)" />
-            <Text size="2" style={{ color: 'var(--olive-12)' }}>
-              {t('agentBuilder.shareWithOrg')}
-            </Text>
-            <Switch
-              checked={shareWithOrg || isServiceAccount}
-              onCheckedChange={onShareWithOrgChange}
-              disabled={isFlowStructureLocked || isServiceAccount}
-            />
-          </Flex>
-        </Tooltip>
+            <Flex
+              align="center"
+              gap="2"
+              px="2"
+              py="1"
+              style={{
+                borderRadius: 'var(--radius-2)',
+                border: '1px solid var(--gray-5)',
+                background: 'var(--gray-2)',
+              }}
+            >
+              <MaterialIcon name="groups" size={18} color="var(--olive-11)" />
+              <Text size="2" style={{ color: 'var(--olive-12)' }}>
+                {t('agentBuilder.shareWithOrg')}
+              </Text>
+              <Switch
+                checked={shareWithOrg || isServiceAccount}
+                onCheckedChange={onShareWithOrgChange}
+                disabled={isFlowStructureLocked || isServiceAccount}
+              />
+            </Flex>
+          </Tooltip>
+        ))}
         {(() => {
           const isSaveDisabled =
             saving || !canPersist || saveBlockedByDeprecatedTools || (editing && !isDirty);

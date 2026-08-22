@@ -65,6 +65,9 @@ def _make_mock_deps():
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     data_entities_processor.get_placeholder_records = AsyncMock(return_value=[])
     data_entities_processor.migrate_group_to_user_by_external_id = AsyncMock()
+    data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+    data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
+    data_entities_processor.get_all_user_groups = AsyncMock(return_value=[])
 
     data_store_provider = MagicMock()
     mock_tx = MagicMock()
@@ -2422,11 +2425,7 @@ class TestCreatePermissionFromPrincipal:
         c = _conn()
         mock_user = MagicMock()
         mock_user.email = "alice@test.com"
-        mock_tx = MagicMock()
-        mock_tx.get_user_by_source_id = AsyncMock(return_value=mock_user)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=mock_user)
 
         perm = await c._create_permission_from_principal("user", "acc-1", PermissionType.READ)
         assert perm is not None
@@ -2436,11 +2435,7 @@ class TestCreatePermissionFromPrincipal:
     @pytest.mark.asyncio
     async def test_user_not_found_no_pseudo(self):
         c = _conn()
-        mock_tx = MagicMock()
-        mock_tx.get_user_by_source_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
 
         perm = await c._create_permission_from_principal(
             "user", "acc-1", PermissionType.READ, create_pseudo_group_if_missing=False
@@ -2450,12 +2445,8 @@ class TestCreatePermissionFromPrincipal:
     @pytest.mark.asyncio
     async def test_user_not_found_create_pseudo(self):
         c = _conn()
-        mock_tx = MagicMock()
-        mock_tx.get_user_by_source_id = AsyncMock(return_value=None)
-        mock_tx.get_user_group_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
 
         pseudo_group = MagicMock()
         pseudo_group.source_user_group_id = "acc-1"
@@ -2472,12 +2463,8 @@ class TestCreatePermissionFromPrincipal:
         c = _conn()
         pseudo = MagicMock()
         pseudo.source_user_group_id = "acc-1"
-        mock_tx = MagicMock()
-        mock_tx.get_user_by_source_id = AsyncMock(return_value=None)
-        mock_tx.get_user_group_by_external_id = AsyncMock(return_value=pseudo)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=pseudo)
 
         perm = await c._create_permission_from_principal(
             "user", "acc-1", PermissionType.READ, create_pseudo_group_if_missing=True
@@ -2490,11 +2477,7 @@ class TestCreatePermissionFromPrincipal:
         c = _conn()
         mock_group = MagicMock()
         mock_group.source_user_group_id = "grp-1"
-        mock_tx = MagicMock()
-        mock_tx.get_user_group_by_external_id = AsyncMock(return_value=mock_group)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=mock_group)
 
         perm = await c._create_permission_from_principal("group", "grp-1", PermissionType.READ)
         assert perm is not None
@@ -2504,11 +2487,7 @@ class TestCreatePermissionFromPrincipal:
     @pytest.mark.asyncio
     async def test_group_not_found(self):
         c = _conn()
-        mock_tx = MagicMock()
-        mock_tx.get_user_group_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
 
         perm = await c._create_permission_from_principal("group", "grp-x", PermissionType.READ)
         assert perm is None
@@ -2605,8 +2584,8 @@ class TestTransformAccessClassSpacePermission:
         )
 
     def _mock_groups(self, connector: ConfluenceConnector, groups: list[AppUserGroup]) -> None:
-        mock_tx = connector.data_store_provider.transaction.return_value
-        mock_tx.get_user_groups = AsyncMock(return_value=groups)
+        connector.data_entities_processor.get_all_user_groups = AsyncMock(return_value=groups)
+        connector._group_name_to_external_id = None
 
     @pytest.mark.asyncio
     async def test_licensed_users_read_space_maps_to_group(self):
@@ -2675,8 +2654,8 @@ class TestTransformAccessClassSpacePermission:
     async def test_group_name_cache_refreshes_after_invalidation(self):
         """Stale cache from a prior sync must not block group resolution on re-sync."""
         c = _conn()
-        c._group_name_to_external_id = {}
         self._mock_groups(c, [self._group("confluence-users", "grp-licensed-uuid")])
+        c._group_name_to_external_id = {}
 
         stale = await c._transform_space_permission(
             self._access_class_perm("ALL_LICENSED_USERS")
@@ -2727,8 +2706,8 @@ class TestFetchSpacePermissionsAccessClassDedupe:
             )
         )
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        mock_tx = connector.data_store_provider.transaction.return_value
-        mock_tx.get_user_groups = AsyncMock(return_value=[])
+        connector.data_entities_processor.get_all_user_groups = AsyncMock(return_value=[])
+        connector._group_name_to_external_id = None
 
         permissions = await connector._fetch_space_permissions("space-1", "IT")
         assert len(permissions) == 1
@@ -3472,25 +3451,22 @@ class TestCheckAndFetchUpdatedAttachment:
 class TestCreateConnector:
     @pytest.mark.asyncio
     async def test_factory(self):
-        with patch("app.connectors.sources.atlassian.confluence_cloud.connector.DataSourceEntitiesProcessor") as mock_dep:
-            mock_instance = MagicMock()
-            mock_instance.initialize = AsyncMock()
-            mock_instance.org_id = "org-1"
-            mock_dep.return_value = mock_instance
+        logger = logging.getLogger("test")
+        dsp = MagicMock()
+        mock_tx = MagicMock()
+        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
+        mock_tx.__aexit__ = AsyncMock(return_value=None)
+        dsp.transaction.return_value = mock_tx
+        cs = MagicMock()
 
-            logger = logging.getLogger("test")
-            dsp = MagicMock()
-            mock_tx = MagicMock()
-            mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-            mock_tx.__aexit__ = AsyncMock(return_value=None)
-            dsp.transaction.return_value = mock_tx
-            cs = MagicMock()
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            connector = await ConfluenceConnector.create_connector(
-                logger, dsp, cs, "c1", "team", "test-user-id"
-            )
-            assert isinstance(connector, ConfluenceConnector)
-            mock_instance.initialize.assert_awaited_once()
+        connector = await ConfluenceConnector.create_connector(
+            logger, dsp, cs, "c1", "team", "test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, ConfluenceConnector)
 
 
 # ===========================================================================
@@ -4110,10 +4086,8 @@ class TestProcessWebpageWithUpdateFullCoverage:
 class TestCreatePermissionFromPrincipalFullCoverage:
     @pytest.mark.asyncio
     async def test_user_found(self):
-        _, _, dsp, _, mock_tx = _make_mock_deps_fullcov()
         c = _c()
-        c.data_store_provider = dsp
-        mock_tx.get_user_by_source_id = AsyncMock(return_value=MagicMock(email="u@t.com"))
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=MagicMock(email="u@t.com"))
         perm = await c._create_permission_from_principal("user", "u1", PermissionType.READ)
         assert perm is not None
         assert perm.email == "u@t.com"
@@ -4127,6 +4101,8 @@ class TestCreatePermissionFromPrincipalFullCoverage:
     @pytest.mark.asyncio
     async def test_user_not_found_with_pseudo_group(self):
         c = _c()
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
         c._create_pseudo_group = AsyncMock(return_value=MagicMock(source_user_group_id="u1"))
         perm = await c._create_permission_from_principal("user", "u1", PermissionType.READ, create_pseudo_group_if_missing=True)
         assert perm is not None
@@ -4134,10 +4110,8 @@ class TestCreatePermissionFromPrincipalFullCoverage:
 
     @pytest.mark.asyncio
     async def test_group_found(self):
-        _, _, dsp, _, mock_tx = _make_mock_deps_fullcov()
         c = _c()
-        c.data_store_provider = dsp
-        mock_tx.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(source_user_group_id="g1"))
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(source_user_group_id="g1"))
         perm = await c._create_permission_from_principal("group", "g1", PermissionType.READ)
         assert perm is not None
         assert perm.entity_type == EntityType.GROUP
@@ -6880,12 +6854,8 @@ class TestCreatePermissionFromPrincipalPseudoGroup:
     @pytest.mark.asyncio
     async def test_user_not_found_creates_pseudo_group(self):
         c = _mk_connector()
-        mock_tx = MagicMock()
-        mock_tx.get_user_by_source_id = AsyncMock(return_value=None)
-        mock_tx.get_user_group_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
 
         pseudo_group = MagicMock()
         pseudo_group.source_user_group_id = "acc-xyz"
@@ -6915,13 +6885,9 @@ class TestTransformPageRestrictionAdditional:
     async def test_user_restriction_with_accountid(self):
         """User restriction using accountId key (line 2366->2363)."""
         c = _mk_connector()
-        mock_tx = MagicMock()
         user = MagicMock()
         user.email = "user@x.com"
-        mock_tx.get_user_by_source_id = AsyncMock(return_value=user)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=user)
 
         restriction_data = {
             "operation": "read",
@@ -6938,13 +6904,9 @@ class TestTransformPageRestrictionAdditional:
     async def test_group_restriction(self):
         """Group restriction (lines 2382->2380)."""
         c = _mk_connector()
-        mock_tx = MagicMock()
         group = MagicMock()
         group.source_user_group_id = "grp-1"
-        mock_tx.get_user_group_by_external_id = AsyncMock(return_value=group)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=group)
 
         restriction_data = {
             "operation": "read",
@@ -8450,8 +8412,7 @@ class TestProcessPageAttachmentsForChildren:
         existing = MagicMock()
         existing.id = "rec-att-1"
         existing.record_name = "file.pdf"
-        mock_tx = c.data_store_provider.transaction.return_value
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         result = await c._process_page_attachments_for_children(
             [{"id": "att-1", "title": "file.pdf", "_links": {}}],

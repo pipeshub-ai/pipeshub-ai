@@ -1550,20 +1550,14 @@ class OutlookConnector(BaseConnector):
             parent_index = base64.b64encode(parent_bytes).decode('utf-8')
             self.logger.debug(f"Thread {thread_id}: Looking for parent with conversation_index={parent_index}")
 
-            # Search in ArangoDB for parent message
-            async with self.data_store_provider.transaction() as tx_store:
-                parent_record = await tx_store.get_record_by_conversation_index(
-                    connector_id=self.connector_id,
-                    conversation_index=parent_index,
-                    thread_id=thread_id,
-                    org_id=org_id,
-                    user_id=user.user_id
-                )
+            parent_record = await self.data_entities_processor.get_record_by_conversation_index(
+                self.connector_id, parent_index, thread_id, user.user_id
+            )
 
-                if parent_record:
-                    return parent_record.id
-                else:
-                    return None
+            if parent_record:
+                return parent_record.id
+            else:
+                return None
 
         except Exception as e:
             self.logger.error(f"Error finding parent by conversation index from DB for thread {thread_id}: {e}")
@@ -2153,8 +2147,7 @@ class OutlookConnector(BaseConnector):
 
             if is_deleted:
                 self.logger.info(f"Deleting message: {message_id} and its attachments from folder {folder_name}")
-                async with self.data_store_provider.transaction() as tx_store:
-                    await tx_store.delete_record_by_external_id(self.connector_id, message_id, user.user_id)
+                await self.data_entities_processor.delete_record_by_external_id(self.connector_id, message_id, user.user_id)
                 return updates
 
             # Process email with attachments
@@ -2530,11 +2523,9 @@ class OutlookConnector(BaseConnector):
     async def _get_existing_record(self, org_id: str, external_record_id: str) -> Record | None:
         """Get existing record from data store."""
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                return await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=external_record_id
-                )
+            return await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, external_record_id
+            )
         except Exception as e:
             self.logger.error(f"Error getting existing record {external_record_id}: {e}")
             return None
@@ -2632,12 +2623,9 @@ class OutlookConnector(BaseConnector):
 
             # Handle FILE records (check if parent is group post)
             if record.record_type == RecordType.FILE and record.parent_external_record_id:
-                # Get parent record to check its type
-                async with self.data_store_provider.transaction() as tx_store:
-                    parent_record = await tx_store.get_record_by_external_id(
-                        connector_id=self.connector_id,
-                        external_id=record.parent_external_record_id
-                    )
+                parent_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, record.parent_external_record_id
+                )
 
                 if parent_record and parent_record.record_type == RecordType.GROUP_MAIL:
                     # Group post attachment (don't need user_id)
@@ -2669,10 +2657,9 @@ class OutlookConnector(BaseConnector):
             # User mailbox records (need user_id)
             user_id = None
 
-            async with self.data_store_provider.transaction() as tx_store:
-                user_email = await tx_store.get_record_owner_source_user_email(record.id)
-                if user_email:
-                    user_id = await self._get_user_id_from_email(user_email)
+            user_email = await self.data_entities_processor.get_record_owner_source_user_email(record.id)
+            if user_email:
+                user_id = await self._get_user_id_from_email(user_email)
 
             if not user_id:
                 raise HTTPException(
@@ -2867,12 +2854,9 @@ class OutlookConnector(BaseConnector):
                 if record.record_type == RecordType.GROUP_MAIL:
                     group_mailbox_records.append(record)
                 elif record.record_type == RecordType.FILE and record.parent_external_record_id:
-                    # Check if it's a GROUP_MAIL attachment
-                    async with self.data_store_provider.transaction() as tx_store:
-                        parent_record = await tx_store.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_id=record.parent_external_record_id
-                        )
+                    parent_record = await self.data_entities_processor.get_record_by_external_id(
+                        self.connector_id, record.parent_external_record_id
+                    )
                     if parent_record and parent_record.record_type == RecordType.GROUP_MAIL:
                         group_mailbox_records.append(record)
                     else:
@@ -3200,9 +3184,7 @@ class OutlookConnector(BaseConnector):
         records_by_user: dict[str, list[Record]] = {}
         for record in records:
             try:
-                # Get owner email from permissions
-                async with self.data_store_provider.transaction() as tx_store:
-                    user_email = await tx_store.get_record_owner_source_user_email(record.id)
+                user_email = await self.data_entities_processor.get_record_owner_source_user_email(record.id)
 
                 if not user_email:
                     self.logger.warning(f"No owner found for record {record.id}, skipping")
@@ -3385,11 +3367,10 @@ class OutlookConnector(BaseConnector):
                 return None
 
             # Get group info for permissions
-            async with self.data_store_provider.transaction() as tx_store:
-                group_data = await tx_store.get_user_group_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=group_id
-                )
+            group_data = await self.data_entities_processor.get_user_group_by_external_id(
+                connector_id=self.connector_id,
+                external_id=group_id
+            )
 
             if not group_data:
                 self.logger.warning(f"Group {group_id} not found in database")
@@ -3400,9 +3381,9 @@ class OutlookConnector(BaseConnector):
                 app_name=Connectors.OUTLOOK,
                 connector_id=self.connector_id,
                 source_user_group_id=group_id,
-                name=group_data.get('name', OutlookDefaults.UNKNOWN_GROUP_LABEL),
+                name=group_data.name if group_data.name else OutlookDefaults.UNKNOWN_GROUP_LABEL,
                 org_id=org_id,
-                description=group_data.get('description')
+                description=group_data.description
             )
 
             # Reuse existing processing logic
@@ -3434,12 +3415,9 @@ class OutlookConnector(BaseConnector):
                 self.logger.warning(f"GROUP_MAIL attachment {attachment_id} has no parent post ID")
                 return None
 
-            # Get parent GROUP_MAIL record to get thread_id (same as stream_record)
-            async with self.data_store_provider.transaction() as tx_store:
-                parent_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=post_id
-                )
+            parent_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, post_id
+            )
 
             if not parent_record or parent_record.record_type != RecordType.GROUP_MAIL:
                 self.logger.warning(f"Parent GROUP_MAIL not found for attachment {attachment_id}")
@@ -3480,11 +3458,10 @@ class OutlookConnector(BaseConnector):
                 return None
 
             # Get group info for permissions
-            async with self.data_store_provider.transaction() as tx_store:
-                group_data = await tx_store.get_user_group_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=group_id
-                )
+            group_data = await self.data_entities_processor.get_user_group_by_external_id(
+                connector_id=self.connector_id,
+                external_id=group_id
+            )
 
             if not group_data:
                 self.logger.warning(f"Group {group_id} not found in database")
@@ -3767,12 +3744,11 @@ class OutlookConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> 'OutlookConnector':
         """Factory method to create and initialize OutlookConnector."""
-        data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
-        await data_entities_processor.initialize()
-
-        return OutlookConnector(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,

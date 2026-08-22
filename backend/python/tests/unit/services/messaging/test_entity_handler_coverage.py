@@ -47,7 +47,7 @@ class TestHandleSyncEvent:
     @pytest.mark.asyncio
     async def test_sync_event_success(self):
         svc = _make_service()
-        result = await svc._EntityEventService__handle_sync_event(
+        result = await svc._handle_sync_event(
             "gmail.start", {"orgId": "org-1"}
         )
         assert result is True
@@ -65,7 +65,7 @@ class TestHandleSyncEvent:
         svc.app_container.messaging_producer.send_message = AsyncMock(
             side_effect=Exception("send error")
         )
-        result = await svc._EntityEventService__handle_sync_event(
+        result = await svc._handle_sync_event(
             "gmail.start", {"orgId": "org-1"}
         )
         assert result is False
@@ -157,7 +157,7 @@ class TestHandleAppEnabledExtended:
         svc.graph_provider.get_document = AsyncMock(
             return_value={"accountType": "ENTERPRISE"}
         )
-        svc._EntityEventService__handle_sync_event = AsyncMock(return_value=True)
+        svc._handle_sync_event = AsyncMock(return_value=True)
 
         result = await svc.process_event(
             "appEnabled",
@@ -171,7 +171,7 @@ class TestHandleAppEnabledExtended:
             },
         )
         assert result is True
-        assert svc._EntityEventService__handle_sync_event.await_count == 3
+        assert svc._handle_sync_event.await_count == 3
 
     @pytest.mark.asyncio
     async def test_app_enabled_with_all_params(self):
@@ -179,7 +179,7 @@ class TestHandleAppEnabledExtended:
         svc.graph_provider.get_document = AsyncMock(
             return_value={"accountType": "ENTERPRISE"}
         )
-        svc._EntityEventService__handle_sync_event = AsyncMock(return_value=True)
+        svc._handle_sync_event = AsyncMock(return_value=True)
 
         result = await svc.process_event(
             "appEnabled",
@@ -193,7 +193,7 @@ class TestHandleAppEnabledExtended:
             },
         )
         assert result is True
-        call_kwargs = svc._EntityEventService__handle_sync_event.call_args[1]
+        call_kwargs = svc._handle_sync_event.call_args[1]
         assert call_kwargs["value"]["connectorId"] == "conn-1"
         assert call_kwargs["value"]["scope"] == "team"
         assert call_kwargs["value"]["fullSync"] is True
@@ -263,7 +263,7 @@ class TestOrgCreatedBusinessAccount:
         svc = _make_service()
         svc.graph_provider.batch_upsert_nodes = AsyncMock()
         svc.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
-        svc._EntityEventService__create_kb_connector_app_instance = AsyncMock(return_value=None)
+        svc._create_kb_connector_app_instance = AsyncMock(return_value=None)
 
         # AccountType.BUSINESS.value is "business" (lowercase)
         result = await svc.process_event(
@@ -295,7 +295,7 @@ class TestGetOrCreateKBEdgeCases:
     @pytest.mark.asyncio
     async def test_empty_user_id_returns_empty(self):
         svc = _make_service()
-        result = await svc._EntityEventService__get_or_create_knowledge_base(
+        result = await svc._get_or_create_knowledge_base(
             "user-key", "", "org-1"
         )
         assert result == {}
@@ -303,7 +303,7 @@ class TestGetOrCreateKBEdgeCases:
     @pytest.mark.asyncio
     async def test_empty_org_id_returns_empty(self):
         svc = _make_service()
-        result = await svc._EntityEventService__get_or_create_knowledge_base(
+        result = await svc._get_or_create_knowledge_base(
             "user-key", "user-1", ""
         )
         assert result == {}
@@ -314,7 +314,7 @@ class TestGetOrCreateKBEdgeCases:
         svc.graph_provider.get_nodes_by_filters = AsyncMock(
             side_effect=Exception("DB error")
         )
-        result = await svc._EntityEventService__get_or_create_knowledge_base(
+        result = await svc._get_or_create_knowledge_base(
             "user-key", "user-1", "org-1"
         )
         assert result == {}
@@ -328,7 +328,7 @@ class TestGetOrCreateKBEdgeCases:
                 {"id": "kb-2", "isDeleted": False},
             ]
         )
-        result = await svc._EntityEventService__get_or_create_knowledge_base(
+        result = await svc._get_or_create_knowledge_base(
             "user-key", "user-1", "org-1"
         )
         # Should return the non-deleted KB
@@ -338,10 +338,10 @@ class TestGetOrCreateKBEdgeCases:
     async def test_kb_app_not_found_returns_empty(self):
         svc = _make_service()
         svc.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
-        svc._EntityEventService__get_or_create_kb_app_for_org = AsyncMock(
+        svc._get_or_create_kb_app_for_org = AsyncMock(
             return_value=None
         )
-        result = await svc._EntityEventService__get_or_create_knowledge_base(
+        result = await svc._get_or_create_knowledge_base(
             "user-key", "user-1", "org-1"
         )
         assert result == {}
@@ -369,7 +369,7 @@ class TestCreateKbConnectorAppInstanceEdgeCases:
             mock_cls._connector_metadata = None
             del mock_cls._connector_metadata  # Force hasattr to return False
 
-            result = await svc._EntityEventService__create_kb_connector_app_instance("org-1")
+            result = await svc._create_kb_connector_app_instance("org-1")
             assert result is None
 
     @pytest.mark.asyncio
@@ -393,7 +393,7 @@ class TestCreateKbConnectorAppInstanceEdgeCases:
                     "app.services.messaging.kafka.handlers.entity.ConnectorFactory"
                 ) as mock_factory:
                     mock_factory.create_and_start_sync = AsyncMock(return_value=None)
-                    result = await svc._EntityEventService__create_kb_connector_app_instance("org-1", "u1")
+                    result = await svc._create_kb_connector_app_instance("org-1", "u1")
                     # Should still return the instance_document
                     assert result is not None
                     assert result["isActive"] is True
@@ -420,6 +420,6 @@ class TestCreateKbConnectorAppInstanceEdgeCases:
                 ) as mock_factory:
                     mock_factory.create_and_start_sync = AsyncMock(return_value=None)
                     # Pass no created_by_user_id
-                    result = await svc._EntityEventService__create_kb_connector_app_instance("org-1", None)
+                    result = await svc._create_kb_connector_app_instance("org-1", None)
                     assert result is not None
                     assert result["createdBy"] == "system"

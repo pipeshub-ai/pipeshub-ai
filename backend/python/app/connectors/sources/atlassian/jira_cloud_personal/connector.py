@@ -435,13 +435,12 @@ class JiraCloudPersonalConnector(JiraConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
         **kwargs,
     ) -> BaseConnector:
-        dep = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
-        await dep.initialize()
         return cls(
             logger,
-            dep,
+            data_entities_processor,
             data_store_provider,
             config_service,
             connector_id,

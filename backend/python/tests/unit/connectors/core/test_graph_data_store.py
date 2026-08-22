@@ -343,12 +343,16 @@ class TestGraphTransactionStore:
     @pytest.mark.asyncio
     async def test_delete_record_by_external_id(self, tx_store, mock_graph_provider) -> None:
         await tx_store.delete_record_by_external_id("conn1", "ext1", "user1")
-        mock_graph_provider.delete_record_by_external_id.assert_awaited_once_with("conn1", "ext1", "user1")
+        mock_graph_provider.delete_record_by_external_id.assert_awaited_once_with(
+            "conn1", "ext1", "user1", transaction="txn-123"
+        )
 
     @pytest.mark.asyncio
     async def test_remove_user_access_to_record(self, tx_store, mock_graph_provider) -> None:
         await tx_store.remove_user_access_to_record("conn1", "ext1", "user1")
-        mock_graph_provider.remove_user_access_to_record.assert_awaited_once_with("conn1", "ext1", "user1")
+        mock_graph_provider.remove_user_access_to_record.assert_awaited_once_with(
+            "conn1", "ext1", "user1", transaction="txn-123"
+        )
 
     @pytest.mark.asyncio
     async def test_delete_record_group_by_external_id(self, tx_store, mock_graph_provider) -> None:

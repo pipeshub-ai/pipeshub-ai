@@ -17,6 +17,7 @@ import {
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { resolveWebUrl } from '@/app/components/file-preview/resolve-web-url';
+import { withCurrentOrgId } from '@/lib/navigation';
 import type { PaginationControls } from '@/app/components/file-preview/types';
 import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
 import {
@@ -384,7 +385,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
 
   const handleOpenExternal = () => {
     if (webUrl) {
-      window.open(webUrl, '_blank', 'noopener,noreferrer');
+      window.open(withCurrentOrgId(webUrl), '_blank', 'noopener,noreferrer');
     }
   };
 

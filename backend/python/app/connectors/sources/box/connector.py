@@ -359,11 +359,9 @@ class BoxConnector(BaseConnector):
                 if parent_id and parent_id != '0':
                     parent_external_record_id = parent_id
 
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    external_id=entry_id,
-                    connector_id=self.connector_id
-                )
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, entry_id
+            )
 
             is_file = entry_type == 'file'
             record_type = RecordType.FILE
@@ -594,14 +592,12 @@ class BoxConnector(BaseConnector):
         """Handle record updates (modified or deleted records)."""
         try:
             if record_update.is_deleted:
-                async with self.data_store_provider.transaction() as tx_store:
-                    existing_record = await tx_store.get_record_by_external_id(
-                        external_id=record_update.external_record_id,
-                        connector_id=self.connector_id
-                    )
-                    if existing_record:
-                        await self.data_entities_processor.on_record_deleted(
-                            record_id=existing_record.id
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, record_update.external_record_id
+                )
+                if existing_record:
+                    await self.data_entities_processor.on_record_deleted(
+                        record_id=existing_record.id
                         )
 
             elif record_update.is_updated:
@@ -673,14 +669,13 @@ class BoxConnector(BaseConnector):
 
         found_users = []
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                for email in emails:
-                    user = await tx_store.get_app_user_by_email(
-                        connector_id=self.connector_id,
-                        email=email
-                    )
-                    if user:
-                        found_users.append(user)
+            for email in emails:
+                user = await self.data_entities_processor.get_app_user_by_email(
+                    email=email,
+                    connector_id=self.connector_id
+                )
+                if user:
+                    found_users.append(user)
 
             if len(found_users) < len(emails):
                 missing_count = len(emails) - len(found_users)
@@ -712,42 +707,41 @@ class BoxConnector(BaseConnector):
             items_to_process = deque([folder_external_id])
             processed_items = set()
 
-            async with self.data_store_provider.transaction() as tx_store:
-                # Process items recursively (BFS approach)
-                while items_to_process:
-                    current_external_id = items_to_process.popleft()
+            # Process items recursively (BFS approach)
+            while items_to_process:
+                current_external_id = items_to_process.popleft()
 
-                    if current_external_id in processed_items:
-                        continue
+                if current_external_id in processed_items:
+                    continue
 
-                    processed_items.add(current_external_id)
+                processed_items.add(current_external_id)
 
-                    # Remove user access from this item
-                    try:
-                        await tx_store.remove_user_access_to_record(
-                            connector_id=self.connector_id,
-                            external_id=current_external_id,
-                            user_id=user_id
-                        )
-                    except Exception as e:
-                        self.logger.warning(f"⚠️ Failed to remove access from {current_external_id}: {e}")
+                # Remove user access from this item
+                try:
+                    await self.data_entities_processor.remove_user_access_to_record(
+                        connector_id=self.connector_id,
+                        external_id=current_external_id,
+                        user_id=user_id
+                    )
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Failed to remove access from {current_external_id}: {e}")
 
-                    # Get children of this item
-                    try:
-                        children = await tx_store.get_records_by_parent(
-                            connector_id=self.connector_id,
-                            parent_external_record_id=current_external_id
-                        )
+                # Get children of this item
+                try:
+                    children = await self.data_entities_processor.get_records_by_parent(
+                        connector_id=self.connector_id,
+                        parent_external_record_id=current_external_id
+                    )
 
-                        if children:
-                            # Add children to the processing queue
-                            for child in children:
-                                if child.external_record_id and child.external_record_id not in processed_items:
-                                    items_to_process.append(child.external_record_id)
-                    except Exception as e:
-                        self.logger.debug(f"No children found for {current_external_id} or error: {e}")
+                    if children:
+                        # Add children to the processing queue
+                        for child in children:
+                            if child.external_record_id and child.external_record_id not in processed_items:
+                                items_to_process.append(child.external_record_id)
+                except Exception as e:
+                    self.logger.debug(f"No children found for {current_external_id} or error: {e}")
 
-                self.logger.info(f"✅ Removed user access from folder and {len(processed_items) - 1} descendants")
+            self.logger.info(f"✅ Removed user access from folder and {len(processed_items) - 1} descendants")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to remove folder access recursively: {e}", exc_info=True)
@@ -849,12 +843,10 @@ class BoxConnector(BaseConnector):
         Compares Box IDs against DB IDs and deletes stale groups.
         """
         try:
-            # 1. Get all groups currently in the DB for this connector using Transaction Store
-            async with self.data_store_provider.transaction() as tx_store:
-                db_groups = await tx_store.get_user_groups(
-                    connector_id=self.connector_id,
-                    org_id=self.data_entities_processor.org_id
-                )
+            # 1. Get all groups currently in the DB for this connector
+            db_groups = await self.data_entities_processor.get_all_user_groups(
+                connector_id=self.connector_id
+            )
 
             # 2. Identify groups in DB that are NOT in the active_box_ids set
             stale_groups = [
@@ -1689,11 +1681,9 @@ class BoxConnector(BaseConnector):
                 # Bail out before any email-resolution API calls if there's no synced record for this item 
                 existing_record = None
                 if file_id:
-                    async with self.data_store_provider.transaction() as tx_store:
-                        existing_record = await tx_store.get_record_by_external_id(
-                            external_id=file_id,
-                            connector_id=self.connector_id
-                        )
+                    existing_record = await self.data_entities_processor.get_record_by_external_id(
+                        self.connector_id, file_id
+                    )
                     if not existing_record:
                         self.logger.debug(
                             f"⏭️ Skipping revocation for {file_id} - no synced record exists to remove access from."
@@ -1742,12 +1732,9 @@ class BoxConnector(BaseConnector):
                                 )
                             else:
                                 # File - remove direct access
-                                async with self.data_store_provider.transaction() as tx_store:
-                                    await tx_store.remove_user_access_to_record(
-                                        connector_id=self.connector_id,
-                                        external_id=file_id,
-                                        user_id=user_id
-                                    )
+                                await self.data_entities_processor.remove_user_access_to_record(
+                                    self.connector_id, file_id, user_id
+                                )
                         else:
                             self.logger.warning("⚠️ User found but has no Internal ID")
                     else:
@@ -1978,53 +1965,52 @@ class BoxConnector(BaseConnector):
         Ensures parent folders exist in the database before processing files.
         Recursively creates folder hierarchy if needed.
         """
-        async with self.data_store_provider.transaction() as tx_store:
-            for folder_id in folder_ids:
-                try:
-                    # Check if folder already exists in DB
-                    existing_folder = await tx_store.get_record_by_external_id(
-                        external_id=folder_id,
-                        connector_id=self.connector_id
-                    )
+        for folder_id in folder_ids:
+            try:
+                # Check if folder already exists in DB
+                existing_folder = await self.data_entities_processor.get_record_by_external_id(
+                    external_record_id=folder_id,
+                    connector_id=self.connector_id
+                )
 
-                    if existing_folder:
-                        continue  # Folder already exists, skip
+                if existing_folder:
+                    continue  # Folder already exists, skip
 
-                    # Fetch folder from Box and create it
-                    self.logger.info(f"📁 Parent folder {folder_id} not found in DB, fetching and creating...")
-                    folder_response = await self.data_source.folders_get_folder_by_id(folder_id)
+                # Fetch folder from Box and create it
+                self.logger.info(f"📁 Parent folder {folder_id} not found in DB, fetching and creating...")
+                folder_response = await self.data_source.folders_get_folder_by_id(folder_id)
 
-                    if not folder_response.success:
-                        self.logger.warning(f"Failed to fetch parent folder {folder_id}: {folder_response.error}")
-                        continue
+                if not folder_response.success:
+                    self.logger.warning(f"Failed to fetch parent folder {folder_id}: {folder_response.error}")
+                    continue
 
-                    folder_entry = self._to_dict(folder_response.data)
-                    if not folder_entry:
-                        continue
+                folder_entry = self._to_dict(folder_response.data)
+                if not folder_entry:
+                    continue
 
-                    # Check if this folder has parents that need to be created first (recursive)
-                    path_collection = folder_entry.get('path_collection', {}).get('entries', [])
-                    if path_collection:
-                        grandparent_ids = [p.get('id') for p in path_collection if p.get('id') and p.get('id') != '0']
-                        if grandparent_ids:
-                            # Recursively ensure grandparents exist first
-                            await self._ensure_parent_folders_exist(owner_id, grandparent_ids)
+                # Check if this folder has parents that need to be created first (recursive)
+                path_collection = folder_entry.get('path_collection', {}).get('entries', [])
+                if path_collection:
+                    grandparent_ids = [p.get('id') for p in path_collection if p.get('id') and p.get('id') != '0']
+                    if grandparent_ids:
+                        # Recursively ensure grandparents exist first
+                        await self._ensure_parent_folders_exist(owner_id, grandparent_ids)
 
-                    # Now create the folder record
-                    update_obj = await self._process_box_entry(
-                        entry=folder_entry,
-                        user_id=owner_id,
-                        user_email="incremental_sync_user",
-                        record_group_id=owner_id,
-                    )
+                # Now create the folder record
+                update_obj = await self._process_box_entry(
+                    entry=folder_entry,
+                    user_id=owner_id,
+                    user_email="incremental_sync_user",
+                    record_group_id=owner_id,
+                )
 
-                    if update_obj:
-                        # Create folder record immediately (not batched)
-                        await self.data_entities_processor.on_new_records([(update_obj.record, update_obj.new_permissions)])
-                        self.logger.info(f"✅ Created parent folder {folder_id} in database")
+                if update_obj:
+                    # Create folder record immediately (not batched)
+                    await self.data_entities_processor.on_new_records([(update_obj.record, update_obj.new_permissions)])
+                    self.logger.info(f"✅ Created parent folder {folder_id} in database")
 
-                except Exception as e:
-                    self.logger.error(f"Error ensuring parent folder {folder_id} exists: {e}", exc_info=True)
+            except Exception as e:
+                self.logger.error(f"Error ensuring parent folder {folder_id} exists: {e}", exc_info=True)
 
     async def _fetch_and_sync_folders_for_owner(self, owner_id: str, folder_ids: List[str]) -> None:
         """
@@ -2294,15 +2280,10 @@ class BoxConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "BoxConnector":
         """Factory method to create a Box connector instance."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-        await data_entities_processor.initialize()
-
         return cls(
             logger,
             data_entities_processor,

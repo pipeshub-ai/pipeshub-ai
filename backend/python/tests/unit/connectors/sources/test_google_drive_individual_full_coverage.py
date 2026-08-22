@@ -149,7 +149,7 @@ def connector():
 
 class TestInitFullPath:
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleDriveDataSource")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_success_full_path(self, MockGClient, MockDS, mock_fetch, connector):
@@ -171,7 +171,7 @@ class TestInitFullPath:
         assert connector.google_client is mock_client_inst
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_no_tokens_warning(self, MockGClient, mock_fetch, connector):
         mock_fetch.return_value = {
@@ -193,7 +193,7 @@ class TestInitFullPath:
         assert result is True
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_client_build_fails(self, MockGClient, mock_fetch, connector):
         mock_fetch.return_value = {
@@ -1412,28 +1412,27 @@ class TestCheckAndFetchUpdatedRecord:
 
 class TestCreateConnector:
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.DataSourceEntitiesProcessor")
     @patch("app.connectors.sources.google.drive.individual.connector.SyncPoint")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
-    async def test_create_connector(self, MockGClient, MockSP, MockDSEP):
+    async def test_create_connector(self, MockGClient, MockSP):
         from app.connectors.sources.google.drive.individual.connector import (
             GoogleDriveIndividualConnector,
         )
 
         MockSP.return_value = AsyncMock()
-        mock_dep = AsyncMock()
-        mock_dep.org_id = "org-1"
-        MockDSEP.return_value = mock_dep
+
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
         logger = _make_logger()
         ds_provider = MagicMock()
         config_service = AsyncMock()
 
         result = await GoogleDriveIndividualConnector.create_connector(
-            logger, ds_provider, config_service, "conn-1", "team", "test-user-id"
+            logger, ds_provider, config_service, "conn-1", "team", "test-user-id",
+            data_entities_processor=processor,
         )
         assert isinstance(result, GoogleDriveIndividualConnector)
-        mock_dep.initialize.assert_awaited_once()
 
 
 # ===================================================================

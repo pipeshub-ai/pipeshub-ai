@@ -527,22 +527,18 @@ class TestRSSConnectorFactory:
         data_store_provider = MagicMock()
         config_service = AsyncMock()
 
-        with patch(
-            "app.connectors.sources.rss.connector.DataSourceEntitiesProcessor"
-        ) as MockProcessor:
-            mock_proc = MagicMock()
-            mock_proc.initialize = AsyncMock()
-            MockProcessor.return_value = mock_proc
-            connector = await RSSConnector.create_connector(
-                logger=logger,
-                data_store_provider=data_store_provider,
-                config_service=config_service,
-                connector_id="rss-conn-1",
-                scope="personal",
-                created_by="test-user-id",
-            )
-            assert isinstance(connector, RSSConnector)
-            mock_proc.initialize.assert_awaited_once()
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        connector = await RSSConnector.create_connector(
+            logger=logger,
+            data_store_provider=data_store_provider,
+            config_service=config_service,
+            connector_id="rss-conn-1",
+            scope="personal",
+            created_by="test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, RSSConnector)
 
 # =============================================================================
 # Merged from test_rss_connector_coverage.py

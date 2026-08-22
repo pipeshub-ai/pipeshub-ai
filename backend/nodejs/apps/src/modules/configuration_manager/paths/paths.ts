@@ -39,10 +39,12 @@ export const configPaths = {
   },
   aiModels: '/services/aiModels',
   aiModelsEmbedding: '/services/aiModels/embedding',
+  systemPrompts: '/services/systemPrompts',
   connectorSyncScheduledJobsMigration:
     '/migrations/connector_sync_scheduled_jobs',
   chatKbFiltersMigration: '/migrations/chat_kb_filters_v1',
   adminRoleMigration: '/migrations/admin_role_v1',
+  documentOrgIdMigration: '/migrations/document_orgid_v1',
   // Python-owned flag (backend/python/app/migrations/kb_apps_migration.py) — read-only from Node.
   kbAppsMigrationDone: '/migrations/kb_apps_v1',
   webSearch: '/services/webSearch',

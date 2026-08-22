@@ -406,6 +406,21 @@ class EventProcessor:
         except (json.JSONDecodeError, Exception):
             return content
 
+    async def _find_duplicate_records(
+        self,
+        doc: dict[str, Any],
+        md5_checksum: str,
+        record_type: str | None,
+        size_in_bytes: int | None,
+    ) -> list[dict]:
+        
+        return await self.graph_provider.find_duplicate_records(
+            record_key=_record_key(doc),
+            md5_checksum=md5_checksum,
+            record_type=record_type,
+            size_in_bytes=size_in_bytes,
+        )
+
     async def _check_duplicate_by_md5(
         self,
         content: bytes | str | dict | list | None,
@@ -442,13 +457,11 @@ class EventProcessor:
 
         if not md5_checksum:
             return False
-
-        rec_key = doc.get('_key') or doc.get('id')
-        duplicate_records = await self.graph_provider.find_duplicate_records(
-            record_key=_record_key(doc),
+        duplicate_records = await self._find_duplicate_records(
+            doc=doc,
             md5_checksum=md5_checksum,
             record_type=record_type,
-            size_in_bytes=size_in_bytes
+            size_in_bytes=size_in_bytes,
         )
 
         duplicate_records = [r for r in duplicate_records if r is not None]

@@ -326,7 +326,7 @@ class TestBuildFromToolset:
     @pytest.mark.asyncio
     async def test_missing_instance_url_raises(self, logger, mock_config_service):
         with patch(
-            "app.sources.client.salesforce.salesforce.get_oauth_credentials_for_toolset",
+            "app.edition_config.get_oauth_credentials_for_toolset",
             new_callable=AsyncMock,
             return_value={"instance_url": ""},
         ):
@@ -343,7 +343,7 @@ class TestBuildFromToolset:
     @pytest.mark.asyncio
     async def test_instance_url_stripped(self, logger, mock_config_service):
         with patch(
-            "app.sources.client.salesforce.salesforce.get_oauth_credentials_for_toolset",
+            "app.edition_config.get_oauth_credentials_for_toolset",
             new_callable=AsyncMock,
             return_value={"instance_url": f" {INSTANCE_URL} "},
         ):
@@ -366,7 +366,7 @@ class TestBuildFromToolset:
     @pytest.mark.asyncio
     async def test_success_default_api_version(self, logger, mock_config_service):
         with patch(
-            "app.sources.client.salesforce.salesforce.get_oauth_credentials_for_toolset",
+            "app.edition_config.get_oauth_credentials_for_toolset",
             new_callable=AsyncMock,
             return_value={"instance_url": INSTANCE_URL},
         ):
