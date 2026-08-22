@@ -125,17 +125,12 @@ def test_get_fallback_chain_empty_when_not_set() -> None:
 
 
 def test_resolve_maps_code_mime_and_extension_to_txt() -> None:
+    """Code without a tree-sitter grammar still falls back to the text parser."""
     registry = ParserRegistry()
     parser = _make_parser(ParserProvider.DEFAULT)
     registry.register("txt", ParserProvider.DEFAULT, parser)
     registry.set_default("txt", ParserProvider.DEFAULT)
 
-    assert registry.resolve("text/x-python", "py") is parser
-    assert registry.resolve("", "ts") is parser
-    assert registry.resolve("application/javascript", "") is parser
-    assert registry.resolve("text/javascript", "") is parser
-    assert registry.resolve("text/x-python-script", "") is parser
-    assert registry.resolve("text/x-script.python", "") is parser
     assert registry.resolve("text/x-sh", "") is parser
     assert registry.resolve("text/x-shellscript", "") is parser
     assert registry.resolve("text/css", "") is parser
@@ -145,12 +140,29 @@ def test_resolve_maps_code_mime_and_extension_to_txt() -> None:
     assert registry.resolve("", "sql") is parser
 
 
+def test_resolve_maps_grammar_backed_code_to_code_parser() -> None:
+    """Python/TS/JS have a tree-sitter grammar and route to the code parser."""
+    registry = ParserRegistry()
+    parser = _make_parser(ParserProvider.DEFAULT)
+    registry.register("code", ParserProvider.DEFAULT, parser)
+    registry.set_default("code", ParserProvider.DEFAULT)
+
+    assert registry.resolve("text/x-python", "py") is parser
+    assert registry.resolve("", "ts") is parser
+    assert registry.resolve("", "tsx") is parser
+    assert registry.resolve("application/javascript", "") is parser
+    assert registry.resolve("text/javascript", "") is parser
+    assert registry.resolve("text/x-python-script", "") is parser
+    assert registry.resolve("text/x-script.python", "") is parser
+
+
 def test_supported_code_file_extensions_normalize() -> None:
     """Every CODE_FILE gate extension must resolve to a known format key."""
     from app.config.constants.arangodb import SUPPORTED_CODE_FILE_EXTENSIONS
+    from app.modules.parsers.code_parser.lang_config import SUPPORTED_CODE_EXTENSIONS
     from app.services.parsing.registry import _normalize_format
 
-    # html/htm → html; md → md; everything else text-like → txt
+    # html/htm → html; md → md; grammar-backed code → code; the rest → txt
     expected = {
         "html": "html",
         "htm": "html",
@@ -159,9 +171,24 @@ def test_supported_code_file_extensions_normalize() -> None:
     for ext in SUPPORTED_CODE_FILE_EXTENSIONS:
         format_key = _normalize_format("", ext)
         assert format_key is not None, f"missing registry mapping for .{ext}"
-        assert format_key == expected.get(ext, "txt"), (
-            f".{ext} mapped to {format_key!r}, expected {expected.get(ext, 'txt')!r}"
-        )
+        want = expected.get(ext, "code" if ext in SUPPORTED_CODE_EXTENSIONS else "txt")
+        assert format_key == want, f".{ext} mapped to {format_key!r}, expected {want!r}"
+
+
+def test_every_grammar_backed_extension_maps_to_code() -> None:
+    """A language added to lang_config but missing from _EXT_TO_FORMAT would
+    silently route through the prose parser instead of tree-sitter."""
+    from app.modules.parsers.code_parser.lang_config import SUPPORTED_CODE_EXTENSIONS
+    from app.services.parsing.registry import _EXT_TO_FORMAT
+
+    missing = [
+        ext for ext in sorted(SUPPORTED_CODE_EXTENSIONS)
+        if _EXT_TO_FORMAT.get(ext) != "code"
+    ]
+    assert not missing, (
+        f"Extensions with a tree-sitter grammar but not mapped to 'code' in "
+        f"_EXT_TO_FORMAT: {missing}"
+    )
 
 
 def test_resolve_maps_image_jpg_and_heic_mime() -> None:

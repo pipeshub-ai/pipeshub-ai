@@ -12092,6 +12092,107 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return {"success": False, "reason": str(e), "code": 500, "eventData": None}
 
 
+    async def delete_single_record(
+        self,
+        record_id: str,
+        transaction: str | None = None,
+    ) -> dict:
+        """Same cleanup as ``delete_records_recursive`` for one record — no walk."""
+        try:
+            if not record_id:
+                return {
+                    "success": True, "deleted_records": [], "failed_records": [],
+                    "total_requested": 0, "successfully_deleted": 0, "failed_count": 0,
+                    "eventData": None,
+                }
+            edge_collections = await self._get_all_edge_collections()
+            node_collections = [CollectionNames.RECORDS.value] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
+            txn_id = transaction
+            if transaction is None:
+                txn_id = await self.begin_transaction(
+                    read=edge_collections + node_collections,
+                    write=edge_collections + node_collections,
+                )
+            try:
+                inventory_query = """
+                LET rec = DOCUMENT('records', @record_id)
+                FILTER rec != null AND rec.isDeleted != true
+                LET tt = FIRST(
+                    FOR isEdge IN @@is_of_type
+                        FILTER isEdge._from == rec._id
+                        LET t = DOCUMENT(isEdge._to)
+                        FILTER t != null
+                        RETURN { collection: PARSE_IDENTIFIER(isEdge._to).collection, key: PARSE_IDENTIFIER(isEdge._to).key, full_id: isEdge._to, doc: t }
+                )
+                RETURN {
+                    valid_root_keys: [rec._key],
+                    records_with_type: [{ record: rec, type_target: tt }]
+                }
+                """
+                inv_results = await self.execute_query(
+                    inventory_query,
+                    bind_vars={
+                        "record_id": record_id,
+                        "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                    },
+                    transaction=txn_id,
+                )
+                inventory = inv_results[0] if inv_results else {}
+                valid_root_keys = inventory.get("valid_root_keys", [])
+                records_with_type = inventory.get("records_with_type", [])
+                record_keys = [rt["record"]["_key"] for rt in records_with_type]
+                type_targets = [rt["type_target"] for rt in records_with_type if rt.get("type_target")]
+
+                node_ids = [f"records/{k}" for k in record_keys]
+                if node_ids:
+                    await self._delete_edges_by_node_ids(txn_id, node_ids, edge_collections)
+                if type_targets:
+                    await self._delete_isoftype_targets_from_collected(txn_id, type_targets, edge_collections)
+                if record_keys:
+                    await self._delete_nodes_by_keys(txn_id, record_keys, CollectionNames.RECORDS.value)
+                if transaction is None and txn_id:
+                    await self.commit_transaction(txn_id)
+
+                event_payloads = []
+                try:
+                    for rt in records_with_type:
+                        rec = rt["record"]
+                        if not rec.get("virtualRecordId"):
+                            continue
+                        type_doc = (rt.get("type_target") or {}).get("doc") or {}
+                        delete_payload = await self._create_deleted_record_event_payload(rec, type_doc)
+                        if delete_payload:
+                            delete_payload["connectorName"] = rec.get("connectorName")
+                            delete_payload["origin"] = rec.get("origin")
+                            event_payloads.append(delete_payload)
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
+                event_data = {
+                    "eventType": "deleteRecord",
+                    "topic": "record-events",
+                    "payloads": event_payloads,
+                } if event_payloads else None
+
+                deleted_records = [
+                    {"record_id": rt["record"]["_key"], "name": rt["record"].get("recordName", "Unknown")}
+                    for rt in records_with_type
+                ]
+                return {
+                    "success": True,
+                    "deleted_records": deleted_records,
+                    "failed_records": [],
+                    "total_requested": 1,
+                    "successfully_deleted": len(valid_root_keys),
+                    "failed_count": 0,
+                    "eventData": event_data,
+                }
+            except Exception as db_error:
+                if transaction is None and txn_id:
+                    await self.rollback_transaction(txn_id)
+                raise db_error
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete single record: {str(e)}")
+            return {"success": False, "reason": str(e), "code": 500, "eventData": None}
 
 
     async def create_kb_permissions(

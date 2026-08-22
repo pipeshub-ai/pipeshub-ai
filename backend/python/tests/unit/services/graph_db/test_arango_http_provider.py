@@ -4647,6 +4647,139 @@ class TestDeleteRecordsRecursive:
 
 
 # ---------------------------------------------------------------------------
+# delete_single_record
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteSingleRecord:
+    @pytest.mark.asyncio
+    async def test_empty_id(self, connected_provider):
+        result = await connected_provider.delete_single_record("")
+        assert result["success"] is True
+        assert result["total_requested"] == 0
+        assert result["eventData"] is None
+
+    @pytest.mark.asyncio
+    async def test_found_with_event(self, connected_provider):
+        inventory = {
+            "valid_root_keys": ["r1"],
+            "records_with_type": [{
+                "record": {
+                    "_key": "r1",
+                    "recordName": "doc.pdf",
+                    "virtualRecordId": "virt-1",
+                    "connectorName": "GITHUB",
+                    "origin": "CONNECTOR",
+                },
+                "type_target": {"doc": {}, "collection": "files", "key": "r1"},
+            }],
+        }
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()) as mock_edges, \
+             patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()) as mock_type, \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()) as mock_nodes, \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()), \
+             patch.object(connected_provider, "_create_deleted_record_event_payload", AsyncMock(return_value={"recordId": "r1"})):
+            result = await connected_provider.delete_single_record("r1")
+
+        mock_edges.assert_awaited_once()
+        mock_type.assert_awaited_once()
+        mock_nodes.assert_awaited_once()
+        assert result["successfully_deleted"] == 1
+        assert result["eventData"]["eventType"] == "deleteRecord"
+        assert result["eventData"]["payloads"][0]["connectorName"] == "GITHUB"
+
+    @pytest.mark.asyncio
+    async def test_missing_is_noop(self, connected_provider):
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[])), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()) as mock_commit, \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()) as mock_nodes:
+            result = await connected_provider.delete_single_record("missing")
+
+        mock_commit.assert_awaited_once()
+        mock_nodes.assert_not_awaited()
+        assert result["success"] is True
+        assert result["successfully_deleted"] == 0
+        assert result["eventData"] is None
+
+    @pytest.mark.asyncio
+    async def test_no_virtual_record_id(self, connected_provider):
+        inventory = {
+            "valid_root_keys": ["r1"],
+            "records_with_type": [{
+                "record": {"_key": "r1", "recordName": "draft.txt", "connectorName": "GITHUB", "origin": "CONNECTOR"},
+                "type_target": {"doc": {}, "collection": "files", "key": "r1"},
+            }],
+        }
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()):
+            result = await connected_provider.delete_single_record("r1")
+
+        assert result["successfully_deleted"] == 1
+        assert result["eventData"] is None
+
+    @pytest.mark.asyncio
+    async def test_db_error_rolls_back(self, connected_provider):
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(side_effect=RuntimeError("query failed"))), \
+             patch.object(connected_provider, "rollback_transaction", AsyncMock()) as mock_rb:
+            result = await connected_provider.delete_single_record("r1")
+
+        assert result["success"] is False
+        assert result["code"] == 500
+        mock_rb.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_external_transaction_not_committed(self, connected_provider):
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock()) as mock_begin, \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[])), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()) as mock_commit:
+            await connected_provider.delete_single_record("r1", transaction="ext-txn")
+
+        mock_begin.assert_not_awaited()
+        mock_commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_payload_build_failure_still_deletes(self, connected_provider):
+        inventory = {
+            "valid_root_keys": ["r1"],
+            "records_with_type": [{
+                "record": {
+                    "_key": "r1",
+                    "recordName": "doc.pdf",
+                    "virtualRecordId": "virt-1",
+                    "connectorName": "GITHUB",
+                    "origin": "CONNECTOR",
+                },
+                "type_target": {"doc": {}, "collection": "files", "key": "r1"},
+            }],
+        }
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()), \
+             patch.object(connected_provider, "_create_deleted_record_event_payload", AsyncMock(side_effect=RuntimeError("bad payload"))):
+            result = await connected_provider.delete_single_record("r1")
+
+        assert result["success"] is True
+        assert result["eventData"] is None
+
+
+# ---------------------------------------------------------------------------
 # delete_connector_instance
 # ---------------------------------------------------------------------------
 

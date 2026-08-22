@@ -111,6 +111,7 @@ def mock_graph_provider():
     provider.remove_nodes_by_field = AsyncMock(return_value=0)
     provider.get_nodes_by_filters = AsyncMock(return_value=[])
     provider.delete_records_recursive = AsyncMock(return_value={"success": True})
+    provider.delete_single_record = AsyncMock(return_value={"success": True})
     return provider
 
 
@@ -630,6 +631,13 @@ class TestGraphTransactionStore:
         await tx_store.delete_records_recursive(["r1", "r2"], "kb-1")
         mock_graph_provider.delete_records_recursive.assert_awaited_once_with(
             ["r1", "r2"], "kb-1", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_graph_data_store_delete_single_record(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.delete_single_record("r1")
+        mock_graph_provider.delete_single_record.assert_awaited_once_with(
+            "r1", transaction="txn-123"
         )
 
     @pytest.mark.asyncio

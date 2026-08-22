@@ -14,7 +14,6 @@ import types
 from collections.abc import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -51,6 +50,7 @@ from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.sql.sql_table_parser import SQLTableParser
 from app.modules.parsers.sql.sql_view_parser import SQLViewParser
 from app.modules.parsers.yaml.yaml_parser import YAMLParser
+from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
 from app.services.docling.client import DoclingClient
 from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParserProvider
@@ -169,6 +169,10 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     # ----------------------------------------------------------------
     registry.register("txt", ParserProvider.DEFAULT, default_md_parser)
     registry.register("txt", ParserProvider.DOCLING, docling_md_parser)
+    # ----------------------------------------------------------------
+    # CODE (tree-sitter)
+    # ----------------------------------------------------------------
+    registry.register("code", ParserProvider.DEFAULT, CodeFileParser())
     # ----------------------------------------------------------------
     # MDX
     # ----------------------------------------------------------------

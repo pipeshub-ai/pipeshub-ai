@@ -289,26 +289,12 @@ class TestMatchEnabledToolsForMcpServer:
 
 
 class TestIsMcpEnabled:
-    @pytest.mark.asyncio
-    async def test_env_true_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("PIPESHUB_ENABLE_MCP", "true")
-        assert await is_mcp_enabled(MagicMock()) is True
+    """No env override exists anymore — resolution is `config_service` (via
+    the shared `read_platform_feature_flag` helper) -> `FeatureFlagService`
+    fallback -> default False."""
 
     @pytest.mark.asyncio
-    async def test_env_false_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("PIPESHUB_ENABLE_MCP", "0")
-        cfg = MagicMock()
-        cfg.get_config = AsyncMock(
-            return_value={"featureFlags": {"ENABLE_MCP": True}}
-        )
-        assert await is_mcp_enabled(cfg) is False
-        cfg.get_config.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_reads_platform_settings_flag(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.delenv("PIPESHUB_ENABLE_MCP", raising=False)
+    async def test_reads_platform_settings_flag(self) -> None:
         cfg = MagicMock()
         cfg.get_config = AsyncMock(
             return_value={"featureFlags": {"enable_mcp": True}}
@@ -316,19 +302,19 @@ class TestIsMcpEnabled:
         assert await is_mcp_enabled(cfg) is True
 
     @pytest.mark.asyncio
-    async def test_platform_settings_read_failure_disables(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.delenv("PIPESHUB_ENABLE_MCP", raising=False)
+    async def test_platform_settings_flag_absent_defaults_false(self) -> None:
+        cfg = MagicMock()
+        cfg.get_config = AsyncMock(return_value={"featureFlags": {}})
+        assert await is_mcp_enabled(cfg) is False
+
+    @pytest.mark.asyncio
+    async def test_platform_settings_read_failure_disables(self) -> None:
         cfg = MagicMock()
         cfg.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
         assert await is_mcp_enabled(cfg) is False
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_feature_flag_service(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.delenv("PIPESHUB_ENABLE_MCP", raising=False)
+    async def test_falls_back_to_feature_flag_service(self) -> None:
         mock_ffs = MagicMock()
         mock_ffs.is_feature_enabled.return_value = True
         with patch(
@@ -338,10 +324,7 @@ class TestIsMcpEnabled:
             assert await is_mcp_enabled(None) is True
 
     @pytest.mark.asyncio
-    async def test_feature_flag_service_unavailable_defaults_false(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.delenv("PIPESHUB_ENABLE_MCP", raising=False)
+    async def test_feature_flag_service_unavailable_defaults_false(self) -> None:
         with patch(
             "app.services.featureflag.featureflag.FeatureFlagService.get_service",
             side_effect=RuntimeError("unwired"),

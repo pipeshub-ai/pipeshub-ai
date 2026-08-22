@@ -999,14 +999,33 @@ class DataSourceEntitiesProcessor:
             #       the real parent record arrives to fill it in.
             if record.origin != OriginTypes.UPLOAD:
                 if existing_record.indexing_status == ProgressStatus.COMPLETED.value:
-                    # If the existing record is completed, set the indexing status to not started so that it can be reindexed.
-                    record.indexing_status = ProgressStatus.NOT_STARTED.value
+                    if record.external_revision_id != existing_record.external_revision_id:
+                        # Real content change on an indexed record: reset so it
+                        # re-queues — unless indexing is manual-only for this
+                        # record, which a content change must not override.
+                        if record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
+                            record.indexing_status = ProgressStatus.NOT_STARTED.value
+                    else:
+                        # Unchanged content stays COMPLETED (blocks re-publish
+                        # below). Resetting unconditionally made every full
+                        # re-sync re-embed the entire already-indexed set, and
+                        # clobbered AUTO_INDEX_OFF on manually-indexed records.
+                        record.indexing_status = ProgressStatus.COMPLETED.value
             elif record.external_revision_id == existing_record.external_revision_id:
                 # KB uploads with unchanged content must keep their indexing status
                 # (folders are created COMPLETED and must not be re-queued on metadata updates).
                 record.indexing_status = existing_record.indexing_status
             if not record.weburl:
                 record.weburl = existing_record.weburl
+            # Same fall-back rule for source timestamps: connectors whose source
+            # exposes no cheap per-item dates (e.g. git blobs) send None and
+            # backfill them later out-of-band. The Neo4j upsert is `SET n +=`,
+            # where a null-valued key DELETES the stored property — without this
+            # carry-forward every re-sync silently erased the backfilled dates.
+            if record.source_created_at is None:
+                record.source_created_at = existing_record.source_created_at
+            if record.source_updated_at is None:
+                record.source_updated_at = existing_record.source_updated_at
             # A real record replacing a stub promotes it out of placeholder state.
             # Set explicitly so we don't depend on batch_upsert overwrite-vs-merge semantics.
             if existing_record.is_placeholder and not record.is_placeholder:
@@ -1117,6 +1136,15 @@ class DataSourceEntitiesProcessor:
 
                 if record.is_internal:
                     self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
+                    continue
+
+                # Already indexed and unchanged — the COMPLETED status was carried
+                # forward from the stored record precisely so this publish can be
+                # skipped; there is nothing for the indexing consumer to redo.
+                if record.indexing_status == ProgressStatus.COMPLETED.value:
+                    self.logger.debug(
+                        f"Skipping indexing event for already-completed record {record.id}"
+                    )
                     continue
 
                 # KB folders carry no indexable content; they are created COMPLETED
@@ -1418,13 +1446,16 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def on_record_deleted(self, record_id: str) -> None:
-        # Connector per-record delete: remove the record vertex and its incoming
-        # PARENT_CHILD edge (so the parent's child-list keeps no dangling edge; the
-        # call is a no-op for root records with no parent). Still shallow — KB deletes
-        # use on_records_deleted_cascade (recursive cascade + deleteRecord events).
+        """Shallow per-record delete for connectors (GitHub, GitLab, Drive, …).
+
+        Removes the record vertex, every edge on it, and its isOfType type doc.
+        Does not walk PARENT_CHILD / ATTACHMENT — connectors own hierarchy
+        (delete blobs then empty folders). Publishes deleteRecord when the
+        record had a virtualRecordId so indexing can drop Qdrant vectors.
+        """
         async with self.data_store_provider.transaction() as tx_store:
-            await tx_store.delete_parent_child_edge_to_record(record_id)
-            await tx_store.delete_record_by_key(record_id)
+            result = await tx_store.delete_single_record(record_id)
+        await self._publish_delete_events((result or {}).get("eventData"))
 
     @retry_on_deadlock()
     async def on_records_deleted_cascade(

@@ -90,6 +90,21 @@ class TestStreamWithEagerFirstChunk:
         with pytest.raises(RuntimeError, match="stream error"):
             await _stream_with_eager_first_chunk(_failing_gen())
 
+    async def test_error_in_first_chunk_closes_source(self) -> None:
+        closed = False
+
+        async def failing() -> AsyncGenerator[bytes, None]:
+            nonlocal closed
+            try:
+                raise RuntimeError("stream error")
+                yield b""  # noqa: unreachable
+            finally:
+                closed = True
+
+        with pytest.raises(RuntimeError, match="stream error"):
+            await _stream_with_eager_first_chunk(failing())
+        assert closed is True
+
 
 # ===========================================================================
 # StreamingHelper.stream_record

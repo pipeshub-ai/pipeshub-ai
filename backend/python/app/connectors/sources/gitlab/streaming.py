@@ -8,45 +8,19 @@ Responsibilities:
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from fastapi.responses import StreamingResponse
 
 from app.config.constants.arangodb import MimeTypes
 from app.models.entities import CodeFileRecord, Record, RecordType
-from app.utils.streaming import create_stream_record_response
+from app.utils.streaming import (
+    create_stream_record_response,
+    stream_with_eager_first_chunk as _stream_with_eager_first_chunk,
+)
 
 if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
-
-
-async def _stream_with_eager_first_chunk(
-    source: AsyncGenerator[bytes, None],
-) -> AsyncGenerator[bytes, None]:
-    """Return a streaming generator after eagerly pulling its first chunk.
-
-    Reading the first chunk before returning lets upstream auth / 404 / network
-    errors surface here, where they can still be converted to a clean HTTP 5xx.
-    Without this, an error raised on the first network read fires after
-    ``StreamingResponse`` has already committed the status line, producing a
-    truncated chunked body on the client side.
-    """
-    aiter = source.__aiter__()
-    try:
-        first = await aiter.__anext__()
-    except StopAsyncIteration:
-        async def _empty() -> AsyncGenerator[bytes, None]:
-            return
-            yield b""  # noqa: unreachable — marks function as async generator
-        return _empty()
-
-    async def _gen() -> AsyncGenerator[bytes, None]:
-        yield first
-        async for chunk in aiter:
-            yield chunk
-
-    return _gen()
 
 
 class StreamingHelper:
