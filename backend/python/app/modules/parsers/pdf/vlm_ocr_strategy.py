@@ -14,7 +14,16 @@ from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.modules.parsers.pdf.pdf_rasterizer import render_batch_from_path_sync
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-from app.utils.aimodels import coerce_message_content_to_text, get_generator_model, is_multimodal_llm
+from app.utils.aimodels import (
+    coerce_message_content_to_text,
+    get_generator_model,
+    get_output_limit_kwargs,
+    is_multimodal_llm,
+)
+from app.utils.image_utils import (
+    convert_image_to_base64,
+    extract_page_image,
+)
 from app.utils.llm import get_llm_for_role
 
 
@@ -34,7 +43,7 @@ class VLMOCRStrategy(OCRStrategy):
     # At 200 DPI each page is ~11 MB as a numpy array; 20 pages ≈ 220 MB peak.
     PAGE_RENDER_BATCH_SIZE = int(os.getenv('PAGE_RENDER_BATCH_SIZE', '20'))
     # Default prompt template
-    DEFAULT_PROMPT = """# Role
+    DEFAULT_PROMPT = r"""# Role
 You are a precise document OCR specialist. Convert the provided document image to clean, accurate markdown.
 
 # Core Instructions
@@ -81,6 +90,7 @@ You are a precise document OCR specialist. Convert the provided document image t
 - Checkboxes: `[ ]` (unchecked) or `[x]` (checked)
 - Preserve line breaks where semantically meaningful
 - Represent horizontal rules as `---`
+- Escape mathematical asterisks (e.g., write `10\*20` instead of `10*20`) to prevent markdown formatting conflicts.
 
 # Output
 Return ONLY the extracted markdown. No preamble, no explanations, no commentary."""
@@ -271,7 +281,11 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
 
             # Call LLM
             self.logger.debug(f"📤 Calling LLM for page {page_number}")
-            response = await self.llm.ainvoke([message])
+            
+            # Resolve provider-specific output limits via the factory
+            invoke_kwargs = get_output_limit_kwargs(getattr(self, "llm_config", {}), limit=4096)
+                
+            response = await self.llm.ainvoke([message], **invoke_kwargs)
 
             # Extract content. LangChain message content may be a plain string or
             # a list of content blocks (e.g. Gemini returns the latter), so coerce

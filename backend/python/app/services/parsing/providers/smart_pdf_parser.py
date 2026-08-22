@@ -21,6 +21,7 @@ from app.services.parsing.interface import (
     ParserProvider,
 )
 from app.services.parsing.providers.ocr_parser import OCRParser
+from app.utils.pdf_utils import calculate_exact_image_union_area
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,15 @@ def _page_needs_ocr(page: Any) -> bool:
             else 0.0
         )
         low_density = text_density < _LOW_DENSITY_THRESHOLD
-        return (has_minimal_text and has_significant_images) or low_density
+        
+        image_area_ratio = 0.0
+        if images and page_area > 0:
+            union_area = calculate_exact_image_union_area(images, float(page.width), float(page.height))
+            image_area_ratio = union_area / page_area
+            
+        is_image_heavy = image_area_ratio > 0.5
+        
+        return (has_minimal_text and has_significant_images) or low_density or is_image_heavy
     except Exception:  # noqa: BLE001
         return True
 
