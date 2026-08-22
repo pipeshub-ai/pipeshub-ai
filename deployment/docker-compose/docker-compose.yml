@@ -196,7 +196,9 @@ services:
       # explicit MiB figure when the idle footprint is known. Growth-side
       # only — the shrink brake always reads true cgroup occupancy.
       - GOVERNOR_BASELINE_MEMORY_MB=${GOVERNOR_BASELINE_MEMORY_MB:-}
-      - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-}
+      # Hub slim still does int(os.getenv(...)); empty crashes the consume loop.
+      # 28 = max(5, 7) * 4, the Hub fallback when this var is unset.
+      - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-28}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
