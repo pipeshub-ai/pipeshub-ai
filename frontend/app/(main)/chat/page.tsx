@@ -493,13 +493,8 @@ function ChatContent() {
     }
 
     if (!conversationId) {
-      // Clear any filters left over from the previous conversation so that
-      // the SelectedCollections pills don't bleed into the new-chat landing.
-      store.setFilters({ apps: [], kb: [] });
-
       const activeSlot = store.activeSlotId ? store.slots[store.activeSlotId] : null;
       if (agentId) {
-        store.setAgentKnowledgeScope(null);
         if (store.activeSlotId) {
           debugLog.flush('chat-switch', { from: store.activeSlotId, to: null, reason: 'agent-new-chat-url' });
           store.clearActiveSlot();
@@ -578,8 +573,22 @@ function ChatContent() {
               store.setFilters({ apps: [], kb: [] });
             }
           }
+        } else {
+          // Slot not yet initialized — history will restore filters when it
+          // loads, but clear stale filters from the previous conversation now
+          // so the badge doesn't flash incorrectly.
+          if (urlAgentId) {
+            store.setAgentKnowledgeScope(null);
+          } else {
+            store.setFilters({ apps: [], kb: [] });
+          }
         }
       } else {
+        if (urlAgentId) {
+          store.setAgentKnowledgeScope(null);
+        } else {
+          store.setFilters({ apps: [], kb: [] });
+        }
         const newSlotId = store.createSlot(conversationId);
         if (urlAgentId) {
           store.updateSlot(newSlotId, {

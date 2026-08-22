@@ -2,8 +2,8 @@
 
 Shared by `chat_modes.bridge` (`/chat/stream` Internal / Web Search) and the
 Universal Agent Mode path (`agentIdPlaceholder` → `run_agent_loop_stream`).
-Agent Builder agents (real agent IDs) must never call this — they use their
-own `systemPrompt` / `instructions` instead.
+Agent Builder agents (real agent IDs) skip this — they use their own
+`systemPrompt` / `instructions` instead.
 """
 
 from __future__ import annotations
