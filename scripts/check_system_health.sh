@@ -17,6 +17,13 @@ SERVICES=(
     "Indexing Service (Python)|8091|/health"
 )
 
+if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
+    SERVICES+=(
+        "Parsing Service (Python)|8092|/health"
+        "Extraction Service (Python)|8093|/health"
+    )
+fi
+
 all_healthy=true
 
 for service_info in "${SERVICES[@]}"; do
@@ -26,12 +33,13 @@ for service_info in "${SERVICES[@]}"; do
     
     # We use curl -s (silent) -o /dev/null (discard body) -w "%{http_code}" to get status code
     status_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "$url")
+    curl_exit=$?
     
-    if [ "$status_code" = "200" ]; then
-        echo -e "[\033[32mOK\033[0m] $name is healthy on port $port"
-    elif [ "$status_code" = "000" ]; then
-        echo -e "[\033[31mFAIL\033[0m] $name is offline (Connection Refused on port $port)"
+    if [ $curl_exit -ne 0 ]; then
+        echo -e "[\033[31mFAIL\033[0m] $name is offline (Unreachable on port $port)"
         all_healthy=false
+    elif [ "$status_code" = "200" ]; then
+        echo -e "[\033[32mOK\033[0m] $name is healthy on port $port"
     else
         echo -e "[\033[33mWARN\033[0m] $name returned HTTP $status_code on port $port"
         all_healthy=false
