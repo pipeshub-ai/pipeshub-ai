@@ -339,7 +339,10 @@ class TestPerformFullSync:
         page2 = {
             "files": [_make_file_metadata(file_id="f2")],
         }
-        connector.drive_data_source.files_list = AsyncMock(side_effect=[page1, page2])
+        connector.drive_data_source.files_list = AsyncMock(
+            # Trailing empty page is consumed by the shared-with-me seed sweep.
+            side_effect=[page1, page2, {"files": []}]
+        )
 
         async def mock_gen(files, uid, email, did):
             for f in files:
@@ -443,6 +446,8 @@ class TestPerformFullSync:
             side_effect=[
                 {"files": page1_files, "nextPageToken": "page2-token-1234567890123456"},
                 {"files": []},
+                # Consumed by the shared-with-me seed sweep.
+                {"files": []},
             ]
         )
 
@@ -456,7 +461,7 @@ class TestPerformFullSync:
         connector._process_drive_items_generator = mock_gen
         await connector._perform_full_sync("key", "org1", "u1", "u@t.com", "d1")
         calls = connector.drive_data_source.files_list.call_args_list
-        assert len(calls) == 2
+        assert len(calls) == 3
         assert "pageToken" in calls[1].kwargs.get("pageToken", "") or "pageToken" in str(calls[1])
 
 
@@ -1968,7 +1973,10 @@ class TestPerformFullSyncFullCoverage:
         page2 = {
             "files": [_make_file_metadata(file_id="f2")],
         }
-        connector.drive_data_source.files_list = AsyncMock(side_effect=[page1, page2])
+        connector.drive_data_source.files_list = AsyncMock(
+            # Trailing empty page is consumed by the shared-with-me seed sweep.
+            side_effect=[page1, page2, {"files": []}]
+        )
 
         async def mock_gen(files, uid, email, did):
             for f in files:
@@ -2072,6 +2080,8 @@ class TestPerformFullSyncFullCoverage:
             side_effect=[
                 {"files": page1_files, "nextPageToken": "page2-token-1234567890123456"},
                 {"files": []},
+                # Consumed by the shared-with-me seed sweep.
+                {"files": []},
             ]
         )
 
@@ -2085,7 +2095,7 @@ class TestPerformFullSyncFullCoverage:
         connector._process_drive_items_generator = mock_gen
         await connector._perform_full_sync("key", "org1", "u1", "u@t.com", "d1")
         calls = connector.drive_data_source.files_list.call_args_list
-        assert len(calls) == 2
+        assert len(calls) == 3
         assert "pageToken" in calls[1].kwargs.get("pageToken", "") or "pageToken" in str(calls[1])
 
 
