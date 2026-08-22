@@ -1020,6 +1020,12 @@ class TestProcessDriveItemsGenerator:
 class TestHandleRecordUpdates:
     @pytest.mark.asyncio
     async def test_deleted(self, connector):
+        existing = MagicMock()
+        existing.id = "rec-f1"
+        existing.record_name = "f1"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         update = RecordUpdate(
             record=None, is_new=False, is_updated=False, is_deleted=True,
             metadata_changed=False, content_changed=False, permissions_changed=False,
