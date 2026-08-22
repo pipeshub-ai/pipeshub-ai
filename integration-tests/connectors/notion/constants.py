@@ -23,6 +23,11 @@ INDEXING_WAIT_SEC = 180
 TITLE_PREFIX = "PHIT-"
 RUN_ROOT_PREFIX = f"{TITLE_PREFIX}Notion-"
 
+# A run root younger than this may belong to a run that is still going: CI can put the
+# neo4j and arango legs on separate runners at the same time, and both sweep before they
+# seed. Trashing a live run's tree destroys it mid-sync instead of cleaning up after it.
+STALE_RUN_MIN_AGE_SECONDS = 2 * 60 * 60
+
 # Fixture page/database titles (suffixed with the run id so concurrent debugging is legible).
 FIXTURE_ROOT_TITLE = f"{TITLE_PREFIX}Fixture"
 SCRATCH_ROOT_TITLE = f"{TITLE_PREFIX}Scratch"

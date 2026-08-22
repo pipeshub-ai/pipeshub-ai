@@ -123,6 +123,9 @@ class NotionExpected:
             connector_name=Connectors.NOTION,
             connector_id=connector_id,
             mime_type=MimeTypes.BLOCKS.value,
+            # Notion records carry blocks, not a previewable file, so the connector
+            # sets this False; WebpageRecord's own default is True.
+            preview_renderable=False,
             weburl=page_data.get("url"),
             source_created_at=parse_notion_timestamp(page_data.get("created_time")),
             source_updated_at=parse_notion_timestamp(last_edited),
@@ -161,6 +164,9 @@ class NotionExpected:
             connector_name=Connectors.NOTION,
             connector_id=connector_id,
             mime_type=MimeTypes.BLOCKS.value,
+            # Notion records carry blocks, not a previewable file, so the connector
+            # sets this False; WebpageRecord's own default is True.
+            preview_renderable=False,
             weburl=data_source_data.get("url"),
             source_created_at=parse_notion_timestamp(data_source_data.get("created_time")),
             source_updated_at=parse_notion_timestamp(last_edited),

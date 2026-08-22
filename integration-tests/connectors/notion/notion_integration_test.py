@@ -99,6 +99,7 @@ from connectors.notion.notion_expected import (  # noqa: E402
 )
 from connectors.notion.notion_seed import (  # noqa: E402
     NotionSeed,
+    foreign_run_object_ids,
     comment_attachment_external_id,
 )
 from connectors.notion.notion_source_helper import (  # noqa: E402
@@ -182,6 +183,7 @@ class TestNotionFullSync:
         notion_connector: dict[str, Any],
         notion_seed: NotionSeed,
         graph_provider: GraphProviderProtocol,
+        notion_source_helper: NotionSourceHelper,
     ) -> None:
         """TC-SYNC-001: the graph holds exactly what the seeder created.
 
@@ -201,6 +203,24 @@ class TestNotionFullSync:
             graph_provider, connector_id, RecordType.FILE.value
         )
 
+        # The connector syncs the whole workspace, so a run happening at the same time on
+        # another backend leg puts its fixture tree in this graph too. Drop those before
+        # comparing: they are ours-by-title but not ours-by-id, and nothing about them says
+        # anything about this run's sync. Ids we created stay in, so an archived page that
+        # was wrongly synced still shows up as unexpected.
+        foreign_pages, foreign_data_sources = await foreign_run_object_ids(
+            notion_source_helper, notion_seed
+        )
+        if foreign_pages or foreign_data_sources:
+            logger.warning(
+                "TC-SYNC-001: ignoring %d page(s) and %d data source(s) from a concurrent "
+                "run — this workspace is shared, so the two runs see each other's trees",
+                len(foreign_pages),
+                len(foreign_data_sources),
+            )
+            graph_pages -= foreign_pages
+            graph_data_sources -= foreign_data_sources
+
         assert graph_pages == notion_seed.expected_page_ids, (
             f"page mismatch — missing from graph: "
             f"{sorted(notion_seed.expected_page_ids - graph_pages)}; "
@@ -214,6 +234,20 @@ class TestNotionFullSync:
         # Unlike pages/data sources there is no cheap pre-seed baseline for files (they come
         # from block traversal, not Search), so an unexpected id here usually means the
         # permanent IT root page carries attachment blocks or comment attachments.
+        # File ids come from block traversal, so a concurrent run's attachments cannot be
+        # recognised by title the way its pages can. Only relax this when that run has
+        # already been detected above, and name what was dropped so the signal is not lost.
+        if foreign_pages or foreign_data_sources:
+            foreign_files = graph_files - notion_seed.expected_file_ids
+            if foreign_files:
+                logger.warning(
+                    "TC-SYNC-001: ignoring %d file record(s) attributed to the concurrent "
+                    "run: %s",
+                    len(foreign_files),
+                    sorted(foreign_files),
+                )
+                graph_files -= foreign_files
+
         assert graph_files == notion_seed.expected_file_ids, (
             f"file mismatch — missing: "
             f"{sorted(notion_seed.expected_file_ids - graph_files)}; "

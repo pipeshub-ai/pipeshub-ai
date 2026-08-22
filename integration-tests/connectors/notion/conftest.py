@@ -212,7 +212,11 @@ async def notion_connector(
             # Seeding raised before returning a manifest, so the run root id is unknown —
             # sweep by title instead, otherwise the orphan inflates the next run's counts.
             try:
-                await sweep_stale_runs(notion_source_helper, root_page_id)
+                # only_run_id: this run's root is seconds old, so the age guard that
+                # protects a concurrent run would otherwise skip our own orphan.
+                await sweep_stale_runs(
+                    notion_source_helper, root_page_id, only_run_id=run_id
+                )
             except Exception as e:  # noqa: BLE001
                 logger.warning("TEARDOWN: sweep of partial seed failed: %s", e)
 

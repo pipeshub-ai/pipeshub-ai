@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import unquote, urlparse
 
@@ -50,6 +51,7 @@ from connectors.notion.constants import (  # type: ignore[import-not-found]
     RUN_ROOT_PREFIX,
     SAMPLE_FILE_FIXTURES,
     SCRATCH_ROOT_TITLE,
+    STALE_RUN_MIN_AGE_SECONDS,
     TITLE_FALLBACK_TITLE,
     TITLE_PREFIX,
     TITLE_STANDARD_TITLE,
@@ -157,8 +159,37 @@ def _normalize_id(raw: str) -> str:
     return str(raw)
 
 
-async def sweep_stale_runs(helper: NotionSourceHelper, root_page_id: str) -> int:
-    """Trash run roots left behind by an earlier crashed run. Returns how many were trashed."""
+def _age_seconds(page: dict[str, Any], now: datetime) -> Optional[float]:
+    """Age of a page from ``created_time``; ``None`` when Notion omits/malforms it."""
+    raw = page.get("created_time")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        created = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (now - created).total_seconds()
+
+
+async def sweep_stale_runs(
+    helper: NotionSourceHelper,
+    root_page_id: str,
+    *,
+    min_age_seconds: float = STALE_RUN_MIN_AGE_SECONDS,
+    only_run_id: Optional[str] = None,
+) -> int:
+    """Trash run roots left behind by an earlier crashed run. Returns how many were trashed.
+
+    Roots younger than ``min_age_seconds`` are left alone: CI can run the neo4j and arango
+    legs on separate runners at the same time, and both sweep before they seed, so a young
+    root usually belongs to a run that is still going. Trashing one mid-sync destroys that
+    run — its pages vanish under the connector, which then dies on a stale search cursor.
+
+    Pass ``only_run_id`` to target exactly one run's root regardless of age; teardown uses
+    it to clean up after itself when seeding failed before returning a manifest.
+    """
+    target = f"{RUN_ROOT_PREFIX}{only_run_id}" if only_run_id else None
+    now = datetime.now(timezone.utc)
     trashed = 0
     for page in await helper.search_objects("page"):
         parent = page.get("parent") or {}
@@ -167,10 +198,56 @@ async def sweep_stale_runs(helper: NotionSourceHelper, root_page_id: str) -> int
         title = _plain_title(page)
         if not title.startswith(RUN_ROOT_PREFIX):
             continue
+        if target is not None:
+            if title != target:
+                continue
+        else:
+            age = _age_seconds(page, now)
+            # Unknown age is treated as young: skipping leaves a loud, recoverable
+            # count mismatch, while trashing a live run does not.
+            if age is None or age < min_age_seconds:
+                logger.info(
+                    "SWEEP: leaving run root %s (%s) — age %s < %.0fs, may still be running",
+                    title,
+                    page.get("id"),
+                    "unknown" if age is None else f"{age:.0f}s",
+                    min_age_seconds,
+                )
+                continue
         logger.warning("SWEEP: trashing stale run root %s (%s)", title, page.get("id"))
         await helper.trash_page(str(page["id"]))
         trashed += 1
     return trashed
+
+
+async def foreign_run_object_ids(
+    helper: NotionSourceHelper,
+    seed: NotionSeed,
+) -> tuple[set[str], set[str]]:
+    """Page / data-source ids that carry the IT title prefix but were not created by ``seed``.
+
+    The connector syncs everything the token can see, not just this run's subtree, so a
+    concurrent run's fixture tree lands in this run's graph as well. Those objects are
+    ours-by-title but not ours-by-id — the same discriminator ``_baseline_object_ids`` uses
+    to keep them out of the baseline.
+
+    Resolved at assert time rather than at seed time: the other run keeps creating pages
+    after our baseline snapshot, so anything captured earlier would already be stale.
+    """
+    mine_pages = seed.expected_page_ids | {seed.archived_page_id}
+    mine_data_sources = seed.expected_data_source_ids | {seed.archived_db_id}
+
+    foreign_pages = {
+        str(p["id"])
+        for p in await helper.search_objects("page")
+        if _plain_title(p).startswith(TITLE_PREFIX) and str(p["id"]) not in mine_pages
+    }
+    foreign_data_sources = {
+        str(d["id"])
+        for d in await helper.search_objects("data_source")
+        if _plain_title(d).startswith(TITLE_PREFIX) and str(d["id"]) not in mine_data_sources
+    }
+    return foreign_pages, foreign_data_sources
 
 
 async def wait_for_swept_runs_gone(
@@ -722,6 +799,7 @@ __all__ = [
     "NotionSeed",
     "comment_attachment_external_id",
     "seed_notion_workspace",
+    "foreign_run_object_ids",
     "sweep_stale_runs",
     "wait_for_swept_runs_gone",
     "wait_for_seed_indexed",
