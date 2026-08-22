@@ -22,6 +22,7 @@ from .ollama import OllamaProvider
 from .openai import OpenAIProvider
 from .openai_compatible import OpenAICompatibleProvider
 from .openrouter import OpenRouterProvider
+from .orcarouter import OrcaRouterProvider
 from .together import TogetherProvider
 from .vertex_ai import VertexAIProvider
 from .whisper import WhisperProvider
@@ -33,6 +34,7 @@ ALL_PROVIDER_CLASSES: list[type] = [
     AnthropicProvider,
     OpenAICompatibleProvider,
     OpenRouterProvider,
+    OrcaRouterProvider,
     AzureAIProvider,
     AzureOpenAIProvider,
     BedrockProvider,

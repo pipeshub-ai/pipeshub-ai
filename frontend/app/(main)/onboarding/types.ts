@@ -58,6 +58,7 @@ export type AiProvider =
   | 'azureAI'
   | 'ollama'
   | 'openAICompatible'
+  | 'orcarouter'
   | '';
 
 export interface AiModelFormData {
