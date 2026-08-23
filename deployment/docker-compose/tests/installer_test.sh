@@ -197,6 +197,8 @@ check "lost graph password guidance" "$inner" "cannot be recovered"
 check "summary graph DB fallback is honest" "$inner" '"${DATA_STORE:-(unset)}"'
 check ".env locked to owner-only" "$inner" 'chmod 600 "$ENV_FILE"'
 check ".env chmod failure is fatal" "$inner" "Could not restrict permissions"
+check ".env chmod is guarded" "$inner" '&& ! chmod 600 "$ENV_FILE"; then'
+check ".env chmod failure calls die" "$inner" 'die "Could not restrict permissions on $ENV_FILE"'
 check ".env backup locked to owner-only" "$inner" 'chmod 600 "$_backup"'
 check "crash-loop wait has 90s startup grace" "$inner" "ELAPSED >= 90"
 # Compose animates progress with cursor escapes that explode into hundreds of
@@ -412,9 +414,9 @@ check "--no-pull skips the refresh" "$(should_pull_image false true '')" "false"
 check "PIPESHUB_NO_PULL=1 skips the refresh" "$(should_pull_image false false 1)" "false"
 check "PIPESHUB_NO_PULL=true skips the refresh" "$(should_pull_image false false true)" "false"
 check "PIPESHUB_NO_PULL=yes skips the refresh" "$(should_pull_image false false yes)" "false"
-# A pinned/specific tag must still refresh (fetch that exact tag) — pinning is for
-# reproducibility, not a reason to keep a stale local copy.
-if [[ "$(should_pull_image false false '')" == true ]]; then pass "pinned/explicit tag still refreshes by default"; else fail "pinned/explicit tag still refreshes by default"; fi
+# Pinning a tag still refreshes (fetch that exact tag). should_pull_image has no
+# tag argument, so assert the launch path builds _APP_IMAGE from IMAGE_TAG.
+check "refresh target honours the pinned tag" "$inner" '_APP_IMAGE="pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}"'
 # Launch-path guards.
 check "refreshes app and sandbox images" "$inner" "pull pipeshub-ai sandbox-image"
 check "--no-pull flag is parsed" "$inner" "FLAG_NO_PULL=true"

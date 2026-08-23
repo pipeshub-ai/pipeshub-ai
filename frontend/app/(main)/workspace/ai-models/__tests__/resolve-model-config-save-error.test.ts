@@ -81,6 +81,17 @@ describe('resolveModelConfigSaveError', () => {
     );
   });
 
+  it('maps health_check_timeout to the timeout i18n key', () => {
+    const err = processed({
+      type: ErrorType.SERVER_ERROR,
+      message: 'LLM health check timed out. For cloud providers, verify your API key',
+      details: { error_code: 'health_check_timeout' },
+    });
+    expect(resolveModelConfigSaveError(err, t)).toBe(
+      'workspace.aiModels.configSaveTimeoutError'
+    );
+  });
+
   it('uses the processed message for other API errors', () => {
     const err = processed({
       type: ErrorType.SERVER_ERROR,

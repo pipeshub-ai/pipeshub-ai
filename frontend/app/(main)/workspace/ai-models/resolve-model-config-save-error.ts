@@ -26,7 +26,7 @@ export function resolveModelConfigSaveError(err: unknown, t: TFunction): string 
     if (code === 'outbound_connectivity') {
       return t('workspace.aiModels.configSaveOutboundError');
     }
-    if (err.type === ErrorType.TIMEOUT_ERROR) {
+    if (code === 'health_check_timeout' || err.type === ErrorType.TIMEOUT_ERROR) {
       return t('workspace.aiModels.configSaveTimeoutError');
     }
     if (err.message.trim()) {

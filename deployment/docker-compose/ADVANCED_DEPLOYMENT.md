@@ -264,8 +264,9 @@ browser or host shell.
 ### Diagnose
 
 ```bash
-# From the host — should return quickly (404 is fine; 000 means no route)
-docker compose -p pipeshub-ai exec -T pipeshub-ai \
+# From the installation directory (Compose reads COMPOSE_PROJECT_NAME from .env).
+# Should return quickly (404 is fine; 000 means no route).
+docker compose exec -T pipeshub-ai \
   curl -s -o /dev/null -m 6 -w "%{http_code}\n" https://1.1.1.1/
 ```
 
