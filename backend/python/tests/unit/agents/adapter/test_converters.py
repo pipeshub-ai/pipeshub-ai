@@ -11,6 +11,8 @@ from app.agent_loop_lib.core.messages import (
     MALFORMED_TOOL_CALL_ARGS_KEY,
     MALFORMED_TOOL_CALL_ERROR_KEY,
     AssistantMessage,
+    ImagePart,
+    ImageSource,
     TextPart,
     ToolCall,
     ToolMessage,
@@ -23,6 +25,7 @@ from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agents.agent_loop.converters import (
     _clamp_tool_call_id,
     convert_assistant_message_from_langchain,
+    convert_message_from_langchain,
     convert_message_to_langchain,
     convert_messages_to_langchain,
     convert_tool_call_from_langchain,
@@ -121,6 +124,108 @@ class TestMessageToLangchain:
         )
         result = convert_message_to_langchain(msg)
         assert result.tool_calls[0]["id"] == short_id
+
+    def test_multipart_tool_message_produces_content_blocks(self) -> None:
+        """A ToolMessage carrying images (search/fetch tools surfacing
+        IMAGE blocks) must serialize to LangChain's list-of-blocks content
+        shape, not be collapsed into a string."""
+        msg = ToolMessage(
+            content=[
+                TextPart(text="[ref1] (image)"),
+                ImagePart(source=ImageSource(type="base64", media_type="image/png", data="abc123")),
+            ],
+            tool_call_id="tc1",
+        )
+        result = convert_message_to_langchain(msg)
+        assert isinstance(result, LCToolMessage)
+        assert result.content == [
+            {"type": "text", "text": "[ref1] (image)"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
+        ]
+
+    def test_multipart_tool_message_appends_step_footer_as_text_block(self) -> None:
+        msg = ToolMessage(
+            content=[TextPart(text="hello")],
+            tool_call_id="tc1",
+            step_footer="\n\n[loop: step 1/5]",
+        )
+        result = convert_message_to_langchain(msg)
+        assert result.content[-1] == {"type": "text", "text": "\n\n[loop: step 1/5]"}
+
+    def test_strip_tool_images_serializes_text_only_for_ollama_fallback(self) -> None:
+        """Ollama's `/api/chat` rejects multipart tool-result content — see
+        `LangChainTransport._supports_multipart_tool_result`. When
+        `strip_tool_images=True`, a multipart ToolMessage must serialize to
+        a plain text string (text parts + step_footer), not the
+        list-of-blocks shape, so the image never reaches the provider
+        (the PRE_MODEL fallback hook re-injects it separately)."""
+        msg = ToolMessage(
+            content=[
+                TextPart(text="[ref1] (image)"),
+                ImagePart(source=ImageSource(type="base64", media_type="image/png", data="abc123")),
+            ],
+            tool_call_id="tc1",
+            step_footer="\n\n[loop: step 1/5]",
+        )
+        result = convert_message_to_langchain(msg, strip_tool_images=True)
+        assert isinstance(result, LCToolMessage)
+        assert isinstance(result.content, str)
+        assert result.content == "[ref1] (image)\n\n[loop: step 1/5]"
+
+    def test_strip_tool_images_false_keeps_multipart_content(self) -> None:
+        """Default behavior (non-Ollama providers) must be unaffected."""
+        msg = ToolMessage(
+            content=[TextPart(text="[ref1] (image)")],
+            tool_call_id="tc1",
+        )
+        result = convert_message_to_langchain(msg, strip_tool_images=False)
+        assert isinstance(result.content, list)
+
+    def test_convert_messages_to_langchain_threads_strip_tool_images(self) -> None:
+        msg = ToolMessage(
+            content=[
+                TextPart(text="text"),
+                ImagePart(source=ImageSource(type="url", data="https://x/y.png")),
+            ],
+            tool_call_id="tc1",
+        )
+        converted = convert_messages_to_langchain([msg], strip_tool_images=True)
+        assert isinstance(converted[0].content, str)
+
+    def test_plain_string_tool_message_still_serializes_as_string(self) -> None:
+        """Backward compatibility: the overwhelmingly common str-content
+        case must keep producing plain string LangChain content, not a
+        single-item list."""
+        msg = ToolMessage(content="result text", tool_call_id="tc1", step_footer=" [footer]")
+        result = convert_message_to_langchain(msg)
+        assert result.content == "result text [footer]"
+
+
+class TestToolMessageFromLangchain:
+    def test_multipart_content_round_trips_to_parts(self) -> None:
+        lc_msg = LCToolMessage(
+            content=[
+                {"type": "text", "text": "a description"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
+            ],
+            tool_call_id="tc1",
+        )
+        result = convert_message_from_langchain(lc_msg)
+        assert isinstance(result, ToolMessage)
+        assert isinstance(result.content, list)
+        assert result.content[0] == TextPart(text="a description")
+        assert result.content[1] == ImagePart(source=ImageSource(type="url", data="https://example.com/img.png"))
+        assert result.text == "a description"
+
+    def test_plain_string_content_stays_a_string(self) -> None:
+        lc_msg = LCToolMessage(content="plain result", tool_call_id="tc1")
+        result = convert_message_from_langchain(lc_msg)
+        assert result.content == "plain result"
+
+    def test_error_status_round_trips(self) -> None:
+        lc_msg = LCToolMessage(content="boom", tool_call_id="tc1", status="error")
+        result = convert_message_from_langchain(lc_msg)
+        assert result.is_error is True
 
 
 class TestAssistantMessageFromLangchain:

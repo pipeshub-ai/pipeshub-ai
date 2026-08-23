@@ -55,6 +55,7 @@ _MIME_TO_FORMAT: dict[str, str] = {
     "image/svg+xml": "svg",
     "image/heic": "heic",
     "image/heif": "heif",
+    "application/epub+zip": "epub",
     # Google workspace export types
     "application/vnd.google-apps.document": "docx",
     "application/vnd.google-apps.presentation": "pptx",
@@ -122,6 +123,7 @@ _EXT_TO_FORMAT: dict[str, str] = {
     "svg": "svg",
     "heic": "heic",
     "heif": "heif",
+    "epub": "epub",
     "sql_table": "sql_table",
     "sql_view": "sql_view",
     "blocks": "blocks",

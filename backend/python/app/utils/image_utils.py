@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import os
+import re
 from urllib.parse import unquote, urlparse
 
 from app.utils.logger import create_logger
@@ -9,6 +10,41 @@ from app.utils.url_fetcher import FetchError, fetch_url
 logger = create_logger(__name__)
 
 HTTP_STATUS_OK = 200
+_BASE64_CHARSET_RE = re.compile(r"[A-Za-z0-9+/=_-]+")
+
+
+def normalize_image_to_base64(image_uri: str | None) -> str | None:
+    """Strip a ``data:...;base64,`` prefix (if present) and pad to a valid
+    base64 length. Returns ``None`` for empty/non-base64 input.
+
+    Shared by every multimodal image-embedding provider so each one doesn't
+    reimplement the same data-URI parsing / padding logic.
+    """
+    try:
+        if not image_uri or not isinstance(image_uri, str):
+            return None
+        uri = image_uri.strip()
+        if uri.startswith("data:"):
+            comma_index = uri.find(",")
+            if comma_index == -1:
+                return None
+            # A data URI without `;base64` carries percent-encoded text, not
+            # base64 — `data:image/svg+xml,<svg…>` would otherwise be handed
+            # to an embedding provider as if it were image bytes.
+            if ";base64" not in uri[:comma_index].lower():
+                return None
+            candidate = uri[comma_index + 1:]
+        else:
+            candidate = uri
+        candidate = candidate.strip().replace("\n", "").replace("\r", "").replace(" ", "")
+        if not _BASE64_CHARSET_RE.fullmatch(candidate):
+            return None
+        missing = (-len(candidate)) % 4
+        if missing:
+            candidate += "=" * missing
+        return candidate
+    except Exception:
+        return None
 
 
 def get_mime_type_from_base64(b64: str) -> str | None:
@@ -32,7 +68,7 @@ def get_mime_type_from_base64(b64: str) -> str | None:
 
     return None
 
-def get_extension_from_mimetype(mime_type) -> str | None:
+def get_extension_from_mimetype(mime_type: str | None) -> str | None:
     return mime_to_extension.get(mime_type)
 
 def get_image_info_from_url(url: str) -> tuple[str | None, str | None]:

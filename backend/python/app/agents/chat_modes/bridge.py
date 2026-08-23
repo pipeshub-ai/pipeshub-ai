@@ -59,7 +59,7 @@ from app.agents.chat_modes.policy import (
 )
 from app.agents.chat_modes.prefetch import prefetch_retrieval
 from app.config.constants.service import config_node_constants
-from app.utils.chat_helpers import CitationRefMapper, get_message_content
+from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.streaming import create_sse_event, handle_simple_mode
 
 if TYPE_CHECKING:
@@ -393,6 +393,11 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         agent: Any = None
         try:
             factory = PipesHubAgentFactory()
+            # Shared with `retrieval.py`/`citations.py`'s tool-result image
+            # collection so the 50-image cap is enforced across the whole
+            # turn regardless of whether an image came from prefetch or a
+            # later search/fetch tool call -- see `ImageBudget`.
+            image_budget = context.tool_state.setdefault("image_budget", ImageBudget())
             prefetch_task = (
                 asyncio.ensure_future(
                     prefetch_retrieval(
@@ -406,6 +411,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                         # `factory.create()` below -- see
                         # `prefetch_retrieval`'s `ref_mapper` docstring.
                         ref_mapper=ref_mapper,
+                        image_budget=image_budget,
                     )
                 )
                 if policy.prefetch_retrieval else None
@@ -433,6 +439,19 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 # citation_ref_mapper` IS `ref_mapper` (passed in above), the
                 # same instance `context.tool_state["citation_ref_mapper"]`
                 # already holds and web_search/fetch_url already closed over.
+
+                if prefetch_result.collected_images:
+                    # Prefetch produces plain text folded into
+                    # `goal.constraints`, not a tool result -- so its images
+                    # ride the SAME `shape_image_injection` PRE_MODEL hook
+                    # that already delivers user-attachment images, rather
+                    # than a multipart `ToolMessage`. Extend (not overwrite):
+                    # `factory.create()` already ran above and may have
+                    # populated this from the user's own attachments.
+                    context.attachment_image_blocks = [
+                        *context.attachment_image_blocks,
+                        *prefetch_result.collected_images,
+                    ]
 
                 # Compute coverage and candidate list for the prefetched results.
                 # The retrieval TOOL never runs in prefetch mode, so this is the

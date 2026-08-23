@@ -1,0 +1,112 @@
+{
+  "block_groups": [
+    {
+      "children": {
+        "block_group_ranges": [],
+        "block_ranges": [
+          {
+            "end": 2,
+            "start": 0
+          }
+        ]
+      },
+      "comments": [],
+      "data": {
+        "column_headers": [
+          "Tag",
+          "Name"
+        ],
+        "table_markdown": "| Tag | Name |\n| --- | --- |\n|  | PHIT-DbRowWithChildren |\n| alpha | PHIT-DbRowNamed |",
+        "table_summary": ""
+      },
+      "format": "json",
+      "index": 0,
+      "requires_processing": false,
+      "table_metadata": {
+        "captions": [],
+        "column_names": [
+          "Tag",
+          "Name"
+        ],
+        "footnotes": [],
+        "has_header": true,
+        "num_of_cells": 6,
+        "num_of_cols": 2,
+        "num_of_rows": 3
+      },
+      "type": "table"
+    }
+  ],
+  "blocks": [
+    {
+      "comments": [],
+      "data": {
+        "cells": [
+          "Tag",
+          "Name"
+        ],
+        "row": "{\"cells\": [\"Tag\", \"Name\"]}",
+        "row_natural_language_text": "Tag\u200b|\u200bName",
+        "row_number": 1
+      },
+      "format": "json",
+      "index": 0,
+      "parent_index": 0,
+      "table_row_metadata": {
+        "is_header": true,
+        "row_number": 1
+      },
+      "type": "table_row"
+    },
+    {
+      "comments": [],
+      "data": {
+        "cells": [
+          "",
+          "PHIT-DbRowWithChildren"
+        ],
+        "row": "{\"cells\": [\"\", \"PHIT-DbRowWithChildren\"], \"source_name\": \"PHIT-DbRowWithChildren\", \"page_id\": \"UUID-PLACEHOLDER\"}",
+        "row_natural_language_text": "\u200b|\u200bPHIT-DbRowWithChildren",
+        "row_number": 2
+      },
+      "format": "json",
+      "index": 1,
+      "parent_index": 0,
+      "table_row_metadata": {
+        "children_records": [
+          {
+            "child_type": "record"
+          }
+        ],
+        "is_header": false,
+        "row_number": 2
+      },
+      "type": "table_row"
+    },
+    {
+      "comments": [],
+      "data": {
+        "cells": [
+          "alpha",
+          "PHIT-DbRowNamed"
+        ],
+        "row": "{\"cells\": [\"alpha\", \"PHIT-DbRowNamed\"], \"source_name\": \"PHIT-DbRowNamed\", \"page_id\": \"UUID-PLACEHOLDER\"}",
+        "row_natural_language_text": "alpha\u200b|\u200bPHIT-DbRowNamed",
+        "row_number": 3
+      },
+      "format": "json",
+      "index": 2,
+      "parent_index": 0,
+      "table_row_metadata": {
+        "children_records": [
+          {
+            "child_type": "record"
+          }
+        ],
+        "is_header": false,
+        "row_number": 3
+      },
+      "type": "table_row"
+    }
+  ]
+}

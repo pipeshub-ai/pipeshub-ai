@@ -55,6 +55,35 @@ class TestNotionResponse:
         assert resp.error is None
         assert resp.message is None
 
+    def test_from_http_success(self):
+        import httpx
+        from app.sources.client.http.http_response import HTTPResponse
+
+        raw = httpx.Response(200, json={"ok": True})
+        wrapped = NotionResponse.from_http(HTTPResponse(raw))
+        assert wrapped.success is True
+        assert wrapped.data is not None
+        assert wrapped.error is None
+
+    def test_from_http_not_found(self):
+        import httpx
+        from app.sources.client.http.http_response import HTTPResponse
+
+        raw = httpx.Response(404, json={"object": "error", "status": 404})
+        wrapped = NotionResponse.from_http(HTTPResponse(raw))
+        assert wrapped.success is False
+        assert wrapped.error is not None
+        assert "404" in wrapped.error
+
+    def test_from_http_rate_limited(self):
+        import httpx
+        from app.sources.client.http.http_response import HTTPResponse
+
+        raw = httpx.Response(429, text="Too Many Requests")
+        wrapped = NotionResponse.from_http(HTTPResponse(raw))
+        assert wrapped.success is False
+        assert "429" in (wrapped.error or "")
+
 
 # ---------------------------------------------------------------------------
 # NotionRESTClientViaOAuth
@@ -396,3 +425,64 @@ class TestBuildFromServices:
         client = nc.get_client()
         assert isinstance(client, NotionRESTClientViaToken)
         assert client.version == "2023-08-01"
+
+
+# ---------------------------------------------------------------------------
+# Resilience wiring
+# ---------------------------------------------------------------------------
+
+
+class TestResilienceWiring:
+    @pytest.fixture
+    def policy(self):
+        from app.sources.client.resilience import ResiliencePolicy
+
+        return ResiliencePolicy(rate_limit=3, max_retries=3, name="Notion")
+
+    @pytest.mark.asyncio
+    async def test_forwarded_to_api_token_client(self, logger, mock_config_service, policy):
+        mock_config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "API_TOKEN", "apiToken": "tok"}}
+        )
+        nc = await NotionClient.build_from_services(
+            logger, mock_config_service, "inst-1", resilience=policy
+        )
+        assert nc.get_client().resilience is policy
+
+    @pytest.mark.asyncio
+    async def test_forwarded_to_oauth_client(self, logger, mock_config_service, policy):
+        mock_config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {
+                    "authType": "OAUTH",
+                    "clientId": "cid",
+                    "clientSecret": "csec",
+                    "redirectUri": "http://redirect",
+                },
+                "credentials": {"access_token": "at"},
+            }
+        )
+        nc = await NotionClient.build_from_services(
+            logger, mock_config_service, "inst-1", resilience=policy
+        )
+        assert nc.get_client().resilience is policy
+
+    @pytest.mark.asyncio
+    async def test_omitted_leaves_client_unthrottled(self, logger, mock_config_service):
+        mock_config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "API_TOKEN", "apiToken": "tok"}}
+        )
+        nc = await NotionClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert nc.get_client().resilience is None
+
+    def test_token_config_forwards_policy(self, policy):
+        client = NotionTokenConfig(token="tok", resilience=policy).create_client()
+        assert client.resilience is policy
+
+    def test_token_config_to_dict_excludes_live_policy(self, policy):
+        """asdict() would deep-copy the policy's lock and raise."""
+        assert NotionTokenConfig(token="tok", resilience=policy).to_dict() == {
+            "token": "tok",
+            "version": "2025-09-03",
+            "ssl": True,
+        }

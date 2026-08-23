@@ -340,11 +340,26 @@ async def _enhance_one_table(
 
     # cells are raw positional values (block.data["cells"]), same shape the LLM sees
     # regardless of whether column names are known yet.
-    grid = [(rb.data or {}).get("cells") or [] for rb in row_blocks]
+    #
+    # The grid must line up with what enrich_table_grid describes, because the caller
+    # pairs descriptions against data_row_blocks below. Passing the full grid while
+    # claiming known_header_row_count=0 made it describe the header too, shifting every
+    # description onto the previous row and dropping the last row's on the floor.
+    header_is_first = bool(is_header_flags) and is_header_flags[0] and not any(is_header_flags[1:])
+    if header_is_first:
+        # Declaring the header lets the enricher read the real column names off it and
+        # still describe only the data rows.
+        grid = [(rb.data or {}).get("cells") or [] for rb in row_blocks]
+        known_header_row_count = 1
+    else:
+        # No header, or one in an unexpected position: send only the rows the
+        # descriptions map back to.
+        grid = [(rb.data or {}).get("cells") or [] for rb in data_row_blocks]
+        known_header_row_count = 0
 
     try:
         enrichment = await enrich_table_grid(
-            llm, grid, logger=logger, known_header_row_count=0
+            llm, grid, logger=logger, known_header_row_count=known_header_row_count
         )
     except Exception as e:
         logger.warning(f"Table {table_group.index} enrichment failed: {e}")
@@ -364,6 +379,15 @@ async def _enhance_one_table(
         table_group.data = {}
     table_group.data["table_summary"] = enrichment.summary
     table_group.data["column_headers"] = enrichment.headers
+
+    # zip() truncates silently, so a count mismatch would misalign every row without
+    # any signal. The guard inside enrich_table_grid only catches descriptions being
+    # shorter than the rows; it cannot see this caller-side pairing.
+    if len(enrichment.descriptions) != len(data_row_blocks):
+        logger.warning(
+            "Table %s: %d description(s) for %d data row(s) — rows may be misaligned",
+            table_group.index, len(enrichment.descriptions), len(data_row_blocks),
+        )
 
     for rb, description in zip(data_row_blocks, enrichment.descriptions):
         if rb.data is not None:

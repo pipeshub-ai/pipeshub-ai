@@ -24,6 +24,7 @@ on:
             - notion
             - google_drive_workspace
             - google_drive_individual
+            - notion
             - gcs
             - azure_blob
             - azure_files

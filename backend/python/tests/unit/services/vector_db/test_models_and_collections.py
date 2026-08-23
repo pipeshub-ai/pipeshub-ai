@@ -10,12 +10,61 @@ from app.services.vector_db.models import (
     HealthStatus,
     HybridSearchRequest,
     SparseVector,
+    VectorChunkMetadata,
+    VectorChunkPayload,
     VectorDBCapabilities,
     VectorDBHealth,
     VectorCollectionInfo,
     VectorPoint,
     to_generic_sparse_vector,
 )
+
+
+# ---------------------------------------------------------------------------
+# VectorChunkMetadata / VectorChunkPayload — blockType / isImage fields
+# ---------------------------------------------------------------------------
+
+
+class TestVectorChunkMetadata:
+    def test_defaults_are_none(self):
+        meta = VectorChunkMetadata()
+        assert meta.blockType is None
+        assert meta.isImage is None
+
+    def test_blocktype_and_isimage_roundtrip_through_payload(self):
+        payload = VectorChunkPayload(
+            page_content="",
+            metadata=VectorChunkMetadata(
+                orgId="org-1",
+                virtualRecordId="vr-1",
+                blockId="block-1",
+                blockIndex=0,
+                blockType="image",
+                isImage=True,
+            ),
+        )
+        as_dict = payload.to_dict()
+        assert as_dict["metadata"]["blockType"] == "image"
+        assert as_dict["metadata"]["isImage"] is True
+
+        restored = VectorChunkPayload.from_dict(as_dict)
+        assert restored.metadata.blockType == "image"
+        assert restored.metadata.isImage is True
+
+    def test_from_dict_missing_blocktype_defaults_to_none(self):
+        """Points written before blockType existed must not error on read."""
+        legacy_data = {
+            "page_content": "hello",
+            "metadata": {"orgId": "org-1", "virtualRecordId": "vr-1"},
+        }
+        restored = VectorChunkPayload.from_dict(legacy_data)
+        assert restored.metadata.blockType is None
+        assert restored.metadata.isImage is None
+
+    def test_to_dict_omits_none_fields(self):
+        payload = VectorChunkPayload(metadata=VectorChunkMetadata(blockType="text"))
+        as_dict = payload.to_dict()
+        assert as_dict["metadata"] == {"blockType": "text"}
 
 
 # ---------------------------------------------------------------------------

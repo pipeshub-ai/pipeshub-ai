@@ -203,6 +203,16 @@ def test_resolve_maps_image_jpg_and_heic_mime() -> None:
     assert registry.resolve("image/heic", "") is parser
 
 
+def test_resolve_maps_epub_mime_and_extension() -> None:
+    registry = ParserRegistry()
+    parser = _make_parser(ParserProvider.DEFAULT)
+    registry.register("epub", ParserProvider.DEFAULT, parser)
+    registry.set_default("epub", ParserProvider.DEFAULT)
+
+    assert registry.resolve("application/epub+zip", "") is parser
+    assert registry.resolve("", "epub") is parser
+
+
 def test_resolve_maps_json_and_yaml_mime_and_extension() -> None:
     registry = ParserRegistry()
     json_parser = _make_parser(ParserProvider.DEFAULT)

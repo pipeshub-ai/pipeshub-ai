@@ -400,7 +400,6 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
         from langchain_openai.embeddings import OpenAIEmbeddings
 
         base_url = configuration['endpoint']
-
         compat_kwargs: Dict[str, Any] = dict(
             model=model_name,
             api_key=configuration['apiKey'],

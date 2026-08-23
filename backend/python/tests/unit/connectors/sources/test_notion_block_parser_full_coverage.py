@@ -339,16 +339,20 @@ class TestFinalizeIndicesAndMetadata:
             children=BlockGroupChildren(),
         )
         row1 = Block(index=0, parent_index=0, type=BlockType.TABLE_ROW,
-                      data={}, format=DataFormat.JSON,
+                      data={"row_number": 0}, format=DataFormat.JSON,
                       table_row_metadata=TableRowMetadata(row_number=0, is_header=False))
         row2 = Block(index=1, parent_index=0, type=BlockType.TABLE_ROW,
-                      data={}, format=DataFormat.JSON,
+                      data={"row_number": 0}, format=DataFormat.JSON,
                       table_row_metadata=TableRowMetadata(row_number=0, is_header=False))
         parser._finalize_indices_and_metadata([row1, row2], [table_group])
         assert row1.table_row_metadata.is_header is True
         assert row1.table_row_metadata.row_number == 1
+        assert row1.data["row_number"] == 1
         assert row2.table_row_metadata.is_header is False
         assert row2.table_row_metadata.row_number == 2
+        assert row2.data["row_number"] == 2
+        assert table_group.table_metadata.num_of_rows == 2
+        assert table_group.table_metadata.num_of_cells == 4
 
 
 class TestCalculateListIndentLevels:

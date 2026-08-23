@@ -417,7 +417,7 @@ class TestResolveAttachments:
         att = {"mimeType": "application/pdf", "recordName": "doc.pdf", "virtualRecordId": "vrid1"}
         captured: dict = {}
 
-        def fake_rtc(record, ref_mapper=None, is_multimodal_llm=False):
+        def fake_rtc(record, ref_mapper=None, is_multimodal_llm=False, image_budget=None):
             captured["ref_mapper"] = ref_mapper
             return ([{"type": "text", "text": "ok"}], ref_mapper)
 
@@ -664,6 +664,54 @@ class TestEnsureAttachmentBlocks:
         result = await ensure_attachment_blocks(state, logger)
         assert result == []
         assert state["resolved_attachment_blocks"] == []
+
+    async def test_uses_shared_conversation_image_budget(self, logger):
+        """`resolve_attachments` must debit the SAME `state["image_budget"]`
+        instance used by retrieval/prefetch/citations/history-replay, not
+        an independent one -- otherwise attachment images could exceed the
+        shared 50-image conversation cap."""
+        from app.utils.chat_helpers import ImageBudget
+
+        record = _make_image_record(_PNG_URI)
+        blob = AsyncMock()
+        blob.get_record_from_storage.return_value = record
+        shared_budget = ImageBudget(max_images=5)
+        state = {
+            "attachments": [
+                {"mimeType": "image/png", "recordName": "x.png", "virtualRecordId": "v1"}
+            ],
+            "blob_store": blob,
+            "org_id": "org1",
+            "is_multimodal_llm": True,
+            "image_budget": shared_budget,
+        }
+        await ensure_attachment_blocks(state, logger)
+        assert state["image_budget"] is shared_budget
+        assert shared_budget.used == 1
+
+    async def test_respects_already_exhausted_shared_image_budget(self, logger):
+        """Regression: a budget already exhausted by prior tool calls/
+        history this turn must cause the attachment image to degrade
+        instead of bypassing the cap via an independent fresh budget."""
+        from app.utils.chat_helpers import ImageBudget
+
+        record = _make_image_record(_PNG_URI)
+        blob = AsyncMock()
+        blob.get_record_from_storage.return_value = record
+        exhausted_budget = ImageBudget(max_images=1)
+        exhausted_budget.try_consume(1)
+        state = {
+            "attachments": [
+                {"mimeType": "image/png", "recordName": "x.png", "virtualRecordId": "v1"}
+            ],
+            "blob_store": blob,
+            "org_id": "org1",
+            "is_multimodal_llm": True,
+            "image_budget": exhausted_budget,
+        }
+        result = await ensure_attachment_blocks(state, logger)
+        assert not any(b.get("type") == "image_url" for b in result)
+        assert exhausted_budget.used == 1
 
     async def test_uses_existing_citation_ref_mapper(self, logger):
         """When citation_ref_mapper is already in state, no new one is created."""
