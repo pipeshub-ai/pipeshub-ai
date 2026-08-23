@@ -795,6 +795,12 @@
       "actions": {
         "viewProfile": "Ver perfil",
         "changeRole": "Cambiar rol",
+        "changeRoleConfirmTitle": "¿Cambiar rol?",
+        "changeRoleConfirmMessage": "¿Está seguro de que desea cambiar a {{name}} de {{currentRole}} a {{newRole}}?",
+        "changeRoleConfirmButton": "Cambiar rol",
+        "changeRoleSuccess": "Rol actualizado",
+        "changeRoleSuccessDescription": "{{name}} ahora es {{role}}",
+        "changeRoleError": "Error al cambiar el rol",
         "removeFromWorkspace": "Eliminar del espacio de trabajo",
         "removeUserTitle": "¿Eliminar usuario?",
         "removeUserMessage": "¿Está seguro de que desea eliminar a {{email}} del espacio de trabajo {{workspace}}?",
@@ -888,6 +894,9 @@
     "groups": {
       "title": "Grupos",
       "subtitle": "Crea y administra grupos para controlar el acceso y los permisos",
+      "enterpriseTitle": "Los permisos de grupo están disponibles en la Enterprise Edition",
+      "enterpriseMessage": "Actualice a la Enterprise Edition para usar permisos de grupo.",
+      "enterpriseContact": "Contacto",
       "createGroup": "Crear grupo",
       "searchPlaceholder": "Buscar...",
       "emptyTitle": "Aún no has creado ningún grupo",

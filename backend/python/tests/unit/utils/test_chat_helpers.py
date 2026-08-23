@@ -2192,6 +2192,28 @@ class TestCreateBlockFromMetadata:
         assert block["format"] == "txt"
         assert "data" in block
 
+    def test_image_block_wraps_data_as_dict_without_uri(self):
+        """Image points never carry the raw base64 URI in page_content (only a
+        text description or empty string), so there is no URI to recover here.
+        ``data`` must still be a dict (not a bare string) so downstream image
+        handling in _process_flattened_results can safely call .get("uri")
+        instead of raising AttributeError on a str."""
+        meta = {"blockType": "image", "blockNum": [1]}
+        block = create_block_from_metadata(meta, "A network diagram")
+
+        assert block["type"] == "image"
+        assert isinstance(block["data"], dict)
+        assert block["data"].get("uri") is None
+        assert block["data"].get("description") == "A network diagram"
+
+    def test_image_block_with_docx_extension_still_wraps_as_dict(self):
+        """The docx-specific page_content branch must not override image handling."""
+        meta = {"blockType": "image", "blockNum": [0], "extension": "docx"}
+        block = create_block_from_metadata(meta, "")
+
+        assert isinstance(block["data"], dict)
+        assert block["data"].get("uri") is None
+
 
 # ===================================================================
 # get_record (async)
@@ -6605,3 +6627,77 @@ class TestRecordIdShortenerShortenIfKnown:
         s.shorten_if_known("rec-unknown")
         # Counter should still be 0 — no label minted
         assert s.get_or_create_short_id("rec-first") == "R1"
+
+
+class TestRenderBlocksWithImagesBudgetAccounting:
+    """Regression: an image the caller can deliver neither way (a tool result
+    with no `collected_images` sink joins text only) still consumed a slot of
+    the shared conversation-wide ImageBudget, starving a later image that
+    could have been delivered."""
+
+    _PNG = (
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+        "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+
+    def _image_item(self) -> dict:
+        return {
+            "block_index": 0,
+            "block_type": BlockType.IMAGE.value,
+            "content": self._PNG,
+            "citation_ref": "ref1",
+            "virtual_record_id": "vr-1",
+        }
+
+    def test_undeliverable_image_does_not_spend_budget(self):
+        from app.utils.chat_helpers import ImageBudget, _render_blocks_with_images
+
+        budget = ImageBudget(max_images=1)
+        content = _render_blocks_with_images(
+            [self._image_item()], True, budget,
+            collected_images=None, allow_inline_images=False,
+        )
+
+        assert budget.used == 0
+        assert all(item["type"] == "text" for item in content)
+        assert any("ref1" in item["text"] for item in content)
+
+    def test_sink_delivery_spends_budget_and_collects(self):
+        from app.utils.chat_helpers import ImageBudget, _render_blocks_with_images
+
+        budget = ImageBudget(max_images=1)
+        collected: list[dict[str, Any]] = []
+        content = _render_blocks_with_images(
+            [self._image_item()], True, budget,
+            collected_images=collected, allow_inline_images=False,
+        )
+
+        assert budget.used == 1
+        assert len(collected) == 1
+        assert collected[0]["image_url"]["url"] == self._PNG
+        assert all(item["type"] == "text" for item in content)
+
+    def test_inline_delivery_spends_budget_and_embeds(self):
+        from app.utils.chat_helpers import ImageBudget, _render_blocks_with_images
+
+        budget = ImageBudget(max_images=1)
+        content = _render_blocks_with_images(
+            [self._image_item()], True, budget,
+            collected_images=None, allow_inline_images=True,
+        )
+
+        assert budget.used == 1
+        assert any(item["type"] == "image_url" for item in content)
+
+    def test_exhausted_budget_says_so(self):
+        from app.utils.chat_helpers import ImageBudget, _render_blocks_with_images
+
+        budget = ImageBudget(max_images=1)
+        budget.try_consume(1)
+        content = _render_blocks_with_images(
+            [self._image_item()], True, budget,
+            collected_images=[], allow_inline_images=True,
+        )
+
+        assert budget.used == 1
+        assert any("conversation image limit" in item["text"] for item in content)

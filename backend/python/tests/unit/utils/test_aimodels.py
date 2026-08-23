@@ -641,6 +641,47 @@ class TestGetEmbeddingModel:
         mock_cls.assert_called_once()
         assert result is mock_cls.return_value
 
+    @patch("langchain_openai.embeddings.OpenAIEmbeddings")
+    def test_openai_compatible_router_proxying_gemini_disables_ctx_length_check(self, mock_cls):
+        """Regression: a router/gateway (e.g. Requesty) configured as an
+        OpenAI-compatible entry that forwards to a Gemini embedding model
+        must still disable `check_embedding_ctx_length` even though its
+        base_url is the router's own host, not Google's -- otherwise
+        langchain tiktoken-tokenizes the input into `list[list[int]]`,
+        which such routers reject with "input: unsupported: only string,
+        array of strings and array of objects are supported"."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("vertex/google/gemini-embedding-2-preview")
+        config["configuration"]["endpoint"] = "https://router.eu.requesty.ai/v1"
+        get_embedding_model(EmbeddingProvider.OPENAI_COMPATIBLE.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["check_embedding_ctx_length"] is False
+
+    @patch("langchain_openai.embeddings.OpenAIEmbeddings")
+    def test_openai_compatible_generic_model_on_router_still_disables_ctx_length_check(
+        self, mock_cls
+    ):
+        """The model name does not rescue a router host. tiktoken-encoded
+        `input` is accepted only by api.openai.com (see
+        `_TOKEN_ARRAY_EMBEDDING_HOSTS`); Requesty rejects it with a 400 no
+        matter which upstream model it forwards to."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("openai/text-embedding-3-large")
+        config["configuration"]["endpoint"] = "https://router.eu.requesty.ai/v1"
+        get_embedding_model(EmbeddingProvider.OPENAI_COMPATIBLE.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["check_embedding_ctx_length"] is False
+
+    @patch("langchain_openai.embeddings.OpenAIEmbeddings")
+    def test_openai_compatible_direct_openai_endpoint_keeps_ctx_length_check(self, mock_cls):
+        """api.openai.com is the one host that does accept token arrays."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("text-embedding-3-large")
+        config["configuration"]["endpoint"] = "https://api.openai.com/v1"
+        get_embedding_model(EmbeddingProvider.OPENAI_COMPATIBLE.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["check_embedding_ctx_length"] is True
+
     @patch("app.utils.custom_embeddings.TogetherEmbeddings")
     def test_together(self, mock_cls):
         mock_cls.return_value = MagicMock()
@@ -679,6 +720,60 @@ class TestGetEmbeddingModel:
         config["isDefault"] = False
         with pytest.raises(ValueError, match="not found"):
             get_embedding_model(EmbeddingProvider.OPENAI.value, config, model_name="model-c")
+
+
+# Regression: GoogleGenerativeAIEmbeddings.embed_documents must return one
+# vector per input text (not a single aggregated vector for the whole batch).
+# https://github.com/langchain-ai/langchain/issues/37728 — `embed_documents`
+# returned len(texts) == 1 regardless of batch size because the SDK's content
+# transformer merged a bare `list[str]` into a single multi-part `Content`.
+# Fixed in `google-genai>=1.72.0` / `t_contents_for_embed` (each string becomes
+# its own `Content`) and shipped in `langchain-google-genai==4.3.2` (pinned in
+# pyproject.toml). This test exercises the real embedding class (not the
+# factory) with a stubbed `embed_content` call so a dependency downgrade or
+# SDK regression is caught.
+class TestGeminiEmbedDocumentsBatchCountRegression:
+    """Guards against the Gemini SDK collapsing N texts into 1 embedding."""
+
+    def test_embed_documents_returns_one_vector_per_text(self) -> None:
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
+        texts = ["hello world", "foo bar", "lorem ipsum"]
+
+        embeddings = GoogleGenerativeAIEmbeddings(
+            model="models/gemini-embedding-001",
+            google_api_key="fake-api-key",
+        )
+
+        fake_embeddings = [MagicMock(values=[float(i)] * 8) for i in range(len(texts))]
+        fake_result = MagicMock(embeddings=fake_embeddings)
+        embeddings.client = MagicMock()
+        embeddings.client.models.embed_content.return_value = fake_result
+
+        result = embeddings.embed_documents(texts)
+
+        assert len(result) == len(texts), (
+            f"Expected {len(texts)} embeddings (one per text), got {len(result)}. "
+            "This indicates the Gemini batch-embedding bug has regressed — "
+            "check google-genai / langchain-google-genai pinned versions."
+        )
+        # `langchain-google-genai` 4.3.2 sends one Content per text (each as its
+        # own `{"parts": [{"text": ...}]}` dict) rather than a bare list of
+        # strings — the shape that used to get merged into a single multi-part
+        # Content. Extract the text back out regardless of the exact dict/str
+        # shape, since that's an internal-library detail this test shouldn't pin.
+        call_kwargs = embeddings.client.models.embed_content.call_args.kwargs
+        contents = call_kwargs["contents"]
+        assert len(contents) == len(texts)
+
+        def _content_text(content: object) -> str:
+            if isinstance(content, str):
+                return content
+            if isinstance(content, dict):
+                return content["parts"][0]["text"]
+            raise AssertionError(f"Unexpected content shape: {content!r}")
+
+        assert [_content_text(c) for c in contents] == texts
 
 
 # ---------------------------------------------------------------------------

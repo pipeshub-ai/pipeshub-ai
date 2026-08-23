@@ -31,8 +31,10 @@ def extract_text(message: Message) -> str:
     image parts. Shared by shapers that need to summarize or preview a
     message rather than count its tokens."""
     match message:
-        case SystemMessage() | ToolMessage():
+        case SystemMessage():
             return message.content or ""
+        case ToolMessage():
+            return message.text
         case UserMessage():
             if isinstance(message.content, str):
                 return message.content

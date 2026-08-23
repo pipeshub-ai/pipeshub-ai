@@ -10,12 +10,15 @@ import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 from app.agent_loop_lib.core.exceptions import TransportError
-from app.agent_loop_lib.core.messages import UserMessage
+from app.agent_loop_lib.core.messages import ImagePart, ImageSource, TextPart, ToolMessage, UserMessage
 from app.agent_loop_lib.core.responses import StopReason
 from app.agent_loop_lib.core.streaming import StreamCompleteEvent, TextDeltaEvent
 from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agents.agent_loop import langchain_transport as transport_module
-from app.agents.agent_loop.langchain_transport import LangChainTransport
+from app.agents.agent_loop.langchain_transport import (
+    LangChainTransport,
+    _supports_multipart_tool_result,
+)
 from app.utils.llm_api_mode_store import REASONING_MANDATORY_FALLBACK_EFFORT, LLMApiMode
 
 if TYPE_CHECKING:
@@ -886,6 +889,98 @@ class TestReasoningMandatoryFallbackStream:
 
         assert transport._llm is model
         assert store.recorded == []
+
+
+class TestSupportsMultipartToolResult:
+    """`_supports_multipart_tool_result` detects Ollama by walking the
+    model's MRO for a class named `ChatOllama` so `LangChainTransport`
+    knows to route multipart `ToolMessage` content through the text-only
+    fallback instead of sending it straight to a provider that rejects it
+    (Ollama's `/api/chat` only accepts `content: str` for `role: "tool"`)."""
+
+    def test_ollama_model_class_name_returns_false(self) -> None:
+        class ChatOllama(_FakeModel):
+            pass
+
+        assert _supports_multipart_tool_result(ChatOllama()) is False
+
+    def test_non_ollama_model_returns_true(self) -> None:
+        assert _supports_multipart_tool_result(_FakeModel()) is True
+
+    def test_ollama_subclass_with_different_name_still_returns_false(self) -> None:
+        """A wrapper/subclass of `ChatOllama` under a different class name
+        must still be detected — a bare `type(x).__name__ != "ChatOllama"`
+        compare would miss this and incorrectly report multipart support,
+        silently dropping images sent to a still-text-only provider."""
+        class ChatOllama(_FakeModel):
+            pass
+
+        class CustomOllamaWrapper(ChatOllama):
+            pass
+
+        assert _supports_multipart_tool_result(CustomOllamaWrapper()) is False
+
+    def test_transport_computes_flag_once_at_construction(self) -> None:
+        class ChatOllama(_FakeModel):
+            pass
+
+        ollama_transport = LangChainTransport(ChatOllama())
+        assert ollama_transport._supports_multipart_tool_result is False
+
+        other_transport = LangChainTransport(_FakeModel())
+        assert other_transport._supports_multipart_tool_result is True
+
+    async def test_complete_strips_images_from_tool_message_for_ollama(self) -> None:
+        """End-to-end: a multipart `ToolMessage` sent through `complete()`
+        on an Ollama-shaped transport must reach the underlying model as
+        plain text — never a list-of-blocks `content` the provider would
+        reject."""
+        class ChatOllama(_FakeModel):
+            def __init__(self, *a, **kw) -> None:
+                super().__init__(*a, **kw)
+                self.received_messages: list = []
+
+            async def ainvoke(self, messages: list, config: Any = None) -> AIMessage:
+                self.received_messages = messages
+                return await super().ainvoke(messages, config)
+
+        model = ChatOllama(AIMessage(content="done"))
+        transport = LangChainTransport(model)
+
+        tool_msg = ToolMessage(
+            content=[
+                TextPart(text="[ref1] (image)"),
+                ImagePart(source=ImageSource(type="base64", media_type="image/png", data="abc")),
+            ],
+            tool_call_id="tc1",
+        )
+        await transport.complete([UserMessage(content="hi"), tool_msg])
+
+        tool_lc_messages = [m for m in model.received_messages if type(m).__name__ == "ToolMessage"]
+        assert len(tool_lc_messages) == 1
+        assert isinstance(tool_lc_messages[0].content, str)
+
+    async def test_complete_keeps_multipart_content_for_non_ollama(self) -> None:
+        class ChatCapture(_FakeModel):
+            def __init__(self, *a, **kw) -> None:
+                super().__init__(*a, **kw)
+                self.received_messages: list = []
+
+            async def ainvoke(self, messages: list, config: Any = None) -> AIMessage:
+                self.received_messages = messages
+                return await super().ainvoke(messages, config)
+
+        model = ChatCapture(AIMessage(content="done"))
+        transport = LangChainTransport(model)
+
+        tool_msg = ToolMessage(
+            content=[TextPart(text="[ref1] (image)")],
+            tool_call_id="tc1",
+        )
+        await transport.complete([UserMessage(content="hi"), tool_msg])
+
+        tool_lc_messages = [m for m in model.received_messages if type(m).__name__ == "ToolMessage"]
+        assert isinstance(tool_lc_messages[0].content, list)
 class TestBindToolsCaching:
     """Binding re-derives a JSON schema per tool through pydantic — 5.5% of
     query-service CPU under load — for output that is identical whenever the

@@ -66,6 +66,7 @@ def _make_context(**overrides: Any) -> SimpleNamespace:
         "graph_provider": AsyncMock(),
         "full_records_fetched": set(),
         "tool_state": {},
+        "is_multimodal_llm": False,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -293,3 +294,134 @@ class TestExecuteFetchRecord:
 class TestFetchRecordToolName:
     def test_constant_value(self) -> None:
         assert FETCH_RECORD_TOOL_NAME == "knowledgegraph__fetch_record"
+
+
+_MIN_PNG_DATA_URI = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+
+def _image_record() -> dict[str, Any]:
+    from app.models.blocks import BlockType
+
+    return {
+        "id": "rec-1",
+        "virtual_record_id": "vr-1",
+        "frontend_url": "https://a.com",
+        "context_metadata": "ctx",
+        "block_containers": {
+            "blocks": [
+                {
+                    "index": 0,
+                    "type": BlockType.IMAGE.value,
+                    "parent_index": None,
+                    "data": {"uri": _MIN_PNG_DATA_URI},
+                },
+            ],
+            "block_groups": [],
+        },
+    }
+
+
+def _fake_tool_returning(records: list[dict[str, Any]]) -> MagicMock:
+    tool = MagicMock()
+    tool.coroutine = AsyncMock(
+        return_value={"ok": True, "records": records, "not_available_ids": []}
+    )
+    return tool
+
+
+class TestExecuteFetchRecordImageDelivery:
+    """Regression: `record_to_message_content` was called without
+    `is_multimodal_llm`, so a record whose only block is an IMAGE rendered to
+    an empty string and the image never reached the model."""
+
+    @pytest.mark.asyncio
+    async def test_multimodal_returns_multipart_with_image_part(self) -> None:
+        from app.agent_loop_lib.core.messages import ImagePart, TextPart
+        from app.utils.chat_helpers import CitationRefMapper
+
+        ctx = _make_context(is_multimodal_llm=True)
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=_fake_tool_returning([_image_record()]),
+        ):
+            output, _ = await execute_fetch_record(
+                context=ctx,
+                virtual_records={"vr-1": _image_record()},
+                citation_ref_mapper=CitationRefMapper(),
+                record_ids=["rec-1"],
+            )
+
+        assert output.success is True
+        assert isinstance(output.data, list)
+        images = [p for p in output.data if isinstance(p, ImagePart)]
+        assert len(images) == 1
+        from app.agent_loop_lib.core.messages import image_data_url
+
+        assert images[0].source.type == "base64"
+        assert image_data_url(images[0].source) == _MIN_PNG_DATA_URI
+        assert any(isinstance(p, TextPart) for p in output.data)
+        # Native multipart support is the default, so no fallback stash.
+        assert "pending_tool_images" not in ctx.tool_state
+
+    @pytest.mark.asyncio
+    async def test_non_multimodal_returns_plain_text(self) -> None:
+        from app.utils.chat_helpers import CitationRefMapper
+
+        ctx = _make_context(is_multimodal_llm=False)
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=_fake_tool_returning([_image_record()]),
+        ):
+            output, _ = await execute_fetch_record(
+                context=ctx,
+                virtual_records={"vr-1": _image_record()},
+                citation_ref_mapper=CitationRefMapper(),
+                record_ids=["rec-1"],
+            )
+
+        assert isinstance(output.data, str)
+
+    @pytest.mark.asyncio
+    async def test_without_native_multipart_support_stashes_fallback(self) -> None:
+        from app.utils.chat_helpers import CitationRefMapper
+
+        ctx = _make_context(is_multimodal_llm=True)
+        ctx.tool_state["supports_multipart_tool_result"] = False
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=_fake_tool_returning([_image_record()]),
+        ):
+            output, _ = await execute_fetch_record(
+                context=ctx,
+                virtual_records={"vr-1": _image_record()},
+                citation_ref_mapper=CitationRefMapper(),
+                record_ids=["rec-1"],
+            )
+
+        assert isinstance(output.data, list)
+        assert len(ctx.tool_state["pending_tool_images"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_shared_image_budget_is_debited(self) -> None:
+        """The fetch must draw on the same conversation-wide budget as
+        retrieval/attachments, not a private one."""
+        from app.utils.chat_helpers import CitationRefMapper, ImageBudget
+
+        budget = ImageBudget(max_images=1)
+        ctx = _make_context(is_multimodal_llm=True)
+        ctx.tool_state["image_budget"] = budget
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=_fake_tool_returning([_image_record()]),
+        ):
+            await execute_fetch_record(
+                context=ctx,
+                virtual_records={"vr-1": _image_record()},
+                citation_ref_mapper=CitationRefMapper(),
+                record_ids=["rec-1"],
+            )
+
+        assert budget.used == 1

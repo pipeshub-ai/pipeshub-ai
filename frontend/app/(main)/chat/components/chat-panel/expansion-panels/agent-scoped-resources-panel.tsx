@@ -18,7 +18,11 @@ import { useThemeAppearance } from '@/app/components/theme-provider';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { useChatStore } from '@/chat/store';
-import { useFeatureFlagsStore, selectMcpEnabled } from '@/lib/store/feature-flags-store';
+import {
+  useFeatureFlagsStore,
+  selectMcpEnabled,
+  selectActionsEnabled,
+} from '@/lib/store/feature-flags-store';
 import { CollectionRow } from './connectors-collections/collection-row';
 
 type ExpansionViewMode = 'inline' | 'overlay';
@@ -266,6 +270,7 @@ export function AgentScopedResourcesPanel({
   const [search, setSearch] = useState('');
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
+  const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
 
   const connectors = useChatStore((s) => s.agentChatConnectors);
   const collectionRows = useChatStore((s) => s.agentKnowledgeCollectionRows);
@@ -434,10 +439,16 @@ export function AgentScopedResourcesPanel({
     () => (!internalSearchEnabled ? ['connectors', 'collections'] : []),
     [internalSearchEnabled]
   );
-  const hiddenTabs = useMemo<TabValue[]>(() => (mcpEnabled ? [] : ['mcp']), [mcpEnabled]);
+  const hiddenTabs = useMemo<TabValue[]>(
+    () => [...(mcpEnabled ? [] : (['mcp'] as TabValue[])), ...(actionsEnabled ? [] : (['actions'] as TabValue[]))],
+    [mcpEnabled, actionsEnabled]
+  );
 
   useEffect(() => {
-    if (disabledTabs.includes(tab) || hiddenTabs.includes(tab)) setTab('actions');
+    if (disabledTabs.includes(tab) || hiddenTabs.includes(tab)) {
+      const fallback = TAB_VALUES.find((v) => !disabledTabs.includes(v) && !hiddenTabs.includes(v));
+      if (fallback) setTab(fallback);
+    }
   }, [disabledTabs, hiddenTabs, tab]);
 
   const filteredConnectors = useMemo(() => {

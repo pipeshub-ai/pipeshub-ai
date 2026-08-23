@@ -33,6 +33,11 @@ from app.agents.agent_loop.loops.plan_execute import PLANNING_TOOL_NAMES, PlanCr
 from tests.unit.agents.adapter.conftest import FakeChatModel, make_context
 
 
+def _pre_model_qualnames(hooks) -> list[str]:
+    pipeline = hooks.on(HookEvent.PRE_MODEL)
+    return [mw.__qualname__ for _matcher, mw in pipeline._stack]
+
+
 @pytest.fixture(autouse=True)
 def _skills_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """These tests assert factory/agent SHAPE only. The skills subsystem
@@ -440,3 +445,68 @@ class TestCreate:
         agent, _runtime, _goal, _clarifying = await factory.create(context, context.llm, "auto", query="hello")
 
         assert isinstance(agent.spec.loop, ReActLoop)
+
+
+class TestRetrievedImageInjectionHookWiring:
+    """`shape_retrieved_image_injection` (the Ollama PRE_MODEL fallback for
+    images stripped out of multipart `ToolMessage` content) must be
+    registered ONLY for chat models that don't support multipart tool
+    results — registering it unconditionally would double-deliver images
+    to providers (OpenAI/Anthropic) that already receive them natively."""
+
+    def test_registered_when_model_lacks_multipart_tool_result_support(self) -> None:
+        context = make_context(llm=FakeChatModel())
+        hooks = PipesHubAgentFactory._build_hooks(context, supports_multipart_tool_result=False)
+        assert any(
+            "shape_retrieved_image_injection" in name for name in _pre_model_qualnames(hooks)
+        )
+        assert context.tool_state["supports_multipart_tool_result"] is False
+
+    def test_not_registered_when_model_supports_multipart_tool_result(self) -> None:
+        context = make_context(llm=FakeChatModel())
+        hooks = PipesHubAgentFactory._build_hooks(context, supports_multipart_tool_result=True)
+        assert not any(
+            "shape_retrieved_image_injection" in name for name in _pre_model_qualnames(hooks)
+        )
+        # retrieval.py/citations.py read this flag to skip stashing into
+        # `pending_tool_images` when no fallback hook exists to consume it.
+        assert context.tool_state["supports_multipart_tool_result"] is True
+
+    def test_defaults_to_supported_when_flag_omitted(self) -> None:
+        """Backward-compat default: callers that don't pass the new kwarg
+        get today's behavior (no fallback hook, i.e. every existing
+        `_build_hooks` call site outside `create()` is unaffected)."""
+        context = make_context(llm=FakeChatModel())
+        hooks = PipesHubAgentFactory._build_hooks(context)
+        assert not any(
+            "shape_retrieved_image_injection" in name for name in _pre_model_qualnames(hooks)
+        )
+
+    async def test_create_wires_fallback_hook_end_to_end_for_ollama_shaped_model(self) -> None:
+        class ChatOllama(FakeChatModel):
+            pass
+
+        context = make_context(llm=ChatOllama())
+        factory = PipesHubAgentFactory()
+
+        _agent, runtime, _goal, _clarifying = await factory.create(
+            context, context.llm, "quick", query="hello",
+        )
+
+        assert any(
+            "shape_retrieved_image_injection" in name
+            for name in _pre_model_qualnames(runtime.hooks)
+        )
+
+    async def test_create_skips_fallback_hook_for_non_ollama_model(self) -> None:
+        context = make_context(llm=FakeChatModel())
+        factory = PipesHubAgentFactory()
+
+        _agent, runtime, _goal, _clarifying = await factory.create(
+            context, context.llm, "quick", query="hello",
+        )
+
+        assert not any(
+            "shape_retrieved_image_injection" in name
+            for name in _pre_model_qualnames(runtime.hooks)
+        )

@@ -206,7 +206,12 @@ class ToolMessageMeta(BaseModel):
 
 class ToolMessage(BaseModel):
     role: Literal[MessageRole.TOOL] = MessageRole.TOOL
-    content: str = ""
+    # Plain str covers the overwhelming common case (text-only tool
+    # results); list[Part] is for tools that return images alongside text
+    # (e.g. internal-knowledge search/fetch surfacing IMAGE blocks to a
+    # multimodal LLM) — OpenAI and Anthropic both accept image content in
+    # tool results natively; Ollama's transport falls back to `.text` only.
+    content: str | list[Part] = ""
     tool_call_id: str | None = None
     is_error: bool = False
     artifact_meta: ToolMessageMeta | None = None
@@ -214,6 +219,17 @@ class ToolMessage(BaseModel):
     # but NOT included in .content, so consumers like parent_results.py
     # that read raw content see clean tool output.
     step_footer: str = ""
+
+    @property
+    def text(self) -> str:
+        """Concatenated text of every `TextPart` in `content` when
+        multipart, or `content` itself when plain `str` — the accessor
+        every consumer that only cares about text (token counting,
+        `parent_results.py`, context shapers) should use instead of
+        reading `.content` directly."""
+        if isinstance(self.content, str):
+            return self.content
+        return "".join(part.text for part in self.content if isinstance(part, TextPart))
 
 
 Message = Annotated[

@@ -8,6 +8,7 @@ import os
 from collections.abc import AsyncGenerator
 from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 import json
 from uuid import uuid4
@@ -36,6 +37,7 @@ from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.services.base_client import ServiceUnavailableError
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.libreoffice_convert import convert_with_libreoffice
 from app.services.resource_governor import classify
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -141,6 +143,107 @@ class EventProcessor:
         )
 
 
+
+    async def _dispatch_pdf_binary(
+        self,
+        record_name: str,
+        record_id: str,
+        record_version: int,
+        connector: str,
+        org_id: str,
+        pdf_binary: bytes,
+        virtual_record_id: str,
+        event_type: str | None = None,
+        prev_virtual_record_id: str | None = None,
+    ) -> AsyncGenerator[PipelineEvent, None]:
+        """Route PDF bytes to OCR, pdfplumber+OpenCV, or Docling — whichever the
+        existing PDF pipeline would pick for a native PDF. Shared by the native
+        PDF branch and the EPUB branch (EPUB is converted to PDF via LibreOffice
+        before reaching here) so both stay on the identical Docling/pdfplumber
+        selection logic.
+        """
+        self.logger.info("🔍 Checking if PDF needs OCR processing")
+        try:
+            needs_ocr = await self._pdf_needs_ocr(pdf_binary)
+            self.logger.info("📊 OCR requirement: %s", 'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser')
+        except Exception as e:
+            self.logger.warning("⚠️ Error checking OCR need: %s, defaulting to layout parser", str(e))
+            needs_ocr = False
+
+        if needs_ocr:
+            # Skip docling and use OCR handler directly
+            self.logger.info("🤖 PDF needs OCR, skipping layout parser")
+            async for event in self.processor.process_pdf_document_with_ocr(
+                recordName=record_name,
+                recordId=record_id,
+                version=record_version,
+                source=connector,
+                orgId=org_id,
+                pdf_binary=pdf_binary,
+                virtual_record_id=virtual_record_id,
+                event_type=event_type,
+                prev_virtual_record_id=prev_virtual_record_id,
+            ):
+                yield event
+            return
+
+        use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
+        if use_pdfplumber:
+            self.logger.info("📄 Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
+            try:
+                async for event in self.processor.process_pdf_with_pdf_plumber(
+                    recordName=record_name,
+                    recordId=record_id,
+                    pdf_binary=pdf_binary,
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+            except Exception as e:
+                self.logger.warning(f"⚠️ PdfPlumber+OpenCV processing failed, falling back to OCR: {e}")
+                async for event in self.processor.process_pdf_document_with_ocr(
+                    recordName=record_name,
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    pdf_binary=pdf_binary,
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+            return
+
+        # Use docling for PDFs that don't need OCR
+        docling_failed = False
+        async for event in self.processor.process_pdf_with_docling(
+            recordName=record_name,
+            recordId=record_id,
+            pdf_binary=pdf_binary,
+            virtual_record_id=virtual_record_id,
+            event_type=event_type,
+            prev_virtual_record_id=prev_virtual_record_id,
+        ):
+            if event.event == IndexingEvent.DOCLING_FAILED:
+                docling_failed = True
+            else:
+                yield event
+
+        if docling_failed:
+            async for event in self.processor.process_pdf_document_with_ocr(
+                recordName=record_name,
+                recordId=record_id,
+                version=record_version,
+                source=connector,
+                orgId=org_id,
+                pdf_binary=pdf_binary,
+                virtual_record_id=virtual_record_id,
+                event_type=event_type,
+                prev_virtual_record_id=prev_virtual_record_id,
+            ):
+                yield event
 
     def _use_service_pipeline(self) -> bool:
         """Return True when the new HTTP service pipeline should be used."""
@@ -894,88 +997,35 @@ class EventProcessor:
                 return
 
             if extension == ExtensionTypes.PDF.value or mime_type == MimeTypes.PDF.value:
-                # Check if document needs OCR before using docling
+                async for event in self._dispatch_pdf_binary(
+                    record_name=record_name,
+                    record_id=record_id,
+                    record_version=record_version,
+                    connector=connector,
+                    org_id=org_id,
+                    pdf_binary=file_content,
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
 
-                self.logger.info("🔍 Checking if PDF needs OCR processing")
-                try:
-                    needs_ocr = await self._pdf_needs_ocr(file_content)
-                    self.logger.info("📊 OCR requirement: %s", 'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser')
-                except Exception as e:
-                    self.logger.warning("⚠️ Error checking OCR need: %s, defaulting to layout parser", str(e))
-                    needs_ocr = False
-
-                if needs_ocr:
-                    # Skip docling and use OCR handler directly
-                    self.logger.info("🤖 PDF needs OCR, skipping layout parser")
-                    async for event in self.processor.process_pdf_document_with_ocr(
-                        recordName=record_name,
-                        recordId=record_id,
-                        version=record_version,
-                        source=connector,
-                        orgId=org_id,
-                        pdf_binary=file_content,
-                        virtual_record_id=virtual_record_id,
-                        event_type=event_type,
-                        prev_virtual_record_id=prev_virtual_record_id,
-                    ):
-                        yield event
-                else:
-                    use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
-                    if use_pdfplumber:
-                        self.logger.info("📄 Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
-                        try:
-                            async for event in self.processor.process_pdf_with_pdf_plumber(
-                                recordName=record_name,
-                                recordId=record_id,
-                                pdf_binary=file_content,
-                                virtual_record_id=virtual_record_id,
-                                event_type=event_type,
-                                prev_virtual_record_id=prev_virtual_record_id,
-                            ):
-                                yield event
-                        except Exception as e:
-                            self.logger.warning(f"⚠️ PdfPlumber+OpenCV processing failed, falling back to OCR: {e}")
-                            async for event in self.processor.process_pdf_document_with_ocr(
-                                recordName=record_name,
-                                recordId=record_id,
-                                version=record_version,
-                                source=connector,
-                                orgId=org_id,
-                                pdf_binary=file_content,
-                                virtual_record_id=virtual_record_id,
-                                event_type=event_type,
-                                prev_virtual_record_id=prev_virtual_record_id,
-                            ):
-                                yield event
-                    else:
-                    # Use docling for PDFs that don't need OCR
-                        docling_failed = False
-                        async for event in self.processor.process_pdf_with_docling(
-                            recordName=record_name,
-                            recordId=record_id,
-                            pdf_binary=file_content,
-                            virtual_record_id=virtual_record_id,
-                            event_type=event_type,
-                            prev_virtual_record_id=prev_virtual_record_id,
-                        ):
-                            if event.event == IndexingEvent.DOCLING_FAILED:
-                                docling_failed = True
-                            else:
-                                yield event
-
-                        if docling_failed:
-                            async for event in self.processor.process_pdf_document_with_ocr(
-                                recordName=record_name,
-                                recordId=record_id,
-                                version=record_version,
-                                source=connector,
-                                orgId=org_id,
-                                pdf_binary=file_content,
-                                virtual_record_id=virtual_record_id,
-                                event_type=event_type,
-                                prev_virtual_record_id=prev_virtual_record_id,
-                            ):
-                                yield event
+            elif extension == ExtensionTypes.EPUB.value or mime_type == MimeTypes.EPUB.value:
+                self.logger.info("📚 Converting EPUB to PDF via LibreOffice for record: %s", record_name)
+                pdf_binary = await convert_with_libreoffice(file_content, "epub", "pdf")
+                pdf_record_name = f"{Path(record_name).stem}.pdf" if record_name else "converted.pdf"
+                async for event in self._dispatch_pdf_binary(
+                    record_name=pdf_record_name,
+                    record_id=record_id,
+                    record_version=record_version,
+                    connector=connector,
+                    org_id=org_id,
+                    pdf_binary=pdf_binary,
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
 
             elif extension == ExtensionTypes.DOCX.value or mime_type == MimeTypes.DOCX.value:
                 async for event in self.processor.process_docx_document(

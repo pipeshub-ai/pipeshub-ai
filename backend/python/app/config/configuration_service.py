@@ -21,6 +21,9 @@ from app.utils.encryption.encryption_service import EncryptionService
 
 _ = dotenv.load_dotenv()
 
+# Upper bound on how long close() waits for the watch thread to hand over the
+# Pub/Sub state lock before giving up and cancelling anyway.
+_PUBSUB_LOCK_TIMEOUT_SECONDS = 5.0
 
 
 class ConfigurationService:
@@ -57,6 +60,13 @@ class ConfigurationService:
 
         # Redis Pub/Sub subscription task (for Redis store)
         self._pubsub_task: Optional[asyncio.Task] = None
+        self._pubsub_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._stopping = False
+        # Serializes "check _stopping and create _pubsub_task" (in the watch
+        # thread) against "check _pubsub_task and cancel it" (in close()), so
+        # close() can never race ahead to store.close() while the watch thread
+        # is still about to subscribe on it. See close() and start_subscription.
+        self._pubsub_state_lock = threading.Lock()
 
         # etcd prefix watch ID (so we can cancel it on close)
         self._etcd_watch_id: Optional[int] = None
@@ -250,12 +260,16 @@ class ConfigurationService:
 
         def start_subscription() -> None:
             # Wait for client to be ready
-            while getattr(self.store, 'client', None) is None:
+            while not self._stopping and getattr(self.store, 'client', None) is None:
                 time.sleep(1)
+
+            if self._stopping:
+                return
 
             # Create a new event loop for this thread
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+            self._pubsub_loop = loop
 
             try:
                 # Check if migration has been completed by reading directly from Redis
@@ -273,31 +287,41 @@ class ConfigurationService:
                             )
                             if migration_completed:
                                 self.clear_cache()
-                                self.logger.info(
+                                self._log_safe(
                                     "📦 Cache cleared on startup - migration from etcd to Redis was completed"
                                 )
                 except Exception as e:
-                    self.logger.debug("Could not check migration flag: %s", str(e))
+                    self._log_safe("Could not check migration flag: %s" % str(e), level="debug")
 
-                # Subscribe to cache invalidation channel
-                self._pubsub_task = loop.run_until_complete(
-                    self.store.subscribe_cache_invalidation(self._redis_invalidation_callback)
-                )
-                self.logger.debug("👀 Redis Pub/Sub subscription registered for cache invalidation")
+                # Subscribe to cache invalidation channel. Guarded by the same
+                # lock close() uses to check/cancel _pubsub_task, so a
+                # shutdown that starts during the migration-flag check above
+                # is guaranteed to either see the task here and cancel it, or
+                # be observed by the _stopping recheck below — never both
+                # missed, which would let this subscribe a closed client.
+                with self._pubsub_state_lock:
+                    if self._stopping:
+                        return
+                    self._pubsub_task = loop.run_until_complete(
+                        self.store.subscribe_cache_invalidation(self._redis_invalidation_callback)
+                    )
+                self._log_safe("👀 Redis Pub/Sub subscription registered for cache invalidation", level="debug")
 
                 # Clear cache after subscription is active to ensure any values
                 # cached during the startup window are invalidated
                 self.clear_cache()
-                self.logger.debug("📦 Cache cleared after Pub/Sub subscription established")
+                self._log_safe("📦 Cache cleared after Pub/Sub subscription established", level="debug")
 
                 # Keep the loop running to process messages
                 loop.run_until_complete(self._pubsub_task)
             except asyncio.CancelledError:
-                self.logger.debug("Redis Pub/Sub subscription cancelled")
+                self._log_safe("Redis Pub/Sub subscription cancelled", level="debug")
             except Exception as e:
-                self.logger.error("❌ Failed to setup Redis Pub/Sub: %s", str(e))
+                if not self._stopping:
+                    self._log_safe("❌ Failed to setup Redis Pub/Sub: %s" % str(e), level="error")
             finally:
                 loop.close()
+                self._pubsub_loop = None
 
         self.watch_thread = threading.Thread(target=start_subscription, daemon=True)
         self.watch_thread.start()
@@ -311,12 +335,21 @@ class ConfigurationService:
         try:
             if key == "__CLEAR_ALL__":
                 self.clear_cache()
-                self.logger.info("📦 Entire cache cleared via Pub/Sub message")
+                self._log_safe("📦 Entire cache cleared via Pub/Sub message")
             else:
                 self.cache.pop(key, None)
-                self.logger.debug("📦 Cache invalidated for key: %s", key)
+                self._log_safe("📦 Cache invalidated for key: %s" % key, level="debug")
         except Exception as e:
-            self.logger.error("❌ Error in Redis cache invalidation callback: %s", str(e))
+            self._log_safe("❌ Error in Redis cache invalidation callback: %s" % str(e), level="error")
+
+    def _log_safe(self, msg: str, level: str = "info") -> None:
+        """Log a message, suppressing errors from closed file handles during shutdown."""
+        if self._stopping:
+            return
+        try:
+            getattr(self.logger, level)(msg)
+        except (ValueError, OSError):
+            pass
 
     def clear_cache(self) -> None:
         """Clear the entire in-memory LRU cache.
@@ -326,9 +359,9 @@ class ConfigurationService:
         """
         try:
             self.cache.clear()
-            self.logger.info("📦 In-memory configuration cache cleared")
+            self._log_safe("📦 In-memory configuration cache cleared")
         except Exception as e:
-            self.logger.error("❌ Failed to clear cache: %s", str(e))
+            self._log_safe("❌ Failed to clear cache: %s" % str(e), level="error")
 
     async def set_config(self, key: str, value: str | int | float | bool | dict | list) -> bool:
         """Set configuration value with optional encryption"""
@@ -436,6 +469,9 @@ class ConfigurationService:
         """Shut down the configuration service and release resources."""
         if not hasattr(self, 'store') or self.store is None:
             return
+
+        self._stopping = True
+
         try:
             # Cancel the etcd prefix watch if one was registered
             if self._etcd_watch_id is not None:
@@ -447,6 +483,38 @@ class ConfigurationService:
                     self.logger.warning("Failed to cancel etcd prefix watch: %s", str(e))
                 finally:
                     self._etcd_watch_id = None
+
+            # Cancel the Redis Pub/Sub task if running. Acquired off-thread
+            # (via executor) so we don't block this event loop while waiting
+            # on the watch thread's subscribe call; the lock guarantees that
+            # by the time we hold it, the watch thread has either registered
+            # _pubsub_task (so we cancel it below) or has observed _stopping
+            # and will exit without ever calling the store again.
+            # Bounded: a watch thread stuck inside subscribe_cache_invalidation
+            # holds this lock indefinitely, and shutdown must not hang on it.
+            # Cancelling without the lock risks racing a subscribe that is
+            # about to start, which the _stopping recheck already covers.
+            acquired = await asyncio.get_running_loop().run_in_executor(
+                None, self._pubsub_state_lock.acquire, True, _PUBSUB_LOCK_TIMEOUT_SECONDS
+            )
+            if not acquired:
+                self.logger.warning(
+                    "Timed out waiting for the Pub/Sub state lock during shutdown; "
+                    "cancelling the subscription task without it"
+                )
+            try:
+                if self._pubsub_task is not None and self._pubsub_loop is not None:
+                    try:
+                        self._pubsub_loop.call_soon_threadsafe(self._pubsub_task.cancel)
+                    except RuntimeError:
+                        pass
+            finally:
+                if acquired:
+                    self._pubsub_state_lock.release()
+
+            # Wait for the watch thread to finish
+            if hasattr(self, 'watch_thread') and self.watch_thread.is_alive():
+                self.watch_thread.join(timeout=2.0)
 
             await self.store.close()
             self.logger.info("✅ ConfigurationService closed successfully")
@@ -460,9 +528,9 @@ class ConfigurationService:
         """
         try:
             if not hasattr(event, 'events'):
-                self.logger.warning(
-                    "⚠️ etcd watch received non-event object (%s), skipping",
-                    type(event).__name__,
+                self._log_safe(
+                    "⚠️ etcd watch received non-event object (%s), skipping" % type(event).__name__,
+                    level="warning",
                 )
                 return
 
@@ -470,11 +538,11 @@ class ConfigurationService:
                 key = evt.key.decode()
                 if key == "__CLEAR_ALL__":
                     self.clear_cache()
-                    self.logger.info("📦 Entire cache cleared via etcd watch")
+                    self._log_safe("📦 Entire cache cleared via etcd watch")
                 else:
                     self.cache.pop(key, None)
         except Exception as e:
-            self.logger.error("❌ Error in etcd watch callback: %s", str(e))
+            self._log_safe("❌ Error in etcd watch callback: %s" % str(e), level="error")
 
     async def get_redis_config(self) -> RedisConfig:
         """Get typed Redis connection configuration."""

@@ -2,6 +2,7 @@
 
 from concurrent.futures.process import BrokenProcessPool
 from io import BytesIO
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -83,6 +84,52 @@ def test_worker_render_page_from_bytes_with_reportlab_pdf():
     arr, scale = rasterizer._worker_render_page_from_bytes(buf.getvalue(), 1, 72)
     assert arr.shape[2] == 3
     assert scale == 1.0
+
+
+def test_effective_resolution_leaves_standard_pages_untouched():
+    for width, height in ((595.0, 842.0), (612.0, 792.0), (1191.0, 1684.0)):
+        page = SimpleNamespace(width=width, height=height)
+        assert rasterizer._effective_resolution(page, 150) == 150
+
+
+def test_effective_resolution_clamps_large_format_sheet():
+    page = SimpleNamespace(width=3543.31, height=2551.18)
+
+    effective = rasterizer._effective_resolution(page, 150)
+
+    assert effective < 150
+    pixels = (page.width * effective / 72.0) * (page.height * effective / 72.0)
+    assert pixels <= rasterizer.MAX_RASTER_PIXELS
+
+
+def test_effective_resolution_tolerates_unusable_page_dimensions():
+    assert rasterizer._effective_resolution(SimpleNamespace(), 150) == 150
+    assert rasterizer._effective_resolution(
+        SimpleNamespace(width=0, height=800), 150
+    ) == 150
+
+
+def test_clamped_render_returns_scale_matching_the_raster():
+    """A clamped page must report the scale of the raster it actually produced;
+    returning the requested resolution would misplace every downstream crop."""
+    pytest.importorskip("reportlab")
+    from reportlab.lib.pagesizes import A1
+    from reportlab.pdfgen import canvas
+
+    buf = BytesIO()
+    c = canvas.Canvas(buf, pagesize=A1)
+    c.drawString(72, 700, "large format")
+    c.showPage()
+    c.save()
+
+    arr, scale = rasterizer._worker_render_page_from_bytes(buf.getvalue(), 1, 150)
+
+    height_px, width_px = arr.shape[:2]
+    # Each dimension is rounded up by the renderer, so allow a rounding margin.
+    assert width_px * height_px <= rasterizer.MAX_RASTER_PIXELS * 1.01
+    assert scale < 150 / 72.0
+    assert width_px == pytest.approx(A1[0] * scale, abs=2)
+    assert height_px == pytest.approx(A1[1] * scale, abs=2)
 
 
 def test_render_batch_from_path_sync_uses_process_pool():
