@@ -281,16 +281,12 @@ PipesHub has 50+ enterprise connectors with real-time and scheduled indexing. It
 ### How do I deploy PipesHub?
 
 ```bash
-# Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Environment Variables (refer to env.template)
-# Start production deployment
-docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
+curl -fsSL https://get.pipeshub.com/install | bash
 ```
 
-Note: Use HTTPS for cloud deployments. HTTP may cause frontend security blocks.
+This writes Compose files into `./pipeshub` and starts the interactive installer. Open **http://localhost:3000** when it finishes. Use HTTPS for cloud deployments — HTTP may cause frontend security blocks.
+
+Developers building from source should clone the repository and run `./install.sh` (or `./install.sh --build`) from the repo root. See the [Deployment Guide](#-deployment-guide).
 
 ### What LLM providers does PipesHub support?
 

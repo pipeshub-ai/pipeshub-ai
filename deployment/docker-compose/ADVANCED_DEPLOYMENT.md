@@ -28,10 +28,12 @@ The recommended quickstart downloads and runs the installer without cloning:
 curl -fsSL https://get.pipeshub.com/install | bash
 ```
 
-`get.pipeshub.com/install` is a redirect to the root [`install.sh`](../../install.sh)
-published as a GitHub release asset — no extra hosting infrastructure is required.
-In standalone mode the wrapper downloads `docker-compose.yml` and the in-tree
-installer for the resolved release into `./pipeshub`, then runs the same wizard.
+`get.pipeshub.com/install` is a 302 to
+[`https://raw.githubusercontent.com/pipeshub-ai/pipeshub-ai/main/install.sh`](https://raw.githubusercontent.com/pipeshub-ai/pipeshub-ai/main/install.sh)
+(the root [`install.sh`](../../install.sh) wrapper). No extra hosting is required.
+The wrapper then downloads `docker-compose.yml` and the in-tree installer for the
+latest GitHub **release** (or `PIPESHUB_REF`) into `./pipeshub` and runs the same
+wizard.
 
 Standalone-only overrides:
 
@@ -293,7 +295,15 @@ cd deployment/docker-compose && ./install.sh --stop && ./install.sh
 
 ## Developer / local build
 
-For building from source instead of pulling prebuilt images:
+For building from source instead of pulling prebuilt images, clone the repository and run the installer from the repo root:
+
+```bash
+git clone https://github.com/pipeshub-ai/pipeshub-ai.git
+cd pipeshub-ai
+./install.sh --build
+```
+
+Equivalent Compose command if you prefer to drive the build file yourself:
 
 ```bash
 cd pipeshub-ai/deployment/docker-compose
