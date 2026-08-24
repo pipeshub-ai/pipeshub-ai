@@ -462,6 +462,15 @@ class EventProcessor:
                 )
 
                 record.semantic_metadata = semantic_metadata
+
+                try:
+                    with open("test.txt", "a") as f:
+                        f.write(f"record_id={record_id} record_name={getattr(record, 'record_name', 'N/A')}\n")
+                        f.write(json.dumps(semantic_metadata.model_dump() if semantic_metadata else None, indent=2, default=str))
+                        f.write("\n---\n")
+                except Exception:
+                    self.logger.debug("Failed to write semantic metadata to test.txt", exc_info=True)
+
                 if semantic_metadata and (semantic_metadata.summary or "").strip():
                     await self.sink_orchestrator.vector_store.index_record_summary(
                         record_id,
@@ -933,7 +942,6 @@ class EventProcessor:
                     code_ext = fp_base.rsplit(".", 1)[-1].lower()
                 elif "." in rn_base and rn_base.rsplit(".", 1)[-1]:
                     code_ext = rn_base.rsplit(".", 1)[-1].lower()
-
             file_content = event_data.get("buffer")
 
             # Connector streaming or JSON API responses may deliver already-parsed

@@ -174,6 +174,36 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
             if state_logger:
                 state_logger.warning("Failed to add Slack context tools: %s", e)
 
+    # The code graph is a view over files a repo connector ingested, so the tools
+    # follow that connector — same pair of flags as Slack's context tools above.
+    if state.get("has_code_connector") and state.get("has_code_knowledge"):
+        try:
+            from app.agents.actions.code_graph.code_graph import (
+                CODE_GRAPH_APP_NAME,
+                create_code_graph_tools,
+            )
+            from app.agents.actions.knowledge_graph.ops.scope import derive_scope
+
+            # The agent's own knowledge scope, resolved the same way
+            # `navigate`/`lookup_record` resolve theirs, so the code tools cannot
+            # reach a connector the rest of the agent cannot.
+            for code_tool in create_code_graph_tools(
+                org_id=state.get("org_id", ""),
+                user_id=state.get("user_id", ""),
+                graph_provider=state.get("graph_provider"),
+                blob_store=state.get("blob_store"),
+                allowed_connector_ids=tuple(derive_scope(state).app_ids),
+            ):
+                setattr(code_tool, "_original_name", f"{CODE_GRAPH_APP_NAME}.{code_tool.name}")
+                a, t = split_original_tool_name(code_tool)
+                tools.append(PipesHubStructuredToolAdapter(code_tool, a, t))
+
+            if state_logger:
+                state_logger.debug("Added code graph tools")
+        except Exception as e:
+            if state_logger:
+                state_logger.warning("Failed to add code graph tools: %s", e)
+
     web_search_config = state.get("web_search_config")
     if web_search_config:
         ref_mapper = state.get("citation_ref_mapper")

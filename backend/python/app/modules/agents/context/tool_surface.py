@@ -242,13 +242,54 @@ def _resolve_live_api_apps(
 
     # Source 3: service-specific tool names in the granted set
     # (covers any case not handled by the two sources above)
+    internal = _internal_toolset_keys()
     for name in names_set:
         if "__" in name:
             prefix = name.split("__", 1)[0]
-            if prefix not in ("retrieval", "database_sandbox", "knowledgehub",
-                               "knowledgegraph", "artifacts", "internaltools",
-                               "skills", "calculator", "date_calculator",
-                               "image_generator", "dynamic"):
+            if prefix not in internal:
                 apps.add(prefix)
 
     return tuple(sorted(apps))
+
+
+# Prefixes that are never a live-API connector but cannot be read off the
+# registry (dynamic tools are assembled per request, not registered).
+# `codegraph` is here for exactly that reason: its tools are built by
+# `_build_dynamic_tools`, so the registry has nothing to report and Source 3
+# would otherwise read the prefix as a connector and tell the model the code
+# graph is a live service to query instead of an index over its own records.
+_NON_CONNECTOR_PREFIXES = frozenset({"dynamic", "skills", "codegraph"})
+
+# Used only while the registry is empty. Kept in sync by the test that asserts
+# it equals the registry's own `isInternal` set once discovery has run.
+_FALLBACK_INTERNAL_KEYS = frozenset({
+    "artifactmanager", "calculator", "codingsandbox",
+    "databasesandbox", "datecalculator", "imagegenerator", "internaltools",
+    "knowledgegraph", "knowledgehub", "retrieval",
+})
+
+
+def _internal_toolset_keys() -> frozenset[str]:
+    """Toolset keys that are internal, read from the registry.
+
+    A hardcoded list went stale the moment the registry started normalising
+    names: it said `database_sandbox` / `date_calculator` / `artifacts` while
+    the registry had produced `databasesandbox` / `datecalculator` /
+    `artifactmanager`, so six internal toolsets were being described to the
+    model as live-API connectors. The registry is the fact; ask it.
+
+    An *empty* registry is not the fact, though — it means `auto_discover_
+    toolsets` has not run yet, and answering "nothing is internal" from that
+    would relabel every internal toolset as a live connector.
+    """
+    try:
+        from app.agents.registry.toolset_registry import get_toolset_registry
+
+        registry = get_toolset_registry().get_all_toolsets()
+    except Exception:  # pragma: no cover - registry unavailable in some tests
+        registry = {}
+    if not registry:
+        return _NON_CONNECTOR_PREFIXES | _FALLBACK_INTERNAL_KEYS
+    return _NON_CONNECTOR_PREFIXES | frozenset(
+        name for name, meta in registry.items() if meta.get("isInternal")
+    )

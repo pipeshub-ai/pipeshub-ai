@@ -69,6 +69,7 @@ from app.schema.arango.documents import (
     agent_template_schema,
     app_role_schema,
     app_schema,
+    block_schema,
     code_file_record_schema,
     comment_record_schema,
     deal_record_schema,
@@ -166,7 +167,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.SUBCATEGORIES1.value, None),
     (CollectionNames.SUBCATEGORIES2.value, None),
     (CollectionNames.SUBCATEGORIES3.value, None),
-    (CollectionNames.BLOCKS.value, None),
+    (CollectionNames.BLOCKS.value, block_schema),
     (CollectionNames.RECORD_GROUPS.value, record_group_schema),
     (CollectionNames.AGENT_INSTANCES.value, agent_schema),
     (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
@@ -772,6 +773,42 @@ class ArangoHTTPProvider(IGraphDBProvider):
         # SINGLE: name — get_skill/exists/create's uniqueness-within-org lookup.
         await self.http_client.ensure_persistent_index(
             CollectionNames.AGENT_SKILLS.value,
+            ["orgId", "name"],
+        )
+
+        # ==================== CODE GRAPH BLOCK INDEXES ====================
+
+        # COMPOSITE: the global symbol index the edge-resolution pass scans —
+        # one keyset-paginated sweep per repo builds every resolution lookup.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.BLOCKS.value,
+            ["orgId", "recordGroupId", "name"],
+        )
+
+        # COMPOSITE: resolution target lookup by the repo-unique symbol identity.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.BLOCKS.value,
+            ["orgId", "recordGroupId", "qualifiedName"],
+        )
+
+        # COMPOSITE: per-file reconciliation — replacing one record's blocks.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.BLOCKS.value,
+            ["recordId", "source"],
+        )
+
+        # COMPOSITE: the code-graph agent tools address a symbol by
+        # (file path, symbol id) and do not know its repo, so none of the
+        # recordGroupId-leading indexes above apply to them.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.BLOCKS.value,
+            ["orgId", "filePath", "qualifiedName"],
+        )
+
+        # COMPOSITE: free-text symbol lookup, which is repo-agnostic — the agent
+        # asks by name before it knows which repo the symbol lives in.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.BLOCKS.value,
             ["orgId", "name"],
         )
 
@@ -2936,6 +2973,338 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get nodes by field in failed: {str(e)}")
             return []
 
+    async def get_nodes_by_field_prefix(
+        self,
+        collection: str,
+        field_name: str,
+        prefix: str,
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        filters = filters or {}
+        conditions = [f"STARTS_WITH(doc.{field_name}, @prefix)"]
+        bind_vars: dict[str, Any] = {"prefix": prefix, "limit": limit}
+        for field, value in filters.items():
+            parameter = f"filter_{field}"
+            conditions.append(f"doc.{field} == @{parameter}")
+            bind_vars[parameter] = value
+        query = f"""
+        FOR doc IN {collection}
+            FILTER {" AND ".join(conditions)}
+            LIMIT @limit
+            RETURN doc
+        """
+        try:
+            return await self.http_client.execute_aql(
+                query, bind_vars=bind_vars, txn_id=transaction
+            ) or []
+        except Exception as e:
+            self.logger.error(f"❌ Get nodes by field prefix failed: {str(e)}")
+            return []
+
+    async def search_nodes_by_field_terms(
+        self,
+        collection: str,
+        field_name: str,
+        terms: list[str],
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        if not terms:
+            return []
+        filters = filters or {}
+        conditions = [f"doc.{field_name} != null"]
+        bind_vars: dict[str, Any] = {"terms": terms, "limit": limit}
+        for field, value in filters.items():
+            parameter = f"filter_{field}"
+            conditions.append(f"doc.{field} == @{parameter}")
+            bind_vars[parameter] = value
+        query = f"""
+        FOR doc IN {collection}
+            FILTER {" AND ".join(conditions)}
+            FILTER LENGTH(
+                FOR term IN @terms
+                    FILTER CONTAINS(LOWER(doc.{field_name}), LOWER(term))
+                    LIMIT 1
+                    RETURN 1
+            ) > 0
+            LIMIT @limit
+            RETURN doc
+        """
+        try:
+            return await self.http_client.execute_aql(
+                query, bind_vars=bind_vars, txn_id=transaction
+            ) or []
+        except Exception as e:
+            self.logger.error(f"❌ Search nodes by field terms failed: {str(e)}")
+            return []
+
+    async def delete_edges_touching_nodes(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        edge_collection: str,
+        transaction: str | None = None,
+    ) -> int:
+        if not node_keys:
+            return 0
+        node_ids = [f"{node_collection}/{key}" for key in node_keys]
+        query = f"""
+        FOR edge IN {edge_collection}
+            FILTER edge._from IN @node_ids OR edge._to IN @node_ids
+            REMOVE edge IN {edge_collection} OPTIONS {{ ignoreErrors: true }}
+            RETURN OLD
+        """
+        try:
+            rows = await self.http_client.execute_aql(
+                query, bind_vars={"node_ids": node_ids}, txn_id=transaction
+            ) or []
+            return len(rows)
+        except Exception as e:
+            self.logger.error(f"❌ Delete edges touching nodes failed: {str(e)}")
+            raise
+
+    async def get_edge_rollup_by_file_prefix(
+        self,
+        org_id: str,
+        file_path_prefix: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 100000,
+        transaction: str | None = None,
+        connector_id: str | None = None,
+    ) -> list[dict]:
+        halves = {
+            "outbound": [("_from", "_to", "outbound")],
+            "inbound": [("_to", "_from", "inbound")],
+            "any": [
+                ("_from", "_to", "outbound"),
+                ("_to", "_from", "inbound"),
+            ],
+        }
+        if direction not in halves:
+            raise ValueError("direction must be 'outbound', 'inbound', or 'any'")
+        blocks = CollectionNames.BLOCKS.value
+        edges = CollectionNames.RECORD_RELATIONS.value
+        parts = [
+            f"""(
+                FOR block IN {blocks}
+                    FILTER block.orgId == @orgId
+                       AND STARTS_WITH(block.filePath, @prefix)
+                       AND (@connectorId == null
+                            OR block.connectorId == @connectorId)
+                    FOR edge IN {edges}
+                        FILTER edge.{anchor} == block._id
+                           AND edge.relationshipType IN @relations
+                        LET target = DOCUMENT(edge.{other})
+                        RETURN {{
+                            srcPath: block.filePath,
+                            srcRecord: block.recordId,
+                            rel: edge.relationshipType,
+                            dir: "{label}",
+                            dstPath: target.filePath,
+                            dstRecord: target.filePath != null
+                                ? target.recordId
+                                : target._key
+                        }}
+            )"""
+            for anchor, other, label in halves[direction]
+        ]
+        combined = f"APPEND({', '.join(parts)})" if len(parts) > 1 else parts[0]
+        query = f"""
+        FOR row IN {combined}
+            COLLECT srcPath = row.srcPath, srcRecord = row.srcRecord,
+                    rel = row.rel, dir = row.dir,
+                    dstPath = row.dstPath, dstRecord = row.dstRecord
+            WITH COUNT INTO n
+            LIMIT @limit
+            RETURN {{ srcPath, srcRecord, rel, dir, dstPath, dstRecord, n }}
+        """
+        try:
+            return await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "orgId": org_id,
+                    "prefix": file_path_prefix,
+                    "relations": relationship_types,
+                    "limit": limit,
+                    "connectorId": connector_id,
+                },
+                txn_id=transaction,
+            ) or []
+        except Exception as e:
+            self.logger.error(f"❌ Get edge rollup by file prefix failed: {str(e)}")
+            return []
+
+    async def get_file_paths_for_records(
+        self,
+        org_id: str,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> dict[str, str]:
+        if not record_ids:
+            return {}
+        query = f"""
+        FOR block IN {CollectionNames.BLOCKS.value}
+            FILTER block.orgId == @orgId
+               AND block.recordId IN @record_ids
+               AND block.filePath != null
+            RETURN DISTINCT {{
+                recordId: block.recordId,
+                filePath: block.filePath
+            }}
+        """
+        try:
+            rows = await self.http_client.execute_aql(
+                query,
+                bind_vars={"orgId": org_id, "record_ids": record_ids},
+                txn_id=transaction,
+            ) or []
+            return {
+                row["recordId"]: row["filePath"]
+                for row in rows
+                if row.get("recordId") and row.get("filePath")
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Get file paths for records failed: {str(e)}")
+            return {}
+
+    async def get_edges_by_target_keys(
+        self,
+        target_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        return_field: str = "_from",
+        transaction: str | None = None,
+    ) -> list[str]:
+        if not target_keys:
+            return []
+        filters = filters or {}
+        conditions = ["edge._to IN @target_keys"]
+        bind_vars: dict[str, Any] = {"target_keys": target_keys}
+        for field, value in filters.items():
+            parameter = f"filter_{field}"
+            conditions.append(f"edge.{field} == @{parameter}")
+            bind_vars[parameter] = value
+        query = f"""
+        FOR edge IN {edge_collection}
+            FILTER {" AND ".join(conditions)}
+            RETURN DISTINCT edge.{return_field}
+        """
+        try:
+            rows = await self.http_client.execute_aql(
+                query, bind_vars=bind_vars, txn_id=transaction
+            ) or []
+            return [row for row in rows if isinstance(row, str)]
+        except Exception as e:
+            self.logger.error(f"❌ Get edges by target keys failed: {str(e)}")
+            return []
+
+    async def delete_edges_by_source_keys(
+        self,
+        source_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        if not source_keys:
+            return 0
+        filters = filters or {}
+        conditions = ["edge._from IN @source_keys"]
+        bind_vars: dict[str, Any] = {"source_keys": source_keys}
+        for field, value in filters.items():
+            parameter = f"filter_{field}"
+            conditions.append(f"edge.{field} == @{parameter}")
+            bind_vars[parameter] = value
+        query = f"""
+        FOR edge IN {edge_collection}
+            FILTER {" AND ".join(conditions)}
+            REMOVE edge IN {edge_collection} OPTIONS {{ ignoreErrors: true }}
+            RETURN OLD
+        """
+        try:
+            rows = await self.http_client.execute_aql(
+                query, bind_vars=bind_vars, txn_id=transaction
+            ) or []
+            return len(rows)
+        except Exception as e:
+            self.logger.error(f"❌ Delete edges by source keys failed: {str(e)}")
+            raise
+
+    async def count_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        filters = filters or {}
+        in_filters = in_filters or {}
+        conditions: list[str] = []
+        bind_vars: dict[str, Any] = {}
+        for field, value in filters.items():
+            parameter = f"filter_{field}"
+            conditions.append(f"doc.{field} == @{parameter}")
+            bind_vars[parameter] = value
+        for field, values in in_filters.items():
+            parameter = f"in_filter_{field}"
+            conditions.append(f"doc.{field} IN @{parameter}")
+            bind_vars[parameter] = values
+        filter_clause = f"FILTER {' AND '.join(conditions)}" if conditions else ""
+        query = f"""
+        FOR doc IN {collection}
+            {filter_clause}
+            COLLECT WITH COUNT INTO count
+            RETURN count
+        """
+        try:
+            rows = await self.http_client.execute_aql(
+                query, bind_vars=bind_vars, txn_id=transaction
+            ) or []
+            return int(rows[0]) if rows else 0
+        except Exception as e:
+            self.logger.error(f"❌ Count nodes by filters failed: {str(e)}")
+            return 0
+
+    async def get_nodes_updated_since(
+        self,
+        collection: str,
+        timestamp_field: str,
+        since: int,
+        filters: dict[str, Any] | None = None,
+        return_fields: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        filters = filters or {}
+        conditions = [f"doc.{timestamp_field} > @since"]
+        bind_vars: dict[str, Any] = {"since": since}
+        for field, value in filters.items():
+            parameter = f"filter_{field}"
+            conditions.append(f"doc.{field} == @{parameter}")
+            bind_vars[parameter] = value
+        if return_fields:
+            return_expr = (
+                "{"
+                + ", ".join(f"{field}: doc.{field}" for field in return_fields)
+                + "}"
+            )
+        else:
+            return_expr = "doc"
+        query = f"""
+        FOR doc IN {collection}
+            FILTER {" AND ".join(conditions)}
+            RETURN {return_expr}
+        """
+        try:
+            return await self.http_client.execute_aql(
+                query, bind_vars=bind_vars, txn_id=transaction
+            ) or []
+        except Exception as e:
+            self.logger.error(f"❌ Get nodes updated since failed: {str(e)}")
+            return []
+
     async def remove_nodes_by_field(
         self,
         collection: str,
@@ -3083,6 +3452,138 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return results or []
         except Exception as e:
             self.logger.error(f"❌ Get edges from node with target name failed: {str(e)}")
+            return []
+
+    async def get_neighbors_by_relationship_types(
+        self,
+        node_key: str,
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 25,
+        transaction: str | None = None
+    ) -> list[dict[str, Any]]:
+        """
+        Walk one hop from a node along the given relationship types - FULLY ASYNC.
+
+        See IGraphDBProvider.get_neighbors_by_relationship_types.
+        """
+        if not relationship_types:
+            return []
+        if direction not in ("outbound", "inbound"):
+            raise ValueError(
+                f"direction must be 'outbound' or 'inbound', got {direction!r}"
+            )
+
+        # Interpolated, never bound: AQL cannot bind an attribute name, and the
+        # value is constrained to the two literals checked above.
+        anchor_field, other_field = (
+            ("_from", "_to") if direction == "outbound" else ("_to", "_from")
+        )
+
+        query = f"""
+        FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+            FILTER edge.{anchor_field} == @anchor
+            FILTER edge.relationshipType IN @relationship_types
+            LIMIT @limit
+            RETURN {{
+                collection: PARSE_IDENTIFIER(edge.{other_field}).collection,
+                key: PARSE_IDENTIFIER(edge.{other_field}).key,
+                relationshipType: edge.relationshipType,
+                sourceLineNumber: edge.sourceLineNumber,
+                sourceColumnNumber: edge.sourceColumnNumber,
+                provenance: edge.provenance
+            }}
+        """
+
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "anchor": f"{node_collection}/{node_key}",
+                    "relationship_types": relationship_types,
+                    "limit": limit,
+                },
+                txn_id=transaction
+            )
+            return list(results) if results else []
+        except Exception as e:
+            self.logger.error(f"❌ Get neighbors by relationship types failed: {str(e)}")
+            return []
+
+    async def get_neighbors_for_nodes_by_relationship_types(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 5000,
+        transaction: str | None = None
+    ) -> list[dict[str, Any]]:
+        """
+        Walk one hop from many nodes at once - FULLY ASYNC.
+
+        See IGraphDBProvider.get_neighbors_for_nodes_by_relationship_types.
+        """
+        if not node_keys or not relationship_types:
+            return []
+        if direction not in ("outbound", "inbound", "any"):
+            raise ValueError(
+                f"direction must be 'outbound', 'inbound' or 'any', got {direction!r}"
+            )
+
+        edges = CollectionNames.RECORD_RELATIONS.value
+        # Two separate loops rather than `_from IN @a OR _to IN @a`: each half
+        # then uses the edge collection's own _from / _to index, which a single
+        # OR of two IN clauses does not reliably do.
+        def _half(anchor_field: str, other_field: str, label: str) -> str:
+            return f"""
+            FOR edge IN {edges}
+                FILTER edge.{anchor_field} IN @anchors
+                FILTER edge.relationshipType IN @relationship_types
+                RETURN {{
+                    anchorKey: PARSE_IDENTIFIER(edge.{anchor_field}).key,
+                    collection: PARSE_IDENTIFIER(edge.{other_field}).collection,
+                    key: PARSE_IDENTIFIER(edge.{other_field}).key,
+                    direction: "{label}",
+                    relationshipType: edge.relationshipType,
+                    sourceLineNumber: edge.sourceLineNumber,
+                    sourceColumnNumber: edge.sourceColumnNumber,
+                    provenance: edge.provenance
+                }}
+            """
+
+        outbound = _half("_from", "_to", "outbound")
+        inbound = _half("_to", "_from", "inbound")
+        if direction == "outbound":
+            body = f"LET rows = ({outbound})"
+        elif direction == "inbound":
+            body = f"LET rows = ({inbound})"
+        else:
+            body = f"LET rows = UNION_DISTINCT(({outbound}), ({inbound}))"
+
+        query = f"""
+        {body}
+        FOR row IN rows
+            LIMIT @limit
+            RETURN row
+        """
+
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "anchors": [f"{node_collection}/{k}" for k in node_keys],
+                    "relationship_types": relationship_types,
+                    "limit": limit,
+                },
+                txn_id=transaction
+            )
+            return list(results) if results else []
+        except Exception as e:
+            self.logger.error(
+                f"❌ Get neighbors for nodes by relationship types failed: {str(e)}"
+            )
             return []
 
     async def get_related_nodes(

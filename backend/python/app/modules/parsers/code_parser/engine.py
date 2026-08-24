@@ -1,9 +1,15 @@
-"""Tree-sitter walker: source bytes -> the spans that tile a file.
+"""Tree-sitter walker: source bytes -> the spans that tile a file, and the
+deferred edge facts found inside them.
 
-One generic recursive walk driven by ``LanguageConfig``. Every symbol it emits
+One generic recursive walk driven by ``LanguageConfig``, with small per-language
+hooks where grammars genuinely diverge (imports, class heritage, type
+declarations). Every symbol it emits
 comes out of the tiling pass, which is what makes the byte-exactness guarantee
 structural rather than incidental: a definition found off the tiling path would
 overlap the span that already covers it and double-count those bytes.
+
+The walk emits *names*, never IDs. ID minting needs the file's repo-relative
+path, which this layer does not have; ``code_file_parser`` does it.
 """
 from __future__ import annotations
 
@@ -18,7 +24,12 @@ from app.modules.parsers.code_parser.lang_config import (
     LANGUAGES,
     LanguageConfig,
 )
-from app.modules.parsers.code_parser.models import ParsedFile, ParsedSymbol
+from app.modules.parsers.code_parser.models import (
+    ParsedFile,
+    ParsedSymbol,
+    PendingEdgeFact,
+    Relation,
+)
 
 if TYPE_CHECKING:
     from tree_sitter import Node, Parser
@@ -26,6 +37,57 @@ if TYPE_CHECKING:
 __all__ = ["MAX_FILE_SIZE_BYTES", "decode_source", "parse_code"]
 
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
+
+# Names that would otherwise bind a call to a user symbol of the same name.
+_BUILTIN_GLOBALS: dict[str, frozenset[str]] = {
+    "python": frozenset({
+        "print", "len", "range", "str", "int", "float", "bool", "list", "dict", "set",
+        "tuple", "type", "isinstance", "issubclass", "getattr", "setattr", "hasattr",
+        "super", "open", "sorted", "sum", "min", "max", "abs", "any", "all", "zip",
+        "map", "filter", "enumerate", "repr", "format", "hash", "id", "iter", "next",
+        "bytes", "bytearray", "frozenset", "object", "property", "staticmethod",
+        "classmethod", "callable", "vars", "dir", "round", "divmod", "pow", "input",
+        "Exception", "ValueError", "TypeError", "KeyError", "IndexError", "RuntimeError",
+    }),
+    "javascript": frozenset({
+        "require", "console", "parseInt", "parseFloat", "isNaN", "isFinite", "String",
+        "Number", "Boolean", "Array", "Object", "JSON", "Math", "Date", "RegExp",
+        "Promise", "Symbol", "Map", "Set", "WeakMap", "WeakSet", "Error", "TypeError",
+        "encodeURIComponent", "decodeURIComponent", "setTimeout", "setInterval",
+        "clearTimeout", "clearInterval", "fetch", "alert", "structuredClone", "BigInt",
+    }),
+}
+_BUILTIN_GLOBALS["typescript"] = _BUILTIN_GLOBALS["javascript"]
+_BUILTIN_GLOBALS["tsx"] = _BUILTIN_GLOBALS["javascript"]
+
+# Methods of built-in containers/strings/promises. A member call on one of these
+# can never resolve -- resolution needs a known receiver type, and these
+# receivers are language primitives, not repo symbols -- so recording the fact
+# would only bloat a traversed node.
+_BUILTIN_METHODS: dict[str, frozenset[str]] = {
+    "python": frozenset({
+        "get", "items", "keys", "values", "setdefault", "popitem", "update",
+        "append", "extend", "insert", "remove", "pop", "clear", "copy", "sort",
+        "reverse", "index", "count", "add", "discard", "union", "intersection",
+        "lower", "upper", "title", "strip", "lstrip", "rstrip", "split",
+        "rsplit", "splitlines", "join", "replace", "startswith", "endswith",
+        "format", "encode", "decode", "isdigit", "isalpha", "isnumeric",
+        "read", "readline", "readlines", "write", "close", "seek", "flush",
+        "group", "groups", "groupdict", "span",
+    }),
+    "javascript": frozenset({
+        "push", "pop", "shift", "unshift", "slice", "splice", "concat", "join",
+        "map", "filter", "reduce", "forEach", "find", "findIndex", "some",
+        "every", "includes", "indexOf", "lastIndexOf", "sort", "reverse", "flat",
+        "then", "catch", "finally", "toString", "valueOf", "trim", "split",
+        "replace", "replaceAll", "match", "test", "toLowerCase", "toUpperCase",
+        "padStart", "padEnd", "startsWith", "endsWith", "charAt", "substring",
+        "keys", "values", "entries", "has", "set", "get", "delete", "add",
+        "json", "text", "bind", "call", "apply",
+    }),
+}
+_BUILTIN_METHODS["typescript"] = _BUILTIN_METHODS["javascript"]
+_BUILTIN_METHODS["tsx"] = _BUILTIN_METHODS["javascript"]
 
 _PARSER_CACHE: dict[str, Any] = {}
 _PARSER_LOCK = threading.Lock()
@@ -49,6 +111,11 @@ _KIND_SOURCES = (
     ("type_alias", "type_alias_types"),
     ("method", "method_types"),
 )
+
+# Kinds whose body is statements rather than members. Nothing tiles them: they
+# stay a single block whose body is its text, with any definition inside hung off
+# them as a block of its own.
+_CALLABLE_KINDS = frozenset({"function", "method"})
 
 
 def _get_parser(cfg: LanguageConfig) -> Parser:
@@ -141,6 +208,270 @@ def _body_of(node: Node, cfg: LanguageConfig) -> Node | None:
 
 
 # --------------------------------------------------------------------------
+# Import handlers
+# --------------------------------------------------------------------------
+
+def _imports_python(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
+    line = node.start_point[0] + 1
+    if node.type == "import_statement":
+        for child in node.named_children:
+            if child.type == "aliased_import":
+                target = _field(child, "name")
+                if target is not None:
+                    out.append(PendingEdgeFact(
+                        relation=Relation.IMPORTS_FROM, to_name=_text(target, src),
+                        line=line, from_kind="record", to_kind="record",
+                    ))
+            elif child.type == "dotted_name":
+                out.append(PendingEdgeFact(
+                    relation=Relation.IMPORTS_FROM, to_name=_text(child, src),
+                    line=line, from_kind="record", to_kind="record",
+                ))
+        return
+
+    if node.type in ("import_from_statement", "future_import_statement"):
+        module = _field(node, "module_name")
+        module_name = _text(module, src) if module is not None else ""
+        if module_name:
+            out.append(PendingEdgeFact(
+                relation=Relation.IMPORTS_FROM, to_name=module_name,
+                line=line, from_kind="record", to_kind="record",
+            ))
+        for child in node.named_children:
+            if child is module:
+                continue
+            if child.type == "aliased_import":
+                target = _field(child, "name")
+                if target is not None:
+                    out.append(PendingEdgeFact(
+                        relation=Relation.IMPORTS, to_name=_text(target, src), line=line,
+                        from_kind="record", to_kind="block", qualified_prefix=module_name,
+                    ))
+            elif child.type in ("dotted_name", "identifier"):
+                out.append(PendingEdgeFact(
+                    relation=Relation.IMPORTS, to_name=_text(child, src), line=line,
+                    from_kind="record", to_kind="block", qualified_prefix=module_name,
+                ))
+
+
+def _imports_js(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
+    line = node.start_point[0] + 1
+    source = _field(node, "source")
+    specifier = _text(source, src).strip("'\"") if source is not None else ""
+    if not specifier:
+        return
+    out.append(PendingEdgeFact(
+        relation=Relation.IMPORTS_FROM, to_name=specifier,
+        line=line, from_kind="record", to_kind="record",
+    ))
+    for clause in node.named_children:
+        if clause.type not in ("import_clause", "named_imports"):
+            continue
+        for spec in clause.named_children:
+            if spec.type == "identifier":
+                out.append(PendingEdgeFact(
+                    relation=Relation.IMPORTS, to_name=_text(spec, src), line=line,
+                    from_kind="record", to_kind="block", qualified_prefix=specifier,
+                ))
+            elif spec.type == "named_imports":
+                for item in spec.named_children:
+                    target = _field(item, "name")
+                    if target is not None:
+                        out.append(PendingEdgeFact(
+                            relation=Relation.IMPORTS, to_name=_text(target, src), line=line,
+                            from_kind="record", to_kind="block", qualified_prefix=specifier,
+                        ))
+
+
+def _exports_js(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
+    """`export … from './m'` re-exports; `export function f` exports a local symbol."""
+    line = node.start_point[0] + 1
+    source = _field(node, "source")
+    if source is not None:
+        specifier = _text(source, src).strip("'\"")
+        if specifier:
+            out.append(PendingEdgeFact(
+                relation=Relation.RE_EXPORTS, to_name=specifier,
+                line=line, from_kind="record", to_kind="record",
+            ))
+        return
+    for child in node.named_children:
+        if child.type == "export_clause":
+            for spec in child.named_children:
+                target = _field(spec, "name")
+                if target is not None:
+                    out.append(PendingEdgeFact(
+                        relation=Relation.EXPORTS, to_name=_text(target, src), line=line,
+                        from_kind="record", to_kind="block", restrict_to_file=True,
+                    ))
+
+
+# --------------------------------------------------------------------------
+# Class heritage handlers
+# --------------------------------------------------------------------------
+
+def _heritage_python(node: Node, src: bytes, out: list[PendingEdgeFact], idx: int) -> None:
+    supers = _field(node, "superclasses")
+    if supers is None:
+        return
+    line = node.start_point[0] + 1
+    for child in supers.named_children:
+        if child.type in ("identifier", "attribute"):
+            raw = _text(child, src)
+            name = raw.rsplit(".", 1)[-1]
+            prefix = raw.rsplit(".", 1)[0] if "." in raw else None
+            out.append(PendingEdgeFact(
+                relation=Relation.INHERITS, to_name=name, line=line,
+                from_symbol=idx, qualified_prefix=prefix,
+            ))
+
+
+def _heritage_js(node: Node, src: bytes, out: list[PendingEdgeFact], idx: int) -> None:
+    line = node.start_point[0] + 1
+    for child in node.named_children:
+        if child.type != "class_heritage":
+            continue
+        for item in child.named_children:
+            if item.type in ("identifier", "member_expression", "type_identifier"):
+                raw = _text(item, src)
+                out.append(PendingEdgeFact(
+                    relation=Relation.EXTENDS, to_name=raw.rsplit(".", 1)[-1],
+                    line=line, from_symbol=idx,
+                ))
+
+
+def _heritage_ts(node: Node, src: bytes, out: list[PendingEdgeFact], idx: int) -> None:
+    line = node.start_point[0] + 1
+    for child in node.named_children:
+        if child.type == "extends_type_clause":
+            for item in child.named_children:
+                if item.type in ("type_identifier", "generic_type", "identifier"):
+                    out.append(PendingEdgeFact(
+                        relation=Relation.EXTENDS,
+                        to_name=_text(item, src).split("<")[0].rsplit(".", 1)[-1],
+                        line=line, from_symbol=idx,
+                    ))
+        if child.type != "class_heritage":
+            continue
+        for clause in child.named_children:
+            if clause.type == "extends_clause":
+                for item in clause.named_children:
+                    if item.type in ("identifier", "member_expression", "generic_type", "type_identifier"):
+                        out.append(PendingEdgeFact(
+                            relation=Relation.EXTENDS,
+                            to_name=_text(item, src).split("<")[0].rsplit(".", 1)[-1],
+                            line=line, from_symbol=idx,
+                        ))
+            elif clause.type == "implements_clause":
+                for item in clause.named_children:
+                    if item.type in ("type_identifier", "generic_type", "identifier"):
+                        out.append(PendingEdgeFact(
+                            relation=Relation.IMPLEMENTS,
+                            to_name=_text(item, src).split("<")[0].rsplit(".", 1)[-1],
+                            line=line, from_symbol=idx,
+                        ))
+
+
+_IMPORT_HANDLERS = {"python": _imports_python, "js": _imports_js}
+_HERITAGE_HANDLERS = {"python": _heritage_python, "js": _heritage_js, "ts": _heritage_ts}
+
+
+# --------------------------------------------------------------------------
+# Type tables
+# --------------------------------------------------------------------------
+
+def _collect_type_table_ts(root: Node, src: bytes, table: dict[str, str]) -> None:
+    """Harvest `name: Type` bindings from declarations and constructor params."""
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type in ("variable_declarator", "required_parameter", "optional_parameter"):
+            name_node = _field(node, "name") or next(
+                (c for c in node.named_children if c.type == "identifier"), None
+            )
+            ann = next((c for c in node.named_children if c.type == "type_annotation"), None)
+            if name_node is not None and ann is not None:
+                type_node = next(
+                    (c for c in ann.named_children if c.type in ("type_identifier", "generic_type")), None
+                )
+                if type_node is not None:
+                    table.setdefault(
+                        _text(name_node, src), _text(type_node, src).split("<")[0]
+                    )
+        stack.extend(node.named_children)
+
+
+def _collect_type_table_js(root: Node, src: bytes, table: dict[str, str]) -> None:
+    """JS has no annotations; `const x = new Foo()` is the only reliable binding."""
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "variable_declarator":
+            name_node = _field(node, "name")
+            value = _field(node, "value")
+            if name_node is not None and value is not None and value.type == "new_expression":
+                ctor = _field(value, "constructor")
+                if ctor is not None:
+                    table.setdefault(_text(name_node, src), _text(ctor, src).rsplit(".", 1)[-1])
+        stack.extend(node.named_children)
+
+
+def _collect_type_table_python(root: Node, src: bytes, table: dict[str, str]) -> None:
+    """`self.x = Foo()` and `x: Foo = …` are the two usable bindings."""
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "assignment":
+            left = _field(node, "left")
+            right = _field(node, "right")
+            ann = _field(node, "type")
+            if left is not None and ann is not None:
+                table.setdefault(_text(left, src).split(".")[-1], _text(ann, src).split("[")[0])
+            elif left is not None and right is not None and right.type == "call":
+                fn = _field(right, "function")
+                if fn is not None and fn.type in ("identifier", "attribute"):
+                    called = _text(fn, src).rsplit(".", 1)[-1]
+                    if called[:1].isupper():
+                        table.setdefault(_text(left, src).split(".")[-1], called)
+        stack.extend(node.named_children)
+
+
+_TYPE_TABLE_HANDLERS = {
+    "python": _collect_type_table_python,
+    "js": _collect_type_table_js,
+    "ts": _collect_type_table_ts,
+}
+
+
+# --------------------------------------------------------------------------
+# Calls
+# --------------------------------------------------------------------------
+
+def _callee_info(
+    node: Node, src: bytes, cfg: LanguageConfig,
+) -> tuple[str | None, bool, str | None, str | None]:
+    """Return (name, is_member, receiver, qualified_prefix) for a call node."""
+    target = _field(node, cfg.call_function_field) or _field(node, "constructor")
+    if target is None:
+        return None, False, None, None
+
+    if target.type in ("identifier", "type_identifier"):
+        return _text(target, src), False, None, None
+
+    if target.type in cfg.accessor_types:
+        prop = _field(target, cfg.accessor_property_field)
+        obj = _field(target, cfg.accessor_object_field)
+        if prop is None:
+            return None, False, None, None
+        name = _text(prop, src)
+        receiver_text = _text(obj, src) if obj is not None else None
+        # os.path.join(...) -- the receiver chain is the qualifier, not a variable
+        if receiver_text and ("." in receiver_text):
+            return name, True, receiver_text.rsplit(".", 1)[-1], receiver_text
+        return name, True, receiver_text, receiver_text
+    return None, False, None, None
+
+# --------------------------------------------------------------------------
 # Spans
 # --------------------------------------------------------------------------
 
@@ -162,6 +493,7 @@ class _Span:
     def_kind: str | None = None
     name: str | None = None
     decorators: tuple[str, ...] = ()
+    is_exported: bool = False
 
 
 # Filler kinds that absorb an adjacent run of the same kind.
@@ -196,6 +528,9 @@ class _Walker:
         while start != -1:
             self._line_starts.append(start + 1)
             start = src.find(b"\n", start + 1)
+        self.builtins = _BUILTIN_GLOBALS.get(cfg.name, frozenset())
+        self.import_handler = _IMPORT_HANDLERS.get(cfg.import_handler_name)
+        self.heritage_handler = _HERITAGE_HANDLERS.get(cfg.heritage_handler_name)
 
     # -- symbols --------------------------------------------------------
 
@@ -215,6 +550,11 @@ class _Walker:
     # -- entry ----------------------------------------------------------
 
     def walk(self, root: Node) -> ParsedFile:
+        # Built before the walk so a call can resolve its receiver's type as it
+        # is emitted: a variable is often declared below its first use.
+        handler = _TYPE_TABLE_HANDLERS.get(self.cfg.type_table_handler_name)
+        if handler:
+            handler(root, self.src, self.out.type_table)
         self._scope(root, 0, len(self.src), (), None, container_kind=None)
         return self.out
 
@@ -337,11 +677,13 @@ class _Walker:
                 return _Span(
                     child.start_byte, child.end_byte, "definition", nodes=[child],
                     def_node=inner, name=_name_of(inner, self.src, cfg),
+                    is_exported=True,
                 )
             for candidate in child.named_children:
                 bound = self._as_bound_function(candidate)
                 if bound is not None:
                     bound.start, bound.end, bound.nodes = child.start_byte, child.end_byte, [child]
+                    bound.is_exported = True
                     return bound
             return _Span(child.start_byte, child.end_byte, "statements", nodes=[child])
 
@@ -508,36 +850,121 @@ class _Walker:
             name=span.name,
             start_line=self._line_at(span.start),
             end_line=self._line_at(max(span.start, span.end - 1)),
+            start_byte=span.start,
+            end_byte=span.end,
             parent_chain=chain,
             text=self.src[span.start:span.end].decode("utf-8", errors="replace"),
             decorators=span.decorators,
+            is_exported=span.is_exported,
             parent=parent_idx,
         ))
 
-        if span.kind != "definition" or kind not in cfg.container_kinds:
+        if span.kind != "definition":
+            for node in span.nodes:
+                if node.type in cfg.import_types or node.type in cfg.export_types:
+                    self._run_handler(node, idx)
+                else:
+                    self._walk_facts(node, idx)
             return
+
+        if self.heritage_handler and kind in cfg.method_container_kinds:
+            before = len(self.out.pending)
+            self.heritage_handler(span.def_node, self.src, self.out.pending, idx)
+            for fact in self.out.pending[before:]:
+                fact.byte_offset = span.start
+                fact.from_symbol = idx
+                fact.pinned = True
 
         body = _body_of(span.def_node, cfg)
-        if not self._has_members(body):
+        child_chain = (*chain, span.name) if span.name else chain
+
+        # Only a top-level type is a group, and it is one whether or not it has
+        # members, so an empty class still owns its header. Nested inside anything
+        # it is a block like a method: one span, with its own definitions hung off
+        # it rather than tiling it.
+        if kind in cfg.container_kinds and parent_idx is None:
+            self.out.symbols[idx].is_container = True
+            self._scope(body, span.start, span.end, child_chain, idx, container_kind=kind)
             return
 
-        self.out.symbols[idx].is_container = True
-        child_chain = (*chain, span.name) if span.name else chain
-        self._scope(body, span.start, span.end, child_chain, idx, container_kind=kind)
+        # Everything else stays one block -- its body is its text -- and the
+        # definitions inside it become blocks parented to it. Their bytes appear
+        # twice by design: `outer` is still retrievable whole, `outer.inner` alone.
+        if body is not None and (kind in _CALLABLE_KINDS or kind in cfg.container_kinds):
+            self._emit_nested(body, idx, child_chain,
+                              in_type=kind in cfg.method_container_kinds)
+            return
 
-    def _has_members(self, body: Node | None) -> bool:
-        """A container is only a group when something inside it is a definition.
+        self._walk_facts(span.def_node, idx)
 
-        Field detection has to go through ``_as_field``: a Python class attribute
-        is an ``assignment`` wrapped in an ``expression_statement``, so matching
-        the child's own type would miss every attribute-only class.
+    def _emit_nested(self, body: Node, enclosing: int, chain: tuple[str, ...],
+                     *, in_type: bool) -> None:
+        """Emit definitions nested in an untiled body; collect facts for the rest.
+
+        ``in_type`` says whether *body* belongs to a type, which decides both
+        whether a function in it is a method and whether an assignment in it is a
+        field -- a nested class keeps those, a callable's body has neither.
+
+        Only direct children are considered. A function buried inside an
+        expression -- a callback handed to `map` -- has no name worth addressing,
+        and hoisting it would attribute its calls away from the statement that
+        actually runs them.
         """
-        if body is None:
-            return False
+        cfg = self.cfg
         for child in body.named_children:
-            if self._kind_for(child.type, in_type=True) or self._as_field(child) is not None:
-                return True
-        return False
+            span = self._classify(child, in_container=in_type, in_type=in_type)
+            if span is not None and span.kind == "definition":
+                self._emit(span, chain, enclosing, in_type=in_type)
+                continue
+            if child.type in cfg.import_types or child.type in cfg.export_types:
+                self._run_handler(child, enclosing)
+            else:
+                self._walk_facts(child, enclosing)
+
+    def _run_handler(self, node, idx: int) -> None:
+        cfg = self.cfg
+        before = len(self.out.pending)
+        if node.type in cfg.export_types:
+            _exports_js(node, self.src, self.out.pending)
+        elif self.import_handler:
+            self.import_handler(node, self.src, self.out.pending)
+        for fact in self.out.pending[before:]:
+            fact.byte_offset = node.start_byte
+            fact.from_symbol = idx
+
+    def _walk_facts(self, node: Node, enclosing: int) -> None:
+        """Collect references inside *node*, all owned by *enclosing*.
+
+        Nested definitions are not emitted here. Anything tiling did not reach
+        sits inside a span that already covers its bytes, so emitting it would
+        double-count them; its references belong to the block that holds it.
+        """
+        cfg = self.cfg
+        for child in node.named_children:
+            ntype = child.type
+            if ntype in cfg.import_types or ntype in cfg.export_types:
+                self._run_handler(child, enclosing)
+                continue
+            if ntype in cfg.call_types:
+                self._emit_call(child, enclosing)
+            self._walk_facts(child, enclosing)
+
+    def _emit_call(self, node, enclosing: int) -> None:
+        name, is_member, receiver, qualifier = _callee_info(node, self.src, self.cfg)
+        if not name or name in self.builtins:
+            return
+        self.out.pending.append(PendingEdgeFact(
+            relation=Relation.CALLS,
+            to_name=name,
+            line=self._line_at(node.start_byte),
+            byte_offset=node.start_byte,
+            from_symbol=enclosing,
+            to_kind="block",
+            is_member_call=is_member,
+            receiver=receiver,
+            receiver_type=self.out.type_table.get(receiver) if receiver else None,
+            qualified_prefix=qualifier,
+        ))
 
     def _line_at(self, offset: int) -> int:
         return bisect.bisect_right(self._line_starts, offset)
@@ -561,7 +988,45 @@ def parse_code(source: bytes, language: str) -> ParsedFile:
     # record where parsing degraded so callers can judge the result.
     if tree.root_node.has_error:
         parsed.parse_error_line = _first_error_line(tree.root_node)
+
+    # A member call on a built-in container can never resolve -- resolution
+    # needs a known receiver type and these receivers are language primitives
+    # -- so keeping the fact would only bloat a traversed node.
+    builtin_methods = _BUILTIN_METHODS.get(cfg.name, frozenset())
+    parsed.pending = [
+        fact for fact in parsed.pending
+        if not (
+            fact.is_member_call
+            and not fact.receiver_type
+            and fact.receiver not in ("self", "this")
+            and fact.to_name in builtin_methods
+        )
+    ]
+    _attribute_facts(parsed)
     return parsed
+
+
+def _attribute_facts(parsed: ParsedFile) -> None:
+    """Give each reference to the innermost span that contains it.
+
+    Without this a module-level call has no owning symbol and its edge falls back
+    to the file record, so `analysis.analyze_game(...)` at the top level of a
+    script would be sourced from the file rather than from the statement holding
+    it.
+    """
+    ranked = sorted(
+        range(len(parsed.symbols)),
+        key=lambda i: parsed.symbols[i].end_byte - parsed.symbols[i].start_byte,
+    )
+    for fact in parsed.pending:
+        if fact.pinned:
+            continue
+        for i in ranked:
+            sym = parsed.symbols[i]
+            if sym.start_byte <= fact.byte_offset < sym.end_byte:
+                fact.from_symbol = i
+                fact.from_kind = "block"
+                break
 
 
 def _first_error_line(root: Node) -> int | None:
