@@ -322,6 +322,13 @@ class PipesHubStructuredToolAdapter(_PermissiveValidationMixin, Tool):
 
     @property
     def short_description(self) -> str:
+        # Prefer an explicit one-liner (e.g. code-graph tools via metadata) so
+        # the Available Tools index does not dump the full function-schema docstring.
+        meta = getattr(self._structured_tool, "metadata", None) or {}
+        if isinstance(meta, dict):
+            short = meta.get("short_description")
+            if isinstance(short, str) and short.strip():
+                return short.strip()
         return self._structured_tool.description or self.name
 
     @property

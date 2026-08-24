@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -32,6 +32,7 @@ from app.connectors.sources.github_teams.timestamps import (
     aggregate_folder_timestamps as _aggregate_folder_timestamps,
 )
 from app.config.constants.arangodb import ProgressStatus
+from app.connectors.core.registry.filters import FilterCollection
 from app.models.entities import CodeFileRecord
 
 from tests.unit.connectors.sources.test_github_teams.conftest import (
@@ -315,6 +316,36 @@ class TestIncrementalTimestampStamping:
         assert persisted["src/a.py"].source_updated_at == 222
         assert persisted["src/b.py"].source_created_at is None
 
+    async def test_upserted_files_carry_a_fresh_updated_at(self) -> None:
+        """A content change must carry a fresh `updatedAtTimestamp`.
+
+        The model default is frozen at import, so relying on it made every
+        modified file look older than the last code edge build, which then
+        skipped the file and kept its removed CALLS edges.
+        """
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        sync = ReposSync(c)
+        sync.timestamps.fetch_commit_dates = AsyncMock(return_value={})
+
+        sync_time = 1_900_000_000_000
+        with patch(
+            "app.connectors.sources.github_teams.repos.get_epoch_timestamp_in_ms",
+            return_value=sync_time,
+        ):
+            ok = await sync._upsert_code_files(repo, {"src/a.py": "sha-a"})
+
+        assert ok is True
+        persisted = [
+            r
+            for call in c.data_entities_processor.on_new_records.call_args_list
+            for r, _perms in call.args[0]
+            if getattr(r, "file_path", None) == "src/a.py"
+        ]
+        assert len(persisted) == 1
+        assert persisted[0].updated_at == sync_time
+        assert persisted[0].to_arango_base_record()["updatedAtTimestamp"] == sync_time
+
 
 class TestFullSync:
     async def test_flat_tree_persists_folders_before_files(self) -> None:
@@ -346,7 +377,7 @@ class TestFullSync:
         stamped AUTO_INDEX_OFF published one event per folder purely for the
         consumer to throw away."""
         c = make_mock_connector()
-        c.indexing_filters = SimpleNamespace(is_enabled=lambda _key: False)
+        c.indexing_filters = SimpleNamespace(is_enabled=lambda _key, default=True: False)
         repo = make_repo(repo_id=1)
         c.runtime.ds_call.return_value = ok_response(make_git_tree([
             make_tree_element("src", entry_type="tree", sha="sha-src"),
@@ -363,6 +394,72 @@ class TestFullSync:
         ]
         assert {r.record_name for r in persisted} == {"src", "main.py"}
         assert all(r.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value for r in persisted)
+
+    async def test_test_files_sync_but_are_not_indexed_by_default(self) -> None:
+        """Test files must still become records — only their content indexing is
+        off, and only because the opt-in filter defaults to off."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        c.runtime.ds_call.return_value = ok_response(make_git_tree([
+            make_tree_element("src/main.py", entry_type="blob", sha="sha-main", size=10),
+            make_tree_element("tests/test_main.py", entry_type="blob", sha="sha-test", size=10),
+        ]))
+
+        sync = ReposSync(c)
+        assert await sync._full_sync(repo, "head-sha") is True
+
+        persisted = {
+            record.file_path: record
+            for call in c.data_entities_processor.on_new_records.call_args_list
+            for record, _perms in call.args[0]
+            if isinstance(record, CodeFileRecord)
+        }
+        assert set(persisted) == {"src/main.py", "tests/test_main.py"}
+        assert persisted["tests/test_main.py"].file_role == "test"
+        assert (
+            persisted["tests/test_main.py"].indexing_status
+            == ProgressStatus.AUTO_INDEX_OFF.value
+        )
+        assert persisted["src/main.py"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+
+    async def test_test_files_stay_off_when_filters_exist_without_a_row(self) -> None:
+        """A pre-existing filter config with no ``test_files`` row must not
+        fall back to the generic default-True and start indexing tests."""
+        c = make_mock_connector()
+        c.indexing_filters = FilterCollection()
+        repo = make_repo(repo_id=1)
+        c.runtime.ds_call.return_value = ok_response(make_git_tree([
+            make_tree_element("src/main.py", entry_type="blob", sha="sha-main", size=10),
+            make_tree_element("tests/test_main.py", entry_type="blob", sha="sha-test", size=10),
+        ]))
+
+        sync = ReposSync(c)
+        assert sync._code_files_indexing_enabled() is True
+        assert sync._test_files_indexing_enabled() is False
+        assert await sync._full_sync(repo, "head-sha") is True
+
+        persisted = {
+            record.file_path: record
+            for call in c.data_entities_processor.on_new_records.call_args_list
+            for record, _perms in call.args[0]
+            if isinstance(record, CodeFileRecord)
+        }
+        assert persisted["tests/test_main.py"].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+        assert persisted["src/main.py"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+
+    async def test_test_files_are_indexed_once_the_filter_is_on(self) -> None:
+        c = make_mock_connector()
+        c.indexing_filters = SimpleNamespace(is_enabled=lambda _key, default=True: True)
+        repo = make_repo(repo_id=1)
+        c.runtime.ds_call.return_value = ok_response(make_git_tree([
+            make_tree_element("tests/test_main.py", entry_type="blob", sha="sha-test", size=10),
+        ]))
+
+        sync = ReposSync(c)
+        assert await sync._full_sync(repo, "head-sha") is True
+
+        record, _perms = c.data_entities_processor.on_new_records.call_args_list[0].args[0][0]
+        assert record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
 
     async def test_folders_stay_indexable_when_code_files_are(self) -> None:
         c = make_mock_connector()
@@ -531,6 +628,7 @@ class TestFullSync:
         assert by_name["big.bin"].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
         assert "content-indexing limit" in (by_name["big.bin"].reason or "")
         assert by_name["ok.py"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+        assert by_name["ok.py"].language == "python"
         assert by_name[".env"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
 
 
