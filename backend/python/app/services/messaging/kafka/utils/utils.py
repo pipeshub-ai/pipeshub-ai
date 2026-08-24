@@ -2,15 +2,16 @@ import ssl
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from app.config.constants.service import KafkaConfig as KafkaConstants, config_node_constants
-from app.edition_services import (
-    EntityEventService,
-    EventService,
-    RecordEventHandler,
-)
+from app.config.constants.service import KafkaConfig as KafkaConstants
+from app.config.constants.service import config_node_constants
+from app.connectors.services.code_graph_event_service import CodeGraphEventService
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
 from app.containers.query import QueryAppContainer
+from app.edition_services import EntityEventService, EventService, RecordEventHandler
+from app.modules.code_graph.edge_build_runner import CodeEdgeBuildRunner
+from app.modules.code_graph.facts_source import BlobCodeFactsSource
+from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     IndexingMessageHandler,
@@ -24,6 +25,7 @@ from app.services.messaging.kafka.config.kafka_config import (
     KafkaProducerConfig,
 )
 from app.services.messaging.kafka.handlers.ai_config import AiConfigEventService
+from app.services.vector_db.rebuild_state import redis_from_config_service
 
 
 class KafkaUtils:
@@ -294,6 +296,55 @@ class KafkaUtils:
                 return False
 
         return handle_sync_message
+
+    @staticmethod
+    async def create_code_graph_event_service(
+        app_container: ConnectorAppContainer,
+        graph_provider: IGraphDBProvider,
+    ) -> CodeGraphEventService:
+        """One instance per process, shared by the consumer and the reconciler.
+
+        Both must see the same Redis client and task manager, or the lock and
+        the in-process "already running" check would disagree about a repo.
+        """
+        event_service = vars(app_container).get("code_graph_event_service")
+        if event_service is not None:
+            return event_service
+        logger = app_container.logger()
+        redis = vars(app_container).get("code_edge_build_redis")
+        if redis is None:
+            redis = await redis_from_config_service(app_container.config_service())
+            app_container.code_edge_build_redis = redis
+        blob_storage = BlobStorage(logger, app_container.config_service(), graph_provider)
+        event_service = CodeGraphEventService(
+            logger=logger,
+            runner=CodeEdgeBuildRunner(
+                graph_provider,
+                redis,
+                logger,
+                facts_source=BlobCodeFactsSource(blob_storage, graph_provider, logger),
+            ),
+        )
+        app_container.code_graph_event_service = event_service
+        return event_service
+
+    @staticmethod
+    async def create_code_graph_message_handler(
+        app_container: ConnectorAppContainer,
+        graph_provider: IGraphDBProvider,
+    ) -> MessageHandler:
+        event_service = await KafkaUtils.create_code_graph_event_service(
+            app_container,
+            graph_provider,
+        )
+
+        async def handle_code_graph_message(message: StreamMessage) -> bool:
+            return await event_service.process_event(
+                message.eventType,
+                message.payload,
+            )
+
+        return handle_code_graph_message
 
     @staticmethod
     async def create_aiconfig_message_handler(

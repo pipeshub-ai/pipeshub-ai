@@ -477,6 +477,13 @@
     "message": "Esto reindexa el documento desde cero y puede generar costos adicionales. Úselo cuando los resultados de búsqueda estén desactualizados o el documento no sea buscable incluso después de completar la indexación.",
     "confirm": "Confirmar"
   },
+  "reindexBlocked": {
+    "title": "Este registro no se puede reindexar por separado",
+    "message": "Los archivos de GitHub y GitLab se indexan juntos como un único grafo de código para todo el repositorio. Reindexar un solo archivo lo dejaría en una versión más reciente que el resto del repositorio y rompería los vínculos entre archivos. Para obtener los últimos cambios, ejecuta una sincronización en el conector: actualiza a la vez todos los archivos modificados del repositorio.",
+    "folderTitle": "Esta carpeta no se puede reindexar por separado",
+    "folderMessage": "Los archivos de GitHub y GitLab se indexan juntos como un único grafo de código para todo el repositorio. Reindexar una carpeta dejaría solo esos archivos en una versión más reciente que el resto del repositorio y rompería los vínculos entre archivos. Para obtener los últimos cambios, ejecuta una sincronización en el conector: actualiza a la vez todos los archivos modificados del repositorio.",
+    "goToConnectors": "Ir a conectores"
+  },
   "kb": {
     "viewToggle": "Alternar vista",
     "collectionsView": "Vista de colecciones",

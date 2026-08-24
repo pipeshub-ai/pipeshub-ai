@@ -496,6 +496,13 @@
     "message": "This re-indexes the document from scratch and may incur extra cost. Use this when search results are stale, or the document is not searchable even after indexing is complete.",
     "confirm": "Confirm"
   },
+  "reindexBlocked": {
+    "title": "This record can't be reindexed on its own",
+    "message": "GitHub and GitLab files form one code graph for the whole repo. Reindexing a single file would put it ahead of the rest and break cross-file links. Run a connector sync instead — it updates all changed files together.",
+    "folderTitle": "This folder can't be reindexed on its own",
+    "folderMessage": "GitHub and GitLab files form one code graph for the whole repo. Reindexing a folder would update only those files and put them ahead of the rest, breaking cross-file links. Run a connector sync instead — it updates all changed files together.",
+    "goToConnectors": "Go to connectors"
+  },
   "kb": {
     "viewToggle": "View Toggle",
     "collectionsView": "Collections View",

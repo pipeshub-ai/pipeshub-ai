@@ -388,8 +388,7 @@ class TestStartMessagingProducer:
 class TestStartKafkaConsumers:
     """Tests for start_kafka_consumers()."""
 
-    async def test_success_both_consumers(self):
-        """Both entity and sync consumers are started successfully."""
+    async def test_success_all_consumers(self):
         from app.connectors_main import start_kafka_consumers
 
         mock_container = _make_container()
@@ -399,6 +398,8 @@ class TestStartKafkaConsumers:
         mock_entity_consumer.start = AsyncMock()
         mock_sync_consumer = MagicMock()
         mock_sync_consumer.start = AsyncMock()
+        mock_code_graph_consumer = MagicMock()
+        mock_code_graph_consumer.start = AsyncMock()
 
         with (
             patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
@@ -406,15 +407,18 @@ class TestStartKafkaConsumers:
             patch("app.connectors_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_code_graph_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.connectors_main.KafkaUtils.create_sync_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[mock_entity_consumer, mock_sync_consumer]),
+            patch("app.connectors_main.KafkaUtils.create_code_graph_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[mock_entity_consumer, mock_sync_consumer, mock_code_graph_consumer]),
         ):
             consumers = await start_kafka_consumers(mock_container, gp)
 
-        assert len(consumers) == 2
+        assert len(consumers) == 3
         assert consumers[0] == ("entity", mock_entity_consumer)
         assert consumers[1] == ("sync", mock_sync_consumer)
+        assert consumers[2] == ("code_graph", mock_code_graph_consumer)
 
     async def test_error_on_second_consumer_cleans_up_first(self):
         """If second consumer fails, first consumer is stopped for cleanup."""
@@ -474,6 +478,8 @@ class TestStartKafkaConsumers:
         mock_entity_consumer.start = AsyncMock()
         mock_sync_consumer = MagicMock()
         mock_sync_consumer.start = AsyncMock()
+        mock_code_graph_consumer = MagicMock()
+        mock_code_graph_consumer.start = AsyncMock()
         mock_retry_manager = AsyncMock()
         mock_retry_manager.initialize = AsyncMock()
 
@@ -483,9 +489,11 @@ class TestStartKafkaConsumers:
             patch("app.connectors_main.MessagingFactory.create_retry_manager", return_value=mock_retry_manager) as mock_create_rm,
             patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_code_graph_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.connectors_main.KafkaUtils.create_sync_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[mock_entity_consumer, mock_sync_consumer]) as mock_create_consumer,
+            patch("app.connectors_main.KafkaUtils.create_code_graph_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[mock_entity_consumer, mock_sync_consumer, mock_code_graph_consumer]) as mock_create_consumer,
         ):
             consumers = await start_kafka_consumers(mock_container, gp)
 
@@ -493,14 +501,14 @@ class TestStartKafkaConsumers:
         mock_create_rm.assert_called_once()
         mock_retry_manager.initialize.assert_awaited_once()
 
-        # Assert both consumers were created with retry_manager
-        assert mock_create_consumer.call_count == 2
+        assert mock_create_consumer.call_count == 3
         for call in mock_create_consumer.call_args_list:
             assert call.kwargs["retry_manager"] is mock_retry_manager
 
-        assert len(consumers) == 2
+        assert len(consumers) == 3
         assert consumers[0] == ("entity", mock_entity_consumer)
         assert consumers[1] == ("sync", mock_sync_consumer)
+        assert consumers[2] == ("code_graph", mock_code_graph_consumer)
 
 
 # ---------------------------------------------------------------------------

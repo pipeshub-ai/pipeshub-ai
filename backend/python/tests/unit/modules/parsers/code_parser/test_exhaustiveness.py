@@ -18,12 +18,16 @@ def reconstruct(container) -> str:
     """Concatenate the top-level blocks in source order.
 
     Top-level, not leaves: a container keeps its whole body, so its children are
-    subsets of it and would double-count.
+    subsets of it and would double-count. A nested definition is the same case --
+    its bytes sit inside the block it hangs off -- so parent_block_index excludes
+    it too.
     """
     items = [
         (b.code_metadata.start_line, b.data["text"])
         for b in container.blocks
-        if b.type is BlockType.CODE and b.parent_index is None
+        if b.type is BlockType.CODE
+        and b.parent_index is None
+        and b.parent_block_index is None
     ]
     items += [
         (g.code_metadata.start_line, g.data["text"])
@@ -259,3 +263,41 @@ def test_tiles_real_repository_files(suffix):
         assert reconstruct(container).encode() == src, f"tiling broke on {path}"
         checked += 1
     assert checked > 0
+
+
+class TestNesting:
+    """Only a top-level type is a group; everything nested is a block."""
+
+    def test_a_top_level_class_is_a_group_even_with_no_members(self):
+        src = b"class Foo:\n    pass\n"
+        container = parse(src, "m.py")
+        assert [g.name for g in container.block_groups] == ["Foo"]
+        assert reconstruct(container).encode() == src
+
+    def test_a_nested_class_is_a_block_not_a_group(self):
+        src = b"class A:\n    class B:\n        def c(self):\n            pass\n"
+        container = parse(src, "m.py")
+        assert [g.name for g in container.block_groups] == ["A"]
+        kinds = {b.name: b.code_metadata.kind for b in container.blocks if b.name}
+        assert kinds["B"] == "class"
+        # Its members are still methods, so a nested class reads like any other.
+        assert kinds["c"] == "method"
+        assert reconstruct(container).encode() == src
+
+    def test_nested_definitions_are_excluded_from_the_tiling(self):
+        """A nested definition repeats bytes its parent already owns, so it
+        carries parent_block_index and stays out of the reconstruction."""
+        src = b"def outer():\n    def inner():\n        return 1\n    return inner()\n"
+        container = parse(src, "m.py")
+        by_name = {b.name: b for b in container.blocks if b.name}
+        assert by_name["inner"].parent_block_index == by_name["outer"].index
+        assert by_name["inner"].data["text"] in by_name["outer"].data["text"]
+        assert reconstruct(container).encode() == src
+
+    def test_a_local_variable_never_becomes_a_field(self):
+        # Fields belong to types. Tiling a callable's body would turn every
+        # local into one, which DEFINES would then point at.
+        src = b"def go():\n    x = 1\n    return x\n"
+        container = parse(src, "m.py")
+        assert [b.code_metadata.kind for b in container.blocks
+                if b.type is BlockType.CODE] == ["function"]
