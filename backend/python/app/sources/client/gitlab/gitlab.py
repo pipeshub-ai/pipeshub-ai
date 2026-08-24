@@ -22,6 +22,12 @@ from app.utils.oauth_config import resolve_instance_url
 _DEFAULT_MAX_RETRY_AFTER_SECONDS = 60
 _GITLAB_MAX_RETRY_AFTER_ENV = "GITLAB_MAX_RETRY_AFTER_SECONDS"
 
+# GitLab REST default is 20 items/page; the maximum is 100. Setting this on
+# the Gitlab() constructor makes every .list() call inherit it, so callers
+# that omit per_page (issues, MRs, notes, members, repo trees) get 100
+# instead of 20 — roughly 5× fewer HTTP round-trips across a full sync.
+_GITLAB_PER_PAGE = 100
+
 
 def _resolve_max_retry_after_seconds(logger: logging.Logger | None = None) -> int:
     raw = os.environ.get(_GITLAB_MAX_RETRY_AFTER_ENV)
@@ -108,6 +114,7 @@ class GitLabClientViaToken:
         # We keep the fields on this wrapper for API stability with the
         # existing config surface but ignore them at construction time.
 
+        kwargs["per_page"] = _GITLAB_PER_PAGE
         self._sdk = gitlab.Gitlab(**kwargs)
         self._install_retry_after_cap(self._sdk)
         return self._sdk

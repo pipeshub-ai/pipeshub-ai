@@ -75,6 +75,26 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
 # GitLab calls still get half the pool while enrichment runs.
 _GITLAB_USER_ENRICHMENT_CONCURRENCY = 4
 
+# Concurrency cap for the post-sync commit-timestamp backfill.  Same rule as
+# the enrichment cap: at or above _GITLAB_EXECUTOR_MAX_WORKERS the backfill
+# owns every worker thread, so interactive requests (filter pickers) queue for
+# a thread until their whole wall-clock budget burns — and when one throttled
+# call stalls the pool, the entire fan-out's timers expire together, which is
+# the "N identical 300s timeouts within milliseconds" log signature.
+_GITLAB_BACKFILL_CONCURRENCY = 4
+
+# Retry policy for one ``paginatedTree`` page during the full repository walk.
+# A page at a deep cursor on a large repo can exceed the HTTP client timeout
+# transiently; without a retry, one such failure aborts the whole walk, the
+# checkpoint is withheld, and the next sync redoes the ENTIRE full sync — on a
+# 100k-file repo that turns one flaky page into hours of rework. Transport
+# failures (timeout, connection reset, truncated body) are retried with
+# exponential backoff; semantic failures (a GraphQL ``errors`` payload) are
+# not — they mean permissions or query shape, and retrying cannot change that.
+_GITLAB_TREE_PAGE_MAX_ATTEMPTS = 3
+_GITLAB_TREE_PAGE_RETRY_BACKOFF_SECONDS = 2.0
+
+
 # ---------------------------------------------------------------------------
 # Attachment / repo constants
 # ---------------------------------------------------------------------------

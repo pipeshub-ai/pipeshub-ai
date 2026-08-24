@@ -402,6 +402,67 @@ class TestForceRefreshOAuthToken:
         assert result is True
         mock_refresh.refresh_now.assert_called_once()
 
+    async def test_concurrent_401s_refresh_only_once(self) -> None:
+        """GitLab refresh tokens are single-use: N concurrent 401s must produce
+        ONE refresh_now call, with the waiters applying the rotated token
+        instead of burning the stale refresh token into invalid_grant."""
+        import asyncio
+
+        c, runtime = _make_runtime()
+        c.external_client = MagicMock()
+        c.external_client.get_client.return_value.get_token.return_value = "old-access"
+
+        creds = {"access_token": "old-access", "refresh_token": "tok-refresh"}
+        c.config_service = AsyncMock()
+        c.config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "OAUTH"}, "credentials": creds}
+        )
+        runtime.refresh_token_if_needed = AsyncMock()
+        runtime._apply_access_token_to_clients = MagicMock()
+
+        async def _rotate(*_args, **_kwargs):
+            # The real service stores a new pair; later config reads see it.
+            creds["access_token"] = "new-access"
+            creds["refresh_token"] = "tok-refresh-2"
+
+        mock_refresh = MagicMock()
+        mock_refresh.refresh_now = AsyncMock(side_effect=_rotate)
+
+        with patch(self._PATCH_PATH) as mock_ss:
+            mock_ss.get_token_refresh_service = MagicMock(return_value=mock_refresh)
+            results = await asyncio.gather(
+                *(runtime.force_refresh_oauth_token() for _ in range(5))
+            )
+
+        assert all(results)
+        mock_refresh.refresh_now.assert_awaited_once()
+
+    async def test_already_rotated_token_is_applied_without_refresh(self) -> None:
+        """When the stored access token already differs from the client's, a
+        concurrent refresh (or the background refresher) beat us to it — apply
+        it and never touch the single-use refresh token."""
+        c, runtime = _make_runtime()
+        c.external_client = MagicMock()
+        c.external_client.get_client.return_value.get_token.return_value = "old-access"
+        c.config_service = AsyncMock()
+        c.config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {"authType": "OAUTH"},
+                "credentials": {"access_token": "new-access", "refresh_token": "tok-refresh"},
+            }
+        )
+        runtime._apply_access_token_to_clients = MagicMock()
+
+        mock_refresh = MagicMock()
+        mock_refresh.refresh_now = AsyncMock()
+        with patch(self._PATCH_PATH) as mock_ss:
+            mock_ss.get_token_refresh_service = MagicMock(return_value=mock_refresh)
+            result = await runtime.force_refresh_oauth_token()
+
+        assert result is True
+        runtime._apply_access_token_to_clients.assert_called_once_with("new-access")
+        mock_refresh.refresh_now.assert_not_awaited()
+
     async def test_exception_returns_false(self) -> None:
         """Exception during refresh is caught and returns False."""
         c, runtime = _make_runtime()

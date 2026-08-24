@@ -690,7 +690,7 @@ class ReposSync:
             mime_type=mime_type, external_revision_id=str(sha) if sha else "",
             # None, not "", for extensionless names (LICENSE, Dockerfile).
             extension=extension.lower() or None,
-            preview_renderable=extension.lower() in PREVIEW_RENDERABLE_EXTENSIONS,
+            preview_renderable=extension.lower() in PREVIEW_RENDERABLE_EXTENSIONS if extension else True,
             file_path=path, file_hash=sha,
             inherit_permissions=True, parent_external_record_id=parent_external_id,
             parent_record_type=(RecordType.FILE if parent_external_id else None),
