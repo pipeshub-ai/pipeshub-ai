@@ -1671,9 +1671,11 @@ class TestSyncSharedWithMe:
         )
 
         seen = []
+        seen_permission_types = []
 
-        async def mock_gen(files, uid, email, did):
+        async def mock_gen(files, uid, email, did, *, permission_type=None, **kwargs):
             seen.extend(f["id"] for f in files)
+            seen_permission_types.append(permission_type)
             for _ in files:
                 update = MagicMock()
                 update.is_deleted = False
@@ -1686,6 +1688,7 @@ class TestSyncSharedWithMe:
 
         # The personal-drive share is already covered by the full-sync listing.
         assert seen == ["shared-drive-item"]
+        assert seen_permission_types == [PermissionType.READ]
         assert total == 1
         assert connector.drive_data_source.files_list.await_args.kwargs["q"] == (
             "sharedWithMe = true and trashed = false"

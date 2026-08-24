@@ -2670,6 +2670,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         batch_count = 0
         total_files = 0
         current_page_token: Optional[str] = None
+        # Persists across pages so a subtree already pulled in behind one shared folder
+        # is not re-walked when an overlapping/nested share surfaces on a later page.
+        seen_ids: set = set()
 
         while True:
             list_params = {
@@ -2690,17 +2693,20 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             # No driveId means a personal-drive share, already returned by the caller's
             # own listing. A drive this user belongs to is walked by sync_shared_drives.
+            # Already-seen ids are dropped too, in case an earlier page's folder
+            # expansion already pulled this item in.
             files = [
                 file_metadata
                 for file_metadata in files_response.get("files", [])
                 if file_metadata.get("driveId")
                 and file_metadata["driveId"] not in member_drive_ids
+                and file_metadata.get("id") not in seen_ids
             ]
 
             # A shared folder arrives without its contents; pull its subtree in behind it.
-            page_ids = {file_id for f in files if (file_id := f.get("id"))}
+            seen_ids.update(file_id for f in files if (file_id := f.get("id")))
             files.extend(
-                await self._expand_shared_folders(files, page_ids, user_drive_data_source)
+                await self._expand_shared_folders(files, seen_ids, user_drive_data_source)
             )
 
             if files:

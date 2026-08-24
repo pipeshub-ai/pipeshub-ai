@@ -1175,6 +1175,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
         batch_records = []
         total_files = 0
         page_token = None
+        # Persists across pages so a subtree already pulled in behind one shared folder
+        # is not re-walked when an overlapping/nested share surfaces on a later page.
+        seen_ids: set = set()
 
         while True:
             list_params = {
@@ -1191,18 +1194,20 @@ class GoogleDriveIndividualConnector(BaseConnector):
             files_response = await self.drive_data_source.files_list(**list_params)
 
             # Items without a driveId are personal-drive shares, which the full sync
-            # listing already returned.
+            # listing already returned. Already-seen ids are dropped too, in case an
+            # earlier page's folder expansion already pulled this item in.
             files = [
                 file_metadata
                 for file_metadata in files_response.get("files", [])
                 if file_metadata.get("driveId")
+                and file_metadata.get("id") not in seen_ids
             ]
 
             # A shared folder arrives without its contents: sharedWithMeTime marks only
             # the item actually shared, and Drive has no recursive parent operator.
             # drive_scoped=False keeps the walk on the user corpus, since corpora=drive
             # needs shared drive membership and this path does not have it.
-            seen_ids = {file_id for f in files if (file_id := f.get("id"))}
+            seen_ids.update(file_id for f in files if (file_id := f.get("id")))
             for folder in [f for f in files if f.get("mimeType") == MimeTypes.GOOGLE_DRIVE_FOLDER.value]:
                 found = []
                 try:
