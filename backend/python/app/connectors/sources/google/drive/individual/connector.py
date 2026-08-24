@@ -365,6 +365,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         drive_id: str,
         *,
         bypass_folder_filter: bool = False,
+        permission_type: PermissionType = PermissionType.OWNER,
     ) -> Optional[RecordUpdate]:
         """
         Process a single Google Drive file and detect changes.
@@ -377,6 +378,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
             bypass_folder_filter: Skip the folder-scope check. Only the placeholder
                 sweep sets this: the ancestors it backfills are by definition
                 outside the tracked subtree and would otherwise be rejected.
+            permission_type: Access level to record for user_email on this item.
+                Defaults to OWNER (My Drive); callers seeding items the user does
+                not own (e.g. sharedWithMe) must pass the correct grant.
 
         Returns:
             RecordUpdate object or None if entry should be skipped
@@ -504,7 +508,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 Permission(
                     external_id=user_id,
                     email=user_email,
-                    type=PermissionType.OWNER,
+                    type=permission_type,
                     entity_type=EntityType.USER
                 )
             ]
@@ -695,6 +699,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         drive_id: str,
         *,
         bypass_folder_filter: bool = False,
+        permission_type: PermissionType = PermissionType.OWNER,
     ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
         """
         Process Google Drive files and yield records with their permissions.
@@ -707,6 +712,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
             drive_id: The drive ID
             bypass_folder_filter: Forwarded to `_process_drive_item`; set only by
                 the placeholder sweep.
+            permission_type: Forwarded to `_process_drive_item`; the access level
+                to record for user_email on these items.
         """
         import asyncio
 
@@ -718,6 +725,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     user_email,
                     drive_id,
                     bypass_folder_filter=bypass_folder_filter,
+                    permission_type=permission_type,
                 )
                 if record_update and record_update.record:
                     files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
@@ -1220,7 +1228,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     files,
                     user_id,
                     user_email,
-                    drive_id
+                    drive_id,
+                    permission_type=PermissionType.READ,
                 ):
                     if update.is_deleted or update.is_updated:
                         await self._handle_record_updates(update)

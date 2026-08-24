@@ -1610,6 +1610,7 @@ class TestRunSyncWithYield:
                     "user": {"permissionId": "p1", "emailAddress": "u@t.com"}
                 })
                 mock_dds.files_get = AsyncMock(return_value={"id": "root-1"})
+                mock_dds.drives_list = AsyncMock(return_value={"drives": []})
                 MockDDS.return_value = mock_dds
 
                 connector.sync_personal_drive = AsyncMock()

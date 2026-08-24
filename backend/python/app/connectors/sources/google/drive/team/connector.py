@@ -2732,31 +2732,32 @@ class GoogleDriveTeamConnector(BaseConnector):
     async def _list_user_shared_drives(
         self, user_drive_data_source: GoogleDriveDataSource
     ) -> List[Dict]:
-        """List every shared drive this user is a member of, before any filtering."""
+        """List every shared drive this user is a member of, before any filtering.
+
+        Lets pagination errors propagate rather than returning a partial list: a
+        truncated membership set would make sync_shared_with_me misroute items from
+        an unlisted member drive, and sync_shared_drives would silently never sync
+        that drive at all. This runs before any writes for the user this cycle, so
+        raising here just fails the whole run cleanly for a clean retry next time.
+        """
         all_user_drives: List[Dict] = []
         page_token: Optional[str] = None
 
         while True:
-            try:
-                drives_response = await user_drive_data_source.drives_list(
-                    pageSize=100,
-                    pageToken=page_token
-                )
+            drives_response = await user_drive_data_source.drives_list(
+                pageSize=100,
+                pageToken=page_token
+            )
 
-                drives_data = drives_response.get("drives", [])
-                if not drives_data:
-                    break
+            drives_data = drives_response.get("drives", [])
+            if not drives_data:
+                break
 
-                all_user_drives.extend(drives_data)
+            all_user_drives.extend(drives_data)
 
-                page_token = drives_response.get("nextPageToken")
-                if not page_token:
-                    break
-
-            except Exception as e:
-                should_break = await self._handle_drive_error(e, "shared drives list", "", "drives_list")
-                if should_break:
-                    break
+            page_token = drives_response.get("nextPageToken")
+            if not page_token:
+                break
 
         return all_user_drives
 

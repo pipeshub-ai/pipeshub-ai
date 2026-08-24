@@ -2416,6 +2416,7 @@ class TestRunSyncWithYield:
                 "user": {"permissionId": "perm-id", "emailAddress": "u@x.com"},
             })
             mock_ds.files_get = AsyncMock(return_value={"id": "root-drive-id"})
+            mock_ds.drives_list = AsyncMock(return_value={"drives": []})
 
             with patch(
                 "app.connectors.sources.google.drive.team.connector.GoogleDriveDataSource",
