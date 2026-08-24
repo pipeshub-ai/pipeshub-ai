@@ -63,12 +63,17 @@ class ExtractionClient(BaseServiceClient):
         departments: list[str] | None = None,
         record_name: str = "",
         record_type: str = "",
+        is_code: bool = False,
     ) -> SemanticMetadata | None:
         """Call ``POST /api/v1/extract/classify`` and return SemanticMetadata.
 
         Returns ``None`` when the LLM produced no classification (e.g. empty
         document).  Raises :class:`ExtractionClientError` on explicit failures.
         Raises :class:`ServiceCallError` on connection problems.
+
+        *is_code* selects the code prompt over the document prompt. The service
+        has no record of its own, so this decision has to travel with the
+        request rather than being re-derived from the blocks.
         """
         payload = {
             "block_container": block_container.model_dump(mode="json"),
@@ -76,6 +81,7 @@ class ExtractionClient(BaseServiceClient):
             "departments": departments or [],
             "record_name": record_name,
             "record_type": record_type,
+            "is_code": is_code,
         }
 
         response = await self._post_json(

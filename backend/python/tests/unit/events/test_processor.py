@@ -308,6 +308,7 @@ class TestCreateTransformContext:
                 record=mock_record,
                 event_type=None,
                 prev_virtual_record_id=None,
+                is_code=False,
             )
 
     def test_creates_context_with_event_type(self):
@@ -321,6 +322,7 @@ class TestCreateTransformContext:
                 record=mock_record,
                 event_type="updateRecord",
                 prev_virtual_record_id=None,
+                is_code=False,
             )
 
     def test_creates_context_with_explicit_prev_virtual_record_id(self):
@@ -338,6 +340,7 @@ class TestCreateTransformContext:
                 record=mock_record,
                 event_type="newRecord",
                 prev_virtual_record_id="prev-vr-123",
+                is_code=False,
             )
 
 
@@ -3796,3 +3799,71 @@ class TestProcessSqlStructuredData:
                     record_type="SQL_TABLE"
                 )
             )
+
+# ===========================================================================
+# project_code_blocks_to_graph / process_code_document — failure propagation
+# ===========================================================================
+
+
+class TestProjectCodeBlocksToGraph:
+    """Swallowing is the default because the blocks are already searchable and
+    the edge pass can be re-run; a caller that has not yet marked the record
+    COMPLETED must opt in to the raise, or the edge builder resolves the repo
+    against a symbol table this file is missing from."""
+
+    @staticmethod
+    def _kwargs(**overrides: object) -> dict:
+        base = {
+            "record_id": "rec-1", "org_id": "org-1", "record_group_id": "repo-1",
+            "connector_id": "conn-1", "record_name": "a.py", "file_path": "src/a.py",
+            "language": "python", "block_containers": MagicMock(),
+        }
+        base.update(overrides)
+        return base
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_is_swallowed_by_default(self) -> None:
+        proc, logger, _, _ = _make_processor()
+        with patch("app.events.processor.write_code_file_blocks_to_graph",
+                   AsyncMock(side_effect=RuntimeError("graph down"))):
+            assert await proc.project_code_blocks_to_graph(**self._kwargs()) is None
+        assert logger.error.called
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_raises_when_asked(self) -> None:
+        proc, _, _, _ = _make_processor()
+        with patch("app.events.processor.write_code_file_blocks_to_graph",
+                   AsyncMock(side_effect=RuntimeError("graph down"))), \
+             pytest.raises(RuntimeError, match="graph down"):
+            await proc.project_code_blocks_to_graph(**self._kwargs(propagate_failure=True))
+
+
+class TestProcessCodeDocumentProjection:
+    @pytest.mark.asyncio
+    async def test_a_failed_projection_stops_the_record_before_indexing(self) -> None:
+        """The in-process pipeline marks the record COMPLETED inside
+        `IndexingPipeline.apply`, so the projection ahead of it has to raise."""
+        from unittest.mock import create_autospec
+
+        proc, _, graph_provider, _ = _make_processor()
+        graph_provider.get_document = AsyncMock(return_value=_base_record_dict(
+            recordName="a.py", recordGroupId="repo-1", mimeType="text/x-python",
+        ))
+        parsed = MagicMock(blocks=[MagicMock()], block_groups=[])
+        proc.parsers["code"] = MagicMock(parse_to_blocks=MagicMock(return_value=parsed))
+        proc.project_code_blocks_to_graph = create_autospec(
+            Processor, instance=True
+        ).project_code_blocks_to_graph
+        proc.project_code_blocks_to_graph.side_effect = RuntimeError("graph down")
+        proc._create_transform_context = MagicMock()
+
+        with pytest.raises(DocumentProcessingError, match="graph down"):
+            await _collect(proc.process_code_document(
+                recordName="a.py", recordId="rec-1", code_binary=b"x = 1\n",
+                virtual_record_id="v-1", file_path="src/a.py",
+            ))
+
+        kwargs = proc.project_code_blocks_to_graph.await_args.kwargs
+        assert kwargs["propagate_failure"] is True
+        assert kwargs["file_path"] == "src/a.py"
+        proc._create_transform_context.assert_not_called()

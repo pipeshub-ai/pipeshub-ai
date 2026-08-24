@@ -229,7 +229,7 @@ class GraphDBTransformer(Transformer):
 
                 # --- Reconcile department edges ---
                 new_dept_tos: Dict[str, str] = {}
-                for department in metadata.departments:
+                for department in metadata.departments or ():
                     try:
                         results = await tx_store.get_nodes_by_filters(
                             CollectionNames.DEPARTMENTS.value,
@@ -262,25 +262,29 @@ class GraphDBTransformer(Transformer):
                 # --- Reconcile category edges ---
                 new_cat_tos: Dict[str, str] = {}
 
-                # Handle primary category
-                category_key = await self._find_or_create_node(
-                    tx_store, CollectionNames.CATEGORIES.value, "name", metadata.categories[0]
-                )
-                cat_to = f"{CollectionNames.CATEGORIES.value}/{category_key}"
-                new_cat_tos[cat_to] = metadata.categories[0]
-                touched_entities.append(EntityRecord(
-                    entity_id=category_key,
-                    entity_type=EntityType.CATEGORY,
-                    name=metadata.categories[0],
-                    org_id=org_id_placeholder,
-                    type_category=EntityTypeCategory.GENERIC_SCHEMA_FREE,
-                    connector_ids=connector_ids_placeholder,
-                    record_group_ids=record_group_ids_placeholder,
-                ))
+                # A blank primary category would otherwise create a Categories
+                # node named "" that every unclassified record attaches to.
+                primary_category = (metadata.categories or [""])[0].strip()
+                category_key: Optional[str] = None
+                if primary_category:
+                    category_key = await self._find_or_create_node(
+                        tx_store, CollectionNames.CATEGORIES.value, "name", primary_category
+                    )
+                    cat_to = f"{CollectionNames.CATEGORIES.value}/{category_key}"
+                    new_cat_tos[cat_to] = primary_category
+                    touched_entities.append(EntityRecord(
+                        entity_id=category_key,
+                        entity_type=EntityType.CATEGORY,
+                        name=primary_category,
+                        org_id=org_id_placeholder,
+                        type_category=EntityTypeCategory.GENERIC_SCHEMA_FREE,
+                        connector_ids=connector_ids_placeholder,
+                        record_group_ids=record_group_ids_placeholder,
+                    ))
 
                 # Handle subcategories
                 async def handle_subcategory(
-                    name: str, level: str, parent_key: str, parent_collection: str
+                    name: str, level: str, parent_key: Optional[str], parent_collection: str
                 ) -> str:
                     collection_name = getattr(CollectionNames, f"SUBCATEGORIES{level}").value
                     key = await self._find_or_create_node(tx_store, collection_name, "name", name)
@@ -349,7 +353,7 @@ class GraphDBTransformer(Transformer):
 
                 # --- Reconcile language edges ---
                 new_lang_tos: Dict[str, str] = {}
-                for language in metadata.languages:
+                for language in metadata.languages or ():
                     lang_key = await self._find_or_create_node(
                         tx_store, CollectionNames.LANGUAGES.value, "name", language
                     )
@@ -373,7 +377,7 @@ class GraphDBTransformer(Transformer):
 
                 # --- Reconcile topic edges ---
                 new_topic_tos: Dict[str, str] = {}
-                for topic in metadata.topics:
+                for topic in metadata.topics or ():
                     topic_key = await self._find_or_create_node(
                         tx_store, CollectionNames.TOPICS.value, "name", topic
                     )
