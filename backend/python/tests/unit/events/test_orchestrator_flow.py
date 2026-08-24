@@ -13,7 +13,7 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -42,6 +42,14 @@ def _make_parse_result(*, empty: bool = False) -> ParseResult:
         provider_used=ParserProvider.DEFAULT,
         metadata={},
     )
+
+
+def _project_code_blocks_mock() -> AsyncMock:
+    """Autospec'd: a caller passing a kwarg the real processor does not accept
+    fails here instead of at runtime."""
+    from app.events.processor import Processor  # noqa: PLC0415
+
+    return create_autospec(Processor, instance=True).project_code_blocks_to_graph
 
 
 def _make_event_processor(
@@ -603,3 +611,137 @@ async def test_real_pdf_named_with_leading_dot_is_not_skipped() -> None:
     assert not any(
         update.get("indexingStatus") == "FILE_TYPE_NOT_SUPPORTED" for update in updates
     )
+
+
+# ---------------------------------------------------------------------------
+# Code-graph projection on the service pipeline
+#
+# The service pipeline is what deployments run (every compose file defaults
+# USE_PARSING_SERVICE to true), so a code file that is not projected here is
+# absent from the code graph entirely while still being searchable.
+# ---------------------------------------------------------------------------
+
+
+def _make_code_event() -> dict[str, Any]:
+    event = _make_event_data()
+    event["payload"].update({
+        "extension": "py",
+        "mimeType": "text/plain",
+        "recordName": "client.py",
+        "filePath": "src/client.py",
+    })
+    return event
+
+
+def _service_pipeline_processor() -> tuple:
+    parsing_client = MagicMock()
+    parsing_client.circuit_open = False
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+
+    extraction_client = MagicMock()
+    extraction_client.classify = AsyncMock(return_value=None)
+
+    sink_orchestrator = MagicMock()
+    sink_orchestrator.index = AsyncMock()
+    sink_orchestrator.enrich = AsyncMock()
+
+    processor = MagicMock()
+    processor.project_code_blocks_to_graph = _project_code_blocks_mock()
+
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        extraction_client=extraction_client,
+        sink_orchestrator=sink_orchestrator,
+        processor=processor,
+    )
+    return ep, processor, parsing_client, sink_orchestrator
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_service_pipeline_projects_code_blocks() -> None:
+    """A code file's blocks reach the graph under its own record id."""
+    ep, processor, parsing_client, _ = _service_pipeline_processor()
+
+    async for _ in ep.on_event(_make_code_event()):
+        pass
+
+    processor.project_code_blocks_to_graph.assert_awaited_once()
+    kwargs = processor.project_code_blocks_to_graph.await_args.kwargs
+    assert kwargs["record_id"] == "rec-1"
+    assert kwargs["org_id"] == "org-1"
+    assert kwargs["file_path"] == "src/client.py"
+    assert kwargs["connector_id"] == "connector-1"
+    # Reuses what the parsing service already returned rather than re-parsing.
+    assert kwargs["block_containers"] is parsing_client.parse.return_value.block_container
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_service_pipeline_skips_projection_for_non_code() -> None:
+    """A PDF has no symbols; nothing should reach the code graph."""
+    ep, processor, _, _ = _service_pipeline_processor()
+
+    async for _ in ep.on_event(_make_event_data()):
+        pass
+
+    processor.project_code_blocks_to_graph.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_code_projection_runs_before_enrichment() -> None:
+    """Enrichment is allowed to fail; the code graph must still be populated."""
+    ep, processor, _, sink_orchestrator = _service_pipeline_processor()
+    sink_orchestrator.enrich = AsyncMock(side_effect=RuntimeError("extraction down"))
+
+    async for _ in ep.on_event(_make_code_event()):
+        pass
+
+    processor.project_code_blocks_to_graph.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_failed_code_projection_stops_the_record() -> None:
+    """A record marked COMPLETED with no blocks makes the edge builder resolve
+    the repo against a symbol table it is missing from, so a projection failure
+    has to abort before indexing rather than be swallowed."""
+    ep, processor, _, sink_orchestrator = _service_pipeline_processor()
+    processor.project_code_blocks_to_graph.side_effect = RuntimeError("graph down")
+
+    with pytest.raises(RuntimeError, match="graph down"):
+        async for _ in ep.on_event(_make_code_event()):
+            pass
+
+    kwargs = processor.project_code_blocks_to_graph.await_args.kwargs
+    assert kwargs["propagate_failure"] is True
+    sink_orchestrator.index.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_service_pipeline_forwards_the_record_file_path() -> None:
+    parsing_client = MagicMock()
+    parsing_client.circuit_open = False
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+    extraction_client = MagicMock()
+    extraction_client.classify = AsyncMock(return_value=None)
+    sink_orchestrator = MagicMock()
+    sink_orchestrator.index = AsyncMock()
+    sink_orchestrator.enrich = AsyncMock()
+    transform_pipeline = MagicMock()
+    transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        extraction_client=extraction_client,
+        sink_orchestrator=sink_orchestrator,
+        transform_pipeline=transform_pipeline,
+    )
+    event_data = _make_event_data()
+    event_data["payload"]["filePath"] = "docs/reports/test.pdf"
+
+    async for _ in ep.on_event(event_data):
+        pass
+
+    assert parsing_client.parse.await_args.kwargs["file_path"] == "docs/reports/test.pdf"

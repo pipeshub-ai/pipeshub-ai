@@ -1,9 +1,13 @@
 import asyncio
+import time
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
+from typing import TYPE_CHECKING, Any
 
 import aiohttp  # type: ignore
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -26,6 +30,7 @@ from app.events.events import EventProcessor
 from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.modules.code_graph import edge_build_trigger
 from app.modules.transformers.transformer import TransformContext
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.messaging.config import (
@@ -35,6 +40,7 @@ from app.services.messaging.config import (
     StreamMessage,
     Topic,
 )
+from app.services.messaging.consumer_concurrency import bridge_to_loop
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
@@ -45,6 +51,7 @@ from app.services.vector_db.rebuild_state import (
     PHASE_FAILED,
     PHASE_READY,
     mark_cleanup_phase,
+    redis_from_config_service,
 )
 from app.services.vector_db.strategy import DeleteContext, RecordContext
 from app.services.vector_db.strategy_resolver import reset_strategy_cache
@@ -52,6 +59,9 @@ from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from redis.asyncio import Redis
 
 
 class RecordEventHandler(BaseEventService):
@@ -66,6 +76,42 @@ class RecordEventHandler(BaseEventService):
 
         self.event_processor : EventProcessor = event_processor
         self.producer = producer
+        # Shared by every code record this handler finishes; all uses run on the
+        # consumer's worker loop (process_event), which is the loop the client
+        # binds to on first use.
+        self._redis: Redis | None = None
+        # The producer's client is bound to the loop that created it — the main
+        # loop this handler is constructed on (indexing_main.start_kafka_consumers).
+        # process_event runs on the indexing consumer's worker-thread loop, so
+        # every publish below is bridged back, the same way the consumer bridges
+        # its own xack/re-queue (see indexing_consumer._run_on_main_loop).
+        try:
+            self._producer_loop: asyncio.AbstractEventLoop | None = (
+                asyncio.get_running_loop()
+            )
+        except RuntimeError:
+            self._producer_loop = None
+
+    async def _redis_client(self) -> "Redis":
+        if self._redis is None:
+            self._redis = await redis_from_config_service(self.config_service)
+        return self._redis
+
+    async def _discard_redis(self) -> None:
+        redis, self._redis = self._redis, None
+        if redis is None:
+            return
+        try:
+            await redis.aclose()
+        except Exception:
+            self.logger.exception("Failed to close the record handler's Redis client")
+
+    async def aclose(self) -> None:
+        await self._discard_redis()
+
+    @staticmethod
+    def _is_redis_connection_error(exc: BaseException) -> bool:
+        return isinstance(exc, (RedisConnectionError, RedisTimeoutError))
 
     # Statuses that already describe a finished record. Abandoning a duplicate
     # delivery of one of these must not rewrite it as a failure. FAILED is
@@ -255,12 +301,111 @@ class RecordEventHandler(BaseEventService):
     async def _publish_reindex_event(self, record_id: str, payload: dict) -> None:
         if not self.producer:
             raise IndexingError("No messaging producer configured; cannot publish newRecord event")
-        await self.producer.send_event(
-            topic=Topic.RECORD_EVENTS.value,
-            event_type="newRecord",
-            payload=payload,
-            key=str(record_id),
+        await bridge_to_loop(
+            self.producer.send_event(
+                topic=Topic.RECORD_EVENTS.value,
+                event_type="newRecord",
+                payload=payload,
+                key=str(record_id),
+            ),
+            self._producer_loop,
         )
+
+    async def _publish_code_edges_event(
+        self, *, org_id: str, connector_id: str, record_group_id: str
+    ) -> None:
+        await bridge_to_loop(
+            self.producer.send_event(
+                topic=Topic.CODE_GRAPH_EVENTS.value,
+                event_type=EventTypes.BUILD_CODE_EDGES.value,
+                payload={
+                    "orgId": org_id,
+                    "connectorId": connector_id,
+                    "recordGroupId": record_group_id,
+                },
+                key=record_group_id,
+            ),
+            self._producer_loop,
+        )
+
+    async def _request_code_edge_build_if_repo_drained(
+        self, record_id: str | None, record: dict | None = None
+    ) -> None:
+        """Ask for this repo's edge build once its records stop arriving.
+
+        Never raises. This runs on the way out of a record that has already
+        reached a terminal state, and a repo whose edges are late is a smaller
+        problem than a record reported as failed because asking went wrong.
+        """
+        if not record_id or self.producer is None:
+            return
+        # Gate on the copy already in hand before reading anything:
+        # connectorName does not change between reads, so this costs every
+        # non-code record on the platform nothing. The re-read below is still
+        # needed for the ones that pass, because on the failure path that copy
+        # predates the status write that made the record terminal.
+        if record is not None and not edge_build_trigger.is_code_record(record):
+            return
+        try:
+            graph_provider = self.event_processor.graph_provider
+            record = await graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+            scope = edge_build_trigger.publishable_scope(record)
+            if scope is None:
+                return
+            org_id, connector_id, record_group_id = scope
+
+            if await edge_build_trigger.group_has_unfinished_records(
+                graph_provider, org_id, record_group_id
+            ):
+                return
+
+            state = await edge_build_trigger.read_build_state(
+                graph_provider, org_id, record_group_id
+            )
+            redis = await self._redis_client()
+            now_ms = int(time.time() * 1000)
+            # The claim is always taken first, so the tail of a repo asks once.
+            # Only a pending request older than the window, presumed lost,
+            # gets past a lost claim.
+            if not await edge_build_trigger.claim_publish(
+                redis, org_id, record_group_id
+            ) and not edge_build_trigger.request_is_stale(state, now_ms):
+                return
+
+            # Written before the request, so a request that dies in the broker
+            # leaves the repo marked as owing a build rather than leaving
+            # nothing at all.
+            await graph_provider.upsert_sync_point(
+                sync_point_key=edge_build_trigger.sync_point_key_for(
+                    record_group_id
+                ),
+                sync_point_data={
+                    "orgId": org_id,
+                    "connectorId": connector_id,
+                    "syncDataPointType": "codeEdgeBuild",
+                    "edgeBuildPending": True,
+                    "edgeBuildRequestedAt": now_ms,
+                },
+                collection=CollectionNames.SYNC_POINTS.value,
+            )
+            await self._publish_code_edges_event(
+                org_id=org_id,
+                connector_id=connector_id,
+                record_group_id=record_group_id,
+            )
+            self.logger.info(
+                "Requested code edge build for org=%s record_group=%s",
+                org_id,
+                record_group_id,
+            )
+        except Exception as exc:
+            self.logger.exception(
+                "Failed to request a code edge build after record %s", record_id
+            )
+            if self._is_redis_connection_error(exc):
+                await self._discard_redis()
 
     async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id) -> None:
         try:
@@ -1264,6 +1409,14 @@ class RecordEventHandler(BaseEventService):
                         await self._trigger_next_queued_duplicate(record_id, virtual_record_id)
                 else:
                     self.logger.warning(f"Record {record_id} not found in database")
+
+            # Outside both branches above, because a repo's last file is as
+            # likely to end FAILED or EMPTY as COMPLETED and only the success
+            # branch is reached from there. Skipped on cancellation: the record
+            # stays IN_PROGRESS for redelivery, so the repo is not drained and
+            # this would be graph I/O during an unwind.
+            if not cancelled:
+                await self._request_code_edge_build_if_repo_drained(record_id, record)
 
     async def __update_document_status(
         self,

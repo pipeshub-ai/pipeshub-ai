@@ -706,3 +706,4 @@ class TestFullRecordEscalation:
         assert "knowledgegraph__fetch_record" in section
         assert "ranked fragments" in section
         assert "ONE call" in section
+
