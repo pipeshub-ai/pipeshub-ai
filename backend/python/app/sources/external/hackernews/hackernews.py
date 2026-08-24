@@ -1,4 +1,5 @@
-"""HackerNews API DataSource
+"""
+HackerNews API DataSource
 
 Auto-generated HackerNews (Firebase v0) API client wrapper.
 Covers the full official HackerNews API with explicit type hints.
@@ -36,24 +37,23 @@ class HackerNewsDataSource:
         
         Args:
             client: HackerNewsClient instance
-
         """
         self._client = client
         self.http = client.get_client()
         if self.http is None:
-            raise ValueError("HTTP client is not initialized")
+            raise ValueError('HTTP client is not initialized')
         try:
-            self.base_url = self.http.get_base_url().rstrip("/")
+            self.base_url = self.http.get_base_url().rstrip('/')
         except AttributeError as exc:
-            raise ValueError("HTTP client does not have get_base_url method") from exc
+            raise ValueError('HTTP client does not have get_base_url method') from exc
 
-    def get_data_source(self) -> "HackerNewsDataSource":
+    def get_data_source(self) -> 'HackerNewsDataSource':
         """Return the data source instance."""
         return self
 
     async def get_item(
         self,
-        item_id: int,
+        item_id: int
     ) -> HackerNewsResponse:
         """Get an item (story, comment, job, poll, or poll option) by id.
 
@@ -62,9 +62,8 @@ class HackerNewsDataSource:
 
         Returns:
             HackerNewsResponse: Response object with success status and data/error
-
         """
-        url = self.base_url + f"/item/{item_id}.json"
+        url = self.base_url + "/item/{item_id}.json".format(item_id=item_id)
 
         headers = dict(self.http.headers)
 
@@ -73,18 +72,23 @@ class HackerNewsDataSource:
             url=url,
             headers=headers,
             query_params={},
-            body=None,
+            body=None
         )
 
         try:
             response = await self.http.execute(request)
+            if response.status >= 400:
+                return HackerNewsResponse(
+                    success=False,
+                    error=f"HTTP {response.status}: {response.text()}",
+                )
             return HackerNewsResponse(success=True, data=response.json())
         except Exception as e:
             return HackerNewsResponse(success=False, error=str(e))
 
     async def get_user(
         self,
-        username: str,
+        username: str
     ) -> HackerNewsResponse:
         """Get a user profile by username (HackerNews usernames are case-sensitive).
 
@@ -93,9 +97,8 @@ class HackerNewsDataSource:
 
         Returns:
             HackerNewsResponse: Response object with success status and data/error
-
         """
-        url = self.base_url + f"/user/{username}.json"
+        url = self.base_url + "/user/{username}.json".format(username=username)
 
         headers = dict(self.http.headers)
 
@@ -104,23 +107,27 @@ class HackerNewsDataSource:
             url=url,
             headers=headers,
             query_params={},
-            body=None,
+            body=None
         )
 
         try:
             response = await self.http.execute(request)
+            if response.status >= 400:
+                return HackerNewsResponse(
+                    success=False,
+                    error=f"HTTP {response.status}: {response.text()}",
+                )
             return HackerNewsResponse(success=True, data=response.json())
         except Exception as e:
             return HackerNewsResponse(success=False, error=str(e))
 
     async def get_max_item_id(
-        self,
+        self
     ) -> HackerNewsResponse:
         """Get the current largest item id. Poll this to walk every item sequentially.
 
         Returns:
             HackerNewsResponse: Response object with success status and data/error
-
         """
         url = self.base_url + "/maxitem.json"
 
@@ -131,23 +138,27 @@ class HackerNewsDataSource:
             url=url,
             headers=headers,
             query_params={},
-            body=None,
+            body=None
         )
 
         try:
             response = await self.http.execute(request)
+            if response.status >= 400:
+                return HackerNewsResponse(
+                    success=False,
+                    error=f"HTTP {response.status}: {response.text()}",
+                )
             return HackerNewsResponse(success=True, data=response.json())
         except Exception as e:
             return HackerNewsResponse(success=False, error=str(e))
 
     async def get_top_stories(
-        self,
+        self
     ) -> HackerNewsResponse:
         """Get up to 500 of the current top story ids, best rank first.
 
         Returns:
             HackerNewsResponse: Response object with success status and data/error
-
         """
         url = self.base_url + "/topstories.json"
 
@@ -158,23 +169,27 @@ class HackerNewsDataSource:
             url=url,
             headers=headers,
             query_params={},
-            body=None,
+            body=None
         )
 
         try:
             response = await self.http.execute(request)
+            if response.status >= 400:
+                return HackerNewsResponse(
+                    success=False,
+                    error=f"HTTP {response.status}: {response.text()}",
+                )
             return HackerNewsResponse(success=True, data=response.json())
         except Exception as e:
             return HackerNewsResponse(success=False, error=str(e))
 
     async def get_new_stories(
-        self,
+        self
     ) -> HackerNewsResponse:
         """Get up to 500 of the newest story ids, most recent first.
 
         Returns:
             HackerNewsResponse: Response object with success status and data/error
-
         """
         url = self.base_url + "/newstories.json"
 
@@ -185,23 +200,27 @@ class HackerNewsDataSource:
             url=url,
             headers=headers,
             query_params={},
-            body=None,
+            body=None
         )
 
         try:
             response = await self.http.execute(request)
+            if response.status >= 400:
+                return HackerNewsResponse(
+                    success=False,
+                    error=f"HTTP {response.status}: {response.text()}",
+                )
             return HackerNewsResponse(success=True, data=response.json())
         except Exception as e:
             return HackerNewsResponse(success=False, error=str(e))
 
     async def get_best_stories(
-        self,
+        self
     ) -> HackerNewsResponse:
         """Get up to 500 of the current best story ids.
 
         Returns:
             HackerNewsResponse: Response object with success status and data/error
-
         """
         url = self.base_url + "/beststories.json"
 
@@ -212,23 +231,27 @@ class HackerNewsDataSource:
             url=url,
             headers=headers,
             query_params={},
-            body=None,
+            body=None
         )
 
         try:
             response = await self.http.execute(request)
+            if response.status >= 400:
+                return HackerNewsResponse(
+                    success=False,
+                    error=f"HTTP {response.status}: {response.text()}",
+                )
             return HackerNewsResponse(success=True, data=response.json())
         except Exception as e:
             return HackerNewsResponse(success=False, error=str(e))
 
     async def get_ask_stories(
-        self,
+        self
     ) -> HackerNewsResponse:
         """Get up to 200 of the latest Ask HN story ids.
 
         Returns:
             HackerNewsResponse: Response object with success status and data/error
-
         """
         url = self.base_url + "/askstories.json"
 
@@ -239,23 +262,27 @@ class HackerNewsDataSource:
             url=url,
             headers=headers,
             query_params={},
-            body=None,
+            body=None
         )
 
         try:
             response = await self.http.execute(request)
+            if response.status >= 400:
+                return HackerNewsResponse(
+                    success=False,
+                    error=f"HTTP {response.status}: {response.text()}",
+                )
             return HackerNewsResponse(success=True, data=response.json())
         except Exception as e:
             return HackerNewsResponse(success=False, error=str(e))
 
     async def get_show_stories(
-        self,
+        self
     ) -> HackerNewsResponse:
         """Get up to 200 of the latest Show HN story ids.
 
         Returns:
             HackerNewsResponse: Response object with success status and data/error
-
         """
         url = self.base_url + "/showstories.json"
 
@@ -266,23 +293,27 @@ class HackerNewsDataSource:
             url=url,
             headers=headers,
             query_params={},
-            body=None,
+            body=None
         )
 
         try:
             response = await self.http.execute(request)
+            if response.status >= 400:
+                return HackerNewsResponse(
+                    success=False,
+                    error=f"HTTP {response.status}: {response.text()}",
+                )
             return HackerNewsResponse(success=True, data=response.json())
         except Exception as e:
             return HackerNewsResponse(success=False, error=str(e))
 
     async def get_job_stories(
-        self,
+        self
     ) -> HackerNewsResponse:
         """Get up to 200 of the latest Job story ids.
 
         Returns:
             HackerNewsResponse: Response object with success status and data/error
-
         """
         url = self.base_url + "/jobstories.json"
 
@@ -293,23 +324,27 @@ class HackerNewsDataSource:
             url=url,
             headers=headers,
             query_params={},
-            body=None,
+            body=None
         )
 
         try:
             response = await self.http.execute(request)
+            if response.status >= 400:
+                return HackerNewsResponse(
+                    success=False,
+                    error=f"HTTP {response.status}: {response.text()}",
+                )
             return HackerNewsResponse(success=True, data=response.json())
         except Exception as e:
             return HackerNewsResponse(success=False, error=str(e))
 
     async def get_updates(
-        self,
+        self
     ) -> HackerNewsResponse:
         """Get recently changed items and profiles, as {"items": [...ids], "profiles": [...usernames]}.
 
         Returns:
             HackerNewsResponse: Response object with success status and data/error
-
         """
         url = self.base_url + "/updates.json"
 
@@ -320,11 +355,16 @@ class HackerNewsDataSource:
             url=url,
             headers=headers,
             query_params={},
-            body=None,
+            body=None
         )
 
         try:
             response = await self.http.execute(request)
+            if response.status >= 400:
+                return HackerNewsResponse(
+                    success=False,
+                    error=f"HTTP {response.status}: {response.text()}",
+                )
             return HackerNewsResponse(success=True, data=response.json())
         except Exception as e:
             return HackerNewsResponse(success=False, error=str(e))
@@ -334,14 +374,13 @@ class HackerNewsDataSource:
         
         Returns:
             HackerNewsResponse: Information about available API methods
-
         """
         info = {
-            "total_methods": 10,
-            "base_url": self.base_url,
-            "api_categories": [
-                "Items & Users (2 methods)",
-                "Live data: max item id, story lists, updates (8 methods)",
-            ],
+            'total_methods': 10,
+            'base_url': self.base_url,
+            'api_categories': [
+                'Items & Users (2 methods)',
+                'Live data: max item id, story lists, updates (8 methods)',
+            ]
         }
         return HackerNewsResponse(success=True, data=info)
