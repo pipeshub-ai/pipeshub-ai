@@ -213,3 +213,7 @@ class TestPolicyText:
         text = policy_text("custom_fetch_tool")
         assert "custom_fetch_tool" in text
         assert "knowledgegraph__fetch_record" not in text
+
+    def test_mentions_occurrence_counts(self) -> None:
+        text = policy_text("fetch_tool")
+        assert "Computed occurrence count" in text

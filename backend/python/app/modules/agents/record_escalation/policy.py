@@ -19,6 +19,9 @@ from app.modules.agents.record_escalation.models import (
     FetchCandidate,
     FetchPlan,
 )
+from app.modules.agents.record_escalation.occurrence_count import (
+    is_occurrence_count_query,
+)
 
 # ---------------------------------------------------------------------------
 # Fallback signal — used only when the intent call produced no marker
@@ -107,8 +110,11 @@ def needs_whole_document(marker: str | None, *texts: str) -> bool:
     Args:
         marker: The WHOLE_DOCUMENT marker from the intent call ("yes"/"no"), or
                 None when the intent call was skipped or produced no marker.
-                A real model judgment, so it wins outright when present.
-        *texts: Request texts, used only when `marker` is None.
+                A real model judgment, so it wins outright when present —
+                except occurrence-count questions (#2996), which always need
+                the full record even if the marker said "no".
+        *texts: Request texts. Used when `marker` is None, and always used to
+                detect occurrence-count questions.
 
     The fallback is class-based (see the module constants above), not a list of
     known request shapes: it fires on aggregative operations, aggregative
@@ -116,10 +122,15 @@ def needs_whole_document(marker: str | None, *texts: str) -> bool:
     True because a false positive only costs a candidate list the model can
     ignore, whereas a false negative hides coverage information it needs.
     """
+    combined = " ".join(t for t in texts if t)
+    # Occurrence tallies are a property of the whole record even if the intent
+    # marker said "no" — snippets under-count (issue #2996).
+    if is_occurrence_count_query(combined):
+        return True
+
     if marker is not None:
         return marker.lower().strip() == "yes"
 
-    combined = " ".join(t for t in texts if t)
     if not combined.strip():
         return False
 
@@ -231,8 +242,11 @@ def policy_text(tool_ref: str) -> str:
         f"visible in a block you hold, or metadata alone (status, assignee) "
         f"settles the goal. This covers both no content yet from lookup/"
         f"navigate/list_files, and incomplete coverage for a whole-document "
-        f"property (a summary, risks or key points, a comparison, whether it "
-        f"mentions something anywhere). Never infer content from a title.\n\n"
+        f"property (a summary, risks or key points, a comparison, how many "
+        f"times a phrase appears, whether it mentions something anywhere). "
+        f"Never infer content from a title. If a fetch result includes a "
+        f"Computed occurrence count, use that number — do not recount from "
+        f"snippets or visible blocks.\n\n"
         f"A retrieval result may include a candidate list showing how much of "
         f"each record you hold ('you have 4 of 87 blocks'), which tells you "
         f"whether reading further would add anything; use it when present. "
