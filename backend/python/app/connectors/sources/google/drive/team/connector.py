@@ -2621,11 +2621,26 @@ class GoogleDriveTeamConnector(BaseConnector):
                     drive_scoped=False,
                 ):
                     found.extend(child_batch)
-            except Exception as e:
-                self.logger.warning(
+            except HttpError as e:
+                if e.resp.status in (HttpStatusCode.FORBIDDEN.value, HttpStatusCode.NOT_FOUND.value):
+                    # Folder genuinely gone or access revoked since it was listed above;
+                    # there is nothing to replay, so this is safe to skip permanently.
+                    self.logger.warning(
+                        f"Shared folder {folder_id} no longer accessible (HTTP {e.resp.status}); skipping"
+                    )
+                    continue
+                # Anything else (rate limiting, transient 5xx, etc.) must not be
+                # swallowed: the sync-point save below would then permanently skip
+                # this folder's descendants since incremental sync never replays them.
+                self.logger.error(
                     f"Failed to list children of shared folder {folder_id}: {e}"
                 )
-                continue
+                raise
+            except Exception as e:
+                self.logger.error(
+                    f"Failed to list children of shared folder {folder_id}: {e}"
+                )
+                raise
 
             seen_ids.update(child_id for child in found if (child_id := child.get("id")))
             descendants.extend(found)

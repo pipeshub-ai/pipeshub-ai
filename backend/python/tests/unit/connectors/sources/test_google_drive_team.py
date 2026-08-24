@@ -3768,7 +3768,33 @@ class TestSharedFolderExpansion:
         assert found == []
 
     @pytest.mark.asyncio
-    async def test_listing_failure_skips_the_folder(self, connector):
+    async def test_folder_gone_or_inaccessible_skips_the_folder(self, connector):
+        # 403/404 means the folder was deleted or access was revoked since it was
+        # listed above: there is nothing to replay, so this is safe to skip.
+        folder = _make_file_metadata(
+            file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
+        )
+
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+            raise _make_http_error(HttpStatusCode.NOT_FOUND.value)
+            yield  # pragma: no cover - makes this an async generator
+
+        with patch(
+            "app.connectors.sources.google.drive.team.connector.fetch_folder_children",
+            fake_children,
+        ):
+            found = await connector._expand_shared_folders(
+                [folder], {"fold-1"}, AsyncMock()
+            )
+
+        assert found == []
+
+    @pytest.mark.asyncio
+    async def test_unknown_listing_failure_is_not_swallowed(self, connector):
+        # Anything other than a confirmed-gone folder (rate limiting, transient 5xx,
+        # or an unrelated exception) must propagate so the caller does not save the
+        # sync-point token, which would otherwise skip this folder's descendants
+        # for good.
         folder = _make_file_metadata(
             file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
         )
@@ -3781,11 +3807,29 @@ class TestSharedFolderExpansion:
             "app.connectors.sources.google.drive.team.connector.fetch_folder_children",
             fake_children,
         ):
-            found = await connector._expand_shared_folders(
-                [folder], {"fold-1"}, AsyncMock()
-            )
+            with pytest.raises(RuntimeError):
+                await connector._expand_shared_folders(
+                    [folder], {"fold-1"}, AsyncMock()
+                )
 
-        assert found == []
+    @pytest.mark.asyncio
+    async def test_transient_http_error_is_not_swallowed(self, connector):
+        folder = _make_file_metadata(
+            file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
+        )
+
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+            raise _make_http_error(500)
+            yield  # pragma: no cover - makes this an async generator
+
+        with patch(
+            "app.connectors.sources.google.drive.team.connector.fetch_folder_children",
+            fake_children,
+        ):
+            with pytest.raises(HttpError):
+                await connector._expand_shared_folders(
+                    [folder], {"fold-1"}, AsyncMock()
+                )
 
     @pytest.mark.asyncio
     async def test_non_folders_are_not_expanded(self, connector):

@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from googleapiclient.errors import HttpError
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
@@ -79,6 +80,13 @@ def _make_file_metadata(
     if version is not None:
         meta["version"] = version
     return meta
+
+
+def _make_http_error(status: int, content: bytes = b"error") -> HttpError:
+    mock_resp = MagicMock()
+    mock_resp.status = status
+    mock_resp.reason = "Error"
+    return HttpError(mock_resp, content)
 
 
 def _make_record(**kwargs):
@@ -1706,3 +1714,92 @@ class TestSyncSharedWithMe:
         )
 
         assert await connector._sync_shared_with_me("u1", "u@t.com", "d1") == 0
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
+    async def test_folder_gone_or_inaccessible_skips_the_folder(self, mock_refresh, connector):
+        # 403/404 means the shared folder was deleted or access was revoked since it
+        # was listed above: there is nothing to replay, so it is safe to skip and the
+        # folder item itself still gets processed normally.
+        mock_refresh.return_value = None
+        shared_folder = _make_file_metadata(
+            file_id="fold-1", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
+        )
+        shared_folder["driveId"] = "some-drive"
+        connector.drive_data_source.files_list = AsyncMock(
+            return_value={"files": [shared_folder]}
+        )
+
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+            raise _make_http_error(HttpStatusCode.NOT_FOUND.value)
+            yield  # pragma: no cover - makes this an async generator
+
+        seen = []
+
+        async def mock_gen(files, uid, email, did, *, permission_type=None, **kwargs):
+            seen.extend(f["id"] for f in files)
+            for _ in files:
+                update = MagicMock()
+                update.is_deleted = False
+                update.is_updated = False
+                yield MagicMock(), [], update
+
+        connector._process_drive_items_generator = mock_gen
+
+        with patch(
+            "app.connectors.sources.google.drive.individual.connector.fetch_folder_children",
+            fake_children,
+        ):
+            total = await connector._sync_shared_with_me("u1", "u@t.com", "d1")
+
+        assert seen == ["fold-1"]
+        assert total == 1
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
+    async def test_unknown_listing_failure_is_not_swallowed(self, mock_refresh, connector):
+        # Anything other than a confirmed-gone folder must propagate, so the caller
+        # (the full sync) does not save the sync-point token and skip this folder's
+        # descendants for good.
+        mock_refresh.return_value = None
+        shared_folder = _make_file_metadata(
+            file_id="fold-1", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
+        )
+        shared_folder["driveId"] = "some-drive"
+        connector.drive_data_source.files_list = AsyncMock(
+            return_value={"files": [shared_folder]}
+        )
+
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+            raise RuntimeError("no access")
+            yield  # pragma: no cover - makes this an async generator
+
+        with patch(
+            "app.connectors.sources.google.drive.individual.connector.fetch_folder_children",
+            fake_children,
+        ):
+            with pytest.raises(RuntimeError):
+                await connector._sync_shared_with_me("u1", "u@t.com", "d1")
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
+    async def test_transient_http_error_is_not_swallowed(self, mock_refresh, connector):
+        mock_refresh.return_value = None
+        shared_folder = _make_file_metadata(
+            file_id="fold-1", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
+        )
+        shared_folder["driveId"] = "some-drive"
+        connector.drive_data_source.files_list = AsyncMock(
+            return_value={"files": [shared_folder]}
+        )
+
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+            raise _make_http_error(500)
+            yield  # pragma: no cover - makes this an async generator
+
+        with patch(
+            "app.connectors.sources.google.drive.individual.connector.fetch_folder_children",
+            fake_children,
+        ):
+            with pytest.raises(HttpError):
+                await connector._sync_shared_with_me("u1", "u@t.com", "d1")
