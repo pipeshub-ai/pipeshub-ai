@@ -510,7 +510,29 @@ function UsersPageContent() {
     setSelectedUsers(new Set());
   }, [selectedUsersList, addToast, t, setSelectedUsers]);
 
+  const showDemoteAdminBeforeCancelToast = useCallback(() => {
+    addToast({
+      variant: 'info',
+      title: t(
+        'workspace.users.actions.demoteAdminBeforeRemoveTitle',
+        'Cannot remove admin'
+      ),
+      description: t(
+        'workspace.users.actions.demoteAdminBeforeRemove',
+        'Demote the admin to member, then remove them.'
+      ),
+      duration: 5000,
+    });
+  }, [addToast, t]);
+
   const handleBulkCancelInvite = useCallback(async () => {
+    const hasAdminInvite = selectedUsersList.some(
+      (u) => (u.role || USER_ROLES.MEMBER) === USER_ROLES.ADMIN
+    );
+    if (hasAdminInvite) {
+      showDemoteAdminBeforeCancelToast();
+      return;
+    }
     const userIds = selectedUsersList.map((u) => u.userId);
     const { succeeded, failed } = await UsersApi.bulkCancelInvites(userIds);
     if (succeeded > 0) {
@@ -535,7 +557,14 @@ function UsersPageContent() {
     }
     setSelectedUsers(new Set());
     fetchUsers();
-  }, [selectedUsersList, addToast, t, setSelectedUsers, fetchUsers]);
+  }, [
+    selectedUsersList,
+    addToast,
+    t,
+    setSelectedUsers,
+    fetchUsers,
+    showDemoteAdminBeforeCancelToast,
+  ]);
 
   /** Bulk actions shown in the floating bar — varies by selection composition */
   const hasAdminSelected = useMemo(
@@ -557,9 +586,15 @@ function UsersPageContent() {
       if (isAdmin) {
         actions.push({
           key: 'cancel-invite',
-          label: t('workspace.users.bulk.cancelInvite', 'Cancel Invite'),
-          icon: 'cancel_schedule_send',
+          label: hasAdminSelected
+            ? t(
+                'workspace.users.bulk.adminInviteCantBeCancelled',
+                'Admin invites cannot be cancelled'
+              )
+            : t('workspace.users.bulk.cancelInvite', 'Cancel Invite'),
+          icon: hasAdminSelected ? 'block' : 'cancel_schedule_send',
           variant: 'danger',
+          disabled: hasAdminSelected,
           onClick: handleBulkCancelInvite,
         });
       }
@@ -674,21 +709,6 @@ function UsersPageContent() {
       setIsRemoving(false);
     }
   }, [removeTarget, fetchUsers, addToast, t]);
-
-  const showDemoteAdminBeforeCancelToast = useCallback(() => {
-    addToast({
-      variant: 'info',
-      title: t(
-        'workspace.users.actions.demoteAdminBeforeRemoveTitle',
-        'Cannot remove admin'
-      ),
-      description: t(
-        'workspace.users.actions.demoteAdminBeforeRemove',
-        'Demote the admin to member, then remove them.'
-      ),
-      duration: 5000,
-    });
-  }, [addToast, t]);
 
   const requestCancelInvite = useCallback(
     (user: User) => {
