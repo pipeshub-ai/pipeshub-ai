@@ -92,6 +92,40 @@ class TestKnowledgeToolsetGate:
         assert not any("search_internal_knowledge" in name for name in registry.names())
 
 
+class TestCodeGraphDynamicToolsGate:
+    """The code graph is a view over files a repo connector ingested, so its
+    tools are built per request and gated on the same pair as Slack's context
+    tools: the org has one configured AND this agent has one attached."""
+
+    def _names(self, *, connector: bool, knowledge: bool) -> list[str]:
+        context = _make_context()
+        context.tool_state["has_code_connector"] = connector
+        context.tool_state["has_code_knowledge"] = knowledge
+        context.tool_state["graph_provider"] = MagicMock()
+        return [t.name for t in _build_dynamic_tools(context)]
+
+    def test_both_flags_build_the_tools(self) -> None:
+        names = self._names(connector=True, knowledge=True)
+        assert "codegraph__query_code_graph" in names
+        assert "codegraph__get_symbol_code" in names
+
+    def test_attached_but_connector_gone_builds_nothing(self) -> None:
+        """Attached knowledge is a stored list, so an agent can still name a
+        connector the org has since deleted. The org flag is what catches it."""
+        assert self._names(connector=False, knowledge=True) == []
+
+    def test_org_has_a_repo_but_agent_is_not_scoped_to_it(self) -> None:
+        assert self._names(connector=True, knowledge=False) == []
+
+    def test_no_graph_provider_builds_nothing(self) -> None:
+        """A tool that can only ever fail is worse than no tool."""
+        context = _make_context()
+        context.tool_state["has_code_connector"] = True
+        context.tool_state["has_code_knowledge"] = True
+        context.tool_state["graph_provider"] = None
+        assert _build_dynamic_tools(context) == []
+
+
 class TestBuildDynamicToolsWebSearchGate:
     """`web_search`/`agent` set `state["web_search_config"]`; `internal_search`
     leaves it `None` -- the sole gate on whether `web_search`/`fetch_url`

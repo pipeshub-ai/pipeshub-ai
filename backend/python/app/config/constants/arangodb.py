@@ -303,7 +303,7 @@ class ExtensionTypes(Enum):
     HEIC = "heic"
     HEIF = "heif"
     EPUB = "epub"
-    SQL_TABLE = "sql_table"  
+    SQL_TABLE = "sql_table"
     SQL_VIEW = "sql_view"
     # Registry key for the tree-sitter code parser; not a file extension.
     CODE = "code"
@@ -626,6 +626,21 @@ class RecordRelations(Enum):
     # (see `config/constants/neo4j.py`), no new edge collection or Neo4j
     # relationship type required.
     DERIVED_FROM = "DERIVED_FROM"
+
+    # --- code knowledge graph ---
+    # Structural, written at parse time because both endpoints are in one file.
+    CONTAINS = "CONTAINS"      # record -> block, or block group -> block
+    DEFINES = "DEFINES"        # class -> field
+    METHOD = "METHOD"          # class -> method
+    # Cross-file, written by the edge-resolution pass once a repo is indexed.
+    CALLS = "CALLS"
+    INDIRECT_CALL = "INDIRECT_CALL"
+    IMPORTS = "IMPORTS"            # file -> imported symbol
+    IMPORTS_FROM = "IMPORTS_FROM"  # file -> imported module file
+    RE_EXPORTS = "RE_EXPORTS"
+    EXPORTS = "EXPORTS"
+    INHERITS = "INHERITS"
+    EXTENDS = "EXTENDS"
 
 
 class EntityRelations(Enum):

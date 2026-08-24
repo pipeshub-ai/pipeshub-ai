@@ -181,9 +181,18 @@ class CodeMetadata(BaseModel):
     signature: Optional[str] = None
     docstring: Optional[str] = None
     decorators: Optional[list[str]] = None
+    # Repo-unique, human-readable resolution identity. The graph block key is
+    # hashed from this, so the blob and the graph must agree on it exactly.
     qualified_name: Optional[str] = None  # "method:Outer.Inner.run"
     start_line: Optional[int] = None
     end_line: Optional[int] = None
+    # Cross-file edges whose source is this block and whose target is still a
+    # bare name; resolved by the corpus pass after every file is indexed.
+    pending_edges: Optional[list[dict]] = None
+    pending_edges_truncated: bool = False
+    # Receiver-variable -> declared type for the whole file. Cannot be rebuilt
+    # without re-parsing, so the file-summary block carries it.
+    type_table: Optional[dict[str, str]] = None
 
 class MediaMetadata(BaseModel):
     """Metadata for media blocks (image, video, audio)"""

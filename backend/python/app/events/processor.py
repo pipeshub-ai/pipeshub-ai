@@ -33,6 +33,10 @@ from app.models.blocks import (
 )
 from app.models.entities import Record, RecordType
 from app.modules.parsers.code_parser.lang_config import config_for_extension, detect_language
+from app.modules.code_graph.block_projection import (
+    BlockProjectionContext,
+    write_code_file_blocks_to_graph,
+)
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
@@ -1823,6 +1827,30 @@ class Processor:
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
+
+            # Blocks become graph nodes here, carrying their unresolved
+            # cross-file references. The edges themselves are resolved later,
+            # once every file in the repo has been indexed.
+            try:
+                await write_code_file_blocks_to_graph(
+                    graph_provider=self.graph_provider,
+                    context=BlockProjectionContext(
+                        org_id=record.org_id,
+                        record_id=recordId,
+                        record_group_id=record.record_group_id,
+                        connector_id=record.connector_id,
+                        file_path=file_path,
+                        language=language,
+                    ),
+                    block_containers=block_containers,
+                    logger=self.logger,
+                )
+            except Exception as projection_error:
+                # A graph-projection failure must not fail indexing: the blocks
+                # are already searchable, and the edge pass can be re-run.
+                self.logger.error(
+                    f"❌ Failed to project code blocks to graph for {recordId}: {projection_error}"
+                )
 
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
             self.logger.info("✅ Code processing completed successfully")

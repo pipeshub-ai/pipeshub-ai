@@ -103,6 +103,20 @@ class TestApplyPolicyToChatState:
         assert chat_state["has_sql_knowledge"] is False
         assert chat_state["has_slack_knowledge"] is False
 
+    def test_code_knowledge_follows_the_connector_like_sql_and_slack(self) -> None:
+        """Chat modes have no per-agent knowledge scope, so code-tool
+        availability mirrors connector presence — same as SQL and Slack."""
+        chat_state: dict[str, Any] = {"has_code_connector": True}
+        _apply_policy_to_chat_state(chat_state, INTERNAL_SEARCH_POLICY, web_search_config=None)
+        assert chat_state["has_code_knowledge"] is True
+
+    def test_web_search_mode_turns_code_tools_off(self) -> None:
+        chat_state: dict[str, Any] = {"has_code_connector": True}
+        _apply_policy_to_chat_state(
+            chat_state, WEB_SEARCH_POLICY, web_search_config={"provider": "tavily"}
+        )
+        assert chat_state["has_code_knowledge"] is False
+
 
 class TestResolveCustomInstructions:
     """`_resolve_custom_instructions` -- the workspace "Custom Instructions"

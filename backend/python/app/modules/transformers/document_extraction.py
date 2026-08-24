@@ -145,6 +145,14 @@ class DocumentExtraction(Transformer):
         )
         self.logger.debug("🎯 Document extraction completed successfully")
 
+        try:
+            with open("test.txt", "a") as f:
+                f.write(f"record_id={record.id} record_name={getattr(record, 'record_name', 'N/A')}\n")
+                f.write(json.dumps(record.semantic_metadata.model_dump(), indent=2, default=str))
+                f.write("\n---\n")
+        except Exception:
+            self.logger.debug("Failed to write semantic metadata to test.txt", exc_info=True)
+
 
     def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool, context_length: int) -> List[dict]:
         MAX_TOKENS = int(context_length * CONTENT_TOKEN_RATIO)
