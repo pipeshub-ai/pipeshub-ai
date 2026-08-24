@@ -74,6 +74,7 @@ from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     fetch_folder_children,
     has_entered_scope,
     has_exited_scope,
+    is_retryable_403,
     pass_folder_filter,
     probe_can_list_children,
 )
@@ -1220,16 +1221,21 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     ):
                         found.extend(child_batch)
                 except HttpError as e:
-                    if e.resp.status in (HttpStatusCode.FORBIDDEN.value, HttpStatusCode.NOT_FOUND.value):
+                    if (
+                        e.resp.status in (HttpStatusCode.FORBIDDEN.value, HttpStatusCode.NOT_FOUND.value)
+                        and not is_retryable_403(e)
+                    ):
                         # Folder genuinely gone or access revoked since it was listed above;
                         # there is nothing to replay, so this is safe to skip permanently.
                         self.logger.warning(
                             f"Shared folder {folder['id']} no longer accessible (HTTP {e.resp.status}); skipping"
                         )
                         continue
-                    # Anything else (rate limiting, transient 5xx, etc.) must not be
-                    # swallowed: the sync-point save below would then permanently skip
-                    # this folder's descendants since incremental sync never replays them.
+                    # Anything else (rate limiting -- including a 403 with a
+                    # rateLimitExceeded/userRateLimitExceeded reason -- transient 5xx,
+                    # etc.) must not be swallowed: the sync-point save below would then
+                    # permanently skip this folder's descendants since incremental sync
+                    # never replays them.
                     self.logger.error(
                         f"Failed to list children of shared folder {folder['id']}: {e}"
                     )

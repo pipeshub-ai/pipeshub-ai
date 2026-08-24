@@ -1470,6 +1470,104 @@ class TestPerformFullSync:
 
 
 # ===================================================================
+# _sync_shared_with_me() -- shared-folder child-listing error handling
+# ===================================================================
+
+
+def _make_retryable_403() -> HttpError:
+    """A 403 whose reason marks it as rate-limiting, not permission loss."""
+    resp = MagicMock()
+    resp.status = 403
+    resp.reason = "Forbidden"
+    http_err = HttpError(resp, b"rate limited")
+    http_err.error_details = [{"reason": "rateLimitExceeded"}]
+    return http_err
+
+
+def _shared_with_me_files_list_side_effect(retryable_error: HttpError) -> "callable":
+    """Serve the sharedWithMe listing, then fail the folder's child listing."""
+
+    def _side_effect(**kwargs):
+        q = kwargs.get("q", "")
+        if "sharedWithMe" in q:
+            return {
+                "files": [
+                    {
+                        "id": "folder-1",
+                        "mimeType": MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                        "driveId": "drive-x",
+                    }
+                ]
+            }
+        # Child-listing call from fetch_folder_children for folder-1.
+        raise retryable_error
+
+    return _side_effect
+
+
+class TestSyncSharedWithMeErrorHandling:
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
+    async def test_retryable_403_on_child_listing_propagates(self, mock_refresh, connector):
+        """rateLimitExceeded is a 403 but is retryable, not a permanent-access
+        loss -- it must propagate instead of being skipped like a genuinely
+        inaccessible folder."""
+        mock_refresh.return_value = None
+        retryable_error = _make_retryable_403()
+        connector.drive_data_source.files_list = AsyncMock(
+            side_effect=_shared_with_me_files_list_side_effect(retryable_error)
+        )
+
+        with pytest.raises(HttpError):
+            await connector._sync_shared_with_me("u1", "u@t.com", "d1")
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
+    async def test_non_retryable_403_is_skipped(self, mock_refresh, connector):
+        """A 403 without a retryable reason (or genuinely revoked access) is
+        still safe to skip permanently."""
+        mock_refresh.return_value = None
+        resp = MagicMock()
+        resp.status = 403
+        resp.reason = "Forbidden"
+        not_found_error = HttpError(resp, b"forbidden")
+        not_found_error.error_details = [{"reason": "insufficientPermissions"}]
+        connector.drive_data_source.files_list = AsyncMock(
+            side_effect=_shared_with_me_files_list_side_effect(not_found_error)
+        )
+
+        # Should not raise -- the folder is skipped and the sweep completes.
+        await connector._sync_shared_with_me("u1", "u@t.com", "d1")
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
+    async def test_full_sync_does_not_persist_sync_point_on_retryable_403(self, mock_refresh, connector):
+        """A retryable 403 surfaced from the shared-with-me seed sweep must
+        abort _perform_full_sync before the page token is saved, so the next
+        run replays this folder instead of skipping it for good."""
+        mock_refresh.return_value = None
+        retryable_error = _make_retryable_403()
+        connector.drive_data_source.changes_get_start_page_token = AsyncMock(
+            return_value={"startPageToken": "start-token-12345678901234567890"}
+        )
+
+        def files_list_side_effect(**kwargs):
+            q = kwargs.get("q", "")
+            if q == "trashed=false":
+                # Main full-sync listing: nothing to process, moves straight
+                # on to the shared-with-me seed sweep.
+                return {"files": []}
+            return _shared_with_me_files_list_side_effect(retryable_error)(**kwargs)
+
+        connector.drive_data_source.files_list = AsyncMock(side_effect=files_list_side_effect)
+
+        with pytest.raises(HttpError):
+            await connector._perform_full_sync("key", "org1", "u1", "u@t.com", "d1")
+
+        connector.drive_delta_sync_point.update_sync_point.assert_not_awaited()
+
+
+# ===================================================================
 # _perform_incremental_sync()
 # ===================================================================
 

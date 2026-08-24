@@ -3790,6 +3790,53 @@ class TestSharedFolderExpansion:
         assert found == []
 
     @pytest.mark.asyncio
+    async def test_403_without_retryable_reason_skips_the_folder(self, connector):
+        # A 403 with no rate-limit reason (or none at all) is still a genuine
+        # permission loss and safe to skip permanently.
+        folder = _make_file_metadata(
+            file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
+        )
+
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+            raise _make_http_error(HttpStatusCode.FORBIDDEN.value)
+            yield  # pragma: no cover - makes this an async generator
+
+        with patch(
+            "app.connectors.sources.google.drive.team.connector.fetch_folder_children",
+            fake_children,
+        ):
+            found = await connector._expand_shared_folders(
+                [folder], {"fold-1"}, AsyncMock()
+            )
+
+        assert found == []
+
+    @pytest.mark.asyncio
+    async def test_retryable_403_reason_is_not_swallowed(self, connector):
+        # Drive surfaces rate limiting as a 403 with reason rateLimitExceeded /
+        # userRateLimitExceeded, not a distinct status code. Treating it like a
+        # permission loss would skip this folder's descendants for good, since
+        # incremental sync never replays them.
+        folder = _make_file_metadata(
+            file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
+        )
+
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+            http_err = _make_http_error(HttpStatusCode.FORBIDDEN.value)
+            http_err.error_details = [{"reason": "rateLimitExceeded"}]
+            raise http_err
+            yield  # pragma: no cover - makes this an async generator
+
+        with patch(
+            "app.connectors.sources.google.drive.team.connector.fetch_folder_children",
+            fake_children,
+        ):
+            with pytest.raises(HttpError):
+                await connector._expand_shared_folders(
+                    [folder], {"fold-1"}, AsyncMock()
+                )
+
+    @pytest.mark.asyncio
     async def test_unknown_listing_failure_is_not_swallowed(self, connector):
         # Anything other than a confirmed-gone folder (rate limiting, transient 5xx,
         # or an unrelated exception) must propagate so the caller does not save the
