@@ -491,27 +491,71 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
 
     raise ValueError(f"Unsupported embedding config type: {provider}")
 
-def _get_anthropic_max_tokens(model_name: str) -> int:
-    """Gets the max output tokens for an Anthropic model based on its name.
+# Bedrock/Anthropic snapshot suffixes (e.g. 20250219) are not x.y minors.
+_CLAUDE_SNAPSHOT_DATE_MIN = 100
 
-    Claude 4.5 supports 64K output tokens.  Claude 4.6+ and Claude 5.x
-    support at least 16K.  Legacy/unrecognised models fall back to 4096.
+_CLAUDE_TIER_PATTERN = r"([a-z]+)"
+
+
+def _claude_version_minor(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    value = int(raw)
+    if value >= _CLAUDE_SNAPSHOT_DATE_MIN:
+        return None
+    return value
+
+
+def _parse_claude_version(
+    model_name: str | None,
+) -> tuple[str | None, int, int | None] | None:
+    """Parse Claude tier/major/minor from API, Bedrock, and Vertex IDs.
+
+    Handles both ``claude-sonnet-4-5`` and dated ``claude-3-7-sonnet-20250219``
+    shapes. Snapshot dates are not treated as minor versions.
     """
-    lowered = model_name.lower() if model_name else ""
+    if not model_name:
+        return None
+    lowered = model_name.lower()
+    if "claude" not in lowered:
+        return None
+
     match = re.search(
-        r"claude[-_]?(?:opus|sonnet|haiku)[-_]?(\d+)(?:[-_.](\d+))?",
+        rf"claude[-_]?{_CLAUDE_TIER_PATTERN}[-_]?(\d+)(?:[-_.](\d+))?",
         lowered,
     )
     if match:
-        major = int(match.group(1))
-        minor = int(match.group(2)) if match.group(2) is not None else None
+        return match.group(1), int(match.group(2)), _claude_version_minor(match.group(3))
+
+    match = re.search(
+        rf"claude[-_]?(\d+)(?:[-_.](\d+))?[-_]?{_CLAUDE_TIER_PATTERN}",
+        lowered,
+    )
+    if match:
+        return match.group(3), int(match.group(1)), _claude_version_minor(match.group(2))
+
+    return None
+
+
+def _get_anthropic_max_tokens(model_name: str) -> int:
+    """Gets the max output tokens for an Anthropic model based on its name.
+
+    Claude 3.7, Claude 4, and Claude 4.5 support 64K output tokens (GA
+    thinking cap on 3.7). Claude 4.6+ and Claude 5.x use 16K. Legacy or
+    unrecognised models fall back to 4096.
+    """
+    lowered = model_name.lower() if model_name else ""
+    parsed = _parse_claude_version(model_name)
+    if parsed is not None:
+        _tier, major, minor = parsed
         if major >= 5:
             return MAX_OUTPUT_TOKENS_CLAUDE_MODERN
         if major == 4:
-            if minor is not None and minor == 5:
-                return MAX_OUTPUT_TOKENS_CLAUDE_4_5
             if minor is not None and minor >= 6:
                 return MAX_OUTPUT_TOKENS_CLAUDE_MODERN
+            return MAX_OUTPUT_TOKENS_CLAUDE_4_5
+        if major == 3 and minor is not None and minor >= 7:
+            return MAX_OUTPUT_TOKENS_CLAUDE_4_5
     if "4.5" in lowered:
         return MAX_OUTPUT_TOKENS_CLAUDE_4_5
     return MAX_OUTPUT_TOKENS
@@ -536,17 +580,11 @@ def _anthropic_supports_sampling_params(model_name: str | None) -> bool:
     if "claude" not in lowered:
         return True
 
-    # Minor is optional so bare major IDs like ``claude-sonnet-5`` match.
-    match = re.search(
-        r"claude[-_]?(opus|sonnet|haiku)[-_]?(\d+)(?:[-_.](\d+))?",
-        lowered,
-    )
-    if not match:
+    parsed = _parse_claude_version(model_name)
+    if parsed is None:
         return True
 
-    tier = match.group(1)
-    major = int(match.group(2))
-    minor = int(match.group(3)) if match.group(3) is not None else None
+    tier, major, minor = parsed
 
     if major >= 5:
         return False
@@ -945,7 +983,11 @@ _BEDROCK_GPT_OSS_EFFORT_MAP: Dict[str, str] = {
 }
 _BEDROCK_OPENAI_EFFORT_MAP = _BEDROCK_GPT_OSS_EFFORT_MAP
 
-_GPT5_MODEL_RE = re.compile(r"gpt[-_.]?5")
+# Same gpt-5 family as ``_OPENAI_GPT5_MODEL_PATTERN``, but Bedrock IDs are
+# dot-delimited (``us.openai.gpt-5.6-luna``) so the prefix must also allow
+# ``.``. A substring ``gpt[-_.]?5`` would false-positive ``gpt-50`` and
+# mid-token names like ``my-gpt-5-compatible``.
+_GPT5_MODEL_RE = re.compile(r"(?:^|[./])gpt-5(?:\.\d+)?(?:[-_]|$)", re.IGNORECASE)
 
 # Nova 2 maxReasoningEffort is low|medium|high only.
 _BEDROCK_NOVA_EFFORT_MAP: Dict[str, str] = {
@@ -966,6 +1008,8 @@ _BEDROCK_ANTHROPIC_THINKING_BUDGETS: Dict[str, int] = {
 }
 
 _BEDROCK_MIN_THINKING_BUDGET_TOKENS = 1024
+# Visible-reply headroom so budget_tokens stays strictly below max_tokens.
+_BEDROCK_THINKING_OUTPUT_RESERVE_TOKENS = 1024
 
 
 def _bedrock_is_nova_2(model_name: str | None) -> bool:
@@ -1026,27 +1070,17 @@ def _bedrock_anthropic_uses_adaptive_thinking(model_name: str | None) -> bool:
     if any(token in lowered for token in ("fable", "mythos")):
         return True
 
-    # Dated / dotted forms: claude-*-4-6, claude-*-4.6, claude-*-4-7, …
-    if re.search(r"claude.*4[-_.]([67]|[6-9]\d)", lowered):
-        return True
-
-    match = re.search(
-        r"claude[-_]?(opus|sonnet|haiku|fable|mythos)[-_]?(\d+)(?:[-_.](\d+))?",
-        lowered,
-    )
-    if not match:
+    parsed = _parse_claude_version(model_name)
+    if parsed is not None:
+        _tier, major, minor = parsed
+        if major >= 5:
+            return True
+        if major == 4 and minor is not None and minor >= 6:
+            return True
         return False
 
-    major = int(match.group(2))
-    minor = int(match.group(3)) if match.group(3) is not None else None
-
-    if major >= 5:
-        return True
-
-    if major == 4 and minor is not None and minor >= 6:
-        return True
-
-    return False
+    # IDs like ``claude-4-6`` with no tier token.
+    return bool(re.search(r"claude.*4[-_.]([67]|[6-9]\d)", lowered))
 
 
 def _resolve_bedrock_effort_input(reasoning_effort: str | None) -> str:
@@ -1123,6 +1157,31 @@ def _bedrock_additional_model_request_fields(
         }
 
     return {}
+
+
+def _bedrock_max_tokens_for_thinking(
+    model_name: str | None,
+    thinking: dict[str, Any] | None,
+) -> int:
+    """max_tokens for Bedrock Converse, with budget_tokens < max_tokens.
+
+    AWS and Anthropic require ``1024 <= budget_tokens < max_tokens`` when
+    ``thinking.type`` is ``enabled``. Unrecognised Claude IDs fall back to
+    4096, which collides with the high/max thinking budgets, so those
+    requests are lifted to at least the modern Claude output floor.
+    """
+    max_tokens = _get_anthropic_max_tokens(model_name or "")
+    if not isinstance(thinking, dict) or thinking.get("type") != "enabled":
+        return max_tokens
+    budget = thinking.get("budget_tokens")
+    if not isinstance(budget, int):
+        return max_tokens
+    if max_tokens > budget:
+        return max_tokens
+    return max(
+        MAX_OUTPUT_TOKENS_CLAUDE_MODERN,
+        budget + _BEDROCK_THINKING_OUTPUT_RESERVE_TOKENS,
+    )
 
 
 def _bedrock_temperature(
@@ -1299,14 +1358,21 @@ def get_generator_model(
         if additional_fields:
             bedrock_kwargs["additional_model_request_fields"] = additional_fields
 
-        # Anthropic needs an explicit max_tokens on Converse. Nova 2 with
-        # maxReasoningEffort=high forbids maxTokens — skip in that case.
+        # Anthropic needs an explicit max_tokens on Converse. Any path that
+        # emits a thinking block must set it too (budget_tokens < max_tokens).
+        # Nova 2 with maxReasoningEffort=high forbids maxTokens — skip then.
+        thinking = additional_fields.get("thinking")
         nova_high = (
             isinstance(additional_fields.get("reasoningConfig"), dict)
             and additional_fields["reasoningConfig"].get("maxReasoningEffort") == "high"
         )
-        if provider_in_bedrock == LLMProvider.ANTHROPIC.value and not nova_high:
-            bedrock_kwargs["max_tokens"] = _get_anthropic_max_tokens(model_name)
+        if not nova_high and (
+            isinstance(thinking, dict)
+            or provider_in_bedrock == LLMProvider.ANTHROPIC.value
+        ):
+            bedrock_kwargs["max_tokens"] = _bedrock_max_tokens_for_thinking(
+                model_name, thinking if isinstance(thinking, dict) else None
+            )
 
         if temperature is not None:
             bedrock_kwargs["temperature"] = temperature

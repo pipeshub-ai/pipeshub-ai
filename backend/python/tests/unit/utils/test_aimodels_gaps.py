@@ -65,6 +65,7 @@ class TestAnthropicSupportsSamplingParams:
             ("claude-haiku-5-1", False),
             ("claude-sonnet-4", True),
             ("claude-opus-4", True),
+            ("anthropic.claude-opus-4-20250514-v1:0", True),
         ],
     )
     def test_sampling_param_support(self, model_name, expected):

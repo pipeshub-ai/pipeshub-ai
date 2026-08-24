@@ -19,7 +19,9 @@ from app.utils.aimodels import (
     MAX_OUTPUT_TOKENS_CLAUDE_4_5,
     MAX_OUTPUT_TOKENS_CLAUDE_MODERN,
     ModelType,
+    _bedrock_is_openai_gpt5,
     _create_bedrock_client,
+    _detect_bedrock_provider,
     _get_anthropic_max_tokens,
     get_embedding_model,
     get_generator_model,
@@ -269,6 +271,25 @@ class TestGetGeneratorModelBedrock:
                 get_generator_model(LLMProvider.AWS_BEDROCK.value, config)
                 assert mock_chat.call_args.kwargs["provider"] == "openai"
 
+    def test_gpt5_pattern_accepts_bedrock_ids(self):
+        for model_id in (
+            "openai.gpt-5.4",
+            "openai.gpt-5.5",
+            "us.openai.gpt-5.6-luna",
+            "global.openai.gpt-5.6-sol",
+            "gpt-5.6-luna",
+        ):
+            assert _bedrock_is_openai_gpt5(model_id), model_id
+            assert _detect_bedrock_provider(model_id) == "openai", model_id
+
+    def test_gpt5_pattern_rejects_false_positives(self):
+        assert not _bedrock_is_openai_gpt5("amazon.gpt-50-future")
+        assert not _bedrock_is_openai_gpt5("vendor.my-gpt-5-compatible")
+        assert not _bedrock_is_openai_gpt5("vendor.gpt5-model")
+        assert not _bedrock_is_openai_gpt5("openai.gpt-oss-120b-1:0")
+        assert _detect_bedrock_provider("amazon.gpt-50-future") == "amazon"
+        assert _detect_bedrock_provider("vendor.gpt5-model") == LLMProvider.ANTHROPIC.value
+
     def test_auto_detect_nova_2_lite(self):
         config = self._make_config("nova-2-lite")
         with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
@@ -366,9 +387,33 @@ class TestBedrockReasoningAndTemperature:
                 )
                 assert "additional_model_request_fields" not in mock_chat.call_args.kwargs
 
-    def test_anthropic_reasoning_omits_temperature(self):
+    @pytest.mark.parametrize("effort", ("high", "max"))
+    def test_anthropic_reasoning_omits_temperature(self, effort):
         config = self._make_config(
             "anthropic.claude-3-7-sonnet-20250219-v1:0",
+            provider="anthropic",
+            is_reasoning=True,
+        )
+        with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
+            with patch("langchain_aws.ChatBedrockConverse") as mock_chat:
+                mock_chat.return_value = MagicMock()
+                get_generator_model(
+                    LLMProvider.AWS_BEDROCK.value, config, reasoning_effort=effort
+                )
+                kwargs = mock_chat.call_args.kwargs
+                thinking = kwargs["additional_model_request_fields"]["thinking"]
+                budget = thinking["budget_tokens"]
+                max_tokens = kwargs["max_tokens"]
+                assert thinking["type"] == "enabled"
+                assert budget == 4096
+                assert budget >= 1024
+                assert max_tokens == MAX_OUTPUT_TOKENS_CLAUDE_4_5
+                assert budget < max_tokens
+                assert "temperature" not in kwargs
+
+    def test_unrecognised_claude_thinking_keeps_budget_below_max_tokens(self):
+        config = self._make_config(
+            "anthropic.claude-experimental-v1:0",
             provider="anthropic",
             is_reasoning=True,
         )
@@ -379,10 +424,50 @@ class TestBedrockReasoningAndTemperature:
                     LLMProvider.AWS_BEDROCK.value, config, reasoning_effort="high"
                 )
                 kwargs = mock_chat.call_args.kwargs
-                assert kwargs["additional_model_request_fields"] == {
-                    "thinking": {"type": "enabled", "budget_tokens": 4096}
-                }
-                assert "temperature" not in kwargs
+                thinking = kwargs["additional_model_request_fields"]["thinking"]
+                budget = thinking["budget_tokens"]
+                assert thinking["type"] == "enabled"
+                assert budget >= 1024
+                assert kwargs["max_tokens"] > budget
+
+    def test_thinking_sets_max_tokens_when_provider_is_not_anthropic(self):
+        config = self._make_config(
+            "anthropic.claude-3-7-sonnet-20250219-v1:0",
+            provider="amazon",
+            is_reasoning=True,
+        )
+        with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
+            with patch("langchain_aws.ChatBedrockConverse") as mock_chat:
+                mock_chat.return_value = MagicMock()
+                get_generator_model(
+                    LLMProvider.AWS_BEDROCK.value, config, reasoning_effort="high"
+                )
+                kwargs = mock_chat.call_args.kwargs
+                thinking = kwargs["additional_model_request_fields"]["thinking"]
+                budget = thinking["budget_tokens"]
+                assert thinking["type"] == "enabled"
+                assert budget >= 1024
+                assert kwargs["max_tokens"] > budget
+
+    def test_dated_sonnet_4_uses_manual_thinking_not_adaptive(self):
+        config = self._make_config(
+            "anthropic.claude-sonnet-4-20250514-v1:0",
+            provider="anthropic",
+            is_reasoning=True,
+        )
+        with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
+            with patch("langchain_aws.ChatBedrockConverse") as mock_chat:
+                mock_chat.return_value = MagicMock()
+                get_generator_model(
+                    LLMProvider.AWS_BEDROCK.value, config, reasoning_effort="high"
+                )
+                kwargs = mock_chat.call_args.kwargs
+                thinking = kwargs["additional_model_request_fields"]["thinking"]
+                budget = thinking["budget_tokens"]
+                assert thinking["type"] == "enabled"
+                assert budget >= 1024
+                assert kwargs["max_tokens"] == MAX_OUTPUT_TOKENS_CLAUDE_4_5
+                assert budget < kwargs["max_tokens"]
 
     def test_anthropic_adaptive_reasoning(self):
         config = self._make_config(
