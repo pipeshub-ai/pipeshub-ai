@@ -311,7 +311,7 @@ export function MessageActions({
   if (isStreaming) return null;
 
   const chatModeLabel = formatChatMode(modelInfo?.chatMode);
-  const modelName = modelInfo?.modelName || '';
+  const modelName = modelInfo?.modelFriendlyName || modelInfo?.modelName || '';
 
   return (
     <>
