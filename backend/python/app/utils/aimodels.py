@@ -933,15 +933,19 @@ def _reasoning_effort_kwargs(
     return {"reasoning_effort": effort}
 
 
-# Bedrock Converse: OpenAI gpt-oss only accepts low/medium/high for
+# Bedrock Converse: gpt-oss only accepts low/medium/high for
 # additionalModelRequestFields.reasoning_effort (no none/max/xhigh).
-_BEDROCK_OPENAI_EFFORT_MAP: Dict[str, str] = {
+# GPT-5.6 Sol/Terra/Luna accept a wider set (including max); do not clamp.
+_BEDROCK_GPT_OSS_EFFORT_MAP: Dict[str, str] = {
     "none": "low",
     "low": "low",
     "medium": "medium",
     "high": "high",
     "max": "high",
 }
+_BEDROCK_OPENAI_EFFORT_MAP = _BEDROCK_GPT_OSS_EFFORT_MAP
+
+_GPT5_MODEL_RE = re.compile(r"gpt[-_.]?5")
 
 # Nova 2 maxReasoningEffort is low|medium|high only.
 _BEDROCK_NOVA_EFFORT_MAP: Dict[str, str] = {
@@ -965,9 +969,37 @@ _BEDROCK_MIN_THINKING_BUDGET_TOKENS = 1024
 
 
 def _bedrock_is_nova_2(model_name: str | None) -> bool:
+    """True for Nova 2 ids such as ``amazon.nova-2-lite-v1:0`` and ``us.amazon.nova-2-lite-v1:0``."""
     if not model_name:
         return False
     return "nova-2" in model_name.lower()
+
+
+def _bedrock_is_gpt_oss(model_name: str | None) -> bool:
+    return bool(model_name) and "gpt-oss" in model_name.lower()
+
+
+def _bedrock_is_openai_gpt5(model_name: str | None) -> bool:
+    """GPT-5.x on Bedrock Converse (Sol/Terra/Luna), not gpt-oss."""
+    if not model_name:
+        return False
+    lowered = model_name.lower()
+    if "gpt-oss" in lowered:
+        return False
+    return bool(_GPT5_MODEL_RE.search(lowered))
+
+
+def _bedrock_is_openai(provider: str, model_name: str | None) -> bool:
+    if (provider or "").lower() == "openai":
+        return True
+    if not model_name:
+        return False
+    lowered = model_name.lower()
+    return (
+        "openai" in lowered
+        or "gpt-oss" in lowered
+        or bool(_GPT5_MODEL_RE.search(lowered))
+    )
 
 
 def _bedrock_is_deepseek_r1(model_name: str | None) -> bool:
@@ -1052,10 +1084,13 @@ def _bedrock_additional_model_request_fields(
     effort_input = _resolve_bedrock_effort_input(reasoning_effort)
     provider = (provider_in_bedrock or "").lower()
 
-    if provider == "openai" or (
-        model_name and ("openai" in model_name.lower() or "gpt-oss" in model_name.lower())
-    ):
-        effort = _BEDROCK_OPENAI_EFFORT_MAP.get(effort_input, effort_input)
+    if _bedrock_is_openai(provider, model_name):
+        if _bedrock_is_gpt_oss(model_name):
+            effort = _BEDROCK_GPT_OSS_EFFORT_MAP.get(effort_input, effort_input)
+        else:
+            # GPT-5.6 (and future gpt-5* Converse models): pass UI effort
+            # through. ``none`` is already floored to low above.
+            effort = effort_input
         return {"reasoning_effort": effort}
 
     if provider == LLMProvider.ANTHROPIC.value or (
@@ -1078,7 +1113,7 @@ def _bedrock_additional_model_request_fields(
             },
         }
 
-    if provider == "amazon" and _bedrock_is_nova_2(model_name):
+    if _bedrock_is_nova_2(model_name):
         effort = _BEDROCK_NOVA_EFFORT_MAP.get(effort_input, effort_input)
         return {
             "reasoningConfig": {
@@ -1099,10 +1134,11 @@ def _bedrock_temperature(
 ) -> float | None:
     """Return Converse temperature, or ``None`` when the param must be omitted.
 
-    Rules (AWS / Anthropic / Nova):
+    Rules (AWS / Anthropic / Nova / OpenAI):
     - Claude models that dropped sampling params → omit.
     - Claude with thinking / adaptive thinking enabled → omit (non-1 values 400).
     - Nova 2 with ``maxReasoningEffort=high`` → omit (also forbids maxTokens).
+    - GPT-5.x on Bedrock typically rejects temperature → omit.
     - Otherwise use configured temperature (default 0.2). Never force 1 for
       Bedrock OpenAI gpt-oss (unlike direct OpenAI gpt-5.x).
     """
@@ -1111,6 +1147,9 @@ def _bedrock_temperature(
         model_name is not None
         and ("claude" in model_name.lower() or "anthropic" in model_name.lower())
     )
+
+    if _bedrock_is_openai_gpt5(model_name):
+        return None
 
     if is_anthropic and not _anthropic_supports_sampling_params(model_name):
         return None
@@ -1143,7 +1182,7 @@ def _detect_bedrock_provider(model_name: str | None) -> str:
         return LLMProvider.MISTRAL.value
     if "claude" in lowered or "anthropic" in lowered:
         return LLMProvider.ANTHROPIC.value
-    if "openai" in lowered or "gpt-oss" in lowered:
+    if "openai" in lowered or "gpt-oss" in lowered or _GPT5_MODEL_RE.search(lowered):
         return "openai"
     if "llama" in lowered or "meta" in lowered:
         return "meta"

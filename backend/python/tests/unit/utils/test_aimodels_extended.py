@@ -261,6 +261,22 @@ class TestGetGeneratorModelBedrock:
                 get_generator_model(LLMProvider.AWS_BEDROCK.value, config)
                 assert mock_chat.call_args.kwargs["provider"] == "openai"
 
+    def test_auto_detect_openai_gpt56_luna(self):
+        config = self._make_config("gpt-5.6-luna")
+        with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
+            with patch("langchain_aws.ChatBedrockConverse") as mock_chat:
+                mock_chat.return_value = MagicMock()
+                get_generator_model(LLMProvider.AWS_BEDROCK.value, config)
+                assert mock_chat.call_args.kwargs["provider"] == "openai"
+
+    def test_auto_detect_nova_2_lite(self):
+        config = self._make_config("nova-2-lite")
+        with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
+            with patch("langchain_aws.ChatBedrockConverse") as mock_chat:
+                mock_chat.return_value = MagicMock()
+                get_generator_model(LLMProvider.AWS_BEDROCK.value, config)
+                assert mock_chat.call_args.kwargs["provider"] == "amazon"
+
     def test_auto_detect_deepseek(self):
         config = self._make_config("us.deepseek.r1-v1:0")
         with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
@@ -307,6 +323,22 @@ class TestBedrockReasoningAndTemperature:
                     "reasoning_effort": "medium"
                 }
                 assert kwargs["temperature"] == 0.2
+
+    def test_gpt56_luna_max_effort_not_clamped(self):
+        config = self._make_config(
+            "us.openai.gpt-5.6-luna", provider="openai", is_reasoning=True
+        )
+        with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
+            with patch("langchain_aws.ChatBedrockConverse") as mock_chat:
+                mock_chat.return_value = MagicMock()
+                get_generator_model(
+                    LLMProvider.AWS_BEDROCK.value, config, reasoning_effort="max"
+                )
+                kwargs = mock_chat.call_args.kwargs
+                assert kwargs["additional_model_request_fields"] == {
+                    "reasoning_effort": "max"
+                }
+                assert "temperature" not in kwargs
 
     def test_openai_max_effort_clamps_to_high(self):
         config = self._make_config(
@@ -392,6 +424,44 @@ class TestBedrockReasoningAndTemperature:
                 }
                 assert "temperature" not in kwargs
                 assert "max_tokens" not in kwargs
+
+    def test_nova_2_unprefixed_id_high_reasoning(self):
+        config = self._make_config(
+            "amazon.nova-2-lite-v1:0",
+            provider="amazon",
+            is_reasoning=True,
+        )
+        with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
+            with patch("langchain_aws.ChatBedrockConverse") as mock_chat:
+                mock_chat.return_value = MagicMock()
+                get_generator_model(
+                    LLMProvider.AWS_BEDROCK.value, config, reasoning_effort="high"
+                )
+                kwargs = mock_chat.call_args.kwargs
+                assert kwargs["additional_model_request_fields"] == {
+                    "reasoningConfig": {
+                        "type": "enabled",
+                        "maxReasoningEffort": "high",
+                    }
+                }
+                assert "temperature" not in kwargs
+                assert "max_tokens" not in kwargs
+
+    def test_nova_1_reasoning_omits_reasoning_config(self):
+        config = self._make_config(
+            "amazon.nova-lite-v1:0",
+            provider="amazon",
+            is_reasoning=True,
+        )
+        with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
+            with patch("langchain_aws.ChatBedrockConverse") as mock_chat:
+                mock_chat.return_value = MagicMock()
+                get_generator_model(
+                    LLMProvider.AWS_BEDROCK.value, config, reasoning_effort="high"
+                )
+                kwargs = mock_chat.call_args.kwargs
+                assert "additional_model_request_fields" not in kwargs
+                assert kwargs["temperature"] == 0.2
 
     def test_deepseek_r1_reasoning_sends_no_additional_fields(self):
         config = self._make_config(
