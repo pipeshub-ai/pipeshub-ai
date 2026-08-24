@@ -20,6 +20,7 @@ from app.agent_loop_lib.core.messages import (
     TextPart,
     UserMessage,
 )
+from app.agent_loop_lib.transport.anthropic import AnthropicTransport
 from app.agent_loop_lib.transport.gemini import GeminiTransport
 from app.agent_loop_lib.transport.openai import OpenAITransport
 from app.agent_loop_lib.transport.openai_responses import format_responses_input
@@ -132,3 +133,37 @@ def test_no_transport_silently_drops_an_image(source_type: str) -> None:
 
     gem = GeminiTransport(api_key="k")._format_contents([msg])[0].parts
     assert any(p.inline_data is not None or p.file_data is not None for p in gem)
+
+    anthropic_blocks = AnthropicTransport(api_key="k")._format_message(msg)["content"]
+    assert any(b["type"] == "image" for b in anthropic_blocks)
+
+
+class TestAnthropicImageSourceShape:
+    """Anthropic's two source shapes are not interchangeable: a url source
+    carries `url`, a base64 source carries `media_type` + `data`. Sending
+    `data` under `type: "url"` is a 400, which is what every image built by
+    `chat_helpers.image_dict_to_part` used to produce."""
+
+    def test_base64_source_carries_media_type_and_data(self) -> None:
+        block = AnthropicTransport._format_part(
+            ImagePart(source=ImageSource(type="base64", media_type="image/png", data=PNG))
+        )
+        assert block["source"] == {"type": "base64", "media_type": "image/png", "data": PNG}
+
+    def test_url_source_carries_url_not_data(self) -> None:
+        block = AnthropicTransport._format_part(
+            ImagePart(source=ImageSource(type="url", data="https://x/y.png"))
+        )
+        assert block["source"] == {"type": "url", "url": "https://x/y.png"}
+
+    def test_collected_tool_image_reaches_anthropic_as_base64(self) -> None:
+        """End to end from the side channel a search/fetch tool fills."""
+        from app.utils.chat_helpers import image_dict_to_part
+
+        part = image_dict_to_part(
+            {"image_url": {"url": f"data:image/png;base64,{PNG}"}}
+        )
+        block = AnthropicTransport._format_part(part)
+        assert block["source"]["type"] == "base64"
+        assert block["source"]["media_type"] == "image/png"
+        assert block["source"]["data"] == PNG

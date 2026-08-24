@@ -60,16 +60,18 @@ def mock_deps():
 
 @pytest.fixture()
 def connector(mock_deps):
-    with patch("app.connectors.sources.notion.connector.NotionApp"):
-        c = NotionConnector(
-            logger=mock_deps["logger"],
-            data_entities_processor=mock_deps["data_entities_processor"],
-            data_store_provider=mock_deps["data_store_provider"],
-            config_service=mock_deps["config_service"],
-            connector_id="notion-comp-1",
-            scope="personal",
-            created_by="test-user-id",
-        )
+    # Real NotionApp, not a mock: the connector stamps ``self.connector_name``
+    # (which comes from the app) onto every record it builds, and a MagicMock
+    # there fails enum validation instead of producing a record.
+    c = NotionConnector(
+        logger=mock_deps["logger"],
+        data_entities_processor=mock_deps["data_entities_processor"],
+        data_store_provider=mock_deps["data_store_provider"],
+        config_service=mock_deps["config_service"],
+        connector_id="notion-comp-1",
+        scope="personal",
+        created_by="test-user-id",
+    )
     c.workspace_id = "ws-1"
     return c
 
@@ -526,21 +528,22 @@ class TestGetDatabaseParentPageId:
         result = await connector._get_database_parent_page_id("db-2")
         assert result is None
 
-    async def test_api_failure_returns_none(self, connector):
+    async def test_api_failure_raises(self, connector):
         mock_ds = MagicMock()
         mock_response = MagicMock()
         mock_response.success = False
         mock_response.error = "Not found"
+        mock_response.data = None
         mock_ds.retrieve_database = AsyncMock(return_value=mock_response)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await connector._get_database_parent_page_id("db-3")
-        assert result is None
+        with pytest.raises(RuntimeError, match="Failed to retrieve database"):
+            await connector._get_database_parent_page_id("db-3")
 
-    async def test_exception_returns_none(self, connector):
+    async def test_exception_propagates(self, connector):
         connector._get_fresh_datasource = AsyncMock(side_effect=Exception("Error"))
-        result = await connector._get_database_parent_page_id("db-4")
-        assert result is None
+        with pytest.raises(Exception, match="Error"):
+            await connector._get_database_parent_page_id("db-4")
 
     async def test_database_parent(self, connector):
         mock_ds = MagicMock()

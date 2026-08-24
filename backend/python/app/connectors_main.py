@@ -28,6 +28,7 @@ from app.connectors.api.router import router
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.factory.connector_factory import ConnectorFactory
@@ -157,25 +158,34 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                 scope = app.get("scope", "personal")
                 created_by = app.get("createdBy", "")
                 connector_name = app["type"].lower().replace(" ", "")
-                try:
-                    connector = await ConnectorFactory.create_and_start_sync(
-                        name=connector_name,
-                        logger=logger,
-                        data_store_provider=data_store,
-                        config_service=config_service,
-                        connector_id=connector_id,
-                        scope=scope,
-                        created_by=created_by,
-                        org_id=org_id,
-                        notification_service=app_container.connector_notification_service(),
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"❌ Failed to initialize {connector_name} ({connector_id}) for org {org_id}: {e}",
-                        exc_info=True,
-                    )
-                    return connector_name, connector_id, None
-                return connector_name, connector_id, connector
+                # Same lock the lazy-init paths use, and publish as soon as the
+                # instance exists rather than after the whole gather: startup can
+                # take seconds, and a request arriving in that window used to build
+                # a second instance with its own HTTP client and rate limiter.
+                async with connector_init_lock(connector_id):
+                    if app_container.connectors_map.get(connector_id) is not None:
+                        return connector_name, connector_id, None
+                    try:
+                        connector = await ConnectorFactory.create_and_start_sync(
+                            name=connector_name,
+                            logger=logger,
+                            data_store_provider=data_store,
+                            config_service=config_service,
+                            connector_id=connector_id,
+                            scope=scope,
+                            created_by=created_by,
+                            org_id=org_id,
+                            notification_service=app_container.connector_notification_service(),
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"❌ Failed to initialize {connector_name} ({connector_id}) for org {org_id}: {e}",
+                            exc_info=True,
+                        )
+                        return connector_name, connector_id, None
+                    if connector:
+                        app_container.connectors_map[connector_id] = connector
+                    return connector_name, connector_id, connector
 
             results = await asyncio.gather(
                 *[_init_app(app) for app in enabled_apps],
@@ -183,8 +193,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
             )
             for connector_name, connector_id, connector in results:
                 if connector:
-                    # Store using connector_id as the unique key (not connector_name to avoid conflicts with multiple instances)
-                    app_container.connectors_map[connector_id] = connector
+                    # _init_app already published it under the lock; this loop only reports.
                     logger.info(f"{connector_name} connector (id: {connector_id}) initialized for org %s", org_id)
 
             logger.info("✅ Sync services resumed for org %s", org_id)

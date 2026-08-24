@@ -14,7 +14,6 @@ import types
 from collections.abc import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -27,6 +26,7 @@ from app.containers.parsing import ParsingAppContainer, initialize_container
 from app.modules.parsers.blocks.blocks_parser import BlocksParser
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
+from app.modules.parsers.epub.epub_parser import EPUBParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.xls_parser import XLSParser
 from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
@@ -51,6 +51,7 @@ from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.sql.sql_table_parser import SQLTableParser
 from app.modules.parsers.sql.sql_view_parser import SQLViewParser
 from app.modules.parsers.yaml.yaml_parser import YAMLParser
+from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
 from app.services.docling.client import DoclingClient
 from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParserProvider
@@ -144,8 +145,16 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     # ----------------------------------------------------------------
     # PDF
     # ----------------------------------------------------------------
-    registry.register("pdf", ParserProvider.DOCLING, SmartPDFParser(docling_svc_parser, docling_ocr_parser))
-    registry.register("pdf", ParserProvider.DEFAULT, SmartPDFParser(docling_svc_parser, default_ocr_parser))
+    smart_pdf_docling = SmartPDFParser(docling_svc_parser, docling_ocr_parser)
+    smart_pdf_default = SmartPDFParser(docling_svc_parser, default_ocr_parser)
+    registry.register("pdf", ParserProvider.DOCLING, smart_pdf_docling)
+    registry.register("pdf", ParserProvider.DEFAULT, smart_pdf_default)
+
+    # EPUB is converted to PDF via LibreOffice, then delegated to the same
+    # SmartPDFParser instances used for native PDFs (Docling / pdfplumber /
+    # OCR selection stays entirely inside SmartPDFParser).
+    registry.register("epub", ParserProvider.DOCLING, EPUBParser(smart_pdf_docling))
+    registry.register("epub", ParserProvider.DEFAULT, EPUBParser(smart_pdf_default))
 
     # ----------------------------------------------------------------
     # DOCX / DOC — local Docling handles these in-process
@@ -169,6 +178,10 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     # ----------------------------------------------------------------
     registry.register("txt", ParserProvider.DEFAULT, default_md_parser)
     registry.register("txt", ParserProvider.DOCLING, docling_md_parser)
+    # ----------------------------------------------------------------
+    # CODE (tree-sitter)
+    # ----------------------------------------------------------------
+    registry.register("code", ParserProvider.DEFAULT, CodeFileParser())
     # ----------------------------------------------------------------
     # MDX
     # ----------------------------------------------------------------

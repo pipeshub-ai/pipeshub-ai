@@ -14,7 +14,11 @@ import type { ToolsetTypeKeyFlowNode } from '../sidebar-toolset-utils';
 import { toggleKeyedBoolean } from '../sidebar-expand-utils';
 import { AGENT_LLM_FALLBACK_ICON, resolveLlmProviderIconPath } from '../display-utils';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
-import { useFeatureFlagsStore, selectMcpEnabled } from '@/lib/store/feature-flags-store';
+import {
+  useFeatureFlagsStore,
+  selectMcpEnabled,
+  selectActionsEnabled,
+} from '@/lib/store/feature-flags-store';
 import { AgentBuilderToolsetsSection } from './sidebar-toolsets-section';
 import { AgentBuilderMcpSection } from './sidebar-mcp-section';
 import { SidebarCategoryRow } from './sidebar-category-row';
@@ -155,6 +159,7 @@ export function AgentBuilderSidebar(props: {
 
   const { t } = useTranslation();
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
+  const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
   const onPaletteDragBlocked = useCallback(() => {
     if (paletteDragBlockedMessage) onNotify(paletteDragBlockedMessage);
   }, [paletteDragBlockedMessage, onNotify]);
@@ -518,30 +523,34 @@ export function AgentBuilderSidebar(props: {
             )
           ) : null}
 
-          <SectionHeader
-            title={t('agentBuilder.tools')}
-            icon="handyman"
-            open={expanded.tools}
-            onToggle={() => toggle('tools')}
-          />
-          {expanded.tools ? (
-            <Box className="agent-builder-palette-nest" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <AgentBuilderToolsetsSection
-                toolsets={toolsets}
-                loading={loading}
-                refreshToolsets={refreshToolsets}
-                activeToolsetTypeKeys={activeToolsetTypeKeys}
-                toolsetMergeCheckNodes={toolsetMergeCheckNodes}
-                isServiceAccount={isServiceAccount}
-                agentKey={agentKey}
-                onManageAgentToolsetCredentials={onManageAgentToolsetCredentials}
-                onNotify={onNotify}
-                structureLocked={paletteStructureLocked}
-                orgCredentialUiLocked={toolsetsOrgCredentialLocked}
-                onPaletteStructureDragBlocked={onPaletteDragBlocked}
-                webSearchAttached={webSearchAttached}
+          {actionsEnabled ? (
+            <>
+              <SectionHeader
+                title={t('agentBuilder.tools')}
+                icon="handyman"
+                open={expanded.tools}
+                onToggle={() => toggle('tools')}
               />
-            </Box>
+              {expanded.tools ? (
+                <Box className="agent-builder-palette-nest" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <AgentBuilderToolsetsSection
+                    toolsets={toolsets}
+                    loading={loading}
+                    refreshToolsets={refreshToolsets}
+                    activeToolsetTypeKeys={activeToolsetTypeKeys}
+                    toolsetMergeCheckNodes={toolsetMergeCheckNodes}
+                    isServiceAccount={isServiceAccount}
+                    agentKey={agentKey}
+                    onManageAgentToolsetCredentials={onManageAgentToolsetCredentials}
+                    onNotify={onNotify}
+                    structureLocked={paletteStructureLocked}
+                    orgCredentialUiLocked={toolsetsOrgCredentialLocked}
+                    onPaletteStructureDragBlocked={onPaletteDragBlocked}
+                    webSearchAttached={webSearchAttached}
+                  />
+                </Box>
+              ) : null}
+            </>
           ) : null}
 
           {mcpEnabled ? (

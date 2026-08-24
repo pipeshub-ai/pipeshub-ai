@@ -6,6 +6,7 @@ from app.config.constants.arangodb import ExtensionTypes
 from app.events.events import EventProcessor
 from app.events.processor import Processor
 from app.modules.indexing.run import IndexingPipeline
+from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
@@ -168,6 +169,7 @@ class ContainerUtils:
             ExtensionTypes.JSON.value: JSONParser(),
             ExtensionTypes.YAML.value: YAMLParser(),
             ExtensionTypes.YML.value: YAMLParser(),
+            ExtensionTypes.CODE.value: CodeFileParser(),
         }
         return parsers
 

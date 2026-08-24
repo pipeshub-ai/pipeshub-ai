@@ -397,6 +397,7 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.SHELL.value,
                 MimeTypes.SHELL_TEXT.value,
                 MimeTypes.SHELLSCRIPT.value,
+                MimeTypes.EPUB.value,
             ]
 
             supported_extensions = [
@@ -450,6 +451,7 @@ class RecordEventHandler(BaseEventService):
                 ExtensionTypes.SH.value,
                 ExtensionTypes.BASH.value,
                 ExtensionTypes.HTM.value,
+                ExtensionTypes.EPUB.value,
             ]
 
             if is_code_file:

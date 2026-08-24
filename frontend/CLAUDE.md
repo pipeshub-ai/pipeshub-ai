@@ -16,7 +16,7 @@ In Docker Compose the built UI is served by Express on port **3000** (same origi
 - Google Fonts (Manrope) + Google Material Icons
 - React Hook Form + Zod (complex forms) / Native (simple forms)
 - SSE (chat streaming) + WebSocket (notifications)
-- i18n: German, English, Spanish, Hindi
+- i18n: German, English, Spanish, Hindi, Korean, Chinese (Taiwan), Chinese (Singapore), Chinese (Mandarin/Simplified, zh-CN)
 
 ## Naming: Collections vs Knowledge Base
 

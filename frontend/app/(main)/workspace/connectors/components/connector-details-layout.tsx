@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useState } from 'react';
+import Link from 'next/link';
 import { useTranslation } from 'react-i18next';
 import { Flex, Heading, Text, Button, Box } from '@radix-ui/themes';
 import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
@@ -9,6 +10,10 @@ import { InstanceCard } from './instance-card';
 import type { Connector, ConnectorInstance, ConnectorConfig, ConnectorScope } from '../types';
 import { useToastStore } from '@/lib/store/toast-store';
 import { getConnectorInfoText, getConnectorDocumentationUrl } from '../utils/connector-metadata';
+import {
+  getPersonalConnectorRedirectType,
+  personalConnectorHref,
+} from '../utils/admin-access-helpers';
 
 // ========================================
 // Props
@@ -71,6 +76,8 @@ export function ConnectorDetailsLayout({
   const addToast = useToastStore((s) => s.addToast);
   const connectorName = connector?.name ?? '';
   const connectorInfoText = getConnectorInfoText(connector);
+
+  const personalConnectorType = getPersonalConnectorRedirectType(connector);
 
   const emailVisibilityDocUrl = React.useMemo(() => {
     if (!connector || (connector.type !== 'Confluence' && connector.type !== 'Jira')) {
@@ -271,6 +278,21 @@ export function ConnectorDetailsLayout({
                   >
                     {t('workspace.connectors.emailVisibilityDocLink')}
                   </a>
+                </>
+              )}
+              {personalConnectorType && (
+                <>
+                  {'\n\n'}
+                  <Link
+                    href={personalConnectorHref(personalConnectorType)}
+                    style={{
+                      color: 'var(--accent-11)',
+                      textDecoration: 'underline',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {t('workspace.connectors.personalConnectorLink', { name: personalConnectorType })}
+                  </Link>
                 </>
               )}
             </Text>

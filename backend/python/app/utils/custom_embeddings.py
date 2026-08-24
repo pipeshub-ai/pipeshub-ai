@@ -142,8 +142,13 @@ class VoyageEmbeddings(BaseModel, Embeddings):
     ) -> Dict:
         api_key = cast(SecretStr, self.voyage_api_key).get_secret_value()
         model = self.model
-        if model == "voyage-multimodal-3":
-            logger.debug("Using voyage-multimodal-3 multimodal embeddings endpoint")
+        # Prefix, not equality: Voyage ships successive multimodal models
+        # (voyage-multimodal-3, -3.5, ...). An exact match sends every later
+        # one to the TEXT endpoint, which accepts a base64 data URI as a
+        # string and returns a perfectly valid-looking embedding *of the
+        # base64 characters* — silently wrong vectors rather than an error.
+        if model and model.startswith("voyage-multimodal"):
+            logger.debug("Using Voyage multimodal embeddings endpoint for %s", model)
             url = "https://api.voyageai.com/v1/multimodalembeddings"
             inputs =[]
             for text in input:

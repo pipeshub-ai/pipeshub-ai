@@ -122,9 +122,13 @@ from app.agents.agent_loop.hooks import (
     retry_with_status,
     seed_visible_tools_from_history,
     shape_image_injection,
+    shape_retrieved_image_injection,
     stash_tool_call_metadata,
 )
-from app.agents.agent_loop.langchain_transport import LangChainTransport
+from app.agents.agent_loop.langchain_transport import (
+    LangChainTransport,
+    _supports_multipart_tool_result,
+)
 from app.agents.agent_loop.lazy_tools_wiring import (
     CONNECTORS_PARENT,
     META_TOOL_NAMES,
@@ -338,9 +342,8 @@ class PipesHubAgentFactory:
 
         # Gate on the SAME resolution the legacy LangGraph path uses
         # (per-request state flag -> PIPESHUB_ENABLE_CODE_EXECUTION env ->
-        # ENABLE_CODE_EXECUTION Labs feature flag -> default True) rather
-        # than re-deriving an env-only check here, so the admin Labs toggle
-        # applies identically to both paths.
+        # default True) rather than re-deriving an env-only check here, so
+        # both paths apply identically.
         code_exec_enabled = code_execution_enabled(context.tool_state)
         logger.info(
             "PipesHubAgentFactory.create: code_execution_enabled=%s (org_id=%s conversation_id=%s)",
@@ -352,10 +355,10 @@ class PipesHubAgentFactory:
         # `code_exec_enabled`: when enabled, agent_loop_lib's own run_code
         # is registered below as the sole code-execution tool, so the model
         # never sees two competing code-execution tools; when disabled,
-        # skipping `coding_sandbox` here is what actually makes the
-        # ENABLE_CODE_EXECUTION flag disable code execution — `coding_sandbox`
-        # is `.as_internal()` (see coding_sandbox.py), so it bypasses the
-        # "configured on this agent" gate in tool_loader.py and would
+        # skipping `coding_sandbox` here is what actually makes
+        # `PIPESHUB_ENABLE_CODE_EXECUTION` disable code execution —
+        # `coding_sandbox` is `.as_internal()` (see coding_sandbox.py), so it
+        # bypasses the "configured on this agent" gate in tool_loader.py and would
         # otherwise load unconditionally even with the flag off.
         # database_sandbox is dropped outright — its functionality is
         # subsumed by the coding sandbox's SQL capabilities.
@@ -443,6 +446,7 @@ class PipesHubAgentFactory:
             context, sandbox_manager, allow_network=network_enabled,
             artifact_store=artifact_store, tool_registry=tool_registry,
             transport_registry=transport_registry, model_name=model_name,
+            supports_multipart_tool_result=_supports_multipart_tool_result(llm),
         )
         tool_registry.register_tool(RetrieveArtifactContentTool(store=artifact_store))
         _register_final_answer_if_enabled(tool_registry)
@@ -802,12 +806,22 @@ class PipesHubAgentFactory:
         context: "AgentContext", sandbox_manager: Any = None, *, allow_network: bool = False,
         artifact_store: Any = None, tool_registry: Any = None,
         transport_registry: Any = None, model_name: str = "",
+        supports_multipart_tool_result: bool = True,
     ) -> HookRegistry:
         """Phase 5's hooks, wired onto a fresh `HookRegistry` (never a
         shared/global one — see that phase's hook docstrings for why
         per-request instances matter for `ToolErrorTracker`/`CitationCollector`
         state isolation across concurrent requests)."""
         hooks = HookRegistry()
+
+        # Exposed on tool_state so search/fetch tools (retrieval.py,
+        # citations.py) can skip stashing into `pending_tool_images` when
+        # the model already receives images natively via the multipart
+        # ToolMessage — that stash only exists to feed
+        # `shape_retrieved_image_injection`'s fallback, which is only
+        # registered below (and thus only ever consumes the stash) when
+        # this flag is False.
+        context.tool_state["supports_multipart_tool_result"] = supports_multipart_tool_result
 
         # --- POST_TOOL_USE: artifact registration (Phase 1 of two-phase compaction) ---
         # Large tool results (>2K tokens) are persisted in the artifact store
@@ -843,6 +857,14 @@ class PipesHubAgentFactory:
         # after all shapers ran — catches any orphans from shaper
         # interactions or future shapers that don't use safe_tail_boundary.
         hooks.on(HookEvent.PRE_MODEL).use(shape_image_injection(context))     # L0
+        if not supports_multipart_tool_result:
+            # Ollama's transport (see `LangChainTransport`/`converters.py`)
+            # strips images out of every ToolMessage before it reaches the
+            # provider — this is the fallback that gets them to the model
+            # anyway, via the same UserMessage-injection mechanism as L0.
+            # Only registered for providers that actually need it so
+            # OpenAI/Anthropic never see an image delivered twice.
+            hooks.on(HookEvent.PRE_MODEL).use(shape_retrieved_image_injection(context))  # L0.1
         hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction())           # L1
         hooks.on(HookEvent.PRE_MODEL).use(shape_artifact_compaction(          # L2
             keep_last_n_turns=2,
@@ -957,6 +979,8 @@ class PipesHubAgentFactory:
         state["virtual_record_id_to_result"] = vrmap
 
         is_multimodal = context.is_multimodal_llm
+        from app.utils.chat_helpers import ImageBudget  # noqa: PLC0415
+        image_budget: ImageBudget = state.setdefault("image_budget", ImageBudget())
 
         ctx = ContextManager()
         for turn in previous_conversations:
@@ -972,6 +996,7 @@ class PipesHubAgentFactory:
                     extra_text, image_blocks = await resolve_history_attachments(
                         attachments, blob_store, org_id, ref_mapper, vrmap,
                         is_multimodal_llm=is_multimodal,
+                        image_budget=image_budget,
                     )
                     msg = messages[0]
                     if extra_text:

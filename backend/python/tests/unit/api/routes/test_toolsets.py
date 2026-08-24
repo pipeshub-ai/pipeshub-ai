@@ -8210,3 +8210,69 @@ class TestGetAuthenticatedToolsets:
         assert toolset["isAuthenticated"] is True
         assert toolset["createdAtTimestamp"] == 1234567890
         assert toolset["updatedAtTimestamp"] == 1234567900
+
+
+class TestIsActionsEnabled:
+    """No env override exists — resolution is `config_service` (via the shared
+    `read_platform_feature_flag` helper) -> `FeatureFlagService` fallback ->
+    default True. Every "no signal" path must resolve to `True` here (the
+    opposite of `is_mcp_enabled`'s `False`), since Actions/toolsets are
+    pre-existing functionality rather than an opt-in feature."""
+
+    @pytest.mark.asyncio
+    async def test_reads_platform_settings_flag_true(self) -> None:
+        from app.api.routes.toolsets import is_actions_enabled
+
+        cfg = MagicMock()
+        cfg.get_config = AsyncMock(
+            return_value={"featureFlags": {"ENABLE_ACTIONS": True}}
+        )
+        assert await is_actions_enabled(cfg) is True
+
+    @pytest.mark.asyncio
+    async def test_reads_platform_settings_flag_false(self) -> None:
+        from app.api.routes.toolsets import is_actions_enabled
+
+        cfg = MagicMock()
+        cfg.get_config = AsyncMock(
+            return_value={"featureFlags": {"ENABLE_ACTIONS": False}}
+        )
+        assert await is_actions_enabled(cfg) is False
+
+    @pytest.mark.asyncio
+    async def test_platform_settings_flag_absent_defaults_true(self) -> None:
+        from app.api.routes.toolsets import is_actions_enabled
+
+        cfg = MagicMock()
+        cfg.get_config = AsyncMock(return_value={"featureFlags": {}})
+        assert await is_actions_enabled(cfg) is True
+
+    @pytest.mark.asyncio
+    async def test_platform_settings_read_failure_stays_enabled(self) -> None:
+        from app.api.routes.toolsets import is_actions_enabled
+
+        cfg = MagicMock()
+        cfg.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
+        assert await is_actions_enabled(cfg) is True
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_feature_flag_service(self) -> None:
+        from app.api.routes.toolsets import is_actions_enabled
+
+        mock_ffs = MagicMock()
+        mock_ffs.is_feature_enabled.return_value = False
+        with patch(
+            "app.services.featureflag.featureflag.FeatureFlagService.get_service",
+            return_value=mock_ffs,
+        ):
+            assert await is_actions_enabled(None) is False
+
+    @pytest.mark.asyncio
+    async def test_feature_flag_service_unavailable_defaults_true(self) -> None:
+        from app.api.routes.toolsets import is_actions_enabled
+
+        with patch(
+            "app.services.featureflag.featureflag.FeatureFlagService.get_service",
+            side_effect=RuntimeError("unwired"),
+        ):
+            assert await is_actions_enabled(None) is True
