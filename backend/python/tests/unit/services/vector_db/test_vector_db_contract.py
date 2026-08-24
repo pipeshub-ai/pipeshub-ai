@@ -84,6 +84,26 @@ class TestDeletePointsContract:
             await connected_service.delete_points("records", FilterExpression())
 
 
+class TestSetPayloadContract:
+    @pytest.mark.asyncio
+    async def test_empty_filter_raises(self, connected_service):
+        with pytest.raises(ValueError, match="empty"):
+            await connected_service.set_payload(
+                "records", {"connectorIds": ["c1"]}, FilterExpression()
+            )
+
+    @pytest.mark.asyncio
+    async def test_top_level_membership_filter_not_prefixed(self, connected_service):
+        expr = await connected_service.filter_collection(
+            must={"connectorIds": ["conn-1"], "recordGroupIds": ["rg-1"]}
+        )
+        keys = {c.key for c in expr.must}
+        assert "connectorIds" in keys
+        assert "recordGroupIds" in keys
+        assert "metadata.connectorIds" not in keys
+        assert "metadata.recordGroupIds" not in keys
+
+
 class TestFilterCollectionContract:
     @pytest.mark.asyncio
     async def test_must_filter_builds_conditions(self, connected_service):

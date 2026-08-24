@@ -138,7 +138,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
 
       const fileUrl = this.getFileUrl(relativePath);
 
-      this.logger.info('Local storage upload successful');
+      this.logger.debug('Local storage upload successful');
 
       return {
         statusCode: 200,

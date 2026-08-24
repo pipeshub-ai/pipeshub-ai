@@ -34,6 +34,7 @@ from app.config.constants.arangodb import (
 )
 from app.events.processor import Processor
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.exceptions.indexing_exceptions import IndexingError
 from app.services.base_client import ServiceUnavailableError
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -130,6 +131,62 @@ class EventProcessor:
         self.parsing_client = parsing_client
         self.extraction_client = extraction_client
         self.sink_orchestrator = sink_orchestrator
+
+    def _indexing_pipeline(self):
+        """The single owner of vector-membership writes.
+
+        Returns None only if the processor was built without an indexing
+        pipeline; callers log rather than silently skipping, because a quiet
+        no-op here leaves vector membership permanently stale.
+        """
+        return getattr(self.processor, "indexing_pipeline", None)
+
+    async def sync_vector_membership(self, virtual_record_id: str) -> None:
+        """Recompute a VRID's connector/group arrays from graph. Never deletes."""
+        if not virtual_record_id or not isinstance(virtual_record_id, str):
+            return
+        pipeline = self._indexing_pipeline()
+        if pipeline is None:
+            # Raise rather than return: the handler yields INDEXING_COMPLETE
+            # straight after this call, so returning would acknowledge a
+            # syncVectorMembership event whose work never happened, and nothing
+            # would revisit it. IndexingError classifies as transient, which is
+            # what this needs — an event arriving before the pipeline is wired
+            # succeeds on retry, while a genuine misconfiguration dead-letters
+            # visibly instead of being silently dropped.
+            raise IndexingError(
+                "Indexing pipeline unavailable; cannot apply vector membership",
+                details={"virtual_record_id": virtual_record_id},
+            )
+        try:
+            await pipeline.sync_vector_membership(virtual_record_id)
+        except Exception as e:
+            # Propagate so the consumer redelivers. Swallowing here leaves the
+            # record attached to the VRID with its connectorId missing from the
+            # points and nothing to repair it; both callers are event handlers,
+            # and re-running a duplicate attach is idempotent.
+            self.logger.error(
+                "Failed to sync vector membership for %s: %s", virtual_record_id, e
+            )
+            raise
+
+    async def _rewrite_or_delete_vrid_vectors(self, virtual_record_id: str) -> None:
+        if not virtual_record_id or not isinstance(virtual_record_id, str):
+            return
+        pipeline = self._indexing_pipeline()
+        if pipeline is None:
+            self.logger.error(
+                "No indexing pipeline available — vectors for abandoned VRID %s "
+                "were not rewritten or deleted",
+                virtual_record_id,
+            )
+            return
+        try:
+            await pipeline.rewrite_or_delete_vector_membership(virtual_record_id)
+        except Exception as e:
+            self.logger.error(
+                "Failed to rewrite/delete vectors for %s: %s", virtual_record_id, e
+            )
 
     async def _pdf_needs_ocr(self, file_content: bytes) -> bool:
         if PDF_OCR_DETECTION_WORKERS <= 1:
@@ -355,9 +412,9 @@ class EventProcessor:
         )
 
         # ── Step 2: Index (VectorStore + BlobStorage) ────────────────────────
-        self.logger.info("📥 Indexing record %s (making searchable)", record_id)
+        self.logger.debug("📥 Indexing record %s (making searchable)", record_id)
         await self.sink_orchestrator.index(ctx)
-        self.logger.info("✅ Record %s is now searchable (indexingStatus=COMPLETED)", record_id)
+        self.logger.debug("✅ Record %s is now searchable (indexingStatus=COMPLETED)", record_id)
 
         # ── Step 3: Enrich (Extraction Service → GraphDB) ────────────────────
         defer_extraction = (
@@ -557,7 +614,7 @@ class EventProcessor:
         duplicate_records = [r for r in duplicate_records if r is not None]
 
         if not duplicate_records:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 No duplicate records found for record {_record_key(doc)}"
             )
             return False
@@ -595,6 +652,9 @@ class EventProcessor:
                 _record_key(processed_duplicate),
                 _record_key(doc),
             )
+            attached_vrid = processed_duplicate.get("virtualRecordId")
+            if attached_vrid:
+                await self.sync_vector_membership(attached_vrid)
             self.logger.debug(
                 f"✅ Duplicate record {_record_key(processed_duplicate)} returning TRUE"
             )
@@ -771,6 +831,7 @@ class EventProcessor:
                 await self.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
 
             prev_virtual_record_id = None
+            abandoned_virtual_record_id = None
             if event_type == EventTypes.UPDATE_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
                 # For reconciliation-enabled types, decide whether to keep or generate new vrid
                 from app.config.constants.arangodb import (
@@ -791,6 +852,7 @@ class EventProcessor:
                         if len(records_with_vrid) > 1:
                             # N:1 case: multiple records share this vrid, isolate with new vrid
                             virtual_record_id = str(uuid4())
+                            abandoned_virtual_record_id = prev_virtual_record_id
                             self.logger.info(
                                 f"📊 Multiple records ({len(records_with_vrid)}) share vrid {prev_virtual_record_id}, "
                                 f"generated new vrid: {virtual_record_id}"
@@ -804,6 +866,7 @@ class EventProcessor:
                         # No existing vrid, treat as new record
                         self.logger.info("📊 No existing virtual_record_id for reconciliation type, treating as new")
                 else:
+                    abandoned_virtual_record_id = virtual_record_id
                     virtual_record_id = str(uuid4())
 
             if virtual_record_id is None:
@@ -820,6 +883,11 @@ class EventProcessor:
                 await self.update_record_fields(
                     doc, {"virtualRecordId": virtual_record_id}
                 )
+            if (
+                abandoned_virtual_record_id
+                and abandoned_virtual_record_id != virtual_record_id
+            ):
+                await self._rewrite_or_delete_vrid_vectors(abandoned_virtual_record_id)
 
             # Ask the consumer for a nested parsing slot only after the record
             # is already IN_PROGRESS under the outer indexing gate. Tier/size

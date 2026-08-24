@@ -1,6 +1,7 @@
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 
 import asyncio
+import inspect
 import os
 from uuid import uuid4
 from collections.abc import AsyncGenerator, Awaitable
@@ -19,6 +20,9 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.containers.indexing import IndexingAppContainer, initialize_container
+from app.modules.indexing.vector_membership_backfill import (
+    run_vector_membership_backfill_loop,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     ConsumerType,
@@ -487,6 +491,41 @@ async def recover_in_progress_records(
                 # next stale_recovery_interval_seconds tick.
                 offset += len(page) - removed_from_result
 
+        # QUEUED records on a disabled connector are unreachable by the scan
+        # above: it filters on IN_PROGRESS, and a QUEUED row has no
+        # processingStartedAt to age out. Nothing else moves them either — the
+        # event guard only fires for messages still in the broker — so without
+        # this pass they sit in QUEUED for ever.
+        #
+        # Deliberately narrow: it only ever marks records whose connector is
+        # gone or inactive. Re-queuing QUEUED rows for *live* connectors would
+        # duplicate work, because a message for them may still be in the broker.
+        queued_swept = await _sweep_queued_records_for_inactive_connectors(
+            graph_provider=graph_provider,
+            logger=logger,
+            page_size=page_size,
+        )
+        total_records += queued_swept
+
+        # Vectors whose last referencing record was repointed elsewhere are
+        # reachable from neither the record scan above nor the membership
+        # backfill (both walk records, and this VRID has none). Left alone they
+        # stay searchable for ever. See the sweep's docstring.
+        try:
+            pipeline = app_container.indexing_pipeline()
+            if inspect.isawaitable(pipeline):
+                pipeline = await pipeline
+        except Exception as exc:
+            pipeline = None
+            logger.warning(f"Indexing pipeline unavailable for orphan sweep: {exc}")
+        if pipeline is not None:
+            total_records += await _sweep_orphaned_virtual_record_mappings(
+                graph_provider=graph_provider,
+                pipeline=pipeline,
+                logger=logger,
+                page_size=page_size,
+            )
+
         if total_records == 0:
             logger.debug("No stale in-progress records to recover")
             return
@@ -518,6 +557,222 @@ async def recover_in_progress_records(
                     "Failed to release stale-record recovery lease: %s",
                     release_exc,
                 )
+
+
+# How much of virtualRecordToDocIdMapping one recovery tick will walk. Bounded
+# because orphans are rare and every row costs a graph lookup; the cursor below
+# carries the position forward so successive ticks cover the rest.
+ORPHAN_SCAN_MAX_PAGES_PER_TICK = 4
+_orphan_sweep_cursor = 0
+
+
+async def _sweep_orphaned_virtual_record_mappings(
+    *,
+    graph_provider,
+    pipeline,
+    logger,
+    page_size: int,
+) -> int:
+    """Clean up VRIDs whose vectors outlived every graph record referencing them.
+
+    An abandoned VRID can be stranded: on an N:1 split the record is repointed at
+    a fresh VRID *before* the old one is cleaned up, so if that cleanup fails the
+    old VRID has no record left to find it by — and the membership backfill walks
+    records, not VRIDs, so it can never reach it either.
+
+    virtualRecordToDocIdMapping is the durable marker for this. It is written per
+    VRID and removed only by a successful cleanup, so a mapping whose VRID has no
+    records is exactly an orphan. Reusing rewrite_or_delete_virtual_record keeps
+    the confirming re-read, so a lagging graph read cannot delete live vectors.
+
+    Orphans are rare but the mapping collection is large, and each row costs a
+    graph lookup, so a full scan per tick would be a standing N+1 for almost no
+    yield. Instead each tick walks a bounded slice and leaves the cursor where it
+    stopped, wrapping at the end: the collection is covered over many ticks
+    rather than all at once. The cursor is per-process and resets on restart —
+    acceptable, since nothing here is required to be timely.
+    """
+    global _orphan_sweep_cursor
+
+    swept = 0
+    offset = _orphan_sweep_cursor
+    pages_scanned = 0
+    while pages_scanned < ORPHAN_SCAN_MAX_PAGES_PER_TICK:
+        pages_scanned += 1
+        page = await graph_provider.get_documents_paginated(
+            CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
+            skip=offset,
+            limit=page_size,
+            sort_field="_key",
+            raise_on_error=False,
+        )
+        if not page:
+            offset = 0  # ran off the end; restart from the top next tick
+            break
+
+        swept_this_page = 0
+        for mapping in page:
+            vrid = mapping.get("_key") or mapping.get("id")
+            if not isinstance(vrid, str) or not vrid:
+                continue
+            try:
+                records = await graph_provider.get_records_by_virtual_record_id(vrid)
+            except Exception as exc:
+                logger.warning(
+                    "Could not check virtual record %s for orphaned vectors: %s",
+                    vrid,
+                    exc,
+                )
+                continue
+            if records:
+                continue
+            try:
+                outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
+            except Exception as exc:
+                logger.error(
+                    "Failed to clean up orphaned vectors for virtual record %s: %s",
+                    vrid,
+                    exc,
+                )
+                continue
+            if outcome == "deleted":
+                swept += 1
+                swept_this_page += 1
+
+        if len(page) < page_size:
+            offset = 0
+            break
+        offset += len(page) - swept_this_page
+
+    _orphan_sweep_cursor = offset
+
+    if swept:
+        logger.info(
+            "Cleaned up %d orphaned virtual record(s) whose vectors outlived "
+            "every referencing record",
+            swept,
+        )
+    return swept
+
+
+async def _sweep_queued_records_for_inactive_connectors(
+    *,
+    graph_provider,
+    logger,
+    page_size: int,
+) -> int:
+    """Move stranded records on gone/inactive connectors to AUTO_INDEX_OFF.
+
+    Disabling a connector sweeps its backlog at the time of the toggle, but that
+    cannot help rows queued during the toggle, a sweep that failed part-way, or a
+    connector disabled before that sweep existed. This is the self-healing path
+    for all three.
+
+    Never re-publishes. A row on a *live* connector is left alone: its message may
+    still be sitting in the broker, and re-queuing would duplicate the work.
+
+    QUEUED rows are unreachable by the main stale scan — it filters on
+    IN_PROGRESS, and a QUEUED row has no processingStartedAt to age out — so
+    without this they sit for ever.
+
+    IN_PROGRESS rows are included past a short grace period. The main scan waits
+    stale_recovery_after_seconds (~32 min by default), which is right for a
+    pipeline that might still finish and wrong here: the connector has already
+    been popped from connectors_map, so nothing in flight can succeed. One lease
+    interval is enough to be sure no worker still owns the row.
+    """
+    swept = 0
+    connector_active: dict[str, bool] = {}
+    in_progress_cutoff_ms = get_epoch_timestamp_in_ms() - int(
+        messaging_env.concurrency_lease_seconds * 1000
+    )
+
+    async def _is_inactive(connector_id: str) -> bool:
+        if connector_id not in connector_active:
+            instance = await graph_provider.get_document(
+                connector_id, CollectionNames.APPS.value
+            )
+            # A missing instance counts as inactive: its records can never be
+            # indexed again.
+            connector_active[connector_id] = bool(
+                instance and instance.get("isActive", False)
+            )
+        return not connector_active[connector_id]
+
+    for status_value in (
+        ProgressStatus.QUEUED.value,
+        ProgressStatus.IN_PROGRESS.value,
+    ):
+        offset = 0
+        while True:
+            page = await graph_provider.get_documents_paginated(
+                CollectionNames.RECORDS.value,
+                skip=offset,
+                limit=page_size,
+                filters={"indexingStatus": status_value},
+                sort_field="_key",
+                raise_on_error=False,
+            )
+            if not page:
+                break
+
+            swept_this_page = 0
+            for record in page:
+                connector_id = record.get("connectorId")
+                if (
+                    not connector_id
+                    or record.get("origin") != OriginTypes.CONNECTOR.value
+                ):
+                    continue
+
+                if status_value == ProgressStatus.IN_PROGRESS.value:
+                    started_at = record.get("processingStartedAt")
+                    try:
+                        recently_started = (
+                            started_at is not None
+                            and float(started_at) > in_progress_cutoff_ms
+                        )
+                    except (TypeError, ValueError):
+                        recently_started = False
+                    if recently_started:
+                        continue
+
+                if not await _is_inactive(connector_id):
+                    continue
+
+                record_key = record.get("_key") or record.get("id")
+                if not record_key:
+                    continue
+                try:
+                    await graph_provider.update_node(
+                        record_key,
+                        CollectionNames.RECORDS.value,
+                        {
+                            "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
+                            "processingStartedAt": None,
+                            "reason": "Connector is inactive",
+                        },
+                    )
+                    swept += 1
+                    swept_this_page += 1
+                except Exception as exc:
+                    logger.error(
+                        "Failed to move record %s to manual indexing: %s",
+                        record_key,
+                        exc,
+                    )
+
+            if len(page) < page_size:
+                break
+            # Swept rows leave this filtered result, so advance only over the
+            # rows still in front of the cursor — this page's removals.
+            offset += len(page) - swept_this_page
+
+    if swept:
+        logger.info(
+            "Moved %d record(s) on inactive connectors to manual indexing", swept
+        )
+    return swept
 
 
 async def run_stale_recovery_loop(
@@ -834,9 +1089,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_stale_recovery_loop(app_container, graph_provider),
             worker_loop,
         )
+        app.state.backfill_future = asyncio.run_coroutine_threadsafe(
+            run_vector_membership_backfill_loop(app_container, graph_provider),
+            worker_loop,
+        )
     else:
         app.state.recovery_task = asyncio.create_task(
             run_stale_recovery_loop(app_container, graph_provider)
+        )
+        app.state.backfill_task = asyncio.create_task(
+            run_vector_membership_backfill_loop(app_container, graph_provider)
         )
 
     yield
@@ -876,6 +1138,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
         except Exception as e:
             logger.error(f"❌ Error during recovery future shutdown: {str(e)}")
+
+    backfill_task = getattr(app.state, "backfill_task", None)
+    if backfill_task:
+        if not backfill_task.done():
+            backfill_task.cancel()
+        try:
+            await backfill_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during vector membership backfill shutdown: {str(e)}")
+
+    backfill_future = getattr(app.state, "backfill_future", None)
+    if backfill_future:
+        if not backfill_future.done():
+            backfill_future.cancel()
+        try:
+            await asyncio.wrap_future(backfill_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during vector membership backfill future shutdown: {str(e)}")
 
     # Stop message consumers
     try:

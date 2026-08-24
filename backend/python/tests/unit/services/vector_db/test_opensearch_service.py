@@ -293,6 +293,8 @@ class TestCreateCollection:
         assert body["settings"]["index.knn"] is True
         assert body["mappings"]["properties"]["dense_embedding"]["dimension"] == 1024
         assert body["mappings"]["properties"]["dense_embedding"]["method"]["space_type"] == "cosinesimil"
+        assert body["mappings"]["properties"]["connectorIds"] == {"type": "keyword"}
+        assert body["mappings"]["properties"]["recordGroupIds"] == {"type": "keyword"}
 
     @pytest.mark.asyncio
     async def test_create_collection_custom_name(self, connected_service):
@@ -821,7 +823,9 @@ class TestOverwritePayload:
 
     @pytest.mark.asyncio
     async def test_overwrite_payload_multiple_fields(self, connected_service):
-        filter_expr = FilterExpression()
+        filter_expr = FilterExpression(
+            must=[GenericFieldCondition(key="metadata.orgId", value="org1")]
+        )
         await connected_service.overwrite_payload(
             "my-idx",
             {"status": "active", "version": 2},
@@ -836,7 +840,48 @@ class TestOverwritePayload:
     @pytest.mark.asyncio
     async def test_overwrite_payload_not_connected(self, service):
         with pytest.raises(RuntimeError, match="config not loaded"):
-            await service.overwrite_payload("my-idx", {}, FilterExpression())
+            await service.overwrite_payload(
+                "my-idx",
+                {},
+                FilterExpression(
+                    must=[GenericFieldCondition(key="metadata.orgId", value="org1")]
+                ),
+            )
+
+    @pytest.mark.asyncio
+    async def test_overwrite_payload_empty_filter_raises(self, connected_service):
+        with pytest.raises(ValueError, match="empty filter"):
+            await connected_service.overwrite_payload("my-idx", {"k": "v"}, FilterExpression())
+
+
+class TestSetPayload:
+    @pytest.mark.asyncio
+    async def test_empty_filter_raises(self, connected_service):
+        with pytest.raises(ValueError, match="empty"):
+            await connected_service.set_payload(
+                "my-idx", {"connectorIds": ["c1"]}, FilterExpression()
+            )
+        connected_service.client.update_by_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_merges_top_level_membership_fields(self, connected_service):
+        filter_expr = FilterExpression(
+            must=[GenericFieldCondition(key="metadata.virtualRecordId", value="vr-1")]
+        )
+        await connected_service.set_payload(
+            "my-idx",
+            {"connectorIds": ["c1", "c2"], "recordGroupIds": ["g1"]},
+            filter_expr,
+        )
+
+        connected_service.client.update_by_query.assert_awaited_once()
+        body = connected_service.client.update_by_query.call_args.kwargs["body"]
+        script = body["script"]["source"]
+        assert "ctx._source['connectorIds']" in script
+        assert "ctx._source['recordGroupIds']" in script
+        assert script.count("ctx._source.metadata") == 0
+        assert body["script"]["params"]["p_connectorIds"] == ["c1", "c2"]
+        assert body["script"]["params"]["p_recordGroupIds"] == ["g1"]
 
 
 # ---------------------------------------------------------------------------
@@ -1349,3 +1394,101 @@ class TestRrfPipelineConfigurable:
         rrf_cfg = body["phase_results_processors"][0]["score-ranker-processor"]["combination"]
         assert rrf_cfg["rank_constant"] == 30
 
+
+
+class TestMergePolicy:
+    """Segment count is managed by the merge policy, not periodic force-merges."""
+
+    @pytest.mark.asyncio
+    async def test_upsert_does_not_schedule_a_force_merge(self, connected_service):
+        """A recurring full-index rewrite on a live index is self-perpetuating:
+        one segment exceeds max_merged_segment, so TieredMergePolicy stops
+        merging it and only another force-merge can reclaim its deletes."""
+        assert not hasattr(connected_service, "schedule_idle_force_merge")
+
+        with patch(
+            "app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk",
+            new=AsyncMock(return_value=(1, [])),
+        ):
+            await connected_service.upsert_points(
+                "my-idx",
+                [VectorPoint(id="p1", dense_vector=[0.1] * 4, payload={"metadata": {}})],
+            )
+
+        connected_service.client.indices.forcemerge.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_index_creation_tunes_segments_per_tier(self, connected_service):
+        connected_service.client.indices.exists = AsyncMock(return_value=False)
+        await connected_service.create_collection("my-idx", CollectionConfig(embedding_size=4))
+
+        body = connected_service.client.indices.create.call_args[1]["body"]
+        assert body["settings"]["index.merge.policy.segments_per_tier"] == 4
+
+    @pytest.mark.asyncio
+    async def test_force_merge_remains_available_explicitly(self, connected_service):
+        """Still the right tool for an index that is no longer written to."""
+        await connected_service.force_merge("my-idx", max_segments=1)
+        connected_service.client.indices.forcemerge.assert_awaited_once()
+
+
+class TestScrollAndFanOut:
+    @pytest.mark.asyncio
+    async def test_scroll_sorts_on_point_id_not_underscore_id(self, connected_service):
+        """Sorting on _id needs fielddata, which is disabled by default."""
+        await connected_service.scroll("my-idx", FilterExpression(), limit=10)
+        body = connected_service.client.search.call_args[1]["body"]
+        assert body["sort"] == [{"point_id": "asc"}]
+
+    def test_document_carries_point_id_for_sorting(self):
+        doc = OpenSearchUtils.vector_point_to_document(
+            VectorPoint(id="p-42", dense_vector=[0.1], payload={"metadata": {}})
+        )
+        assert doc["point_id"] == "p-42"
+
+    @pytest.mark.asyncio
+    async def test_query_fan_out_is_bounded(self, connected_service):
+        """One request per agent source; a wide query must not open N searches."""
+        import asyncio as _asyncio
+
+        active = {"n": 0, "max": 0}
+
+        async def _search(**kwargs):
+            active["n"] += 1
+            active["max"] = max(active["max"], active["n"])
+            await _asyncio.sleep(0.005)
+            active["n"] -= 1
+            return {"hits": {"hits": []}}
+
+        connected_service.client.search = AsyncMock(side_effect=_search)
+        reqs = [HybridSearchRequest(dense_query=[0.1], limit=5) for _ in range(30)]
+
+        await connected_service.query_nearest_points("my-idx", reqs)
+        assert active["max"] <= 8, f"fan-out reached {active['max']} concurrent searches"
+
+
+class TestScrollMigrationGuard:
+    @pytest.mark.asyncio
+    async def test_full_page_without_sort_value_raises(self, connected_service):
+        """Documents predating point_id have nothing to anchor search_after to;
+        returning next_offset=None would look like the last page."""
+        connected_service.client.search = AsyncMock(
+            return_value={"hits": {"hits": [{"_id": f"p{i}", "_source": {}} for i in range(5)]}}
+        )
+        with pytest.raises(RuntimeError, match="point_id"):
+            await connected_service.scroll("my-idx", FilterExpression(), limit=5)
+
+    @pytest.mark.asyncio
+    async def test_full_page_with_sort_value_returns_cursor(self, connected_service):
+        connected_service.client.search = AsyncMock(
+            return_value={
+                "hits": {
+                    "hits": [
+                        {"_id": f"p{i}", "_source": {}, "sort": [f"p{i}"]}
+                        for i in range(5)
+                    ]
+                }
+            }
+        )
+        result = await connected_service.scroll("my-idx", FilterExpression(), limit=5)
+        assert result.next_offset == '["p4"]'

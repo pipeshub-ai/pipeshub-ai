@@ -702,9 +702,31 @@ class TestOnRecordDeleted:
 
         await proc.on_record_deleted("rec-1")
 
-        tx_store.delete_single_record.assert_awaited_once_with("rec-1")
-        proc.messaging_producer.send_message.assert_awaited_once()
-        assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"
+        tx_store.delete_record_by_key.assert_awaited_once_with("rec-1")
+        proc.messaging_producer.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deletes_record_publishes_when_vrid_present(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        existing = MagicMock()
+        existing.virtual_record_id = "vr-9"
+        existing.org_id = "org-1"
+        existing.id = "rec-1"
+        existing.version = 1
+        existing.connector_id = "conn-9"
+        tx_store.get_record_by_key = AsyncMock(return_value=existing)
+
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = ctx
+
+        await proc.on_record_deleted("rec-1")
+
+        proc.messaging_producer.send_message.assert_awaited()
+        body = proc.messaging_producer.send_message.await_args.args[1]
+        assert body["payload"]["virtualRecordId"] == "vr-9"
 
 
 # ===========================================================================

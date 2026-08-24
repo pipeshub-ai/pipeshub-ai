@@ -261,6 +261,16 @@ def is_base64_image(s: str) -> bool:
 _multimodal_logger = logging.getLogger(__name__)
 
 
+# Bounded page size for vector scrolls: providers cap a single request
+# (OpenSearch 10k, RediSearch MAXSEARCHRESULTS), so callers must page.
+SCROLL_PAGE_SIZE = 1000
+
+# Ceiling on points reconstructed for one virtual record. The walk below runs on
+# a request path and every point expands into a block and a payload, so one
+# oversized record would otherwise be an OOM; a record this large cannot be
+# rendered as citations anyway.
+MAX_SCROLL_POINTS = 50_000
+
 async def build_multimodal_user_content(
     text_content: str,
     attachments: list[dict],
@@ -2614,17 +2624,57 @@ async def create_record_from_vector_metadata(metadata: dict[str, Any], org_id: s
             "virtualRecordId": virtual_record_id,
         })
 
-# Scroll through all points with the filter
+        # Page until the provider says there is no more. A single large-limit
+        # call silently truncates: OpenSearch caps size at 10k and RediSearch at
+        # MAXSEARCHRESULTS, so an oversized limit returns a partial set that
+        # looks complete.
         points = []
-
-        result = await vector_db_service.scroll(
-                collection_name=VECTOR_DB_COLLECTION_NAME,
-                scroll_filter=payload_filter,
-                limit=100000,
-            )
-
-
-        points.extend(result[0])
+        next_offset = None
+        seen_offsets: set = set()
+        while True:
+            try:
+                result = await vector_db_service.scroll(
+                    collection_name=VECTOR_DB_COLLECTION_NAME,
+                    scroll_filter=payload_filter,
+                    limit=SCROLL_PAGE_SIZE,
+                    offset=next_offset,
+                )
+            except RuntimeError as e:
+                # A provider result ceiling (RediSearch MAXSEARCHRESULTS) is a
+                # hard stop, not a reason to fail the whole rebuild: reconstruct
+                # from what we have and say plainly that it is partial.
+                logger.error(
+                    "Vector scroll for %s stopped early after %d points: %s",
+                    virtual_record_id,
+                    len(points),
+                    e,
+                )
+                break
+            points.extend(result.points)
+            next_offset = result.next_offset
+            if not next_offset:
+                break
+            # Termination depends entirely on the provider advancing the cursor.
+            # A provider that repeats one refetches and re-appends the same page
+            # for ever, on a request path, so treat a repeat as the end.
+            if next_offset in seen_offsets:
+                logger.error(
+                    "Vector scroll for %s repeated offset %r after %d points; "
+                    "stopping with a partial result",
+                    virtual_record_id,
+                    next_offset,
+                    len(points),
+                )
+                break
+            seen_offsets.add(next_offset)
+            if len(points) >= MAX_SCROLL_POINTS:
+                logger.error(
+                    "Vector scroll for %s hit the %d point ceiling; "
+                    "result is partial",
+                    virtual_record_id,
+                    MAX_SCROLL_POINTS,
+                )
+                break
 
         point_id_to_blockIndex = {}
         new_payloads = []

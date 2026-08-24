@@ -499,6 +499,7 @@ class ConnectorRegistry:
                 'isAgentActive': False,
                 'isConfigured': True,
                 'isAuthenticated': False,
+                'vectorMembershipBackfilled': True,
                 'createdBy': created_by,
                 'updatedBy': created_by,
                 'createdAtTimestamp': current_timestamp,

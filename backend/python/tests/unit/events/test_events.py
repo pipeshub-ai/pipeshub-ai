@@ -31,6 +31,10 @@ def _make_event_processor():
     """Create an EventProcessor with mocked deps from events module."""
     logger = MagicMock()
     processor = MagicMock()
+    # Membership sync is awaited, so the pipeline must be an AsyncMock; a bare
+    # MagicMock raises TypeError, which the caller now propagates rather than
+    # swallowing.
+    processor.indexing_pipeline = AsyncMock()
     graph_provider = AsyncMock()
     graph_provider.update_node = AsyncMock(return_value=True)
     config_service = MagicMock()
@@ -1687,3 +1691,137 @@ class TestOnEventPrevVirtualRecordId:
 
         call_kwargs = processor.process_sql_structured_data.call_args[1]
         assert call_kwargs["prev_virtual_record_id"] == "prev-vrid"
+
+
+class TestVectorMembershipHooks:
+    @pytest.mark.asyncio
+    async def test_duplicate_attach_syncs_membership(self):
+        ep, _, _, gp = _make_event_processor()
+        processed = {
+            "_key": "dup-p",
+            "virtualRecordId": "vr-shared",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+            "summaryDocumentId": "sum-p",
+        }
+        gp.find_duplicate_records.return_value = [processed]
+        doc = {"_key": "r-new", "md5Checksum": "abc", "recordType": "FILE", "sizeInBytes": 10}
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
+            with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+                result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result is True
+        sync.assert_awaited_once_with("vr-shared")
+
+    @pytest.mark.asyncio
+    async def test_n1_vrid_split_rewrites_old_vrid(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_TABLE",
+            "virtualRecordId": "shared-vrid",
+        }
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1", "rec-2"])
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            with patch.object(ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock) as rewrite:
+                event_data = _make_event_payload(
+                    mime_type=MimeTypes.SQL_TABLE.value,
+                    extension=ExtensionTypes.SQL_TABLE.value,
+                    event_type=EventTypes.UPDATE_RECORD.value,
+                    virtual_record_id="shared-vrid",
+                )
+                await _drain(ep.on_event(event_data))
+
+        rewrite.assert_awaited_once_with("shared-vrid")
+        call_kwargs = processor.process_sql_structured_data.call_args[1]
+        assert call_kwargs["virtual_record_id"] != "shared-vrid"
+        assert call_kwargs["prev_virtual_record_id"] == "shared-vrid"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_attach_skips_sync_when_vrid_missing(self):
+        ep, _, _, gp = _make_event_processor()
+        processed = {
+            "_key": "dup-empty",
+            "indexingStatus": ProgressStatus.EMPTY.value,
+        }
+        gp.find_duplicate_records.return_value = [processed]
+        doc = {"_key": "r-new", "md5Checksum": "abc", "recordType": "FILE", "sizeInBytes": 10}
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
+            with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+                result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result is True
+        sync.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_to_one_reconciliation_does_not_rewrite(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_TABLE",
+            "virtualRecordId": "solo-vrid",
+        }
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            with patch.object(ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock) as rewrite:
+                event_data = _make_event_payload(
+                    mime_type=MimeTypes.SQL_TABLE.value,
+                    extension=ExtensionTypes.SQL_TABLE.value,
+                    event_type=EventTypes.UPDATE_RECORD.value,
+                    virtual_record_id="solo-vrid",
+                )
+                await _drain(ep.on_event(event_data))
+
+        rewrite.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_delegates_to_indexing_pipeline(self):
+        ep, _, processor, _ = _make_event_processor()
+        processor.indexing_pipeline.sync_vector_membership = AsyncMock()
+
+        await ep.sync_vector_membership("vr-1")
+
+        processor.indexing_pipeline.sync_vector_membership.assert_awaited_once_with("vr-1")
+
+    @pytest.mark.asyncio
+    async def test_sync_without_pipeline_fails_the_event(self):
+        """Must not acknowledge work that never happened.
+
+        The handler yields INDEXING_COMPLETE straight after this call, so
+        returning quietly would ack a syncVectorMembership event whose update was
+        never applied, with nothing to revisit it. IndexingError is transient, so
+        an event arriving before the pipeline is wired succeeds on retry and a
+        real misconfiguration dead-letters visibly.
+        """
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
+
+        ep, _, processor, _ = _make_event_processor()
+        processor.indexing_pipeline = None
+
+        with pytest.raises(IndexingError) as exc:
+            await ep.sync_vector_membership("vr-1")
+
+        assert (
+            MessageErrorClassifier.classify_by_exception(exc.value)
+            == MessageErrorType.TRANSIENT
+        )
+
+    @pytest.mark.asyncio
+    async def test_sync_ignores_blank_vrid(self):
+        ep, _, processor, _ = _make_event_processor()
+        processor.indexing_pipeline.sync_vector_membership = AsyncMock()
+
+        await ep.sync_vector_membership("")
+
+        processor.indexing_pipeline.sync_vector_membership.assert_not_awaited()
+

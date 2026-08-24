@@ -1020,13 +1020,13 @@ def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
                 schema,
                 **additional_kwargs
             )
-            logger.info("Using structured output")
+            logger.debug("Using structured output")
             return model_with_structure
         except Exception as e:
             logger.warning("Failed to apply structured output, falling back to default. Error: %s", str(e))
-            logger.info("Using non-structured LLM")
+            logger.debug("Using non-structured LLM")
 
-    logger.info("Using non-structured LLM")
+    logger.debug("Using non-structured LLM")
     return llm
 
 

@@ -1116,6 +1116,8 @@ class TestGetOrCreateKnowledgeBaseCreationActive:
 
         assert result.get("success") is True
         assert "kb_id" in result
+        kb_data = svc.graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert kb_data["vectorMembershipBackfilled"] is True
         svc.logger.warning.assert_called()
 
 

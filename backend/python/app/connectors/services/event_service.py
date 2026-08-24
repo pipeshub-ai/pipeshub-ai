@@ -1,5 +1,6 @@
 """Generic Event Service for handling connector-specific events"""
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -423,10 +424,23 @@ class EventService:
                 self.logger.error(f"❌ Failed to set SYNCING status for connector {connector_id}: {status_err}")
                 # Non-fatal: proceed with sync even if status write failed
 
-            await sync_task_manager.start_sync(
+            # Declined rather than restarted: a scheduled tick that lands while
+            # the previous sync is still running used to cancel it, so a sync
+            # slower than its own interval could be killed and restarted for
+            # ever and never finish. An explicit full sync still pre-empts,
+            # because asking for one is a deliberate act.
+            started = await sync_task_manager.start_if_idle(
                 connector_id,
                 self._run_sync_and_clear_status(connector, connector_id, org_id),
             )
+            if started is None:
+                self.logger.info(
+                    f"Sync already running for {connector_name} {connector_id}; "
+                    f"ignoring this request"
+                )
+                # Acknowledged, not failed: the work is already in progress, so
+                # redelivering this event would only repeat the decision.
+                return True
             self.logger.info(f"Started sync task for {connector_name} {connector_id}")
 
         return True
@@ -439,15 +453,27 @@ class EventService:
     ) -> None:
         """Wrap run_sync() so that status is cleared to null when the task finishes."""
         start = time.monotonic()
+        cancelled = False
         try:
             await connector.run_sync()
+        except asyncio.CancelledError:
+            # Distinguished from completion: the finally below reports success,
+            # so a pre-empted sync used to read in the logs exactly like one that
+            # finished its work.
+            cancelled = True
+            raise
         finally:
             elapsed = time.monotonic() - start
             mins, secs = divmod(elapsed, 60)
             elapsed_str = f"{int(mins)}m {secs:.1f}s" if mins else f"{secs:.1f}s"
-            self.logger.info(
-                f"✅ Sync finished for connector {connector_id} — total time: {elapsed_str}"
-            )
+            if cancelled:
+                self.logger.warning(
+                    f"⚠️ Sync cancelled for connector {connector_id} after {elapsed_str}"
+                )
+            else:
+                self.logger.info(
+                    f"✅ Sync finished for connector {connector_id} — total time: {elapsed_str}"
+                )
             try:
                 await self._update_app_status(connector_id, status=AppStatus.IDLE.value)
                 self.logger.info(f"✅ Cleared status for connector {connector_id} after sync")

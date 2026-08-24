@@ -218,7 +218,7 @@ class TestVectorStoreApply:
 # _initialize_collection
 # ===================================================================
 
-class TestInitializeCollection:
+class TestInitializeCollectionBasics:
     """Tests for VectorStore._initialize_collection."""
 
     @pytest.mark.asyncio
@@ -235,7 +235,7 @@ class TestInitializeCollection:
         await vs._initialize_collection(embedding_size=768)
 
         vs.vector_db_service.create_collection.assert_awaited_once()
-        assert vs.vector_db_service.create_index.call_count == 2
+        assert vs.vector_db_service.create_index.call_count == 4
 
     @pytest.mark.asyncio
     async def test_recreates_on_dimension_mismatch(self):
@@ -279,9 +279,59 @@ class TestInitializeCollection:
             await vs._initialize_collection(embedding_size=768)
 
 
-# ===================================================================
-# get_embedding_model_instance
-# ===================================================================
+class TestRecreateRecordsCollection:
+    @pytest.mark.asyncio
+    async def test_drops_before_initialising(self):
+        """Order is the whole point.
+
+        get_embedding_model_instance ends by calling _initialize_collection,
+        which raises on an embedding-dimension mismatch. Initialising before the
+        drop would therefore fail exactly when the model changed — the main
+        reason to recreate.
+        """
+        calls: list[str] = []
+
+        vs = _make_vectorstore()
+        vs.vector_db_service.delete_collection = AsyncMock(
+            side_effect=lambda *a, **k: calls.append("delete")
+        )
+        vs.get_embedding_model_instance = AsyncMock(
+            side_effect=lambda *a, **k: calls.append("init")
+        )
+
+        await vs.recreate_records_collection()
+
+        assert calls == ["delete", "init"], calls
+        vs.vector_db_service.delete_collection.assert_awaited_once_with(
+            "test_collection"
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_collection_still_initialises(self):
+        vs = _make_vectorstore()
+        vs.vector_db_service.delete_collection = AsyncMock(
+            side_effect=Exception("collection not found")
+        )
+        vs.get_embedding_model_instance = AsyncMock()
+
+        await vs.recreate_records_collection()
+
+        vs.get_embedding_model_instance.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_unexpected_delete_error_propagates(self):
+        """A real outage must not be mistaken for an absent collection."""
+        vs = _make_vectorstore()
+        vs.vector_db_service.delete_collection = AsyncMock(
+            side_effect=ConnectionError("qdrant unreachable")
+        )
+        vs.get_embedding_model_instance = AsyncMock()
+
+        with pytest.raises(ConnectionError):
+            await vs.recreate_records_collection()
+
+        vs.get_embedding_model_instance.assert_not_awaited()
+
 
 class TestGetEmbeddingModelInstance:
     """Tests for VectorStore.get_embedding_model_instance."""
@@ -822,7 +872,7 @@ class TestIndexDocuments:
 
     @pytest.mark.asyncio
     async def test_text_blocks_with_multiple_sentences(self):
-        """Text blocks with multiple sentences create sentence + block embeddings."""
+        """Short multi-sentence blocks embed as one document under the word threshold."""
         from app.models.blocks import Block, BlocksContainer
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
@@ -836,9 +886,9 @@ class TestIndexDocuments:
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
-        # The documents should include individual sentences + the full block
         chunks = vs._create_embeddings.call_args[0][0]
-        assert len(chunks) == 3  # 2 sentences + 1 block
+        assert len(chunks) == 1
+        assert chunks[0].metadata["isBlock"] is True
 
     @pytest.mark.asyncio
     async def test_image_blocks_with_multimodal_embedding(self):
@@ -1185,9 +1235,40 @@ class TestBuildTextDocuments:
         assert docs[0].metadata["isBlock"] is True
         assert docs[0].metadata["blockType"] == "text"
 
-    def test_multi_sentence_block_yields_sentences_plus_block(self):
+    def test_short_multi_sentence_block_embeds_block_only(self, monkeypatch):
         from app.models.blocks import Block
         from app.modules.transformers.vectorstore import _build_text_documents
+        monkeypatch.setenv("EMBED_SENTENCE_MIN_WORDS", "100")
+        blocks = [
+            Block(
+                index=0,
+                type="text",
+                format="txt",
+                data="First sentence. Second sentence.",
+                comments=[],
+            )
+        ]
+        docs = _build_text_documents(blocks, "vr-1", "org-1", "en")
+        assert len(docs) == 1
+        assert docs[0].metadata["isBlock"] is True
+        assert docs[0].page_content == "First sentence. Second sentence."
+
+    def test_long_multi_sentence_block_yields_sentences_plus_block(self, monkeypatch):
+        from app.models.blocks import Block
+        from app.modules.transformers.vectorstore import _build_text_documents
+        monkeypatch.setenv("EMBED_SENTENCE_MIN_WORDS", "100")
+        sentence = "This is a complete English sentence about widgets. "
+        text = sentence * 20
+        assert len(text.split()) > 100
+        blocks = [Block(index=0, type="text", format="txt", data=text, comments=[])]
+        docs = _build_text_documents(blocks, "vr-1", "org-1", "en")
+        assert len(docs) > 2
+        assert sum(1 for d in docs if d.metadata["isBlock"]) == 1
+
+    def test_zero_min_words_splits_every_multi_sentence_block(self, monkeypatch):
+        from app.models.blocks import Block
+        from app.modules.transformers.vectorstore import _build_text_documents
+        monkeypatch.setenv("EMBED_SENTENCE_MIN_WORDS", "0")
         blocks = [
             Block(
                 index=0,
@@ -1306,6 +1387,7 @@ class TestInitializeCollection:
 
         await vs._initialize_collection(embedding_size=1024)
         vs.vector_db_service.create_collection.assert_not_awaited()
+        assert vs.vector_db_service.create_index.call_count == 4
 
     @pytest.mark.asyncio
     async def test_collection_exists_different_size(self):
@@ -1333,6 +1415,7 @@ class TestInitializeCollection:
 
         await vs._initialize_collection(embedding_size=1024)
         vs.vector_db_service.create_collection.assert_awaited_once()
+        assert vs.vector_db_service.create_index.call_count == 4
 
     @pytest.mark.asyncio
     async def test_collection_creation_failure(self):
@@ -2564,3 +2647,105 @@ class TestResolveBatchConcurrency:
         from app.modules.transformers import vectorstore as module
 
         assert module._DEFAULT_CONCURRENCY_LIMIT == module._resolve_batch_concurrency(None)
+
+
+class TestBuildTextDocumentsHandlesEmptyBlocks:
+    """Text blocks can carry no text, and only one code path ever sees it.
+
+    Blob storage strips keys whose value is "" (_clean_top_level_empty_values),
+    so a block that was empty at parse time re-hydrates with data=None. Normal
+    indexing uses freshly parsed blocks and never hits it; the blob-backed
+    vector-only reindex does, and used to die on len(None).
+    """
+
+    @staticmethod
+    def _block(data, index):
+        block = MagicMock()
+        block.data = data
+        block.id = f"b{index}"
+        block.index = index
+        return block
+
+    def test_none_data_does_not_raise(self):
+        from app.modules.transformers.vectorstore import _build_text_documents
+
+        docs = _build_text_documents([self._block(None, 0)], "vr-1", "org-1", "en")
+        assert docs == []
+
+    def test_empty_and_whitespace_blocks_are_skipped(self):
+        from app.modules.transformers.vectorstore import _build_text_documents
+
+        blocks = [self._block("", 0), self._block("   \n\t ", 1)]
+        assert _build_text_documents(blocks, "vr-1", "org-1", "en") == []
+
+    def test_real_text_still_produces_documents(self):
+        from app.modules.transformers.vectorstore import _build_text_documents
+
+        blocks = [
+            self._block("a real paragraph of content", 0),
+            self._block(None, 1),
+            self._block("another paragraph", 2),
+        ]
+        docs = _build_text_documents(blocks, "vr-1", "org-1", "en")
+
+        assert len(docs) >= 2
+        assert all(d.page_content.strip() for d in docs)
+        # The empty block must not leave a hole in the emitted metadata.
+        assert 1 not in {d.metadata.get("blockIndex") for d in docs}
+
+
+class TestRecordSummaryEmbeddingInit:
+    """index_record_summary runs in the enrich phase, which can be reached
+    without the index phase having initialised the model on this instance."""
+
+    @pytest.mark.asyncio
+    async def test_initialises_model_before_deleting_the_old_block(self):
+        """Deleting first leaves the record with no summary when embedding fails.
+
+        Without the init the first use of dense_embeddings raises
+        AttributeError('NoneType'), far from the real cause and after the old
+        block has already gone.
+        """
+        vs = _make_vectorstore()
+        vs.dense_embeddings = None
+        vs._build_record_summary_document = MagicMock(return_value={"doc": 1})
+        vs._bind_membership = AsyncMock(return_value=None)
+        vs._process_document_chunks = AsyncMock()
+
+        order = []
+
+        async def _init():
+            order.append("init")
+            vs.dense_embeddings = MagicMock()
+            return False
+
+        async def _delete(*_a, **_k):
+            order.append("delete")
+
+        vs.get_embedding_model_instance = AsyncMock(side_effect=_init)
+        vs.delete_blocks_by_ids = AsyncMock(side_effect=_delete)
+
+        with patch(
+            "app.modules.transformers.vectorstore.reset_membership_context",
+            MagicMock(),
+        ):
+            await vs.index_record_summary("rec-1", "vr-1", "org-1", MagicMock())
+
+        assert order == ["init", "delete"], order
+
+    @pytest.mark.asyncio
+    async def test_init_failure_raises_before_any_delete(self):
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        vs = _make_vectorstore()
+        vs.dense_embeddings = None
+        vs._build_record_summary_document = MagicMock(return_value={"doc": 1})
+        vs.delete_blocks_by_ids = AsyncMock()
+        vs.get_embedding_model_instance = AsyncMock(
+            side_effect=RuntimeError("bad service account key")
+        )
+
+        with pytest.raises(IndexingError):
+            await vs.index_record_summary("rec-1", "vr-1", "org-1", MagicMock())
+
+        vs.delete_blocks_by_ids.assert_not_awaited()

@@ -661,3 +661,92 @@ class TestCreateKbConnectorAppInstance:
         # or database errors) should be caught and return None.
         result = await svc._EntityEventService__create_kb_connector_app_instance("org-1")
         assert result is None
+
+
+class TestAppDisabledDrainsQueuedRecords:
+    """Disabling must not leave a backlog stranded.
+
+    Records already QUEUED have no event guard to catch them and no
+    processingStartedAt, so stale recovery — which scans IN_PROGRESS — can never
+    reach them. Without this sweep they sit in QUEUED for ever.
+    """
+
+    @pytest.mark.asyncio
+    async def test_queued_records_move_to_manual_indexing(self):
+        from app.config.constants.arangodb import ProgressStatus
+
+        svc, _, gp, _ = _make_service()
+        gp.get_document = AsyncMock(return_value={
+            "name": "Drive", "type": "FILE", "appGroup": "Google",
+            "createdAtTimestamp": 1000000,
+        })
+        gp.batch_upsert_nodes = AsyncMock()
+        gp.reset_indexing_status_for_connector = AsyncMock()
+
+        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as stm:
+            stm.cancel_sync = AsyncMock()
+            result = await svc.process_event("appDisabled", {
+                "orgId": "org-1",
+                "apps": ["Drive"],
+                "connectorId": "conn-1",
+            })
+
+        assert result is True
+        gp.reset_indexing_status_for_connector.assert_awaited_once()
+        args, kwargs = gp.reset_indexing_status_for_connector.await_args
+        assert args[0] == "conn-1"
+        assert args[1] == ProgressStatus.AUTO_INDEX_OFF.value
+        # IN_PROGRESS is mid-pipeline and COMPLETED is already done; taking
+        # either out from under a running index is its own race.
+        assert set(kwargs["exclude_statuses"]) == {
+            ProgressStatus.IN_PROGRESS.value,
+            ProgressStatus.COMPLETED.value,
+        }
+
+    @pytest.mark.asyncio
+    async def test_sweep_failure_does_not_abort_the_disable(self):
+        """Disabling must still take effect if the sweep cannot run."""
+        svc, _, gp, _ = _make_service()
+        gp.get_document = AsyncMock(return_value={
+            "name": "Drive", "type": "FILE", "appGroup": "Google",
+            "createdAtTimestamp": 1000000,
+        })
+        gp.batch_upsert_nodes = AsyncMock()
+        gp.reset_indexing_status_for_connector = AsyncMock(
+            side_effect=RuntimeError("graph unavailable")
+        )
+
+        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as stm:
+            stm.cancel_sync = AsyncMock()
+            result = await svc.process_event("appDisabled", {
+                "orgId": "org-1",
+                "apps": ["Drive"],
+                "connectorId": "conn-1",
+            })
+
+        assert result is True
+        gp.batch_upsert_nodes.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sweep_runs_after_sync_cancellation(self):
+        """Order matters: a live sync would re-queue behind the sweep."""
+        order = []
+        svc, _, gp, _ = _make_service()
+        gp.get_document = AsyncMock(return_value={
+            "name": "Drive", "type": "FILE", "appGroup": "Google",
+            "createdAtTimestamp": 1000000,
+        })
+        gp.batch_upsert_nodes = AsyncMock()
+        gp.reset_indexing_status_for_connector = AsyncMock(
+            side_effect=lambda *a, **k: order.append("sweep")
+        )
+
+        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as stm:
+            stm.cancel_sync = AsyncMock(side_effect=lambda *a: order.append("cancel"))
+            await svc.process_event("appDisabled", {
+                "orgId": "org-1",
+                "apps": ["Drive"],
+                "connectorId": "conn-1",
+            })
+
+        assert order == ["cancel", "sweep"], order

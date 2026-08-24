@@ -19,7 +19,10 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.events.events import EventProcessor
-from app.exceptions.indexing_exceptions import IndexingError
+from app.events.processor import convert_record_dict_to_record
+from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
+from app.models.blocks import BlocksContainer
+from app.modules.transformers.transformer import TransformContext
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.messaging.config import (
     IndexingEvent,
@@ -36,6 +39,11 @@ from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
+from app.services.vector_db.rebuild_state import (
+    PHASE_FAILED,
+    PHASE_READY,
+    mark_cleanup_phase,
+)
 
 
 class RecordEventHandler(BaseEventService):
@@ -138,6 +146,178 @@ class RecordEventHandler(BaseEventService):
             except Exception as e:
                 self.logger.warning(f"Failed to update queued duplicates status: {str(e)}")
 
+    @staticmethod
+    def _blob_has_blocks(blob: dict) -> bool:
+        containers = blob.get("block_containers") if isinstance(blob, dict) else None
+        if not isinstance(containers, dict):
+            return False
+        return bool(containers.get("blocks") or containers.get("block_groups"))
+
+    async def _delete_vector_collection(self) -> AsyncGenerator[PipelineEvent, None]:
+        sink = getattr(self.event_processor, "sink_orchestrator", None)
+        vector_store = getattr(sink, "vector_store", None) if sink is not None else None
+        if vector_store is None:
+            # The cleanup job polls for a phase and otherwise waits out its whole
+            # deadline. Nothing here recovers on redelivery — an unconfigured
+            # vector store is the same on the next attempt — so publish the
+            # failure rather than let the job time out with no explanation.
+            await mark_cleanup_phase(
+                self.config_service, PHASE_FAILED, logger=self.logger
+            )
+            raise IndexingError("Vector store is not configured; cannot drop the records collection")
+        await vector_store.recreate_records_collection()
+        await mark_cleanup_phase(self.config_service, PHASE_READY, logger=self.logger)
+        yield PipelineEvent(
+            event=IndexingEvent.PARSING_COMPLETE,
+            data=PipelineEventData(record_id="delete_vector_collection"),
+        )
+        yield PipelineEvent(
+            event=IndexingEvent.INDEXING_COMPLETE,
+            data=PipelineEventData(record_id="delete_vector_collection"),
+        )
+
+    async def _index_from_blob(
+        self,
+        record_id: str,
+        record: dict,
+        payload: dict,
+        virtual_record_id: str | None,
+        event_type: str,
+    ) -> AsyncGenerator[PipelineEvent, None]:
+        org_id = payload.get("orgId") or record.get("orgId") or ""
+        extraction_status = record.get("extractionStatus", ProgressStatus.NOT_STARTED.value)
+
+        async def _fail(reason: str) -> AsyncGenerator[PipelineEvent, None]:
+            await self.__update_document_status(
+                record_id=record_id,
+                indexing_status=ProgressStatus.FAILED.value,
+                extraction_status=extraction_status,
+                reason=reason,
+            )
+            yield PipelineEvent(
+                event=IndexingEvent.PARSING_COMPLETE,
+                data=PipelineEventData(record_id=record_id),
+            )
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id=record_id),
+            )
+
+        if not virtual_record_id:
+            # Not a failure: no virtualRecordId means the record was never
+            # indexed, so there is nothing in blob to re-embed. A vector-only
+            # reindex re-embeds what is already indexed — it deliberately does
+            # not download or parse sources — so such a record is simply out of
+            # scope. Marking it FAILED would misreport a healthy record, never
+            # succeed on retry, and overwrite whatever status it actually had.
+            self.logger.info(
+                "Skipping vector-only reindex for record %s: no virtualRecordId, "
+                "so it has never been indexed and has nothing to rebuild from",
+                record_id,
+            )
+            yield PipelineEvent(
+                event=IndexingEvent.PARSING_COMPLETE,
+                data=PipelineEventData(record_id=record_id),
+            )
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id=record_id),
+            )
+            return
+
+        sink = getattr(self.event_processor, "sink_orchestrator", None)
+        if sink is None:
+            # A service-level misconfiguration, not a bad record. _fail would
+            # brand this record FAILED and acknowledge the message, so a wiring
+            # problem would silently burn every record it touched.
+            raise IndexingError(
+                "Sink orchestrator is not configured; cannot reindex from blob"
+            )
+
+        try:
+            blob = await sink.blob_storage.get_record_from_storage(
+                virtual_record_id, org_id
+            )
+        except Exception as exc:
+            self.logger.exception(
+                "Blob fetch failed for vector-only reindex of record %s", record_id
+            )
+            # _fail writes FAILED and yields both completion events, so the
+            # broker counts the message as handled and nothing retries it. A
+            # storage timeout or 5xx would therefore burn every record it
+            # touched for the whole rebuild. Re-raise instead and let the
+            # consumer redeliver under its capped-attempt policy, which
+            # dead-letters only if the outage outlasts the retries.
+            if (
+                MessageErrorClassifier.classify_by_exception(exc)
+                == MessageErrorType.TRANSIENT
+            ):
+                raise
+            async for event in _fail("Failed to retrieve record from blob storage"):
+                yield event
+            return
+
+        if not blob or not self._blob_has_blocks(blob):
+            async for event in _fail("Blob has no parsed blocks"):
+                yield event
+            return
+
+        # Everything that can fail deterministically happens before the delete.
+        # _blob_has_blocks only checks the container is non-empty, so a malformed
+        # block still raises here — and a validation error classifies TERMINAL,
+        # which after the delete would acknowledge a record whose vectors are
+        # already gone and never revisit it.
+        try:
+            record_obj = convert_record_dict_to_record(record)
+            record_obj.virtual_record_id = virtual_record_id
+            record_obj.block_containers = BlocksContainer.model_validate(
+                blob["block_containers"]
+            )
+            ctx = TransformContext(
+                record=record_obj,
+                settings={"skip_blob": True},
+                event_type=event_type,
+            )
+        except Exception:
+            # Terminal by nature — the same blob parses the same way next time —
+            # and safe to mark FAILED because the old vectors are still intact.
+            self.logger.exception(
+                "Vector-only reindex could not build blocks for record %s", record_id
+            )
+            async for event in _fail("Blob blocks are malformed"):
+                yield event
+            return
+
+        # Unconditional: bulk_delete_embeddings only deletes when the VRID has no
+        # remaining graph record, which is never true on a re-embed, so it would
+        # leave the old points in place and the upsert below would duplicate them.
+        await self.event_processor.processor.indexing_pipeline.delete_points_for_virtual_record(
+            virtual_record_id
+        )
+
+        try:
+            await sink.index(ctx)
+        except Exception:
+            self.logger.exception(
+                "Vector-only reindex failed for record %s", record_id
+            )
+            # Past the point of no return: the old points are gone, so the only
+            # way back to a searchable record is a successful re-run. _fail would
+            # acknowledge the message and end that possibility, so every failure
+            # here is re-raised regardless of classification — the content was
+            # already validated above, which leaves infrastructure as the likely
+            # cause and that is worth retrying. A genuinely terminal error just
+            # exhausts its attempts and lands on the same FAILED status.
+            raise
+
+        yield PipelineEvent(
+            event=IndexingEvent.PARSING_COMPLETE,
+            data=PipelineEventData(record_id=record_id),
+        )
+        yield PipelineEvent(
+            event=IndexingEvent.INDEXING_COMPLETE,
+            data=PipelineEventData(record_id=record_id),
+        )
 
     async def process_event(self, event_type: str, payload: dict) -> AsyncGenerator[PipelineEvent, None]:
         """Process record events, yielding phase completion events.
@@ -156,8 +336,17 @@ class RecordEventHandler(BaseEventService):
         record = None
         try:
             if not event_type:
+                # A message with no event type is a producer bug: acking it
+                # silently would hide that, so it still dead-letters. Raise a
+                # TERMINAL-classified error rather than returning bare, which the
+                # consumer reports as "Handler ended without INDEXING_COMPLETE"
+                # and classifies as transient — three deliveries of something no
+                # retry can fix.
                 self.logger.error(f"Missing event_type in message {payload}")
-                return
+                raise ProcessingError(
+                    "Message has no eventType; cannot be routed",
+                    details={"payload_keys": sorted(payload.keys())},
+                )
 
             # Handle bulk delete event FIRST - for connector instance deletion (doesn't have record_id)
             if event_type == EventTypes.BULK_DELETE_RECORDS.value:
@@ -176,6 +365,25 @@ class RecordEventHandler(BaseEventService):
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
                 return
 
+            if event_type == EventTypes.SYNC_VECTOR_MEMBERSHIP.value:
+                virtual_record_id = payload.get("virtualRecordId")
+                if virtual_record_id:
+                    await self.event_processor.sync_vector_membership(virtual_record_id)
+                yield PipelineEvent(
+                    event=IndexingEvent.PARSING_COMPLETE,
+                    data=PipelineEventData(record_id="sync_vector_membership"),
+                )
+                yield PipelineEvent(
+                    event=IndexingEvent.INDEXING_COMPLETE,
+                    data=PipelineEventData(record_id="sync_vector_membership"),
+                )
+                return
+
+            if event_type == EventTypes.DELETE_VECTOR_COLLECTION.value:
+                async for event in self._delete_vector_collection():
+                    yield event
+                return
+
             # For all other event types, require record_id
             record_id = payload.get("recordId")
             extension = payload.get("extension", "unknown")
@@ -184,8 +392,13 @@ class RecordEventHandler(BaseEventService):
             message_id = f"{event_type}-{record_id}"
 
             if not record_id:
+                # As above: malformed payload, surfaced via the dead-letter queue
+                # in one attempt rather than three.
                 self.logger.error(f"Missing record_id in message {payload}")
-                return
+                raise ProcessingError(
+                    f"Message of type {event_type} has no recordId",
+                    details={"event_type": event_type},
+                )
 
         
 
@@ -193,7 +406,7 @@ class RecordEventHandler(BaseEventService):
                 record_id, CollectionNames.RECORDS.value
             )
 
-            self.logger.info(
+            self.logger.debug(
                 f"Processing record {record_id} with event type: {event_type}. "
                 f"Virtual Record ID: {virtual_record_id} "
                 f"Extension: {extension}, Mime Type: {mime_type}"
@@ -208,14 +421,33 @@ class RecordEventHandler(BaseEventService):
                 return
 
             if record is None:
+                # Legitimately reachable: the record can be deleted between the
+                # event being published and consumed. There is nothing to index
+                # and nothing to fail, so drain the message like the delete path
+                # does instead of retrying it three times.
                 self.logger.error(f"❌ Record {record_id} not found in database")
+                yield PipelineEvent(
+                    event=IndexingEvent.PARSING_COMPLETE,
+                    data=PipelineEventData(record_id=record_id),
+                )
+                yield PipelineEvent(
+                    event=IndexingEvent.INDEXING_COMPLETE,
+                    data=PipelineEventData(record_id=record_id),
+                )
                 return
 
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
 
             #Reconciliation
-            if event_type == EventTypes.UPDATE_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
+            vector_db_only = bool(payload.get("vectorDbOnly"))
+            if (
+                not vector_db_only
+                and (
+                    event_type == EventTypes.UPDATE_RECORD.value
+                    or event_type == EventTypes.REINDEX_RECORD.value
+                )
+            ):
                 from app.config.constants.arangodb import (
                     RECONCILIATION_ENABLED_EXTENSIONS,
                     RECONCILIATION_ENABLED_MIME_TYPES,
@@ -245,8 +477,21 @@ class RecordEventHandler(BaseEventService):
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
-            # Check if record is from a connector and if the connector is active
-            if event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
+            # Check if record is from a connector and if the connector is active.
+            # UPDATE_RECORD is included: without it an update for a disabled
+            # connector runs the full pipeline, fails once the connector has been
+            # removed from connectors_map, and burns every delivery attempt (each
+            # holding a Pool.INDEX slot) before landing on FAILED instead of
+            # AUTO_INDEX_OFF. vectorDbOnly still opts out — the vector-store
+            # rebuild deliberately re-embeds disabled connectors from blob.
+            if (
+                not vector_db_only
+                and (
+                    event_type == EventTypes.NEW_RECORD.value
+                    or event_type == EventTypes.REINDEX_RECORD.value
+                    or event_type == EventTypes.UPDATE_RECORD.value
+                )
+            ):
                 connector_id = record.get("connectorId")
                 origin = record.get("origin")
                 if connector_id and origin == OriginTypes.CONNECTOR.value:
@@ -340,6 +585,17 @@ class RecordEventHandler(BaseEventService):
                     event=IndexingEvent.INDEXING_COMPLETE,
                     data=PipelineEventData(record_id=record_id),
                 )
+                return
+
+            if vector_db_only and event_type == EventTypes.REINDEX_RECORD.value:
+                async for event in self._index_from_blob(
+                    record_id=record_id,
+                    record=record,
+                    payload=payload,
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                ):
+                    yield event
                 return
 
             is_code_file = doc.get("recordType") == RecordTypes.CODE_FILE.value

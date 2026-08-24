@@ -80,8 +80,16 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         version=record_dict.get("version", 1),
         origin=origin,
         summary_document_id=record_dict.get("summaryDocumentId"),
-        created_at=record_dict.get("createdAtTimestamp"),
-        updated_at=record_dict.get("updatedAtTimestamp"),
+        created_at=(
+            record_dict["createdAtTimestamp"]
+            if record_dict.get("createdAtTimestamp") is not None
+            else get_epoch_timestamp_in_ms()
+        ),
+        updated_at=(
+            record_dict["updatedAtTimestamp"]
+            if record_dict.get("updatedAtTimestamp") is not None
+            else get_epoch_timestamp_in_ms()
+        ),
         source_created_at=record_dict.get("sourceCreatedAtTimestamp"),
         source_updated_at=record_dict.get("sourceLastModifiedTimestamp"),
         weburl=record_dict.get("webUrl"),

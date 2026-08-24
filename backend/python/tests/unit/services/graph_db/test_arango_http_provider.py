@@ -1763,6 +1763,40 @@ class TestGetOrgApps:
         assert result == []
 
 
+class TestVectorStoreRebuildGraphQueries:
+    @pytest.mark.asyncio
+    async def test_active_only_false_omits_is_active_filter(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [{"_key": "app1"}]
+        result = await connected_provider.get_org_apps("org1", active_only=False)
+        assert result == [{"_key": "app1"}]
+        query = connected_provider.http_client.execute_aql.await_args.args[0]
+        assert "isActive" not in query
+
+    @pytest.mark.asyncio
+    async def test_reset_indexing_status_for_connector(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider.reset_indexing_status_for_connector(
+            "app-1", "NOT_STARTED", exclude_statuses=["IN_PROGRESS"]
+        )
+        bind = connected_provider.execute_query.await_args.kwargs["bind_vars"]
+        assert bind["connector_id"] == "app-1"
+        assert bind["status"] == "NOT_STARTED"
+        assert bind["exclude_statuses"] == ["IN_PROGRESS"]
+
+    @pytest.mark.asyncio
+    async def test_reset_failure_propagates(self, connected_provider):
+        """The rebuild drops the vector collection immediately after this call.
+
+        Swallowing the error would drop it against records that kept their old
+        statuses, so nothing re-indexes them and search stays silently empty.
+        """
+        connected_provider.execute_query = AsyncMock(side_effect=RuntimeError("aql"))
+        with pytest.raises(RuntimeError):
+            await connected_provider.reset_indexing_status_for_connector(
+                "app-1", "NOT_STARTED"
+            )
+
+
 # ---------------------------------------------------------------------------
 # get_departments
 # ---------------------------------------------------------------------------
@@ -5227,7 +5261,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 20
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 21
 
 
 # ---------------------------------------------------------------------------
@@ -7875,7 +7909,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 20
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 21
 
 
 # ---------------------------------------------------------------------------
@@ -12719,6 +12753,7 @@ class TestCreateDeletedRecordEventPayload:
         assert result["orgId"] == "o1"
         assert result["recordId"] == "r1"
         assert result["extension"] == ".pdf"
+        assert result["connectorId"] is None
 
     @pytest.mark.asyncio
     async def test_no_file_record(self, connected_provider):
@@ -19978,6 +20013,8 @@ class TestMigrateLegacyKbToApp:
         
         assert result["success"] is True
         connected_provider.delete_edge.assert_not_called()
+        kb_data = connected_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert kb_data["vectorMembershipBackfilled"] is False
 
     @pytest.mark.asyncio
     async def test_successful_edge_retargeting(self, connected_provider):

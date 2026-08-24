@@ -9,6 +9,8 @@ from urllib.parse import quote
 
 import pytest
 
+from app.services.vector_db.models import ScrollResult
+
 from app.config.constants.arangodb import Connectors, OriginTypes, RecordRelations
 from app.models.blocks import BlockType, GroupType
 from app.models.entities import (
@@ -4697,7 +4699,9 @@ class TestCreateRecordFromVectorMetadata:
         # Mock ContainerUtils and vector_db_service
         mock_vector_service = AsyncMock()
         mock_vector_service.filter_collection = AsyncMock(return_value="mock_filter")
-        mock_vector_service.scroll = AsyncMock(return_value=([mock_point], None))
+        mock_vector_service.scroll = AsyncMock(
+            return_value=ScrollResult(points=[mock_point], next_offset=None)
+        )
 
         real_utils_mod = sys.modules.pop("app.containers.utils.utils", None)
         fake_utils = ModuleType("app.containers.utils.utils")
@@ -4767,7 +4771,9 @@ class TestCreateRecordFromVectorMetadata:
 
         mock_vector_service = AsyncMock()
         mock_vector_service.filter_collection = AsyncMock(return_value="mock_filter")
-        mock_vector_service.scroll = AsyncMock(return_value=([mock_point], None))
+        mock_vector_service.scroll = AsyncMock(
+            return_value=ScrollResult(points=[mock_point], next_offset=None)
+        )
 
         real_utils_mod = sys.modules.pop("app.containers.utils.utils", None)
         fake_utils = ModuleType("app.containers.utils.utils")
@@ -6502,7 +6508,9 @@ class TestCreateRecordFromVectorMetadataConnectorId:
 
         mock_vector_service = AsyncMock()
         mock_vector_service.filter_collection = AsyncMock(return_value="f")
-        mock_vector_service.scroll = AsyncMock(return_value=([mock_point], None))
+        mock_vector_service.scroll = AsyncMock(
+            return_value=ScrollResult(points=[mock_point], next_offset=None)
+        )
 
         mock_container = MagicMock()
         mock_container.get_vector_db_service = AsyncMock(return_value=mock_vector_service)

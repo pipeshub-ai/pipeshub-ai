@@ -1,5 +1,10 @@
 from typing import Any, Dict, List
 
+from app.services.vector_db.const.const import (
+    CONNECTOR_IDS_FIELD,
+    RECORD_GROUP_IDS_FIELD,
+)
+from app.services.vector_db.filters import canonical_filter_key
 from app.services.vector_db.models import (
     FieldCondition,
     FilterExpression,
@@ -16,13 +21,14 @@ class OpenSearchUtils:
     def build_conditions(filters: Dict[str, Any]) -> List[FieldCondition]:
         """Build generic FieldCondition list from a key→value dict.
 
-        Keys are automatically prefixed with ``metadata.``.
+        Keys are automatically prefixed with ``metadata.`` except top-level
+        membership arrays (``connectorIds``, ``recordGroupIds``).
         """
         conditions: List[FieldCondition] = []
         for key, value in filters.items():
             if value is None:
                 continue
-            field_key = key if key.startswith("metadata.") else f"metadata.{key}"
+            field_key = canonical_filter_key(key)
             if isinstance(value, (list, tuple)):
                 filtered = [v for v in value if v is not None]
                 if filtered:
@@ -148,10 +154,19 @@ class OpenSearchUtils:
 
     @staticmethod
     def vector_point_to_document(point: VectorPoint) -> Dict[str, Any]:
-        """Convert a VectorPoint to an OpenSearch document dict."""
+        """Convert a VectorPoint to an OpenSearch document dict.
+
+        ``point_id`` duplicates the document ``_id`` as an ordinary keyword so
+        scroll can sort on it. Sorting on ``_id`` itself needs fielddata, which
+        is disabled by default, and there is no other unique stable field to
+        anchor a search_after cursor to.
+        """
         doc: Dict[str, Any] = {
+            "point_id": str(point.id),
             "metadata": point.payload.get("metadata", {}),
             "page_content": point.payload.get("page_content", ""),
+            CONNECTOR_IDS_FIELD: list(point.payload.get(CONNECTOR_IDS_FIELD) or []),
+            RECORD_GROUP_IDS_FIELD: list(point.payload.get(RECORD_GROUP_IDS_FIELD) or []),
         }
         if point.dense_vector is not None:
             doc["dense_embedding"] = point.dense_vector
@@ -168,5 +183,7 @@ class OpenSearchUtils:
             payload={
                 "metadata": source.get("metadata", {}),
                 "page_content": source.get("page_content", ""),
+                CONNECTOR_IDS_FIELD: list(source.get(CONNECTOR_IDS_FIELD) or []),
+                RECORD_GROUP_IDS_FIELD: list(source.get(RECORD_GROUP_IDS_FIELD) or []),
             },
         )
