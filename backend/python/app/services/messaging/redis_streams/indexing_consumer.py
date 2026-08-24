@@ -425,9 +425,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         max_attempts = messaging_env.max_delivery_attempts
         tracking_id = stable_message_id or message_id
 
-        try:
-            if self.retry_manager is not None:
+        if self.retry_manager is not None:
+            try:
                 failure_count = await self._get_retry_count(tracking_id)
+            except Exception as e:
+                # Isolated from the times_delivered backstop below: a failed
+                # lookup here (e.g. a Redis error inside RetryManager) must
+                # not skip the backstop, which doesn't depend on this count.
+                self.logger.error("Error checking app-tracked retry count: %s", e)
+            else:
                 if failure_count >= max_attempts:
                     await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore
                     await self._clear_retry_tracking(tracking_id)
@@ -444,6 +450,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 # if the process crashes/is killed mid-handler, so it can lag
                 # the real delivery count indefinitely (see #2992).
 
+        try:
             details = await self.redis.xpending_range(  # type: ignore
                 topic,
                 self.config.group_id,

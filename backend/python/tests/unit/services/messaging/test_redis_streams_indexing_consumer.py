@@ -2097,6 +2097,37 @@ class TestExceedsMaxRetries:
         consumer.redis.xpending_range.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_backstop_fires_when_app_counter_lookup_raises(self, consumer):
+        """A RetryManager lookup error must not skip the times_delivered
+        backstop: it used to share a try/except with the backstop, so an
+        exception from the app-tracked count check returned False before
+        ever reaching xpending_range, even though the backstop doesn't
+        depend on that lookup succeeding."""
+        consumer.retry_manager = AsyncMock()
+        consumer.retry_manager.get_count = AsyncMock(
+            side_effect=Exception("redis down")
+        )
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"times_delivered": 10}]
+        )
+        consumer.redis.xack = AsyncMock()
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 10
+            mock_env.max_pending_indexing_tasks = 100
+            mock_env.max_concurrent_parsing = 5
+            mock_env.max_concurrent_indexing = 10
+            result = await consumer._should_dead_letter("topic-a", "1-0")
+
+        assert result is True
+        consumer.redis.xack.assert_awaited_once_with(
+            "topic-a", consumer.config.group_id, "1-0"
+        )
+
+    @pytest.mark.asyncio
     async def test_drain_phase1_skips_poison_message(self, consumer):
         """Phase 1 should skip dispatch when _should_dead_letter returns True."""
         consumer.running = True
