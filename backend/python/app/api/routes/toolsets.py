@@ -434,8 +434,15 @@ def _is_toolset_authenticated(
     A NONE-auth toolset (e.g. a public, credential-free API) has nothing to
     store per user, so auth_record is legitimately always empty for it —
     that must not be read as "user hasn't authenticated yet".
+
+    Only an EXPLICIT "NONE" short-circuits this — a missing/unknown
+    auth_type must fall through to the real credential check below, not be
+    treated as equivalent to NONE. Real instances always have authType
+    validated as a required non-empty field at creation time
+    (see create_toolset_instance), so a missing value here means the data
+    is incomplete/unexpected, not that no auth is needed.
     """
-    if (auth_type or "NONE").upper() == "NONE":
+    if auth_type is not None and str(auth_type).upper() == "NONE":
         return True
     return bool(auth_record and auth_record.get("isAuthenticated", False))
 
@@ -2920,8 +2927,8 @@ async def _build_toolsets_list_response(
     for inst, auth_record in results:
         toolset_type = inst.get("toolsetType", "")
         meta = registry.get_toolset_metadata(toolset_type)
-        auth_type = inst.get("authType", "NONE")
-        auth_type_upper = auth_type.upper()
+        auth_type = inst.get("authType")
+        auth_type_upper = (auth_type or "NONE").upper()
         is_authenticated = _is_toolset_authenticated(auth_type, auth_record)
 
         meta_cfg = (meta.get("config") or {}) if meta else {}
