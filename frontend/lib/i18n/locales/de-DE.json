@@ -483,6 +483,7 @@
     "record": "Datensatz"
   },
   "chat": {
+    "results": "Ergebnisse",
     "greeting": "Was möchten Sie heute erkunden?",
     "heyUser": "Hey, {{name}} 👋",
     "heyUserDefaultName": "du",

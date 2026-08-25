@@ -483,6 +483,7 @@
     "record": "रिकॉर्ड"
   },
   "chat": {
+    "results": "परिणाम",
     "greeting": "आज आप क्या खोजना चाहेंगे?",
     "heyUser": "नमस्ते, {{name}} 👋",
     "heyUserDefaultName": "दोस्त",

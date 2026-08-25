@@ -305,7 +305,7 @@
     "confirmDeleteMultiple": "¿Estás seguro de que quieres eliminar {{count}} elementos?",
     "cannotUndo": "Esta acción no se puede deshacer.",
     "areYouSure": "¿Estás seguro?",
-    "deleteKeyword": "DELETE",
+    "deleteKeyword": "ELIMINAR",
     "typeDeleteToConfirm": "Escribe {{keyword}} para confirmar",
     "knowledgeBase": "base de conocimiento",
     "in": "en",
@@ -482,6 +482,7 @@
     "record": "registro"
   },
   "chat": {
+    "results": "Resultados",
     "greeting": "¿Qué quieres explorar hoy?",
     "heyUser": "Hola, {{name}} 👋",
     "heyUserDefaultName": "amigo",

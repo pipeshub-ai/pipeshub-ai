@@ -177,7 +177,7 @@ export function SearchResultsView() {
             }}
           >
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              Results
+              {t('chat.results')}
             </Text>
             {/* Active tab underline */}
             <Box
