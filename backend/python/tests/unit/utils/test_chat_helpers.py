@@ -1000,6 +1000,19 @@ class TestGetEnhancedMetadata:
         result = get_enhanced_metadata(record, block, meta)
         assert result["blockText"] == ""
 
+    def test_code_block_with_none_text_returns_string(self):
+        """CODE block with text=None in data dict returns a valid string blockText."""
+        record = _make_record_blob()
+        block = {
+            "type": BlockType.CODE.value,
+            "data": {"text": None, "kind": "function"},
+            "citation_metadata": None,
+            "index": 0,
+        }
+        meta = {}
+        result = get_enhanced_metadata(record, block, meta)
+        assert isinstance(result["blockText"], str)
+
     def test_no_data_returns_empty_blocktext(self):
         record = _make_record_blob()
         block = {

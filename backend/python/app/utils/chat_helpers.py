@@ -2377,7 +2377,10 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
                 elif block_type == BlockType.CODE.value:
                     # Code blocks store source text in data["text"]
                     if isinstance(data, dict):
-                        block_text = data.get("text", "")
+                        if "text" in data:
+                            block_text = _safe_stringify_content(data["text"])
+                        else:
+                            block_text = ""
                     else:
                         block_text = str(data)
                 else:
