@@ -205,7 +205,7 @@ class GraphDBTransformer(Transformer):
 
                 # --- Reconcile department edges ---
                 new_dept_tos: Dict[str, str] = {}
-                for department in metadata.departments:
+                for department in metadata.departments or ():
                     try:
                         results = await tx_store.get_nodes_by_filters(
                             CollectionNames.DEPARTMENTS.value,
@@ -229,12 +229,17 @@ class GraphDBTransformer(Transformer):
                 # --- Reconcile category edges ---
                 new_cat_tos: Dict[str, str] = {}
 
-                # Handle primary category
-                category_key = await self._find_or_create_node(
-                    tx_store, CollectionNames.CATEGORIES.value, "name", metadata.categories[0]
-                )
-                cat_to = f"{CollectionNames.CATEGORIES.value}/{category_key}"
-                new_cat_tos[cat_to] = metadata.categories[0]
+                # Handle primary category. A blank one would otherwise create a
+                # Categories node named "" that every unclassified record
+                # attaches to, so the whole chain is skipped instead.
+                primary_category = (metadata.categories or [""])[0].strip()
+                category_key = None
+                if primary_category:
+                    category_key = await self._find_or_create_node(
+                        tx_store, CollectionNames.CATEGORIES.value, "name", primary_category
+                    )
+                    cat_to = f"{CollectionNames.CATEGORIES.value}/{category_key}"
+                    new_cat_tos[cat_to] = primary_category
 
                 # Handle subcategories
                 async def handle_subcategory(
@@ -298,7 +303,7 @@ class GraphDBTransformer(Transformer):
 
                 # --- Reconcile language edges ---
                 new_lang_tos: Dict[str, str] = {}
-                for language in metadata.languages:
+                for language in metadata.languages or ():
                     lang_key = await self._find_or_create_node(
                         tx_store, CollectionNames.LANGUAGES.value, "name", language
                     )
@@ -313,7 +318,7 @@ class GraphDBTransformer(Transformer):
 
                 # --- Reconcile topic edges ---
                 new_topic_tos: Dict[str, str] = {}
-                for topic in metadata.topics:
+                for topic in metadata.topics or ():
                     topic_key = await self._find_or_create_node(
                         tx_store, CollectionNames.TOPICS.value, "name", topic
                     )

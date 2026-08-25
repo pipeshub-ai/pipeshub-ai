@@ -307,6 +307,11 @@ class SemanticMetadata(BaseModel):
     sub_category_level_2: Optional[str] = None
     sub_category_level_3: Optional[str] = None
     confidence: Optional[Confidence] = None
+    # Populated for CODE_FILE records only. They reach chat context through the
+    # blob record, not the graph -- nothing creates taxonomy nodes for them.
+    architecture_role: Optional[str] = None
+    design_patterns: Optional[list[str]] = None
+    external_dependencies: Optional[list[str]] = None
 
     def to_llm_context(self) -> list[str]:
         lines = []
@@ -325,6 +330,12 @@ class SemanticMetadata(BaseModel):
             cat_parts.append(self.sub_category_level_3)
         if cat_parts:
             lines.append(f"Category: {' > '.join(cat_parts)}")
+        if self.architecture_role:
+            lines.append(f"Architecture Role: {self.architecture_role}")
+        if self.design_patterns:
+            lines.append(f"Design Patterns: {', '.join(self.design_patterns)}")
+        if self.external_dependencies:
+            lines.append(f"External Dependencies: {', '.join(self.external_dependencies)}")
         return lines
 
 class Block(BaseModel):
