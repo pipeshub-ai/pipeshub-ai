@@ -177,6 +177,7 @@ class ReposSync:
         folders_walked = 0
         blobs_walked = 0
         any_data = False
+        all_ok = True
 
         pending: asyncio.Task[tuple[str, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]] | None = (
             asyncio.create_task(self._fetch_entries_page(project_path, project_id, after_cursor))
@@ -204,10 +205,12 @@ class ReposSync:
                         self._fetch_entries_page(project_path, project_id, after_cursor)
                     )
                 if page_trees:
-                    await self._persist_folder_records(page_trees, project_id)
+                    all_ok = await self._persist_folder_records(page_trees, project_id) and all_ok
                     folders_walked += len(page_trees)
                 if page_blobs:
-                    await self.build_code_file_records(page_blobs, project_id, project_path)
+                    all_ok = await self.build_code_file_records(
+                        page_blobs, project_id, project_path
+                    ) and all_ok
                     blobs_walked += len(page_blobs)
         finally:
             if pending is not None and not pending.done():
@@ -222,14 +225,15 @@ class ReposSync:
             return True
 
         self.logger.info(
-            "Full code sync for project %s: %s folder(s), %s file(s) walked",
+            "Full code sync for project %s: %s folder(s), %s file(s) walked%s",
             project_id, folders_walked, blobs_walked,
+            "" if all_ok else " (INCOMPLETE - checkpoint withheld)",
         )
-        return True
+        return all_ok
 
     async def _persist_folder_records(
         self, tree_nodes: list[dict[str, Any]], project_id: int
-    ) -> None:
+    ) -> bool:
         """Persist folder records from a single page in one batch."""
         external_group_id = f"{project_id}-code-repository"
         code_files_enabled = self._code_files_indexing_enabled()
@@ -262,7 +266,8 @@ class ReposSync:
                 external_record_id=str(external_record_id), new_permissions=[], old_permissions=[],
             ))
         if updates:
-            await self._process_records(updates)
+            return await self._process_records(updates)
+        return True
 
     async def _fetch_entries_page(
         self, project_path: str, project_id: int, after_cursor: str
@@ -614,7 +619,7 @@ class ReposSync:
                                "webPath": web_path, "webUrl": f"{c._gitlab_base_url}{web_path}"})
 
         if nodes:
-            await self.build_code_file_records(nodes, project_id, project_path)
+            all_ok = await self.build_code_file_records(nodes, project_id, project_path) and all_ok
         return all_ok
 
     async def _delete_code_files_by_paths(
@@ -876,9 +881,11 @@ class ReposSync:
             ))
 
         if list_records_new:
-            await self._process_records(list_records_new)
+            ok = await self._process_records(list_records_new)
             if files_skipped:
                 self.logger.info("Processed %s code file records; %s skipped (non-indexable/missing metadata)", len(list_records_new), files_skipped)
+            return ok
+        return True
 
     # ------------------------------------------------------------------
     # Content streaming
@@ -1086,15 +1093,23 @@ class ReposSync:
     # Record persistence helper
     # ------------------------------------------------------------------
 
-    async def _process_records(self, records: list[RecordUpdate]) -> None:
-        """Persist a batch of RecordUpdate objects."""
+    async def _process_records(self, records: list[RecordUpdate]) -> bool:
+        """Persist a batch of RecordUpdate objects; ``False`` if the write failed.
+
+        Callers walking a repository must fold this into their return value: a
+        swallowed failure that still advances the code-repo checkpoint sends the
+        next run down the incremental path, so the records that were never
+        written are never retried.
+        """
         if not records:
-            return
+            return True
         batch_sent = [(ru.record, ru.new_permissions) for ru in records]
         try:
             await self.c.data_entities_processor.on_new_records(batch_sent)
         except Exception as e:
             self.logger.error("Error persisting repo records: %s", e, exc_info=True)
+            return False
+        return True
 
 
 # ------------------------------------------------------------------

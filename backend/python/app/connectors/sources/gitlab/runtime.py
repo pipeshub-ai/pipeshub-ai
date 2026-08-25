@@ -162,11 +162,11 @@ class RuntimeHelper:
         Returns ``True`` when the client ends up holding a fresh token — whether
         this call performed the refresh or a concurrent one already had.
 
-        Single-flight: concurrent 401s queue on ``_token_refresh_lock``; after
-        acquiring it, each caller first checks whether the stored access token
-        already differs from the one the client is holding (meaning another
-        task, or the background refresher, rotated it while we waited) and just
-        applies it instead of burning the single-use refresh token again.
+        Single-flight: concurrent 401s queue on ``_token_refresh_lock``. A waiter
+        that finds the client holding a different token than it did on entry
+        returns straight away — somebody refreshed while it queued. Only if the
+        client is unchanged does it look at etcd, apply a token the background
+        refresher rotated behind the client's back, or refresh for real.
         """
         c = self.c
         try:
@@ -179,7 +179,29 @@ class RuntimeHelper:
                 self.logger.error("Token refresh service unavailable; cannot refresh GitLab token.")
                 return False
 
+            # Snapshot BEFORE queuing on the lock. The winner ends its critical
+            # section by pushing the rotated token into the client, so a waiter
+            # that only compares etcd against the client finds them equal and
+            # refreshes again. Worse than pointless: TokenRefreshService already
+            # serialises per connector and hands a waiter the winner's token for
+            # free when the token it passes is stale — re-reading config inside
+            # this lock passes a *fresh* token instead, defeating that
+            # short-circuit and turning N concurrent 401s into N provider
+            # refreshes. Comparing against the value held on entry is what
+            # actually detects "somebody refreshed while we waited".
+            token_at_entry = (
+                c.external_client.get_client().get_token() if c.external_client else None
+            )
             async with self._token_refresh_lock:
+                current_token = (
+                    c.external_client.get_client().get_token() if c.external_client else None
+                )
+                if token_at_entry and current_token and current_token != token_at_entry:
+                    self.logger.info(
+                        "GitLab token was refreshed while this 401 waited; reusing it."
+                    )
+                    return True
+
                 config_path = f"/services/connectors/{c.connector_id}/config"
                 config = await c.config_service.get_config(config_path)
                 if not config:
@@ -192,9 +214,6 @@ class RuntimeHelper:
                     return False
 
                 stored_access_token = (config.get("credentials") or {}).get("access_token", "")
-                current_token = (
-                    c.external_client.get_client().get_token() if c.external_client else None
-                )
                 if stored_access_token and current_token and stored_access_token != current_token:
                     self.logger.info(
                         "GitLab token already rotated by a concurrent refresh; applying it."

@@ -273,7 +273,6 @@ class FiltersHelper:
             )
 
         server_search = search
-        fetch_per_page = per_page + 1
 
         if c._is_admin or c._is_auditor:
             proj_scope: dict[str, object] = {}

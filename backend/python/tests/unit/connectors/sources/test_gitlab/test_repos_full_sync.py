@@ -224,6 +224,34 @@ class TestSyncRepoFull:
         repos.build_code_file_records.assert_awaited_once()
         assert repos.build_code_file_records.await_args.args[0][0]["path"] == "src/a.py"
 
+    async def test_persist_failure_withholds_the_checkpoint(self) -> None:
+        """A swallowed write must not report success. The walk itself completed,
+        but if the records never landed and the checkpoint advances, the next run
+        goes incremental from that SHA and they are never retried."""
+        c = make_mock_connector()
+        repos = ReposSync(c)
+
+        page = {
+            "data": {"project": {"repository": {"paginatedTree": {
+                "nodes": [{
+                    "trees": {"nodes": [{
+                        "name": "src", "path": "src", "sha": "t1", "type": "tree",
+                        "webPath": "/ns/proj/-/tree/HEAD/src", "webUrl": "https://gitlab.com/x",
+                    }]},
+                    "blobs": {"nodes": [{
+                        "name": "a.py", "path": "src/a.py", "sha": "b1", "type": "blob",
+                        "webPath": "/ns/proj/-/blob/HEAD/src/a.py", "webUrl": "https://gitlab.com/y",
+                    }]},
+                }],
+                "pageInfo": {"hasNextPage": False, "endCursor": ""},
+            }}}}
+        }
+        res = MagicMock(success=True, error=None, data=json.dumps(page))
+        c.runtime.ds_call_async = AsyncMock(return_value=res)
+        c.data_entities_processor.on_new_records = AsyncMock(side_effect=Exception("db down"))
+
+        assert await repos._sync_repo_full(_PROJECT_ID, _PROJECT_PATH) is False
+
 
 # ===========================================================================
 # build_code_file_records tests

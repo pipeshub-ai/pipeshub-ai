@@ -1,7 +1,7 @@
 from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import Connectors, PermissionModel
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -98,12 +98,15 @@ class GitLabPersonalProjectsSync(ProjectsSync):
     .with_description("Sync content from your personal GitLab account")
     .with_categories(["Knowledge Management"])
     .with_scopes([ConnectorScope.PERSONAL.value])
-    # RECORD_LEVEL (the default) rather than APP_LEVEL: reviewers disagreed on
-    # whether a non-creator can hold a USER_APP_RELATION to a personal instance,
-    # and APP_LEVEL answers with one connector-wide scan that never checks the
-    # per-user ACL. The only cost of being wrong the safe way is losing the cache
-    # shortcut for this connector; the cost of being wrong the other way is one
-    # user reading another's records.
+    # APP_LEVEL: the only USER_APP_RELATION this connector ever writes is the
+    # creator's (connector_service.ensure_connector_group_permission); the GitLab
+    # user-directory sync that fans edges out to real members belongs to the
+    # workspace connector and is never reached from run_sync here. Reaching the
+    # app therefore already means being the creator, so the per-user ACL
+    # traversal can only return what the connector-wide scan does. Anything that
+    # later grants a non-creator a USER_APP_RELATION to a personal instance must
+    # revert this — the scan does not consult ConnectorGroup membership.
+    .with_permission_model(PermissionModel.APP_LEVEL)
     .with_auth(
         [
             AuthBuilder.type(AuthType.OAUTH).oauth(
