@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +26,7 @@ __all__ = [
     "DEFAULT_MAX_DEPTH",
     "DEFAULT_NEIGHBOR_LIMIT",
     "SymbolRef",
+    "attach_file_paths",
     "find_call_neighbors_impl",
     "find_symbol_path_impl",
     "get_symbol_code_impl",
@@ -43,6 +47,7 @@ _FRONTIER_LIMIT = 2000
 
 _BLOCKS = CollectionNames.BLOCKS.value
 _RECORDS = CollectionNames.RECORDS.value
+_CODE_FILES = CollectionNames.CODE_FILES.value
 
 
 class SymbolRef(dict):
@@ -81,28 +86,57 @@ async def resolve_symbol(
     still resolves each correctly.
     """
     try:
-        rows = await graph_provider.get_nodes_by_filters(
-            collection=_BLOCKS,
-            filters={
-                "orgId": org_id,
-                "filePath": file_path,
-                "qualifiedName": qualified_name,
-                "connectorId": connector_id,
-            },
-        )
-        if rows:
-            return rows[0]
+        record_ids = await _records_for_path(graph_provider, org_id, file_path)
+        if not record_ids:
+            return None
+        for record_id in record_ids:
+            rows = await graph_provider.get_nodes_by_filters(
+                collection=_BLOCKS,
+                filters={
+                    "orgId": org_id,
+                    "recordId": record_id,
+                    "qualifiedName": qualified_name,
+                    "connectorId": connector_id,
+                },
+            )
+            if rows:
+                return _with_file_path(rows[0], file_path)
         return await _resolve_case_insensitive(
-            graph_provider, org_id, file_path, qualified_name, connector_id
+            graph_provider, org_id, record_ids, file_path, qualified_name, connector_id
         )
     except Exception as exc:
         logger.warning("Symbol lookup failed for %s#%s: %s", file_path, qualified_name, exc)
         return None
 
 
+async def _records_for_path(
+    graph_provider: Any, org_id: str, file_path: str
+) -> list[str]:
+    """Record ids for a repo-relative path.
+
+    The path is a property of the file, not of its symbols, so it is stored once
+    on ``codeFiles`` (keyed by record id) rather than on every block. Normally one
+    id; more than one means two connectors indexed the same path, and the caller
+    narrows by connector.
+    """
+    rows = await graph_provider.get_nodes_by_filters(
+        collection=_CODE_FILES,
+        filters={"orgId": org_id, "filePath": file_path},
+        return_fields=["_key"],
+    )
+    return [key for row in rows or [] if (key := row.get("_key") or row.get("id"))]
+
+
+def _with_file_path(block: dict[str, Any], file_path: str | None) -> dict[str, Any]:
+    """Attach the owning record's path so callers can address the block."""
+    block["filePath"] = file_path
+    return block
+
+
 async def _resolve_case_insensitive(
     graph_provider: Any,
     org_id: str,
+    record_ids: list[str],
     file_path: str,
     qualified_name: str,
     connector_id: str,
@@ -114,17 +148,19 @@ async def _resolve_case_insensitive(
     there is no right answer then, so it resolves nothing rather than guess.
     """
     wanted = qualified_name.casefold()
+    rows: list[dict[str, Any]] = []
     try:
-        rows = await graph_provider.get_nodes_by_filters(
-            collection=_BLOCKS,
-            filters={"orgId": org_id, "filePath": file_path, "connectorId": connector_id},
-        )
+        for record_id in record_ids:
+            rows.extend(await graph_provider.get_nodes_by_filters(
+                collection=_BLOCKS,
+                filters={"orgId": org_id, "recordId": record_id, "connectorId": connector_id},
+            ) or [])
     except Exception as exc:
         logger.warning("Case-insensitive lookup failed for %s: %s", file_path, exc)
         return None
-    matches = [r for r in (rows or []) if (r.get("qualifiedName") or "").casefold() == wanted]
+    matches = [r for r in rows if (r.get("qualifiedName") or "").casefold() == wanted]
     if len(matches) == 1:
-        return matches[0]
+        return _with_file_path(matches[0], file_path)
     if matches:
         logger.debug("Ambiguous case-insensitive match for %s#%s", file_path, qualified_name)
     return None
@@ -194,7 +230,34 @@ async def _readable_blocks(
             )
         if allowed[record_id]:
             out[row.get("_key") or row.get("id")] = row
+
+    await attach_file_paths(graph_provider, org_id, out.values())
     return out
+
+
+async def attach_file_paths(
+    graph_provider: Any, org_id: str, blocks: "Iterable[dict[str, Any]]"
+) -> None:
+    """Fill in each block's ``filePath`` from its owning record.
+
+    The path is stored once per file on ``codeFiles``, so it is joined here
+    rather than copied onto every block. Every tool reaches its blocks through
+    this or ``resolve_symbol``, which is what lets the rest of the code-graph
+    code keep reading ``block["filePath"]`` unchanged.
+    """
+    blocks = list(blocks)
+    record_ids = sorted({b.get("recordId") for b in blocks if b.get("recordId")})
+    if not record_ids:
+        return
+    try:
+        paths = await graph_provider.get_file_paths_for_records(
+            org_id=org_id, record_ids=record_ids
+        )
+    except Exception as exc:
+        logger.warning("File path lookup failed: %s", exc)
+        return
+    for block in blocks:
+        block["filePath"] = paths.get(block.get("recordId"))
 
 
 # ---------------------------------------------------------------------------

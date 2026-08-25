@@ -5358,7 +5358,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 26
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 27
 
     @pytest.mark.asyncio
     async def test_block_indexes_cover_every_query_shape(self, connected_provider):
@@ -5380,9 +5380,18 @@ class TestEnsureIndexes:
             ("orgId", "recordGroupId", "name"),           # edge-resolution symbol sweep
             ("orgId", "recordGroupId", "qualifiedName"),  # resolution target lookup
             ("recordId", "source"),                       # per-file reconciliation
-            ("orgId", "filePath", "qualifiedName"),       # the agent tools' addressing
+            ("orgId", "recordId", "qualifiedName"),       # the agent tools' addressing
             ("orgId", "name"),                            # free-text select, repo-agnostic
         }
+
+        code_files = {
+            tuple(call.args[1])
+            for call in connected_provider.http_client.ensure_persistent_index.await_args_list
+            if call.args[0] == CollectionNames.CODE_FILES.value
+        }
+        # A file's path lives here, not on its blocks, so this backs every
+        # path-prefix query the code tools make.
+        assert code_files == {("orgId", "filePath")}
 
 
 # ---------------------------------------------------------------------------
@@ -7959,7 +7968,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 26
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 27
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,17 @@ class FakeGraphProvider:
     def __init__(self) -> None:
         self.blocks: dict[str, dict] = {}
         self.edges: list[dict] = []
+        # recordId -> file path. The real graph keeps this on `codeFiles`, one
+        # row per file, rather than on every block.
+        self.code_files: dict[str, str] = {}
+
+    async def get_file_paths_for_records(self, org_id, record_ids, transaction=None) -> dict:
+        wanted = set(record_ids)
+        return {
+            record_id: path
+            for record_id, path in self.code_files.items()
+            if record_id in wanted
+        }
 
     async def get_documents_paginated(self, collection, skip=0, limit=50, filters=None,
                                       sort_field=None, transaction=None, raise_on_error=False):
@@ -137,12 +148,12 @@ def index_file(graph):
         container = parser.parse_to_blocks(
             source, name or file_path.rsplit("/", 1)[-1], file_path, language
         )
+        graph.code_files[record_id] = file_path
         ctx = BlockProjectionContext(
             org_id=ORG_ID,
             record_id=record_id,
             record_group_id=GROUP_ID,
             connector_id="conn1",
-            file_path=file_path,
             language=language,
         )
         return await write_code_file_blocks_to_graph(

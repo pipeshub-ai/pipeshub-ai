@@ -799,10 +799,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         # COMPOSITE: the code-graph agent tools address a symbol by
         # (file path, symbol id) and do not know its repo, so none of the
-        # recordGroupId-leading indexes above apply to them.
+        # recordGroupId-leading indexes above apply to them. The path resolves to
+        # a record on codeFiles first, so blocks are reached by record.
         await self.http_client.ensure_persistent_index(
             CollectionNames.BLOCKS.value,
-            ["orgId", "filePath", "qualifiedName"],
+            ["orgId", "recordId", "qualifiedName"],
+        )
+
+        # COMPOSITE: codeFiles is the single home of a code file's path, and what
+        # every path-prefix query drives from.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.CODE_FILES.value,
+            ["orgId", "filePath"],
         )
 
         # COMPOSITE: free-text symbol lookup, which is repo-agnostic — the agent
@@ -2920,8 +2928,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_nodes_by_field_in(
         self,
         collection: str,
-        field: str,
-        values: list[Any],
+        field_name: str,
+        field_values: list[Any],
         return_fields: list[str] | None = None,
         transaction: str | None = None
     ) -> list[dict]:
@@ -2930,8 +2938,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         Args:
             collection: Collection name
-            field: Field name to check
-            values: List of values
+            field_name: Field name to check
+            field_values: List of values
             return_fields: Optional list of fields to return
             transaction: Optional transaction ID
 
@@ -2943,7 +2951,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         # caller silently gets an empty batch. Callers use the generic `id`
         # because that is what the Neo4j provider stores, so the translation
         # belongs here rather than in every call site.
-        filter_field = "_key" if field == "id" else field
+        filter_field = "_key" if field_name == "id" else field_name
 
         if return_fields:
             # `id` has to be projected back out of `_key`, or a caller asking
@@ -2965,7 +2973,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"values": values},
+                bind_vars={"values": field_values},
                 txn_id=transaction
             )
             return results or []
@@ -3088,24 +3096,33 @@ class ArangoHTTPProvider(IGraphDBProvider):
             raise ValueError("direction must be 'outbound', 'inbound', or 'any'")
         blocks = CollectionNames.BLOCKS.value
         edges = CollectionNames.RECORD_RELATIONS.value
+        records = CollectionNames.RECORDS.value
+        code_files = CollectionNames.CODE_FILES.value
+        # The prefix is matched on codeFiles -- one row per file rather than ~30
+        # per file on blocks -- and the connector scope is re-applied per record,
+        # since codeFiles carries no connectorId.
+        scoped = f"""(
+            FOR codeFile IN {code_files}
+                FILTER codeFile.orgId == @orgId
+                   AND STARTS_WITH(codeFile.filePath, @prefix)
+                LET record = DOCUMENT({records}, codeFile._key)
+                FILTER @connectorId == null
+                    OR record.connectorId == @connectorId
+                RETURN codeFile._key
+        )"""
         parts = [
             f"""(
                 FOR block IN {blocks}
-                    FILTER block.orgId == @orgId
-                       AND STARTS_WITH(block.filePath, @prefix)
-                       AND (@connectorId == null
-                            OR block.connectorId == @connectorId)
+                    FILTER block.recordId IN scopedRecords
                     FOR edge IN {edges}
                         FILTER edge.{anchor} == block._id
                            AND edge.relationshipType IN @relations
                         LET target = DOCUMENT(edge.{other})
                         RETURN {{
-                            srcPath: block.filePath,
                             srcRecord: block.recordId,
                             rel: edge.relationshipType,
                             dir: "{label}",
-                            dstPath: target.filePath,
-                            dstRecord: target.filePath != null
+                            dstRecord: target.recordId != null
                                 ? target.recordId
                                 : target._key
                         }}
@@ -3113,14 +3130,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
             for anchor, other, label in halves[direction]
         ]
         combined = f"APPEND({', '.join(parts)})" if len(parts) > 1 else parts[0]
+        # Grouped by record, not by path: the caller resolves ids to paths in one
+        # batch, so a moved file needs no rewrite here.
         query = f"""
+        LET scopedRecords = {scoped}
         FOR row IN {combined}
-            COLLECT srcPath = row.srcPath, srcRecord = row.srcRecord,
-                    rel = row.rel, dir = row.dir,
-                    dstPath = row.dstPath, dstRecord = row.dstRecord
+            COLLECT srcRecord = row.srcRecord, rel = row.rel, dir = row.dir,
+                    dstRecord = row.dstRecord
             WITH COUNT INTO n
             LIMIT @limit
-            RETURN {{ srcPath, srcRecord, rel, dir, dstPath, dstRecord, n }}
+            RETURN {{ srcRecord, rel, dir, dstRecord, n }}
         """
         try:
             return await self.http_client.execute_aql(
@@ -3146,15 +3165,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> dict[str, str]:
         if not record_ids:
             return {}
+        # codeFiles is keyed by record id. recordName is the fallback for a
+        # source file that arrived without a codeFiles node -- a .py uploaded to
+        # a KB is a plain FILE record, and dispatch is by extension, so it still
+        # gets parsed and projected.
         query = f"""
-        FOR block IN {CollectionNames.BLOCKS.value}
-            FILTER block.orgId == @orgId
-               AND block.recordId IN @record_ids
-               AND block.filePath != null
-            RETURN DISTINCT {{
-                recordId: block.recordId,
-                filePath: block.filePath
-            }}
+        FOR record IN {CollectionNames.RECORDS.value}
+            FILTER record.orgId == @orgId
+               AND record._key IN @record_ids
+            LET codeFile = DOCUMENT({CollectionNames.CODE_FILES.value}, record._key)
+            LET path = codeFile.filePath != null ? codeFile.filePath : record.recordName
+            FILTER path != null
+            RETURN {{ recordId: record._key, filePath: path }}
         """
         try:
             rows = await self.http_client.execute_aql(

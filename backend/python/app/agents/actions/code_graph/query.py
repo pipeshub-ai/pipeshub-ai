@@ -23,7 +23,7 @@ from typing import Any
 from app.config.constants.arangodb import CollectionNames, RecordRelations
 from app.modules.parsers.code_parser.models import FILLER_KINDS
 
-from .ops import SymbolRef, _readable_blocks, _user_can_read
+from .ops import SymbolRef, _readable_blocks, _user_can_read, attach_file_paths
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ QUERY_CODE_GRAPH_TOOL_NAME = "codegraph__query_code_graph"
 
 _BLOCKS = CollectionNames.BLOCKS.value
 _RECORDS = CollectionNames.RECORDS.value
+_CODE_FILES = CollectionNames.CODE_FILES.value
 
 CONNECTOR_ID_REQUIRED = (
     "connector_id is required. Run a knowledge search first and copy the "
@@ -112,21 +113,47 @@ def _module_depth_for(prefix: str) -> int:
 async def _select_by_path(
     graph_provider: Any, org_id: str, pattern: str, connector_id: str
 ) -> list[dict]:
-    """Blocks whose filePath matches a glob (or a literal path prefix)."""
+    """Blocks of the files whose path matches a glob (or a literal prefix).
+
+    Matched against ``codeFiles``, which holds one row per file, rather than
+    against blocks, which hold ~30 copies of the same path. The scan limit
+    therefore counts files, not symbols.
+    """
     # Anchor the DB-side filter on the pattern's literal prefix so the index does
     # the work; the glob itself is applied in Python.
     prefix = pattern.split("*", 1)[0]
-    rows = await graph_provider.get_nodes_by_field_prefix(
-        collection=_BLOCKS,
+    files = await graph_provider.get_nodes_by_field_prefix(
+        collection=_CODE_FILES,
         field_name="filePath",
         prefix=prefix,
-        filters={"orgId": org_id, "connectorId": connector_id},
+        filters={"orgId": org_id},
         limit=_SELECT_SCAN_LIMIT,
     )
-    rows = [_unwrap(r) for r in rows]
-    if "*" in pattern or "?" in pattern:
-        rows = [r for r in rows if fnmatch.fnmatch(r.get("filePath") or "", pattern)]
-    return rows
+    paths: dict[str, str] = {}
+    for raw in files or []:
+        row = _unwrap(raw)
+        key = row.get("_key") or row.get("id")
+        path = row.get("filePath")
+        if not key or not path:
+            continue
+        if ("*" in pattern or "?" in pattern) and not fnmatch.fnmatch(path, pattern):
+            continue
+        paths[key] = path
+    if not paths:
+        return []
+
+    rows = await graph_provider.get_nodes_by_field_in(
+        collection=_BLOCKS, field_name="recordId", field_values=sorted(paths)
+    )
+    out = []
+    for raw in rows or []:
+        row = _unwrap(raw)
+        # codeFiles carries no connectorId, so the repo scope is re-applied here.
+        if row.get("orgId") != org_id or row.get("connectorId") != connector_id:
+            continue
+        row["filePath"] = paths.get(row.get("recordId"))
+        out.append(row)
+    return out
 
 
 async def _select_by_qualified_name(
@@ -145,7 +172,7 @@ async def _select_by_qualified_name(
             collection=_BLOCKS, filters={**base, "qualifiedName": qualified_name}
         )
         if rows:
-            return [_unwrap(r) for r in rows]
+            return await _with_paths(graph_provider, org_id, [_unwrap(r) for r in rows])
         wanted = qualified_name.casefold()
         if wanted == qualified_name:
             return []
@@ -155,7 +182,7 @@ async def _select_by_qualified_name(
     except Exception as exc:
         logger.warning("qualifiedName lookup failed for %s: %s", qualified_name, exc)
         return []
-    return [_unwrap(r) for r in rows or []]
+    return await _with_paths(graph_provider, org_id, [_unwrap(r) for r in rows or []])
 
 
 async def _select_by_text(
@@ -176,7 +203,15 @@ async def _select_by_text(
         filters={"orgId": org_id, "connectorId": connector_id},
         limit=_SELECT_SCAN_LIMIT,
     )
-    return [_unwrap(r) for r in rows]
+    return await _with_paths(graph_provider, org_id, [_unwrap(r) for r in rows])
+
+
+async def _with_paths(
+    graph_provider: Any, org_id: str, blocks: list[dict]
+) -> list[dict]:
+    """Join each block to its record's path; blocks do not store one."""
+    await attach_file_paths(graph_provider, org_id, blocks)
+    return blocks
 
 
 def _unwrap(row: dict) -> dict:
@@ -327,7 +362,12 @@ def _group_rows(
     group_by: str,
     depth: int,
 ) -> dict[str, Any]:
-    """Roll aggregated file-level rows up to files or modules."""
+    """Roll aggregated record-level rows up to files or modules.
+
+    The rollup aggregates by record because that is what an edge endpoint
+    identifies; ``record_paths`` resolves those ids to paths in one batch, so a
+    renamed file needs nothing rewritten in the graph.
+    """
     def bucket(path: str | None) -> str | None:
         if not path:
             return None
@@ -341,7 +381,7 @@ def _group_rows(
         src_record, dst_record = row.get("srcRecord"), row.get("dstRecord")
         if src_record not in readable:
             continue
-        src_path = row.get("srcPath")
+        src_path = record_paths.get(src_record)
         src = bucket(src_path)
         if src:
             members[src].add(src_path)
@@ -350,7 +390,7 @@ def _group_rows(
         # would be a different answer, not a redacted one.
         if dst_record not in readable:
             continue
-        dst_path = row.get("dstPath") or record_paths.get(dst_record)
+        dst_path = record_paths.get(dst_record)
         dst = bucket(dst_path)
         if dst:
             members[dst].add(dst_path)
@@ -380,10 +420,7 @@ def _group_rows(
 
 
 async def _record_paths(graph_provider: Any, org_id: str, record_ids: set[str]) -> dict[str, str]:
-    """filePath for a set of records, read off any one of their blocks.
-
-    Import edges land on the record, but only blocks carry filePath.
-    """
+    """filePath for a set of records, read from the record itself."""
     if not record_ids:
         return {}
     return await graph_provider.get_file_paths_for_records(
@@ -541,8 +578,10 @@ async def _grouped_result(
     rows = await _rollup_rows(
         graph_provider, org_id, prefix, relations, direction, connector_id
     )
-    unresolved = {r.get("dstRecord") for r in rows if not r.get("dstPath")} & readable
-    paths = await _record_paths(graph_provider, org_id, {r for r in unresolved if r})
+    # Both endpoints are record ids; resolve every readable one to a path in a
+    # single batch rather than carrying ~30 copies of each path on the blocks.
+    wanted = {r.get(end) for r in rows for end in ("srcRecord", "dstRecord")} & readable
+    paths = await _record_paths(graph_provider, org_id, {r for r in wanted if r})
 
     module_depth = _module_depth_for(prefix) if group_by == "directory" else 0
     result = _group_rows(rows, readable, paths, group_by, module_depth)

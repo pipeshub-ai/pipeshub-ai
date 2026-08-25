@@ -12,6 +12,7 @@ import pytest
 from app.config.constants.arangodb import CollectionNames
 
 BLOCKS = CollectionNames.BLOCKS.value
+CODE_FILES = CollectionNames.CODE_FILES.value
 RECORDS = CollectionNames.RECORDS.value
 ORG = "org-1"
 USER = "user-1"
@@ -55,6 +56,13 @@ class FakeGraphProvider:
                                "fetchTarget"),
         }
         self.blocks["k_class"]["isBlockGroup"] = True
+        # A path belongs to the file, so the graph keeps it on `codeFiles` --
+        # one row per record -- not on each of that file's ~30 blocks.
+        self.code_files: dict[str, str] = {}
+        for doc in self.blocks.values():
+            path = doc.pop("filePath", None)
+            if path:
+                self.code_files.setdefault(doc["recordId"], path)
         self.edges = [
             {"_from": f"{BLOCKS}/k_caller", "_to": f"{BLOCKS}/k_target", "relationshipType": "CALLS"},
             {"_from": f"{BLOCKS}/k_class", "_to": f"{BLOCKS}/k_method", "relationshipType": "CONTAINS"},
@@ -72,11 +80,24 @@ class FakeGraphProvider:
             "rec-d": {"_key": "rec-d", "virtualRecordId": "v-d"},
         }
 
+    def _code_file_docs(self) -> list[dict]:
+        return [
+            {"_key": record_id, "id": record_id, "orgId": ORG, "filePath": path}
+            for record_id, path in self.code_files.items()
+        ]
+
     async def get_nodes_by_filters(self, collection, filters, return_fields=None, transaction=None):
+        if collection == CODE_FILES:
+            return [d for d in self._code_file_docs()
+                    if all(d.get(k) == v for k, v in filters.items())]
         if collection != BLOCKS:
             return []
         return [d for d in self.blocks.values()
                 if all(d.get(k) == v for k, v in filters.items())]
+
+    async def get_file_paths_for_records(self, org_id, record_ids, transaction=None) -> dict:
+        wanted = set(record_ids)
+        return {r: p for r, p in self.code_files.items() if r in wanted}
 
     async def get_nodes_by_field_in(self, collection, field_name, field_values,
                                     return_fields=None, transaction=None):
@@ -167,8 +188,9 @@ class QueryGraphProvider(FakeGraphProvider):
         return {f"v-{r}": r for r in self.records if r not in self.deny_records}
 
     def _rollup(self, prefix, relations, direction, limit):
-        """What the DB-side rollup returns: one row per file edge, with the
-        record at each end so the caller can drop what it may not read."""
+        """What the DB-side rollup returns: one row per file edge, keyed by the
+        record at each end so the caller can drop what it may not read and
+        resolve the paths in one batch."""
         by_id = {f"{BLOCKS}/{k}": d for k, d in self.blocks.items()}
         rows = []
         for edge in self.edges:
@@ -179,15 +201,17 @@ class QueryGraphProvider(FakeGraphProvider):
                 if direction not in (label, "any"):
                     continue
                 block = by_id.get(edge[anchor_f])
-                if not block or not (block.get("filePath") or "").startswith(prefix):
+                if not block:
+                    continue
+                src_path = self.code_files.get(block["recordId"]) or ""
+                if not src_path.startswith(prefix):
                     continue
                 other = edge[other_f]
                 target = by_id.get(other)
                 collection, _, key = other.partition("/")
                 rows.append({
-                    "srcPath": block["filePath"], "srcRecord": block["recordId"],
+                    "srcRecord": block["recordId"],
                     "rel": edge["relationshipType"], "dir": label,
-                    "dstPath": target["filePath"] if target else None,
                     "dstRecord": target["recordId"] if target else key,
                     "n": 1,
                 })
@@ -197,8 +221,9 @@ class QueryGraphProvider(FakeGraphProvider):
         self, collection, field_name, prefix, filters=None, limit=400,
         transaction=None,
     ):
+        docs = self._code_file_docs() if collection == CODE_FILES else self.blocks.values()
         return [
-            doc for doc in self.blocks.values()
+            doc for doc in docs
             if (doc.get(field_name) or "").startswith(prefix)
             and all(doc.get(key) == value for key, value in (filters or {}).items())
         ][:limit]
@@ -221,20 +246,6 @@ class QueryGraphProvider(FakeGraphProvider):
         return self._rollup(
             file_path_prefix, relationship_types, direction, limit
         )
-
-    async def get_file_paths_for_records(
-        self, org_id, record_ids, transaction=None,
-    ):
-        wanted = set(record_ids)
-        paths = {}
-        for doc in self.blocks.values():
-            if (
-                doc.get("orgId") == org_id
-                and doc.get("recordId") in wanted
-                and doc.get("filePath")
-            ):
-                paths.setdefault(doc["recordId"], doc["filePath"])
-        return paths
 
 
 @pytest.fixture
