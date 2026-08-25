@@ -54,6 +54,7 @@ class LinearExpected:
             created_at_timestamp=0,
             updated_at_timestamp=0,
             permission_model=PermissionModel.RECORD_LEVEL.value,
+            vector_membership_backfilled=True,
         )
 
     @staticmethod
