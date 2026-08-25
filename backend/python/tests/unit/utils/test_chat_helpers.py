@@ -955,6 +955,51 @@ class TestGetEnhancedMetadata:
         result = get_enhanced_metadata(record, block, meta)
         assert result["blockText"] == "row string data"
 
+    def test_code_block_extracts_text_from_data(self):
+        """CODE blocks store source code in data['text']."""
+        record = _make_record_blob()
+        block = {
+            "type": BlockType.CODE.value,
+            "data": {
+                "text": "def hello():\n    print('world')",
+                "kind": "function",
+                "start_line": 1,
+                "end_line": 2,
+            },
+            "citation_metadata": {"line_number": 1},
+            "index": 0,
+        }
+        meta = {}
+        result = get_enhanced_metadata(record, block, meta)
+        assert result["blockText"] == "def hello():\n    print('world')"
+        assert result["blockType"] == BlockType.CODE.value
+
+    def test_code_block_with_string_data(self):
+        """When CODE block data is a plain string, convert to str."""
+        record = _make_record_blob()
+        block = {
+            "type": BlockType.CODE.value,
+            "data": "some code as string",
+            "citation_metadata": None,
+            "index": 0,
+        }
+        meta = {}
+        result = get_enhanced_metadata(record, block, meta)
+        assert result["blockText"] == "some code as string"
+
+    def test_code_block_with_empty_text(self):
+        """CODE block with empty text in data dict."""
+        record = _make_record_blob()
+        block = {
+            "type": BlockType.CODE.value,
+            "data": {"text": "", "kind": "imports"},
+            "citation_metadata": None,
+            "index": 0,
+        }
+        meta = {}
+        result = get_enhanced_metadata(record, block, meta)
+        assert result["blockText"] == ""
+
     def test_no_data_returns_empty_blocktext(self):
         record = _make_record_blob()
         block = {
