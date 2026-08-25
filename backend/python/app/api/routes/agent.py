@@ -3326,8 +3326,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
+        toolset_registry = getattr(request.app.state, "toolset_registry", None)
         if agent_id == "agentIdPlaceholder":
-            toolset_registry = getattr(request.app.state, "toolset_registry", None)
             agent = await get_assistant_agent(user_context["userId"], org_key, config_service, graph_provider, toolset_registry, logger)
             user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
             enriched_user_info = await _enrich_user_info(user_context, user_doc)
@@ -3529,11 +3529,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             missing_toolset_display_names: list[str] = []        # no config found at all
             unauthenticated_toolset_display_names: list[str] = []  # config exists but OAuth not completed
 
-            # Fetched fresh (not reused from earlier in this handler) since
-            # toolset_registry is only assigned on the agentIdPlaceholder branch
-            # above and would be undefined here otherwise.
-            _toolset_registry_for_auth_check = getattr(request.app.state, "toolset_registry", None)
-
             for toolset, config in fetch_results:
                 instance_id = toolset.get("instanceId")
                 toolset_name = toolset.get("name", "")
@@ -3543,10 +3538,13 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 # A toolset whose ONLY supported auth type is NONE (e.g. a public,
                 # credential-free API) has nothing to configure — no per-agent
                 # credential record will ever exist for it, so it must not be
-                # treated as "missing" or "unauthenticated".
+                # treated as "missing" or "unauthenticated". toolset_registry is
+                # hoisted above the agentIdPlaceholder if/else earlier in this
+                # handler, so it's always defined here regardless of which
+                # branch ran.
                 toolset_meta = (
-                    _toolset_registry_for_auth_check.get_toolset_metadata(toolset_name)
-                    if _toolset_registry_for_auth_check
+                    toolset_registry.get_toolset_metadata(toolset_name)
+                    if toolset_registry
                     else None
                 )
                 supported_auth_types = (toolset_meta or {}).get("supported_auth_types") or []
