@@ -256,16 +256,49 @@ class TestTicketToRecord:
     async def test_returns_none_without_id(self, zendesk_connector):
         assert await zendesk_connector._ticket_to_record({"subject": "no id"}) is None
 
-    async def test_shared_organization_grant_is_attached(self, zendesk_connector):
-        """Zendesk's shared-organization setting lets an org's members see each
-        other's tickets; without this grant only the requester can."""
-        result = await zendesk_connector._ticket_to_record({
+    async def test_org_grant_attached_when_zendesk_shares_tickets(self, zendesk_connector):
+        """shared_tickets is the Zendesk switch that lets an org's end users read each
+        other's tickets. Only then may the org-wide grant be written."""
+        zendesk_connector._org_id_to_data = {"21": {"id": 21, "shared_tickets": True}}
+
+        _, permissions = await zendesk_connector._ticket_to_record({
             "id": 555, "subject": "Printer", "group_id": 7, "organization_id": 21,
         })
 
-        _, permissions = result
         group_ids = {p.external_id for p in permissions if p.entity_type == EntityType.GROUP}
         assert group_ids == {"group_7", "org_21"}
+
+    async def test_org_grant_withheld_when_tickets_are_not_shared(self, zendesk_connector):
+        """Regression: granting unconditionally handed every end user in a company every
+        ticket that company ever raised. shared_tickets is false by default."""
+        zendesk_connector._org_id_to_data = {"21": {"id": 21, "shared_tickets": False}}
+
+        _, permissions = await zendesk_connector._ticket_to_record({
+            "id": 555, "subject": "Printer", "group_id": 7, "organization_id": 21,
+        })
+
+        group_ids = {p.external_id for p in permissions if p.entity_type == EntityType.GROUP}
+        assert group_ids == {"group_7"}
+
+    async def test_org_grant_withheld_when_org_is_absent_from_the_export(self, zendesk_connector):
+        """An org we never fetched is one we cannot justify sharing — fail closed."""
+        zendesk_connector._org_id_to_data = {}
+
+        _, permissions = await zendesk_connector._ticket_to_record({
+            "id": 555, "subject": "Printer", "group_id": 7, "organization_id": 21,
+        })
+
+        assert {p.external_id for p in permissions if p.entity_type == EntityType.GROUP} == {"group_7"}
+
+    async def test_org_grant_withheld_when_flag_missing(self, zendesk_connector):
+        """Zendesk omits shared_tickets on some payloads; absent must read as false."""
+        zendesk_connector._org_id_to_data = {"21": {"id": 21}}
+
+        _, permissions = await zendesk_connector._ticket_to_record({
+            "id": 555, "subject": "Printer", "group_id": 7, "organization_id": 21,
+        })
+
+        assert {p.external_id for p in permissions if p.entity_type == EntityType.GROUP} == {"group_7"}
 
     async def test_skips_unchanged_ticket(self, zendesk_connector, mock_tx_store):
         existing = MagicMock()
@@ -1598,23 +1631,26 @@ class TestConnectionAndLifecycle:
     async def test_webhook_notification_is_noop(self, zendesk_connector):
         assert await zendesk_connector.handle_webhook_notification({"a": 1}) is None
 
-    @patch("app.connectors.sources.zendesk.connector.DataSourceEntitiesProcessor")
-    async def test_create_connector_initialises_processor(
-        self, mock_processor_cls, mock_logger, mock_data_store_provider, mock_config_service
+    async def test_create_connector_takes_the_processor_from_the_factory(
+        self, mock_logger, mock_data_store_provider, mock_config_service,
+        mock_data_entities_processor
     ):
-        processor = MagicMock()
-        processor.initialize = AsyncMock()
-        mock_processor_cls.return_value = processor
-
+        """The factory builds and initialises the processor and passes it in; building
+        a second one here is what broke connector creation after the registry change."""
         with patch("app.connectors.sources.zendesk.connector.ZendeskApp"):
             connector = await ZendeskConnector.create_connector(
-                mock_logger, mock_data_store_provider, mock_config_service,
-                "zd-conn-9", "team", "user-1",
+                logger=mock_logger,
+                data_store_provider=mock_data_store_provider,
+                config_service=mock_config_service,
+                connector_id="zd-conn-9",
+                scope="team",
+                created_by="user-1",
+                data_entities_processor=mock_data_entities_processor,
             )
 
-        processor.initialize.assert_awaited_once()
         assert isinstance(connector, ZendeskConnector)
         assert connector.connector_id == "zd-conn-9"
+        assert connector.data_entities_processor is mock_data_entities_processor
 
 
 # ===========================================================================
