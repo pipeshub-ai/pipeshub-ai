@@ -100,11 +100,20 @@ class RecordEventHandler(BaseEventService):
                 e,
             )
 
+    async def _publish_reindex_event(self, record_id: str, payload: dict) -> None:
+        if not self.producer:
+            raise IndexingError("No messaging producer configured; cannot publish newRecord event")
+        await self.producer.send_event(
+            topic=Topic.RECORD_EVENTS.value,
+            event_type="newRecord",
+            payload=payload,
+            key=str(record_id),
+        )
+
     async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id) -> None:
         try:
             self.logger.info(f"🔍 Looking for next queued duplicate for record {record_id}")
 
-            # Find the next queued duplicate
             next_queued_record = await self.event_processor.graph_provider.find_next_queued_duplicate(record_id)
 
             if not next_queued_record:
@@ -114,28 +123,18 @@ class RecordEventHandler(BaseEventService):
             next_record_id = next_queued_record.get("_key")
             self.logger.info(f"🚀 Found queued duplicate: {next_record_id}, triggering indexing")
 
-            # Get file record for the queued duplicate
             file_record = None
             if next_queued_record.get("recordType") == RecordTypes.FILE.value:
                 file_record = await self.event_processor.graph_provider.get_document(
                     next_record_id, CollectionNames.FILES.value
                 )
 
-            # Create event payload for the queued record
             payload = await self.event_processor.graph_provider._create_reindex_event_payload(
                 next_queued_record,
                 file_record,
             )
 
-            # Publish the event to trigger indexing
-            if not self.producer:
-                raise IndexingError("No messaging producer configured; cannot publish newRecord event")
-            await self.producer.send_event(
-                topic=Topic.RECORD_EVENTS.value,
-                event_type="newRecord",
-                payload=payload,
-                key=str(next_record_id),
-            )
+            await self._publish_reindex_event(str(next_record_id), payload)
 
             self.logger.info(f"✅ Successfully triggered indexing for queued duplicate: {next_record_id}")
 
@@ -153,7 +152,7 @@ class RecordEventHandler(BaseEventService):
             return False
         return bool(containers.get("blocks") or containers.get("block_groups"))
 
-    async def _delete_vector_collection(self) -> AsyncGenerator[PipelineEvent, None]:
+    async def _delete_vector_collection(self, payload: dict | None = None) -> AsyncGenerator[PipelineEvent, None]:
         sink = getattr(self.event_processor, "sink_orchestrator", None)
         vector_store = getattr(sink, "vector_store", None) if sink is not None else None
         if vector_store is None:
@@ -380,7 +379,7 @@ class RecordEventHandler(BaseEventService):
                 return
 
             if event_type == EventTypes.DELETE_VECTOR_COLLECTION.value:
-                async for event in self._delete_vector_collection():
+                async for event in self._delete_vector_collection(payload):
                     yield event
                 return
 

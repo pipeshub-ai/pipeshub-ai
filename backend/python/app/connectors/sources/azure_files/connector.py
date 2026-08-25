@@ -38,10 +38,7 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.base.data_store.data_store import (
-    DataStoreProvider,
-    TransactionStore,
-)
+from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -443,11 +440,9 @@ class AzureFilesConnector(BaseConnector):
             )
 
             if self.scope == ConnectorScope.TEAM.value:
-                async with self.data_store_provider.transaction() as tx_store:
-                    await tx_store.ensure_team_app_edge(
-                        self.connector_id,
-                        self.data_entities_processor.org_id,
-                    )
+                await self.data_entities_processor.ensure_team_app_edge(
+                    self.connector_id
+                )
             else:
                 # Personal: create user-app edge only for the creator
                 if self.created_by:
@@ -945,19 +940,6 @@ class AzureFilesConnector(BaseConnector):
                 sync_point_key, {"last_sync_time": max_timestamp}
             )
 
-    async def _remove_old_parent_relationship(
-        self, record_id: str, tx_store: "TransactionStore"
-    ) -> None:
-        """Remove old PARENT_CHILD relationships for a record."""
-        try:
-            deleted_count = await tx_store.delete_parent_child_edge_to_record(record_id)
-            if deleted_count > 0:
-                self.logger.info(
-                    f"Removed {deleted_count} old parent relationship(s) for record {record_id}"
-                )
-        except Exception as e:
-            self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
-
     def _get_azure_files_revision_id(self, item: dict) -> str:
         """
         Determines a stable revision ID for an Azure Files item.
@@ -1051,11 +1033,9 @@ class AzureFilesConnector(BaseConnector):
             current_revision_id = self._get_azure_files_revision_id(item)
             raw_etag = item.get("etag", "").strip('"') if item.get("etag") else ""
 
-            # PRIMARY: Try lookup by path (externalRecordId)
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id, external_id=external_record_id
-                )
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, external_record_id
+            )
 
             is_move = False
 
@@ -1077,11 +1057,9 @@ class AzureFilesConnector(BaseConnector):
                             f"Stored revision missing for {normalized_path}, processing record"
                         )
             elif current_revision_id:
-                # Not found by path - FALLBACK: try revision-based lookup (for move/rename detection)
-                async with self.data_store_provider.transaction() as tx_store:
-                    existing_record = await tx_store.get_record_by_external_revision_id(
-                        connector_id=self.connector_id, external_revision_id=current_revision_id
-                    )
+                existing_record = await self.data_entities_processor.get_record_by_external_revision_id(
+                    self.connector_id, current_revision_id
+                )
 
                 if existing_record:
                     is_move = True
@@ -1119,8 +1097,7 @@ class AzureFilesConnector(BaseConnector):
 
             # For moves/renames, remove old parent relationship
             if is_move and existing_record:
-                async with self.data_store_provider.transaction() as tx_store:
-                    await self._remove_old_parent_relationship(record_id, tx_store)
+                await self.data_entities_processor.delete_parent_child_edge_to_record(record_id)
 
             version = 0 if not existing_record else existing_record.version + 1
 
@@ -1823,6 +1800,7 @@ class AzureFilesConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
         **kwargs: object,
     ) -> "AzureFilesConnector":
         """Factory method to create and initialize connector."""

@@ -1588,8 +1588,7 @@ class TestHandleAttachmentDeletionsFromChangelog:
     @pytest.mark.asyncio
     async def test_no_changelog(self):
         connector = _make_connector()
-        tx_store = AsyncMock()
-        await connector._handle_attachment_deletions_from_changelog({"key": "P-1"}, tx_store)
+        await connector._handle_attachment_deletions_from_changelog({"key": "P-1"})
 
     @pytest.mark.asyncio
     async def test_explicit_attachment_deletion(self):
@@ -1615,12 +1614,11 @@ class TestHandleAttachmentDeletionsFromChangelog:
         mock_record.external_record_id = "attachment_100"
         mock_record.record_name = "file.txt"
 
-        tx_store = AsyncMock()
-        tx_store.delete_records_and_relations = AsyncMock()
         connector._find_attachment_record_by_id = AsyncMock(return_value=mock_record)
+        connector.data_entities_processor.delete_records_and_relations = AsyncMock()
 
-        await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
-        tx_store.delete_records_and_relations.assert_awaited_once()
+        await connector._handle_attachment_deletions_from_changelog(issue)
+        connector.data_entities_processor.delete_records_and_relations.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_description_change_with_removed_attachment(self):
@@ -1646,13 +1644,12 @@ class TestHandleAttachmentDeletionsFromChangelog:
         mock_record.external_record_id = "attachment_300"
         mock_record.record_name = "removed.png"
 
-        tx_store = AsyncMock()
-        tx_store.delete_records_and_relations = AsyncMock()
-        tx_store.get_records_by_parent = AsyncMock(return_value=[mock_record])
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[mock_record])
+        connector.data_entities_processor.delete_records_and_relations = AsyncMock()
         connector._find_attachment_record_by_id = AsyncMock(return_value=None)
 
-        await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
-        tx_store.delete_records_and_relations.assert_awaited()
+        await connector._handle_attachment_deletions_from_changelog(issue)
+        connector.data_entities_processor.delete_records_and_relations.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_error_is_caught(self):
@@ -1661,10 +1658,9 @@ class TestHandleAttachmentDeletionsFromChangelog:
             "key": "P-1",
             "changelog": {"histories": [{"items": [{"field": "Attachment", "from": "x", "to": None}]}]},
         }
-        tx_store = AsyncMock()
         connector._find_attachment_record_by_id = AsyncMock(side_effect=Exception("db err"))
 
-        await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
+        await connector._handle_attachment_deletions_from_changelog(issue)
 
 
 class TestHandleIssueDeletions:
@@ -2344,15 +2340,14 @@ class TestFindAttachmentRecordById:
     @pytest.mark.asyncio
     async def test_finds_record(self):
         connector = _make_connector()
-        tx_store = AsyncMock()
         mock_record = MagicMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=mock_record)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=mock_record)
 
-        result = await connector._find_attachment_record_by_id("100", tx_store)
+        result = await connector._find_attachment_record_by_id("100")
         assert result == mock_record
-        tx_store.get_record_by_external_id.assert_awaited_once_with(
+        connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(
             connector_id="conn-jira-1",
-            external_id="attachment_100",
+            external_record_id="attachment_100",
         )
 
 
@@ -2361,16 +2356,15 @@ class TestDeleteAttachmentRecord:
     @pytest.mark.asyncio
     async def test_deletes_and_logs(self):
         connector = _make_connector()
-        tx_store = AsyncMock()
-        tx_store.delete_records_and_relations = AsyncMock()
+        connector.data_entities_processor.delete_records_and_relations = AsyncMock()
 
         record = MagicMock()
         record.id = "r1"
         record.external_record_id = "attachment_100"
         record.record_name = "file.txt"
 
-        await connector._delete_attachment_record(record, "PROJ-1", tx_store)
-        tx_store.delete_records_and_relations.assert_awaited_once_with(record_key="r1", hard_delete=True)
+        await connector._delete_attachment_record(record, "PROJ-1")
+        connector.data_entities_processor.delete_records_and_relations.assert_awaited_once_with(record_key="r1", hard_delete=True)
 
 
 class TestGetFreshDatasourceOAuth:

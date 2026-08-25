@@ -99,6 +99,7 @@ export interface ServiceAccountConfirmDialogProps {
   creating: boolean;
   error: string | null;
   isConverting?: boolean;
+  hideOrgAccess?: boolean;
   onClose: () => void;
   onConfirm: () => void | Promise<void>;
 }
@@ -109,6 +110,7 @@ export function ServiceAccountConfirmDialog({
   creating,
   error,
   isConverting = false,
+  hideOrgAccess = false,
   onClose,
   onConfirm,
 }: ServiceAccountConfirmDialogProps) {
@@ -116,20 +118,20 @@ export function ServiceAccountConfirmDialog({
 
   const title = isConverting ? t('agentBuilder.svcAcctConvertTitle') : t('agentBuilder.svcAcctCreateTitle');
   const description = isConverting
-    ? t('agentBuilder.svcAcctConvertDesc')
-    : t('agentBuilder.svcAcctCreateDesc');
+    ? t(hideOrgAccess ? 'agentBuilder.svcAcctConvertDescNoOrg' : 'agentBuilder.svcAcctConvertDesc')
+    : t(hideOrgAccess ? 'agentBuilder.svcAcctCreateDescNoOrg' : 'agentBuilder.svcAcctCreateDesc');
   const confirmLabel = isConverting ? t('agentBuilder.svcAcctConvertLabel') : t('agentBuilder.svcAcctCreateLabel');
   const busyLabel = isConverting ? t('agentBuilder.svcAcctConvertBusy') : t('agentBuilder.svcAcctCreateBusy');
 
   const [ackKnowledge, setAckKnowledge] = useState(false);
   const [ackToolsets, setAckToolsets] = useState(false);
-  const [ackOrg, setAckOrg] = useState(false);
+  const [ackOrg, setAckOrg] = useState(hideOrgAccess);
 
   useEffect(() => {
     if (!open) return;
     setAckKnowledge(false);
     setAckToolsets(false);
-    setAckOrg(false);
+    setAckOrg(hideOrgAccess);
 
     const main = document.querySelector<HTMLElement>('[data-app-main-scroll]');
     const prevOverflow = main ? main.style.overflow : '';
@@ -288,17 +290,19 @@ export function ServiceAccountConfirmDialog({
               </ul>
             </InfoCard>
 
-            <InfoCard
-              icon="groups"
-              iconColor="var(--red-11)"
-              iconBg="var(--red-3)"
-              iconBorder="var(--red-6)"
-              title={t('agentBuilder.svcAcctOrgTitle')}
-            >
-              <Text size="2" style={{ color: 'var(--olive-12)', lineHeight: 1.45 }}>
-                {t('agentBuilder.svcAcctOrgDesc')}
-              </Text>
-            </InfoCard>
+            {!hideOrgAccess && (
+              <InfoCard
+                icon="groups"
+                iconColor="var(--red-11)"
+                iconBg="var(--red-3)"
+                iconBorder="var(--red-6)"
+                title={t('agentBuilder.svcAcctOrgTitle')}
+              >
+                <Text size="2" style={{ color: 'var(--olive-12)', lineHeight: 1.45 }}>
+                  {t('agentBuilder.svcAcctOrgDesc')}
+                </Text>
+              </InfoCard>
+            )}
 
             {error ? (
               <Callout.Root color="red" variant="soft" size="2">
@@ -347,18 +351,20 @@ export function ServiceAccountConfirmDialog({
                     {t('agentBuilder.svcAcctAckToolsets')}
                   </Text>
                 </label>
-                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
-                  <Checkbox
-                    size="2"
-                    checked={ackOrg}
-                    onCheckedChange={(v) => setAckOrg(v === true)}
-                    disabled={creating}
-                    style={{ marginTop: 2 }}
-                  />
-                  <Text size="2" style={{ color: 'var(--olive-12)', lineHeight: 1.45 }}>
-                    {t('agentBuilder.svcAcctAckOrg')}
-                  </Text>
-                </label>
+                {!hideOrgAccess && (
+                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+                    <Checkbox
+                      size="2"
+                      checked={ackOrg}
+                      onCheckedChange={(v) => setAckOrg(v === true)}
+                      disabled={creating}
+                      style={{ marginTop: 2 }}
+                    />
+                    <Text size="2" style={{ color: 'var(--olive-12)', lineHeight: 1.45 }}>
+                      {t('agentBuilder.svcAcctAckOrg')}
+                    </Text>
+                  </label>
+                )}
               </Flex>
               {!allAcknowledged ? (
                 <Text size="1" mt="2" style={{ color: 'var(--olive-11)', lineHeight: 1.4 }}>

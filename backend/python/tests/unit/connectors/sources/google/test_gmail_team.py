@@ -57,15 +57,16 @@ def _make_logger():
     return log
 
 
-def _make_mock_tx_store(existing_record=None):
+def _make_mock_tx_store(existing_record=None, attachment_records=None):
     tx = AsyncMock()
     tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
     tx.create_record_relation = AsyncMock()
+    tx.get_records_by_parent = AsyncMock(return_value=attachment_records or [])
     return tx
 
 
-def _make_mock_data_store_provider(existing_record=None):
-    tx = _make_mock_tx_store(existing_record)
+def _make_mock_data_store_provider(existing_record=None, attachment_records=None):
+    tx = _make_mock_tx_store(existing_record, attachment_records=attachment_records)
     provider = MagicMock()
 
     @asynccontextmanager
@@ -184,6 +185,8 @@ def connector():
         dep.on_record_metadata_update = AsyncMock()
         dep.on_record_content_update = AsyncMock()
         dep.get_record_by_external_id = AsyncMock(return_value=None)
+        dep.get_records_by_parent = AsyncMock(return_value=[])
+        dep.create_record_relation = AsyncMock()
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -1367,6 +1370,8 @@ def connector_fullcov():
         dep.delete_permission_from_record = AsyncMock()
         dep.get_users_with_permission_to_node = AsyncMock(return_value=[])
         dep.get_record_by_external_id = AsyncMock(return_value=None)
+        dep.get_records_by_parent = AsyncMock(return_value=[])
+        dep.create_record_relation = AsyncMock()
 
         ds_provider = _make_mock_data_store_provider_fullcov()
         config_service = AsyncMock()
@@ -2121,6 +2126,7 @@ class TestDeleteMessageAndAttachments:
         attachment.id = "att-rec-1"
         provider = _make_mock_data_store_provider_fullcov(attachment_records=[attachment])
         connector_fullcov.data_store_provider = provider
+        connector_fullcov.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[attachment])
         await connector_fullcov._delete_message_and_attachments("rec-1", "msg-1")
         assert connector_fullcov.data_entities_processor.on_record_deleted.await_count == 2
 

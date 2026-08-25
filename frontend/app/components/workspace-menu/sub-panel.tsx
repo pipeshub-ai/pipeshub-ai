@@ -29,14 +29,14 @@ export function SubPanel({ isOpen, children }: SubPanelProps) {
         top: 0,
         borderRadius: 'var(--radius-1)',
         border: '1px solid var(--olive-3)',
-        background: 'var(--effects-translucent)',
-        backdropFilter: 'blur(25px)',
+        backgroundColor: 'var(--color-background)',
         boxShadow: '0 8px 24px rgba(0, 0, 0, 0.15)',
         padding: 4,
         display: 'flex',
         flexDirection: 'column',
         gap: 2,
         fontFamily: 'Manrope, sans-serif',
+        width: 250,
       }}
     >
       {children}

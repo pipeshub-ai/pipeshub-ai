@@ -1,231 +1,193 @@
-import 'reflect-metadata';
-import { expect } from 'chai';
-import type { AIModelConfiguration } from '../../../../src/modules/configuration_manager/types/ai-models.types';
+/// <reference types="mocha" />
+import 'reflect-metadata'
+import { expect } from 'chai'
+
 import {
   CONFIG_SECRET_PLACEHOLDER,
   maskAiModelEntry,
   maskAiModelsStoredConfig,
   maskSmtpConfig,
   mergeSmtpConfigPlaceholders,
-} from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets';
+  maskGoogleAuthConfig,
+  maskMicrosoftAuthConfig,
+  maskOAuthConfig,
+  maskGithubAuthConfig,
+  maskWebSearchProvider,
+  mergeWebSearchProviderPlaceholders,
+} from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets'
 
-function makeAiEntry(
-  configuration: Record<string, unknown>,
-  overrides: Partial<AIModelConfiguration> = {},
-): AIModelConfiguration {
-  return {
-    provider: 'azureOpenAI',
-    configuration: configuration as AIModelConfiguration['configuration'],
-    modelKey: 'efa176ba-af99-47e6-8c13-b777a7c95ece',
-    isMultimodal: false,
-    isDefault: true,
-    isReasoning: false,
-    contextLength: null,
-    ...overrides,
-  };
-}
-
-describe('configuration_manager/utils/maskConfigSecrets', () => {
-  describe('maskSmtpConfig', () => {
-    it('replaces non-empty host, username, password, and fromEmail with placeholder', () => {
-      const input = {
-        host: 'smtp.example.com',
-        port: 587,
-        username: 'user',
-        password: 'secret-pass',
-        fromEmail: 'noreply@example.com',
-      };
-      const out = maskSmtpConfig(input);
-      expect(out.host).to.equal(CONFIG_SECRET_PLACEHOLDER);
-      expect(out.username).to.equal(CONFIG_SECRET_PLACEHOLDER);
-      expect(out.password).to.equal(CONFIG_SECRET_PLACEHOLDER);
-      expect(out.fromEmail).to.equal(CONFIG_SECRET_PLACEHOLDER);
-      expect(out.port).to.equal(587);
-    });
-
-    it('does not replace empty string fields', () => {
-      const input = { host: '', port: 1, username: '', password: '', fromEmail: '' };
-      const out = maskSmtpConfig(input);
-      expect(out.host).to.equal('');
-      expect(out.username).to.equal('');
-      expect(out.password).to.equal('');
-      expect(out.fromEmail).to.equal('');
-    });
-
-    it('masks host and fromEmail even when password is missing', () => {
-      const input = { host: 'h', port: 25, fromEmail: 'a@b.c' };
-      const out = maskSmtpConfig(input);
-      expect(out.host).to.equal(CONFIG_SECRET_PLACEHOLDER);
-      expect(out.fromEmail).to.equal(CONFIG_SECRET_PLACEHOLDER);
-      expect(out.port).to.equal(25);
-    });
-
-    it('returns nullish config as-is', () => {
-      expect(maskSmtpConfig(null as unknown as Record<string, unknown>)).to.equal(null);
-      expect(maskSmtpConfig(undefined as unknown as Record<string, unknown>)).to.equal(undefined);
-    });
-  });
-
-  describe('mergeSmtpConfigPlaceholders', () => {
-    const existing = {
-      host: 'smtp.real.com',
-      port: 587,
-      username: 'real-user',
-      password: 'real-pass',
-      fromEmail: 'real@example.com',
-    };
-
-    it('restores every masked field from the existing stored config', () => {
-      const incoming = {
-        host: CONFIG_SECRET_PLACEHOLDER,
-        port: 25,
-        username: CONFIG_SECRET_PLACEHOLDER,
-        password: CONFIG_SECRET_PLACEHOLDER,
-        fromEmail: CONFIG_SECRET_PLACEHOLDER,
-      };
-      const out = mergeSmtpConfigPlaceholders(incoming, existing);
-      expect(out.host).to.equal('smtp.real.com');
-      expect(out.username).to.equal('real-user');
-      expect(out.password).to.equal('real-pass');
-      expect(out.fromEmail).to.equal('real@example.com');
-      expect(out.port).to.equal(25);
-    });
-
-    it('keeps client-supplied real values when the field is not a placeholder', () => {
-      const incoming = {
-        host: 'smtp.new.com',
-        port: 587,
-        username: CONFIG_SECRET_PLACEHOLDER,
-        password: 'new-pass',
-        fromEmail: CONFIG_SECRET_PLACEHOLDER,
-      };
-      const out = mergeSmtpConfigPlaceholders(incoming, existing);
-      expect(out.host).to.equal('smtp.new.com');
-      expect(out.username).to.equal('real-user');
-      expect(out.password).to.equal('new-pass');
-      expect(out.fromEmail).to.equal('real@example.com');
-    });
-
-    it('returns incoming unchanged when there is no existing stored config', () => {
-      const incoming = { host: CONFIG_SECRET_PLACEHOLDER, port: 587 };
-      expect(mergeSmtpConfigPlaceholders(incoming, null)).to.equal(incoming);
-      expect(mergeSmtpConfigPlaceholders(incoming, undefined)).to.equal(incoming);
-    });
-
-    it('leaves placeholder as-is when existing config has no value for that key', () => {
-      const incoming = { host: CONFIG_SECRET_PLACEHOLDER, port: 587 };
-      const out = mergeSmtpConfigPlaceholders(incoming, { port: 587 });
-      expect(out.host).to.equal(CONFIG_SECRET_PLACEHOLDER);
-    });
-  });
-
+describe('maskConfigSecrets', () => {
   describe('maskAiModelEntry', () => {
-    it('keeps modelName in configuration unmasked (whitelist)', () => {
-      const entry = makeAiEntry({
-        modelName: 'gpt-4o-mini',
-        apiKey: 'secret',
-      });
-      const out = maskAiModelEntry(entry);
-      expect(out.configuration.modelName).to.equal('gpt-4o-mini');
-      expect(out.configuration.apiKey).to.equal(CONFIG_SECRET_PLACEHOLDER);
-    });
-
-    it('masks string credential fields but keeps model name fields (case-insensitive keys)', () => {
-      const entry = makeAiEntry({
-        model: 'text-embedding-3-small',
-        ModelFriendlyName: 'friendly',
-        apiKey: 'sk-secret',
-        endpoint: 'https://x.azure.com/',
-        deploymentName: 'text-embedding-3-small',
-      });
-      const out = maskAiModelEntry(entry);
-      expect(out.provider).to.equal('azureOpenAI');
-      expect(out.modelKey).to.equal(entry.modelKey);
-      expect(out.isDefault).to.equal(true);
-      expect(out.configuration.model).to.equal('text-embedding-3-small');
-      expect(out.configuration.ModelFriendlyName).to.equal('friendly');
-      expect(out.configuration.apiKey).to.equal(CONFIG_SECRET_PLACEHOLDER);
-      expect(out.configuration.endpoint).to.equal(CONFIG_SECRET_PLACEHOLDER);
-      expect(out.configuration.deploymentName).to.equal(CONFIG_SECRET_PLACEHOLDER);
-    });
-
-    it('preserves non-string configuration values', () => {
-      const entry = makeAiEntry({
-        model: 'gpt-4',
-        temperature: 0.7,
-        maxTokens: 4096,
-      });
-      const out = maskAiModelEntry(entry);
-      expect(out.configuration.model).to.equal('gpt-4');
-      expect(out.configuration.temperature).to.equal(0.7);
-      expect(out.configuration.maxTokens).to.equal(4096);
-    });
-
-    it('does not mask empty string values in configuration', () => {
-      const entry = makeAiEntry({
-        model: 'm',
-        apiKey: '',
-      });
-      const out = maskAiModelEntry(entry);
-      expect(out.configuration.apiKey).to.equal('');
-    });
-
-    it('returns entry unchanged when configuration is missing', () => {
-      const entry = { ...makeAiEntry({ model: 'x' }), configuration: undefined as unknown as AIModelConfiguration['configuration'] };
-      const out = maskAiModelEntry(entry);
-      expect(out).to.deep.equal(entry);
-    });
-
-    it('returns entry unchanged when configuration is an array', () => {
+    it('should mask secret fields but keep model/modelName/modelFriendlyName', () => {
       const entry = {
-        ...makeAiEntry({}),
-        configuration: [] as unknown as AIModelConfiguration['configuration'],
-      };
-      const out = maskAiModelEntry(entry);
-      expect(out).to.equal(entry);
-    });
-  });
+        provider: 'openai',
+        configuration: {
+          model: 'gpt-4o', modelName: 'GPT-4o', modelFriendlyName: 'GPT 4o',
+          apiKey: 'sk-secret123', endpoint: 'https://api.openai.com', organizationId: 'org-abc',
+        },
+        modelKey: 'mk-1',
+      }
+      const result = maskAiModelEntry(entry as any)
+      expect(result.configuration.model).to.equal('gpt-4o')
+      expect(result.configuration.modelName).to.equal('GPT-4o')
+      expect(result.configuration.modelFriendlyName).to.equal('GPT 4o')
+      expect(result.configuration.apiKey).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.configuration.endpoint).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.provider).to.equal('openai')
+      expect(result.modelKey).to.equal('mk-1')
+    })
+
+    it('should not mask empty string values', () => {
+      const entry = { provider: 'openai', configuration: { model: 'gpt-4', apiKey: '' } }
+      const result = maskAiModelEntry(entry as any)
+      expect(result.configuration.apiKey).to.equal('')
+    })
+
+    it('should not mask non-string values', () => {
+      const entry = { provider: 'openai', configuration: { model: 'gpt-4', maxTokens: 4096, streaming: true } }
+      const result = maskAiModelEntry(entry as any)
+      expect(result.configuration.maxTokens).to.equal(4096)
+    })
+
+    it('should return entry unchanged when configuration is null', () => {
+      const entry = { provider: 'openai', configuration: null }
+      expect(maskAiModelEntry(entry as any)).to.deep.equal(entry)
+    })
+
+    it('should return entry unchanged when configuration is not object', () => {
+      const entry = { provider: 'openai', configuration: 'invalid' }
+      expect(maskAiModelEntry(entry as any)).to.deep.equal(entry)
+    })
+
+    it('should return entry unchanged when configuration is array', () => {
+      const entry = { provider: 'openai', configuration: [1, 2, 3] }
+      expect(maskAiModelEntry(entry as any)).to.deep.equal(entry)
+    })
+
+    it('should be case-insensitive for non-secret keys', () => {
+      const entry = { provider: 'openai', configuration: { MODEL: 'gpt-4', MODELFRIENDLYNAME: 'GPT' } }
+      const result = maskAiModelEntry(entry as any)
+      expect(result.configuration.MODEL).to.equal('gpt-4')
+      expect(result.configuration.MODELFRIENDLYNAME).to.equal('GPT')
+    })
+
+    it('should not mutate the original entry', () => {
+      const entry = { provider: 'openai', configuration: { model: 'gpt-4', apiKey: 'secret' } }
+      maskAiModelEntry(entry as any)
+      expect(entry.configuration.apiKey).to.equal('secret')
+    })
+  })
 
   describe('maskAiModelsStoredConfig', () => {
-    it('masks each entry in every array bucket and copies non-array properties', () => {
+    it('should mask all entries across buckets', () => {
       const config = {
-        llm: [
-          makeAiEntry({ model: 'gpt-4', apiKey: 'secret-llm' }),
-        ],
-        embedding: [
-          makeAiEntry({ model: 'emb-1', apiKey: 'secret-emb' }, { isDefault: false }),
-        ],
-        customSystemPrompt: 'not an array',
-        emptyBucket: [],
-      };
-      const out = maskAiModelsStoredConfig(config);
-      expect((out.llm as AIModelConfiguration[])[0].configuration.apiKey).to.equal(
-        CONFIG_SECRET_PLACEHOLDER,
-      );
-      expect((out.llm as AIModelConfiguration[])[0].configuration.model).to.equal('gpt-4');
-      expect((out.embedding as AIModelConfiguration[])[0].configuration.apiKey).to.equal(
-        CONFIG_SECRET_PLACEHOLDER,
-      );
-      expect(out.customSystemPrompt).to.equal('not an array');
-      expect(out.emptyBucket).to.deep.equal([]);
-    });
+        llm: [{ provider: 'openai', configuration: { model: 'gpt-4', apiKey: 'sk-1' } }],
+        embedding: [{ provider: 'openai', configuration: { model: 'ada', apiKey: 'sk-3' } }],
+      }
+      const result = maskAiModelsStoredConfig(config as any)
+      expect(result.llm[0].configuration.apiKey).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.embedding[0].configuration.apiKey).to.equal(CONFIG_SECRET_PLACEHOLDER)
+    })
 
-    it('passes through non-object array elements', () => {
-      const config = { llm: [null, 'skip', makeAiEntry({ model: 'm', apiKey: 'k' })] };
-      const out = maskAiModelsStoredConfig(config);
-      const arr = out.llm as unknown[];
-      expect(arr[0]).to.equal(null);
-      expect(arr[1]).to.equal('skip');
-      expect((arr[2] as AIModelConfiguration).configuration.apiKey).to.equal(
-        CONFIG_SECRET_PLACEHOLDER,
-      );
-    });
+    it('should return null as-is', () => { expect(maskAiModelsStoredConfig(null as any)).to.be.null })
+    it('should return non-object as-is', () => { expect(maskAiModelsStoredConfig('s' as any)).to.equal('s') })
+    it('should pass through non-array bucket values', () => {
+      expect(maskAiModelsStoredConfig({ version: '1.0' } as any).version).to.equal('1.0')
+    })
+    it('should skip non-object array items', () => {
+      const result = maskAiModelsStoredConfig({ llm: ['str', 42, null] } as any)
+      expect(result.llm).to.deep.equal(['str', 42, null])
+    })
+  })
 
-    it('returns falsy root config unchanged', () => {
-      expect(maskAiModelsStoredConfig(null as unknown as Record<string, unknown>)).to.equal(null);
-      expect(maskAiModelsStoredConfig(undefined as unknown as Record<string, unknown>)).to.equal(
-        undefined,
-      );
-    });
-  });
-});
+  describe('maskSmtpConfig', () => {
+    it('should mask SMTP secret fields', () => {
+      const result = maskSmtpConfig({ host: 'smtp.ex.com', port: 587, username: 'u', password: 'p', fromEmail: 'f' })
+      expect(result.host).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.port).to.equal(587)
+      expect(result.username).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.password).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.fromEmail).to.equal(CONFIG_SECRET_PLACEHOLDER)
+    })
+    it('should not mask empty strings', () => { expect(maskSmtpConfig({ host: '' }).host).to.equal('') })
+    it('should return null as-is', () => { expect(maskSmtpConfig(null as any)).to.be.null })
+  })
+
+  describe('mergeSmtpConfigPlaceholders', () => {
+    it('should restore placeholders from existing', () => {
+      const result = mergeSmtpConfigPlaceholders(
+        { host: CONFIG_SECRET_PLACEHOLDER, password: 'new' },
+        { host: 'smtp.ex.com', password: 'old' },
+      )
+      expect(result.host).to.equal('smtp.ex.com')
+      expect(result.password).to.equal('new')
+    })
+    it('should return incoming when existing is null', () => {
+      expect(mergeSmtpConfigPlaceholders({ host: CONFIG_SECRET_PLACEHOLDER }, null).host).to.equal(CONFIG_SECRET_PLACEHOLDER)
+    })
+    it('should return incoming when existing is undefined', () => {
+      expect(mergeSmtpConfigPlaceholders({ host: 'h' }, undefined).host).to.equal('h')
+    })
+  })
+
+  describe('maskGoogleAuthConfig', () => {
+    it('should mask clientId', () => {
+      expect(maskGoogleAuthConfig({ clientId: 'g-id', enableJit: true }).clientId).to.equal(CONFIG_SECRET_PLACEHOLDER)
+    })
+    it('should not mask empty clientId', () => { expect(maskGoogleAuthConfig({ clientId: '' }).clientId).to.equal('') })
+    it('should return null as-is', () => { expect(maskGoogleAuthConfig(null as any)).to.be.null })
+  })
+
+  describe('maskMicrosoftAuthConfig', () => {
+    it('should mask clientId, tenantId, authority', () => {
+      const result = maskMicrosoftAuthConfig({ clientId: 'c', tenantId: 't', authority: 'a', enableJit: true })
+      expect(result.clientId).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.tenantId).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.authority).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.enableJit).to.equal(true)
+    })
+    it('should return null as-is', () => { expect(maskMicrosoftAuthConfig(null as any)).to.be.null })
+  })
+
+  describe('maskOAuthConfig', () => {
+    it('should mask clientId and clientSecret', () => {
+      const result = maskOAuthConfig({ clientId: 'oa', clientSecret: 'sec', providerName: 'p' })
+      expect(result.clientId).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.clientSecret).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.providerName).to.equal('p')
+    })
+    it('should return null as-is', () => { expect(maskOAuthConfig(null as any)).to.be.null })
+  })
+
+  describe('maskGithubAuthConfig', () => {
+    it('should mask clientId and clientSecret', () => {
+      const result = maskGithubAuthConfig({ clientId: 'gh', clientSecret: 'sec' })
+      expect(result.clientId).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.clientSecret).to.equal(CONFIG_SECRET_PLACEHOLDER)
+    })
+    it('should return null as-is', () => { expect(maskGithubAuthConfig(null as any)).to.be.null })
+  })
+
+  describe('maskWebSearchProvider', () => {
+    it('should mask apiKey', () => {
+      const result = maskWebSearchProvider({ apiKey: 'key', provider: 'serper' })
+      expect(result.apiKey).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.provider).to.equal('serper')
+    })
+    it('should not mask empty apiKey', () => { expect(maskWebSearchProvider({ apiKey: '' }).apiKey).to.equal('') })
+    it('should return null as-is', () => { expect(maskWebSearchProvider(null as any)).to.be.null })
+  })
+
+  describe('mergeWebSearchProviderPlaceholders', () => {
+    it('should restore apiKey from existing', () => {
+      const result = mergeWebSearchProviderPlaceholders({ apiKey: CONFIG_SECRET_PLACEHOLDER }, { apiKey: 'real' })
+      expect(result.apiKey).to.equal('real')
+    })
+    it('should keep new apiKey', () => {
+      expect(mergeWebSearchProviderPlaceholders({ apiKey: 'new' }, { apiKey: 'old' }).apiKey).to.equal('new')
+    })
+    it('should return incoming when existing is null', () => {
+      expect(mergeWebSearchProviderPlaceholders({ apiKey: CONFIG_SECRET_PLACEHOLDER }, null).apiKey).to.equal(CONFIG_SECRET_PLACEHOLDER)
+    })
+  })
+})

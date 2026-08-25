@@ -340,13 +340,10 @@ class GitLabPersonalConnector(GitLabConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> BaseConnector:
         """Factory method to create a GitLab Personal connector instance."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
-
         return GitLabPersonalConnector(
             logger,
             data_entities_processor,

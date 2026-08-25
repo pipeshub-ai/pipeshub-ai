@@ -1506,7 +1506,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             and is_folder
             and file_id not in self._folder_seed_ids
             and await has_entered_scope(
-                self.data_store_provider, self.connector_id, file_id, tracked_folder_ids
+                self.data_entities_processor, self.connector_id, file_id, tracked_folder_ids
             )
         ):
             self.logger.info(
@@ -1533,7 +1533,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         user's changes feed reports it first performs the delete and the rest no-op.
         """
         exited_scope, existing_record = await has_exited_scope(
-            self.data_store_provider, self.connector_id, file_id, tracked_folder_ids
+            self.data_entities_processor, self.connector_id, file_id, tracked_folder_ids
         )
         if not exited_scope:
             self.logger.debug(
@@ -3490,15 +3490,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> BaseConnector:
         """Create a new instance of the Google Drive enterprise connector."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-        await data_entities_processor.initialize()
-
         return GoogleDriveTeamConnector(
             logger,
             data_entities_processor,

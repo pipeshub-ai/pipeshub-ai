@@ -84,6 +84,9 @@ def mock_data_entities_processor():
         full_name="Test User",
     )
     proc.get_user_by_user_id = AsyncMock(return_value=u)
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
+    proc.delete_parent_child_edge_to_record = AsyncMock()
     return proc
 
 
@@ -450,7 +453,7 @@ class TestProcessS3Object:
         existing.external_record_id = "mybucket/path/file.txt"
         existing.version = 1
         existing.source_created_at = 1700000000000
-        s3_connector.data_store_provider = _make_mock_data_store_provider(existing)
+        s3_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         s3_connector.scope = ConnectorScope.TEAM.value
 
         obj = {
@@ -472,9 +475,8 @@ class TestProcessS3Object:
         existing.external_revision_id = "mybucket/same_etag"
         existing.version = 0
         existing.source_created_at = 1700000000000
-        s3_connector.data_store_provider = _make_mock_data_store_provider(
-            existing_record=None, existing_revision_record=existing
-        )
+        s3_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        s3_connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
         s3_connector.scope = ConnectorScope.TEAM.value
 
         obj = {
@@ -744,23 +746,6 @@ class TestRunSyncExtended:
         s3_connector._sync_bucket = AsyncMock(side_effect=Exception("sync error"))
         # Should not raise
         await s3_connector.run_sync()
-
-
-# ===========================================================================
-# _remove_old_parent_relationship
-# ===========================================================================
-class TestRemoveOldParentRelationship:
-    @pytest.mark.asyncio
-    async def test_successful_removal(self, s3_connector):
-        tx_store = AsyncMock()
-        tx_store.delete_parent_child_edge_to_record = AsyncMock(return_value=2)
-        await s3_connector._remove_old_parent_relationship("rec-1", tx_store)
-
-    @pytest.mark.asyncio
-    async def test_exception_handled(self, s3_connector):
-        tx_store = AsyncMock()
-        tx_store.delete_parent_child_edge_to_record = AsyncMock(side_effect=Exception("err"))
-        await s3_connector._remove_old_parent_relationship("rec-1", tx_store)
 
 
 # ===========================================================================
@@ -1231,15 +1216,9 @@ class TestCreateS3PermissionsEdgeCases:
     async def test_personal_creator_lookup_fails(self, s3_connector):
         s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = "user-1"
-        # Mock tx_store to return None for user lookup so no email is found
-        tx = AsyncMock()
-        tx.get_user_by_id = AsyncMock(return_value=None)
-        provider = MagicMock()
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        s3_connector.data_store_provider = provider
+        s3_connector.data_entities_processor.get_user_by_user_id = AsyncMock(
+            side_effect=Exception("DB error")
+        )
         perms = await s3_connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
         assert perms[0].entity_type.value == "ORG"

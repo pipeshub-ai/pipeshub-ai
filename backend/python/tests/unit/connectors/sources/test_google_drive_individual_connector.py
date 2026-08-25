@@ -179,10 +179,12 @@ def connector():
         dep.on_new_app_users = AsyncMock()
         dep.on_new_record_groups = AsyncMock()
         dep.on_record_deleted = AsyncMock()
+        dep.on_records_deleted_cascade = AsyncMock()
         dep.on_record_metadata_update = AsyncMock()
         dep.on_record_content_update = AsyncMock()
         dep.on_updated_record_permissions = AsyncMock()
         dep.reindex_existing_records = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -211,7 +213,7 @@ def connector():
 
 class TestInit:
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleDriveDataSource")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_success(self, MockGClient, MockDS, mock_fetch, connector):
@@ -254,7 +256,7 @@ class TestInit:
         assert result is False
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_oauth_config_not_found(self, mock_fetch, connector):
         mock_fetch.return_value = None
         connector.config_service.get_config = AsyncMock(
@@ -264,7 +266,7 @@ class TestInit:
         assert result is False
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_missing_client_id(self, mock_fetch, connector):
         mock_fetch.return_value = {"config": {"clientSecret": "csec"}}
         connector.config_service.get_config = AsyncMock(
@@ -277,7 +279,7 @@ class TestInit:
             await connector.init()
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_missing_client_secret(self, mock_fetch, connector):
         mock_fetch.return_value = {"config": {"clientId": "cid"}}
         connector.config_service.get_config = AsyncMock(
@@ -290,7 +292,7 @@ class TestInit:
             await connector.init()
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_no_tokens_warning(self, MockGClient, mock_fetch, connector):
         """No access_token and no refresh_token -- should still succeed with warning."""
@@ -313,7 +315,7 @@ class TestInit:
         assert result is True
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_client_build_fails(self, MockGClient, mock_fetch, connector):
         mock_fetch.return_value = {
@@ -330,7 +332,7 @@ class TestInit:
             await connector.init()
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_empty_oauth_config_data(self, mock_fetch, connector):
         """oauth_config has no 'config' key, so clientId/Secret are None."""
         mock_fetch.return_value = {"id": "oc-1"}
@@ -791,7 +793,7 @@ class TestProcessDriveItem:
             external_record_group_id="d1",
             parent_external_record_id="parent-1",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._pass_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
 
@@ -812,7 +814,7 @@ class TestProcessDriveItem:
             external_record_group_id="d1",
             parent_external_record_id="parent-1",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._pass_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
 
@@ -829,7 +831,7 @@ class TestProcessDriveItem:
             external_record_group_id="d1",
             parent_external_record_id="parent-1",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._pass_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
 
@@ -846,7 +848,7 @@ class TestProcessDriveItem:
             external_record_group_id="old-drive-id",
             parent_external_record_id="parent-1",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._pass_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
 
@@ -863,7 +865,7 @@ class TestProcessDriveItem:
             external_record_group_id="d1",
             parent_external_record_id="old-parent",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._pass_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
 
@@ -882,7 +884,7 @@ class TestProcessDriveItem:
             parent_external_record_id="parent-1",
             version=5,
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._pass_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
 
@@ -996,7 +998,7 @@ class TestProcessDriveItem:
             indexing_status=ProgressStatus.COMPLETED.value,
             extraction_status=ProgressStatus.COMPLETED.value,
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._pass_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
 
@@ -1136,7 +1138,7 @@ class TestHandleRecordUpdates:
             record_name="test.txt",
             mime_type="text/plain",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         update = MagicMock()
         update.is_deleted = True
         update.external_record_id = "file-1"
@@ -1234,7 +1236,7 @@ class TestHandleRecordUpdates:
             record_name="Folder A",
             mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         update = MagicMock()
         update.is_deleted = True
         update.external_record_id = "folder-ext-1"
@@ -1253,7 +1255,7 @@ class TestHandleRecordUpdates:
             record_name="test.txt",
             mime_type="text/plain",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         update = MagicMock()
         update.is_deleted = True
         update.external_record_id = "file-1"
@@ -1272,7 +1274,7 @@ class TestHandleRecordUpdates:
             record_name="test.txt",
             mime_type="text/plain",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         update = MagicMock()
         update.is_deleted = True
         update.external_record_id = "file-1"
@@ -2624,28 +2626,27 @@ class TestGetFilterOptions:
 
 class TestCreateConnector:
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.DataSourceEntitiesProcessor")
     @patch("app.connectors.sources.google.drive.individual.connector.SyncPoint")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
-    async def test_create_connector(self, MockGClient, MockSP, MockDSEP):
+    async def test_create_connector(self, MockGClient, MockSP):
         from app.connectors.sources.google.drive.individual.connector import (
             GoogleDriveIndividualConnector,
         )
 
         MockSP.return_value = AsyncMock()
-        mock_dep = AsyncMock()
-        mock_dep.org_id = "org-1"
-        MockDSEP.return_value = mock_dep
+
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
         logger = _make_logger()
         ds_provider = MagicMock()
         config_service = AsyncMock()
 
         result = await GoogleDriveIndividualConnector.create_connector(
-            logger, ds_provider, config_service, "conn-1", "team", "test-user-id"
+            logger, ds_provider, config_service, "conn-1", "team", "test-user-id",
+            data_entities_processor=processor,
         )
         assert isinstance(result, GoogleDriveIndividualConnector)
-        mock_dep.initialize.assert_awaited_once()
 
 
 # ===================================================================
@@ -3004,7 +3005,7 @@ class TestApplyFolderScopeToChange:
             parent_external_record_id="folder-a",
             mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector.data_entities_processor.on_records_deleted_cascade = AsyncMock(
             return_value={"deleted_records": ["rec-folder-b", "rec-child"]}
         )
@@ -3027,7 +3028,7 @@ class TestApplyFolderScopeToChange:
             parent_external_record_id="folder-a",
             mime_type="text/plain",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         moved_out = _make_file_metadata(file_id="f1", parents=["outside"])
         assert await connector._apply_folder_scope_to_change(moved_out, set()) == []

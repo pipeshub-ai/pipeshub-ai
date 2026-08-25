@@ -14,7 +14,7 @@ import {
   snapshotOAuthCredentialFieldValues,
 } from '../../utils/auth-helpers';
 import { DocumentationSection } from './documentation-section';
-import { OAuthAppSelector } from './oauth-app-selector';
+import { OAuthAppSelector } from '@/config';
 import { resolveAuthFields, formatAuthTypeName } from './helpers';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
@@ -59,6 +59,10 @@ export function AuthenticateTab() {
 
   const { t } = useTranslation();
 
+  const disableCredentialEditWhenLinked = useConnectorsStore(
+    (s) => s.disableCredentialEditWhenLinked
+  );
+
   const isCreateMode = !panelConnectorId;
   const connectorTypeName =
     registryConnectors.find((connector) => connector.type === panelConnector?.type)?.name ??
@@ -84,8 +88,8 @@ export function AuthenticateTab() {
     [connectorSchema, selectedAuthType]
   );
   const { linkedOAuthAppId, oauthFieldVisibility } = useMemo(
-    () => resolveOAuthFieldVisibility(formData.auth, connectorConfig, isCreateMode, isAdmin),
-    [formData.auth, connectorConfig, isCreateMode, isAdmin]
+    () => resolveOAuthFieldVisibility(formData.auth, connectorConfig, isCreateMode, isAdmin, disableCredentialEditWhenLinked),
+    [formData.auth, connectorConfig, isCreateMode, isAdmin, disableCredentialEditWhenLinked]
   );
 
   const authFieldsForForm = useMemo(() => {
@@ -132,6 +136,12 @@ export function AuthenticateTab() {
       !linkedOAuthAppId ||
       !panelConnectorId
     ) {
+      oauthCredentialHydratedKeyRef.current = null;
+      useConnectorsStore.getState().setOAuthCredentialBaseline(null);
+      return;
+    }
+
+    if (disableCredentialEditWhenLinked) {
       oauthCredentialHydratedKeyRef.current = null;
       useConnectorsStore.getState().setOAuthCredentialBaseline(null);
       return;
@@ -221,6 +231,7 @@ export function AuthenticateTab() {
     panelConnector?.type,
     oauthCredentialFieldNames,
     oauthCredentialBaselineTick,
+    disableCredentialEditWhenLinked,
   ]);
 
   if (!connectorSchema || !panelConnector) {

@@ -799,16 +799,10 @@ class NotionConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "NotionConnector":
         """Factory method to create a Notion connector instance."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-
-        await data_entities_processor.initialize()
-
         return cls(
             logger,
             data_entities_processor,
@@ -988,11 +982,10 @@ class NotionConnector(BaseConnector):
                 return
 
             # Get the existing record group by external_id (if it exists)
-            async with self.data_store_provider.transaction() as tx_store:
-                record_group = await tx_store.get_record_group_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=self.workspace_id
-                )
+            record_group = await self.data_entities_processor.get_record_group_by_external_id(
+                connector_id=self.connector_id,
+                external_id=self.workspace_id
+            )
 
             # Create record group if it doesn't exist
             if not record_group:
@@ -2165,8 +2158,9 @@ class NotionConnector(BaseConnector):
         """
         Batch get or create child records for multiple external IDs.
 
-        Uses a single transaction for lookup and a single on_new_records call for creation,
-        avoiding race conditions and improving performance.
+        Looks up each external ID via the shared data entities processor and issues
+        a single on_new_records call for creation, avoiding race conditions and
+        improving performance.
 
         Args:
             children_to_resolve: Dict mapping external_id -> (name, record_type, parent_external_id)
@@ -2180,16 +2174,15 @@ class NotionConnector(BaseConnector):
         external_ids = list(children_to_resolve.keys())
         child_record_map: Dict[str, ChildRecord] = {}
 
-        # Step 1: Batch lookup all external IDs in one transaction
+        # Step 1: Batch lookup all external IDs
         existing_records: Dict[str, Record] = {}
-        async with self.data_store_provider.transaction() as tx_store:
-            for ext_id in external_ids:
-                record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=ext_id
-                )
-                if record:
-                    existing_records[ext_id] = record
+        for ext_id in external_ids:
+            record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id,
+                external_record_id=ext_id
+            )
+            if record:
+                existing_records[ext_id] = record
 
         # Step 2: Build ChildRecord for existing records
         for ext_id, record in existing_records.items():
@@ -3651,13 +3644,11 @@ class NotionConnector(BaseConnector):
         """
         try:
             # First check if we have the record in ArangoDB
-            async with self.data_store_provider.transaction() as tx_store:
-                record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=page_id
-                )
-                if record and record.record_name:
-                    return record.record_name
+            record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, page_id
+            )
+            if record and record.record_name:
+                return record.record_name
 
             # If not in DB, fetch from Notion API
             datasource = await self._get_fresh_datasource()
@@ -3732,11 +3723,9 @@ class NotionConnector(BaseConnector):
             Record object if found, None otherwise
         """
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                return await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=external_id
-                )
+            return await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, external_id
+            )
         except Exception as e:
             self.logger.warning(f"Failed to get record for {external_id}: {e}")
             return None
@@ -3833,11 +3822,10 @@ class NotionConnector(BaseConnector):
         """
         try:
             # Query user from database by source_user_id
-            async with self.data_store_provider.transaction() as tx_store:
-                user = await tx_store.get_user_by_source_id(
-                    source_user_id=user_id,
-                    connector_id=self.connector_id
-                )
+            user = await self.data_entities_processor.get_user_by_source_id(
+                source_user_id=user_id,
+                connector_id=self.connector_id
+            )
 
             if user:
                 # User found in database - use database user ID

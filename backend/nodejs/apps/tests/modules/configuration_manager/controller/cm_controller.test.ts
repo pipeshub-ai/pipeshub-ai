@@ -76,6 +76,8 @@ import {
   getGoogleWorkspaceCredentials,
   getGoogleWorkspaceBusinessCredentials,
   deleteGoogleWorkspaceCredentials,
+  getModelRoles,
+  updateModelRoles,
 } from '../../../../src/modules/configuration_manager/controller/cm_controller'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 
@@ -6419,6 +6421,219 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.write.called).to.be.false
       expect(res.end.called).to.be.false
+    })
+  })
+
+  describe('getModelRoles', () => {
+    it('should return empty modelRoles when no AI config exists', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = getModelRoles(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.status).to.equal('success')
+      expect(jsonArg.modelRoles).to.deep.equal({})
+    })
+
+    it('should return modelRoles from encrypted AI config', async () => {
+      const aiModels = {
+        llm: [{ provider: 'openai', modelKey: 'k1' }],
+        modelRoles: { primary: { modelType: 'llm', modelKey: 'k1' } },
+      }
+      const encData = mockEncService.encrypt(JSON.stringify(aiModels))
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(encData) })
+      const handler = getModelRoles(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.modelRoles).to.deep.equal({ primary: { modelType: 'llm', modelKey: 'k1' } })
+    })
+
+    it('should return empty object when modelRoles is undefined in config', async () => {
+      const aiModels = { llm: [{ provider: 'openai', modelKey: 'k1' }] }
+      const encData = mockEncService.encrypt(JSON.stringify(aiModels))
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(encData) })
+      const handler = getModelRoles(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.modelRoles).to.deep.equal({})
+    })
+
+    it('should call next on error', async () => {
+      const kvs = createMockKeyValueStore({ get: sinon.stub().rejects(new Error('KV error')) })
+      const handler = getModelRoles(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+  })
+
+  describe('updateModelRoles', () => {
+    it('should reject when roles is missing from body', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = updateModelRoles(kvs)
+      const req = createMockRequest({ body: {} })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].message).to.include('"roles" object')
+    })
+
+    it('should reject when roles is an array', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = updateModelRoles(kvs)
+      const req = createMockRequest({ body: { roles: [] } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(400)).to.be.true
+    })
+
+    it('should reject when role assignment is not an object', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = updateModelRoles(kvs)
+      const req = createMockRequest({ body: { roles: { primary: 'bad' } } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].message).to.include('must be an object')
+    })
+
+    it('should reject when modelType is missing', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = updateModelRoles(kvs)
+      const req = createMockRequest({ body: { roles: { primary: { modelKey: 'k1' } } } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].message).to.include('modelType and modelKey')
+    })
+
+    it('should reject when modelKey is missing', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = updateModelRoles(kvs)
+      const req = createMockRequest({ body: { roles: { primary: { modelType: 'llm' } } } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].message).to.include('modelType and modelKey')
+    })
+
+    it('should reject invalid modelType', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = updateModelRoles(kvs)
+      const req = createMockRequest({ body: { roles: { primary: { modelType: 'invalid', modelKey: 'k1' } } } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].message).to.include('not valid')
+    })
+
+    it('should reject when modelKey not found in bucket', async () => {
+      const aiModels = { llm: [{ provider: 'openai', modelKey: 'existing-key' }] }
+      const encData = mockEncService.encrypt(JSON.stringify(aiModels))
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(encData) })
+      const handler = updateModelRoles(kvs)
+      const req = createMockRequest({
+        body: { roles: { primary: { modelType: 'llm', modelKey: 'nonexistent' } } },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].message).to.include('no model with key')
+    })
+
+    it('should update model roles successfully', async () => {
+      const aiModels = {
+        llm: [{ provider: 'openai', modelKey: 'gpt-4-key', configuration: {} }],
+        embedding: [{ provider: 'openai', modelKey: 'ada-key', configuration: {} }],
+      }
+      const encData = mockEncService.encrypt(JSON.stringify(aiModels))
+      const setStub = sinon.stub().resolves()
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(encData), set: setStub })
+      const handler = updateModelRoles(kvs)
+      const req = createMockRequest({
+        body: { roles: { primary: { modelType: 'llm', modelKey: 'gpt-4-key' } } },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.status).to.equal('success')
+      expect(jsonArg.modelRoles).to.deep.equal({ primary: { modelType: 'llm', modelKey: 'gpt-4-key' } })
+      expect(setStub.calledOnce).to.be.true
+    })
+
+    it('should handle empty AI config (no models configured yet)', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = updateModelRoles(kvs)
+      const req = createMockRequest({
+        body: { roles: { primary: { modelType: 'llm', modelKey: 'k1' } } },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].message).to.include('no model with key')
+    })
+
+    it('should call next on unexpected error', async () => {
+      const kvs = createMockKeyValueStore({ get: sinon.stub().rejects(new Error('DB crash')) })
+      const handler = updateModelRoles(kvs)
+      const req = createMockRequest({
+        body: { roles: { primary: { modelType: 'llm', modelKey: 'k1' } } },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
     })
   })
 })

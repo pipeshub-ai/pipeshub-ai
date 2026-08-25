@@ -902,7 +902,7 @@ class TestGetConnectorStatsGaps:
         registry.can_user_view_connector = AsyncMock(return_value=True)
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
-        result = await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+        result = await get_connector_stats_endpoint(req, connector_id="c1", org_id="org-1", graph_provider=gp)
         assert result["success"] is True
 
     @pytest.mark.asyncio
@@ -915,7 +915,7 @@ class TestGetConnectorStatsGaps:
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="c1", org_id="org-1", graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
@@ -929,7 +929,7 @@ class TestGetConnectorStatsGaps:
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="c1", org_id="org-1", graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
 
@@ -1993,27 +1993,33 @@ class TestHandleRecordDeletionGaps:
     @pytest.mark.asyncio
     async def test_record_not_found_raises_404(self):
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
         gp.delete_records_and_relations = AsyncMock(return_value=None)
+        req = _mock_request(graph_provider=gp)
 
         with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", graph_provider=gp)
+            await handle_record_deletion("rec-1", request=req, graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
     async def test_generic_exception_raises_500(self):
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
         gp.delete_records_and_relations = AsyncMock(side_effect=RuntimeError("boom"))
+        req = _mock_request(graph_provider=gp)
 
         with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", graph_provider=gp)
+            await handle_record_deletion("rec-1", request=req, graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
     @pytest.mark.asyncio
     async def test_success_returns_response(self):
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
         gp.delete_records_and_relations = AsyncMock(return_value={"deleted": True})
+        req = _mock_request(graph_provider=gp)
 
-        result = await handle_record_deletion("rec-1", graph_provider=gp)
+        result = await handle_record_deletion("rec-1", request=req, graph_provider=gp)
         assert result["status"] == "success"
 
 
@@ -2712,19 +2718,23 @@ class TestHandleRecordDeletionSuccess:
     @pytest.mark.asyncio
     async def test_success_returns_response(self):
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
         gp.delete_records_and_relations = AsyncMock(return_value={"deleted": True})
+        req = _mock_request(graph_provider=gp)
 
-        result = await handle_record_deletion("rec-1", graph_provider=gp)
+        result = await handle_record_deletion("rec-1", request=req, graph_provider=gp)
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
     async def test_http_exception_re_raised(self):
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
         gp.delete_records_and_relations = AsyncMock(
             side_effect=HTTPException(status_code=403, detail="Forbidden")
         )
+        req = _mock_request(graph_provider=gp)
         with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", graph_provider=gp)
+            await handle_record_deletion("rec-1", request=req, graph_provider=gp)
         assert exc_info.value.status_code == 403
 
 

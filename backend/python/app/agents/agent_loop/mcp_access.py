@@ -40,6 +40,7 @@ class ResolvedMCPServer:
     auth: dict[str, Any]  # SENSITIVE: resolved credential record ({} for auth_mode "none")
     owner_id: str  # credential_lookup_id (agentKey for service accounts, else the executing user) - the id the SAME credential record is persisted under, needed to refresh+persist correctly
     attached_tools: list[dict[str, Any]] | None  # explicit tool selection (graph attachment or chat filter); None = discover everything (unfiltered assistant path)
+    fallback_config_services: list[Any] | None = None  # pre-resolved parent-org config services for inherited instances (EE); None for own instances or OSS
 
 
 class MCPAccessResolver:
@@ -74,5 +75,6 @@ class MCPAccessResolver:
                 auth=config.get("auth") or {},
                 owner_id=config.get("ownerId") or context.user_id,
                 attached_tools=mcp_server.get("tools"),
+                fallback_config_services=config.get("fallbackConfigServices"),
             ))
         return resolved

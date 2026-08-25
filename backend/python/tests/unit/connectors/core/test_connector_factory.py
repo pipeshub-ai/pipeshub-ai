@@ -228,6 +228,10 @@ class TestCreateConnector:
         # Register and create
         ConnectorFactory.register_connector("test_create", mock_cls)
 
+        mock_processor = MagicMock()
+        mock_processor.initialize = AsyncMock()
+        mock_processor_cls = MagicMock(return_value=mock_processor)
+
         result = await ConnectorFactory.create_connector(
             name="test_create",
             logger=logger,
@@ -236,6 +240,7 @@ class TestCreateConnector:
             connector_id="conn-2",
             scope="personal",
             created_by="user-123",
+            data_entities_processor_cls=mock_processor_cls,
         )
 
         assert result is expected_connector
@@ -253,6 +258,10 @@ class TestCreateConnector:
 
         ConnectorFactory.register_connector("test_fail", mock_cls)
 
+        mock_processor = MagicMock()
+        mock_processor.initialize = AsyncMock()
+        mock_processor_cls = MagicMock(return_value=mock_processor)
+
         result = await ConnectorFactory.create_connector(
             name="test_fail",
             logger=logger,
@@ -261,6 +270,7 @@ class TestCreateConnector:
             connector_id="conn-3",
             scope="personal",
             created_by="user-123",
+            data_entities_processor_cls=mock_processor_cls,
         )
 
         assert result is None
@@ -278,6 +288,10 @@ class TestCreateConnector:
 
         ConnectorFactory.register_connector("test_kwargs", mock_cls)
 
+        mock_processor = MagicMock()
+        mock_processor.initialize = AsyncMock()
+        mock_processor_cls = MagicMock(return_value=mock_processor)
+
         await ConnectorFactory.create_connector(
             name="test_kwargs",
             logger=logger,
@@ -286,6 +300,7 @@ class TestCreateConnector:
             connector_id="conn-4",
             scope="personal",
             created_by="user-123",
+            data_entities_processor_cls=mock_processor_cls,
             custom_param="value123",
         )
 
@@ -314,6 +329,10 @@ class TestInitializeConnector:
         mock_cls.create_connector = AsyncMock(return_value=mock_connector)
         ConnectorFactory.register_connector("test_init", mock_cls)
 
+        mock_processor = MagicMock()
+        mock_processor.initialize = AsyncMock()
+        mock_processor_cls = MagicMock(return_value=mock_processor)
+
         result = await ConnectorFactory.initialize_connector(
             name="test_init",
             logger=logger,
@@ -322,6 +341,7 @@ class TestInitializeConnector:
             connector_id="conn-5",
             scope="personal",
             created_by="user-123",
+            data_entities_processor_cls=mock_processor_cls,
         )
 
         assert result is mock_connector
@@ -340,6 +360,10 @@ class TestInitializeConnector:
         mock_cls.create_connector = AsyncMock(return_value=mock_connector)
         ConnectorFactory.register_connector("test_init_fail", mock_cls)
 
+        mock_processor = MagicMock()
+        mock_processor.initialize = AsyncMock()
+        mock_processor_cls = MagicMock(return_value=mock_processor)
+
         result = await ConnectorFactory.initialize_connector(
             name="test_init_fail",
             logger=logger,
@@ -348,6 +372,7 @@ class TestInitializeConnector:
             connector_id="conn-6",
             scope="personal",
             created_by="user-123",
+            data_entities_processor_cls=mock_processor_cls,
         )
 
         assert result is None
@@ -365,6 +390,10 @@ class TestInitializeConnector:
         mock_cls.create_connector = AsyncMock(return_value=mock_connector)
         ConnectorFactory.register_connector("test_init_exc", mock_cls)
 
+        mock_processor = MagicMock()
+        mock_processor.initialize = AsyncMock()
+        mock_processor_cls = MagicMock(return_value=mock_processor)
+
         result = await ConnectorFactory.initialize_connector(
             name="test_init_exc",
             logger=logger,
@@ -373,6 +402,7 @@ class TestInitializeConnector:
             connector_id="conn-7",
             scope="personal",
             created_by="user-123",
+            data_entities_processor_cls=mock_processor_cls,
         )
 
         assert result is None
@@ -443,6 +473,10 @@ class TestCreateAndStartSync:
 
         mock_stm.start_sync = AsyncMock()
 
+        mock_processor = MagicMock()
+        mock_processor.initialize = AsyncMock()
+        mock_processor_cls = MagicMock(return_value=mock_processor)
+
         result = await ConnectorFactory.create_and_start_sync(
             name="test_sync_start",
             logger=logger,
@@ -451,6 +485,7 @@ class TestCreateAndStartSync:
             connector_id="conn-11",
             scope="personal",
             created_by="test-user-id",
+            data_entities_processor_cls=mock_processor_cls,
         )
         assert result is mock_connector
         mock_stm.start_sync.assert_awaited_once()
@@ -473,6 +508,10 @@ class TestCreateAndStartSync:
 
         mock_stm.start_sync = AsyncMock()
 
+        mock_processor = MagicMock()
+        mock_processor.initialize = AsyncMock()
+        mock_processor_cls = MagicMock(return_value=mock_processor)
+
         result = await ConnectorFactory.create_and_start_sync(
             name="test_manual_sync",
             logger=logger,
@@ -481,6 +520,7 @@ class TestCreateAndStartSync:
             connector_id="conn-12",
             scope="personal",
             created_by="test-user-id",
+            data_entities_processor_cls=mock_processor_cls,
         )
         assert result is mock_connector
         mock_stm.start_sync.assert_not_awaited()
@@ -504,6 +544,10 @@ class TestCreateAndStartSync:
 
         mock_stm.start_sync = AsyncMock(side_effect=RuntimeError("sync error"))
 
+        mock_processor = MagicMock()
+        mock_processor.initialize = AsyncMock()
+        mock_processor_cls = MagicMock(return_value=mock_processor)
+
         result = await ConnectorFactory.create_and_start_sync(
             name="test_sync_fail",
             logger=logger,
@@ -512,6 +556,7 @@ class TestCreateAndStartSync:
             connector_id="conn-13",
             scope="personal",
             created_by="test-user-id",
+            data_entities_processor_cls=mock_processor_cls,
         )
         assert result is None
         logger.error.assert_called()
@@ -532,6 +577,7 @@ class TestCreateAndStartSync:
         mock_cls.create_connector = AsyncMock(return_value=mock_connector)
         ConnectorFactory.register_connector("test_config_none", mock_cls)
 
+        mock_processor_cls = MagicMock(return_value=MagicMock(initialize=AsyncMock()))
         with patch("app.connectors.core.factory.connector_factory.sync_task_manager") as mock_stm:
             mock_stm.start_sync = AsyncMock()
             result = await ConnectorFactory.create_and_start_sync(
@@ -542,5 +588,6 @@ class TestCreateAndStartSync:
                 connector_id="conn-14",
                 scope="personal",
                 created_by="test-user-id",
+                data_entities_processor_cls=mock_processor_cls,
             )
         assert result is mock_connector

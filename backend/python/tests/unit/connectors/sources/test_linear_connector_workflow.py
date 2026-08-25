@@ -615,10 +615,11 @@ class TestSyncAttachments:
         connector._get_attachments_sync_checkpoint = AsyncMock(return_value=None)
         connector._update_attachments_sync_checkpoint = AsyncMock()
 
-        # Mock parent record
+        # Mock parent record lookup and existing attachment lookup on data_entities_processor
         parent_record = MagicMock()
         parent_record.id = "parent-id"
-        tx.get_record_by_external_id = AsyncMock(side_effect=[parent_record, None])
+        dep.get_record_by_external_id = AsyncMock(side_effect=[parent_record, None])
+        dep.get_record_by_weburl = AsyncMock(return_value=None)
 
         mock_ds = MagicMock()
         attachments = [{
@@ -666,10 +667,10 @@ class TestSyncDocuments:
         connector._get_documents_sync_checkpoint = AsyncMock(return_value=None)
         connector._update_documents_sync_checkpoint = AsyncMock()
 
-        # Mock parent record
+        # Mock parent record and existing doc lookup on data_entities_processor
         parent_record = MagicMock()
         parent_record.id = "parent-id"
-        tx.get_record_by_external_id = AsyncMock(side_effect=[parent_record, None])
+        dep.get_record_by_external_id = AsyncMock(side_effect=[parent_record, None])
 
         mock_ds = MagicMock()
         documents = [{

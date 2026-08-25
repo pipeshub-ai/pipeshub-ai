@@ -336,7 +336,7 @@ class EventProcessor:
         from app.modules.transformers.transformer import TransformContext  # noqa: PLC0415
 
         # ── Step 1: Parse ────────────────────────────────────────────────────
-        self.logger.info(
+        self.logger.debug(
             "📤 Sending '%s' to Parsing Service (mime=%s ext=%s)", record_name, mime_type, extension
         )
         provider = ParserProvider(os.getenv("PARSER_BACKEND") or ParserProvider.DEFAULT.value)
@@ -349,7 +349,7 @@ class EventProcessor:
             provider=provider,
         )
         block_container = parse_result.block_container
-        self.logger.info(
+        self.logger.debug(
             "✅ Parsing complete via provider '%s' (%d blocks)",
             parse_result.provider_used.value if parse_result.provider_used else "unknown",
             len(block_container.blocks),
@@ -566,6 +566,21 @@ class EventProcessor:
         except (json.JSONDecodeError, Exception):
             return content
 
+    async def _find_duplicate_records(
+        self,
+        doc: dict[str, Any],
+        md5_checksum: str,
+        record_type: str | None,
+        size_in_bytes: int | None,
+    ) -> list[dict]:
+        
+        return await self.graph_provider.find_duplicate_records(
+            record_key=_record_key(doc),
+            md5_checksum=md5_checksum,
+            record_type=record_type,
+            size_in_bytes=size_in_bytes,
+        )
+
     async def _check_duplicate_by_md5(
         self,
         content: bytes | str | dict | list | None,
@@ -602,13 +617,11 @@ class EventProcessor:
 
         if not md5_checksum:
             return False
-
-        rec_key = doc.get('_key') or doc.get('id')
-        duplicate_records = await self.graph_provider.find_duplicate_records(
-            record_key=_record_key(doc),
+        duplicate_records = await self._find_duplicate_records(
+            doc=doc,
             md5_checksum=md5_checksum,
             record_type=record_type,
-            size_in_bytes=size_in_bytes
+            size_in_bytes=size_in_bytes,
         )
 
         duplicate_records = [r for r in duplicate_records if r is not None]
@@ -716,7 +729,7 @@ class EventProcessor:
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
             virtual_record_id = event_data.get("virtualRecordId")
-            self.logger.info(f"📥 Processing event: {event_type}: for record {record_id} with virtual_record_id {virtual_record_id}")
+            self.logger.debug(f"📥 Processing event: {event_type}: for record {record_id} with virtual_record_id {virtual_record_id}")
 
             if not record_id:
                 self.logger.error("❌ No record ID provided in event data")

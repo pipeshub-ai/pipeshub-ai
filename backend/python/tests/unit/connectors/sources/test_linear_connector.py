@@ -1481,7 +1481,8 @@ class TestLinearSyncAttachments:
         with patch.object(c, "_get_attachments_sync_checkpoint", new_callable=AsyncMock, return_value=None):
             with patch.object(c, "_update_attachments_sync_checkpoint", new_callable=AsyncMock):
                 with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-                    c._tx_store.get_record_by_external_id = AsyncMock(side_effect=[parent_record, None])
+                    c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=[parent_record, None])
+                    c.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
                     await c._sync_attachments([(team_rg, perms)])
 
     @pytest.mark.asyncio
@@ -1507,7 +1508,7 @@ class TestLinearSyncDocuments:
         with patch.object(c, "_get_documents_sync_checkpoint", new_callable=AsyncMock, return_value=None):
             with patch.object(c, "_update_documents_sync_checkpoint", new_callable=AsyncMock):
                 with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-                    c._tx_store.get_record_by_external_id = AsyncMock(side_effect=[parent_record, None])
+                    c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=[parent_record, None])
                     await c._sync_documents([(team_rg, perms)])
 
     @pytest.mark.asyncio
@@ -2229,7 +2230,7 @@ class TestLinearCheckAndFetchUpdated:
         parent_record.record_type = RecordType.TICKET
         parent_record.id = "parent-id"
 
-        c._tx_store.get_record_by_external_id = AsyncMock(return_value=parent_record)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent_record)
 
         with patch.object(c, "_check_and_fetch_updated_issue_link", new_callable=AsyncMock, return_value=None):
             result = await c._check_and_fetch_updated_record(record)
@@ -2246,7 +2247,7 @@ class TestLinearExtractFilesFromMarkdown:
     async def test_empty_markdown(self):
         c = _make_connector_cov()
         new_files, existing = await c._extract_files_from_markdown(
-            "", "parent-1", "node-1", RecordType.TICKET, "team-1", c._tx_store
+            "", "parent-1", "node-1", RecordType.TICKET, "team-1"
         )
         assert len(new_files) == 0
         assert len(existing) == 0
@@ -2258,11 +2259,11 @@ class TestLinearExtractFilesFromMarkdown:
         existing_record.record_type = RecordType.FILE
         existing_record.id = "existing-file-id"
         existing_record.record_name = "doc.pdf"
-        c._tx_store.get_record_by_external_id = AsyncMock(return_value=existing_record)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing_record)
 
         md = "[doc](https://uploads.linear.app/test/doc.pdf)"
         new_files, existing = await c._extract_files_from_markdown(
-            md, "parent-1", "node-1", RecordType.TICKET, "team-1", c._tx_store
+            md, "parent-1", "node-1", RecordType.TICKET, "team-1"
         )
         assert len(new_files) == 0
         assert len(existing) == 1
@@ -2281,10 +2282,10 @@ class TestLinearProcessIssueAttachments:
         existing = MagicMock()
         existing.id = "existing-att-id"
         existing.record_name = "att"
-        c._tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         att_data = [_make_attachment_data()]
-        result = await c._process_issue_attachments(att_data, "issue-1", "node-1", "team-1", c._tx_store)
+        result = await c._process_issue_attachments(att_data, "issue-1", "node-1", "team-1")
         assert len(result) == 1
         assert result[0].child_id == "existing-att-id"
 
@@ -2292,17 +2293,17 @@ class TestLinearProcessIssueAttachments:
     async def test_new_attachment(self):
         c = _make_connector_cov()
         c.indexing_filters = None
-        c._tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         att_data = [_make_attachment_data()]
-        result = await c._process_issue_attachments(att_data, "issue-1", "node-1", "team-1", c._tx_store)
+        result = await c._process_issue_attachments(att_data, "issue-1", "node-1", "team-1")
         c.data_entities_processor.on_new_records.assert_called()
 
     @pytest.mark.asyncio
     async def test_empty_attachment_id(self):
         c = _make_connector_cov()
         att_data = [{"id": "", "url": "http://x"}]
-        result = await c._process_issue_attachments(att_data, "issue-1", "node-1", "team-1", c._tx_store)
+        result = await c._process_issue_attachments(att_data, "issue-1", "node-1", "team-1")
         assert len(result) == 0
 
 
@@ -2314,10 +2315,10 @@ class TestLinearProcessIssueDocuments:
         existing = MagicMock()
         existing.id = "existing-doc-id"
         existing.record_name = "doc"
-        c._tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         doc_data = [_make_document_data()]
-        result = await c._process_issue_documents(doc_data, "issue-1", "node-1", "team-1", c._tx_store)
+        result = await c._process_issue_documents(doc_data, "issue-1", "node-1", "team-1")
         assert len(result) == 1
         assert result[0].child_id == "existing-doc-id"
 
@@ -2325,17 +2326,17 @@ class TestLinearProcessIssueDocuments:
     async def test_new_document(self):
         c = _make_connector_cov()
         c.indexing_filters = None
-        c._tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         doc_data = [_make_document_data()]
-        result = await c._process_issue_documents(doc_data, "issue-1", "node-1", "team-1", c._tx_store)
+        result = await c._process_issue_documents(doc_data, "issue-1", "node-1", "team-1")
         c.data_entities_processor.on_new_records.assert_called()
 
     @pytest.mark.asyncio
     async def test_empty_document_id(self):
         c = _make_connector_cov()
         doc_data = [{"id": "", "url": "http://x"}]
-        result = await c._process_issue_documents(doc_data, "issue-1", "node-1", "team-1", c._tx_store)
+        result = await c._process_issue_documents(doc_data, "issue-1", "node-1", "team-1")
         assert len(result) == 0
 
 
@@ -2403,7 +2404,7 @@ class TestLinearPrepareProjectRelatedRecords:
         with patch.object(c, "_process_project_external_links", new_callable=AsyncMock, return_value=([(MagicMock(), [])], [])):
             with patch.object(c, "_process_project_documents", new_callable=AsyncMock, return_value=([(MagicMock(), [])], [])):
                 result = await c._prepare_project_related_records(
-                    project_data, "proj-1", MagicMock(), "team-1", c._tx_store
+                    project_data, "proj-1", MagicMock(), "team-1"
                 )
         assert len(result) == 2
 
@@ -2412,7 +2413,7 @@ class TestLinearPrepareProjectRelatedRecords:
         c = _make_connector_cov()
         project_data = _make_project_data()
         result = await c._prepare_project_related_records(
-            project_data, "proj-1", None, "team-1", c._tx_store
+            project_data, "proj-1", None, "team-1"
         )
         assert len(result) == 0
 
@@ -2507,19 +2508,18 @@ class TestLinearParseIssueToBlocks:
 class TestLinearCreateConnector:
     @pytest.mark.asyncio
     async def test_create_connector(self):
-        with patch("app.connectors.sources.linear.connector.DataSourceEntitiesProcessor") as MockDSEP:
-            mock_dep = MagicMock()
-            mock_dep.initialize = AsyncMock()
-            MockDSEP.return_value = mock_dep
-            connector = await LinearConnector.create_connector(
-                logger=MagicMock(),
-                data_store_provider=MagicMock(),
-                config_service=AsyncMock(),
-                connector_id="test-conn",
-                scope="personal",
-                created_by="test-user-id",
-            )
-            assert isinstance(connector, LinearConnector)
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        connector = await LinearConnector.create_connector(
+            logger=MagicMock(),
+            data_store_provider=MagicMock(),
+            config_service=AsyncMock(),
+            connector_id="test-conn",
+            scope="personal",
+            created_by="test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, LinearConnector)
 
 # =============================================================================
 # Merged from test_linear_connector_full_coverage.py
@@ -2738,6 +2738,9 @@ class TestFetchProjectsForTeamBatch:
         )
         mock_ds.get_file_size = AsyncMock(return_value=0)
 
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
+
         with patch.object(
             connector, "_get_fresh_datasource", new_callable=AsyncMock
         ) as mock_fresh:
@@ -2820,6 +2823,9 @@ class TestFetchProjectsForTeamBatch:
         )
         mock_ds.get_file_size = AsyncMock(return_value=0)
 
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
+
         with patch.object(
             connector, "_get_fresh_datasource", new_callable=AsyncMock
         ) as mock_fresh:
@@ -2848,6 +2854,9 @@ class TestFetchProjectsForTeamBatch:
         mock_ds.project = AsyncMock(
             return_value=_mock_response(data={"project": project_data})
         )
+
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
 
         with patch.object(
             connector, "_get_fresh_datasource", new_callable=AsyncMock
@@ -2882,6 +2891,9 @@ class TestFetchProjectsForTeamBatch:
             return_value=_mock_response(data={"project": project_data})
         )
 
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
+
         with patch.object(
             connector, "_get_fresh_datasource", new_callable=AsyncMock
         ) as mock_fresh:
@@ -2911,6 +2923,9 @@ class TestFetchProjectsForTeamBatch:
         mock_ds.project = AsyncMock(
             return_value=_mock_response(data={"project": proj_good})
         )
+
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
 
         with patch.object(
             connector, "_get_fresh_datasource", new_callable=AsyncMock
@@ -3757,7 +3772,7 @@ class TestCheckAndFetchUpdated:
         parent_record.record_type = RecordType.TICKET
         parent_record.id = "parent-rec-1"
 
-        connector._tx_store.get_record_by_external_id = AsyncMock(
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
             return_value=parent_record
         )
 
@@ -5118,8 +5133,11 @@ class TestSyncAttachments:
 
         parent_record = MagicMock()
         parent_record.id = "parent-id"
-        connector._tx_store.get_record_by_external_id = AsyncMock(
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
             return_value=parent_record
+        )
+        connector.data_entities_processor.get_record_by_weburl = AsyncMock(
+            return_value=None
         )
 
         attachment = {
@@ -5169,7 +5187,7 @@ class TestSyncDocuments:
 
         parent_record = MagicMock()
         parent_record.id = "parent-id"
-        connector._tx_store.get_record_by_external_id = AsyncMock(
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
             return_value=parent_record
         )
 
@@ -5697,15 +5715,13 @@ class TestProcessIssueAttachments:
             "updatedAt": "2024-01-15T12:00:00.000Z",
         }
 
-        mock_tx = AsyncMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         children = await connector._process_issue_attachments(
             attachments_data=[attachment],
             issue_id="issue-1",
             issue_node_id="node-1",
             team_id="team-1",
-            tx_store=mock_tx,
         )
         assert len(children) == 1
         assert children[0].child_type == ChildType.RECORD
@@ -5718,8 +5734,7 @@ class TestProcessIssueAttachments:
         existing.id = "existing-id"
         existing.record_name = "Existing File"
 
-        mock_tx = AsyncMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         attachment = {
             "id": "attach-1",
@@ -5734,7 +5749,6 @@ class TestProcessIssueAttachments:
             issue_id="issue-1",
             issue_node_id="node-1",
             team_id="team-1",
-            tx_store=mock_tx,
         )
         assert len(children) == 1
         assert children[0].child_id == "existing-id"
@@ -5742,13 +5756,11 @@ class TestProcessIssueAttachments:
     @pytest.mark.asyncio
     async def test_skips_empty_id(self):
         connector = _make_connector_fullcov()
-        mock_tx = AsyncMock()
         children = await connector._process_issue_attachments(
             attachments_data=[{"id": ""}],
             issue_id="issue-1",
             issue_node_id="node-1",
             team_id="team-1",
-            tx_store=mock_tx,
         )
         assert len(children) == 0
 
@@ -5773,15 +5785,13 @@ class TestProcessIssueDocuments:
             "updatedAt": "2024-01-15T12:00:00.000Z",
         }
 
-        mock_tx = AsyncMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         children = await connector._process_issue_documents(
             documents_data=[doc],
             issue_id="issue-1",
             issue_node_id="node-1",
             team_id="team-1",
-            tx_store=mock_tx,
         )
         assert len(children) == 1
 
@@ -5801,7 +5811,6 @@ class TestExtractFilesFromMarkdown:
             parent_node_id="node-1",
             parent_record_type=RecordType.TICKET,
             team_id="team-1",
-            tx_store=AsyncMock(),
         )
         assert result == []
         assert existing == []
@@ -5815,8 +5824,7 @@ class TestExtractFilesFromMarkdown:
         mock_ds = MagicMock()
         mock_ds.get_file_size = AsyncMock(return_value=512)
 
-        mock_tx = AsyncMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         text = "[report.pdf](https://uploads.linear.app/report.pdf)"
 
@@ -5830,7 +5838,6 @@ class TestExtractFilesFromMarkdown:
                 parent_node_id="node-1",
                 parent_record_type=RecordType.TICKET,
                 team_id="team-1",
-                tx_store=mock_tx,
                 exclude_images=True,
             )
             assert len(result) == 1
@@ -5845,8 +5852,7 @@ class TestExtractFilesFromMarkdown:
         existing_file.record_type = RecordType.FILE
         existing_file.record_name = "report.pdf"
 
-        mock_tx = AsyncMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing_file)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing_file)
 
         text = "[report.pdf](https://uploads.linear.app/report.pdf)"
 
@@ -5856,7 +5862,6 @@ class TestExtractFilesFromMarkdown:
             parent_node_id="node-1",
             parent_record_type=RecordType.TICKET,
             team_id="team-1",
-            tx_store=mock_tx,
             exclude_images=True,
         )
         assert len(result) == 0
@@ -5964,16 +5969,14 @@ class TestProcessProjectExternalLinks:
             "updatedAt": "2024-01-15T12:00:00.000Z",
         }
 
-        mock_tx = AsyncMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx.get_record_by_weburl = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
 
         records, block_groups = await connector._process_project_external_links(
             external_links_data=[link_data],
             project_id="proj-1",
             project_node_id="node-1",
             team_id="team-1",
-            tx_store=mock_tx,
             create_block_groups=False,
         )
         assert len(records) == 1
@@ -5992,16 +5995,14 @@ class TestProcessProjectExternalLinks:
             "updatedAt": "",
         }
 
-        mock_tx = AsyncMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx.get_record_by_weburl = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
 
         records, block_groups = await connector._process_project_external_links(
             external_links_data=[link_data],
             project_id="proj-1",
             project_node_id="node-1",
             team_id="team-1",
-            tx_store=mock_tx,
             create_block_groups=True,
         )
         assert len(block_groups) == 1
@@ -6026,15 +6027,13 @@ class TestProcessProjectDocuments:
             "updatedAt": "2024-01-15T12:00:00.000Z",
         }
 
-        mock_tx = AsyncMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         records, block_groups = await connector._process_project_documents(
             documents_data=[doc_data],
             project_id="proj-1",
             project_node_id="node-1",
             team_id="team-1",
-            tx_store=mock_tx,
             create_block_groups=False,
         )
         assert len(records) == 1
@@ -6053,15 +6052,13 @@ class TestProcessProjectDocuments:
             "updatedAt": "",
         }
 
-        mock_tx = AsyncMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         records, block_groups = await connector._process_project_documents(
             documents_data=[doc_data],
             project_id="proj-1",
             project_node_id="node-1",
             team_id="team-1",
-            tx_store=mock_tx,
             create_block_groups=True,
         )
         assert len(block_groups) == 1

@@ -6,6 +6,7 @@ import { Avatar, Badge, Box, Checkbox, Flex, IconButton, Tabs, Text, TextField, 
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { toast } from '@/lib/store/toast-store';
 import { apiClient, isProcessedError } from '@/lib/api';
+import { isMcpInstanceReadOnly, McpInheritedCallout } from '@/config';
 import { WorkspaceRightPanel } from '../../../components/workspace-right-panel';
 import { FormField, SelectDropdown, TagInput, type TagItem } from '../../../components';
 import { McpServersApi } from '../../api';
@@ -112,6 +113,7 @@ export function McpInstanceConfigPanel({
   }, [prefillTemplate, editingInstance, templates]);
 
   const isTemplateBased = Boolean(resolvedTemplate);
+  const isReadOnly = isMcpInstanceReadOnly(editingInstance);
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -391,10 +393,12 @@ export function McpInstanceConfigPanel({
   const apiTokenPlaceholder = resolvedTemplate?.authHint?.placeholder ?? undefined;
   const credentialsPlaceholder = mode === 'edit' ? t('workspace.mcpServers.form.leaveBlankToKeep') : undefined;
 
-  const showFooter = mode === 'create' || activeTab === 'configuration';
+  const showFooter = mode === 'create' || (activeTab === 'configuration' && !isReadOnly);
 
   const configurationForm = (
     <Flex direction="column" gap="4">
+      <McpInheritedCallout instance={editingInstance} />
+
       <FormField label={t('workspace.mcpServers.form.name')} required>
         <TextField.Root size="2" value={name} onChange={(e) => setName(e.target.value)} />
       </FormField>
@@ -622,7 +626,7 @@ export function McpInstanceConfigPanel({
       onPrimaryClick={handleSave}
       hideFooter={!showFooter}
       headerActions={
-        mode === 'edit' && editingInstance ? (
+        mode === 'edit' && editingInstance && !isReadOnly ? (
           <button
             type="button"
             onClick={() => onRequestDelete(editingInstance)}
@@ -799,11 +803,12 @@ function ConnectionAndToolsTab({
 }) {
   const { t } = useTranslation();
 
+  const isReadOnly = isMcpInstanceReadOnly(instance);
   const [createdByName, setCreatedByName] = useState<string | null>(null);
   const [createdByAvatar, setCreatedByAvatar] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!instance?.createdBy) {
+    if (!instance?.createdBy || isReadOnly) {
       setCreatedByName(null);
       setCreatedByAvatar(null);
       return;
@@ -835,7 +840,7 @@ function ConnectionAndToolsTab({
     return () => {
       cancelled = true;
     };
-  }, [instance?.createdBy]);
+  }, [instance?.createdBy, isReadOnly]);
 
   if (!instance) {
     return (
@@ -854,20 +859,22 @@ function ConnectionAndToolsTab({
 
   return (
     <Flex direction="column" gap="4" style={{ height: '100%', minHeight: 0 }}>
-      <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
-        <Text size="1" weight="medium" style={{ color: 'var(--gray-10)' }}>
-          {t('workspace.mcpServers.details.createdBy', { defaultValue: 'Created by' })}
-        </Text>
-        <Avatar
-          size="1"
-          src={createdByAvatar ?? undefined}
-          fallback={createdByName?.[0] ?? '?'}
-          radius="full"
-        />
-        <Text size="2" style={{ color: 'var(--gray-12)' }}>
-          {createdByName ?? instance.createdBy}
-        </Text>
-      </Flex>
+      {!isReadOnly && (
+        <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
+          <Text size="1" weight="medium" style={{ color: 'var(--gray-10)' }}>
+            {t('workspace.mcpServers.details.createdBy', { defaultValue: 'Created by' })}
+          </Text>
+          <Avatar
+            size="1"
+            src={createdByAvatar ?? undefined}
+            fallback={createdByName?.[0] ?? '?'}
+            radius="full"
+          />
+          <Text size="2" style={{ color: 'var(--gray-12)' }}>
+            {createdByName ?? instance.createdBy}
+          </Text>
+        </Flex>
+      )}
 
       {needsAuth && (
         <Flex

@@ -3,9 +3,8 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Box } from '@radix-ui/themes';
-import { AgentBuilder } from '@/app/(main)/agents/agent-builder/agent-builder';
+import { AgentBuilder, CreateAgentDialog } from '@/config';
 import { ServiceGate } from '@/app/components/ui/service-gate';
-import { CreateAgentDialog } from '@/app/(main)/agents/components/create-agent-dialog';
 
 export default function NewAgentPage() {
   const router = useRouter();

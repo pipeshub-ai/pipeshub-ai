@@ -305,7 +305,8 @@
     "confirmDeleteMultiple": "¿Estás seguro de que quieres eliminar {{count}} elementos?",
     "cannotUndo": "Esta acción no se puede deshacer.",
     "areYouSure": "¿Estás seguro?",
-    "typeDeleteToConfirm": "Escribe DELETE para confirmar",
+    "deleteKeyword": "ELIMINAR",
+    "typeDeleteToConfirm": "Escribe {{keyword}} para confirmar",
     "knowledgeBase": "base de conocimiento",
     "in": "en",
     "willBeDeleted": "será eliminado",
@@ -389,7 +390,8 @@
     "language": "Idioma",
     "english": "Inglés",
     "german": "Alemán",
-    "rotateLandscape": "Gire su dispositivo para una mejor experiencia"
+    "rotateLandscape": "Gire su dispositivo para una mejor experiencia",
+    "errorOccurred": "Se produjo un error. Inténtelo de nuevo."
   },
   "units": {
     "bytes": "Bytes",
@@ -480,6 +482,14 @@
     "record": "registro"
   },
   "chat": {
+    "recordActions": {
+      "preview": "Vista previa",
+      "open": "Abrir {{source}}",
+      "openIn": "Abrir en {{source}}",
+      "openInCollections": "Abrir en Colecciones",
+      "relevance": "Relevancia: {{percent}} %"
+    },
+    "results": "Resultados",
     "greeting": "¿Qué quieres explorar hoy?",
     "heyUser": "Hola, {{name}} 👋",
     "heyUserDefaultName": "amigo",
@@ -1916,6 +1926,9 @@
       "noResults": "Ningún servidor MCP coincide con tu búsqueda",
       "addServer": "Añadir servidor",
       "custom": "Personalizado",
+      "inherited": "Heredado",
+      "inheritedDeleteTooltip": "Gestionado por la organización principal",
+      "inheritedReadOnly": "Este servidor MCP se hereda de una organización principal y no se puede editar aquí.",
       "sharedAuth": "Autenticación de administrador compartida",
       "toolsCount_one": "{{count}} herramienta",
       "toolsCount_other": "{{count}} herramientas",
@@ -2635,6 +2648,7 @@
     "agentActionsMenuAria": "Menú del agente",
     "agentMenuCreateAsServiceAgent": "Crear como agente de servicio",
     "agentMenuConvertToServiceAgent": "Convertir a agente de servicio",
+    "share": "Compartir",
     "shareWithOrg": "Compartir con todos",
     "shareWithOrgTooltip": "Compartir este agente con todos en su organización.",
     "serviceAccountShareTooltip": "Los agentes de servicio siempre se comparten con la organización.",
@@ -2740,6 +2754,8 @@
     "svcAcctCreateTitle": "Crear agente de servicio",
     "svcAcctConvertDesc": "Este agente pasará a ser un agente de servicio compartido: disponible en toda la organización, cada conjunto de herramientas se autentica una vez a nivel de agente y el conocimiento se limita a lo que conecte en el flujo.",
     "svcAcctCreateDesc": "Creará un agente de servicio compartido: disponible en toda la organización, cada conjunto de herramientas se autentica una vez a nivel de agente y el conocimiento se limita a lo que conecte en el flujo.",
+    "svcAcctConvertDescNoOrg": "Este agente pasará a ser un agente de servicio: cada conjunto de herramientas se autentica una vez a nivel de agente y el conocimiento se limita a lo que conecte en el flujo. Use el botón Compartir para controlar quién puede acceder.",
+    "svcAcctCreateDescNoOrg": "Creará un agente de servicio: cada conjunto de herramientas se autentica una vez a nivel de agente y el conocimiento se limita a lo que conecte en el flujo. Use el botón Compartir para controlar quién puede acceder.",
     "svcAcctConvertLabel": "Convertir a agente de servicio",
     "svcAcctCreateLabel": "Crear agente de servicio",
     "svcAcctConvertBusy": "Convirtiendo…",
@@ -2770,6 +2786,8 @@
     "mcpCredentialsTitle": "Credenciales del servidor MCP",
     "mcpCredentialsDesc": "Autentique este servidor MCP para que el agente pueda usar sus herramientas.",
     "mcpServerDefaultName": "Servidor MCP",
+    "configureMcpTooltip": "Administrar credenciales",
+    "authenticateMcpTooltip": "Autenticar este servidor MCP",
     "mcpAuthUpdatedNotify": "Autenticación MCP actualizada.",
     "mcpAuthSaveError": "No se pudieron guardar las credenciales MCP.",
     "mcpAuthRemoveError": "No se pudieron eliminar las credenciales MCP.",
@@ -3091,9 +3109,7 @@
         "emailNotePre": "Asegúrate de que el correo con el que te registraste —",
         "emailNotePost": "— sea el mismo que usas en las aplicaciones de tu organización para que tus permisos se reconozcan correctamente.",
         "cancelButton": "Cancelar",
-        "signUpButton": "Registrarse",
-        "verificationNoteTitle": "Verificación requerida",
-        "verificationNoteBody": "Se enviará un enlace de verificación al correo indicado. Tu organización solo será accesible tras verificarlo."
+        "signUpButton": "Registrarse"
       }
     },
     "login": {

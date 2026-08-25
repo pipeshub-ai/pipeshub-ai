@@ -234,6 +234,7 @@ class S3Connector(S3CompatibleBaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
         **kwargs,
     ) -> "S3Connector":
         """Factory method to create and initialize connector."""

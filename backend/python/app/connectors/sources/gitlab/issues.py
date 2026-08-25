@@ -143,10 +143,9 @@ class IssuesSync:
         """Map a single GitLab work-item to a TicketRecord RecordUpdate."""
         c = self.c
         try:
-            async with c.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=c.connector_id, external_id=str(issue.id)
-                )
+            existing_record = await c.data_entities_processor.get_record_by_external_id(
+                c.connector_id, str(issue.id)
+            )
             is_new = existing_record is None
             is_updated = False
             metadata_changed = False

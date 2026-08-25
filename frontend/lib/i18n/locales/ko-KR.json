@@ -319,7 +319,8 @@
     "confirmDeleteMultiple": "{{count}}개 항목을 삭제하시겠습니까?",
     "cannotUndo": "이 작업은 되돌릴 수 없습니다.",
     "areYouSure": "계속하시겠습니까?",
-    "typeDeleteToConfirm": "확인하려면 DELETE를 입력하세요",
+    "deleteKeyword": "삭제",
+    "typeDeleteToConfirm": "확인하려면 '{{keyword}}'를 입력하세요",
     "knowledgeBase": "지식 베이스",
     "in": "위치:",
     "willBeDeleted": "이(가) 삭제됩니다",
@@ -499,6 +500,14 @@
     "record": "레코드"
   },
   "chat": {
+    "recordActions": {
+      "preview": "미리보기",
+      "open": "{{source}} 열기",
+      "openIn": "{{source}}에서 열기",
+      "openInCollections": "컬렉션에서 열기",
+      "relevance": "관련도: {{percent}}%"
+    },
+    "results": "결과",
     "greeting": "오늘은 무엇을 탐색해 볼까요?",
     "heyUser": "안녕하세요, {{name}}님 👋",
     "heyUserDefaultName": "사용자",

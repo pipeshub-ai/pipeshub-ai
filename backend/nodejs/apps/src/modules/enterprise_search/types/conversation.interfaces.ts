@@ -86,6 +86,15 @@ export interface IChatAttachmentRef {
   mimeType?: string;
   extension?: string;
   virtualRecordId?: string;
+  /**
+   * Origin of this attachment ('upload' = user-picked file, 'paste-text' =
+   * large clipboard text auto-converted to a .txt attachment on the frontend).
+   * Matches the frontend's `UploadedFileSource` vocabulary, where a bare
+   * 'paste' means a pasted image/file — a different thing entirely.
+   * Not populated by the upload endpoint today — reserved for future
+   * analytics/UX once the upload pipeline threads this through explicitly.
+   */
+  source?: 'upload' | 'paste-text';
 }
 export interface IToolCallItem {
   toolName: string;

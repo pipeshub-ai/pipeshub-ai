@@ -23,6 +23,7 @@ import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import type { AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, MessagePart } from '../../types';
 import { FileIcon } from '@/app/components/ui/file-icon';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
 import { emptyCitationMaps } from './response-tabs/citations';
@@ -37,6 +38,8 @@ import {
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { KnowledgeBaseApi } from '@/knowledge-base/api';
+import { TextPreviewDialog } from '../text-preview-dialog';
+import { isPastedTextAttachment } from '../../utils/paste-attachment';
 import { useTranslation } from 'react-i18next';
 import { CitationMessageRowKeyContext } from './response-tabs/citations/citation-popover-control';
 import { useInlineCitationPopoverStore } from './response-tabs/citations/citation-popover-store';
@@ -194,6 +197,9 @@ export const ChatResponse = React.memo(function ChatResponse({
   const activeSlotId = useChatStore((s) => s.activeSlotId);
   const setPreviewFile = useChatStore((s) => s.setPreviewFile);
   const setPreviewMode = useChatStore((s) => s.setPreviewMode);
+
+  /** Attachment currently shown in the lightweight text preview dialog (pasted-text attachments only). */
+  const [textPreviewAttachment, setTextPreviewAttachment] = useState<AttachmentRef | null>(null);
 
   const handleAttachmentPreview = useCallback(
     async (att: AttachmentRef) => {
@@ -737,50 +743,73 @@ export const ChatResponse = React.memo(function ChatResponse({
           }}
           className="no-scrollbar"
         >
-          {attachments.map((att) => (
-            <Flex
-              key={att.virtualRecordId || att.recordId}
-              align="center"
-              gap="1"
-              role="button"
-              title={att.recordName}
-              onClick={() => handleAttachmentPreview(att)}
-              style={{
-                flexShrink: 0,
-                padding: 'var(--space-1) var(--space-2)',
-                backgroundColor: 'var(--olive-a2)',
-                border: '1px solid var(--olive-3)',
-                borderRadius: 'var(--radius-1)',
-                maxWidth: '200px',
-                cursor: 'pointer',
-                transition: 'background-color 0.15s',
-              }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--olive-a4)';
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--olive-a2)';
-              }}
-            >
-              <FileIcon
-                extension={getMimeTypeExtension(att.mimeType) || att.extension || undefined}
-                filename={att.recordName}
-                size={14}
-                fallbackIcon="insert_drive_file"
-              />
-              <Text
-                size="1"
+          {attachments.map((att) => {
+            const isPastedText = isPastedTextAttachment(att);
+            const openAttachment = () =>
+              isPastedText ? setTextPreviewAttachment(att) : handleAttachmentPreview(att);
+            return (
+              <Flex
+                key={att.virtualRecordId || att.recordId}
+                align="center"
+                gap="1"
+                role="button"
+                tabIndex={0}
+                title={isPastedText ? t('chat.attachments.pastedText', { defaultValue: 'Pasted text' }) : att.recordName}
+                onClick={openAttachment}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    // Space would otherwise scroll the transcript.
+                    e.preventDefault();
+                    openAttachment();
+                  }
+                }}
                 style={{
-                  color: 'var(--slate-11)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
+                  padding: 'var(--space-1) var(--space-2)',
+                  backgroundColor: isPastedText ? 'var(--accent-a2)' : 'var(--olive-a2)',
+                  border: isPastedText ? '1px dashed var(--accent-a7)' : '1px solid var(--olive-3)',
+                  borderRadius: 'var(--radius-1)',
+                  maxWidth: '200px',
+                  cursor: 'pointer',
+                  transition: 'background-color 0.15s',
+                }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLElement).style.backgroundColor = isPastedText
+                    ? 'var(--accent-a4)'
+                    : 'var(--olive-a4)';
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLElement).style.backgroundColor = isPastedText
+                    ? 'var(--accent-a2)'
+                    : 'var(--olive-a2)';
                 }}
               >
-                {att.recordName}
-              </Text>
-            </Flex>
-          ))}
+                {isPastedText ? (
+                  <MaterialIcon name="content_paste" size={14} color="var(--accent-9)" />
+                ) : (
+                  <FileIcon
+                    extension={getMimeTypeExtension(att.mimeType) || att.extension || undefined}
+                    filename={att.recordName}
+                    size={14}
+                    fallbackIcon="insert_drive_file"
+                  />
+                )}
+                <Text
+                  size="1"
+                  style={{
+                    color: 'var(--slate-11)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {isPastedText
+                    ? t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })
+                    : att.recordName}
+                </Text>
+              </Flex>
+            );
+          })}
         </Flex>
       )}
 
@@ -810,6 +839,22 @@ export const ChatResponse = React.memo(function ChatResponse({
           isLastMessage={isLastMessage && !askQuestionMatchesRow}
           appliedFilters={appliedFilters}
           feedbackInfo={feedbackInfo}
+        />
+      )}
+
+      {/* Pasted-text attachment preview — read-only (this message already sent) */}
+      {textPreviewAttachment && (
+        <TextPreviewDialog
+          key={textPreviewAttachment.virtualRecordId || textPreviewAttachment.recordId}
+          open
+          onOpenChange={(open) => {
+            if (!open) setTextPreviewAttachment(null);
+          }}
+          title={t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })}
+          loadText={async () => {
+            const blob = await KnowledgeBaseApi.streamRecord(textPreviewAttachment.recordId);
+            return blob.text();
+          }}
         />
       )}
     </Box>

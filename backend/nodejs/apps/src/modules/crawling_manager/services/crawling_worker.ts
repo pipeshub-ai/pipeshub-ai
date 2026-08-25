@@ -80,7 +80,7 @@ export class CrawlingWorkerService {
 
       await job.updateProgress(100);
 
-      this.logger.info('Crawling job completed successfully', {
+      this.logger.debug('Crawling job completed successfully', {
         jobId: job.id,
         connector,
         connectorId,

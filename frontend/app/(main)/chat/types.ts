@@ -374,6 +374,14 @@ export interface ChatSettings {
  */
 export type AttachmentUploadStatus = 'uploading' | 'uploaded' | 'error';
 
+/**
+ * How a chip entered the composer. `'paste-text'` marks a large plain-text
+ * clipboard paste that was auto-converted into a synthetic `.txt` file (see
+ * `utils/paste-attachment.ts`) — used to render a specialized chip/preview
+ * instead of the generic file chip. The others are informational only.
+ */
+export type UploadedFileSource = 'upload' | 'drag' | 'paste' | 'paste-text';
+
 export interface UploadedFile {
   id: string;
   file: File;
@@ -386,6 +394,14 @@ export interface UploadedFile {
   ref?: AttachmentRef;
   /** User-facing message when status === 'error'. */
   errorMessage?: string;
+  /** Origin of this chip — see {@link UploadedFileSource}. */
+  source?: UploadedFileSource;
+  /** First-line excerpt shown on the chip, present only when `source === 'paste-text'`. */
+  pastePreview?: string;
+  /** Character count of the original pasted text (present only when `source === 'paste-text'`). */
+  pasteCharCount?: number;
+  /** Line count of the original pasted text (present only when `source === 'paste-text'`). */
+  pasteLineCount?: number;
 }
 
 /** Derived from `SUPPORTED_FILE_TYPES`/`ACCEPTED_MIME_TYPES` in `utils/attachment-file-types.ts`
@@ -399,6 +415,18 @@ export interface AttachmentRef {
   mimeType: string;
   extension: string;
   virtualRecordId: string;
+  /**
+   * Origin metadata, mirrored from `UploadedFileSource` when known
+   * ('upload' | 'paste-text'). Deliberately not the bare 'paste' of
+   * `UploadedFileSource`, which means a pasted image/file. Not currently
+   * populated by the
+   * upload API — detection of pasted-text attachments instead relies on
+   * the `pasted-text-<timestamp>.txt` filename convention (see
+   * `isPastedTextAttachment` in `utils/paste-attachment.ts`), matching the
+   * same defense-in-depth pattern used server-side. Reserved for future
+   * use once the upload pipeline threads real origin metadata through.
+   */
+  source?: 'upload' | 'paste-text';
 }
 
 /** MIME types accepted by the chat attachment upload endpoint. */

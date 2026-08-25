@@ -838,35 +838,13 @@ class TestChannelGroupMap:
         from types import SimpleNamespace
 
         rg = SimpleNamespace(id="rg2")
-
-        class Tx:
-            async def get_record_group_by_external_id(self, **_kwargs):
-                return rg
-
-        tx = Tx()
-
-        class _TxCM:
-            def __init__(self, inner: Tx):
-                self._inner = inner
-
-            async def __aenter__(self) -> Tx:
-                return self._inner
-
-            async def __aexit__(self, *a):
-                return None
-
-        class Store:
-            def transaction(self):
-                return _TxCM(tx)
-
-        c.data_store_provider = Store()
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=rg)
         out = await c._channel_group_map(["C2"])
         assert out["C2"] == "rg2"
 
-        async def boom(**_kwargs):
-            raise RuntimeError("db")
-
-        tx.get_record_group_by_external_id = boom
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(
+            side_effect=RuntimeError("db")
+        )
         await c._channel_group_map(["C3"])
 
 
@@ -1464,13 +1442,9 @@ class TestSyncChannelMessages:
             await c.sync_channel_messages("C1")
 
         c.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_reply_ts": "9.0"})
-        tx = MagicMock()
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
         erg = MagicMock()
         erg.id = "thread-rg"
-        tx.get_record_group_by_external_id = AsyncMock(return_value=erg)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=erg)
         with (
             patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
             patch.object(type(c), "_channel_group_map", new=AsyncMock(return_value={"C1": "rg"})),
@@ -1828,11 +1802,7 @@ class TestFindBurstAndHandleEdited:
         c = _make_connector()
         md = {"ts": "1.0", "user": "U1", "text": "new", "edited": {"ts": "2.0"}}
 
-        tx = MagicMock()
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        tx.get_record_by_external_id = AsyncMock(side_effect=RuntimeError("db"))
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=RuntimeError("db"))
         assert await c._handle_edited_message(md, "C1", "1.0") == 0
 
         existing = MagicMock()
@@ -1841,8 +1811,7 @@ class TestFindBurstAndHandleEdited:
         existing.source_created_at = 1000
         existing.weburl = "u"
         existing.record_group_id = "rg"
-        tx.get_record_by_external_id = AsyncMock(return_value=existing)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         with patch.object(c, "_record_changed", return_value=False):
             assert await c._handle_edited_message(md, "C1", "1.0") == 0
 
@@ -1852,8 +1821,7 @@ class TestFindBurstAndHandleEdited:
         ):
             assert await c._handle_edited_message(md, "C1", "1.0") == 1
 
-        tx.get_record_by_external_id = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         burst = MagicMock()
         burst.record_group_id = "rg"
         burst.start_ts = "0.5"
@@ -1890,11 +1858,7 @@ class TestHandleNewThread:
         c = _make_connector()
         md = {"ts": "1.0", "user": "U1", "text": "t", "reply_count": 1, "thread_ts": "1.0", "latest_reply": "1.1"}
 
-        tx = MagicMock()
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        tx.get_record_group_by_external_id = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
         c.audit_log_sync_point.read_sync_point = AsyncMock(return_value=None)
         with (
             patch.object(type(c), "_process_thread", new=AsyncMock()),
@@ -1902,7 +1866,7 @@ class TestHandleNewThread:
             await c._handle_new_thread(md, "C1", "1.0")
 
         c.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_reply_ts": "0.5"})
-        tx.get_record_group_by_external_id = AsyncMock(
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(
             side_effect=[None, MagicMock(id="trg")]
         )
         with (
@@ -1911,7 +1875,7 @@ class TestHandleNewThread:
             await c._handle_new_thread(md, "C1", "1.0")
 
         c.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_reply_ts": "0.5"})
-        tx.get_record_group_by_external_id = AsyncMock(side_effect=[RuntimeError("x"), MagicMock(id="trg")])
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(side_effect=[RuntimeError("x"), MagicMock(id="trg")])
         with patch.object(type(c), "_process_thread_incremental", new=AsyncMock()):
             await c._handle_new_thread(md, "C1", "1.0")
 
@@ -2325,19 +2289,13 @@ class TestCreateConnector:
     async def test_create_connector(self):
         from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
 
-        with (
-            patch(
-                "app.connectors.sources.slack.individual.connector.DataSourceEntitiesProcessor",
-            ) as dep_cls,
-            _patch_base_connector_init(),
-        ):
-            dep = MagicMock()
-            dep.org_id = "o"
-            dep.initialize = AsyncMock()
-            dep_cls.return_value = dep
+        with _patch_base_connector_init():
+            processor = MagicMock()
+            processor.org_id = "org-1"
             conn = await SlackIndividualConnector.create_connector(
                 MagicMock(), MagicMock(), MagicMock(), "cid2",
                 "personal", "user-1",
+                data_entities_processor=processor,
             )
         assert isinstance(conn, SlackIndividualConnector)
 
@@ -3168,13 +3126,9 @@ class TestSlackIndividualAdditionalCoverage:
         c.audit_log_sync_point.read_sync_point = AsyncMock(
             return_value={"last_reply_ts": "98.0"},
         )
-        tx = MagicMock()
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
         erg = MagicMock()
         erg.id = "thread-rg"
-        tx.get_record_group_by_external_id = AsyncMock(return_value=erg)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=erg)
         with (
             patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
             patch.object(type(c), "_channel_group_map", new=AsyncMock(return_value={"C1": "rg"})),

@@ -1397,12 +1397,10 @@ async def test_fetch_issues_batched_empty_page():
 async def test_build_issue_records_skips_unchanged_when_not_full_sync():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    tx = MagicMock()
     ex = _ticket_record()
     ex.source_updated_at = 1700000000000
     ex.version = 2
-    tx.get_record_by_external_id = AsyncMock(return_value=ex)
-    _bind_async_transaction(conn, tx)
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=ex)
     issue = {
         "id": ex.external_record_id,
         "key": "K-9",
@@ -1419,7 +1417,7 @@ async def test_build_issue_records_skips_unchanged_when_not_full_sync():
     mapper.map_status.return_value = "Open"
     mapper.map_priority.return_value = "Low"
     conn.value_mapper = mapper
-    rows = await conn._build_issue_records([issue], "pid", [], tx, is_new_project=False)
+    rows = await conn._build_issue_records([issue], "pid", [], is_new_project=False)
     assert rows == []
 
 
@@ -1427,12 +1425,10 @@ async def test_build_issue_records_skips_unchanged_when_not_full_sync():
 async def test_build_issue_records_full_sync_keeps_unchanged():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    tx = MagicMock()
     ex = _ticket_record()
     ex.source_updated_at = 1700000000000
     ex.version = 2
-    tx.get_record_by_external_id = AsyncMock(return_value=ex)
-    _bind_async_transaction(conn, tx)
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=ex)
     issue = {
         "id": ex.external_record_id,
         "key": "K-9",
@@ -1450,7 +1446,7 @@ async def test_build_issue_records_full_sync_keeps_unchanged():
     mapper.map_priority.return_value = "Low"
     conn.value_mapper = mapper
     with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
-        rows = await conn._build_issue_records([issue], "pid", [], tx, is_new_project=True)
+        rows = await conn._build_issue_records([issue], "pid", [], is_new_project=True)
     assert len(rows) == 1
     assert isinstance(rows[0][0], TicketRecord)
 
@@ -1459,8 +1455,7 @@ async def test_build_issue_records_full_sync_keeps_unchanged():
 async def test_fetch_issue_attachments_builds_file_records():
     conn = _make_connector()
     conn.site_url = "https://jira.example"
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(return_value=None)
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     fields = {
         "attachment": [
             {"id": "77", "filename": "a.png", "mimeType": "image/png", "size": 10, "created": "2024-01-01T00:00:00.000+0000"},
@@ -1473,7 +1468,6 @@ async def test_fetch_issue_attachments_builds_file_records():
         [],
         "pid",
         RecordGroupType.PROJECT,
-        tx,
         parent_node_id="node-1",
     )
     assert len(out) == 1
@@ -1483,10 +1477,9 @@ async def test_fetch_issue_attachments_builds_file_records():
 @pytest.mark.asyncio
 async def test_fetch_issue_attachments_swallows_inner_failure():
     conn = _make_connector()
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(side_effect=RuntimeError("db"))
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=RuntimeError("db"))
     fields = {"attachment": [{"id": "1", "filename": "f"}]}
-    out = await conn._fetch_issue_attachments("10", "K-1", fields, [], "pid", RecordGroupType.PROJECT, tx)
+    out = await conn._fetch_issue_attachments("10", "K-1", fields, [], "pid", RecordGroupType.PROJECT)
     assert out == []
 
 
@@ -2372,6 +2365,7 @@ async def test_fetch_issues_batched_search_error_raises():
 async def test_fetch_issues_batched_retries_on_transport_error():
     conn = _make_connector()
     conn.data_source = MagicMock()
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     issue = {
         "id": "1",
         "key": "K-1",
@@ -2392,9 +2386,6 @@ async def test_fetch_issues_batched_retries_on_transport_error():
             page1,
         ]
     )
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(return_value=None)
-    _bind_async_transaction(conn, tx)
     mapper = MagicMock()
     mapper.map_type.return_value = "T"
     mapper.map_status.return_value = "O"
@@ -2414,6 +2405,7 @@ async def test_fetch_issues_batched_retries_on_transport_error():
 async def test_fetch_issues_batched_one_page_calls_build_records():
     conn = _make_connector()
     conn.data_source = MagicMock()
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     issue = {
         "id": "1",
         "key": "K-1",
@@ -2429,9 +2421,6 @@ async def test_fetch_issues_batched_one_page_calls_build_records():
     resp.json = MagicMock(return_value={"issues": [issue], "total": 1})
     ds = MagicMock()
     ds.search_issues_post_v2 = AsyncMock(return_value=resp)
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(return_value=None)
-    _bind_async_transaction(conn, tx)
     mapper = MagicMock()
     mapper.map_type.return_value = "T"
     mapper.map_status.return_value = "O"
@@ -2473,12 +2462,10 @@ def test_extract_issue_data_without_status_priority_objects():
 async def test_build_issue_records_increments_version_when_updated():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    tx = MagicMock()
     ex = _ticket_record()
     ex.source_updated_at = 1
     ex.version = 3
-    tx.get_record_by_external_id = AsyncMock(return_value=ex)
-    _bind_async_transaction(conn, tx)
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=ex)
     issue = {
         "id": ex.external_record_id,
         "key": "K-1",
@@ -2496,7 +2483,7 @@ async def test_build_issue_records_increments_version_when_updated():
     conn.value_mapper = mapper
     with patch.object(conn, "_parse_jira_timestamp", side_effect=[999, 999, 999]):
         with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
-            rows = await conn._build_issue_records([issue], "pid", [], tx, is_new_project=False)
+            rows = await conn._build_issue_records([issue], "pid", [], is_new_project=False)
     assert rows[0][0].version == 4
 
 
@@ -2529,10 +2516,10 @@ async def test_parse_issue_to_blocks_plain_string_comment_body():
 async def test_process_issue_attachments_for_children_creates_file_and_maps():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(return_value=None)
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    conn.data_entities_processor.on_new_records = AsyncMock()
     att = [{"id": "55", "filename": "f.bin", "mimeType": "application/octet-stream", "size": 4, "created": "2024-01-01T00:00:00.000+0000"}]
-    cmap = await conn._process_issue_attachments_for_children(att, "iss", "node", "prj", "https://w", tx)
+    cmap = await conn._process_issue_attachments_for_children(att, "iss", "node", "prj", "https://w")
     assert "55" in cmap
     conn.data_entities_processor.on_new_records.assert_awaited()
 
@@ -2541,10 +2528,10 @@ async def test_process_issue_attachments_for_children_creates_file_and_maps():
 async def test_process_issue_attachments_for_children_per_file_exception():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(side_effect=[RuntimeError("db"), None])
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=[RuntimeError("db"), None])
+    conn.data_entities_processor.on_new_records = AsyncMock()
     att = [{"id": "1", "filename": "a"}, {"id": "2", "filename": "b", "mimeType": "text/plain", "created": "2024-01-01T00:00:00.000+0000"}]
-    cmap = await conn._process_issue_attachments_for_children(att, "i", "n", "p", None, tx)
+    cmap = await conn._process_issue_attachments_for_children(att, "i", "n", "p", None)
     assert "2" in cmap
 
 
@@ -2566,9 +2553,6 @@ async def test_process_issue_blockgroups_for_streaming_end_to_end():
     resp.json = MagicMock(return_value={"id": rec.external_record_id, "key": "KF", "fields": fields})
     ds = MagicMock()
     ds.get_issue_v2 = AsyncMock(return_value=resp)
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(return_value=None)
-    _bind_async_transaction(conn, tx)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         raw = await conn._process_issue_blockgroups_for_streaming(rec)
     assert raw.startswith(b"{") and b"block_groups" in raw
@@ -2602,10 +2586,7 @@ async def test_process_issue_blockgroups_resolves_project_from_api_when_record_g
     resp.json = MagicMock(return_value={"id": rec.external_record_id, "key": "PA-1", "fields": fields})
     ds = MagicMock()
     ds.get_issue_v2 = AsyncMock(return_value=resp)
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(return_value=None)
-    tx.get_record_group_by_id = AsyncMock(return_value=None)
-    _bind_async_transaction(conn, tx)
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
     captured: list = []
 
@@ -2716,9 +2697,7 @@ async def test_check_and_fetch_updated_attachment_returns_updated_record():
     f.source_updated_at = 10
     parent = MagicMock()
     parent.id = "pid-internal"
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(return_value=parent)
-    _bind_async_transaction(conn, tx)
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent)
     issue_resp = MagicMock()
     issue_resp.status = HttpStatusCode.OK.value
     issue_resp.json = MagicMock(
@@ -2755,15 +2734,13 @@ async def test_create_connector_classmethod():
     log = _make_logger()
     dsp = MagicMock()
     cs = MagicMock()
-    dep_inst = MagicMock()
-    dep_inst.initialize = AsyncMock()
-    with patch(
-        "app.connectors.sources.atlassian.jira_data_center.connector.DataSourceEntitiesProcessor",
-        return_value=dep_inst,
-    ):
-        c = await JiraDataCenterConnector.create_connector(log, dsp, cs, "cid", "team", "user-1")
+    processor = MagicMock()
+    processor.org_id = "org-1"
+    c = await JiraDataCenterConnector.create_connector(
+        log, dsp, cs, "cid", "team", "user-1",
+        data_entities_processor=processor,
+    )
     assert isinstance(c, JiraDataCenterConnector)
-    dep_inst.initialize.assert_awaited_once()
 
 
 def test_parse_jira_timestamp_strptime_fallback_and_warn():
@@ -3047,6 +3024,7 @@ async def test_sync_project_issues_resume_existing_project():
 async def test_fetch_issues_batched_two_pages():
     conn = _make_connector()
     conn.data_source = MagicMock()
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     issue = {
         "id": "1",
         "key": "K-1",
@@ -3063,9 +3041,6 @@ async def test_fetch_issues_batched_two_pages():
     r2.json = MagicMock(return_value={"issues": [issue2], "total": 2})
     ds = MagicMock()
     ds.search_issues_post_v2 = AsyncMock(side_effect=[r1, r2])
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(return_value=None)
-    _bind_async_transaction(conn, tx)
     mapper = MagicMock()
     mapper.map_type.return_value = "T"
     mapper.map_status.return_value = "O"
@@ -3103,8 +3078,7 @@ async def test_build_issue_records_epic_subtask_links_and_indexing_off():
     idx = MagicMock()
     idx.is_enabled = MagicMock(return_value=False)
     conn.indexing_filters = idx
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(return_value=None)
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     epic = {
         "id": "e1",
         "key": "E-1",
@@ -3135,7 +3109,7 @@ async def test_build_issue_records_epic_subtask_links_and_indexing_off():
     mapper.map_priority.return_value = "Low"
     conn.value_mapper = mapper
     with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
-        rows = await conn._build_issue_records([epic, sub], "pid", [], tx, is_new_project=False)
+        rows = await conn._build_issue_records([epic, sub], "pid", [], is_new_project=False)
     by_id = {r[0].external_record_id: r[0] for r in rows}
     assert by_id["e1"].parent_external_record_id is None
     assert by_id["s1"].parent_external_record_id == "e1"
@@ -3372,8 +3346,7 @@ async def test_build_issue_records_epic_story_subtask_chain():
     conn.site_url = "https://jira.example"
     conn._epic_link_field_id = "customfield_10108"
     conn._parent_link_field_id = ""
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(return_value=None)
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     epic = {
         "id": "10023",
         "key": "PA-24",
@@ -3419,7 +3392,7 @@ async def test_build_issue_records_epic_story_subtask_chain():
         with patch.object(conn, "_safe_json_parse", return_value={"id": "10023"}):
             with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
                 rows = await conn._build_issue_records(
-                    [epic, story, subtask], "pid", [], tx, is_new_project=False
+                    [epic, story, subtask], "pid", [], is_new_project=False
                 )
     by_id = {r[0].external_record_id: r[0] for r in rows}
     assert by_id["10023"].parent_external_record_id is None
@@ -3434,8 +3407,7 @@ async def test_build_issue_records_epic_with_parent_link():
     conn.site_url = "https://jira.example"
     conn._epic_link_field_id = ""
     conn._parent_link_field_id = "customfield_10014"
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(return_value=None)
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     epic = {
         "id": "10023",
         "key": "PA-24",
@@ -3457,7 +3429,7 @@ async def test_build_issue_records_epic_with_parent_link():
     mapper.map_priority.return_value = "Low"
     conn.value_mapper = mapper
     with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
-        rows = await conn._build_issue_records([epic], "pid", [], tx, is_new_project=False)
+        rows = await conn._build_issue_records([epic], "pid", [], is_new_project=False)
     assert rows[0][0].parent_external_record_id == "10001"
     assert rows[0][0].parent_record_type == RecordType.TICKET
 
@@ -3469,8 +3441,7 @@ async def test_build_issue_records_initiative_with_parent_link():
     conn.site_url = "https://jira.example"
     conn._epic_link_field_id = ""
     conn._parent_link_field_id = "customfield_10014"
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(return_value=None)
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     initiative = {
         "id": "10050",
         "key": "INIT-1",
@@ -3491,7 +3462,7 @@ async def test_build_issue_records_initiative_with_parent_link():
     conn.value_mapper = mapper
     with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
         rows = await conn._build_issue_records(
-            [initiative], "pid", [], tx, is_new_project=False
+            [initiative], "pid", [], is_new_project=False
         )
     assert rows[0][0].parent_external_record_id == "10000"
 
@@ -3762,10 +3733,8 @@ async def test_build_issue_records_promotes_placeholder():
     conn.data_source = MagicMock()
     conn.site_url = "https://jira.example"
     stub = _placeholder_ticket(external_id="10026", group_id="pid", revision="placeholder:1")
-    # Match issue updated so non-placeholder path would skip; promotion must still emit.
     stub.source_updated_at = 1700000000000
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(return_value=stub)
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=stub)
     issue = {
         "id": "10026",
         "key": "PA-27",
@@ -3783,7 +3752,7 @@ async def test_build_issue_records_promotes_placeholder():
     conn.value_mapper = mapper
     conn._parse_jira_timestamp = MagicMock(return_value=1700000000000)  # type: ignore[method-assign]
     with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
-        rows = await conn._build_issue_records([issue], "pid", [], tx, is_new_project=False)
+        rows = await conn._build_issue_records([issue], "pid", [], is_new_project=False)
     assert len(rows) == 1
     assert rows[0][0].version == 0
     assert rows[0][0].is_placeholder is False
@@ -3802,8 +3771,7 @@ async def test_stream_record_rejects_placeholder():
 async def test_build_issue_records_attachment_fetch_error_still_returns_issue():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(return_value=None)
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     issue = {
         "id": "10",
         "key": "K-10",
@@ -3820,25 +3788,24 @@ async def test_build_issue_records_attachment_fetch_error_still_returns_issue():
     mapper.map_priority.return_value = "Low"
     conn.value_mapper = mapper
     with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, side_effect=RuntimeError("att")):
-        rows = await conn._build_issue_records([issue], "pid", [], tx, is_new_project=False)
+        rows = await conn._build_issue_records([issue], "pid", [], is_new_project=False)
     assert len(rows) == 1
 
 
 @pytest.mark.asyncio
 async def test_fetch_issue_attachments_no_attachments_and_version_bump():
     conn = _make_connector()
-    tx = MagicMock()
     ex = _file_record()
     ex.source_updated_at = 1
     ex.version = 2
-    tx.get_record_by_external_id = AsyncMock(return_value=ex)
-    assert await conn._fetch_issue_attachments("i", "K", {}, [], "p", RecordGroupType.PROJECT, tx) == []
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=ex)
+    assert await conn._fetch_issue_attachments("i", "K", {}, [], "p", RecordGroupType.PROJECT) == []
     fields = {
         "attachment": [
             {"id": "5", "filename": "f", "mimeType": "text/plain", "size": 1, "created": "2025-06-01T00:00:00.000+0000"},
         ]
     }
-    out = await conn._fetch_issue_attachments("i", "K", fields, [], "p", RecordGroupType.PROJECT, tx)
+    out = await conn._fetch_issue_attachments("i", "K", fields, [], "p", RecordGroupType.PROJECT)
     assert out[0][0].version == 3
 
 

@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useState } from "react"
+import React, { Suspense, useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import "../globals.css"
 import 'react-pdf-highlighter/dist/esm/style/PdfHighlighter.css';
@@ -32,6 +32,7 @@ import { useIsMobile } from "@/lib/hooks/use-is-mobile"
 import { AuthGuard } from '@/app/components/ui/auth-guard'
 import { HealthGate } from '@/app/components/ui/health-gate'
 import { AuthHydrator } from '@/lib/store/auth-hydrator'
+import { OrgUrlCleaner } from '@/lib/navigation'
 import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store'
 import { FullNameDialog } from './components/full-name-dialog'
 import { ServerUrlGuard } from '@/app/components/electron/server-url-setup'
@@ -89,6 +90,9 @@ export default function RootLayout({
         <I18nextProvider i18n={i18n}>
           <ThemeProvider>
             <AuthHydrator />
+            <Suspense fallback={null}>
+              <OrgUrlCleaner />
+            </Suspense>
             {/* Landscape block — pure CSS visibility, no JS */}
             <div className="landscape-block-overlay">
               <MaterialIcon name="screen_rotation" size={48} color="var(--gray-11)" />

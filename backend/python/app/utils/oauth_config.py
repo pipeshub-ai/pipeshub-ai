@@ -341,6 +341,7 @@ async def fetch_oauth_config_by_id(
     connector_type: str,
     config_service: ConfigurationService,
     logger=None,
+    org_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Fetch an OAuth configuration by ID from the config service.
@@ -353,6 +354,7 @@ async def fetch_oauth_config_by_id(
         connector_type: The type of connector (e.g., "DROPBOX_PERSONAL", "GOOGLE_DRIVE")
         config_service: The configuration service instance to use for fetching
         logger: Optional logger instance for logging errors/warnings
+        org_id: Organization ID
 
 
     Returns:
@@ -378,6 +380,7 @@ async def fetch_oauth_config_by_id(
         )
         # config_data contains: {"clientId": "...", "clientSecret": "...", ...}
     """
+    del org_id
     if not oauth_config_id or not connector_type:
         if logger:
             logger.warning("oauth_config_id and connector_type are required to fetch OAuth config")

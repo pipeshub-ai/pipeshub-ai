@@ -22,6 +22,7 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
 from app.containers.connector import ConnectorAppContainer
 from app.services.cache.invalidation_hooks import notify_connector_sync_completed
+from app.edition_services import get_data_entities_processor_cls
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -112,6 +113,14 @@ class EventService:
         except Exception as e:
             self.logger.warning(f"Failed to clean up the replaced {connector_id} connector instance: {e}")
 
+    def _resolve_org_id(self) -> str | None:
+        """Optional org id from request/event context"""
+        return None
+
+    def _build_data_store(self, org_id: str | None = None) -> GraphDataStore:
+        """Build a graph data store"""
+        return GraphDataStore(self.logger, self.graph_provider)
+
     async def _ensure_connector(self, connector_name: str, connector_id: str) -> BaseConnector | None:
         """
         Get connector from memory, or auto-initialize it if missing.
@@ -155,12 +164,12 @@ class EventService:
                 )
                 return None
             config_service = self.app_container.config_service()
-            data_store_provider = GraphDataStore(self.logger, self.graph_provider)
 
             # Extract scope, createdBy and org from connector document
             scope = connector_doc.get("scope", "personal")
             created_by = connector_doc.get("createdBy", "")
-            org_id = connector_doc.get("orgId")
+            org_id = connector_doc.get("orgId") or self._resolve_org_id()
+            data_store_provider = self._build_data_store(org_id)
 
             connector = await ConnectorFactory.initialize_connector(
                 name=connector_name,
@@ -171,6 +180,7 @@ class EventService:
                 scope=scope,
                 created_by=created_by,
                 org_id=org_id,
+                data_entities_processor_cls=get_data_entities_processor_cls(),
                 notification_service=self.app_container.connector_notification_service(),
             )
 
@@ -249,7 +259,7 @@ class EventService:
             self.logger.info(f"Initializing {connector_name} init sync service for org_id: {org_id} and connector_id: {connector_id}")
             config_service = self.app_container.config_service()
             # Create data_store manually using already-resolved graph_provider (arango_service) to avoid coroutine reuse
-            data_store_provider = GraphDataStore(self.logger, self.graph_provider)
+            data_store_provider = self._build_data_store(org_id)
             
             # Fetch scope and createdBy from database App node
             connector_doc = await self.graph_provider.get_document(
@@ -272,6 +282,7 @@ class EventService:
                 scope=scope,
                 created_by=created_by,
                 org_id=org_id,
+                data_entities_processor_cls=get_data_entities_processor_cls(),
                 notification_service=self.app_container.connector_notification_service(),
             )
 

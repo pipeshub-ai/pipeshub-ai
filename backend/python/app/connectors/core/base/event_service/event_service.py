@@ -55,7 +55,7 @@ class BaseEventService(IEventService, ABC):
     async def process_event(self, event_type: str, payload: Dict[str, Any]) -> bool:
         """Handle connector-specific events"""
         try:
-            self.logger.info(f"Processing event: {event_type}")
+            self.logger.debug(f"Processing event: {event_type}")
             # This should be implemented by specific event services
             return True
         except Exception as e:

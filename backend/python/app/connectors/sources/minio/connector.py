@@ -309,6 +309,7 @@ class MinIOConnector(S3CompatibleBaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
         **kwargs,
     ) -> "MinIOConnector":
         """Factory method to create and initialize connector."""

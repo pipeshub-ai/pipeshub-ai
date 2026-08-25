@@ -50,6 +50,10 @@ interface ConnectorCatalogLayoutProps {
   onCardClick?: (connector: Connector) => void;
   /** Whether data is loading. */
   isLoading?: boolean;
+  /** Override tab counts for tabs whose content is externally managed. */
+  extraTabCounts?: Record<string, number>;
+  /** Custom content for a tab, replacing the default connector card grid. */
+  tabContent?: React.ReactNode;
 }
 
 // ========================================
@@ -73,6 +77,8 @@ export function ConnectorCatalogLayout({
   onAddInstance,
   onCardClick,
   isLoading = false,
+  extraTabCounts,
+  tabContent,
 }: ConnectorCatalogLayoutProps) {
   const { t } = useTranslation();
   const resolvedSearchPlaceholder = searchPlaceholder ?? t('form.searchPlaceholder');
@@ -166,8 +172,13 @@ export function ConnectorCatalogLayout({
     counts['inactive'] = base.filter(
       (c) => (inactiveCountByType[c.type] ?? 0) > 0
     ).length;
+    if (extraTabCounts) {
+      for (const [k, v] of Object.entries(extraTabCounts)) {
+        counts[k] = v;
+      }
+    }
     return counts;
-  }, [allConnectors, searchQuery, activeCountByType, inactiveCountByType]);
+  }, [allConnectors, searchQuery, activeCountByType, inactiveCountByType, extraTabCounts]);
 
   return (
     <Flex
@@ -225,8 +236,8 @@ export function ConnectorCatalogLayout({
         {trailingAction}
       </Flex>
 
-      {/* ── Connector grid ── */}
-      {isLoading ? (
+      {/* ── Connector grid (or custom tab content) ── */}
+      {tabContent ? tabContent : isLoading ? (
         <Flex
           align="center"
           justify="center"

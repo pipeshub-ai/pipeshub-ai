@@ -868,17 +868,21 @@ class JiraConnector(BaseConnector):
     # Initialization & Configuration
     # ============================================================================
 
+    async def _build_jira_client(self):
+        """EE override point: swap to EE JiraClient for org-scoped OAuth inheritance."""
+        return await JiraClient.build_from_services(
+            logger=self.logger,
+            config_service=self.config_service,
+            connector_instance_id=self.connector_id,
+        )
+
     async def init(self) -> bool:
         """
         Initialize Jira client using proper Client + DataSource architecture
         """
         try:
             # Use JiraClient.build_from_services() to create client with proper auth
-            client = await JiraClient.build_from_services(
-                logger=self.logger,
-                config_service=self.config_service,
-                connector_instance_id=self.connector_id
-            )
+            client = await self._build_jira_client()
 
             # Store client for token updates
             self.external_client = client
@@ -3090,11 +3094,10 @@ class JiraConnector(BaseConnector):
                     last_issue_updated = self._parse_jira_timestamp(updated_str)
 
             # Build records for this batch
-            async with self.data_store_provider.transaction() as tx_store:
-                records_batch = await self._build_issue_records(
-                    batch_issues, project_id, users, tx_store,
-                    is_new_project=is_new_project,
-                )
+            records_batch = await self._build_issue_records(
+                batch_issues, project_id, users,
+                is_new_project=is_new_project,
+            )
 
             self.logger.debug(f"📦 Fetched batch {page_count}: {len(batch_issues)} issues -> {len(records_batch)} records (last updated: {last_issue_updated})")
 
@@ -3343,7 +3346,6 @@ class JiraConnector(BaseConnector):
         issues: list[dict[str, Any]],
         project_id: str,
         users: list[AppUser],
-        tx_store,
         is_new_project: bool = False,
     ) -> list[tuple[Record, list[Permission]]]:
         """
@@ -3392,12 +3394,12 @@ class JiraConnector(BaseConnector):
             fields = issue.get("fields", {})
 
             # Handle attachment deletions based on changelog for this issue
-            await self._handle_attachment_deletions_from_changelog(issue, tx_store)
+            await self._handle_attachment_deletions_from_changelog(issue)
 
             # Check for existing record (works for both Epics and regular issues)
-            existing_record = await tx_store.get_record_by_external_id(
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
                 connector_id=self.connector_id,
-                external_id=issue_id
+                external_record_id=issue_id
             )
 
             record_id = existing_record.id if existing_record else str(uuid4())
@@ -3500,7 +3502,6 @@ class JiraConnector(BaseConnector):
                     permissions,
                     external_record_group_id,
                     record_group_type,
-                    tx_store,
                     parent_node_id=issue_record.id,
                 )
                 if attachment_records:
@@ -3526,7 +3527,6 @@ class JiraConnector(BaseConnector):
         parent_permissions: list[Permission],
         parent_record_group_id: str,
         parent_record_group_type: RecordGroupType,
-        tx_store,
         parent_node_id: Optional[str] = None,
     ) -> list[tuple[FileRecord, list[Permission]]]:
         """
@@ -3553,9 +3553,9 @@ class JiraConnector(BaseConnector):
                     continue
 
                 # Check for existing attachment record
-                existing_record = await tx_store.get_record_by_external_id(
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id,
-                    external_id=f"attachment_{attachment_id}"
+                    external_record_id=f"attachment_{attachment_id}"
                 )
 
                 # Get attachment metadata
@@ -3622,13 +3622,12 @@ class JiraConnector(BaseConnector):
         self,
         record: Record,
         issue_key: str,
-        tx_store,
         reason: str = "based on changelog event"
     ) -> None:
         """
         Helper method to delete an attachment record and log the action.
         """
-        await tx_store.delete_records_and_relations(
+        await self.data_entities_processor.delete_records_and_relations(
             record_key=record.id,
             hard_delete=True
         )
@@ -3641,7 +3640,6 @@ class JiraConnector(BaseConnector):
     async def _find_attachment_record_by_id(
         self,
         attachment_id: str,
-        tx_store
     ) -> Optional[Record]:
         """
         Find attachment record by ID
@@ -3649,16 +3647,15 @@ class JiraConnector(BaseConnector):
         external_id = f"attachment_{attachment_id}"
 
         # First try new-style external ID (attachment_<id>)
-        return await tx_store.get_record_by_external_id(
+        return await self.data_entities_processor.get_record_by_external_id(
             connector_id=self.connector_id,
-            external_id=external_id,
+            external_record_id=external_id,
         )
 
 
     async def _handle_attachment_deletions_from_changelog(
         self,
         issue: dict[str, Any],
-        tx_store,
     ) -> None:
         """
         Detect and delete attachments that were removed from an issue using changelog.
@@ -3738,7 +3735,7 @@ class JiraConnector(BaseConnector):
             # Case 1: Delete attachments with explicit IDs from changelog
             deleted_count = 0
             for attachment_id in deleted_attachment_ids:
-                record = await self._find_attachment_record_by_id(attachment_id, tx_store)
+                record = await self._find_attachment_record_by_id(attachment_id)
                 if not record:
                     self.logger.debug(
                         f"Attachment attachment_{attachment_id} referenced in changelog for issue {issue_key} "
@@ -3746,7 +3743,7 @@ class JiraConnector(BaseConnector):
                     )
                     continue
 
-                await self._delete_attachment_record(record, issue_key, tx_store)
+                await self._delete_attachment_record(record, issue_key)
                 deleted_count += 1
 
             # Early return if no unmatched filenames to handle
@@ -3758,7 +3755,7 @@ class JiraConnector(BaseConnector):
                 return
 
             # Case 2: Handle unmatched filenames and description changes
-            existing_records = await tx_store.get_records_by_parent(
+            existing_records = await self.data_entities_processor.get_records_by_parent(
                 connector_id=self.connector_id,
                 parent_external_record_id=issue_id,
                 record_type=RecordType.FILE.value
@@ -3772,8 +3769,7 @@ class JiraConnector(BaseConnector):
                     await self._delete_attachment_record(
                         record,
                         issue_key,
-                        tx_store,
-                        "because it was removed from description"
+                        reason="because it was removed from description"
                     )
                     deleted_count += 1
                     deleted_by_filename += 1
@@ -3790,8 +3786,7 @@ class JiraConnector(BaseConnector):
                 await self._delete_attachment_record(
                     record,
                     issue_key,
-                    tx_store,
-                    "because it no longer exists in Jira"
+                    reason="because it no longer exists in Jira"
                 )
                 deleted_count += 1
 
@@ -4160,7 +4155,6 @@ class JiraConnector(BaseConnector):
         issue_node_id: str,
         project_id: str,
         issue_weburl: Optional[str],
-        tx_store,
     ) -> dict[str, ChildRecord]:
         """
         Process issue attachments and create ChildRecords for TableRowMetadata.
@@ -4175,7 +4169,6 @@ class JiraConnector(BaseConnector):
             issue_node_id: Internal record ID of issue
             project_id: Project ID for external_record_group_id
             issue_weburl: Issue web URL (used as weburl for FileRecords)
-            tx_store: Transaction store for looking up existing records
 
         Returns:
             Dict mapping attachment_id -> ChildRecord for proper location assignment
@@ -4191,9 +4184,9 @@ class JiraConnector(BaseConnector):
 
                 # Look up existing attachment record from database
                 external_id = f"attachment_{attachment_id}"
-                existing_record = await tx_store.get_record_by_external_id(
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id,
-                    external_id=external_id
+                    external_record_id=external_id
                 )
 
                 # Create FileRecord if it doesn't exist (new attachment added after sync)
@@ -4416,17 +4409,15 @@ class JiraConnector(BaseConnector):
         # Fetch child records from database - get map of attachment_id -> ChildRecord
         attachment_children_map: dict[str, ChildRecord] = {}
 
-        async with self.data_store_provider.transaction() as tx_store:
-            # Process attachments (including images)
-            if attachments_data:
-                attachment_children_map = await self._process_issue_attachments_for_children(
-                    attachments_data=attachments_data,
-                    issue_id=issue_id,
-                    issue_node_id=record.id,
-                    project_id=project_id,
-                    issue_weburl=issue_weburl,
-                    tx_store=tx_store
-                )
+        # Process attachments (including images)
+        if attachments_data:
+            attachment_children_map = await self._process_issue_attachments_for_children(
+                attachments_data=attachments_data,
+                issue_id=issue_id,
+                issue_node_id=record.id,
+                project_id=project_id,
+                issue_weburl=issue_weburl,
+            )
 
         # Add comments to issue_data for parsing
         issue_data["comments"] = comments_data
@@ -5109,12 +5100,9 @@ class JiraConnector(BaseConnector):
                 self.logger.warning(f"Attachment {attachment_id} missing parent issue ID")
                 return None
 
-            # Get parent ticket's internal record ID
-            async with self.data_store_provider.transaction() as tx_store:
-                parent_ticket_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=issue_id
-                )
+            parent_ticket_record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=issue_id
+            )
             parent_node_id = parent_ticket_record.id if parent_ticket_record else None
 
             # Fetch issue to get attachment metadata
@@ -5211,17 +5199,11 @@ class JiraConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
         **kwargs,
     ) -> "BaseConnector":
         """Factory method to create JiraConnector instance"""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-        await data_entities_processor.initialize()
-
-        return JiraConnector(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,

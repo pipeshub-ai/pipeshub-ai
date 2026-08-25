@@ -267,9 +267,129 @@ describe('SamlController', () => {
         orgId: 'o1',
         authSteps: [{ order: 1, allowedMethods: [{ type: 'samlSso' }] }],
       } as any);
+    });
+  });
 
-      // The ConfigurationManagerServiceCommand is created inside signInViaSAML,
-      // so the test will verify error propagation through next()
+  describe('parseRelayState', () => {
+    it('should return empty object when no RelayState is present', () => {
+      const req: any = { body: {}, query: {} };
+      const result = controller.parseRelayState(req);
+      expect(result).to.deep.equal({});
+    });
+
+    it('should decode RelayState from body', () => {
+      const data = { orgId: 'org1', sessionToken: 'tok1' };
+      const encoded = Buffer.from(JSON.stringify(data)).toString('base64');
+      const req: any = { body: { RelayState: encoded }, query: {} };
+      const result = controller.parseRelayState(req);
+      expect(result).to.deep.equal(data);
+    });
+
+    it('should decode RelayState from query', () => {
+      const data = { orgId: 'org2' };
+      const encoded = Buffer.from(JSON.stringify(data)).toString('base64');
+      const req: any = { body: {}, query: { RelayState: encoded } };
+      const result = controller.parseRelayState(req);
+      expect(result).to.deep.equal(data);
+    });
+
+    it('should prefer body over query for RelayState', () => {
+      const bodyData = { orgId: 'body-org' };
+      const queryData = { orgId: 'query-org' };
+      const bodyEncoded = Buffer.from(JSON.stringify(bodyData)).toString('base64');
+      const queryEncoded = Buffer.from(JSON.stringify(queryData)).toString('base64');
+      const req: any = { body: { RelayState: bodyEncoded }, query: { RelayState: queryEncoded } };
+      const result = controller.parseRelayState(req);
+      expect(result).to.deep.equal(bodyData);
+    });
+
+    it('should return empty object for invalid base64', () => {
+      const req: any = { body: { RelayState: '!!!invalid!!!' }, query: {} };
+      const result = controller.parseRelayState(req);
+      expect(result).to.deep.equal({});
+      expect(mockLogger.warn.calledOnce).to.be.true;
+    });
+
+    it('should return empty object for non-JSON base64', () => {
+      const encoded = Buffer.from('not json').toString('base64');
+      const req: any = { body: { RelayState: encoded }, query: {} };
+      const result = controller.parseRelayState(req);
+      expect(result).to.deep.equal({});
+    });
+  });
+
+  describe('getSamlEmail', () => {
+    it('should return email from configured email key', () => {
+      controller.updateOrgIdToSamlEmailKey('org1', 'customEmail');
+      const samlUser = { customEmail: 'user@example.com' };
+      const result = controller.getSamlEmail(samlUser, 'org1');
+      expect(result).to.equal('user@example.com');
+    });
+
+    it('should return null when no valid email found', () => {
+      const result = controller.getSamlEmail({}, 'org1');
+      expect(result).to.be.null;
+    });
+
+    it('should skip invalid emails from configured key', () => {
+      controller.updateOrgIdToSamlEmailKey('org1', 'customEmail');
+      const samlUser = { customEmail: 'not-an-email', email: 'valid@example.com' };
+      const result = controller.getSamlEmail(samlUser, 'org1');
+      expect(result).to.equal('valid@example.com');
+    });
+
+    it('should fall back to "email" key', () => {
+      const samlUser = { email: 'fallback@example.com' };
+      const result = controller.getSamlEmail(samlUser, 'unknown-org');
+      expect(result).to.equal('fallback@example.com');
+    });
+
+    it('should fall back to "mail" key', () => {
+      const samlUser = { mail: 'mail@example.com' };
+      const result = controller.getSamlEmail(samlUser, 'org1');
+      expect(result).to.equal('mail@example.com');
+    });
+
+    it('should fall back to "userPrincipalName" key', () => {
+      const samlUser = { userPrincipalName: 'upn@example.com' };
+      const result = controller.getSamlEmail(samlUser, 'org1');
+      expect(result).to.equal('upn@example.com');
+    });
+
+    it('should fall back to "primaryEmail" key', () => {
+      const samlUser = { primaryEmail: 'primary@example.com' };
+      const result = controller.getSamlEmail(samlUser, 'org1');
+      expect(result).to.equal('primary@example.com');
+    });
+
+    it('should fall back to "contactEmail" key', () => {
+      const samlUser = { contactEmail: 'contact@example.com' };
+      const result = controller.getSamlEmail(samlUser, 'org1');
+      expect(result).to.equal('contact@example.com');
+    });
+
+    it('should fall back to "preferred_username" key', () => {
+      const samlUser = { preferred_username: 'preferred@example.com' };
+      const result = controller.getSamlEmail(samlUser, 'org1');
+      expect(result).to.equal('preferred@example.com');
+    });
+
+    it('should fall back to "mailPrimaryAddress" key', () => {
+      const samlUser = { mailPrimaryAddress: 'mpa@example.com' };
+      const result = controller.getSamlEmail(samlUser, 'org1');
+      expect(result).to.equal('mpa@example.com');
+    });
+
+    it('should fall back to "nameID" key', () => {
+      const samlUser = { nameID: 'nameid@example.com' };
+      const result = controller.getSamlEmail(samlUser, 'org1');
+      expect(result).to.equal('nameid@example.com');
+    });
+
+    it('should skip invalid emails in fallback keys', () => {
+      const samlUser = { email: 'bad', mail: 'also-bad', userPrincipalName: 'good@example.com' };
+      const result = controller.getSamlEmail(samlUser, 'org1');
+      expect(result).to.equal('good@example.com');
     });
   });
 });

@@ -123,6 +123,8 @@ def _make_connector() -> SnowflakeConnector:
     dep.reindex_existing_records = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_user_by_user_id = AsyncMock()
+    dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.ensure_team_app_edge = AsyncMock()
     c.data_entities_processor = dep
 
     # Data store provider (used for checkpoint/transactions)
@@ -613,12 +615,12 @@ class TestBatchGetRecords:
         mock_record = MagicMock()
         mock_record.id = "rec-1"
 
-        async def fetch(*, connector_id: str, external_id: str):
-            if external_id == "ext-1":
+        async def fetch(*, connector_id: str, external_record_id: str):
+            if external_record_id == "ext-1":
                 return mock_record
             return None
 
-        c._tx_store.get_record_by_external_id.side_effect = fetch
+        c.data_entities_processor.get_record_by_external_id.side_effect = fetch
         result = await c._batch_get_records_by_external_ids(["ext-1", "ext-2"])
         assert "ext-1" in result
         assert "ext-2" not in result
@@ -627,12 +629,12 @@ class TestBatchGetRecords:
     async def test_handles_exceptions_per_record(self) -> None:
         c = _make_connector()
 
-        async def fetch(*, connector_id: str, external_id: str):
-            if external_id == "bad":
+        async def fetch(*, connector_id: str, external_record_id: str):
+            if external_record_id == "bad":
                 raise RuntimeError("err")
             return MagicMock()
 
-        c._tx_store.get_record_by_external_id.side_effect = fetch
+        c.data_entities_processor.get_record_by_external_id.side_effect = fetch
         result = await c._batch_get_records_by_external_ids(["bad", "good"])
         assert "good" in result
         assert "bad" not in result
@@ -655,10 +657,10 @@ class TestMarkRecordsForReindex:
         c = _make_connector()
         mock_record = MagicMock()
 
-        async def fetch(*, connector_id: str, external_id: str):
+        async def fetch(*, connector_id: str, external_record_id: str):
             return mock_record
 
-        c._tx_store.get_record_by_external_id.side_effect = fetch
+        c.data_entities_processor.get_record_by_external_id.side_effect = fetch
         await c._mark_records_for_reindex(["ext-1", "ext-2"])
         c.data_entities_processor.reindex_existing_records.assert_awaited_once()
         assert c.sync_stats.records_reindexed == 2
@@ -1380,10 +1382,10 @@ class TestProcessDeletionsBatch:
         mock_rec = MagicMock()
         mock_rec.id = "rec-1"
 
-        async def fetch(*, connector_id: str, external_id: str):
+        async def fetch(*, connector_id: str, external_record_id: str):
             return mock_rec
 
-        c._tx_store.get_record_by_external_id.side_effect = fetch
+        c.data_entities_processor.get_record_by_external_id.side_effect = fetch
         await c._process_deletions_batch(
             deleted_databases=set(),
             deleted_schemas=set(),
@@ -1406,10 +1408,10 @@ class TestProcessDeletionsBatch:
         mock_rec = MagicMock()
         mock_rec.id = "rec"
 
-        async def fetch(*, connector_id: str, external_id: str):
+        async def fetch(*, connector_id: str, external_record_id: str):
             return mock_rec
 
-        c._tx_store.get_record_by_external_id.side_effect = fetch
+        c.data_entities_processor.get_record_by_external_id.side_effect = fetch
         await c._process_deletions_batch(
             deleted_databases=set(),
             deleted_schemas=set(),
@@ -1427,10 +1429,10 @@ class TestProcessDeletionsBatch:
         mock_rec = MagicMock()
         mock_rec.id = "rec"
 
-        async def fetch(*, connector_id: str, external_id: str):
+        async def fetch(*, connector_id: str, external_record_id: str):
             return mock_rec
 
-        c._tx_store.get_record_by_external_id.side_effect = fetch
+        c.data_entities_processor.get_record_by_external_id.side_effect = fetch
         c.data_entities_processor.on_record_deleted.side_effect = RuntimeError("boom")
         await c._process_deletions_batch(
             deleted_databases=set(),
@@ -1829,10 +1831,10 @@ class TestRunIncrementalSyncInternal:
 
         mock_record = MagicMock()
 
-        async def fetch(*, connector_id: str, external_id: str):
+        async def fetch(*, connector_id: str, external_record_id: str):
             return mock_record
 
-        c._tx_store.get_record_by_external_id.side_effect = fetch
+        c.data_entities_processor.get_record_by_external_id.side_effect = fetch
 
         table = SnowflakeTable(
             name="T",
@@ -2510,8 +2512,6 @@ class TestCreateConnector:
             self.app = app
 
         with patch(
-            "app.connectors.sources.snowflake.connector.DataSourceEntitiesProcessor"
-        ) as dep_cls, patch(
             "app.connectors.sources.snowflake.connector.BaseConnector.__init__",
             new=_fake_base_init,
         ), patch(
@@ -2519,16 +2519,15 @@ class TestCreateConnector:
         ), patch(
             "app.connectors.sources.snowflake.connector.SnowflakeApp"
         ):
-            dep_instance = MagicMock()
-            dep_instance.initialize = AsyncMock()
-            dep_instance.org_id = "org-1"
-            dep_cls.return_value = dep_instance
+            processor = MagicMock()
+            processor.org_id = "org-1"
 
             conn = await SnowflakeConnector.create_connector(
                 logger=logging.getLogger("x"),
                 data_store_provider=MagicMock(),
                 config_service=MagicMock(),
                 connector_id="conn-xyz",
+                data_entities_processor=processor,
             )
         assert isinstance(conn, SnowflakeConnector)
         assert conn.connector_id == "conn-xyz"
@@ -2622,7 +2621,7 @@ class TestEnsureScopeAppEdges:
         from app.connectors.core.registry.connector_builder import ConnectorScope
         c.scope = ConnectorScope.TEAM.value
         await c._ensure_scope_app_edges()
-        c._tx_store.ensure_team_app_edge.assert_awaited_once_with("conn-sf-1", "org-1")
+        c.data_entities_processor.ensure_team_app_edge.assert_awaited_once_with("conn-sf-1")
 
     @pytest.mark.asyncio
     async def test_personal_without_created_by_logs_warning(self) -> None:

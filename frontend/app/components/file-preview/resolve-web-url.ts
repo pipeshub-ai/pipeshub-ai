@@ -6,7 +6,7 @@
  * Mirrors the previous `resolveWebUrl` in `record-view-shell.tsx`:
  * - respects `hideWeburl`
  * - tries each candidate independently (invalid primary must not block fallback)
- * - normalizes relative UPLOAD paths to an absolute same-origin URL
+ * - keeps relative UPLOAD paths as-is so callers can apply withCurrentOrgId / useOrgHref
  */
 
 export type WebUrlRecordFields = {
@@ -25,11 +25,9 @@ function normalizeWebUrlCandidate(
 
   if (/^https?:\/\//i.test(url)) return url;
 
-  // Relative / non-http upload paths — same-origin absolute URL (record-view-shell).
+  // Relative UPLOAD paths — kept relative so consumers can apply withCurrentOrgId / useOrgHref.
   if (origin === 'UPLOAD') {
-    const path = url.startsWith('/') ? url : `/${url}`;
-    if (typeof window === 'undefined') return path;
-    return `${window.location.protocol}//${window.location.host}${path}`;
+    return url.startsWith('/') ? url : `/${url}`;
   }
 
   return null;

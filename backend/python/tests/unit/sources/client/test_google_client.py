@@ -771,7 +771,7 @@ class TestBuildFromToolset:
     @pytest.mark.asyncio
     @patch("app.sources.client.google.google.build")
     @patch("app.sources.client.google.google.Credentials")
-    @patch("app.sources.client.google.google.get_oauth_credentials_for_toolset", create=True)
+    @patch("app.api.routes.toolsets.get_oauth_credentials_for_toolset", create=True)
     async def test_success_with_refresh_token(
         self, mock_get_oauth, mock_credentials_cls, mock_build, logger, mock_config_service
     ):

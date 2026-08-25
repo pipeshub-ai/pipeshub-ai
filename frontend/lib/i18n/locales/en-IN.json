@@ -306,7 +306,8 @@
     "confirmDeleteMultiple": "Are you sure you want to delete {{count}} items?",
     "cannotUndo": "This action cannot be undone.",
     "areYouSure": "Are you sure?",
-    "typeDeleteToConfirm": "Type DELETE to confirm",
+    "deleteKeyword": "DELETE",
+    "typeDeleteToConfirm": "Type {{keyword}} to confirm",
     "knowledgeBase": "knowledge base",
     "in": "in",
     "willBeDeleted": "will be deleted",
@@ -390,7 +391,8 @@
     "language": "Language",
     "english": "English",
     "german": "German",
-    "rotateLandscape": "Rotate your device for the best experience"
+    "rotateLandscape": "Rotate your device for the best experience",
+    "errorOccurred": "An error occurred. Please try again."
   },
   "units": {
     "bytes": "Bytes",
@@ -481,6 +483,14 @@
     "record": "record"
   },
   "chat": {
+    "recordActions": {
+      "preview": "Preview",
+      "open": "Open {{source}}",
+      "openIn": "Open in {{source}}",
+      "openInCollections": "Open in Collections",
+      "relevance": "Relevance: {{percent}}%"
+    },
+    "results": "Results",
     "greeting": "What do you want to explore today?",
     "heyUser": "Hey, {{name}} 👋",
     "heyUserDefaultName": "there",
@@ -1917,6 +1927,9 @@
       "noResults": "No MCP servers match your search",
       "addServer": "Add Server",
       "custom": "Custom",
+      "inherited": "Inherited",
+      "inheritedDeleteTooltip": "Managed by parent organization",
+      "inheritedReadOnly": "This MCP server is inherited from a parent organization and cannot be edited here.",
       "sharedAuth": "Shared admin auth",
       "toolsCount_one": "{{count}} tool",
       "toolsCount_other": "{{count}} tools",
@@ -2636,6 +2649,7 @@
     "agentActionsMenuAria": "Agent menu",
     "agentMenuCreateAsServiceAgent": "Create as service agent",
     "agentMenuConvertToServiceAgent": "Convert to service agent",
+    "share": "Share",
     "shareWithOrg": "Share with everyone",
     "shareWithOrgTooltip": "Share this agent with everyone in your organisation.",
     "serviceAccountShareTooltip": "Service agents are always shared with the organisation.",
@@ -2741,6 +2755,8 @@
     "svcAcctCreateTitle": "Create service agent",
     "svcAcctConvertDesc": "This agent becomes a shared service agent: available across your organisation, each toolset authenticates once at the agent level, and knowledge is limited to what you connect on the flow.",
     "svcAcctCreateDesc": "You are creating a shared service agent: available across your organisation, each toolset authenticates once at the agent level, and knowledge is limited to what you connect on the flow.",
+    "svcAcctConvertDescNoOrg": "This agent becomes a service agent: each toolset authenticates once at the agent level, and knowledge is limited to what you connect on the flow. Use the Share button to control who can access it.",
+    "svcAcctCreateDescNoOrg": "You are creating a service agent: each toolset authenticates once at the agent level, and knowledge is limited to what you connect on the flow. Use the Share button to control who can access it.",
     "svcAcctConvertLabel": "Convert to service agent",
     "svcAcctCreateLabel": "Create service agent",
     "svcAcctConvertBusy": "Converting…",
@@ -2771,6 +2787,8 @@
     "mcpCredentialsTitle": "MCP server credentials",
     "mcpCredentialsDesc": "Authenticate this MCP server so the agent can use its tools.",
     "mcpServerDefaultName": "MCP Server",
+    "configureMcpTooltip": "Manage credentials",
+    "authenticateMcpTooltip": "Authenticate this MCP server",
     "mcpAuthUpdatedNotify": "MCP authentication updated.",
     "mcpAuthSaveError": "Failed to save MCP credentials.",
     "mcpAuthRemoveError": "Failed to remove MCP credentials.",
@@ -3045,14 +3063,14 @@
       "subtitle": "Welcome to Pipeshub -- let's get started!",
       "firstNameLabel": "First Name*",
       "lastNameLabel": "Last Name*",
-      "orgNameLabel": "Organization Name*",
+      "orgNameLabel": "Workspace Name*",
       "emailLabel": "Your Email*",
       "passwordLabel": "Password*",
       "confirmPasswordLabel": "Confirm Password*",
       "preferredLanguageLabel": "Preferred Language",
       "firstNamePlaceholder": "Enter your first name",
       "lastNamePlaceholder": "Enter your last name",
-      "orgNamePlaceholder": "Enter your organization name",
+      "orgNamePlaceholder": "Enter your workspace name",
       "emailPlaceholder": "Enter your email",
       "passwordPlaceholder": "Enter your password",
       "confirmPasswordPlaceholder": "Confirm your password",
@@ -3075,7 +3093,7 @@
       "errors": {
         "firstNameRequired": "First name is required.",
         "lastNameRequired": "Last name is required.",
-        "orgNameRequired": "Organization name is required.",
+        "orgNameRequired": "Workspace name is required.",
         "emailRequired": "Email is required.",
         "emailInvalid": "Please enter a valid email address.",
         "passwordRequired": "Password is required.",
@@ -3092,9 +3110,7 @@
         "emailNotePre": "Make sure the email you registered with —",
         "emailNotePost": "— is the same one used in your organisation's apps so your permissions are recognised correctly.",
         "cancelButton": "Cancel",
-        "signUpButton": "Sign Up",
-        "verificationNoteTitle": "Verification required",
-        "verificationNoteBody": "A verification link will be sent to the email above. Your organisation will only be accessible after you verify it."
+        "signUpButton": "Sign Up"
       }
     },
     "login": {

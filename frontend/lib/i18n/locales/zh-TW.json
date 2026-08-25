@@ -319,7 +319,8 @@
     "confirmDeleteMultiple": "確定要刪除 {{count}} 個項目嗎？",
     "cannotUndo": "此操作無法復原。",
     "areYouSure": "確定要繼續嗎？",
-    "typeDeleteToConfirm": "輸入 DELETE 以確認",
+    "deleteKeyword": "刪除",
+    "typeDeleteToConfirm": "輸入「{{keyword}}」以確認",
     "knowledgeBase": "知識庫",
     "in": "位於",
     "willBeDeleted": "將被刪除",
@@ -499,6 +500,14 @@
     "record": "記錄"
   },
   "chat": {
+    "recordActions": {
+      "preview": "預覽",
+      "open": "開啟 {{source}}",
+      "openIn": "在 {{source}} 中開啟",
+      "openInCollections": "在集合中開啟",
+      "relevance": "相關度：{{percent}}%"
+    },
+    "results": "結果",
     "greeting": "今天想探索什麼？",
     "heyUser": "嗨，{{name}} 👋",
     "heyUserDefaultName": "您好",

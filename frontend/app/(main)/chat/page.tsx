@@ -4,7 +4,8 @@ import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useSta
 import { useSearchParams, useRouter } from 'next/navigation';
 import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
 import { SuggestionChip, MessageList, ChatInputWrapper, SearchResultsView } from './components';
-import { AgentChatHeader } from './components/agent-chat-header';
+import { AgentChatHeader } from '@/config';
+import { getAgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import {
   applyConversationModelInfoToStore,
@@ -392,6 +393,9 @@ function ChatContent() {
           });
           store.setAgentContextDisplayName(agent?.name?.trim() || null);
           store.setAgentContextCreatedBy(agent?.createdBy ?? null);
+          store.setAgentContextAccess(
+            agent ? getAgentSidebarRowMenuAccess(agent) : null,
+          );
 
           // Warn when any tool attached to this agent has been removed from
           // server code since the agent was last saved (deprecated=true is
@@ -447,12 +451,14 @@ function ChatContent() {
             store.hydrateAgentChatResources(null);
             store.setAgentContextDisplayName(null);
             store.setAgentContextCreatedBy(null);
+            store.setAgentContextAccess(null);
           }
         }
       } else {
         store.hydrateAgentChatResources(null);
         store.setAgentContextDisplayName(null);
         store.setAgentContextCreatedBy(null);
+        store.setAgentContextAccess(null);
       }
 
       try {

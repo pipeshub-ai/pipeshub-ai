@@ -990,7 +990,7 @@ class VectorStore(Transformer):
                 must={"virtualRecordId": virtual_record_id}
             )
             await self.vector_db_service.delete_points(self.collection_name, filter_dict)
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Deleted embeddings for virtual record '{virtual_record_id}'"
             )
         except Exception as e:

@@ -310,12 +310,12 @@ class QdrantService(IVectorDBService):
 
     async def connect(self) -> None:
         try:
-            if isinstance(self.config_service, ConfigurationService):
+            if isinstance(self.config_service, QdrantConfig):
+                raw = self.config_service.qdrant_config
+            else:
                 raw = await self.config_service.get_config(
                     config_node_constants.QDRANT.value
                 )
-            else:
-                raw = self.config_service.qdrant_config
 
             if not raw:
                 raise ValueError("Qdrant configuration not found")

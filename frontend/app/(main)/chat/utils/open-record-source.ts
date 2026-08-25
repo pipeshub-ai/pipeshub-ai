@@ -3,6 +3,7 @@
 import { KnowledgeBaseApi } from '@/knowledge-base/api';
 import type { RecordDetailsResponse } from '@/knowledge-base/types';
 import { isLocalFsConnectorType } from '@/app/(main)/workspace/connectors/utils/local-fs-helpers';
+import { withCurrentOrgId } from '@/lib/navigation';
 
 interface ElectronLocalFsOpenPayload {
   connectorId: string;
@@ -69,7 +70,11 @@ function openFallbackUrl(
     (deps.navigateCurrentWindow ?? ((target) => window.location.assign(target)))(url);
     return;
   }
-  (deps.openWindow ?? ((target) => window.open(target, '_blank', 'noopener,noreferrer')))(url);
+  // New tabs start with an empty sessionStorage, so an internal /record/ URL has to
+  // carry the active org itself. External URLs are returned unchanged.
+  (deps.openWindow ?? ((target) => window.open(target, '_blank', 'noopener,noreferrer')))(
+    withCurrentOrgId(url),
+  );
 }
 
 function normalizeAbsolutePath(pathValue?: string | null): string | null {

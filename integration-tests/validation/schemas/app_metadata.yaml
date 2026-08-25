@@ -52,3 +52,9 @@ fields:
   updated_by:
     required: false
     type: string
+  vector_membership_backfilled:
+    required: false
+    type: boolean
+  vector_membership_backfill_after_key:
+    required: false
+    type: string

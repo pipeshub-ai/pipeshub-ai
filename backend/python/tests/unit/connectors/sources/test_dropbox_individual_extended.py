@@ -136,6 +136,18 @@ def connector():
         dep.on_new_records = AsyncMock()
         dep.on_new_app_users = AsyncMock()
         dep.on_new_record_groups = AsyncMock()
+        dep.on_record_deleted = AsyncMock()
+        dep.on_record_metadata_update = AsyncMock()
+        dep.on_record_content_update = AsyncMock()
+        dep.on_updated_record_permissions = AsyncMock()
+        dep.reindex_existing_records = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
+        dep.update_user_group_name = AsyncMock(return_value=True)
+        dep.get_user_by_email = AsyncMock(return_value=None)
+        dep.get_user_group_by_external_id = AsyncMock(return_value=None)
+        dep.upsert_permission_edge = AsyncMock()
+        dep.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
+        dep.get_file_record_by_id = AsyncMock(return_value=None)
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -173,7 +185,7 @@ class TestDropboxInit:
         result = await connector.init()
         assert result is False
 
-    @patch("app.connectors.sources.dropbox_individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_oauth_config_not_found(self, mock_fetch, connector):
         mock_fetch.return_value = None
         connector.config_service.get_config = AsyncMock(return_value={
@@ -328,7 +340,7 @@ class TestProcessDropboxEntry:
         existing.version = 0
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = ProgressStatus.COMPLETED.value
-        connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         entry = self._make_file_entry()
         self._mock_temp_link(connector)
@@ -346,7 +358,7 @@ class TestProcessDropboxEntry:
         existing.record_name = "old_name.txt"
         existing.external_revision_id = "rev-1"
         existing.version = 0
-        connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         entry = self._make_file_entry(name="new_name.txt")
         self._mock_temp_link(connector)

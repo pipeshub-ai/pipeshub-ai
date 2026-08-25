@@ -330,7 +330,7 @@ async def _sync_vector_membership_locked(
     if logger is not None:
         # Counts at info, contents at debug: the backfill runs this for every
         # VRID in the corpus, and full arrays at info would drown the log.
-        logger.info(
+        logger.debug(
             "Rewrote vector membership for virtual_record_id %s "
             "(%d connectorIds, %d recordGroupIds)",
             virtual_record_id,

@@ -4485,7 +4485,7 @@ class IGraphDBProvider(ABC):
         pre-flight checks).
 
         Returns None if the agent does not exist, is deleted, or the user has
-        no access (individual, team, or org).
+        no access (individual or org).
 
         Args:
             agent_id: The agent key / ID.
