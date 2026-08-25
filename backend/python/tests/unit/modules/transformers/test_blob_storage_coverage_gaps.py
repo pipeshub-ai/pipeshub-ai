@@ -228,8 +228,13 @@ class TestApplyUploadNextVersionErrors:
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-existing"}
         )
-        bs.upload_next_version = AsyncMock(side_effect=RuntimeError("upstream failure"))
-        bs.save_record_to_storage = AsyncMock()
+        # apply()'s "override in place" branch catches ANY exception from
+        # update_record_buffer unconditionally and falls back to
+        # save_record_to_storage -- it does not gate on
+        # _is_non_versioned_exception. So a non-"cannot be versioned" error
+        # only propagates out of apply() if the fallback create ALSO fails.
+        bs.update_record_buffer = AsyncMock(side_effect=RuntimeError("upstream failure"))
+        bs.save_record_to_storage = AsyncMock(side_effect=RuntimeError("upstream failure"))
 
         ctx = MagicMock()
         ctx.record = _make_record_mock()
@@ -237,14 +242,7 @@ class TestApplyUploadNextVersionErrors:
         with pytest.raises(RuntimeError, match="upstream failure"):
             await bs.apply(ctx)
 
-        bs.save_record_to_storage.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_non_versioned_exception_message_detected(self):
-        """_is_non_versioned_exception is case-insensitive on the phrase."""
-        bs = _make_bs()
-        assert bs._is_non_versioned_exception(Exception("Cannot Be Versioned")) is True
-        assert bs._is_non_versioned_exception(Exception("other")) is False
+        bs.save_record_to_storage.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -458,7 +456,12 @@ class TestSaveReconciliationMetadataPropagates:
             return_value={"record_metadata_doc_id": "existing-meta"},
         )
         bs = _make_bs(graph_provider=gp)
-        bs.upload_next_version = AsyncMock(side_effect=RuntimeError("s3 outage"))
+        # existing record_metadata_doc_id routes into the _update_metadata_buffer
+        # branch. On failure that branch falls back to _create_metadata_document
+        # rather than propagating -- so the fallback must ALSO fail for the
+        # error to genuinely propagate out of save_reconciliation_metadata.
+        bs._update_metadata_buffer = AsyncMock(side_effect=RuntimeError("s3 outage"))
+        bs._create_metadata_document = AsyncMock(side_effect=RuntimeError("s3 outage"))
 
         with pytest.raises(RuntimeError, match="s3 outage"):
             await bs.save_reconciliation_metadata("o", "r", "vr", {"x": 1})
@@ -471,7 +474,9 @@ class TestSaveReconciliationMetadataPropagates:
 
 class TestGetReconciliationMetadataSignedUrlNonSuccess:
     @pytest.mark.asyncio
-    async def test_keeps_outer_payload_when_signed_fetch_fails_status(self):
+    async def test_returns_none_when_signed_fetch_fails_status(self):
+        """A failed signed-URL GET must not fall through and return the raw
+        {'signedUrl': ...} wrapper dict as if it were real metadata."""
         gp = AsyncMock()
         gp.get_document = AsyncMock(
             return_value={"record_metadata_doc_id": "meta-doc"},
@@ -496,7 +501,7 @@ class TestGetReconciliationMetadataSignedUrlNonSuccess:
         ):
             result = await bs.get_reconciliation_metadata("vr-1", "org-1")
 
-        assert result == {"signedUrl": "https://cdn.example/object"}
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

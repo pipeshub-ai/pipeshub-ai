@@ -38,6 +38,12 @@ from app.utils.chat_helpers import (
     image_dict_to_part,
 )
 from app.utils.image_admission import admission_from_state
+from app.utils.pattern_match import (
+    DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
+    cap_pattern_match_blocks,
+    execute_pattern_match_pipeline,
+    merge_pattern_match_results,
+)
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.messages import Part
@@ -390,6 +396,28 @@ class Retrieval:
             resolved_apps = list(narrowed_scope.app_ids) if narrowed_scope else []
             resolved_kbs = list(narrowed_scope.kb_ids) if narrowed_scope else []
 
+            # === PATTERN MATCH (kicked off in parallel with semantic search) ===
+            # execute_pattern_match_pipeline is fully self-gating — it derives its
+            # own grep command from the query, checks local-storage eligibility,
+            # and resolves connector ids from `filter_groups["apps"]` — so it is
+            # a fail-soft no-op (returns []) when storage isn't local, no keywords
+            # are extractable, or no app connectors are in scope. Started here
+            # (before the semantic search below) so both run concurrently; awaited
+            # further down once semantic results are in hand.
+            pattern_match_task: asyncio.Task[list[dict[str, Any]]] | None = None
+            if config_service is not None:
+                pattern_match_task = asyncio.create_task(
+                    execute_pattern_match_pipeline(
+                        query=search_query,
+                        config_service=config_service,
+                        org_id=org_id,
+                        user_id=user_id,
+                        graph_provider=graph_provider,
+                        filters=filter_groups,
+                        logger_instance=logger_instance,
+                    )
+                )
+
             # === SEARCH ===
             is_service_account = bool(self.state.get("is_service_account", False))
             logger_instance.debug(
@@ -495,7 +523,23 @@ class Retrieval:
 
             logger_instance.info(f"✅ Retrieved {len(search_results)} documents")
 
-            if not search_results:
+            # === PATTERN MATCH RESULT (awaited after semantic search) ===
+            # Fail-soft: any exception here falls back to semantic-only results.
+            raw_pattern_records: list[dict[str, Any]] = []
+            if pattern_match_task is not None:
+                try:
+                    raw_pattern_records = await pattern_match_task
+                except Exception as exc:
+                    logger_instance.warning(
+                        "Pattern match failed, continuing with semantic results only: %s", exc,
+                    )
+                    raw_pattern_records = []
+                if raw_pattern_records:
+                    logger_instance.info(
+                        "Pattern match: %d raw record(s)", len(raw_pattern_records),
+                    )
+
+            if not search_results and not raw_pattern_records:
                 return json.dumps({
                     "status": "success",
                     "message": "No results found",
@@ -554,6 +598,41 @@ class Retrieval:
             # received its own adjusted_limit.
             if not per_source_fan_out:
                 final_results = final_results[:adjusted_limit]
+
+            # === MERGE PATTERN MATCH ===
+            # Applied AFTER the semantic-only trim above so pattern-match blocks
+            # (capped separately to their own budget) are never sliced off by the
+            # semantic adjusted_limit. Dedup against virtual_record_ids already
+            # present in virtual_record_id_to_result happens inside
+            # merge_pattern_match_results; permission filtering (check_vrids_accessible)
+            # happens there too, so no separate access check is needed here.
+            if raw_pattern_records:
+                try:
+                    pm_blocks = await merge_pattern_match_results(
+                        raw_records=raw_pattern_records,
+                        virtual_record_id_to_result=virtual_record_id_to_result,
+                        user_id=user_id,
+                        org_id=org_id,
+                        blob_store=blob_store,
+                        graph_provider=graph_provider,
+                        is_multimodal_llm=is_multimodal_llm,
+                        logger_instance=logger_instance,
+                    )
+                    if pm_blocks:
+                        pm_blocks = cap_pattern_match_blocks(
+                            pm_blocks,
+                            budget=DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
+                            virtual_record_id_to_result=virtual_record_id_to_result,
+                            logger_instance=logger_instance,
+                        )
+                        final_results = final_results + pm_blocks
+                        logger_instance.info(
+                            "Pattern match: merged %d block(s) into results", len(pm_blocks),
+                        )
+                except Exception as exc:
+                    logger_instance.warning(
+                        "Pattern match merge failed, continuing with semantic results only: %s", exc,
+                    )
 
             # ================================================================
             # Write results directly to state (accumulate for parallel calls)
@@ -742,4 +821,3 @@ class Retrieval:
                 "status": "error",
                 "message": f"Retrieval error: {str(e)}"
             })
-

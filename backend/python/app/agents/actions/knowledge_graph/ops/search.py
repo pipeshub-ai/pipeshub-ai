@@ -17,6 +17,12 @@ from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
 from app.modules.transformers.blob_storage import BlobStorage
+from app.utils.pattern_match import (
+    DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
+    cap_pattern_match_blocks,
+    execute_pattern_match_pipeline,
+    merge_pattern_match_results,
+)
 from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
@@ -149,6 +155,20 @@ async def execute_search(
         resolved_apps = list(narrowed_scope.app_ids) if narrowed_scope else []
         resolved_kbs = list(narrowed_scope.kb_ids) if narrowed_scope else []
 
+        pattern_match_task: asyncio.Task[list[dict[str, Any]]] | None = None
+        if config_service is not None:
+            pattern_match_task = asyncio.create_task(
+                execute_pattern_match_pipeline(
+                    query=query,
+                    config_service=config_service,
+                    org_id=org_id,
+                    user_id=user_id,
+                    graph_provider=graph_provider,
+                    filters=filter_groups,
+                    logger_instance=logger_instance,
+                )
+            )
+
         is_service_account = bool(state.get("is_service_account", False))
         fan_out_sources = explicit_ids and (len(resolved_apps) > 1 or len(resolved_kbs) > 1)
         per_source_fan_out = False
@@ -228,7 +248,21 @@ async def execute_search(
             search_results = results.get("searchResults", [])
             virtual_to_record_map = results.get("virtual_to_record_map", {})
 
-        if not search_results:
+        raw_pattern_records: list[dict[str, Any]] = []
+        if pattern_match_task is not None:
+            try:
+                raw_pattern_records = await pattern_match_task
+            except Exception as exc:
+                logger_instance.warning(
+                    "Pattern match failed, continuing with semantic results only: %s", exc,
+                )
+                raw_pattern_records = []
+            if raw_pattern_records:
+                logger_instance.info(
+                    "Pattern match: %d raw record(s)", len(raw_pattern_records),
+                )
+
+        if not search_results and not raw_pattern_records:
             return json.dumps({
                 "status": "success",
                 "message": "No results found",
@@ -277,6 +311,34 @@ async def execute_search(
         final_results = search_results if not flattened_results else flattened_results
         if not per_source_fan_out:
             final_results = final_results[:adjusted_limit]
+
+        if raw_pattern_records:
+            try:
+                pm_blocks = await merge_pattern_match_results(
+                    raw_records=raw_pattern_records,
+                    virtual_record_id_to_result=virtual_record_id_to_result,
+                    user_id=user_id,
+                    org_id=org_id,
+                    blob_store=blob_store,
+                    graph_provider=graph_provider,
+                    is_multimodal_llm=is_multimodal_llm,
+                    logger_instance=logger_instance,
+                )
+                if pm_blocks:
+                    pm_blocks = cap_pattern_match_blocks(
+                        pm_blocks,
+                        budget=DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
+                        virtual_record_id_to_result=virtual_record_id_to_result,
+                        logger_instance=logger_instance,
+                    )
+                    final_results = final_results + pm_blocks
+                    logger_instance.info(
+                        "Pattern match: merged %d block(s) into results", len(pm_blocks),
+                    )
+            except Exception as exc:
+                logger_instance.warning(
+                    "Pattern match merge failed, continuing with semantic results only: %s", exc,
+                )
 
         # Accumulate into state for citation pipeline
         from app.agents.actions.retrieval.retrieval import _dedupe_append_final_results
