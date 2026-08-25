@@ -3529,17 +3529,37 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             missing_toolset_display_names: list[str] = []        # no config found at all
             unauthenticated_toolset_display_names: list[str] = []  # config exists but OAuth not completed
 
+            # Fetched fresh (not reused from earlier in this handler) since
+            # toolset_registry is only assigned on the agentIdPlaceholder branch
+            # above and would be undefined here otherwise.
+            _toolset_registry_for_auth_check = getattr(request.app.state, "toolset_registry", None)
+
             for toolset, config in fetch_results:
                 instance_id = toolset.get("instanceId")
                 toolset_name = toolset.get("name", "")
                 lookup_key = instance_id
                 display_name = toolset.get("instanceName") or toolset.get("displayName") or toolset_name.replace("_", " ").title()
 
-                if config and config.get("isAuthenticated", False):
+                # A toolset whose ONLY supported auth type is NONE (e.g. a public,
+                # credential-free API) has nothing to configure — no per-agent
+                # credential record will ever exist for it, so it must not be
+                # treated as "missing" or "unauthenticated".
+                toolset_meta = (
+                    _toolset_registry_for_auth_check.get_toolset_metadata(toolset_name)
+                    if _toolset_registry_for_auth_check
+                    else None
+                )
+                supported_auth_types = (toolset_meta or {}).get("supported_auth_types") or []
+                requires_no_auth = (
+                    len(supported_auth_types) == 1
+                    and str(supported_auth_types[0]).upper() == "NONE"
+                )
+
+                if requires_no_auth or (config and config.get("isAuthenticated", False)):
                     # Fully configured and authenticated — allow
                     # Use instanceId as the toolset_configs key so downstream code
                     # (_build_tool_to_toolset_map) can look it up correctly.
-                    toolset_configs[lookup_key] = config
+                    toolset_configs[lookup_key] = config or {}
                     configured_toolsets.append(toolset)
                 elif config:
                     # Config saved but authentication not completed (e.g. OAuth flow pending)
