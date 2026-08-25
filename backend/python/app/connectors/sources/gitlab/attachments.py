@@ -129,10 +129,9 @@ class AttachmentsHelper:
             if attach.category == GitlabLiterals.IMAGE.value:
                 continue
             full_attachment_url = f"{base_url}{attach.href}"
-            async with c.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=c.connector_id, external_id=full_attachment_url
-                )
+            existing_record = await c.data_entities_processor.get_record_by_external_id(
+                c.connector_id, full_attachment_url
+            )
             filerecord = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 org_id=c.data_entities_processor.org_id,
@@ -178,10 +177,9 @@ class AttachmentsHelper:
             if attach.category == GitlabLiterals.IMAGE.value:
                 continue
             full_attachment_url = f"{base_url}{attach.href}"
-            async with c.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=c.connector_id, external_id=full_attachment_url
-                )
+            existing_record = await c.data_entities_processor.get_record_by_external_id(
+                c.connector_id, full_attachment_url
+            )
             if existing_record:
                 child_records.append(ChildRecord(
                     child_id=existing_record.id, child_type=ChildType.RECORD,
@@ -211,10 +209,9 @@ class AttachmentsHelper:
             if attach.category == GitlabLiterals.IMAGE.value:
                 continue
             full_attachment_url = f"{base_url}{attach.href}"
-            async with c.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=c.connector_id, external_id=full_attachment_url
-                )
+            existing_record = await c.data_entities_processor.get_record_by_external_id(
+                c.connector_id, full_attachment_url
+            )
             if existing_record:
                 comment_attachments.append(CommentAttachment(name=existing_record.record_name, id=existing_record.id))
             else:

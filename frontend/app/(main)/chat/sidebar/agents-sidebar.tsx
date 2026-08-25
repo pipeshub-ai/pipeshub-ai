@@ -16,7 +16,7 @@ import { useDebouncedSearch } from '@/knowledge-base/hooks/use-debounced-search'
 import { AgentsApi } from '@/app/(main)/agents/api';
 import type { AgentListRecord } from '@/app/(main)/agents/types';
 import { AGENTS_SIDEBAR_PAGE_SIZE } from '@/chat/constants';
-import { AgentSidebarListRow } from './agent-sidebar-list-row';
+import { AgentSidebarListRow } from '@/config';
 
 interface AgentsSidebarProps {
   onBack: () => void;

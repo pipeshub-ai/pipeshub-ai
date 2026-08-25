@@ -14,7 +14,7 @@ import type { AgentListRecord } from '@/app/(main)/agents/types';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { ChatSectionHeader } from './chat-section-header';
 import { SidebarItem } from './sidebar-item';
-import { AgentSidebarListRow } from './agent-sidebar-list-row';
+import { AgentSidebarListRow } from '@/config';
 import { ChatItemSkeleton } from './chat-section-element';
 import {
   MAX_VISIBLE_AGENTS_IN_SIDEBAR,

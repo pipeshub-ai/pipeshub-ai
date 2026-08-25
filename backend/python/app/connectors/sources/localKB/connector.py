@@ -279,12 +279,10 @@ class KnowledgeBaseConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "KnowledgeBaseConnector":
         """Factory method to create a KnowledgeBaseConnector instance"""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
         return KnowledgeBaseConnector(
             logger,
             data_entities_processor,

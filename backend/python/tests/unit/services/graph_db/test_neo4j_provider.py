@@ -424,10 +424,7 @@ class TestCheckAgentPermission:
     @pytest.mark.asyncio
     async def test_returns_individual_access(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
-            side_effect=[
-                [],  # user query
-                [{"role": "OWNER", "access_type": "INDIVIDUAL"}],  # individual query
-            ]
+            return_value=[{"role": "OWNER", "access_type": "INDIVIDUAL"}]
         )
 
         result = await neo4j_provider.check_agent_permission("agent-1", "user-1", "org-1")
@@ -444,8 +441,7 @@ class TestCheckAgentPermission:
     async def test_returns_org_access_when_individual_missing(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [],  # user query
-                [],  # individual query
+                [],  # individual query — no individual access
                 [{"role": "WRITER", "access_type": "ORG"}],  # org query
             ]
         )
@@ -460,34 +456,9 @@ class TestCheckAgentPermission:
         assert result["can_share"] is False
 
     @pytest.mark.asyncio
-    async def test_returns_team_access_when_user_has_team(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.client.execute_query = AsyncMock(
-            side_effect=[
-                [{"u": {"id": "user-1"}}],  # user query
-                [{"team_id": "team-1"}],  # teams query
-                [],  # individual query
-                [],  # org query
-                [{"role": "ORGANIZER", "access_type": "TEAM"}],  # team query
-            ]
-        )
-        neo4j_provider._neo4j_to_arango_node = MagicMock(  # type: ignore[method-assign]
-            return_value={"userId": "resolved-user-id"}
-        )
-
-        result = await neo4j_provider.check_agent_permission("agent-1", "user-1", "org-1")
-
-        assert result is not None
-        assert result["access_type"] == "TEAM"
-        assert result["user_role"] == "ORGANIZER"
-        assert result["can_edit"] is True
-        assert result["can_delete"] is False
-        assert result["can_share"] is True
-
-    @pytest.mark.asyncio
     async def test_returns_none_when_no_access(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [],  # user query
                 [],  # individual query
                 [],  # org query
             ]
@@ -521,8 +492,7 @@ class TestGetAllAgents:
     async def test_returns_list_when_paging_not_requested(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [{"team_ids": []}],  # user teams
-                [  # combined result
+                [
                     {
                         "agent": {"id": "a1", "name": "Agent 1", "updatedAtTimestamp": 10},
                         "role": "OWNER",
@@ -530,12 +500,14 @@ class TestGetAllAgents:
                         "priority": 1,
                     }
                 ],
-                [{"org_shared_ids": ["a1"]}],  # org share query
+                [{"org_shared_ids": ["a1"]}],
             ]
         )
         neo4j_provider._neo4j_to_arango_node = MagicMock(  # type: ignore[method-assign]
             side_effect=lambda data, _collection: {"_key": data["id"], "name": data["name"], "updatedAtTimestamp": data.get("updatedAtTimestamp")}
         )
+        neo4j_provider._project_agents_toolsets_and_knowledge = AsyncMock(return_value={"a1": {"toolsets": [], "knowledge": []}})  # type: ignore[method-assign]
+        neo4j_provider._project_agents_mcp_servers = AsyncMock(return_value={})  # type: ignore[method-assign]
 
         result = await neo4j_provider.get_all_agents("user-1", "org-1")
 
@@ -549,19 +521,12 @@ class TestGetAllAgents:
     async def test_dedupes_and_keeps_highest_priority_permission(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [{"team_ids": ["team-1"]}],
                 [
                     {
                         "agent": {"id": "a1", "name": "Agent 1", "updatedAtTimestamp": 10},
                         "role": "READER",
                         "access_type": "ORG",
                         "priority": 3,
-                    },
-                    {
-                        "agent": {"id": "a1", "name": "Agent 1", "updatedAtTimestamp": 10},
-                        "role": "WRITER",
-                        "access_type": "TEAM",
-                        "priority": 2,
                     },
                     {
                         "agent": {"id": "a1", "name": "Agent 1", "updatedAtTimestamp": 10},
@@ -576,6 +541,8 @@ class TestGetAllAgents:
         neo4j_provider._neo4j_to_arango_node = MagicMock(  # type: ignore[method-assign]
             side_effect=lambda data, _collection: {"_key": data["id"], "name": data["name"], "updatedAtTimestamp": data.get("updatedAtTimestamp")}
         )
+        neo4j_provider._project_agents_toolsets_and_knowledge = AsyncMock(return_value={"a1": {"toolsets": [], "knowledge": []}})  # type: ignore[method-assign]
+        neo4j_provider._project_agents_mcp_servers = AsyncMock(return_value={})  # type: ignore[method-assign]
 
         result = await neo4j_provider.get_all_agents("user-1", "org-1")
 
@@ -589,7 +556,6 @@ class TestGetAllAgents:
     async def test_returns_paginated_response_with_total_items(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [{"team_ids": []}],
                 [
                     {"agent": {"id": "a1", "name": "A", "updatedAtTimestamp": 30}, "role": "OWNER", "access_type": "INDIVIDUAL", "priority": 1},
                     {"agent": {"id": "a2", "name": "B", "updatedAtTimestamp": 20}, "role": "OWNER", "access_type": "INDIVIDUAL", "priority": 1},
@@ -601,6 +567,8 @@ class TestGetAllAgents:
         neo4j_provider._neo4j_to_arango_node = MagicMock(  # type: ignore[method-assign]
             side_effect=lambda data, _collection: {"_key": data["id"], "name": data["name"], "updatedAtTimestamp": data.get("updatedAtTimestamp")}
         )
+        neo4j_provider._project_agents_toolsets_and_knowledge = AsyncMock(return_value={"a2": {"toolsets": [], "knowledge": []}})  # type: ignore[method-assign]
+        neo4j_provider._project_agents_mcp_servers = AsyncMock(return_value={})  # type: ignore[method-assign]
 
         result = await neo4j_provider.get_all_agents("user-1", "org-1", page=2, limit=1)
 
@@ -611,28 +579,17 @@ class TestGetAllAgents:
 
     @pytest.mark.asyncio
     async def test_search_is_normalized_and_passed_to_query(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.client.execute_query = AsyncMock(
-            side_effect=[
-                [{"team_ids": []}],
-                [],
-            ]
-        )
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
 
         result = await neo4j_provider.get_all_agents("user-1", "org-1", search="  AGENT  ")
 
         assert result == []
-        # second query is combined_query with parameters containing q
-        second_call_kwargs = neo4j_provider.client.execute_query.await_args_list[1].kwargs
-        assert second_call_kwargs["parameters"]["q"] == "agent"
+        call_kwargs = neo4j_provider.client.execute_query.await_args.kwargs
+        assert call_kwargs["parameters"]["q"] == "agent"
 
     @pytest.mark.asyncio
     async def test_org_share_defaults_false_when_no_agents(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.client.execute_query = AsyncMock(
-            side_effect=[
-                [{"team_ids": []}],
-                [],
-            ]
-        )
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
 
         result = await neo4j_provider.get_all_agents("user-1", "org-1")
 
@@ -891,192 +848,6 @@ class TestHardDeleteAllAgents:
             "knowledge_deleted": 0,
             "edges_deleted": 0,
         }
-
-
-class TestShareAgent:
-    @pytest.mark.asyncio
-    async def test_returns_false_when_no_permission(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(return_value=None)  # type: ignore[method-assign]
-
-        result = await neo4j_provider.share_agent("a1", "u1", "o1", ["u2"], ["t1"])
-
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_returns_false_when_user_cannot_share(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(  # type: ignore[method-assign]
-            return_value={"can_share": False}
-        )
-
-        result = await neo4j_provider.share_agent("a1", "u1", "o1", ["u2"], ["t1"])
-
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_shares_to_users_and_teams_successfully(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(  # type: ignore[method-assign]
-            return_value={"can_share": True}
-        )
-        neo4j_provider.get_user_by_user_id = AsyncMock(  # type: ignore[method-assign]
-            side_effect=[{"id": "u2-id"}, {"id": "u3-id"}]
-        )
-        neo4j_provider.get_document = AsyncMock(  # type: ignore[method-assign]
-            side_effect=[{"id": "t1-id"}]
-        )
-        neo4j_provider.batch_create_edges = AsyncMock(return_value=True)  # type: ignore[method-assign]
-        with patch("app.services.graph_db.neo4j.neo4j_provider.get_epoch_timestamp_in_ms", return_value=111):
-            result = await neo4j_provider.share_agent("a1", "u1", "o1", ["u2", "u3"], ["t1"], transaction="txn-share")
-
-        assert result is True
-        assert neo4j_provider.batch_create_edges.await_count == 2
-
-    @pytest.mark.asyncio
-    async def test_returns_false_when_user_edge_creation_fails(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(return_value={"can_share": True})  # type: ignore[method-assign]
-        neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u2-id"})  # type: ignore[method-assign]
-        neo4j_provider.batch_create_edges = AsyncMock(return_value=False)  # type: ignore[method-assign]
-
-        result = await neo4j_provider.share_agent("a1", "u1", "o1", ["u2"], None)
-
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_skips_missing_user_or_team_and_can_still_succeed(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(return_value={"can_share": True})  # type: ignore[method-assign]
-        neo4j_provider.get_user_by_user_id = AsyncMock(side_effect=[None, {"id": "u2-id"}])  # type: ignore[method-assign]
-        neo4j_provider.get_document = AsyncMock(side_effect=[None])  # type: ignore[method-assign]
-        neo4j_provider.batch_create_edges = AsyncMock(return_value=True)  # type: ignore[method-assign]
-        with patch("app.services.graph_db.neo4j.neo4j_provider.get_epoch_timestamp_in_ms", return_value=222):
-            result = await neo4j_provider.share_agent("a1", "u1", "o1", ["missing", "u2"], ["missing-team"])
-
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_returns_false_on_exception(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(side_effect=RuntimeError("perm fail"))  # type: ignore[method-assign]
-
-        result = await neo4j_provider.share_agent("a1", "u1", "o1", ["u2"], ["t1"])
-
-        assert result is False
-
-
-class TestUnshareAgent:
-    @pytest.mark.asyncio
-    async def test_returns_permission_error_when_user_cannot_share(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(return_value={"can_share": False})  # type: ignore[method-assign]
-
-        result = await neo4j_provider.unshare_agent("a1", "u1", "o1", ["u2"], ["t1"])
-
-        assert result == {"success": False, "reason": "Insufficient permissions to unshare agent"}
-
-    @pytest.mark.asyncio
-    async def test_unshares_users_and_teams_with_deleted_count(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(return_value={"can_share": True})  # type: ignore[method-assign]
-        neo4j_provider.get_user_by_user_id = AsyncMock(side_effect=[{"id": "u2-id"}, {"id": "u3-id"}])  # type: ignore[method-assign]
-        neo4j_provider.client.execute_query = AsyncMock(
-            side_effect=[
-                [{"deleted": 2}],  # user delete
-                [{"deleted": 1}],  # team delete
-            ]
-        )
-
-        result = await neo4j_provider.unshare_agent("a1", "u1", "o1", ["u2", "u3"], ["t1"], transaction="txn-u")
-
-        assert result == {"success": True, "agent_id": "a1", "deleted_permissions": 3}
-
-    @pytest.mark.asyncio
-    async def test_handles_missing_users_and_empty_lists(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(return_value={"can_share": True})  # type: ignore[method-assign]
-        neo4j_provider.get_user_by_user_id = AsyncMock(side_effect=[None])  # type: ignore[method-assign]
-        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"deleted": 0}])
-
-        result = await neo4j_provider.unshare_agent("a1", "u1", "o1", ["missing-user"], None)
-
-        assert result == {"success": True, "agent_id": "a1", "deleted_permissions": 0}
-
-    @pytest.mark.asyncio
-    async def test_returns_internal_error_on_exception(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(side_effect=RuntimeError("perm boom"))  # type: ignore[method-assign]
-
-        result = await neo4j_provider.unshare_agent("a1", "u1", "o1", ["u2"], ["t1"])
-
-        assert result is not None
-        assert result["success"] is False
-        assert "Internal error" in result["reason"]
-
-
-class TestUpdateAgentPermission:
-    @pytest.mark.asyncio
-    async def test_returns_error_when_no_permission(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(return_value=None)  # type: ignore[method-assign]
-
-        result = await neo4j_provider.update_agent_permission("a1", "u1", "o1", ["u2"], ["t1"], "WRITER")
-
-        assert result == {"success": False, "reason": "Agent not found or no permission"}
-
-    @pytest.mark.asyncio
-    async def test_returns_error_when_requester_not_owner(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(return_value={"user_role": "WRITER"})  # type: ignore[method-assign]
-
-        result = await neo4j_provider.update_agent_permission("a1", "u1", "o1", ["u2"], ["t1"], "WRITER")
-
-        assert result == {"success": False, "reason": "Only OWNER can update permissions"}
-
-    @pytest.mark.asyncio
-    async def test_updates_users_and_teams_successfully(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(return_value={"user_role": "OWNER"})  # type: ignore[method-assign]
-        neo4j_provider.get_user_by_user_id = AsyncMock(  # type: ignore[method-assign]
-            side_effect=[{"id": "u2-id"}, {"id": "u3-id"}]
-        )
-        neo4j_provider.client.execute_query = AsyncMock(
-            side_effect=[
-                [{"updated": 2}],  # user update
-                [{"updated": 1}],  # team update
-            ]
-        )
-        with patch("app.services.graph_db.neo4j.neo4j_provider.get_epoch_timestamp_in_ms", return_value=333):
-            result = await neo4j_provider.update_agent_permission(
-                "a1", "u1", "o1", ["u2", "u3"], ["t1"], "WRITER", transaction="txn-up"
-            )
-
-        assert result == {
-            "success": True,
-            "agent_id": "a1",
-            "new_role": "WRITER",
-            "updated_permissions": 3,
-            "updated_users": 2,
-            "updated_teams": 1,
-        }
-
-    @pytest.mark.asyncio
-    async def test_returns_error_when_no_edges_updated(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(return_value={"user_role": "OWNER"})  # type: ignore[method-assign]
-        neo4j_provider.get_user_by_user_id = AsyncMock(return_value=None)  # type: ignore[method-assign]
-        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"updated": 0}])
-
-        result = await neo4j_provider.update_agent_permission("a1", "u1", "o1", ["missing"], ["t1"], "WRITER")
-
-        assert result == {"success": False, "reason": "No permissions found to update"}
-
-    @pytest.mark.asyncio
-    async def test_returns_internal_error_on_exception(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(side_effect=RuntimeError("perm fail"))  # type: ignore[method-assign]
-
-        result = await neo4j_provider.update_agent_permission("a1", "u1", "o1", ["u2"], ["t1"], "WRITER")
-
-        assert result is not None
-        assert result["success"] is False
-        assert "Internal error" in result["reason"]
-
-
-class TestGetAgentPermissions:
-    @pytest.mark.asyncio
-    async def test_returns_none_when_no_permission(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(return_value=None)  # type: ignore[method-assign]
-
-        result = await neo4j_provider.get_agent_permissions("a1", "u1", "o1")
-
-        assert result is None
 
 
 class TestDocumentOperations:
@@ -2233,49 +2004,6 @@ class TestUserAndOrganizationLookups:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_returns_none_when_requester_not_owner(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(return_value={"user_role": "WRITER"})  # type: ignore[method-assign]
-
-        result = await neo4j_provider.get_agent_permissions("a1", "u1", "o1")
-
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_permissions_list_for_owner(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(return_value={"user_role": "OWNER"})  # type: ignore[method-assign]
-        neo4j_provider.client.execute_query = AsyncMock(
-            return_value=[
-                {"permission": {"id": "u2", "role": "READER", "type": "USER"}},
-                {"permission": {"id": "t1", "role": "WRITER", "type": "TEAM"}},
-            ]
-        )
-
-        result = await neo4j_provider.get_agent_permissions("a1", "u1", "o1", transaction="txn-gp")
-
-        assert result == [
-            {"id": "u2", "role": "READER", "type": "USER"},
-            {"id": "t1", "role": "WRITER", "type": "TEAM"},
-        ]
-
-    @pytest.mark.asyncio
-    async def test_returns_empty_list_when_query_returns_no_rows(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(return_value={"user_role": "OWNER"})  # type: ignore[method-assign]
-        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
-
-        result = await neo4j_provider.get_agent_permissions("a1", "u1", "o1")
-
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_returns_none_on_exception(self, neo4j_provider: Neo4jProvider):
-        neo4j_provider.check_agent_permission = AsyncMock(return_value={"user_role": "OWNER"})  # type: ignore[method-assign]
-        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("db fail"))
-
-        result = await neo4j_provider.get_agent_permissions("a1", "u1", "o1")
-
-        assert result is None
-
-    @pytest.mark.asyncio
     async def test_logs_warning_when_orphan_cleanup_partial(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
@@ -2376,7 +2104,6 @@ class TestUserAndOrganizationLookups:
     async def test_paging_uses_non_negative_start_index(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [{"team_ids": []}],
                 [
                     {"agent": {"id": "a1", "name": "A", "updatedAtTimestamp": 1}, "role": "OWNER", "access_type": "INDIVIDUAL", "priority": 1}
                 ],
@@ -2386,6 +2113,8 @@ class TestUserAndOrganizationLookups:
         neo4j_provider._neo4j_to_arango_node = MagicMock(  # type: ignore[method-assign]
             side_effect=lambda data, _collection: {"_key": data["id"], "name": data["name"], "updatedAtTimestamp": data.get("updatedAtTimestamp")}
         )
+        neo4j_provider._project_agents_toolsets_and_knowledge = AsyncMock(return_value={"a1": {"toolsets": [], "knowledge": []}})  # type: ignore[method-assign]
+        neo4j_provider._project_agents_mcp_servers = AsyncMock(return_value={})  # type: ignore[method-assign]
 
         result = await neo4j_provider.get_all_agents("user-1", "org-1", page=0, limit=10)
 

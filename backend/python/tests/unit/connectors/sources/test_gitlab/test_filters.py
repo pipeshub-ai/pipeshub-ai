@@ -549,31 +549,26 @@ class TestUnscopedProjectFilterOptions:
         assert "ns/api-backend" in ids
         assert "ns/frontend" not in ids
 
-    async def test_no_search_list_returns_projects(self) -> None:
-        """No search: direct ds_call for paginated project list."""
+    async def test_no_search_prompts_to_type(self) -> None:
+        """No search: do not list unscoped projects; ask the user to type."""
         c = make_mock_connector()
         c.data_source = MagicMock()
         c._is_admin = True
         c._is_auditor = False
-
-        p = MagicMock()
-        p.id = 1
-        p.path_with_namespace = "ns/proj"
-        p.name_with_namespace = "NS / Proj"
-        p.namespace = MagicMock()
-        p.namespace.full_path = "ns"
-        page_res = MagicMock(success=True, data=[p], error=None)
-        c.runtime.ds_call = AsyncMock(return_value=page_res)
+        c.runtime.ds_call = AsyncMock()
 
         helper = FiltersHelper(c)
         result = await helper._unscoped_project_filter_options(
             search=None, exclude_paths=[], per_page=20, page_n=1, limit=20, page=1
         )
         assert result.success is True
-        assert any(o.id == "ns/proj" for o in result.options)
+        assert result.options == []
+        assert result.message is not None
+        assert "search" in result.message.lower()
+        c.runtime.ds_call.assert_not_called()
 
     async def test_auditor_fallback_on_empty_results(self) -> None:
-        """Empty unscoped results for auditor triggers auditor fallback."""
+        """Empty unscoped search results for auditor triggers auditor fallback."""
         c = make_mock_connector()
         c.data_source = MagicMock()
         c._is_admin = False
@@ -596,7 +591,7 @@ class TestUnscopedProjectFilterOptions:
 
         helper = FiltersHelper(c)
         result = await helper._unscoped_project_filter_options(
-            search=None, exclude_paths=[], per_page=20, page_n=1, limit=20, page=1
+            search="proj", exclude_paths=[], per_page=20, page_n=1, limit=20, page=1
         )
         assert result.success is True
         assert any(o.id == "ns/proj" for o in result.options)

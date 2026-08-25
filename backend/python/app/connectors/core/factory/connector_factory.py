@@ -200,15 +200,17 @@ class ConnectorFactory:
         scope: str,
         created_by: str,
         org_id: str | None = None,
+        data_entities_processor_cls: type | None = None,
         **kwargs,
     ) -> BaseConnector | None:
         """Create a connector instance.
 
-        ``org_id`` is bound here (not forwarded to the connector) and applied to the
-        connector's entities processor after creation. The processor's initialize()
-        resolves an arbitrary orgs[0] fallback; connectors read
-        ``self.data_entities_processor.org_id`` live at sync time, so overriding it
-        here makes every record/edge use the connector's actual org (multi-org fix).
+        The processor is created and initialized here using
+        ``data_entities_processor_cls``.
+        The ready instance is forwarded to the connector so individual connectors
+
+        ``org_id`` is applied to the processor after creation so every
+        record/edge uses the connector's actual org.
         """
         connector_class = cls.get_connector_class(name)
         if not connector_class:
@@ -217,6 +219,13 @@ class ConnectorFactory:
 
         try:
             notification_service = kwargs.pop("notification_service", None)
+            from app.connectors.core.base.data_processor.data_source_entities_processor import DataSourceEntitiesProcessor
+            processor_cls = data_entities_processor_cls or DataSourceEntitiesProcessor
+            data_entities_processor = processor_cls(logger, data_store_provider, config_service)
+            if org_id:
+                data_entities_processor.org_id = org_id
+            await data_entities_processor.initialize()
+
             connector = await connector_class.create_connector(
                 logger=logger,
                 data_store_provider=data_store_provider,
@@ -224,11 +233,10 @@ class ConnectorFactory:
                 connector_id=connector_id,
                 scope=scope,
                 created_by=created_by,
+                data_entities_processor=data_entities_processor,
                 **kwargs,
             )
             if connector is not None:
-                if org_id and getattr(connector, "data_entities_processor", None) is not None:
-                    connector.data_entities_processor.org_id = org_id
                 if notification_service is not None:
                     connector._notification_service = notification_service
             logger.info(f"Created {name} {connector_id} connector successfully")

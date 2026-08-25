@@ -3683,4 +3683,70 @@ describe('UserAccountController', () => {
       }
     });
   });
+
+  describe('validateEmailChange', () => {
+    it('should update email successfully when new email is not in use', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves({} as any)
+      sinon.stub(UserActivities, 'create').resolves({} as any)
+
+      const req: any = {
+        tokenPayload: { userId: 'u1', newEmail: 'New@Example.com', orgId: 'org1' },
+        ip: '127.0.0.1',
+      }
+
+      await controller.validateEmailChange(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].message).to.equal('Email updated successfully')
+      expect((Users.findByIdAndUpdate as any).calledWith('u1', sinon.match({ email: 'new@example.com' }))).to.be.true
+    })
+
+    it('should throw BadRequestError when email is already in use', async () => {
+      sinon.stub(Users, 'findOne').resolves({ _id: 'existing' } as any)
+
+      const req: any = {
+        tokenPayload: { userId: 'u1', newEmail: 'taken@example.com', orgId: 'org1' },
+        ip: '127.0.0.1',
+      }
+
+      await controller.validateEmailChange(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.include('already in use')
+    })
+
+    it('should call next on unexpected error', async () => {
+      sinon.stub(Users, 'findOne').rejects(new Error('DB error'))
+
+      const req: any = {
+        tokenPayload: { userId: 'u1', newEmail: 'test@example.com', orgId: 'org1' },
+        ip: '127.0.0.1',
+      }
+
+      await controller.validateEmailChange(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should log activity with PASSWORD_CHANGED type', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves({} as any)
+      const createStub = sinon.stub(UserActivities, 'create').resolves({} as any)
+
+      const req: any = {
+        tokenPayload: { userId: 'u1', newEmail: 'new@example.com', orgId: 'org1' },
+        ip: '10.0.0.1',
+      }
+
+      await controller.validateEmailChange(req, res, next)
+
+      expect(createStub.calledOnce).to.be.true
+      const activityArg = createStub.firstCall.args[0]
+      expect(activityArg.orgId).to.equal('org1')
+      expect(activityArg.userId).to.equal('u1')
+      expect(activityArg.ipAddress).to.equal('10.0.0.1')
+    })
+  });
 });

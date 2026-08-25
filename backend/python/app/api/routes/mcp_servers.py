@@ -3,7 +3,7 @@ live tool discovery for Model Context Protocol servers.
 
 Architecture:
   - Catalog: in-memory templates (`app.agents.mcp.registry`), no secrets.
-  - Admin creates "instances" (org-wide, no secrets): /services/mcp/instances/{orgId}/{instanceId}
+  - Admin creates "instances" (org-wide, no secrets): /services/mcp/instances/{instanceId}
   - Users authenticate against instances: POST /instances/{id}/authenticate (or OAuth)
   - Per-user/admin credentials: /services/mcp/credentials/{instanceId}/{userId}
   - GET /my-mcp-servers returns a merged view (instances + current user's auth status + tools)
@@ -45,11 +45,18 @@ from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
+from app.edition_config import (
+    build_schedule_refresh_kwargs,
+    forbid_inherited_mcp_mutation,
+    get_mcp_instance_resolved,
+    load_mcp_instances,
+    mask_mcp_instance_for_response,
+    resolve_instance_owner_config_service,
+    resolve_mcp_instances_with_inheritance,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v1/mcp-servers", tags=["mcp-servers"])
-
 DEFAULT_TOOLS_DISCOVERY_TIMEOUT_SECONDS = 8.0
 DEFAULT_ENDPOINTS_PATH = "/services/endpoints"
 ADMIN_CHECK_TIMEOUT_SECONDS = 5.0
@@ -156,6 +163,26 @@ def _get_config_service(request: Request) -> ConfigurationService:
     return config_service
 
 
+async def _require_mcp_enabled(request: Request) -> None:
+    """FastAPI dependency — rejects the request with 403 when the ``ENABLE_MCP``
+    platform feature flag is disabled for the calling org.  Applied to every MCP
+    endpoint so that visibility, auth, and runtime are gated consistently."""
+    from app.agents.mcp.service import is_mcp_enabled
+
+    if not await is_mcp_enabled(_get_config_service(request)):
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail="MCP servers are disabled for this organization.",
+        )
+
+
+router = APIRouter(
+    prefix="/api/v1/mcp-servers",
+    tags=["mcp-servers"],
+    dependencies=[Depends(_require_mcp_enabled)],
+)
+
+
 def _get_mcp_registry(request: Request) -> MCPRegistry:
     registry = getattr(request.app.state, "mcp_registry", None)
     if not registry:
@@ -203,12 +230,9 @@ def _resolve_validated_base_url(requested_base_url: Optional[str], configured_ba
 # ---------------------------------------------------------------------------
 
 
-# Thin aliases onto the shared, FastAPI-free implementations in `app.agents.mcp.service` —
-# extracted there so the agent-loop runtime (query service) and this routes module (connectors
-# service) share exactly one implementation instead of duplicating it per call site. Kept as
-# module-private names here for route-internal call sites and existing tests.
-_load_org_instances = mcp_service.load_org_instances
-_get_org_instance = mcp_service.get_instance
+
+_load_org_instances = load_mcp_instances
+_get_org_instance = get_mcp_instance_resolved
 
 
 def _validate_instance_config(payload: MCPServerInstanceConfig, registry: MCPRegistry) -> None:
@@ -340,11 +364,13 @@ async def list_instances(request: Request) -> dict[str, Any]:
     if not is_admin:
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Only administrators can list MCP server instances.")
 
-    instances = await _load_org_instances(user_context["org_id"], config_service)
+    instances = await resolve_mcp_instances_with_inheritance(config_service)
     for instance in instances:
+        owner_svc = await resolve_instance_owner_config_service(instance["_id"], config_service) or config_service
         instance["hasOAuthClientConfig"] = bool(
-            await config_service.get_config(get_mcp_oauth_client_config_path(instance["_id"]), default=None)
+            await owner_svc.get_config(get_mcp_oauth_client_config_path(instance["_id"]), default=None)
         )
+    instances = [mask_mcp_instance_for_response(i) for i in instances]
     return {"instances": instances}
 
 
@@ -385,7 +411,7 @@ async def create_instance(
     instance_id = str(uuid.uuid4())
     record = _build_instance_record(payload, instance_id, user_context["org_id"], user_context["user_id"], registry)
 
-    success = await config_service.set_config(get_mcp_instance_path(user_context["org_id"], instance_id), record)
+    success = await config_service.set_config(get_mcp_instance_path(instance_id), record)
     if not success:
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to create MCP server instance.")
 
@@ -400,12 +426,13 @@ async def get_instance(request: Request, instance_id: str) -> dict[str, Any]:
     if not is_admin:
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Only administrators can view MCP server instance details.")
 
-    instance = await _get_org_instance(user_context["org_id"], instance_id, config_service)
+    instance = await _get_org_instance(instance_id, config_service)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
+    owner_svc = await resolve_instance_owner_config_service(instance_id, config_service) or config_service
     instance["hasOAuthClientConfig"] = bool(
-        await config_service.get_config(get_mcp_oauth_client_config_path(instance_id), default=None)
+        await owner_svc.get_config(get_mcp_oauth_client_config_path(instance_id), default=None)
     )
     return instance
 
@@ -422,15 +449,16 @@ async def update_instance(
     if not is_admin:
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Only administrators can update MCP server instances.")
 
-    existing = await _get_org_instance(user_context["org_id"], instance_id, config_service)
+    existing = await _get_org_instance(instance_id, config_service)
     if not existing:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
+    forbid_inherited_mcp_mutation(existing)
 
     registry = _get_mcp_registry(request)
     _validate_instance_config(payload, registry)
     record = _build_instance_record(payload, instance_id, user_context["org_id"], user_context["user_id"], registry, existing=existing)
 
-    success = await config_service.set_config(get_mcp_instance_path(user_context["org_id"], instance_id), record)
+    success = await config_service.set_config(get_mcp_instance_path(instance_id), record)
     if not success:
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to update MCP server instance.")
     return record
@@ -444,13 +472,13 @@ async def delete_instance(request: Request, instance_id: str) -> dict[str, Any]:
     if not is_admin:
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Only administrators can delete MCP server instances.")
 
-    org_id = user_context["org_id"]
-    instance = await _get_org_instance(org_id, instance_id, config_service)
+    instance = await _get_org_instance(instance_id, config_service)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
+    forbid_inherited_mcp_mutation(instance)
 
     # Full cascade cleanup — the reference PR left credentials/oauth-clients/oauth-states orphaned.
-    await config_service.delete_config(get_mcp_instance_path(org_id, instance_id))
+    await config_service.delete_config(get_mcp_instance_path(instance_id))
 
     creds_prefix = get_mcp_instance_credentials_prefix(instance_id)
     try:
@@ -602,7 +630,7 @@ async def authenticate_instance(
     user_context = _get_user_context(request)
     org_id, user_id = user_context["org_id"], user_context["user_id"]
 
-    instance = await _get_org_instance(org_id, instance_id, config_service)
+    instance = await _get_org_instance(instance_id, config_service)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
@@ -639,9 +667,9 @@ async def remove_credentials(request: Request, instance_id: str) -> dict[str, An
     """
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
-    org_id, user_id = user_context["org_id"], user_context["user_id"]
+    user_id = user_context["user_id"]
 
-    instance = await _get_org_instance(org_id, instance_id, config_service)
+    instance = await _get_org_instance(instance_id, config_service)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
     await _assert_admin_owns_shared_credential(instance, user_context, request, config_service)
@@ -670,10 +698,9 @@ async def remove_credentials(request: Request, instance_id: str) -> dict[str, An
 async def auto_authenticate_instance(request: Request, instance_id: str) -> dict[str, Any]:
     """Adopt the admin's shared credential for a `useAdminAuth` instance (verifies it exists first)."""
     config_service = _get_config_service(request)
-    user_context = _get_user_context(request)
-    org_id = user_context["org_id"]
+    _get_user_context(request)
 
-    instance = await _get_org_instance(org_id, instance_id, config_service)
+    instance = await _get_org_instance(instance_id, config_service)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
     if not instance.get("useAdminAuth"):
@@ -698,9 +725,9 @@ async def reauthenticate_instance(request: Request, instance_id: str) -> dict[st
     """Clear the caller's stored credentials/tokens for this instance, forcing re-auth."""
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
-    org_id, user_id = user_context["org_id"], user_context["user_id"]
+    user_id = user_context["user_id"]
 
-    instance = await _get_org_instance(org_id, instance_id, config_service)
+    instance = await _get_org_instance(instance_id, config_service)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
@@ -779,6 +806,10 @@ async def _resolve_oauth_client(
         return shared_dcr["clientId"], shared_dcr.get("clientSecret"), True
 
     oauth_client_config = await config_service.get_config(get_mcp_oauth_client_config_path(instance_id), default=None)
+    if not isinstance(oauth_client_config, dict) or not oauth_client_config.get("clientId"):
+        owner_svc = await resolve_instance_owner_config_service(instance_id, config_service)
+        if owner_svc is not None and owner_svc is not config_service:
+            oauth_client_config = await owner_svc.get_config(get_mcp_oauth_client_config_path(instance_id), default=None)
     if isinstance(oauth_client_config, dict) and oauth_client_config.get("clientId"):
         return oauth_client_config["clientId"], oauth_client_config.get("clientSecret"), False
 
@@ -916,7 +947,7 @@ async def get_oauth_authorization_url(
     user_context = _get_user_context(request)
     org_id, user_id = user_context["org_id"], user_context["user_id"]
 
-    instance = await _get_org_instance(org_id, instance_id, config_service)
+    instance = await _get_org_instance(instance_id, config_service)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
@@ -1011,6 +1042,13 @@ async def _resolve_oauth_client_secret(
     static_client = await config_service.get_config(get_mcp_oauth_client_config_path(instance_id), default=None)
     if isinstance(static_client, dict) and static_client.get("clientId") == client_id:
         return static_client.get("clientSecret")
+
+    owner_svc = await resolve_instance_owner_config_service(instance_id, config_service)
+    if owner_svc is not None and owner_svc is not config_service:
+        parent_client = await owner_svc.get_config(get_mcp_oauth_client_config_path(instance_id), default=None)
+        if isinstance(parent_client, dict) and parent_client.get("clientId") == client_id:
+            return parent_client.get("clientSecret")
+
     raise ValueError("The OAuth app configuration for this instance changed during authorization.")
 
 
@@ -1112,7 +1150,11 @@ async def handle_oauth_callback(
 
     refresh_service = startup_service.get_mcp_token_refresh_service()
     if refresh_service:
-        await refresh_service.schedule_token_refresh(get_mcp_credentials_path(instance_id, user_id), tokens)
+        await refresh_service.schedule_token_refresh(
+            get_mcp_credentials_path(instance_id, user_id),
+            tokens,
+            **build_schedule_refresh_kwargs(state_record.get("orgId")),
+        )
 
     return {"success": True, "instanceId": instance_id}
 
@@ -1127,7 +1169,9 @@ async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, A
     user_id = user_context["user_id"]
 
     try:
-        await mcp_token_refresh.refresh_credential_record(instance_id, user_id, config_service)
+        owner_svc = await resolve_instance_owner_config_service(instance_id, config_service)
+        fallbacks = [owner_svc] if owner_svc is not None and owner_svc is not config_service else None
+        await mcp_token_refresh.refresh_credential_record(instance_id, user_id, config_service, fallbacks)
     except mcp_token_refresh.MCPTokenRefreshError as e:
         # Covers "no credential record", "no refresh token", "no tokenUrl", and "no
         # resolvable OAuth client" — all mean the caller must re-authenticate or an admin
@@ -1170,6 +1214,10 @@ async def get_oauth_config(request: Request, instance_id: str) -> dict[str, Any]
 
     config = await config_service.get_config(get_mcp_oauth_client_config_path(instance_id), default=None)
     if not isinstance(config, dict):
+        owner_svc = await resolve_instance_owner_config_service(instance_id, config_service)
+        if owner_svc is not None and owner_svc is not config_service:
+            config = await owner_svc.get_config(get_mcp_oauth_client_config_path(instance_id), default=None)
+    if not isinstance(config, dict):
         return {"configured": False}
 
     return {
@@ -1198,12 +1246,11 @@ async def update_oauth_config(
 ) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
-    org_id = user_context["org_id"]
     is_admin = await _check_user_is_admin(user_context["user_id"], request, config_service)
     if not is_admin:
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Only administrators can configure OAuth clients.")
 
-    instance = await _get_org_instance(org_id, instance_id, config_service)
+    instance = await _get_org_instance(instance_id, config_service)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
@@ -1237,8 +1284,9 @@ async def _build_mcp_instance_entry(
     treats both the same way). Shared so the two routes can't drift.
     """
     entry = dict(instance)
+    owner_svc = await resolve_instance_owner_config_service(instance["_id"], config_service) or config_service
     entry["hasOAuthClientConfig"] = bool(
-        await config_service.get_config(get_mcp_oauth_client_config_path(instance["_id"]), default=None)
+        await owner_svc.get_config(get_mcp_oauth_client_config_path(instance["_id"]), default=None)
     )
     effective_auth = await _resolve_effective_user_auth(instance, owner_id, config_service)
     entry["isAuthenticated"] = bool(effective_auth is not None and (
@@ -1270,9 +1318,9 @@ async def get_my_mcp_servers(
 ) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
-    org_id, user_id = user_context["org_id"], user_context["user_id"]
+    user_id = user_context["user_id"]
 
-    instances = await _load_org_instances(org_id, config_service)
+    instances = await resolve_mcp_instances_with_inheritance(config_service)
     entries = await asyncio.gather(
         *[_build_mcp_instance_entry(i, user_id, config_service, include_tools) for i in instances]
     )
@@ -1286,9 +1334,9 @@ async def get_my_mcp_servers(
 async def get_instance_tools(request: Request, instance_id: str) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
-    org_id, user_id = user_context["org_id"], user_context["user_id"]
+    user_id = user_context["user_id"]
 
-    instance = await _get_org_instance(org_id, instance_id, config_service)
+    instance = await _get_org_instance(instance_id, config_service)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
@@ -1340,10 +1388,9 @@ async def get_agent_mcp_servers(
 
     await _resolve_agent_with_permission(agent_key, request)
     config_service = _get_config_service(request)
-    user_context = _get_user_context(request)
-    org_id = user_context["org_id"]
+    _get_user_context(request)
 
-    instances = await _load_org_instances(org_id, config_service)
+    instances = await resolve_mcp_instances_with_inheritance(config_service)
     entries = await asyncio.gather(
         *[_build_mcp_instance_entry(i, agent_key, config_service, include_tools) for i in instances]
     )
@@ -1366,7 +1413,7 @@ async def authenticate_agent_instance(
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
 
-    instance = await _get_org_instance(org_id, instance_id, config_service)
+    instance = await _get_org_instance(instance_id, config_service)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
@@ -1402,10 +1449,9 @@ async def update_agent_instance_credentials(
 async def remove_agent_instance_credentials(request: Request, agent_key: str, instance_id: str) -> dict[str, Any]:
     await _require_mcp_agent_edit_access(agent_key, request)
     config_service = _get_config_service(request)
-    user_context = _get_user_context(request)
-    org_id = user_context["org_id"]
+    _get_user_context(request)
 
-    instance = await _get_org_instance(org_id, instance_id, config_service)
+    instance = await _get_org_instance(instance_id, config_service)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
@@ -1429,10 +1475,9 @@ async def reauthenticate_agent_instance(request: Request, agent_key: str, instan
     """Clear the agent's stored credentials/tokens for this instance, forcing re-auth."""
     await _require_mcp_agent_edit_access(agent_key, request)
     config_service = _get_config_service(request)
-    user_context = _get_user_context(request)
-    org_id = user_context["org_id"]
+    _get_user_context(request)
 
-    instance = await _get_org_instance(org_id, instance_id, config_service)
+    instance = await _get_org_instance(instance_id, config_service)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
@@ -1472,7 +1517,7 @@ async def get_agent_oauth_authorization_url(
     user_context = _get_user_context(request)
     org_id, user_id = user_context["org_id"], user_context["user_id"]
 
-    instance = await _get_org_instance(org_id, instance_id, config_service)
+    instance = await _get_org_instance(instance_id, config_service)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 

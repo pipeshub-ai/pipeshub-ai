@@ -132,7 +132,7 @@ class RetrievalService:
 
     async def get_llm_instance(self, use_cache: bool = False) -> BaseChatModel | None:
         try:
-            self.logger.info("Getting LLM")
+            self.logger.debug("Getting LLM")
             ai_models = await self.config_service.get_config(
                 config_node_constants.AI_MODELS.value,
                 use_cache=use_cache

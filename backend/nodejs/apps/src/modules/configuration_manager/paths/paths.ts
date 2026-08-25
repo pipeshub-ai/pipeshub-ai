@@ -39,6 +39,7 @@ export const configPaths = {
   },
   aiModels: '/services/aiModels',
   aiModelsEmbedding: '/services/aiModels/embedding',
+  systemPrompts: '/services/systemPrompts',
   connectorSyncScheduledJobsMigration:
     '/migrations/connector_sync_scheduled_jobs',
   chatKbFiltersMigration: '/migrations/chat_kb_filters_v1',

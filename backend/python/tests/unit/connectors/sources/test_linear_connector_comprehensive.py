@@ -54,6 +54,8 @@ def _make_connector():
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.reindex_existing_records = AsyncMock()
+    data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
 
     data_store_provider = MagicMock()
     mock_tx_store = AsyncMock()
@@ -99,13 +101,11 @@ class TestProcessProjectExternalLinks:
             {"id": "link-1", "url": "https://ext.com/doc", "title": "Ext Doc",
              "createdAt": "2024-01-01T00:00:00.000Z", "updatedAt": "2024-01-02T00:00:00.000Z"},
         ]
-        tx_store = connector._tx_store
         records, groups = await connector._process_project_external_links(
             external_links_data=links_data,
             project_id="proj-1",
             project_node_id="node-1",
             team_id="team-1",
-            tx_store=tx_store,
             create_block_groups=False,
         )
         assert len(records) == 1
@@ -118,13 +118,11 @@ class TestProcessProjectExternalLinks:
             {"id": "link-2", "url": "https://ext.com/page", "label": "Page",
              "createdAt": "2024-01-01T00:00:00.000Z", "updatedAt": "2024-01-02T00:00:00.000Z"},
         ]
-        tx_store = connector._tx_store
         records, groups = await connector._process_project_external_links(
             external_links_data=links_data,
             project_id="proj-2",
             project_node_id="node-2",
             team_id="team-2",
-            tx_store=tx_store,
             create_block_groups=True,
         )
         assert len(records) == 1
@@ -134,13 +132,11 @@ class TestProcessProjectExternalLinks:
     async def test_skips_links_without_id(self, connector):
         connector.indexing_filters = FilterCollection()
         links_data = [{"url": "https://example.com"}]
-        tx_store = connector._tx_store
         records, groups = await connector._process_project_external_links(
             external_links_data=links_data,
             project_id="proj-3",
             project_node_id="node-3",
             team_id="team-3",
-            tx_store=tx_store,
         )
         assert len(records) == 0
 
@@ -148,13 +144,11 @@ class TestProcessProjectExternalLinks:
         connector.indexing_filters = FilterCollection()
         # Link with id but no url will raise ValueError in _transform_attachment_to_link_record
         links_data = [{"id": "link-err", "createdAt": "", "updatedAt": ""}]
-        tx_store = connector._tx_store
         records, groups = await connector._process_project_external_links(
             external_links_data=links_data,
             project_id="proj-4",
             project_node_id="node-4",
             team_id="team-4",
-            tx_store=tx_store,
         )
         assert len(records) == 0  # Error caught, continues
 
@@ -170,13 +164,11 @@ class TestProcessProjectDocuments:
             {"id": "doc-1", "url": "https://linear.app/doc/1", "title": "Design Doc",
              "createdAt": "2024-01-01T00:00:00.000Z", "updatedAt": "2024-01-02T00:00:00.000Z"},
         ]
-        tx_store = connector._tx_store
         records, groups = await connector._process_project_documents(
             documents_data=docs_data,
             project_id="proj-1",
             project_node_id="node-1",
             team_id="team-1",
-            tx_store=tx_store,
             create_block_groups=False,
         )
         assert len(records) == 1
@@ -185,13 +177,11 @@ class TestProcessProjectDocuments:
     async def test_skips_docs_without_id(self, connector):
         connector.indexing_filters = FilterCollection()
         docs_data = [{"url": "https://linear.app/doc/2", "title": "No ID"}]
-        tx_store = connector._tx_store
         records, _ = await connector._process_project_documents(
             documents_data=docs_data,
             project_id="proj-5",
             project_node_id="node-5",
             team_id="team-5",
-            tx_store=tx_store,
         )
         assert len(records) == 0
 
@@ -213,25 +203,21 @@ class TestPrepareProjectRelatedRecords:
                  "createdAt": "", "updatedAt": ""},
             ]},
         }
-        tx_store = connector._tx_store
         records = await connector._prepare_project_related_records(
             full_project_data=full_data,
             project_id="proj-1",
             existing_record=None,
             team_id="team-1",
-            tx_store=tx_store,
         )
         assert len(records) == 2
 
     async def test_no_links_or_documents(self, connector):
         full_data = {}
-        tx_store = connector._tx_store
         records = await connector._prepare_project_related_records(
             full_project_data=full_data,
             project_id="proj-2",
             existing_record=None,
             team_id="team-2",
-            tx_store=tx_store,
         )
         assert len(records) == 0
 

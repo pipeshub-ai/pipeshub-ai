@@ -1374,13 +1374,12 @@ class SlackConnector(BaseConnector):
                     existing_rg_id = ""
                     if last_reply_ts:
                         try:
-                            async with self.data_store_provider.transaction() as tx:
-                                existing_rg = await tx.get_record_group_by_external_id(
-                                    external_id=f"thread_{dt.ctx.channel_id}_{ts}",
-                                    connector_id=self.connector_id,
-                                )
-                                if existing_rg:
-                                    existing_rg_id = existing_rg.id or ""
+                            existing_rg = await self.data_entities_processor.get_record_group_by_external_id(
+                                connector_id=self.connector_id,
+                                external_id=f"thread_{dt.ctx.channel_id}_{ts}",
+                            )
+                            if existing_rg:
+                                existing_rg_id = existing_rg.id or ""
                         except Exception as exc:
                             self.logger.debug(
                                 f"[DeferredThread] RG lookup for thread {ts}: {exc}"
@@ -2631,25 +2630,20 @@ class SlackConnector(BaseConnector):
         ]
         if not link_records:
             return
-        try:
-            async with self.data_store_provider.transaction() as tx_store:
-                for rec in link_records:
-                    try:
-                        related_record = await tx_store.get_record_by_weburl(
-                            rec.weburl,
-                            org_id=self.data_entities_processor.org_id,
-                        )
-                        if related_record:
-                            rec.linked_record_id = related_record.id
-                            self.logger.debug(
-                                f"🔗 Found related record {related_record.id} for link URL: {rec.weburl}"
-                            )
-                    except Exception as e:
-                        self.logger.debug(
-                            f"⚠️ Could not fetch related record for URL {rec.weburl}: {e}"
-                        )
-        except Exception as e:
-            self.logger.debug(f"⚠️ Could not open transaction for link record enrichment: {e}")
+        for rec in link_records:
+            try:
+                related_record = await self.data_entities_processor.get_record_by_weburl(
+                    rec.weburl
+                )
+                if related_record:
+                    rec.linked_record_id = related_record.id
+                    self.logger.debug(
+                        f"🔗 Found related record {related_record.id} for link URL: {rec.weburl}"
+                    )
+            except Exception as e:
+                self.logger.debug(
+                    f"⚠️ Could not fetch related record for URL {rec.weburl}: {e}"
+                )
 
     # ── Message record transformation ──────────────────────────────────────────
 
@@ -3316,10 +3310,9 @@ class SlackConnector(BaseConnector):
         # ── Case A: standalone single-message record ──────────────────────
         existing_base: Optional[Record] = None
         try:
-            async with self.data_store_provider.transaction() as tx:
-                existing_base = await tx.get_record_by_external_id(
-                    connector_id=self.connector_id, external_id=ts
-                )
+            existing_base = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=ts
+            )
         except Exception as exc:
             self.logger.error(f"DB lookup for ts={ts}: {exc}")
             return 0
@@ -3469,13 +3462,12 @@ class SlackConnector(BaseConnector):
         """
         rg_id: Optional[str] = None
         try:
-            async with self.data_store_provider.transaction() as tx:
-                existing_rg_chan = await tx.get_record_group_by_external_id(
-                    external_id=channel_id,
-                    connector_id=self.connector_id,
-                )
-                if existing_rg_chan:
-                    rg_id = existing_rg_chan.id
+            existing_rg_chan = await self.data_entities_processor.get_record_group_by_external_id(
+                connector_id=self.connector_id,
+                external_id=channel_id,
+            )
+            if existing_rg_chan:
+                rg_id = existing_rg_chan.id
         except Exception:
             pass
 
@@ -3495,13 +3487,12 @@ class SlackConnector(BaseConnector):
         thread_rg_id = ""
         if last_reply_ts:
             try:
-                async with self.data_store_provider.transaction() as tx:
-                    existing_rg = await tx.get_record_group_by_external_id(
-                        external_id=f"thread_{channel_id}_{ts}",
-                        connector_id=self.connector_id,
-                    )
-                    if existing_rg:
-                        thread_rg_id = existing_rg.id or ""
+                existing_rg = await self.data_entities_processor.get_record_group_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=f"thread_{channel_id}_{ts}",
+                )
+                if existing_rg:
+                    thread_rg_id = existing_rg.id or ""
             except Exception as exc:
                 self.logger.error(f"[ThreadGrowth] RG lookup for thread {ts}: {exc}")
 
@@ -3573,14 +3564,13 @@ class SlackConnector(BaseConnector):
 
         if uncached:
             try:
-                async with self.data_store_provider.transaction() as tx:
-                    for cid in uncached:
-                        rg = await tx.get_record_group_by_external_id(
-                            external_id=cid, connector_id=self.connector_id
-                        )
-                        if rg:
-                            result[cid] = rg.id
-                            self.channel_groups_cache[cid] = rg.id
+                for cid in uncached:
+                    rg = await self.data_entities_processor.get_record_group_by_external_id(
+                        connector_id=self.connector_id, external_id=cid
+                    )
+                    if rg:
+                        result[cid] = rg.id
+                        self.channel_groups_cache[cid] = rg.id
             except Exception as exc:
                 self.logger.error(f"_channel_group_map DB fallback: {exc}")
 
@@ -3989,23 +3979,22 @@ class SlackConnector(BaseConnector):
             # Resolve file ChildRecords from DB, keyed by message ts
             file_children_by_ts: dict[str, list[ChildRecord]] = {}
             try:
-                async with self.data_store_provider.transaction() as tx:
-                    child_records = await tx.get_records_by_parent(
-                        connector_id=self.connector_id,
-                        parent_external_record_id=ext_id,
-                        record_type=RecordType.FILE.value,
+                child_records = await self.data_entities_processor.get_records_by_parent(
+                    connector_id=self.connector_id,
+                    parent_external_record_id=ext_id,
+                    record_type=RecordType.FILE.value,
+                )
+                ext_id_to_child: dict[str, ChildRecord] = {}
+                for cr in (child_records or []):
+                    ext_id_to_child[cr.external_record_id] = ChildRecord(
+                        child_type=ChildType.RECORD, child_id=cr.id, child_name=cr.record_name
                     )
-                    ext_id_to_child: dict[str, ChildRecord] = {}
-                    for cr in (child_records or []):
-                        ext_id_to_child[cr.external_record_id] = ChildRecord(
-                            child_type=ChildType.RECORD, child_id=cr.id, child_name=cr.record_name
-                        )
-                    for msg in burst_msgs:
-                        mts = msg.get("ts", "")
-                        for fd in msg.get("files", []):
-                            fid = fd.get("id", "")
-                            if fid in ext_id_to_child:
-                                file_children_by_ts.setdefault(mts, []).append(ext_id_to_child[fid])
+                for msg in burst_msgs:
+                    mts = msg.get("ts", "")
+                    for fd in msg.get("files", []):
+                        fid = fd.get("id", "")
+                        if fid in ext_id_to_child:
+                            file_children_by_ts.setdefault(mts, []).append(ext_id_to_child[fid])
             except Exception:
                 pass
 
@@ -4046,23 +4035,22 @@ class SlackConnector(BaseConnector):
 
             file_children_by_ts: dict[str, list[ChildRecord]] = {}
             try:
-                async with self.data_store_provider.transaction() as tx:
-                    child_records = await tx.get_records_by_parent(
-                        connector_id=self.connector_id,
-                        parent_external_record_id=ext_id,
-                        record_type=RecordType.FILE.value,
+                child_records = await self.data_entities_processor.get_records_by_parent(
+                    connector_id=self.connector_id,
+                    parent_external_record_id=ext_id,
+                    record_type=RecordType.FILE.value,
+                )
+                ext_id_to_child: dict[str, ChildRecord] = {}
+                for cr in (child_records or []):
+                    ext_id_to_child[cr.external_record_id] = ChildRecord(
+                        child_type=ChildType.RECORD, child_id=cr.id, child_name=cr.record_name
                     )
-                    ext_id_to_child: dict[str, ChildRecord] = {}
-                    for cr in (child_records or []):
-                        ext_id_to_child[cr.external_record_id] = ChildRecord(
-                            child_type=ChildType.RECORD, child_id=cr.id, child_name=cr.record_name
-                        )
-                    for msg in burst_msgs:
-                        mts = msg.get("ts", "")
-                        for fd in msg.get("files", []):
-                            fid = fd.get("id", "")
-                            if fid in ext_id_to_child:
-                                file_children_by_ts.setdefault(mts, []).append(ext_id_to_child[fid])
+                for msg in burst_msgs:
+                    mts = msg.get("ts", "")
+                    for fd in msg.get("files", []):
+                        fid = fd.get("id", "")
+                        if fid in ext_id_to_child:
+                            file_children_by_ts.setdefault(mts, []).append(ext_id_to_child[fid])
             except Exception:
                 pass
 
@@ -4105,16 +4093,15 @@ class SlackConnector(BaseConnector):
             # Resolve file ChildRecords
             file_children: list[ChildRecord] = []
             try:
-                async with self.data_store_provider.transaction() as tx:
-                    child_records = await tx.get_records_by_parent(
-                        connector_id=self.connector_id,
-                        parent_external_record_id=ext_id,
-                        record_type=RecordType.FILE.value,
+                child_records = await self.data_entities_processor.get_records_by_parent(
+                    connector_id=self.connector_id,
+                    parent_external_record_id=ext_id,
+                    record_type=RecordType.FILE.value,
+                )
+                for cr in (child_records or []):
+                    file_children.append(
+                        ChildRecord(child_type=ChildType.RECORD, child_id=cr.id, child_name=cr.record_name)
                     )
-                    for cr in (child_records or []):
-                        file_children.append(
-                            ChildRecord(child_type=ChildType.RECORD, child_id=cr.id, child_name=cr.record_name)
-                        )
             except Exception:
                 pass
 
@@ -4426,7 +4413,7 @@ class SlackConnector(BaseConnector):
         connector_id:         str,
         scope:                str,
         created_by:           str,
+        data_entities_processor,
+        **kwargs,
     ) -> "SlackConnector":
-        dep = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
-        await dep.initialize()
-        return cls(logger, dep, data_store_provider, config_service, connector_id, scope, created_by)
+        return cls(logger, data_entities_processor, data_store_provider, config_service, connector_id, scope, created_by)

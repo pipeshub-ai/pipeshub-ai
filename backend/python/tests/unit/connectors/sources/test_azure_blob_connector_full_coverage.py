@@ -80,6 +80,9 @@ def mock_dep():
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.account_name = "teststorage"
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
+    proc.delete_parent_child_edge_to_record = AsyncMock()
     return proc
 
 
@@ -634,7 +637,7 @@ class TestProcessAzureBlobExtended:
     @pytest.mark.asyncio
     async def test_existing_no_revision(self, connector):
         existing = _make_existing_record(external_revision_id=None)
-        connector.data_store_provider = _make_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         blob = {
             "name": "file.txt",
             "last_modified": datetime(2025, 1, 1, tzinfo=timezone.utc),
@@ -646,7 +649,7 @@ class TestProcessAzureBlobExtended:
     @pytest.mark.asyncio
     async def test_existing_no_current_revision(self, connector):
         existing = _make_existing_record(external_revision_id="old")
-        connector.data_store_provider = _make_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         blob = {
             "name": "file.txt",
             "last_modified": datetime(2025, 1, 1, tzinfo=timezone.utc),
@@ -675,8 +678,7 @@ class TestProcessAzureBlobExtended:
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self, connector):
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = MagicMock(side_effect=Exception("db fail"))
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=Exception("db fail"))
         record, perms = await connector._process_azure_blob({"name": "f.txt"}, "c")
         assert record is None
         assert perms == []
@@ -1244,12 +1246,10 @@ class TestGetContainerOptionsExtended:
 
 class TestCreateConnector:
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.azure_blob.connector.AzureBlobDataSourceEntitiesProcessor")
     @patch("app.connectors.sources.azure_blob.connector.AzureBlobApp")
-    async def test_with_connection_string(self, mock_app, mock_proc_cls, mock_config, mock_provider, mock_logger):
-        mock_proc = MagicMock()
-        mock_proc.initialize = AsyncMock()
-        mock_proc_cls.return_value = mock_proc
+    @patch("app.connectors.sources.azure_blob.connector.AzureBlobDataSourceEntitiesProcessor")
+    async def test_with_connection_string(self, mock_proc_cls, mock_app, mock_config, mock_provider, mock_logger):
+        mock_proc_cls.return_value = MagicMock(initialize=AsyncMock())
         result = await AzureBlobConnector.create_connector(
             logger=mock_logger,
             data_store_provider=mock_provider,
@@ -1257,16 +1257,15 @@ class TestCreateConnector:
             connector_id="az-1",
             scope="personal",
             created_by="test-user-id",
+            data_entities_processor=MagicMock(),
         )
         assert isinstance(result, AzureBlobConnector)
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.azure_blob.connector.AzureBlobDataSourceEntitiesProcessor")
     @patch("app.connectors.sources.azure_blob.connector.AzureBlobApp")
-    async def test_no_config(self, mock_app, mock_proc_cls, mock_provider, mock_logger):
-        mock_proc = MagicMock()
-        mock_proc.initialize = AsyncMock()
-        mock_proc_cls.return_value = mock_proc
+    @patch("app.connectors.sources.azure_blob.connector.AzureBlobDataSourceEntitiesProcessor")
+    async def test_no_config(self, mock_proc_cls, mock_app, mock_provider, mock_logger):
+        mock_proc_cls.return_value = MagicMock(initialize=AsyncMock())
         config_svc = AsyncMock()
         config_svc.get_config = AsyncMock(return_value=None)
         result = await AzureBlobConnector.create_connector(
@@ -1276,16 +1275,15 @@ class TestCreateConnector:
             connector_id="az-1",
             scope="personal",
             created_by="test-user-id",
+            data_entities_processor=MagicMock(),
         )
         assert isinstance(result, AzureBlobConnector)
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.azure_blob.connector.AzureBlobDataSourceEntitiesProcessor")
     @patch("app.connectors.sources.azure_blob.connector.AzureBlobApp")
-    async def test_config_exception(self, mock_app, mock_proc_cls, mock_provider, mock_logger):
-        mock_proc = MagicMock()
-        mock_proc.initialize = AsyncMock()
-        mock_proc_cls.return_value = mock_proc
+    @patch("app.connectors.sources.azure_blob.connector.AzureBlobDataSourceEntitiesProcessor")
+    async def test_config_exception(self, mock_proc_cls, mock_app, mock_provider, mock_logger):
+        mock_proc_cls.return_value = MagicMock(initialize=AsyncMock())
         config_svc = AsyncMock()
         config_svc.get_config = AsyncMock(side_effect=Exception("config err"))
         result = await AzureBlobConnector.create_connector(
@@ -1295,6 +1293,7 @@ class TestCreateConnector:
             connector_id="az-1",
             scope="personal",
             created_by="test-user-id",
+            data_entities_processor=MagicMock(),
         )
         assert isinstance(result, AzureBlobConnector)
 

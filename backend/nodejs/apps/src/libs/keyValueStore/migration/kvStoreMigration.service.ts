@@ -92,7 +92,9 @@ export class KVStoreMigrationService {
       const channel = 'pipeshub:cache:invalidate';
       const message = '__CLEAR_ALL__';
       await this.redisClient!.publish(channel, message);
-      this.logger.info('Published cache invalidation message to clear all caches');
+      this.logger.debug(
+        'Published cache invalidation message to clear all caches',
+      );
     } catch (error) {
       this.logger.error('Failed to publish cache invalidation message', { error });
     }

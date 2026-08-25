@@ -460,13 +460,12 @@ class TestBuildIssueRecords:
         connector.indexing_filters = None
 
         issue = _issue_dict()
-        tx_store = AsyncMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
         records = await connector._build_issue_records(
-            [issue], "p-1", [_app_user()], tx_store
+            [issue], "p-1", [_app_user()]
         )
 
         assert len(records) == 1
@@ -488,12 +487,11 @@ class TestBuildIssueRecords:
         existing.version = 1
         existing.source_updated_at = connector._parse_jira_timestamp("2024-06-15T10:00:00.000+0000")
 
-        tx_store = AsyncMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
 
         records = await connector._build_issue_records(
-            [issue], "p-1", [], tx_store
+            [issue], "p-1", []
         )
 
         assert len(records) == 0
@@ -510,13 +508,12 @@ class TestBuildIssueRecords:
         existing.version = 2
         existing.source_updated_at = connector._parse_jira_timestamp("2024-06-15T10:00:00.000+0000")
 
-        tx_store = AsyncMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
         records = await connector._build_issue_records(
-            [issue], "p-1", [], tx_store
+            [issue], "p-1", []
         )
 
         assert len(records) == 1
@@ -532,13 +529,12 @@ class TestBuildIssueRecords:
         issue["fields"]["issuetype"] = {"name": "Epic", "hierarchyLevel": 1}
         issue["fields"]["parent"] = None
 
-        tx_store = AsyncMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
         records = await connector._build_issue_records(
-            [issue], "p-1", [], tx_store
+            [issue], "p-1", []
         )
 
         assert len(records) == 1
@@ -555,13 +551,12 @@ class TestBuildIssueRecords:
         issue["fields"]["issuetype"] = {"name": "Sub-task", "hierarchyLevel": -1}
         issue["fields"]["parent"] = {"id": "parent-1001", "key": "PROJ-1"}
 
-        tx_store = AsyncMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
         records = await connector._build_issue_records(
-            [issue], "p-1", [], tx_store
+            [issue], "p-1", []
         )
 
         assert len(records) == 1
@@ -577,8 +572,7 @@ class TestBuildIssueRecords:
         issue = _issue_dict()
         issue["fields"]["attachment"] = [{"id": "att-1", "filename": "f.pdf", "size": 100, "mimeType": "application/pdf"}]
 
-        tx_store = AsyncMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
 
         mock_file = MagicMock(spec=FileRecord)
@@ -586,7 +580,7 @@ class TestBuildIssueRecords:
         connector._fetch_issue_attachments = AsyncMock(return_value=[(mock_file, [])])
 
         records = await connector._build_issue_records(
-            [issue], "p-1", [], tx_store
+            [issue], "p-1", []
         )
 
         # ticket + attachment
@@ -607,7 +601,7 @@ class TestFetchIssueAttachments:
         connector.indexing_filters = None
 
         result = await connector._fetch_issue_attachments(
-            "issue-1", "PROJ-1", {}, [], "p-1", RecordGroupType.PROJECT, AsyncMock()
+            "issue-1", "PROJ-1", {}, [], "p-1", RecordGroupType.PROJECT
         )
         assert result == []
 
@@ -622,12 +616,11 @@ class TestFetchIssueAttachments:
                 {"id": "a1", "filename": "doc.pdf", "size": 2048, "mimeType": "application/pdf", "created": "2024-01-01T00:00:00.000+0000"}
             ]
         }
-        tx_store = AsyncMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._create_attachment_file_record = MagicMock(return_value=MagicMock(spec=FileRecord))
 
         result = await connector._fetch_issue_attachments(
-            "issue-1", "PROJ-1", fields, [], "p-1", RecordGroupType.PROJECT, tx_store
+            "issue-1", "PROJ-1", fields, [], "p-1", RecordGroupType.PROJECT
         )
         assert len(result) == 1
 
@@ -638,10 +631,10 @@ class TestFetchIssueAttachments:
         connector.indexing_filters = None
 
         fields = {"attachment": [{"filename": "noid.txt"}]}
-        tx_store = AsyncMock()
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         result = await connector._fetch_issue_attachments(
-            "issue-1", "PROJ-1", fields, [], "p-1", RecordGroupType.PROJECT, tx_store
+            "issue-1", "PROJ-1", fields, [], "p-1", RecordGroupType.PROJECT
         )
         assert result == []
 

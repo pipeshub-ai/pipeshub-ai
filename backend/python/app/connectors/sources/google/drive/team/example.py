@@ -210,8 +210,13 @@ async def test_run() -> None:
     }
     await config_service.set_config(f"/services/connectors/{connector_id}/config", config)
 
+    from app.connectors.core.base.data_processor.data_source_entities_processor import DataSourceEntitiesProcessor
+    data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
+    await data_entities_processor.initialize()
+
     connector: BaseConnector = await GoogleDriveTeamConnector.create_connector(
-        logger, data_store_provider, config_service, connector_id
+        logger, data_store_provider, config_service, connector_id,
+        data_entities_processor=data_entities_processor,
     )
 
     try:

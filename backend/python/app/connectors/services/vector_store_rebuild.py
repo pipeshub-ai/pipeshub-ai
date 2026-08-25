@@ -81,21 +81,30 @@ def _is_deleting(app: dict[str, Any]) -> bool:
     return app.get("status") == APP_STATUS_DELETING
 
 
-async def list_rebuild_apps(graph_provider: IGraphDBProvider) -> list[tuple[str, str]]:
-    """Return (org_id, connector_id) for every non-DELETING app."""
+async def list_rebuild_apps(
+    graph_provider: IGraphDBProvider,
+    org_id: str | None = None,
+) -> list[tuple[str, str]]:
+    """Return (org_id, connector_id) for every non-DELETING app.
+
+    When ``org_id`` is set, only that organisation's apps are returned.
+    Multi-tenant deployments must always pass ``org_id`` so one tenant's
+    admin cannot trigger operations on another tenant's connectors.
+    """
     pairs: list[tuple[str, str]] = []
-    orgs = await graph_provider.get_all_orgs(active=False)
-    for org in orgs or []:
-        org_id = _doc_key(org)
-        if not org_id:
-            continue
-        apps = await graph_provider.get_org_apps(org_id, active_only=False)
+    if org_id:
+        org_ids = [org_id]
+    else:
+        orgs = await graph_provider.get_all_orgs(active=False)
+        org_ids = [_doc_key(org) for org in (orgs or []) if _doc_key(org)]
+    for oid in org_ids:
+        apps = await graph_provider.get_org_apps(oid, active_only=False)
         for app in apps or []:
             if _is_deleting(app):
                 continue
             connector_id = _doc_key(app)
             if connector_id:
-                pairs.append((org_id, connector_id))
+                pairs.append((oid, connector_id))
     return pairs
 
 
@@ -277,6 +286,7 @@ async def start_vector_store_cleanup(
                 "eventType": EventTypes.DELETE_VECTOR_COLLECTION.value,
                 "timestamp": get_epoch_timestamp_in_ms(),
                 "payload": {
+                    "orgId": org_id,
                     "requestedByOrgId": org_id,
                     "requestedByUserId": user_id,
                 },

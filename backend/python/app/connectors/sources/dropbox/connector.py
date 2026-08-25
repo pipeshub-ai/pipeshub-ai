@@ -92,9 +92,7 @@ from app.sources.client.dropbox.dropbox_ import (
     DropboxTokenConfig,
 )
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response, stream_content
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # from dropbox.team import GroupSelector
 
@@ -313,12 +311,10 @@ class DropboxConnector(BaseConnector):
             self.logger.error("Dropbox oauthConfigId not found in auth configuration.")
             return False
 
-        # Fetch OAuth config
-        oauth_config = await fetch_oauth_config_by_id(
+        oauth_config = await self._fetch_oauth_config_by_id(
             oauth_config_id=oauth_config_id,
             connector_type=Connectors.DROPBOX.value,
-            config_service=self.config_service,
-            logger=self.logger
+            auth_config=auth_config,
         )
 
         if not oauth_config:
@@ -404,11 +400,9 @@ class DropboxConnector(BaseConnector):
 
 
             # 2. Get existing record from the database
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=entry.id
-                )
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, entry.id
+            )
 
             # 3. Detect changes
             is_new = existing_record is None
@@ -2042,38 +2036,20 @@ class DropboxConnector(BaseConnector):
             self.logger.error(f"Error processing group_rename event for group {group_id}: {e}", exc_info=True)
 
     async def _update_group_name(self, group_id: str, new_name: str, old_name: str = None) -> None:
-        """
-        Update the name of an existing group in the database.
-        """
-        try:
-            async with self.data_store_provider.transaction() as tx_store:
-                # 1. Look up the existing group by external ID
-                existing_group = await tx_store.get_user_group_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=group_id
-                )
-
-                if not existing_group:
-                    self.logger.warning(
-                        f"Cannot rename group: Group with external ID {group_id} not found in database"
-                    )
-                    return
-
-                # 2. Update the group name and timestamp
-                existing_group.name = new_name
-                existing_group.updated_at = get_epoch_timestamp_in_ms()
-
-                # 3. Upsert the updated group
-                await tx_store.batch_upsert_user_groups([existing_group])
-
-                self.logger.info(
-                    f"Successfully renamed group {group_id} from '{old_name}' to '{new_name}' "
-                    f"(internal_id: {existing_group.id})"
-                )
-
-        except Exception as e:
-            self.logger.error(f"Failed to update group name for {group_id}: {e}", exc_info=True)
-            raise
+        """Update the name of an existing group in the database."""
+        success = await self.data_entities_processor.update_user_group_name(
+            external_group_id=group_id,
+            new_name=new_name,
+            connector_id=self.connector_id,
+        )
+        if success:
+            self.logger.info(
+                f"Successfully renamed group {group_id} from '{old_name}' to '{new_name}'"
+            )
+        else:
+            self.logger.warning(
+                f"Cannot rename group: Group with external ID {group_id} not found in database"
+            )
 
     async def _handle_group_change_member_role_event(self, event) -> None:
         """Handle group_change_member_role events from Dropbox audit log."""
@@ -2147,103 +2123,44 @@ class DropboxConnector(BaseConnector):
         user_email: str,
         new_permission_type: PermissionType
     ) -> bool:
-        """
-        Update a user's permission level within a group.
-        """
+        """Update a user's permission level within a group."""
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                # 1. Look up the user by email
-                user = await tx_store.get_user_by_email(user_email)
-                if not user:
-                    self.logger.warning(
-                        f"Cannot update group permission: User with email {user_email} not found"
-                    )
-                    return False
-
-                # 2. Look up the group by external ID
-                user_group = await tx_store.get_user_group_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=group_id
+            user = await self.data_entities_processor.get_user_by_email(user_email)
+            if not user:
+                self.logger.warning(
+                    f"Cannot update group permission: User with email {user_email} not found"
                 )
-                if not user_group:
-                    self.logger.warning(
-                        f"Cannot update group permission: Group with external ID {group_id} not found"
-                    )
-                    return False
+                return False
 
-                # 3. Check if permission edge exists
-                existing_edge = await tx_store.get_edge(
-                    from_id=user.id,
-                    from_collection=CollectionNames.USERS.value,
-                    to_id=user_group.id,
-                    to_collection=CollectionNames.GROUPS.value,
-                    collection=CollectionNames.PERMISSION.value
+            user_group = await self.data_entities_processor.get_user_group_by_external_id(
+                connector_id=self.connector_id,
+                external_id=group_id,
+            )
+            if not user_group:
+                self.logger.warning(
+                    f"Cannot update group permission: Group with external ID {group_id} not found"
                 )
-                if not existing_edge:
-                    self.logger.warning(
-                        f"No existing permission found between user {user_email} and group {user_group.name}. "
-                        f"Creating new permission with type {new_permission_type}"
-                    )
-                    # Create new permission edge
-                    permission = Permission(
-                        external_id=user.id,
-                        email=user_email,
-                        type=new_permission_type,
-                        entity_type=EntityType.GROUP
-                    )
-                    permission_edge = permission.to_arango_permission(
-                        from_id=user.id,
-                        from_collection=CollectionNames.USERS.value,
-                        to_id=user_group.id,
-                        to_collection=CollectionNames.GROUPS.value
-                    )
-                    await tx_store.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
-                    return True
+                return False
 
-                # 4. Check if permission type has changed
-                current_permission_type = existing_edge.get('permissionType')
-                if current_permission_type == new_permission_type.value:
-                    self.logger.info(
-                        f"Permission type already correct for {user_email} in group {user_group.name}: {new_permission_type}"
-                    )
-                    return True
-
-                # 5. Update the permission by deleting old edge and creating new one
-                self.logger.info(
-                    f"Updating permission for {user_email} in group {user_group.name} "
-                    f"from {current_permission_type} to {new_permission_type}"
-                )
-
-                # Delete old edge
-                await tx_store.delete_edge(
-                    from_id=user.id,
-                    from_collection=CollectionNames.USERS.value,
-                    to_id=user_group.id,
-                    to_collection=CollectionNames.GROUPS.value,
-                    collection=CollectionNames.PERMISSION.value
-                )
-
-                # Create new edge with updated permission
-                permission = Permission(
-                    external_id=user.id,
-                    email=user_email,
-                    type=new_permission_type,
-                    entity_type=EntityType.GROUP
-                )
-                permission_edge = permission.to_arango_permission(
-                    from_id=user.id,
-                    from_collection=CollectionNames.USERS.value,
-                    to_id=user_group.id,
-                    to_collection=CollectionNames.GROUPS.value
-                )
-                await tx_store.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
-
-                return True
+            permission = Permission(
+                external_id=user.id,
+                email=user_email,
+                type=new_permission_type,
+                entity_type=EntityType.GROUP,
+            )
+            await self.data_entities_processor.upsert_permission_edge(
+                from_id=user.id,
+                from_collection=CollectionNames.USERS.value,
+                to_id=user_group.id,
+                to_collection=CollectionNames.GROUPS.value,
+                permission=permission,
+            )
+            return True
 
         except Exception as e:
             self.logger.error(
-                f"Failed to update user group permission for {user_email} in group {group_id}: {e}",
-                exc_info=True
+                f"Failed to update permission for {user_email} in group {group_id}: {e}",
+                exc_info=True,
             )
             return False
 
@@ -2858,21 +2775,19 @@ class DropboxConnector(BaseConnector):
 
             # Determine record_group_id based on entry type
             if isinstance(entry, FileMetadata):
-                async with self.data_store_provider.transaction() as tx_store:
-                    existing_record = await tx_store.get_record_by_external_id(self.connector_id, external_id)
-                    if not existing_record:
-                        self.logger.warning(f"File record {external_id} not found in DB for re-sync. Cannot determine parent group.")
-                        return
-                    record_group_id = existing_record.external_record_group_id
-                    is_person_folder = (record_group_id == team_member_id)
+                existing_record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, external_id)
+                if not existing_record:
+                    self.logger.warning(f"File record {external_id} not found in DB for re-sync. Cannot determine parent group.")
+                    return
+                record_group_id = existing_record.external_record_group_id
+                is_person_folder = (record_group_id == team_member_id)
             else:  # FolderMetadata (shared folder)
-                async with self.data_store_provider.transaction() as tx_store:
-                    existing_record = await tx_store.get_record_by_external_id(self.connector_id, file_id)
-                    if not existing_record:
-                        self.logger.warning(f"File record {file_id} not found in DB for re-sync. Cannot determine parent group.")
-                        return
-                    record_group_id = existing_record.external_record_group_id
-                    is_person_folder = (record_group_id == team_member_id)
+                existing_record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, file_id)
+                if not existing_record:
+                    self.logger.warning(f"File record {file_id} not found in DB for re-sync. Cannot determine parent group.")
+                    return
+                record_group_id = existing_record.external_record_group_id
+                is_person_folder = (record_group_id == team_member_id)
                 # record_group_id = external_id
                 # is_person_folder = False
 
@@ -2912,10 +2827,8 @@ class DropboxConnector(BaseConnector):
         if not self.data_source:
             return None
         try:
-            user_with_permission = None
-            async with self.data_store_provider.transaction() as tx_store:
-                user_with_permission = await tx_store.get_first_user_with_permission_to_node(record.id, CollectionNames.RECORDS.value)
-                file_record = await tx_store.get_file_record_by_id(record.id)
+            user_with_permission = await self.data_entities_processor.get_first_user_with_permission_to_node(record.id, CollectionNames.RECORDS.value)
+            file_record = await self.data_entities_processor.get_file_record_by_id(record.id)
             if not user_with_permission:
                 self.logger.warning(f"No user found with permission to node: {record.id}")
                 return None
@@ -3043,20 +2956,16 @@ class DropboxConnector(BaseConnector):
                 return None
 
             # Get file record for additional info (path, etc.)
-            file_record = None
-            async with self.data_store_provider.transaction() as tx_store:
-                file_record = await tx_store.get_file_record_by_id(record.id)
+            file_record = await self.data_entities_processor.get_file_record_by_id(record.id)
 
             if not file_record:
                 self.logger.warning(f"No file record found for record {record.id}")
                 return None
 
             # Get a user with permission to access this file
-            user_with_permission = None
-            async with self.data_store_provider.transaction() as tx_store:
-                user_with_permission = await tx_store.get_first_user_with_permission_to_node(
-                    record.id, CollectionNames.RECORDS.value
-                )
+            user_with_permission = await self.data_entities_processor.get_first_user_with_permission_to_node(
+                record.id, CollectionNames.RECORDS.value
+            )
 
             if not user_with_permission:
                 self.logger.warning(f"No user found with permission to record: {record.id}")
@@ -3145,12 +3054,10 @@ class DropboxConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "BaseConnector":
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
-        return DropboxConnector(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,

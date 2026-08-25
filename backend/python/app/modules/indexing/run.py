@@ -173,7 +173,7 @@ class IndexingPipeline:
                     if remaining_keys:
                         await self.sync_vector_membership(virtual_record_id)
                         rewritten_virtual_record_ids.append(virtual_record_id)
-                        self.logger.info(
+                        self.logger.debug(
                             f"Rewrote vector membership for virtual_record_id {virtual_record_id} "
                             f"(still referenced by records: {remaining_keys})"
                         )

@@ -4246,19 +4246,16 @@ class TestCreateConnector:
     @pytest.mark.asyncio
     async def test_create_connector(self):
         with patch(
-            "app.connectors.sources.google.drive.team.connector.DataSourceEntitiesProcessor"
-        ) as MockDSEP, patch(
             "app.connectors.sources.google.drive.team.connector.GoogleDriveTeamApp"
         ), patch(
             "app.connectors.sources.google.drive.team.connector.SyncPoint"
         ):
-            mock_dep = MagicMock()
-            mock_dep.initialize = AsyncMock()
-            MockDSEP.return_value = mock_dep
-
             from app.connectors.sources.google.drive.team.connector import (
                 GoogleDriveTeamConnector,
             )
+
+            processor = MagicMock()
+            processor.org_id = "org-1"
 
             connector = await GoogleDriveTeamConnector.create_connector(
                 logger=_make_logger(),
@@ -4267,9 +4264,9 @@ class TestCreateConnector:
                 connector_id="test-drive-team",
                 scope="personal",
                 created_by="test-user-id",
+                data_entities_processor=processor,
             )
             assert connector is not None
-            MockDSEP.return_value.initialize.assert_called_once()
 
 
 # ===========================================================================

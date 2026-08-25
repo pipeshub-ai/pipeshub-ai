@@ -34,7 +34,7 @@ from app.models.entities import (
     RecordGroup,
     User,
 )
-from app.models.permission import Permission
+from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -223,11 +223,11 @@ class GraphTransactionStore(TransactionStore):
         # Delete the record node from the records collection
         return await self.graph_provider.delete_nodes([key], CollectionNames.RECORDS.value, transaction=self.txn)
 
-    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str) -> None:
-        return await self.graph_provider.delete_record_by_external_id(connector_id, external_id, user_id)
+    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> None:
+        return await self.graph_provider.delete_record_by_external_id(connector_id, external_id, user_id, transaction=self.txn)
 
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
-        return await self.graph_provider.remove_user_access_to_record(connector_id, external_id, user_id)
+        return await self.graph_provider.remove_user_access_to_record(connector_id, external_id, user_id, transaction=self.txn)
 
     async def delete_record_group_by_external_id(self, connector_id: str, external_id: str) -> None:
         return await self.graph_provider.delete_record_group_by_external_id(connector_id, external_id, transaction=self.txn)
@@ -362,7 +362,7 @@ class GraphTransactionStore(TransactionStore):
         group_external_id: str,
         connector_id: str
     ) -> bool:
-        """Create BELONGS_TO edge from user to group using source IDs"""
+        """Create BELONGS_TO and PERMISSION edges from user to group using source IDs."""
         try:
             # Lookup user by sourceUserId
             user = await self.get_user_by_source_id(user_source_id, connector_id)
@@ -380,19 +380,23 @@ class GraphTransactionStore(TransactionStore):
                 )
                 return False
 
-            # Create BELONGS_TO edge
-            edge = {
-                "from_id": user.id,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": group.id,
-                "to_collection": CollectionNames.GROUPS.value,
-                "entityType": "GROUP",
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-            }
+            # Create PERMISSION edge (access grant) — matches on_new_user_groups
+            permission = Permission(
+                external_id=user_source_id,
+                email=user.email,
+                type=PermissionType.READ,
+                entity_type=EntityType.USER,
+            )
+            perm_edge = permission.to_arango_permission(
+                from_id=user.id,
+                from_collection=CollectionNames.USERS.value,
+                to_id=group.id,
+                to_collection=CollectionNames.GROUPS.value,
+            )
 
             await self.graph_provider.batch_create_edges(
-                [edge],
-                collection=CollectionNames.BELONGS_TO.value,
+                [perm_edge],
+                collection=CollectionNames.PERMISSION.value,
                 transaction=self.txn
             )
 

@@ -725,11 +725,9 @@ class WebConnector(BaseConnector):
                 self.full_sync = True
 
             if self.scope == ConnectorScope.TEAM.value:
-                async with self.data_store_provider.transaction() as tx_store:
-                    await tx_store.ensure_team_app_edge(
-                        self.connector_id,
-                        self.data_entities_processor.org_id,
-                    )
+                await self.data_entities_processor.ensure_team_app_edge(
+                    self.connector_id
+                )
                 app_users = []
             else:
                 # Personal: create user-app edge only for the creator
@@ -2377,13 +2375,11 @@ class WebConnector(BaseConnector):
         config_service: ConfigurationService,
         connector_id: str,
         scope: str,
-        created_by: str
+        created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> BaseConnector:
         """Factory method to create a WebConnector instance."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
         return WebConnector(
             logger, data_entities_processor, data_store_provider, config_service, connector_id, scope, created_by
         )

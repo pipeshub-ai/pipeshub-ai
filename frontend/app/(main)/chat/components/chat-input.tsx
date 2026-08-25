@@ -37,8 +37,17 @@ import { toast } from '@/lib/store/toast-store';
 import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
 import { useTranslation } from 'react-i18next';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
+import { PastedTextChip } from '@/chat/components/pasted-text-chip';
+import { TextPreviewDialog } from '@/chat/components/text-preview-dialog';
+import {
+  isLargePaste,
+  createPastedTextFile,
+  generatePastePreview,
+  DEFAULT_PASTE_ATTACHMENT_CONFIG,
+} from '@/chat/utils/paste-attachment';
 import type {
   UploadedFile,
+  UploadedFileSource,
   ActiveMessageAction,
   ModelOverride,
   AppliedFilters,
@@ -200,6 +209,15 @@ export function ChatInput({
    * doesn't leak across long-lived sessions.
    */
   const uploadControllersRef = useRef<Map<string, AbortController>>(new Map());
+  /**
+   * Tracks whether Shift is currently held, so `handlePaste` can honor the
+   * Cmd/Ctrl+Shift+V "paste as plain text" convention (bypasses the
+   * large-paste → attachment conversion). `ClipboardEvent` does not expose
+   * modifier-key state directly, hence the separate keydown/keyup listeners.
+   */
+  const shiftKeyHeldRef = useRef(false);
+  /** id of the `UploadedFile` currently shown in the text preview dialog (composer, pre-send). */
+  const [textPreviewFileId, setTextPreviewFileId] = useState<string | null>(null);
   const { t, i18n } = useTranslation();
   const resolvedPlaceholder = placeholder ?? t('chat.askAnything');
 
@@ -825,7 +843,15 @@ export function ChatInput({
       });
   }, [onUploadFile, t]);
 
-  const processFiles = useCallback((files: FileList | File[]) => {
+  const processFiles = useCallback((
+    files: FileList | File[],
+    options?: {
+      source?: UploadedFileSource;
+      pastePreview?: string;
+      pasteCharCount?: number;
+      pasteLineCount?: number;
+    },
+  ) => {
     const fileArray = Array.from(files);
 
     const typeValid: File[] = [];
@@ -888,6 +914,10 @@ export function ChatInput({
       size: file.size,
       type: file.type,
       status: 'uploading' as const,
+      source: options?.source ?? 'upload',
+      pastePreview: options?.pastePreview,
+      pasteCharCount: options?.pasteCharCount,
+      pasteLineCount: options?.pasteLineCount,
     }));
 
     // Pure state update — no side effects inside the updater.
@@ -929,7 +959,7 @@ export function ChatInput({
     setIsPanelDragging(false);
 
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      processFiles(e.dataTransfer.files);
+      processFiles(e.dataTransfer.files, { source: 'drag' });
     }
   };
 
@@ -961,7 +991,7 @@ export function ChatInput({
     setIsPanelDragging(false);
     if (!canAcceptDrop) return;
     if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
-      processFiles(e.dataTransfer.files);
+      processFiles(e.dataTransfer.files, { source: 'drag' });
     }
   };
 
@@ -997,12 +1027,19 @@ export function ChatInput({
   /**
    * Handle Ctrl+V / paste events.
    *
-   * Only clipboard items of kind `'file'` with a supported MIME type are
-   * intercepted. Plain-text pastes continue to work normally — we only call
-   * `e.preventDefault()` when we actually consume file items so that normal
-   * text pasting is never disrupted.
+   * Two things can be intercepted here:
+   *  1. Clipboard items of kind `'file'` with a supported MIME type
+   *     (screenshots, copied images/PDFs) — unchanged from before.
+   *  2. A large plain-text paste (no file items) — auto-converted to a
+   *     synthetic `.txt` attachment, mirroring ChatGPT/Claude. Held Shift
+   *     (Cmd/Ctrl+Shift+V) bypasses this and pastes as plain text, same as
+   *     ChatGPT's convention.
    *
-   * File pastes use the same gating as the attach control: enterprise search
+   * In both cases we only call `e.preventDefault()` once we've actually
+   * decided to consume the paste, so normal short-text pasting is never
+   * disrupted.
+   *
+   * Both paths use the same gating as the attach control: enterprise search
    * (`mode === 'search'`) and web search do not accept attachments.
    */
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
@@ -1013,8 +1050,10 @@ export function ChatInput({
     if (!items) return;
 
     const fileItems: File[] = [];
+    let hasFileItem = false;
     for (const item of Array.from(items)) {
       if (item.kind === 'file') {
+        hasFileItem = true;
         const file = item.getAsFile();
         if (file && isFileTypeSupported(file)) {
           // Keep the original filename when the browser provides one.
@@ -1042,9 +1081,69 @@ export function ChatInput({
       e.stopPropagation();
       // Prevent the browser from trying to render the raw image data as text.
       e.preventDefault();
-      processFiles(fileItems);
+      processFiles(fileItems, { source: 'paste' });
+      return;
     }
+
+    // No file items — check whether the plain text itself is large enough
+    // to collapse into an attachment. Held Shift bypasses this entirely.
+    if (hasFileItem || shiftKeyHeldRef.current) return;
+    const text = e.clipboardData?.getData('text/plain') ?? '';
+    if (!text || !isLargePaste(text)) return;
+
+    e.stopPropagation();
+    e.preventDefault();
+    const file = createPastedTextFile(text, {
+      ...DEFAULT_PASTE_ATTACHMENT_CONFIG,
+      truncationNotice: t('chat.attachments.pasteTruncated', {
+        defaultValue:
+          '\n\n[Content truncated — pasted text exceeded the maximum attachment size.]',
+      }),
+    });
+    processFiles([file], {
+      source: 'paste-text',
+      pastePreview: generatePastePreview(text),
+      pasteCharCount: text.length,
+      pasteLineCount: text.split('\n').length,
+    });
   }, [processFiles, isRegenerateMode, isSearchMode, settings.queryMode]);
+
+  /**
+   * "Show in text field" — moves a pasted-text chip's content back into the
+   * textarea and removes the chip (aborting/deleting its upload via the
+   * existing `removeFile` path, so there is exactly one place that does
+   * that bookkeeping).
+   */
+  const handleShowInTextField = useCallback((file: UploadedFile) => {
+    void file.file.text().then((text) => {
+      setMessage((prev) => (prev.trim() ? `${prev}\n\n${text}` : text));
+      removeFile(file.id);
+      setTimeout(() => textareaRef.current?.focus(), 0);
+    });
+  }, [removeFile]);
+
+  // Track Shift key state for the paste-as-plain-text bypass (see handlePaste).
+  // ClipboardEvent carries no modifier state, so it has to be tracked globally.
+  useEffect(() => {
+    // Read `shiftKey` off every key event, not just the Shift key itself, so any
+    // keystroke re-syncs a ref left stale by a missed keyup.
+    const sync = (e: KeyboardEvent) => {
+      shiftKeyHeldRef.current = e.shiftKey;
+    };
+    // A keyup during Cmd+Tab or a native dialog is delivered to the other window
+    // and never reaches us, which would strand the ref at true.
+    const clear = () => {
+      shiftKeyHeldRef.current = false;
+    };
+    window.addEventListener('keydown', sync);
+    window.addEventListener('keyup', sync);
+    window.addEventListener('blur', clear);
+    return () => {
+      window.removeEventListener('keydown', sync);
+      window.removeEventListener('keyup', sync);
+      window.removeEventListener('blur', clear);
+    };
+  }, []);
 
   // Abort any still-pending uploads on unmount so we don't write back into
   // a destroyed component's state when the network finally responds.
@@ -1392,6 +1491,16 @@ export function ChatInput({
           >
           <Flex gap="2" style={{ minWidth: 'max-content' }}>
             {uploadedFiles.map((file) => (
+              file.source === 'paste-text' ? (
+                <PastedTextChip
+                  key={file.id}
+                  file={file}
+                  onPreview={() => setTextPreviewFileId(file.id)}
+                  onShowInTextField={() => handleShowInTextField(file)}
+                  onRemove={() => removeFile(file.id)}
+                  onRetry={() => retryFile(file.id)}
+                />
+              ) : (
               <Box
                 key={file.id}
                 style={{
@@ -1514,6 +1623,7 @@ export function ChatInput({
                   </Flex>
                 </Flex>
               </Box>
+              )
             ))}
 
             {/* Add Button */}
@@ -2292,6 +2402,24 @@ export function ChatInput({
       )}
     </Flex>
     </Flex>
+
+    {/* Pasted-text attachment preview — composer chip click (pre-send) */}
+    {textPreviewFileId && (() => {
+      const previewFile = uploadedFiles.find((f) => f.id === textPreviewFileId);
+      if (!previewFile) return null;
+      return (
+        <TextPreviewDialog
+          key={previewFile.id}
+          open
+          onOpenChange={(open) => {
+            if (!open) setTextPreviewFileId(null);
+          }}
+          title={previewFile.pastePreview || previewFile.name}
+          loadText={() => previewFile.file.text()}
+          onShowInTextField={() => handleShowInTextField(previewFile)}
+        />
+      );
+    })()}
 
     {/* Mobile query options sheet — meatball → sheet flow */}
     <MobileQueryOptionsSheet

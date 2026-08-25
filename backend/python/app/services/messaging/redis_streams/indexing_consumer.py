@@ -688,7 +688,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                             ):
                                 break
                             try:
-                                self.logger.info(
+                                self.logger.debug(
                                     "Received message: stream=%s, id=%s",
                                     stream_name,
                                     message_id,

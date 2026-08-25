@@ -116,7 +116,6 @@ from app.sources.external.microsoft.outlook.outlook import (
     OutlookCalendarContactsResponse,
     OutlookMailFoldersResponse,
 )
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import (
     datetime_to_epoch_ms,
@@ -344,12 +343,10 @@ class OutlookIndividualConnector(BaseConnector):
                 self.logger.error("Outlook Personal oauthConfigId not found in auth configuration.")
                 raise ValueError("Outlook Personal oauthConfigId not found in auth configuration.")
 
-            # Fetch OAuth config
-            oauth_config = await fetch_oauth_config_by_id(
+            oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
                 connector_type=OutlookOAuthConfig.CONNECTOR_TYPE_PERSONAL,
-                config_service=self.config_service,
-                logger=self.logger
+                auth_config=auth_config,
             )
 
             if not oauth_config:
@@ -539,20 +536,14 @@ class OutlookIndividualConnector(BaseConnector):
             parent_index = base64.b64encode(parent_bytes).decode('utf-8')
             self.logger.debug(f"Thread {thread_id}: Looking for parent with conversation_index={parent_index}")
 
-            # Search in ArangoDB for parent message
-            async with self.data_store_provider.transaction() as tx_store:
-                parent_record = await tx_store.get_record_by_conversation_index(
-                    connector_id=self.connector_id,
-                    conversation_index=parent_index,
-                    thread_id=thread_id,
-                    org_id=org_id,
-                    user_id=user.source_user_id
-                )
+            parent_record = await self.data_entities_processor.get_record_by_conversation_index(
+                self.connector_id, parent_index, thread_id, user.source_user_id
+            )
 
-                if parent_record:
-                    return parent_record.id
-                else:
-                    return None
+            if parent_record:
+                return parent_record.id
+            else:
+                return None
 
         except Exception as e:
             self.logger.error(f"Error finding parent by conversation index from DB for thread {thread_id}: {e}")
@@ -1174,8 +1165,7 @@ class OutlookIndividualConnector(BaseConnector):
 
             if is_deleted:
                 self.logger.info(f"Deleting message: {message_id} and its attachments from folder {folder_name}")
-                async with self.data_store_provider.transaction() as tx_store:
-                    await tx_store.delete_record_by_external_id(self.connector_id, message_id, user.source_user_id)
+                await self.data_entities_processor.delete_record_by_external_id(self.connector_id, message_id, user.source_user_id)
                 return updates, True
 
             # Process email with attachments
@@ -1490,11 +1480,9 @@ class OutlookIndividualConnector(BaseConnector):
     async def _get_existing_record(self, org_id: str, external_record_id: str) -> Record | None:
         """Get existing record from data store."""
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                return await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=external_record_id
-                )
+            return await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, external_record_id
+            )
         except Exception as e:
             self.logger.error(f"Error getting existing record {external_record_id}: {e}")
             return None
@@ -2068,12 +2056,11 @@ class OutlookIndividualConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> 'OutlookIndividualConnector':
         """Factory method to create and initialize OutlookIndividualConnector."""
-        data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
-        await data_entities_processor.initialize()
-
-        return OutlookIndividualConnector(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,

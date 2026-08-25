@@ -625,7 +625,7 @@ async def perform_llm_health_check(
             )
 
         model_name = model_names[0]
-        logger.info("Getting generator model")
+        logger.debug("Getting generator model")
 
         config_keys = list(configuration.keys())
         logger.debug(f"LLM health check configuration keys for {provider}: {config_keys}")
@@ -638,7 +638,7 @@ async def perform_llm_health_check(
             model_name=model_name,
         )
 
-        logger.info("Generator model created")
+        logger.debug("Generator model created")
 
         # Check if multimodal is enabled
         is_multimodal = llm_config.get("isMultimodal", False) or configuration.get("isMultimodal", False)

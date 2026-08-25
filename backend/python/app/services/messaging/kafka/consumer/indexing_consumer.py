@@ -544,7 +544,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                 break
 
                             try:
-                                self.logger.info(f"Received message: topic={message.topic}, partition={message.partition}, offset={message.offset}")
+                                self.logger.debug(f"Received message: topic={message.topic}, partition={message.partition}, offset={message.offset}")
                                 if self.__defer_if_retry_not_ready(message):
                                     # Not ready: seeked back already. Kafka's
                                     # per-partition ordering means we can't

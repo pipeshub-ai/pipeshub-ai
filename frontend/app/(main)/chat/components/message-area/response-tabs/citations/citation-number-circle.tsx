@@ -9,6 +9,7 @@ import {
 } from './citation-popover-control';
 import { useInlineCitationPopoverStore } from './citation-popover-store';
 import { getCitationCopyHref } from './utils';
+import { useOrgHref } from '@/lib/navigation';
 
 interface CitationNumberCircleProps {
   /** The `[N]` number from the markdown text (used as the circle label) */
@@ -74,7 +75,7 @@ export function CitationNumberCircle({
   const openPopover = useInlineCitationPopoverStore((s) => s.open);
   const closePopover = useInlineCitationPopoverStore((s) => s.close);
 
-  const copyHref = getCitationCopyHref(citation);
+  const copyHref = useOrgHref(getCitationCopyHref(citation));
 
   // When this badge (re)mounts — e.g. because react-markdown recreated its
   // component tree after streamingCitationMaps updated — and it is still the

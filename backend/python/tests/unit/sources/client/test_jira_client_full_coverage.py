@@ -227,7 +227,7 @@ class TestBuildFromToolsetApiTokenMissingApiToken:
         """Email is present but apiToken is empty in toolset config."""
         cs = AsyncMock()
         with patch(
-            "app.sources.client.jira.jira.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             return_value={"auth": {"baseUrl": "https://jira.com"}},
         ):
             config = {
@@ -289,7 +289,7 @@ class TestBuildFromToolsetAuthTypeCaseInsensitive:
         """authType='api_token' should be uppercased to 'API_TOKEN'."""
         cs = AsyncMock()
         with patch(
-            "app.sources.client.jira.jira.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             return_value={"auth": {"baseUrl": "https://jira.com"}},
         ):
             config = {

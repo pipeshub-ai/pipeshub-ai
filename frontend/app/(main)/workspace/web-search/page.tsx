@@ -46,6 +46,8 @@ export default function WebSearchPage() {
     includeImages: false,
     maxImages: 3,
   });
+  const [inherited, setInherited] = useState(false);
+
   const [isLoading, setIsLoading] = useState(true);
   const [settingDefaultType, setSettingDefaultType] = useState<WebSearchProviderType | null>(null);
   const [isSettingsSaving, setIsSettingsSaving] = useState(false);
@@ -83,6 +85,8 @@ export default function WebSearchPage() {
         const config = await WebSearchApi.getConfig();
         setConfiguredProviders(config.providers);
         setSettings(config.settings);
+        setInherited(config?.inherited ?? false);
+
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Please try again.';
         addToast({
@@ -401,6 +405,7 @@ export default function WebSearchPage() {
                     isDefault={isDefault}
                     isSettingDefault={settingDefaultType === meta.type}
                     anyActionInProgress={anyActionInProgress}
+                    inherited={inherited ?? false}
                     onSetDefault={() => handleSetDefault(meta.type)}
                     onConfigure={handleConfigure}
                     onDelete={() => configured && handleRowDelete(configured)}

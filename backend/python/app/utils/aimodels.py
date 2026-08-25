@@ -266,7 +266,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
         if model_name not in model_names:
             raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
 
-    logger.info(f"Getting embedding model: provider={provider}, model_name={model_name}")
+    logger.debug(f"Getting embedding model: provider={provider}, model_name={model_name}")
 
     raw_dims = configuration.get("dimensions")
     dimensions: int | None = None
@@ -1287,7 +1287,7 @@ def get_generator_model(
     api_mode_store = get_llm_api_mode_store()
     api_mode = api_mode_store.get(config.get("modelKey"), model_name) if api_mode_store else None
 
-    logger.info(
+    logger.debug(
         f"Getting generator model: provider={provider}, model_name={model_name}, "
         f"reasoning_effort={reasoning_effort}, api_mode={api_mode}"
     )

@@ -96,6 +96,11 @@ def mock_data_entities_processor():
     proc.on_new_records = AsyncMock()
     proc.on_new_user_groups = AsyncMock()
     proc.on_record_deleted = AsyncMock()
+    proc.get_all_app_users = AsyncMock(return_value=[])
+    proc.batch_upsert_user_groups = AsyncMock()
+    proc.create_user_group_membership = AsyncMock()
+    proc.get_user_by_source_id = AsyncMock(return_value=None)
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
     return proc
 
 
@@ -672,15 +677,7 @@ class TestGetAdminUsers:
 
         mock_app_user = MagicMock()
         mock_app_user.email = "admin@test.com"
-        tx = AsyncMock()
-        tx.get_user_by_source_id = AsyncMock(return_value=mock_app_user)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=mock_app_user)
 
         admins = await connector._get_admin_users()
         assert len(admins) == 1

@@ -319,7 +319,8 @@
     "confirmDeleteMultiple": "确定要删除 {{count}} 个项目吗？",
     "cannotUndo": "此操作无法撤销。",
     "areYouSure": "您确定吗？",
-    "typeDeleteToConfirm": "输入 DELETE 以确认",
+    "deleteKeyword": "删除",
+    "typeDeleteToConfirm": "输入“{{keyword}}”以确认",
     "knowledgeBase": "知识库",
     "in": "位于",
     "willBeDeleted": "将被删除",
@@ -499,6 +500,14 @@
     "record": "记录"
   },
   "chat": {
+    "recordActions": {
+      "preview": "预览",
+      "open": "打开 {{source}}",
+      "openIn": "在 {{source}} 中打开",
+      "openInCollections": "在集合中打开",
+      "relevance": "相关度：{{percent}}%"
+    },
+    "results": "结果",
     "greeting": "今天想探索什么？",
     "heyUser": "你好，{{name}} 👋",
     "heyUserDefaultName": "朋友",

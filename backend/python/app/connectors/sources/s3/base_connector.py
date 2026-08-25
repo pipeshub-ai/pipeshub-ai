@@ -33,10 +33,7 @@ from app.services.notification.types import (
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.base.data_store.data_store import (
-    DataStoreProvider,
-    TransactionStore,
-)
+from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -369,11 +366,9 @@ class S3CompatibleBaseConnector(BaseConnector):
             )
 
             if self.scope == ConnectorScope.TEAM.value:
-                async with self.data_store_provider.transaction() as tx_store:
-                    await tx_store.ensure_team_app_edge(
-                        self.connector_id,
-                        self.data_entities_processor.org_id,
-                    )
+                await self.data_entities_processor.ensure_team_app_edge(
+                    self.connector_id
+                )
             else:
                 # Personal: create user-app edge only for the creator
                 if self.created_by:
@@ -513,17 +508,16 @@ class S3CompatibleBaseConnector(BaseConnector):
             else:
                 if self.created_by:
                     try:
-                        async with self.data_store_provider.transaction() as tx_store:
-                            user = await tx_store.get_user_by_user_id(self.created_by)
-                            if user and user.get("email"):
-                                permissions.append(
-                                    Permission(
-                                        type=PermissionType.OWNER,
-                                        entity_type=EntityType.USER,
-                                        email=user.get("email"),
-                                        external_id=self.created_by
-                                    )
+                        user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                        if user and getattr(user, "email", None):
+                            permissions.append(
+                                Permission(
+                                    type=PermissionType.OWNER,
+                                    entity_type=EntityType.USER,
+                                    email=user.email,
+                                    external_id=self.created_by
                                 )
+                            )
                     except Exception as e:
                         self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
 
@@ -840,17 +834,6 @@ class S3CompatibleBaseConnector(BaseConnector):
                 }
             )
 
-    async def _remove_old_parent_relationship(
-        self, record_id: str, tx_store: "TransactionStore"
-    ) -> None:
-        """Remove old PARENT_CHILD relationships for a record."""
-        try:
-            deleted_count = await tx_store.delete_parent_child_edge_to_record(record_id)
-            if deleted_count > 0:
-                self.logger.info(f"Removed {deleted_count} old parent relationship(s) for record {record_id}")
-        except Exception as e:
-            self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
-
     async def _ensure_parent_folders_exist(
         self, bucket_name: str, path_segments: list[str]
     ) -> None:
@@ -945,11 +928,9 @@ class S3CompatibleBaseConnector(BaseConnector):
             current_etag = obj.get("ETag", "").strip('"')
             composite_revision = make_s3_composite_revision(bucket_name, normalized_key, current_etag or None)
 
-            # 2. PRIMARY: Try lookup by path (externalRecordId)
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id, external_id=external_record_id
-                )
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, external_record_id
+            )
 
             is_move = False
 
@@ -972,11 +953,9 @@ class S3CompatibleBaseConnector(BaseConnector):
                             f"Stored revision missing for {normalized_key}, processing record"
                         )
             else:
-                # Not found by path - FALLBACK: try composite revision lookup (for move/rename detection)
-                async with self.data_store_provider.transaction() as tx_store:
-                    existing_record = await tx_store.get_record_by_external_revision_id(
-                        connector_id=self.connector_id, external_revision_id=composite_revision
-                    )
+                existing_record = await self.data_entities_processor.get_record_by_external_revision_id(
+                    self.connector_id, composite_revision
+                )
 
                 if existing_record:
                     # Same composite can only match same key; if path differs it's a move/rename (key changed, etag same)
@@ -1010,8 +989,7 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             # For moves/renames, remove old parent relationship before processing
             if is_move and existing_record:
-                async with self.data_store_provider.transaction() as tx_store:
-                    await self._remove_old_parent_relationship(record_id, tx_store)
+                await self.data_entities_processor.delete_parent_child_edge_to_record(record_id)
 
             version = 0 if not existing_record else existing_record.version + 1
 
@@ -1085,17 +1063,16 @@ class S3CompatibleBaseConnector(BaseConnector):
             else:
                 if self.created_by:
                     try:
-                        async with self.data_store_provider.transaction() as tx_store:
-                            user = await tx_store.get_user_by_user_id(self.created_by)
-                            if user and user.get("email"):
-                                permissions.append(
-                                    Permission(
-                                        type=PermissionType.OWNER,
-                                        entity_type=EntityType.USER,
-                                        email=user.get("email"),
-                                        external_id=self.created_by
-                                    )
+                        user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                        if user and getattr(user, "email", None):
+                            permissions.append(
+                                Permission(
+                                    type=PermissionType.OWNER,
+                                    entity_type=EntityType.USER,
+                                    email=user.email,
+                                    external_id=self.created_by
                                 )
+                            )
                     except Exception as e:
                         self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
 

@@ -210,7 +210,7 @@ class SinkOrchestrator(Transformer):
             ],
             CollectionNames.RECORDS.value,
         )
-        self.logger.info(
+        self.logger.debug(
             "✅ indexingStatus=COMPLETED recorded for %s", record.id
         )
         # The record is only searchable now, so the accessible-record map that
@@ -236,7 +236,7 @@ class SinkOrchestrator(Transformer):
         this method.
         """
         await self.graphdb.apply(ctx)
-        self.logger.info(
+        self.logger.debug(
             "✅ Graph enrichment completed for record %s", ctx.record.id
         )
 

@@ -44,9 +44,9 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-async def load_org_instances(org_id: str, config_service: ConfigurationService) -> list[dict[str, Any]]:
-    """Every MCP instance metadata record for `org_id` (no secrets)."""
-    prefix = get_mcp_instances_prefix(org_id)
+async def load_org_instances(config_service: ConfigurationService) -> list[dict[str, Any]]:
+    """Every MCP instance metadata record for the current org scope (no secrets)."""
+    prefix = get_mcp_instances_prefix()
     try:
         keys = await config_service.list_keys_in_directory(prefix)
     except Exception as e:
@@ -65,9 +65,11 @@ async def load_org_instances(org_id: str, config_service: ConfigurationService) 
 
 
 async def get_instance(
-    org_id: str, instance_id: str, config_service: ConfigurationService
+    instance_id: str, config_service: ConfigurationService
 ) -> Optional[dict[str, Any]]:
-    data = await config_service.get_config(get_mcp_instance_path(org_id, instance_id), default=None, use_cache=False)
+    data = await config_service.get_config(
+        get_mcp_instance_path(instance_id), default=None, use_cache=False
+    )
     return data if isinstance(data, dict) else None
 
 
@@ -192,8 +194,8 @@ def match_enabled_tools_for_mcp_server(
 
 async def get_authenticated_mcp_servers(
     owner_id: str,
-    org_id: str,
     config_service: ConfigurationService,
+    instances: Optional[list[dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     """All MCP instances `owner_id` (a user, or an agentKey for a service-account agent) has
     completed authentication for — the MCP analog of
@@ -204,14 +206,16 @@ async def get_authenticated_mcp_servers(
     is no attach-time "reject duplicate server type" guard on this path (unlike explicit
     per-agent attachment), duplicate types are deduped here instead — first authenticated
     instance for a given type wins — so `mcp_{server_type}_{tool}` names stay unique.
-    """
-    try:
-        instances = await load_org_instances(org_id, config_service)
-    except Exception as e:
-        logger.error(f"Failed to load MCP instances for org {org_id}: {e}", exc_info=True)
-        return []
 
-    instances = [i for i in instances if i.get("orgId") == org_id]
+    ``instances``, when provided, is used as-is instead of loading from the config service.
+    """
+    if instances is None:
+        try:
+            instances = await load_org_instances(config_service)
+        except Exception as e:
+            logger.error(f"Failed to load MCP instances: {e}", exc_info=True)
+            return []
+
     if not instances:
         return []
 

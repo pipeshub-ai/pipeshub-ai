@@ -184,3 +184,28 @@ export function maskGithubAuthConfig<T extends Record<string, unknown>>(config: 
   }
   return out as T;
 }
+
+export function maskWebSearchProvider<T extends Record<string, unknown>>(configuration: T): T {
+  if (!configuration || typeof configuration !== 'object') {
+    return configuration;
+  }
+  const out = { ...configuration } as Record<string, unknown>;
+  if (typeof out['apiKey'] === 'string' && out['apiKey'].length > 0) {
+    out['apiKey'] = CONFIG_SECRET_PLACEHOLDER;
+  }
+  return out as T;
+}
+
+export function mergeWebSearchProviderPlaceholders<T extends Record<string, unknown>>(
+  incoming: T,
+  existing: Record<string, unknown> | null | undefined,
+): T {
+  if (!existing || typeof existing !== 'object') {
+    return incoming;
+  }
+  const out = { ...incoming } as Record<string, unknown>;
+  if (out['apiKey'] === CONFIG_SECRET_PLACEHOLDER && typeof existing['apiKey'] === 'string') {
+    out['apiKey'] = existing['apiKey'];
+  }
+  return out as T;
+}

@@ -347,7 +347,7 @@ class TestListIssues:
 
 
 class TestGraphQLMethods:
-    async def test_get_repo_tree_g_posts_to_graphql(self, data_source: GitLabDataSource) -> None:
+    async def test_get_repo_entries_g_posts_to_graphql(self, data_source: GitLabDataSource) -> None:
         data_source.token = "gql-token"
         mock_response = MagicMock()
         mock_response.raise_for_status.return_value = None
@@ -355,7 +355,7 @@ class TestGraphQLMethods:
 
         with patch.object(data_source.http_client, "post", new_callable=AsyncMock) as mock_post:
             mock_post.return_value = mock_response
-            resp = await data_source.get_repo_tree_g("group/repo", ref="main", after_cursor="cursor-1")
+            resp = await data_source.get_repo_entries_g("group/repo", ref="main", after_cursor="cursor-1")
 
         mock_post.assert_awaited_once()
         call_kwargs = mock_post.await_args.kwargs
@@ -366,7 +366,27 @@ class TestGraphQLMethods:
         assert resp.success is True
         assert resp.data == b'{"data":{"project":{"name":"repo"}}}'
 
-    async def test_get_file_tree_g_returns_error_on_failure(self, data_source: GitLabDataSource) -> None:
+    async def test_get_repo_entries_g_selects_folders_and_files_together(
+        self, data_source: GitLabDataSource
+    ) -> None:
+        """One page must carry both node types — walking the stream twice was
+        the whole cost this query exists to remove."""
+        data_source.token = "gql-token"
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.content = b"{}"
+
+        with patch.object(data_source.http_client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_response
+            await data_source.get_repo_entries_g("group/repo")
+
+        query = mock_post.await_args.kwargs["json"]["query"]
+        assert "trees {" in query
+        assert "blobs {" in query
+
+    async def test_get_repo_entries_g_returns_error_on_failure(
+        self, data_source: GitLabDataSource
+    ) -> None:
         data_source.token = "gql-token"
         with patch.object(
             data_source.http_client,
@@ -374,10 +394,12 @@ class TestGraphQLMethods:
             new_callable=AsyncMock,
             side_effect=RuntimeError("network down"),
         ):
-            resp = await data_source.get_file_tree_g("group/repo", ref="main")
+            resp = await data_source.get_repo_entries_g("group/repo", ref="main")
 
         assert resp.success is False
-        assert resp.error == "network down"
+        # Type name included: httpx timeout exceptions stringify to "", which
+        # previously logged as a bare colon with nothing after it.
+        assert resp.error == "RuntimeError: network down"
 
 
 class TestDirectHttp:

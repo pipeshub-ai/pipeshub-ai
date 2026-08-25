@@ -12,7 +12,7 @@ from typing import Any
 
 from app.agents.chat_modes.policy import ChatModePolicy
 
-# Maps `ChatModePolicy.system_prompt_key` to the AI models config field the
+# Maps `ChatModePolicy.system_prompt_key` to the SystemPromptsConfig field the
 # workspace "Custom Instructions" settings page writes.
 _CUSTOM_INSTRUCTIONS_CONFIG_KEY: dict[str, str] = {
     "internal_search": "customSystemPrompt",
@@ -22,13 +22,18 @@ _CUSTOM_INSTRUCTIONS_CONFIG_KEY: dict[str, str] = {
 
 
 def resolve_custom_instructions(
-    ai_models_config: dict[str, Any], policy: ChatModePolicy,
+    system_prompts_config: dict[str, Any], policy: ChatModePolicy,
 ) -> str | None:
     """Selects the org-level "Custom Instructions" text matching the active
     chat mode. Returns `None` when unset/blank so the prompt builder omits
     the section instead of rendering an empty header."""
+    if not isinstance(system_prompts_config, dict):
+        return None
     key = _CUSTOM_INSTRUCTIONS_CONFIG_KEY.get(policy.system_prompt_key, "")
     if not key:
         return None
-    prompt = (ai_models_config.get(key) or "").strip()
+    value = system_prompts_config.get(key)
+    if not isinstance(value, str):
+        return None
+    prompt = value.strip()
     return prompt or None

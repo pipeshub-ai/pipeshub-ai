@@ -81,7 +81,6 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -232,12 +231,10 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 self.logger.error("Gmail oauthConfigId not found in auth configuration.")
                 return False
 
-            # Fetch OAuth config
-            oauth_config = await fetch_oauth_config_by_id(
+            oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
                 connector_type=Connectors.GOOGLE_MAIL.value,
-                config_service=self.config_service,
-                logger=self.logger
+                auth_config=auth_config,
             )
 
             if not oauth_config:
@@ -327,12 +324,9 @@ class GoogleGmailIndividualConnector(BaseConnector):
     async def _get_existing_record(self, external_record_id: str) -> Optional[Record]:
         """Get existing record from data store."""
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=external_record_id
-                )
-                return existing_record
+            return await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, external_record_id
+            )
         except Exception as e:
             self.logger.error(f"Error getting existing record {external_record_id}: {e}")
             return None
@@ -1390,14 +1384,12 @@ class GoogleGmailIndividualConnector(BaseConnector):
         # Get parent message record using parent_external_record_id
         message_id = None
         if record.parent_external_record_id:
-            async with self.data_store_provider.transaction() as tx_store:
-                parent_record = await tx_store.get_record_by_external_id(
-                    connector_id=record.connector_id,
-                    external_id=record.parent_external_record_id
-                )
-                if parent_record:
-                    message_id = parent_record.external_record_id
-                    self.logger.info(f"Found parent message ID: {message_id} from parent_external_record_id")
+            parent_record = await self.data_entities_processor.get_record_by_external_id(
+                record.connector_id, record.parent_external_record_id
+            )
+            if parent_record:
+                message_id = parent_record.external_record_id
+                self.logger.info(f"Found parent message ID: {message_id} from parent_external_record_id")
 
         if not message_id:
             self.logger.error(f"Parent message ID not found for attachment record {record.id}")
@@ -1751,12 +1743,11 @@ class GoogleGmailIndividualConnector(BaseConnector):
                                     # Create SIBLING relation if there was a previous message
                                     if previous_message_id:
                                         try:
-                                            async with self.data_store_provider.transaction() as tx_store:
-                                                await tx_store.create_record_relation(
-                                                    previous_message_id,
-                                                    mail_record.id,
-                                                    RecordRelations.SIBLING.value
-                                                )
+                                            await self.data_entities_processor.create_record_relation(
+                                                previous_message_id,
+                                                mail_record.id,
+                                                RecordRelations.SIBLING.value
+                                            )
                                         except Exception as relation_error:
                                             self.logger.error(f"Error creating sibling relation: {relation_error}")
 
@@ -2009,21 +2000,16 @@ class GoogleGmailIndividualConnector(BaseConnector):
         """
         try:
             # Find and delete associated attachment records first
-            async with self.data_store_provider.transaction() as tx_store:
-                # Get all attachment records with this message as parent
-                attachment_records = await tx_store.get_records_by_parent(
-                    connector_id=self.connector_id,
-                    parent_external_record_id=message_id,
-                    record_type=RecordTypes.FILE.value
-                )
+            attachment_records = await self.data_entities_processor.get_records_by_parent(
+                self.connector_id, message_id, RecordTypes.FILE.value
+            )
 
-                # Delete each attachment record
-                for attachment_record in attachment_records:
-                    try:
-                        await self.data_entities_processor.on_record_deleted(attachment_record.id)
-                        self.logger.debug(f"Deleted attachment record {attachment_record.id} for message {message_id}")
-                    except Exception as attach_error:
-                        self.logger.error(f"Error deleting attachment {attachment_record.id}: {attach_error}")
+            for attachment_record in attachment_records:
+                try:
+                    await self.data_entities_processor.on_record_deleted(attachment_record.id)
+                    self.logger.debug(f"Deleted attachment record {attachment_record.id} for message {message_id}")
+                except Exception as attach_error:
+                    self.logger.error(f"Error deleting attachment {attachment_record.id}: {attach_error}")
 
             # Delete the main message record
             await self.data_entities_processor.on_record_deleted(record_id)
@@ -2141,12 +2127,11 @@ class GoogleGmailIndividualConnector(BaseConnector):
                         # Create SIBLING relation if there was a previous message
                         if previous_message_record_id:
                             try:
-                                async with self.data_store_provider.transaction() as tx_store:
-                                    await tx_store.create_record_relation(
-                                        previous_message_record_id,
-                                        mail_record.id,
-                                        RecordRelations.SIBLING.value
-                                    )
+                                await self.data_entities_processor.create_record_relation(
+                                    previous_message_record_id,
+                                    mail_record.id,
+                                    RecordRelations.SIBLING.value
+                                )
                             except Exception as relation_error:
                                 self.logger.error(f"Error creating sibling relation: {relation_error}")
 
@@ -2800,17 +2785,12 @@ class GoogleGmailIndividualConnector(BaseConnector):
         config_service: ConfigurationService,
         connector_id: str,
         scope: str,
-        created_by: str
+        created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> BaseConnector:
         """Create a new instance of the Google Gmail connector."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-        await data_entities_processor.initialize()
-
-        return GoogleGmailIndividualConnector(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,

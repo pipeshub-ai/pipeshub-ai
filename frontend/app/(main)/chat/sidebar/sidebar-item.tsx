@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
+import { Link } from '@/lib/navigation';
 import { CHAT_ITEM_HEIGHT } from '@/app/components/sidebar';
 
 interface SidebarItemProps {

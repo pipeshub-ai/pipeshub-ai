@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useCallback, useRef, useState, Suspense } fr
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore } from '@/config';
+import { useAuthStore, UsersPageHeaderActions } from '@/config';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { formatDate } from '@/lib/utils/formatters';
@@ -1103,6 +1103,7 @@ function UsersPageContent() {
         ctaLabel={t('workspace.users.inviteButton')}
         ctaIcon="person_add_alt"
         onCtaClick={navigateToInvitePanel}
+        additionalActions={<UsersPageHeaderActions />}
       />
 
       {/* Content: filter bar + table + pagination */}

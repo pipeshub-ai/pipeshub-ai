@@ -80,6 +80,7 @@ interface ConnectorsState {
   selectedAuthType: string;
   authState: AuthCardState | 'authenticating';
   isAuthTypeImmutable: boolean;
+  disableCredentialEditWhenLinked: boolean;
 
   // ── Create mode ───────────────────────────────────────────────
   instanceName: string;
@@ -177,6 +178,7 @@ interface ConnectorsState {
   setAuthState: (state: AuthCardState | 'authenticating') => void;
   setInstanceName: (name: string) => void;
   setInstanceNameError: (error: string | null) => void;
+  setDisableCredentialEditWhenLinked: (disable: boolean) => void;
   setSelectedScope: (scope: 'personal' | 'team') => void;
   setSelectedRecords: (records: string[]) => void;
   setAvailableRecords: (records: { id: string; name: string }[]) => void;
@@ -287,6 +289,7 @@ const initialState = {
   selectedAuthType: '',
   authState: 'empty' as AuthCardState | 'authenticating',
   isAuthTypeImmutable: false,
+  disableCredentialEditWhenLinked: false,
 
   // Create mode
   instanceName: '',
@@ -653,6 +656,11 @@ export const useConnectorsStore = create<ConnectorsState>()(
       setInstanceNameError: (error) =>
         set((s) => {
           s.instanceNameError = error;
+        }),
+
+      setDisableCredentialEditWhenLinked: (disable) =>
+        set((s) => {
+          s.disableCredentialEditWhenLinked = disable;
         }),
 
       setSelectedScope: (scope) =>

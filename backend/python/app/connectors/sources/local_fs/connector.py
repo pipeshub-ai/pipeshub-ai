@@ -31,7 +31,6 @@ from pydantic import JsonValue
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
-    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -485,36 +484,13 @@ class LocalFsConnector(BaseConnector):
         self.include_subfolders = include_subfolders
         self.batch_size = batch_size
 
-    @staticmethod
-    def _parse_user_from_graph_result(
-        raw: User | Dict[str, JsonValue] | None,
-    ) -> Optional[User]:
-        """Graph providers return user dicts; GraphTransactionStore may type them as User."""
-        if raw is None:
-            return None
-        if isinstance(raw, User):
-            return raw
-        return User.from_arango_user(raw)
-
     async def _resolve_owner_user(self) -> Optional[User]:
-        async with self.data_store_provider.transaction() as tx_store:
-            app_doc = await tx_store.graph_provider.get_document(
-                self.connector_id,
-                CollectionNames.APPS.value,
-                transaction=tx_store.txn,
+        user = await self.data_entities_processor.get_app_creator_user(self.connector_id)
+        if not user:
+            self.logger.error(
+                "Local FS: could not resolve creator user for connector app %s", self.connector_id
             )
-            if not app_doc:
-                self.logger.error("Local FS: connector app %s not found in graph", self.connector_id)
-                return None
-            created_by = app_doc.get("createdBy") or app_doc.get("created_by")
-            if not created_by:
-                self.logger.error("Local FS: connector %s has no createdBy", self.connector_id)
-                return None
-            raw = await tx_store.get_user_by_user_id(str(created_by))
-            user = self._parse_user_from_graph_result(raw)
-            if not user:
-                self.logger.error("Local FS: user %s not found or could not be loaded", created_by)
-            return user
+        return user
 
     def _to_app_user(self, user: User) -> AppUser:
         return AppUser(
@@ -927,20 +903,17 @@ class LocalFsConnector(BaseConnector):
     async def _bulk_get_records_by_external_ids(
         self, external_ids: List[str]
     ) -> Dict[str, Record]:
-        """One transaction, one lookup per id — beats opening a fresh
-        transaction inside the per-event upload loop.
-        """
+        """One lookup per id via the processor's record cache/wrapper."""
         result: Dict[str, Record] = {}
         unique_ids = [eid for eid in {*external_ids} if eid]
         if not unique_ids:
             return result
-        async with self.data_store_provider.transaction() as tx_store:
-            for ext_id in unique_ids:
-                record = await tx_store.get_record_by_external_id(
-                    self.connector_id, ext_id
-                )
-                if record is not None:
-                    result[ext_id] = record
+        for ext_id in unique_ids:
+            record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, ext_id
+            )
+            if record is not None:
+                result[ext_id] = record
         return result
 
     async def _storage_base_url(self) -> str:
@@ -1220,10 +1193,9 @@ class LocalFsConnector(BaseConnector):
                 )
 
     async def _get_record_by_external_id(self, external_id: str) -> Optional[Record]:
-        async with self.data_store_provider.transaction() as tx_store:
-            return await tx_store.get_record_by_external_id(
-                self.connector_id, external_id
-            )
+        return await self.data_entities_processor.get_record_by_external_id(
+            self.connector_id, external_id
+        )
 
     async def _storage_document_id_for_external_id(self, external_id: str) -> str | None:
         record = await self._get_record_by_external_id(external_id)
@@ -1381,11 +1353,10 @@ class LocalFsConnector(BaseConnector):
     ) -> None:
         if not external_ids:
             return
-        async with self.data_store_provider.transaction() as tx_store:
-            for external_id in external_ids:
-                await tx_store.delete_record_by_external_id(
-                    self.connector_id, external_id, user_id
-                )
+        for external_id in external_ids:
+            await self.data_entities_processor.delete_record_by_external_id(
+                self.connector_id, external_id, user_id
+            )
 
     def _prepare_upsert_record(
         self,
@@ -2275,12 +2246,9 @@ class LocalFsConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
         **kwargs,
     ) -> "LocalFsConnector":
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
         return LocalFsConnector(
             logger,
             data_entities_processor,

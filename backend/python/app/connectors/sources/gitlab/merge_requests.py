@@ -93,9 +93,20 @@ class MergeRequestsSync:
         all_prs = prs_res.data
         self.logger.info("Fetched %s merge requests for project %s; processing in batches", len(all_prs), project_id)
 
+        # Checkpoint advancement is deferred to the end of the sweep — see
+        # ``IssuesSync.process_new_records``.
+        watermarks: dict[str, int] = {}
         for i in range(0, len(all_prs), c.batch_size):
             batch_records = await self._build_pr_records(all_prs[i : i + c.batch_size])
-            await c.issues.process_new_records(batch_records)
+            if not await c.issues.process_new_records(batch_records, watermarks):
+                self.logger.warning(
+                    "Merge request batch failed for project %s at offset %s; stopping so the "
+                    "checkpoint stays behind the failure instead of skipping past it.",
+                    project_id, i,
+                )
+                return
+        for group_id, last_sync_time in watermarks.items():
+            await c.issues._update_sync_checkpoint(group_id, last_sync_time)
 
     # ------------------------------------------------------------------
     # Record building
@@ -149,10 +160,9 @@ class MergeRequestsSync:
         """Map a single GitLab MR to a PullRequestRecord RecordUpdate."""
         c = self.c
         try:
-            async with c.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=c.connector_id, external_id=str(pr.id)
-                )
+            existing_record = await c.data_entities_processor.get_record_by_external_id(
+                c.connector_id, str(pr.id)
+            )
             is_new = existing_record is None
             is_updated = False
             metadata_changed = False

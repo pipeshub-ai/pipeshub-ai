@@ -307,11 +307,9 @@ class MariaDBConnector(BaseConnector):
         """
         try:
             if self.scope == ConnectorScope.TEAM.value:
-                async with self.data_store_provider.transaction() as tx_store:
-                    await tx_store.ensure_team_app_edge(
-                        self.connector_id,
-                        self.data_entities_processor.org_id,
-                    )
+                await self.data_entities_processor.ensure_team_app_edge(
+                    self.connector_id
+                )
                 self.logger.info("Ensured team-app edge for MariaDB connector")
             else:
                 if self.created_by:
@@ -1184,13 +1182,10 @@ class MariaDBConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        data_entities_processor,
         **kwargs,
     ) -> "MariaDBConnector":
         """Factory method to create a MariaDB connector instance."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
         return cls(
             logger,
             data_entities_processor,

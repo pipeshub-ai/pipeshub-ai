@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useLayoutEffect, useCallback, type CSSProperties } from 'react';
-import Link from 'next/link';
+import { Link } from '@/lib/navigation';
 import { Flex, Text, Box, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';

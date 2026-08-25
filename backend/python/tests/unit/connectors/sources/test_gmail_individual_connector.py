@@ -120,6 +120,8 @@ def _make_connector():
         dep.on_record_metadata_update = AsyncMock()
         dep.on_record_content_update = AsyncMock()
         dep.reindex_existing_records = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
+        dep.get_records_by_parent = AsyncMock(return_value=[])
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -749,8 +751,8 @@ class TestStreamAttachmentRecordEdgeCases:
 
         parent_record = MagicMock()
         parent_record.external_record_id = "msg-1"
-        connector.data_store_provider = _make_mock_data_store_provider(
-            existing_record=parent_record
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
         )
 
         record = MagicMock()
@@ -782,8 +784,8 @@ class TestStreamAttachmentRecordEdgeCases:
 
         parent_record = MagicMock()
         parent_record.external_record_id = "msg-1"
-        connector.data_store_provider = _make_mock_data_store_provider(
-            existing_record=parent_record
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
         )
 
         record = MagicMock()
@@ -817,8 +819,8 @@ class TestStreamAttachmentRecordEdgeCases:
 
         parent_record = MagicMock()
         parent_record.external_record_id = "msg-1"
-        connector.data_store_provider = _make_mock_data_store_provider(
-            existing_record=parent_record
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
         )
 
         record = MagicMock()
@@ -856,8 +858,8 @@ class TestStreamAttachmentRecordEdgeCases:
 
         parent_record = MagicMock()
         parent_record.external_record_id = "msg-1"
-        connector.data_store_provider = _make_mock_data_store_provider(
-            existing_record=parent_record
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
         )
 
         record = MagicMock()
@@ -885,8 +887,8 @@ class TestStreamAttachmentRecordEdgeCases:
 
         parent_record = MagicMock()
         parent_record.external_record_id = "msg-1"
-        connector.data_store_provider = _make_mock_data_store_provider(
-            existing_record=parent_record
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
         )
 
         record = MagicMock()
@@ -1605,14 +1607,7 @@ class TestCreateConnector:
             "app.connectors.sources.google.gmail.individual.connector.GmailIndividualApp"
         ), patch(
             "app.connectors.sources.google.gmail.individual.connector.SyncPoint"
-        ), patch(
-            "app.connectors.sources.google.gmail.individual.connector.DataSourceEntitiesProcessor"
-        ) as MockDEP:
-            mock_dep_instance = AsyncMock()
-            mock_dep_instance.org_id = "org-1"
-            mock_dep_instance.initialize = AsyncMock()
-            MockDEP.return_value = mock_dep_instance
-
+        ):
             from app.connectors.sources.google.gmail.individual.connector import (
                 GoogleGmailIndividualConnector,
             )
@@ -1620,6 +1615,8 @@ class TestCreateConnector:
             logger = _make_logger()
             ds_provider = MagicMock()
             config_service = AsyncMock()
+            processor = MagicMock()
+            processor.org_id = "org-1"
 
             result = await GoogleGmailIndividualConnector.create_connector(
                 logger=logger,
@@ -1628,9 +1625,9 @@ class TestCreateConnector:
                 connector_id="gmail-test",
                 scope="personal",
                 created_by="test-user-id",
+                data_entities_processor=processor,
             )
             assert result is not None
-            mock_dep_instance.initialize.assert_called_once()
 
 
 # ===========================================================================
@@ -1932,9 +1929,7 @@ class TestDeleteMessageAndAttachmentsEdge:
     @pytest.mark.asyncio
     async def test_no_attachment_records(self):
         connector = _make_connector()
-        connector.data_store_provider = _make_mock_data_store_provider(
-            child_records=[]
-        )
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
         await connector._delete_message_and_attachments("rec-1", "msg-1")
         connector.data_entities_processor.on_record_deleted.assert_called_once_with(
             "rec-1"
@@ -1986,8 +1981,8 @@ class TestProcessGmailMessageExistingRecordChange:
         existing.version = 2
         existing.external_record_group_id = "user@test.com:SENT"
 
-        connector.data_store_provider = _make_mock_data_store_provider(
-            existing_record=existing
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
         )
 
         msg = _make_gmail_message(
@@ -2011,8 +2006,8 @@ class TestProcessGmailMessageExistingRecordChange:
         existing.id = "existing-id"
         existing.version = 2
 
-        connector.data_store_provider = _make_mock_data_store_provider(
-            existing_record=existing
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
         )
 
         msg = _make_gmail_message(message_id="m-noattr", label_ids=["INBOX"])
