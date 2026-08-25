@@ -1485,24 +1485,52 @@ class TestAttachmentChildRecords:
             comment, self._parent()
         ) == []
 
-    async def test_existing_attachment_is_not_republished(
-        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
-    ):
+    @staticmethod
+    def _existing(mock_tx_store):
         existing = MagicMock()
         existing.id = "rec-att"
         existing.version = 4
         mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
-        comment = {"id": 5, "attachments": [{
+        return existing
+
+    @staticmethod
+    def _comment():
+        return {"id": 5, "attachments": [{
             "id": 88, "file_name": "a.txt",
             "content_url": "https://acme.zendesk.com/attachments/88",
         }]}
 
+    async def test_existing_attachment_is_not_republished_on_incremental(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        self._existing(mock_tx_store)
+        zendesk_connector._reemit_unchanged = False
+
         children = await zendesk_connector._build_attachment_child_records(
-            comment, self._parent()
+            self._comment(), self._parent()
         )
 
         assert children[0].child_id == "rec-att"
         mock_data_entities_processor.on_new_records.assert_not_awaited()
+
+    async def test_existing_attachment_reemitted_on_full_sync(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        """Regression: a full sync deletes every BELONGS_TO edge. Publishing only new
+        attachments left the existing ones orphaned — present, but unreachable, and the
+        edge never came back."""
+        self._existing(mock_tx_store)
+        zendesk_connector._reemit_unchanged = True
+
+        await zendesk_connector._build_attachment_child_records(
+            self._comment(), self._parent()
+        )
+
+        published = mock_data_entities_processor.on_new_records.await_args.args[0]
+        record, permissions = published[0]
+        assert record.id == "rec-att"
+        assert record.version == 4
+        assert permissions
 
     async def test_returns_empty_when_attachments_disabled(self, zendesk_connector):
         disabled = MagicMock()
