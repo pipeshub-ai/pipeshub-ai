@@ -3270,6 +3270,7 @@
         "DATASOURCE": "Data source",
         "MESSAGE": "Message",
         "MAIL": "Email",
+        "EMAIL": "Email",
         "GROUP_MAIL": "Group email",
         "TICKET": "Ticket",
         "COMMENT": "Comment",
