@@ -1233,13 +1233,10 @@ class ZendeskConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "BaseConnector":
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service,
-        )
-        await data_entities_processor.initialize()
+        """Factory method to create ZendeskConnector instance"""
         return ZendeskConnector(
             logger,
             data_entities_processor,
@@ -1370,6 +1367,23 @@ class ZendeskConnector(BaseConnector):
                 start_time = max(int(start_time), int(value[0] / 1000))
         return int(start_time)
 
+    def _org_shares_tickets(self, organization_id: Any) -> bool:
+        """Whether an organization's members may read each other's tickets.
+
+        Zendesk gates that on the organization's own ``shared_tickets`` flag, which is
+        false by default. Granting org-wide without checking it hands every end user in
+        a company every ticket that company ever raised. An organization missing from
+        the cache means the export did not reach it, so withhold rather than guess.
+        """
+        org_data = self._org_id_to_data.get(str(organization_id))
+        if org_data is None:
+            self.logger.warning(
+                "Zendesk: organization %s not in cache — withholding its org-wide grant",
+                organization_id,
+            )
+            return False
+        return bool(org_data.get("shared_tickets"))
+
     def _record_permissions(
         self,
         group_id: Any,
@@ -1383,8 +1397,8 @@ class ZendeskConnector(BaseConnector):
                 type=PermissionType.READ,
                 entity_type=EntityType.GROUP,
             ))
-        # Shared-organization visibility; the org user group carries the membership.
-        if organization_id:
+        # Only when Zendesk itself shares the org's tickets — see _org_shares_tickets.
+        if organization_id and self._org_shares_tickets(organization_id):
             permissions.append(Permission(
                 external_id=f"org_{organization_id}",
                 type=PermissionType.READ,
