@@ -95,12 +95,15 @@ def collect_parent_tool_results(
 
     results: list[ParentToolResult] = []
     for msg in relevant:
-        if not isinstance(msg, ToolMessage) or msg.is_error or not msg.content:
+        if not isinstance(msg, ToolMessage) or msg.is_error:
+            continue
+        text_content = msg.text
+        if not text_content:
             continue
         name = tool_name_by_call_id.get(msg.tool_call_id or "", "")
         if name in exclude_tool_names:
             continue
-        results.append(ParentToolResult(tool_name=name or "unknown_tool", content=msg.content))
+        results.append(ParentToolResult(tool_name=name or "unknown_tool", content=text_content))
     return results
 
 

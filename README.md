@@ -241,6 +241,7 @@ Want to join our community of developers? Please check out our [Contributing Gui
 <tr><td>Report a bug or request a feature</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">GitHub Issues</a></td></tr>
 <tr><td>Report a security issue</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/SECURITY.md">Report Security Issue</a></td></tr>
 <tr><td>Read the docs</td><td><a href="https://docs.pipeshub.com/">Pipeshub Docs</a></td></tr>
+<tr><td>See what changed in each release</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CHANGELOG.md">Changelog</a></td></tr>
 </tbody>
 </table>
 

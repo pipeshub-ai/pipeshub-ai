@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import logging
+import math
 import multiprocessing
 import os
 import threading
@@ -81,9 +82,44 @@ def _shutdown_pdf_raster_pool_on_exit() -> None:
     shutdown_pdf_raster_pool()
 
 
+# Target ceiling on rendered pixels for one page. Large-format sheets (a 49x35in
+# CAD drawing renders to 39 MPix at 150 DPI) cost ~120 MB for the RGB array and
+# peak near 1 GB in the worker, which OOM-kills the pool. Every ISO size up to
+# A2 stays under this bound at 150 DPI, so only oversized sheets are stepped
+# down. The renderer rounds each pixel dimension up, so an individual page can
+# land a fraction of a percent over.
+MAX_RASTER_PIXELS = 10_000_000
+
+
+def _effective_resolution(page, resolution: float) -> float:
+    """Reduce *resolution* until the rendered page fits in MAX_RASTER_PIXELS."""
+    try:
+        width_pt = float(page.width)
+        height_pt = float(page.height)
+    except (AttributeError, TypeError, ValueError):
+        return resolution
+    if width_pt <= 0 or height_pt <= 0 or resolution <= 0:
+        return resolution
+    pixels = width_pt * height_pt * (resolution / 72.0) ** 2
+    if pixels <= MAX_RASTER_PIXELS:
+        return resolution
+    return resolution * math.sqrt(MAX_RASTER_PIXELS / pixels)
+
+
 def _page_to_rgb_array(page, resolution: float) -> Tuple[np.ndarray, float]:
-    pil = page.to_image(resolution=resolution).original
-    return np.array(pil), resolution / 72.0
+    effective = _effective_resolution(page, resolution)
+    if effective < resolution:
+        _logger.info(
+            "Page is %.0fx%.0f pt; rendering at %.1f DPI instead of %.1f to stay "
+            "within %d pixels",
+            float(page.width), float(page.height), effective, resolution,
+            MAX_RASTER_PIXELS,
+        )
+    pil = page.to_image(resolution=effective).original
+    # The scale must describe the raster actually produced -- every consumer
+    # maps PDF points to pixels by multiplying with it, so returning the
+    # requested resolution here would misplace every crop.
+    return np.array(pil), effective / 72.0
 
 
 def _render_all_pages_impl(
@@ -261,19 +297,6 @@ def render_all_pages_as_pil_from_bytes_sync(
 ) -> List[Image.Image]:
     pages = render_all_pages_from_bytes_sync(pdf_bytes, resolution)
     return [Image.fromarray(pages[i][0]) for i in sorted(pages)]
-
-
-async def render_all_pages_from_path(
-    pdf_path: str,
-    resolution: float = 72,
-) -> Dict[int, Tuple[np.ndarray, float]]:
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        _get_pdf_raster_pool(),
-        _worker_render_all_from_path,
-        pdf_path,
-        resolution,
-    )
 
 
 async def render_all_pages_from_bytes(

@@ -988,13 +988,29 @@ class KnowledgeBaseService:
             # which cascades to remove the folder + all descendants (records/subfolders +
             # edges + files docs) and publishes a deleteRecord event per contained file,
             # so the router does not need to publish eventData for this path.
-            await self.processor.on_records_deleted_cascade([folder_id], kb_id)
+            cascade_result = await self.processor.on_records_deleted_cascade([folder_id], kb_id)
+            if not (cascade_result and cascade_result.get("success")):
+                # The recursive delete itself failed (not just the cleanup-event
+                # publish) — do not report a success the graph doesn't back up.
+                self.logger.error(f"❌ Failed to delete folder {folder_id}: {cascade_result}")
+                return cascade_result or {
+                    "success": False,
+                    "code": 500,
+                    "reason": "Failed to delete folder",
+                }
             self.logger.info(f"🎉 Folder {folder_id} and ALL contents deleted successfully by {user_id}")
-            return {
+            response = {
                 "success": True,
                 "reason": "Folder and all contents deleted successfully",
                 "code": 200,
             }
+            if (cascade_result or {}).get("vectorCleanupPending"):
+                # Graph deletion committed; only the vector-cleanup event publish
+                # failed after retries. Report the deletion as what it is
+                # (successful) while flagging that embeddings need reconciliation.
+                response["vectorCleanupPending"] = True
+                response["vectorCleanupFailedRecordIds"] = cascade_result["vectorCleanupFailedRecordIds"]
+            return response
 
         except Exception as e:
             self.logger.error(f"❌ Failed to delete folder: {str(e)}")

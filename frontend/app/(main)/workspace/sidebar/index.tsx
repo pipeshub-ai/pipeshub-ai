@@ -11,7 +11,7 @@ import { WorkspaceSidebarItem } from './sidebar-item';
 import { SectionHeader } from './section-header';
 import { CollapsibleSection } from './collapsible-section';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
-import { useFeatureFlagsStore, selectMcpEnabled } from '@/lib/store/feature-flags-store';
+import { useFeatureFlagsStore, selectMcpEnabled, selectActionsEnabled } from '@/lib/store/feature-flags-store';
 import { YourConnectorsIcon } from '@/app/components/ui/your-connectors-icon';
 
 // ========================================
@@ -25,7 +25,7 @@ interface NavItem {
   adminOnly?: boolean;
   customIcon?: ReactNode;
   /** Only rendered when the named feature flag is enabled. */
-  requiresFlag?: 'mcp';
+  requiresFlag?: 'mcp' | 'actions';
 }
 
 const OVERVIEW_ITEMS: NavItem[] = [
@@ -51,7 +51,7 @@ const WORKSPACE_ITEMS: NavItem[] = [
   { icon: 'security', labelKey: 'workspace.sidebar.nav.authentication', route: '/workspace/authentication', adminOnly: true },
   { icon: 'hub', labelKey: 'workspace.sidebar.nav.connectors', route: '/workspace/connectors/team', adminOnly: true },
   { icon: 'device_hub', labelKey: 'workspace.sidebar.nav.mcpServers', route: '/workspace/mcp-servers/team', adminOnly: true, requiresFlag: 'mcp' },
-  { icon: 'bolt', labelKey: 'workspace.sidebar.nav.actions', route: '/workspace/actions/team', adminOnly: true },
+  { icon: 'bolt', labelKey: 'workspace.sidebar.nav.actions', route: '/workspace/actions/team', adminOnly: true, requiresFlag: 'actions' },
   { icon: 'support_agent', labelKey: 'workspace.sidebar.nav.bots', route: '/workspace/bots', adminOnly: true },
   { icon: 'manage_accounts', labelKey: 'workspace.sidebar.nav.services', route: '/workspace/services', adminOnly: true },
   { icon: 'smart_toy', labelKey: 'workspace.sidebar.nav.aiModels', route: '/workspace/ai-models', adminOnly: true },
@@ -63,7 +63,7 @@ const WORKSPACE_ITEMS: NavItem[] = [
 const PERSONAL_ITEMS: NavItem[] = [
   { icon: 'person', labelKey: 'workspace.sidebar.nav.profile', route: '/workspace/profile' },
   { icon: '', labelKey: 'workspace.sidebar.nav.yourConnectors', route: '/workspace/connectors/personal', customIcon: <YourConnectorsIcon size={ICON_SIZE_DEFAULT} color="var(--slate-11)" /> },
-  { icon: 'bolt', labelKey: 'workspace.sidebar.nav.yourActions', route: '/workspace/actions/personal' },
+  { icon: 'bolt', labelKey: 'workspace.sidebar.nav.yourActions', route: '/workspace/actions/personal', requiresFlag: 'actions' },
   { icon: 'psychology', labelKey: 'workspace.sidebar.nav.yourSkills', route: '/workspace/skills/personal' },
   { icon: 'device_hub', labelKey: 'workspace.sidebar.nav.yourMcpServers', route: '/workspace/mcp-servers/personal', requiresFlag: 'mcp' },
   { icon: 'archive', labelKey: 'workspace.sidebar.nav.archivedChats', route: '/workspace/archived-chats' },
@@ -86,6 +86,7 @@ export default function WorkspaceSidebar() {
   const { t } = useTranslation();
   const isAdmin = useUserStore(selectIsAdmin);
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
+  const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
 
   // Normalize trailing slash (trailingSlash: true in next.config)
   const pathname = rawPathname.endsWith('/') && rawPathname !== '/'
@@ -97,7 +98,9 @@ export default function WorkspaceSidebar() {
   );
 
   const isNavItemVisible = (item: NavItem) =>
-    (isAdmin || !item.adminOnly) && (item.requiresFlag !== 'mcp' || mcpEnabled);
+    (isAdmin || !item.adminOnly) &&
+    (item.requiresFlag !== 'mcp' || mcpEnabled) &&
+    (item.requiresFlag !== 'actions' || actionsEnabled);
 
   const allRoutes = [
     ...OVERVIEW_ITEMS.map((item) => item.route),

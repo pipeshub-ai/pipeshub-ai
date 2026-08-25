@@ -46,6 +46,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.utils.retry import retry_async
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -1424,25 +1425,57 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"on_records_moved failed: {e}", exc_info=True)
             raise
 
-    async def _publish_delete_events(self, event_data: dict | None) -> None:
+    async def _publish_delete_events(self, event_data: dict | None) -> list[str]:
         """Publish deleteRecord events (Qdrant vector cleanup) for a delete result.
 
         Called AFTER the DB transaction commits so the graph vertex is gone before
         the indexing consumer runs its cleanup — a guard there skips vector deletion
         while a graph record still references the virtualRecordId.
+
+        The graph deletion has already committed by the time this runs, so a
+        publish failure here cannot be undone by raising — that would only make
+        the caller misreport an already-completed deletion as failed. Retry
+        transient broker hiccups, then return the record ids whose cleanup event
+        could not be published (embeddings orphaned until a reconciliation pass)
+        instead of raising, so callers can report success accurately and surface
+        what still needs cleanup.
         """
         if not event_data:
-            return
+            return []
+
+        unpublished_record_ids: list[str] = []
         for payload in event_data.get("payloads", []):
-            await self.messaging_producer.send_message(
-                "record-events",
-                {
-                    "eventType": "deleteRecord",
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                    "payload": payload,
-                },
-                key=payload.get("recordId"),
-            )
+            record_id = payload.get("recordId") if isinstance(payload, dict) else None
+            if not record_id:
+                # A malformed payload must not turn an already-committed
+                # deletion into an unhandled exception; count it as an
+                # unpublished cleanup instead of crashing the whole batch.
+                self.logger.error(f"Skipping malformed deleteRecord payload: {payload!r}")
+                unpublished_record_ids.append(str(payload))
+                continue
+            try:
+                await retry_async(
+                    lambda payload=payload, record_id=record_id: self.messaging_producer.send_message(
+                        "record-events",
+                        {
+                            "eventType": "deleteRecord",
+                            "timestamp": get_epoch_timestamp_in_ms(),
+                            "payload": payload,
+                        },
+                        key=record_id,
+                    ),
+                    logger=self.logger,
+                    description=f"publish deleteRecord event for record {record_id}",
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"Giving up publishing deleteRecord event for record {record_id} "
+                    f"after retries; embeddings for this record are orphaned until "
+                    f"reconciliation: {e}",
+                    exc_info=True,
+                )
+                unpublished_record_ids.append(record_id)
+        return unpublished_record_ids
 
     @retry_on_deadlock()
     async def on_record_deleted(self, record_id: str) -> None:
@@ -1493,7 +1526,11 @@ class DataSourceEntitiesProcessor:
             # No-ops unless connector_id is a KB; connectors invalidate on sync
             # completion instead, so a mid-sync delete does not thrash the cache.
             await notify_kb_records_changed(connector_id)
-        await self._publish_delete_events((result or {}).get("eventData"))
+        unpublished_record_ids = await self._publish_delete_events((result or {}).get("eventData"))
+        if unpublished_record_ids:
+            result = dict(result or {})
+            result["vectorCleanupPending"] = True
+            result["vectorCleanupFailedRecordIds"] = unpublished_record_ids
         return result
 
 

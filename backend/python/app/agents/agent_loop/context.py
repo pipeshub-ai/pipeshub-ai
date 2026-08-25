@@ -391,7 +391,16 @@ class AgentContext(BaseModel):
         creating (`final_results`, `tool_records`, ...) beyond their empty
         defaults, so `.setdefault()` never clobbers accumulated state on a
         second call into `_seed_tool_state`."""
+        from app.utils.chat_helpers import ImageBudget  # noqa: PLC0415
+
         return {
+            # Conversation-wide 50-image cap shared by EVERY image source
+            # for this request — attachments, history replay, and every
+            # search/fetch/prefetch tool call all debit the SAME instance
+            # via `context.tool_state["image_budget"]` (also `.setdefault()`
+            # here defensively for callers/tests that build `tool_state`
+            # without going through `AgentContext`).
+            "image_budget": ImageBudget(),
             "logger": self.logger,
             "llm": self.llm,
             "retrieval_service": self.retrieval_service,

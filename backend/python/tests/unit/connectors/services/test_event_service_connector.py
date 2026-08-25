@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.connectors.core.sync.task_manager import reindex_task_manager
+from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
 from app.connectors.services.event_service import EventService
 
 from app.config.constants.arangodb import CollectionNames
@@ -137,27 +137,64 @@ class TestGetConnector:
 
 
 class TestStoreConnector:
-    def test_store_in_container_attr(self, service):
+    @pytest.mark.asyncio
+    async def test_store_in_container_attr(self, service):
         mock_provider = MagicMock()
+        # The provider is called to read the previous instance; return an
+        # AsyncMock so the cleanup path runs for real instead of raising a
+        # TypeError that the handler swallows.
+        mock_provider.return_value = AsyncMock()
         service.app_container.conn1_connector = mock_provider
         mock_conn = MagicMock()
-        service._store_connector("conn1", mock_conn)
+
+        with patch.object(sync_task_manager, "is_running", return_value=False):
+            await service._store_connector("conn1", mock_conn)
+
         mock_provider.override.assert_called_once()
 
-    def test_store_in_connectors_map_new(self, service):
+    @pytest.mark.asyncio
+    async def test_store_in_connectors_map_new(self, service):
         spec_container = MagicMock(spec=[])
         service.app_container = spec_container
         mock_conn = MagicMock()
-        service._store_connector("conn1", mock_conn)
+        await service._store_connector("conn1", mock_conn)
         assert service.app_container.connectors_map["conn1"] is mock_conn
 
-    def test_store_in_connectors_map_existing(self, service):
+    @pytest.mark.asyncio
+    async def test_store_in_connectors_map_existing(self, service):
         spec_container = MagicMock(spec=[])
         spec_container.connectors_map = {}
         service.app_container = spec_container
         mock_conn = MagicMock()
-        service._store_connector("conn1", mock_conn)
+        await service._store_connector("conn1", mock_conn)
         assert service.app_container.connectors_map["conn1"] is mock_conn
+
+    @pytest.mark.asyncio
+    async def test_replacing_an_instance_closes_the_old_one(self, service):
+        """A superseded instance still owns an open connection pool."""
+        spec_container = MagicMock(spec=[])
+        previous = AsyncMock()
+        spec_container.connectors_map = {"conn1": previous}
+        service.app_container = spec_container
+
+        with patch.object(sync_task_manager, "is_running", return_value=False):
+            await service._store_connector("conn1", MagicMock())
+
+        previous.cleanup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_does_not_close_an_instance_whose_sync_is_running(self, service):
+        """cleanup() nulls the client and data source, so closing mid-sync would
+        kill the running sync; leaking the pool is the lesser evil."""
+        spec_container = MagicMock(spec=[])
+        previous = AsyncMock()
+        spec_container.connectors_map = {"conn1": previous}
+        service.app_container = spec_container
+
+        with patch.object(sync_task_manager, "is_running", return_value=True):
+            await service._store_connector("conn1", MagicMock())
+
+        previous.cleanup.assert_not_awaited()
 
 
 # ===========================================================================

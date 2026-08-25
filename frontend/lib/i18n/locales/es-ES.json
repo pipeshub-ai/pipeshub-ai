@@ -795,6 +795,12 @@
       "actions": {
         "viewProfile": "Ver perfil",
         "changeRole": "Cambiar rol",
+        "changeRoleConfirmTitle": "¿Cambiar rol?",
+        "changeRoleConfirmMessage": "¿Está seguro de que desea cambiar a {{name}} de {{currentRole}} a {{newRole}}?",
+        "changeRoleConfirmButton": "Cambiar rol",
+        "changeRoleSuccess": "Rol actualizado",
+        "changeRoleSuccessDescription": "{{name}} ahora es {{role}}",
+        "changeRoleError": "Error al cambiar el rol",
         "removeFromWorkspace": "Eliminar del espacio de trabajo",
         "removeUserTitle": "¿Eliminar usuario?",
         "removeUserMessage": "¿Está seguro de que desea eliminar a {{email}} del espacio de trabajo {{workspace}}?",
@@ -888,6 +894,9 @@
     "groups": {
       "title": "Grupos",
       "subtitle": "Crea y administra grupos para controlar el acceso y los permisos",
+      "enterpriseTitle": "Los permisos de grupo están disponibles en la Enterprise Edition",
+      "enterpriseMessage": "Actualice a la Enterprise Edition para usar permisos de grupo.",
+      "enterpriseContact": "Contacto",
       "createGroup": "Crear grupo",
       "searchPlaceholder": "Buscar...",
       "emptyTitle": "Aún no has creado ningún grupo",
@@ -1664,6 +1673,7 @@
       "configPanelTitle": "{{name}} Configuration",
       "instance": "Instance",
       "emailVisibilityDocLink": "Guía de configuración de visibilidad del correo →",
+      "personalConnectorLink": "Usar {{name}} en su lugar →",
       "toasts": {
         "loadError": "Failed to load connectors",
         "syncStarted": "{{name}} is now syncing",
@@ -1772,6 +1782,7 @@
         "redirectUrlHelperNonOauth": "Registra la URL de redirección/callback en tu proveedor de identidad y luego completa los campos siguientes.",
         "noAuthRequired": "No authentication required for this connector",
         "emailVisibilityDocLink": "Guía de configuración de visibilidad del correo →",
+        "personalConnectorLink": "Usar {{name}} en su lugar →",
         "oauthAppNameLabel": "Nombre de la app OAuth",
         "oauthAppNamePlaceholder": "p. ej., {{name}} OAuth",
         "oauthAppNameHelper": "Este nombre se guarda con el registro OAuth y aparece cuando los usuarios eligen una app guardada para otras instancias.",

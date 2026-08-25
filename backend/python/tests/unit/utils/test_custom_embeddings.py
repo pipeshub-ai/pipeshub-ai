@@ -139,6 +139,27 @@ class TestInvocationParams:
         assert inputs[0]["content"][0]["type"] == "image_base64"
         assert inputs[0]["content"][0]["image_base64"] == image_data
 
+    @patch.dict("os.environ", {"VOYAGE_API_KEY": "test-api-key"})
+    @pytest.mark.parametrize("model", ["voyage-multimodal-3", "voyage-multimodal-3.5"])
+    def test_later_multimodal_generations_still_use_the_multimodal_endpoint(self, model):
+        """Regression: the branch matched `voyage-multimodal-3` exactly, so
+        voyage-multimodal-3.5 fell through to the TEXT endpoint — which accepts
+        a base64 data URI as a plain string and returns a valid-looking
+        embedding *of the base64 characters* rather than of the image."""
+        embeddings = VoyageEmbeddings(model=model, batch_size=7)
+        params = embeddings._invocation_params(
+            ["data:image/png;base64,abc123"], input_type="document",
+        )
+        assert params["url"] == "https://api.voyageai.com/v1/multimodalembeddings"
+        assert params["json"]["inputs"][0]["content"][0]["type"] == "image_base64"
+
+    @patch.dict("os.environ", {"VOYAGE_API_KEY": "test-api-key"})
+    def test_text_model_still_uses_the_text_endpoint(self):
+        embeddings = VoyageEmbeddings(model="voyage-3.5", batch_size=7)
+        params = embeddings._invocation_params(["hello"], input_type="document")
+        assert params["url"] != "https://api.voyageai.com/v1/multimodalembeddings"
+        assert params["json"]["input"] == ["hello"]
+
 
 # ============================================================================
 # embed_documents tests

@@ -3,23 +3,35 @@ from typing import Optional
 import httpx  # type: ignore
 
 from app.sources.client.http.http_request import HTTPRequest
+from app.sources.client.http.http_resilient_transport import ResilientHTTPTransport
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.iclient import IClient
+from app.sources.client.resilience import ResiliencePolicy
 
 
 class HTTPClient(IClient):
+    """HTTP client with token auth and optional rate limiting / retries.
+
+    Args:
+        resilience: Shared policy from the connector's ``@ConnectorBuilder``
+            metadata. When omitted the client behaves exactly as before — no
+            transport, no retries.
+    """
+
     def __init__(
         self,
         token: str,
         token_type: str = "Bearer",
         timeout: float = 30.0,
-        follow_redirects: bool = True
+        follow_redirects: bool = True,
+        resilience: Optional[ResiliencePolicy] = None
     ) -> None:
         self.headers = {
             "Authorization": f"{token_type} {token}",
         }
         self.timeout = timeout
         self.follow_redirects = follow_redirects
+        self.resilience = resilience
         self.client: Optional[httpx.AsyncClient] = None
 
     def get_client(self) -> "HTTPClient":
@@ -29,11 +41,14 @@ class HTTPClient(IClient):
     async def _ensure_client(self) -> httpx.AsyncClient:
         """Ensure client is created and available"""
         if self.client is None:
-            self.client = httpx.AsyncClient(
-                timeout=self.timeout,
-                follow_redirects=self.follow_redirects,
-                headers=self.headers
-            )
+            kwargs = {
+                "timeout": self.timeout,
+                "follow_redirects": self.follow_redirects,
+                "headers": self.headers,
+            }
+            if self.resilience is not None:
+                kwargs["transport"] = ResilientHTTPTransport(self.resilience)
+            self.client = httpx.AsyncClient(**kwargs)
         return self.client
 
     async def execute(self, request: HTTPRequest, **kwargs) -> HTTPResponse:

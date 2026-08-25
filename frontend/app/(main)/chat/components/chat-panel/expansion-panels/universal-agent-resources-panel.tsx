@@ -27,7 +27,11 @@ import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/Connect
 import { useChatStore, ASSISTANT_CTX, getUniversalCombinedCatalog } from '@/chat/store';
 import { ToolsetsApi } from '@/app/(main)/toolsets/api';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
-import { useFeatureFlagsStore, selectMcpEnabled } from '@/lib/store/feature-flags-store';
+import {
+  useFeatureFlagsStore,
+  selectMcpEnabled,
+  selectActionsEnabled,
+} from '@/lib/store/feature-flags-store';
 import { McpServersApi } from '@/app/(main)/workspace/mcp-servers/api';
 import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types';
 import { CollectionsTab } from './connectors-collections/collections-tab';
@@ -391,6 +395,7 @@ export function UniversalAgentResourcesPanel({
   const [search, setSearch] = useState('');
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
+  const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
 
   const settings = useChatStore((s) => s.settings);
   const setFilters = useChatStore((s) => s.setFilters);
@@ -491,9 +496,11 @@ export function UniversalAgentResourcesPanel({
 
   // Initial load — skips re-fetch when the module cache has a fresh page-1 result
   // (including “success but zero actionable tools”, where toolGroups stay empty).
-  // Refetches when the cache is older than CACHE_TTL_MS.
+  // Refetches when the cache is older than CACHE_TTL_MS. Skipped entirely when
+  // Actions is disabled — the tab is hidden, so there's nothing to render this
+  // data into (mirrors the MCP load effect below).
   useEffect(() => {
-    if (toolsLoading) return;
+    if (!actionsEnabled || toolsLoading) return;
     const lastAt = _actionsPageCache.lastFetchedAt;
     const cacheStale = lastAt <= 0 || Date.now() - lastAt > CACHE_TTL_MS;
     const hasFreshPage1 = lastAt > 0 && !cacheStale;
@@ -502,7 +509,7 @@ export function UniversalAgentResourcesPanel({
       return;
     }
     void loadPage(1);
-  }, [toolsLoading, loadPage]);
+  }, [actionsEnabled, toolsLoading, loadPage]);
 
   const handleLoadMore = useCallback(() => {
     if (!hasNextPage || isLoadingMore) return;
@@ -656,11 +663,17 @@ export function UniversalAgentResourcesPanel({
     () => (!internalSearchEnabled ? ['connectors', 'collections'] : []),
     [internalSearchEnabled]
   );
-  const hiddenTabs = useMemo<TabValue[]>(() => (mcpEnabled ? [] : ['mcp']), [mcpEnabled]);
+  const hiddenTabs = useMemo<TabValue[]>(
+    () => [...(mcpEnabled ? [] : (['mcp'] as TabValue[])), ...(actionsEnabled ? [] : (['actions'] as TabValue[]))],
+    [mcpEnabled, actionsEnabled]
+  );
 
-  // If the active tab becomes disabled or hidden, switch to 'actions'
+  // If the active tab becomes disabled or hidden, switch to the first tab that's neither.
   React.useEffect(() => {
-    if (disabledTabs.includes(tab) || hiddenTabs.includes(tab)) setTab('actions');
+    if (disabledTabs.includes(tab) || hiddenTabs.includes(tab)) {
+      const fallback = TAB_VALUES.find((v) => !disabledTabs.includes(v) && !hiddenTabs.includes(v));
+      if (fallback) setTab(fallback);
+    }
   }, [disabledTabs, hiddenTabs, tab]);
 
   // ── Filtered views ──

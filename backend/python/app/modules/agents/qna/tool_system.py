@@ -4,6 +4,7 @@ Most tool loading logic has moved to ``app.agents.agent_loop.tool_loader``.
 This module retains only:
 
 - ``code_execution_enabled`` — deployment-level gate for sandbox tools
+  (env-only; no feature flag)
 - Tool-result normalisation helpers (used by ``nodes.py``)
 - ``get_tool_results_summary`` — debugging helper
 """
@@ -51,14 +52,13 @@ def _flatten_success_into_payload(success: bool, data: object) -> str:
 def code_execution_enabled(state: ChatState) -> bool:
     """Return whether this deployment/caller has access to code-execution tools.
 
-    Source of truth is the ``ENABLE_CODE_EXECUTION`` platform feature flag.
+    No feature flag involved — deployment-level control is env-only.
     Defaults to ENABLED so the feature works out of the box.
 
     Resolution order (first hit wins):
     1. ``state["enable_code_execution"]`` — per-request override
     2. ``PIPESHUB_ENABLE_CODE_EXECUTION`` env var
-    3. ``FeatureFlagService`` — platform settings
-    4. Default: ``True``
+    3. Default: ``True``
     """
     state_flag = state.get("enable_code_execution")
     if isinstance(state_flag, bool):
@@ -73,17 +73,7 @@ def code_execution_enabled(state: ChatState) -> bool:
         if raw in {"0", "false", "no", "off"}:
             return False
 
-    try:
-        from app.services.featureflag.config.config import CONFIG
-        from app.services.featureflag.featureflag import FeatureFlagService
-
-        return bool(
-            FeatureFlagService.get_service().is_feature_enabled(
-                CONFIG.ENABLE_CODE_EXECUTION, default=True
-            )
-        )
-    except Exception:
-        return True
+    return True
 
 
 def get_tool_results_summary(state: ChatState) -> str:

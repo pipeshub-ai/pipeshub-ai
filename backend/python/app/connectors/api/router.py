@@ -61,6 +61,7 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthToken,
@@ -102,6 +103,7 @@ from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import extract_oauth_error_message, fetch_oauth_config_by_id, get_oauth_config
+from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -142,11 +144,12 @@ def get_mime_type_from_record(record: Record) -> str:
 
 
 # File types that require conversion to PDF for streaming
-_PDF_CONVERTIBLE_EXTENSIONS: frozenset[str] = frozenset({"ppt", "pptx"})
+_PDF_CONVERTIBLE_EXTENSIONS: frozenset[str] = frozenset({"ppt", "pptx", "epub"})
 _PDF_CONVERTIBLE_MIME_TYPES: frozenset[str] = frozenset({
     MimeTypes.PPT.value,
     MimeTypes.PPTX.value,
     MimeTypes.GOOGLE_SLIDES.value,
+    MimeTypes.EPUB.value,
 })
 
 
@@ -183,6 +186,8 @@ def get_pdf_conversion_info(
             # Google Slides exports are returned as OOXML presentations by the
             # connector, so LibreOffice needs a .pptx suffix to detect them.
             file_extension = "pptx"
+        elif resolved_mime == MimeTypes.EPUB.value:
+            file_extension = "epub"
     needs_conversion = (
         file_extension in _PDF_CONVERTIBLE_EXTENSIONS
         or resolved_mime in _PDF_CONVERTIBLE_MIME_TYPES
@@ -1849,20 +1854,44 @@ async def delete_record(
         )
 
         if result["success"]:
-            # Publish deletion event
+            # Publish deletion event. The graph deletion above has already
+            # committed, so a publish failure here cannot be undone by failing
+            # the request — that would misreport an already-completed deletion.
+            # Retry transient broker hiccups, then flag (rather than silently
+            # swallow) a failure so the caller knows vector cleanup is pending.
+            vector_cleanup_pending = False
             event_data = result.get("eventData")
-            if event_data and event_data.get("payload"):
+            has_valid_event_data = (
+                isinstance(event_data, dict)
+                and event_data.get("payload")
+                and event_data.get("eventType")
+                and event_data.get("topic")
+            )
+            if event_data and not has_valid_event_data:
+                logger.error(
+                    f"❌ Malformed eventData for record {record_id}, skipping publish: {event_data!r}"
+                )
+                vector_cleanup_pending = True
+            elif has_valid_event_data:
+                timestamp = get_epoch_timestamp_in_ms()
+                event = {
+                    "eventType": event_data["eventType"],
+                    "timestamp": timestamp,
+                    "payload": event_data["payload"]
+                }
                 try:
-                    timestamp = get_epoch_timestamp_in_ms()
-                    event = {
-                        "eventType": event_data["eventType"],
-                        "timestamp": timestamp,
-                        "payload": event_data["payload"]
-                    }
-                    await kafka_service.publish_event(event_data["topic"], event)
+                    await retry_async(
+                        lambda: kafka_service.publish_event(event_data["topic"], event),
+                        logger=logger,
+                        description=f"publish {event_data['eventType']} event for record {record_id}",
+                    )
                     logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
                 except Exception as e:
-                    logger.error(f"❌ Failed to publish deletion event: {str(e)}")
+                    logger.error(
+                        f"❌ Giving up publishing deletion event for record {record_id} "
+                        f"after retries; embeddings are orphaned until reconciliation: {str(e)}"
+                    )
+                    vector_cleanup_pending = True
 
             # This route deletes directly, bypassing the processor's cascade
             # path, so it owns its own cache invalidation.
@@ -1870,13 +1899,17 @@ async def delete_record(
                 await notify_kb_records_changed(result["connectorId"], result.get("orgId"))
 
             logger.info(f"✅ Successfully deleted record {record_id}")
-            return {
+            response = {
                 "success": True,
                 "message": f"Record {record_id} deleted successfully",
                 "recordId": record_id,
                 "connector": result.get("connector"),
                 "timestamp": result.get("timestamp")
             }
+            if vector_cleanup_pending:
+                response["vectorCleanupPending"] = True
+                response["vectorCleanupFailedRecordIds"] = [record_id]
+            return response
         else:
             logger.error(f"❌ Failed to delete record {record_id}: {result.get('reason')}")
             raise HTTPException(
@@ -6586,8 +6619,48 @@ async def _ensure_connector_initialized(
     is_admin: bool,
     logger: logging.Logger,
 ) -> BaseConnector | None:
+    """Return the live connector for ``connector_id``, building it at most once.
+
+    Concurrent callers all miss the ``connectors_map`` check and would each
+    build their own instance — every one with its own HTTP client and its own
+    ResiliencePolicy, multiplying the connector's rate limit by the number of
+    racers. The lock lets the first caller build while the rest wait and then
+    re-check.
+    """
+    if hasattr(container, "connectors_map") and connector_id in container.connectors_map:
+        return container.connectors_map.get(connector_id)
+
+    async with connector_init_lock(connector_id):
+        return await _build_and_store_connector(
+            container=container,
+            connector_id=connector_id,
+            connector_type=connector_type,
+            connector_registry=connector_registry,
+            graph_provider=graph_provider,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin,
+            logger=logger,
+        )
+
+
+async def _build_and_store_connector(
+    container: ConnectorAppContainer,
+    connector_id: str,
+    connector_type: str,
+    connector_registry: ConnectorRegistry,
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+    *,
+    is_admin: bool,
+    logger: logging.Logger,
+) -> BaseConnector | None:
     """
     Ensure connector is initialized in container. If not, initialize it.
+
+    Callers must hold ``connector_init_lock(connector_id)``; the existence check
+    below is the re-check that makes the lock effective.
 
     Args:
         container: App container

@@ -398,13 +398,17 @@ class TestTeamProcessGmailMessage:
         )
         assert result.record.mime_type == MimeTypes.GMAIL.value
 
-    async def test_weburl_includes_user_email(self, connector):
+    async def test_weburl_uses_viewer_placeholder_not_synced_user_email(self, connector):
+        """weburl must carry the {user.email} placeholder, not the synced mailbox owner's
+        email, so retrieval_service can substitute the *viewing* user's email later.
+        Baking the synced owner's email in here defeats that substitution (see #3002)."""
         message = _make_gmail_message()
         result = await connector._process_gmail_message(
             user_email="user@example.com", message=message,
             thread_id="thread-1", previous_message_id=None,
         )
-        assert "authuser=user@example.com" in result.record.weburl
+        assert "authuser={user.email}" in result.record.weburl
+        assert "user@example.com" not in result.record.weburl
 
     async def test_existing_record_detected(self, connector):
         existing = MagicMock()

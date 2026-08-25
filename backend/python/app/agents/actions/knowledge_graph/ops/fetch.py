@@ -65,7 +65,7 @@ async def execute_fetch_record(
     """
     from app.agent_loop_lib.tools.base import ToolOutput
     from app.agents.agent_loop.tool_adapter import _to_tool_output
-    from app.utils.chat_helpers import record_to_message_content
+    from app.utils.chat_helpers import ImageBudget, image_dict_to_part, record_to_message_content
     from app.utils.fetch_full_record import create_fetch_full_record_tool
 
     if isinstance(record_ids, str):
@@ -106,12 +106,21 @@ async def execute_fetch_record(
     if isinstance(result, dict) and result.get("ok") and result.get("records"):
         parts: list[str] = []
         ref_mapper = citation_ref_mapper
+        # Without `is_multimodal_llm` a record that IS an image (an uploaded
+        # PNG whose only block is an IMAGE) renders to an empty string.
+        # `collected_images` keeps the images out of the text join so they
+        # can ride the multipart return below instead of being dropped.
+        image_budget: ImageBudget = context.tool_state.setdefault("image_budget", ImageBudget())
+        collected_images: list[dict[str, Any]] = []
         for record in result["records"]:
             content_list, ref_mapper = record_to_message_content(
                 record,
                 ref_mapper=ref_mapper,
                 start_block=start_block,
                 max_blocks=block_cap,
+                is_multimodal_llm=context.is_multimodal_llm,
+                collected_images=collected_images,
+                image_budget=image_budget,
             )
             parts.append("".join(
                 item["text"] for item in content_list if item.get("type") == "text"
@@ -143,6 +152,25 @@ async def execute_fetch_record(
             if rid:
                 context.full_records_fetched.add(rid)
                 context.tool_state.setdefault("full_records_fetched", set()).add(rid)
+
+        if collected_images and context.is_multimodal_llm:
+            # Mirrors `retrieval.py`'s matching branch: multipart `data`
+            # flows through `ToolOutput` -> `ToolResult.content` ->
+            # `ToolMessage.content` unchanged. Only stash a fallback copy
+            # when the transport needs one — models with native multipart
+            # tool-result support already got the images above, and
+            # `shape_retrieved_image_injection` (the sole consumer of the
+            # stash) is never registered for them.
+            from app.agent_loop_lib.core.messages import TextPart
+
+            if not context.tool_state.get("supports_multipart_tool_result", True):
+                context.tool_state.setdefault("pending_tool_images", []).extend(collected_images)
+            image_parts = [
+                part for img in collected_images
+                if (part := image_dict_to_part(img)) is not None
+            ]
+            if image_parts:
+                return ToolOutput(success=True, data=[TextPart(text=text), *image_parts]), ref_mapper
 
         return ToolOutput(success=True, data=text), ref_mapper
 

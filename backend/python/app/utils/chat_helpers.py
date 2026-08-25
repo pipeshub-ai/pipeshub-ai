@@ -17,6 +17,7 @@ from app.config.constants.service import config_node_constants
 from app.models.blocks import BlockType, GroupSubType, GroupType, SemanticMetadata
 from app.modules.reconciliation.service import ReconciliationMetadata
 from app.models.entities import (
+    CodeFileRecord,
     Connectors,
     DealRecord,
     FileRecord,
@@ -57,15 +58,118 @@ valid_group_labels = [
         GroupType.CONVERSATION.value
     ]
 
-MAX_IMAGES_IN_MESSAGE = 25
+MAX_IMAGES_IN_CONVERSATION = 50
+
+
+class ImageBudget:
+    """Conversation-wide image counter shared across every image source
+    (user attachments, history replay, search/fetch/prefetch tool
+    results). A single instance is threaded through a turn so the same
+    50-image cap applies no matter which source contributed the image —
+    without this, each source enforcing its own local limit could let the
+    conversation total balloon past what any provider will actually
+    accept as multimodal input.
+    """
+
+    def __init__(self, max_images: int = MAX_IMAGES_IN_CONVERSATION) -> None:
+        self.max_images = max_images
+        self.used = 0
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self.max_images - self.used)
+
+    def can_add(self) -> bool:
+        return self.used < self.max_images
+
+    def try_consume(self, count: int = 1) -> int:
+        """Consume up to `count` from the budget. Returns the amount
+        actually consumed (may be less than `count` near the cap)."""
+        actual = min(count, self.remaining)
+        self.used += actual
+        return actual
+
+
+def image_dict_to_part(image: dict[str, Any]) -> Any | None:
+    """Convert a `collected_images` entry (`{"image_url": {"url": ...}, ...}`)
+    into an `ImagePart` for a multipart `ToolOutput`/`UserMessage`. Shared by
+    every tool (`retrieval.py`, `citations.py`) and hook
+    (`attachment_resolver.py`'s `shape_image_injection`/
+    `shape_retrieved_image_injection`) that needs to hand collected images to
+    the agent loop, so the dict-to-Part conversion lives in exactly one
+    place. Local import avoids a module-level dependency from this
+    low-level formatting module onto `agent_loop_lib`.
+    """
+    from app.agent_loop_lib.core.messages import ImagePart, ImageSource  # noqa: PLC0415
+
+    image_url = image.get("image_url") or {}
+    url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url)
+    if not url:
+        return None
+    # A `data:` URI must become a real base64 source, not a `type="url"` one
+    # carrying the whole URI: Anthropic's image block takes `source.url` only
+    # for a fetchable http(s) URL and rejects a data URI there, so collapsing
+    # both cases into "url" made every collected image a 400 on that provider.
+    # The OpenAI-family formatters rebuild the same data URI via
+    # `image_data_url()`, so they are unaffected by the split.
+    if url.startswith("data:"):
+        header, _, payload = url[len("data:"):].partition(",")
+        if payload and ";base64" in header.lower():
+            media_type = header.split(";", 1)[0] or None
+            return ImagePart(
+                source=ImageSource(type="base64", media_type=media_type, data=payload)
+            )
+    return ImagePart(source=ImageSource(type="url", data=url))
+
+
+
+def group_child_results(doc: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Children of a *group* flattened-result, or None when it is not a group.
+
+    `block_type` alone cannot tell the two apart: GroupType.CODE and
+    BlockType.CODE are both the string "code", so a code block and a code group
+    carry the same label. Only a group's content is a ``(summary, children)``
+    pair, so the shape is the reliable test -- keying off the label alone
+    unpacks a leaf's source string character by character.
+
+    None and [] are distinct on purpose: None means "treat this as a leaf",
+    while [] means "a group that contributed nothing", which must stay skipped.
+    """
+    content = doc.get("content")
+    if isinstance(content, tuple) and len(content) == 2:
+        children = content[1]
+        return children if isinstance(children, list) else []
+    return None
 
 def _safe_stringify_content(value: Any) -> str:
-    """Convert citation content to string without raising."""
+    """Convert citation content to string without raising.
+
+    A code block's ``data`` is a dict; stringifying it whole would put the
+    BM25 ``subtokens`` padding in front of the model as a Python repr, so the
+    source text is unwrapped first.
+    """
+    if isinstance(value, dict) and "text" in value:
+        value = value.get("text") or ""
     try:
         return str(value)
     except Exception as exc:
         logger.warning("Failed to cast citation content to string: %s", exc)
         return ""
+
+
+def block_qualified_name(block: dict[str, Any]) -> str:
+    """Qualified name of a code block, or "" for anything else."""
+    meta = block.get("code_metadata")
+    if not isinstance(meta, dict):
+        return ""
+    return meta.get("qualified_name") or ""
+
+
+def format_code_locator(file_path: str, qualified_name: str) -> str:
+    """`path#qualified_name` — human-readable locator for a code block."""
+    if file_path and qualified_name:
+        return f"{file_path}#{qualified_name}"
+    return file_path or qualified_name or ""
 
 def build_block_web_url(frontend_url: str, record_id: str, block_index: int) -> str:
     """Construct a block-level preview URL: {frontend_url}/record/{record_id}/preview#blockIndex={block_index}"""
@@ -421,6 +525,10 @@ collection_map = {
                     RecordType.MEETING.value: "meetings",
                     RecordType.DEAL.value: "deals",
                     RecordType.MESSAGE.value: "messages",
+                    # filePath lives only on the codeFiles node -- the blob record
+                    # is built from a plain Record, which has no such field. Without
+                    # this entry every code file renders with no path at all.
+                    RecordType.CODE_FILE.value: "codeFiles",
                 }
 
 def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dict[str, Any] | None = None) -> Record | None:
@@ -509,6 +617,17 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "extension": graph_doc.get("extension"),
             }
             return FileRecord(**base_args, **specific_args)
+
+        elif record_type == RecordType.CODE_FILE.value and graph_doc:
+            specific_args = {
+                "record_type": RecordType.CODE_FILE,
+                "file_path": graph_doc.get("filePath"),
+                "file_hash": graph_doc.get("fileHash"),
+                "extension": graph_doc.get("extension"),
+                "language": graph_doc.get("language"),
+                "file_role": graph_doc.get("fileRole"),
+            }
+            return CodeFileRecord(**base_args, **specific_args)
 
         elif record_type == RecordType.MAIL.value and graph_doc:
             specific_args = {
@@ -1866,6 +1985,13 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             result["content"] = block.get("data","")
             adjacent_chunks[virtual_record_id].append(index-1)
             adjacent_chunks[virtual_record_id].append(index+1)
+        elif block_type == BlockType.CODE.value and block.get("parent_index") is None:
+            # Without this a top-level code hit is dropped here and never reaches
+            # build_message_content_array, however well it scored.
+            result["content"] = _safe_stringify_content(block.get("data", ""))
+            result["qualified_name"] = block_qualified_name(block)
+            adjacent_chunks[virtual_record_id].append(index-1)
+            adjacent_chunks[virtual_record_id].append(index+1)
         elif block_type == BlockType.IMAGE.value:
             data = block.get("data")
             if data:
@@ -2418,6 +2544,11 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                 else:
                     record["context_metadata"] = ""
 
+                # Code blocks are addressed by (file path, symbol id), and the
+                # path exists only on the codeFiles node -- not in the blob.
+                if graph_doc and graph_doc.get("filePath"):
+                    record["file_path"] = graph_doc.get("filePath")
+
             record["frontend_url"] = frontend_url or ""
             record["virtual_record_id"] = virtual_record_id
             virtual_record_id_to_result[virtual_record_id] = record
@@ -2541,13 +2672,21 @@ def create_block_from_metadata(metadata: dict[str, Any],page_content: str) -> di
             "bounding_boxes": metadata.get("bounding_box")
         }
 
+        block_type = metadata.get("blockType","text")
+
         extension = metadata.get("extension")
-        if extension == "docx":
+        if block_type == BlockType.IMAGE.value:
+            # Image points never carry the raw base64 URI in page_content (only a
+            # text description, or empty — see VectorStore._build_image_points).
+            # Wrap as a dict with no "uri" so downstream image handling in
+            # _process_flattened_results takes its existing "missing uri" skip
+            # path instead of crashing on `str.get`.
+            data = {"uri": None, "description": page_content}
+        elif extension == "docx":
             data = page_content
         else:
             data = metadata.get("blockText",page_content)
 
-        block_type = metadata.get("blockType","text")
         # Create the Block structure
         return {
             "id": str(uuid4()),  # Generate unique ID
@@ -2763,14 +2902,31 @@ def _build_fragment_map(blocks: list[dict[str, Any]]) -> dict[int, list[dict[str
 def _render_blocks_with_images(
     blocks_list: list[dict[str, Any]],
     is_multimodal_llm: bool,
-    image_count: list[int] | None = None,
+    image_budget: "ImageBudget | None" = None,
+    collected_images: list[dict[str, Any]] | None = None,
+    allow_inline_images: bool = True,
 ) -> list[dict[str, Any]]:
     """Render a list of block entries (with possible IMAGE types) into LLM content entries.
 
     Groups consecutive entries sharing the same block_index so that the
     `[idx|ref]` header is emitted only once per container, with all
     fragment content listed underneath it.
+
+    When `collected_images` is provided (tool-result callers, see
+    `build_message_content_array`), inline table/group images are routed
+    into that side-channel instead of being embedded directly as
+    `image_url` content blocks — `ToolMessage` only gets images via its
+    multipart `content`, never buried inside a text-typed tool result
+    string. Direct-embedding callers (attachments) leave `collected_images`
+    `None` and keep the original inline behavior.
+
+    `allow_inline_images` is False for callers that can deliver neither way
+    (a tool result with no `collected_images` sink joins text only), so an
+    image that would be dropped downstream does not silently consume a slot
+    of the shared `image_budget`.
     """
+    if image_budget is None:
+        image_budget = ImageBudget(MAX_IMAGES_IN_CONVERSATION)
     content: list[dict[str, Any]] = []
     for _block_idx, group_iter in groupby(blocks_list, key=lambda b: b.get("block_index")):
         group = list(group_iter)
@@ -2796,14 +2952,47 @@ def _render_blocks_with_images(
                 if item.get("block_type") == BlockType.IMAGE.value:
                     if is_multimodal_llm:
                         img_uri = item.get("content", "")
+                        item_ref = item.get("citation_ref", "")
                         if img_uri and is_base64_image(img_uri):
-                            if image_count is None or image_count[0] < MAX_IMAGES_IN_MESSAGE:
+                            deliverable = collected_images is not None or allow_inline_images
+                            if deliverable and image_budget.can_add():
+                                image_budget.try_consume(1)
+                                if collected_images is not None:
+                                    collected_images.append({
+                                        "ref": item_ref,
+                                        "block_index": item.get("block_index"),
+                                        "image_url": {"url": img_uri},
+                                        "virtual_record_id": item.get("virtual_record_id"),
+                                    })
+                                    # Side-channel callers still need a text
+                                    # anchor in `content` — without it, the
+                                    # image (delivered separately via
+                                    # `collected_images`) has no `[ref]`
+                                    # citation the model can point back to.
+                                    content.append({
+                                        "type": "text",
+                                        "text": f"    [{item_ref}] (image)\n",
+                                    })
+                                else:
+                                    content.append({
+                                        "type": "image_url",
+                                        "image_url": {"url": img_uri}
+                                    })
+                            elif not deliverable:
+                                # No sink and no way to inline (a tool result
+                                # joins text only). Emit the anchor without
+                                # spending budget an undeliverable image would
+                                # otherwise take from a later one.
                                 content.append({
-                                    "type": "image_url",
-                                    "image_url": {"url": img_uri}
+                                    "type": "text",
+                                    "text": f"    [{item_ref}] (image)\n",
                                 })
-                                if image_count is not None:
-                                    image_count[0] += 1
+                            else:
+                                content.append({
+                                    "type": "text",
+                                    "text": f"    [{item_ref}] (image block - visual content "
+                                            "not shown due to conversation image limit)\n",
+                                })
                     continue
                 content.append({
                     "type": "text",
@@ -2888,6 +3077,7 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
             "block_type": block.get("type"),
             "virtual_record_id": virtual_record_id,
             "block_index": block.get("index"),
+            "qualified_name": block_qualified_name(block),
             "metadata": get_enhanced_metadata(record, block, meta),
             "score": float(result.get("score",0.0)),
             "citationType": "vectordb|document",
@@ -2902,6 +3092,8 @@ def record_to_message_content(
     *,
     start_block: int = 0,
     max_blocks: int | None = None,
+    collected_images: list[dict[str, Any]] | None = None,
+    image_budget: "ImageBudget | None" = None,
 ) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """
     Convert a record JSON object to message content format matching get_message_content.
@@ -2916,12 +3108,26 @@ def record_to_message_content(
             hint is appended: "Showing blocks N-M of T. Call
             dynamic_fetch_full_record with start_block=M+1 for the rest."
             None means no cap (today's default behaviour).
+        collected_images: When provided, IMAGE blocks are routed into this
+            list (`{"ref", "block_index", "image_url", "virtual_record_id"}`
+            dicts) instead of being embedded inline as `image_url` content
+            entries — used by tool callers (e.g. `_FetchFullRecordTool`)
+            that must deliver images via `ToolMessage`'s multipart content
+            rather than buried in the returned content list. `None` (the
+            default) preserves the original inline-embedding behavior for
+            direct UserMessage callers (attachment resolution).
+        image_budget: Conversation-wide `ImageBudget` to enforce the
+            50-image cap across all sources. Defaults to a fresh
+            (unbounded-in-practice) per-call budget when not shared by the
+            caller.
 
     Returns:
         Tuple of (content list, ref_mapper)
     """
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
+    if image_budget is None:
+        image_budget = ImageBudget(MAX_IMAGES_IN_CONVERSATION)
 
     try:
         content = []
@@ -2939,6 +3145,7 @@ def record_to_message_content(
         seen_block_groups = set()
         rec_frontend_url = record.get("frontend_url", "")
         rec_record_id = record.get("id", "")
+        record_file_path = record.get("file_path", "") or ""
 
         # Windowing: track how many renderable (non-fragment) blocks we have
         # rendered so we can truncate at max_blocks and emit a continuation hint.
@@ -2972,20 +3179,55 @@ def record_to_message_content(
                 if is_multimodal_llm and isinstance(data, dict):
                     image_uri = data.get("uri", "")
                     if image_uri and is_base64_image(image_uri):
-                        content.append({
-                            "type": "text",
-                            "text": f"[{ref}]"
-                        })
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {"url": image_uri}
-                        })
+                        if image_budget.can_add():
+                            image_budget.try_consume(1)
+                            if collected_images is not None:
+                                collected_images.append({
+                                    "ref": ref,
+                                    "block_index": block_index,
+                                    "image_url": {"url": image_uri},
+                                    "virtual_record_id": record.get("virtual_record_id"),
+                                })
+                                content.append({
+                                    "type": "text",
+                                    "text": f"[{ref}] (image)\n\n",
+                                })
+                            else:
+                                content.append({
+                                    "type": "text",
+                                    "text": f"[{ref}]"
+                                })
+                                content.append({
+                                    "type": "image_url",
+                                    "image_url": {"url": image_uri}
+                                })
+                        else:
+                            captions = ((block.get("image_metadata") or {}).get("captions")) or []
+                            description = " ".join(captions).strip()
+                            fallback_text = (
+                                f"[{ref}] (image) {description}\n\n" if description
+                                else f"[{ref}] (image block - visual content not shown due to "
+                                     "conversation image limit)\n\n"
+                            )
+                            content.append({"type": "text", "text": fallback_text})
                         _renderable_rendered += 1
                 continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
                 content.append({
                     "type": "text",
                     "text": f"[{ref}] {data}\n\n"
+                })
+                _renderable_rendered += 1
+            elif block_type == BlockType.CODE.value and block.get("parent_index") is None:
+                # Top-level code -- module functions, imports, module-level
+                # statements. These belong to no group, so without this branch
+                # they fall to `else: continue` and a file with no classes
+                # reaches the model empty.
+                locator = format_code_locator(record_file_path, block_qualified_name(block))
+                header = f"[{ref}] {locator}\n" if locator else f"[{ref}] "
+                content.append({
+                    "type": "text",
+                    "text": f"{header}{_safe_stringify_content(data)}\n\n"
                 })
                 _renderable_rendered += 1
             elif block_type == BlockType.TABLE_ROW.value:
@@ -3082,7 +3324,9 @@ def record_to_message_content(
                                     "type": "text",
                                     "text": header,
                                 })
-                                content.extend(_render_blocks_with_images(child_results, is_multimodal_llm))
+                                content.extend(_render_blocks_with_images(
+                                    child_results, is_multimodal_llm, image_budget, collected_images,
+                                ))
                             _renderable_rendered += 1
             elif(block.get("parent_index") is not None):
                 parent_index = block.get("parent_index")
@@ -3114,6 +3358,7 @@ def record_to_message_content(
                         block_group_web_url="",
                         label=block_group.get("type"),
                         blocks=group_blocks,
+                        file_path=record_file_path,
                     )
                     content.append({
                         "type": "text",
@@ -3125,7 +3370,9 @@ def record_to_message_content(
                         "type": "text",
                         "text": header,
                     })
-                    content.extend(_render_blocks_with_images(group_blocks, is_multimodal_llm))
+                    content.extend(_render_blocks_with_images(
+                        group_blocks, is_multimodal_llm, image_budget, collected_images,
+                    ))
                 _renderable_rendered += 1
             else:
                 continue
@@ -3212,6 +3459,15 @@ def record_to_text(record: dict[str, Any]) -> str:
                 continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
                 content.append(f"* Block Type: {block_type}\n* Block Content: {data}\n\n")
+            elif block_type == BlockType.CODE.value and block.get("parent_index") is None:
+                locator = format_code_locator(
+                    record.get("file_path", "") or "", block_qualified_name(block)
+                )
+                header = f"* Symbol: {locator}\n" if locator else ""
+                content.append(
+                    f"* Block Type: {block_type}\n{header}"
+                    f"* Block Content: {_safe_stringify_content(data)}\n\n"
+                )
             elif block_type == BlockType.TABLE_ROW.value:
                 block_group_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{block_group_index}"
@@ -3290,6 +3546,7 @@ def record_to_text(record: dict[str, Any]) -> str:
                     block_group_index=parent_index,
                     label=block_group.get("type"),
                     blocks=group_blocks,
+                    file_path=record.get("file_path", "") or "",
                 )
                 content.append(f"{rendered_form}\n\n")
             else:
@@ -3391,22 +3648,51 @@ def get_message_content(
     content.append({"type": "text", "text": rendered_form})
     return content, ref_mapper
 
-def build_message_content_array(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any],is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, record_id_shortener: "RecordIdShortener | None" = None) -> tuple[list[list[dict[str, Any]]], CitationRefMapper]:
+def build_message_content_array(
+    flattened_results: list[dict[str, Any]],
+    virtual_record_id_to_result: dict[str, Any],
+    is_multimodal_llm: bool = False,
+    ref_mapper: CitationRefMapper | None = None,
+    from_tool: bool = True,
+    record_id_shortener: "RecordIdShortener | None" = None,
+    collected_images: list[dict[str, Any]] | None = None,
+    image_budget: "ImageBudget | None" = None,
+) -> tuple[list[list[dict[str, Any]]], CitationRefMapper]:
+    """
+    Args (new):
+        collected_images: When `from_tool=True` and provided, IMAGE blocks
+            (standalone and inline table/group images) are routed into
+            this list instead of being silently dropped or embedded
+            inline — the side-channel a tool wrapper (e.g. `retrieval.py`)
+            reads to build a multipart `ToolOutput`. `None` preserves the
+            pre-existing behavior for each `from_tool` value.
+        image_budget: Conversation-wide `ImageBudget` (50-image cap by
+            default) shared across every image source in the turn.
+            Defaults to a fresh per-call budget when not supplied.
+    """
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
+    if image_budget is None:
+        image_budget = ImageBudget(MAX_IMAGES_IN_CONVERSATION)
     all_contents = []
     content = []
     seen_virtual_record_ids = set()
     seen_blocks = set()
     current_frontend_url = ""
     current_record_id = ""
+    current_file_path = ""
     # True so the first record's blocks get "Record blocks (sorted):"; later records reopen
     # pending via the i > 0 branch before the next record's metadata.
     pending_record_blocks_sorted_header = True
     record_page_url_for_summary: str | None = None
     summary_citation_insert_index: int | None = None
     current_record_has_blocks = False
-    image_count = [0]
+    # Table/group inline images only go through the collected_images side
+    # channel when the caller both wants tool-result delivery (from_tool)
+    # AND supplied somewhere to put them — preserves the from_tool=False
+    # direct-embed behavior (currently unused in practice, kept for API
+    # parity with the top-level IMAGE-block branch below).
+    _group_collected_images = collected_images if from_tool else None
 
     def insert_summary_citation_if_needed() -> None:
         nonlocal record_page_url_for_summary, summary_citation_insert_index, current_record_has_blocks
@@ -3452,6 +3738,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
 
             current_frontend_url = record.get("frontend_url", "")
             current_record_id = record.get("id", "")
+            current_file_path = record.get("file_path", "") or ""
 
             template = compiled_template(qna_prompt_context)
             rendered_form = template.render(
@@ -3486,20 +3773,54 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
             ref = ref_mapper.get_or_create_ref(block_web_url)
             result["citation_ref"] = ref
             if block_type == BlockType.IMAGE.value:
-                if is_base64_image(result.get("content")) and is_multimodal_llm and not from_tool:
+                image_content = result.get("content")
+                if is_base64_image(image_content) and is_multimodal_llm:
                     current_record_has_blocks = True
-                    if image_count[0] < MAX_IMAGES_IN_MESSAGE:
-                        content.append({
-                            "type": "text",
-                            "text": prepend_record_blocks_sorted_header(
-                                f"[{block_index}|{ref}]"
-                            ),
-                        })
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {"url": result.get("content")}
-                        })
-                        image_count[0] += 1
+                    if image_budget.can_add():
+                        image_budget.try_consume(1)
+                        if from_tool and collected_images is not None:
+                            # ToolMessage only carries images via its
+                            # multipart content (see agent_loop_lib
+                            # messages.py) — never inline them into the
+                            # text-typed content list a tool result's text
+                            # is built from.
+                            collected_images.append({
+                                "ref": ref,
+                                "block_index": block_index,
+                                "image_url": {"url": image_content},
+                                "virtual_record_id": virtual_record_id,
+                            })
+                            content.append({
+                                "type": "text",
+                                "text": prepend_record_blocks_sorted_header(
+                                    f"[{block_index}|{ref}] (image)\n\n"
+                                ),
+                            })
+                        elif not from_tool:
+                            content.append({
+                                "type": "text",
+                                "text": prepend_record_blocks_sorted_header(
+                                    f"[{block_index}|{ref}]"
+                                ),
+                            })
+                            content.append({
+                                "type": "image_url",
+                                "image_url": {"url": image_content}
+                            })
+                        else:
+                            # from_tool=True with no collected_images sink:
+                            # the caller has no way to carry an image
+                            # through its tool result, so fall back to a
+                            # text-only placeholder rather than inlining an
+                            # image_url block that would just be dropped by
+                            # a text-only join downstream.
+                            content.append({
+                                "type": "text",
+                                "text": prepend_record_blocks_sorted_header(
+                                    f"[{block_index}|{ref}] (image) "
+                                    f"{result.get('image_description', '')}\n\n"
+                                ),
+                            })
                     elif result.get("image_description"):
                         content.append({
                             "type": "text",
@@ -3507,14 +3828,22 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                                 f"[{block_index}|{ref}] (image) {result.get('image_description')}\n\n"
                             ),
                         })
+                    else:
+                        content.append({
+                            "type": "text",
+                            "text": prepend_record_blocks_sorted_header(
+                                f"[{block_index}|{ref}] (image block - visual content not "
+                                "shown due to conversation image limit)\n\n"
+                            ),
+                        })
                 else:
-                    if is_base64_image(result.get("content")):
+                    if is_base64_image(image_content):
                         continue
                     current_record_has_blocks = True
                     content.append({
                         "type": "text",
                         "text": prepend_record_blocks_sorted_header(
-                            f"[{block_index}|{ref}] (image) {result.get('content')}\n\n"
+                            f"[{block_index}|{ref}] (image) {image_content}\n\n"
                         ),
                     })
             elif block_type == GroupType.TABLE.value:
@@ -3546,13 +3875,32 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         "type": "text",
                         "text": prepend_record_blocks_sorted_header(f"{header}{fk_info}"),
                     })
-                    content.extend(_render_blocks_with_images(child_results, is_multimodal_llm, image_count))
+                    content.extend(_render_blocks_with_images(
+                        child_results, is_multimodal_llm, image_budget, _group_collected_images,
+                        allow_inline_images=not from_tool,
+                    ))
             elif block_type == BlockType.TEXT.value:
                 current_record_has_blocks = True
                 content.append({
                     "type": "text",
                     "text": prepend_record_blocks_sorted_header(
                         f"[{block_index}|{ref}] {result.get('content')}\n\n"
+                    ),
+                })
+            elif block_type == BlockType.CODE.value:
+                # A code hit is addressed by (file path, symbol id) so the model
+                # can pass it straight to the codegraph tools.
+                current_record_has_blocks = True
+                locator = format_code_locator(
+                    current_file_path, result.get("qualified_name", "") or ""
+                )
+                prefix = f"[{block_index}|{ref}]"
+                if locator:
+                    prefix = f"{prefix} {locator}"
+                content.append({
+                    "type": "text",
+                    "text": prepend_record_blocks_sorted_header(
+                        f"{prefix}\n{_safe_stringify_content(result.get('content'))}\n\n"
                     ),
                 })
             elif block_type in valid_group_labels:
@@ -3572,6 +3920,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         block_group_web_url="",
                         label=block_type,
                         blocks=group_blocks,
+                        file_path=current_file_path,
                     )
                     current_record_has_blocks = True
                     content.append({
@@ -3586,7 +3935,10 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         "type": "text",
                         "text": prepend_record_blocks_sorted_header(header),
                     })
-                    content.extend(_render_blocks_with_images(group_blocks, is_multimodal_llm, image_count))
+                    content.extend(_render_blocks_with_images(
+                        group_blocks, is_multimodal_llm, image_budget, _group_collected_images,
+                        allow_inline_images=not from_tool,
+                    ))
             else:
                 continue
         else:

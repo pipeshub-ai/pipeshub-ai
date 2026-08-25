@@ -12,7 +12,6 @@ and (via `get_authenticated_mcp_servers`) the assistant/placeholder agent's auto
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Optional
 
 from app.agents.constants.mcp_server_constants import (
@@ -23,6 +22,7 @@ from app.agents.constants.mcp_server_constants import (
 from app.agents.mcp.models import MCPAuthMode, MCPServerConfig
 from app.config.configuration_service import ConfigurationService
 from app.services.featureflag.config.config import CONFIG
+from app.services.featureflag.platform_settings import read_platform_feature_flag
 
 logger = logging.getLogger(__name__)
 
@@ -253,51 +253,26 @@ async def get_authenticated_mcp_servers(
 # ---------------------------------------------------------------------------
 
 
-PLATFORM_SETTINGS_KEY = "/services/platform/settings"
-
-
 async def is_mcp_enabled(config_service: Optional[ConfigurationService] = None) -> bool:
     """Deployment-level gate for MCP: agents may only load/use MCP servers when
     this is true. Source of truth is the ``ENABLE_MCP`` platform feature flag.
     Defaults to DISABLED — admins must opt in from Labs.
 
     Resolution order (first hit wins):
-    1. ``PIPESHUB_ENABLE_MCP`` env var
-    2. ``config_service`` — live read of the platform settings the Labs UI writes
-    3. ``FeatureFlagService`` — only reachable in services that wire an
+    1. ``config_service`` — live read of the platform settings the Labs UI writes,
+       via the shared ``read_platform_feature_flag`` helper
+    2. ``FeatureFlagService`` — only reachable in services that wire an
        ``EtcdProvider`` (the connectors service); the query service does not, which
        is why the ``config_service`` read above is the primary path
-    4. Default: ``False``
+    3. Default: ``False``
 
     Reads with ``use_cache=False`` (like `load_org_instances`) so flipping the flag
     in Labs takes effect on the next chat instead of after a service restart.
     """
-    env_val = os.environ.get("PIPESHUB_ENABLE_MCP")
-    if env_val is not None:
-        raw = env_val.strip().lower()
-        if raw in {"1", "true", "yes", "on"}:
-            return True
-        if raw in {"0", "false", "no", "off"}:
-            return False
-
     if config_service is not None:
-        try:
-            settings = await config_service.get_config(
-                PLATFORM_SETTINGS_KEY, default={}, use_cache=False,
-            )
-            flags = settings.get("featureFlags") if isinstance(settings, dict) else None
-            if isinstance(flags, dict):
-                # Keys are normalized to upper-case, matching `EtcdProvider`.
-                normalized = {str(k).upper(): v for k, v in flags.items()}
-                return bool(normalized.get(CONFIG.ENABLE_MCP, False))
-            return False
-        except Exception as e:
-            logger.error(
-                f"Failed to read {PLATFORM_SETTINGS_KEY} for the ENABLE_MCP flag, "
-                f"treating MCP as disabled: {e}",
-                exc_info=True,
-            )
-            return False
+        return await read_platform_feature_flag(
+            CONFIG.ENABLE_MCP, config_service, default=False,
+        )
 
     try:
         from app.services.featureflag.featureflag import FeatureFlagService

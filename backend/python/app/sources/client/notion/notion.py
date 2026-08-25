@@ -10,16 +10,34 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
+from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.iclient import IClient
+from app.sources.client.resilience import ResiliencePolicy
 
 
 @dataclass
 class NotionResponse:
     """Standardized Notion API response wrapper"""
     success: bool
-    data: Optional[Dict[str, Any]] = None
+    data: Optional[Any] = None
     error: Optional[str] = None
     message: Optional[str] = None
+
+    @classmethod
+    def from_http(cls, response: HTTPResponse) -> "NotionResponse":
+        """Build a response from an HTTPResponse; non-2xx is success=False."""
+        status = response.status
+        if 200 <= status < 300:
+            return cls(success=True, data=response)
+        body = ""
+        try:
+            body = (response.text() or "")[:200]
+        except Exception:
+            body = ""
+        error = f"HTTP {status}"
+        if body:
+            error = f"{error}: {body}"
+        return cls(success=False, data=response, error=error)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
@@ -46,10 +64,11 @@ class NotionRESTClientViaOAuth(HTTPClient):
         client_secret: str,
         redirect_uri: str,
         access_token: Optional[str] = None,
-        version: str = "2025-09-03"
+        version: str = "2025-09-03",
+        resilience: Optional[ResiliencePolicy] = None
     ) -> None:
         # Initialize with empty token first, will be set after OAuth flow
-        super().__init__(access_token or "", "Bearer")
+        super().__init__(access_token or "", "Bearer", resilience=resilience)
 
         self.base_url = "https://api.notion.com/v1"
         self.oauth_base_url = "https://api.notion.com/v1/oauth"
@@ -201,8 +220,13 @@ class NotionRESTClientViaToken(HTTPClient):
         version: Notion API version (default: "2025-09-03")
     """
 
-    def __init__(self, token: str, version: str = "2025-09-03") -> None:
-        super().__init__(token, "Bearer")
+    def __init__(
+        self,
+        token: str,
+        version: str = "2025-09-03",
+        resilience: Optional[ResiliencePolicy] = None
+    ) -> None:
+        super().__init__(token, "Bearer", resilience=resilience)
         self.base_url = "https://api.notion.com/v1"
         self.version = version
         self.headers.update({
@@ -221,17 +245,23 @@ class NotionTokenConfig:
         token: The internal integration token
         version: Notion API version
         ssl: Whether to use SSL (always True for Notion)
+        resilience: Optional shared rate limit / retry policy
     """
     token: str
     version: str = "2025-09-03"
     ssl: bool = True
+    resilience: Optional[ResiliencePolicy] = None
 
     def create_client(self) -> NotionRESTClientViaToken:
-        return NotionRESTClientViaToken(self.token, self.version)
+        return NotionRESTClientViaToken(self.token, self.version, resilience=self.resilience)
 
     def to_dict(self) -> dict:
-        """Convert the configuration to a dictionary"""
-        return asdict(self)
+        """Convert the configuration to a dictionary.
+
+        Serializes the settings only: ``resilience`` is a live object holding a
+        lock, which ``asdict``'s deep copy cannot handle.
+        """
+        return {"token": self.token, "version": self.version, "ssl": self.ssl}
 
 
 class NotionClient(IClient):
@@ -261,11 +291,19 @@ class NotionClient(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
         connector_instance_id: Optional[str] = None,
+        resilience: Optional[ResiliencePolicy] = None,
+        connector_type: str = "notion",
     ) -> "NotionClient":
         """Build NotionClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
+            connector_instance_id: Connector instance whose config to read
+            resilience: Shared rate limit / retry policy owned by the connector
+            connector_type: Normalized connector type owning the shared OAuth app,
+                as written by ``_get_oauth_config_path`` (e.g. "notionpersonal").
+                Shared OAuth configs are stored per connector type, so a variant
+                that registers its own app must look under its own key.
         Returns:
             NotionClient instance
         """
@@ -294,7 +332,7 @@ class NotionClient(IClient):
 
                 if needs_shared_config:
                     try:
-                        oauth_config_path = "/services/oauth/notion"
+                        oauth_config_path = f"/services/oauth/{connector_type}"
                         oauth_configs = await config_service.get_config(oauth_config_path, default=[])
 
                         # Find the matching shared config by ID
@@ -327,14 +365,15 @@ class NotionClient(IClient):
                     client_secret=client_secret,
                     redirect_uri=redirect_uri,
                     access_token=access_token,
-                    version=version
+                    version=version,
+                    resilience=resilience
                 )
 
             elif auth_type == "API_TOKEN":  # Default to token auth
                 token = auth_config.get("apiToken", "")
                 if not token:
                     raise ValueError("Token required for token auth type")
-                client = NotionRESTClientViaToken(token, version)
+                client = NotionRESTClientViaToken(token, version, resilience=resilience)
 
             else:
                 raise ValueError(f"Invalid auth type: {auth_type}")

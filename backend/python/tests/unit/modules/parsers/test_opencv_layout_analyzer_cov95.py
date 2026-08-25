@@ -697,6 +697,51 @@ class TestExtractLayoutRegions:
         assert regions[0].type == LayoutRegionType.IMAGE
         assert regions[0].image_data is not None
 
+    def test_vector_dense_sheet_returns_single_full_page_image(self):
+        page = MagicMock()
+        page.width = 3543.31
+        page.height = 2551.18
+        fake_img = np.full((200, 260, 3), 128, dtype=np.uint8)
+
+        with patch.object(
+            ola, "_count_vector_primitives",
+            return_value=ola._MAX_VECTOR_PRIMITIVES + 1,
+        ), patch.object(
+            ola, "_rasterize_page", return_value=(fake_img, 0.0757),
+        ) as mock_raster:
+            regions = extract_layout_regions(page)
+
+        assert len(regions) == 1
+        assert regions[0].type == LayoutRegionType.IMAGE
+        assert regions[0].bbox == (0.0, 0.0, 3543.31, 2551.18)
+        assert regions[0].image_data is not None
+        mock_raster.assert_called_once()
+        # The whole point is short-circuiting before any per-primitive work.
+        page.extract_words.assert_not_called()
+
+    def test_count_vector_primitives_matches_lines_rects_curves(self):
+        def draw(c):
+            for i in range(5):
+                c.line(10 + i, 10, 100 + i, 200)
+            for i in range(4):
+                c.rect(20 + i, 300 + i, 30, 15, stroke=1, fill=0)
+            for i in range(3):
+                c.bezier(10, 400 + i, 50, 450 + i, 100, 420 + i, 150, 460 + i)
+
+        page = _make_pdf_page(draw)
+        expected = len(page.lines) + len(page.rects) + len(page.curves)
+        assert expected == 12
+        assert ola._count_vector_primitives(page) == expected
+
+    def test_count_vector_primitives_falls_back_to_zero_on_error(self):
+        page = MagicMock()
+        page.pdf.rsrcmgr = MagicMock()
+        page.page_obj = MagicMock()
+        with patch.object(
+            ola, "PDFPageInterpreter", side_effect=RuntimeError("boom"),
+        ):
+            assert ola._count_vector_primitives(page) == 0
+
     def test_extract_words_exception_yields_empty(self):
         page = MagicMock()
         page.width = 612
