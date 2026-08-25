@@ -491,27 +491,71 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
 
     raise ValueError(f"Unsupported embedding config type: {provider}")
 
-def _get_anthropic_max_tokens(model_name: str) -> int:
-    """Gets the max output tokens for an Anthropic model based on its name.
+# Bedrock/Anthropic snapshot suffixes (e.g. 20250219) are not x.y minors.
+_CLAUDE_SNAPSHOT_DATE_MIN = 100
 
-    Claude 4.5 supports 64K output tokens.  Claude 4.6+ and Claude 5.x
-    support at least 16K.  Legacy/unrecognised models fall back to 4096.
+_CLAUDE_TIER_PATTERN = r"([a-z]+)"
+
+
+def _claude_version_minor(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    value = int(raw)
+    if value >= _CLAUDE_SNAPSHOT_DATE_MIN:
+        return None
+    return value
+
+
+def _parse_claude_version(
+    model_name: str | None,
+) -> tuple[str | None, int, int | None] | None:
+    """Parse Claude tier/major/minor from API, Bedrock, and Vertex IDs.
+
+    Handles both ``claude-sonnet-4-5`` and dated ``claude-3-7-sonnet-20250219``
+    shapes. Snapshot dates are not treated as minor versions.
     """
-    lowered = model_name.lower() if model_name else ""
+    if not model_name:
+        return None
+    lowered = model_name.lower()
+    if "claude" not in lowered:
+        return None
+
     match = re.search(
-        r"claude[-_]?(?:opus|sonnet|haiku)[-_]?(\d+)(?:[-_.](\d+))?",
+        rf"claude[-_]?{_CLAUDE_TIER_PATTERN}[-_]?(\d+)(?:[-_.](\d+))?",
         lowered,
     )
     if match:
-        major = int(match.group(1))
-        minor = int(match.group(2)) if match.group(2) is not None else None
+        return match.group(1), int(match.group(2)), _claude_version_minor(match.group(3))
+
+    match = re.search(
+        rf"claude[-_]?(\d+)(?:[-_.](\d+))?[-_]?{_CLAUDE_TIER_PATTERN}",
+        lowered,
+    )
+    if match:
+        return match.group(3), int(match.group(1)), _claude_version_minor(match.group(2))
+
+    return None
+
+
+def _get_anthropic_max_tokens(model_name: str) -> int:
+    """Gets the max output tokens for an Anthropic model based on its name.
+
+    Claude 3.7, Claude 4, and Claude 4.5 support 64K output tokens (GA
+    thinking cap on 3.7). Claude 4.6+ and Claude 5.x use 16K. Legacy or
+    unrecognised models fall back to 4096.
+    """
+    lowered = model_name.lower() if model_name else ""
+    parsed = _parse_claude_version(model_name)
+    if parsed is not None:
+        _tier, major, minor = parsed
         if major >= 5:
             return MAX_OUTPUT_TOKENS_CLAUDE_MODERN
         if major == 4:
-            if minor is not None and minor == 5:
-                return MAX_OUTPUT_TOKENS_CLAUDE_4_5
             if minor is not None and minor >= 6:
                 return MAX_OUTPUT_TOKENS_CLAUDE_MODERN
+            return MAX_OUTPUT_TOKENS_CLAUDE_4_5
+        if major == 3 and minor is not None and minor >= 7:
+            return MAX_OUTPUT_TOKENS_CLAUDE_4_5
     if "4.5" in lowered:
         return MAX_OUTPUT_TOKENS_CLAUDE_4_5
     return MAX_OUTPUT_TOKENS
@@ -536,17 +580,11 @@ def _anthropic_supports_sampling_params(model_name: str | None) -> bool:
     if "claude" not in lowered:
         return True
 
-    # Minor is optional so bare major IDs like ``claude-sonnet-5`` match.
-    match = re.search(
-        r"claude[-_]?(opus|sonnet|haiku)[-_]?(\d+)(?:[-_.](\d+))?",
-        lowered,
-    )
-    if not match:
+    parsed = _parse_claude_version(model_name)
+    if parsed is None:
         return True
 
-    tier = match.group(1)
-    major = int(match.group(2))
-    minor = int(match.group(3)) if match.group(3) is not None else None
+    tier, major, minor = parsed
 
     if major >= 5:
         return False
@@ -933,6 +971,293 @@ def _reasoning_effort_kwargs(
     return {"reasoning_effort": effort}
 
 
+# Bedrock Converse: gpt-oss only accepts low/medium/high for
+# additionalModelRequestFields.reasoning_effort (no none/max/xhigh).
+# GPT-5.6 Sol/Terra/Luna accept a wider set (including max); do not clamp.
+_BEDROCK_GPT_OSS_EFFORT_MAP: Dict[str, str] = {
+    "none": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "high",
+}
+_BEDROCK_OPENAI_EFFORT_MAP = _BEDROCK_GPT_OSS_EFFORT_MAP
+
+# Same gpt-5 family as ``_OPENAI_GPT5_MODEL_PATTERN``, but Bedrock IDs are
+# dot-delimited (``us.openai.gpt-5.6-luna``) so the prefix must also allow
+# ``.``. A substring ``gpt[-_.]?5`` would false-positive ``gpt-50`` and
+# mid-token names like ``my-gpt-5-compatible``.
+_GPT5_MODEL_RE = re.compile(r"(?:^|[./])gpt-5(?:\.\d+)?(?:[-_]|$)", re.IGNORECASE)
+
+# Nova 2 maxReasoningEffort is low|medium|high only.
+_BEDROCK_NOVA_EFFORT_MAP: Dict[str, str] = {
+    "none": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "high",
+}
+
+# LiteLLM-style budget_tokens map for Claude manual extended thinking on Bedrock.
+# Bedrock rejects budget_tokens < 1024.
+_BEDROCK_ANTHROPIC_THINKING_BUDGETS: Dict[str, int] = {
+    "low": 1024,
+    "medium": 2048,
+    "high": 4096,
+    "max": 4096,
+}
+
+_BEDROCK_MIN_THINKING_BUDGET_TOKENS = 1024
+# Visible-reply headroom so budget_tokens stays strictly below max_tokens.
+_BEDROCK_THINKING_OUTPUT_RESERVE_TOKENS = 1024
+
+
+def _bedrock_is_nova_2(model_name: str | None) -> bool:
+    """True for Nova 2 ids such as ``amazon.nova-2-lite-v1:0`` and ``us.amazon.nova-2-lite-v1:0``."""
+    if not model_name:
+        return False
+    return "nova-2" in model_name.lower()
+
+
+def _bedrock_is_gpt_oss(model_name: str | None) -> bool:
+    return bool(model_name) and "gpt-oss" in model_name.lower()
+
+
+def _bedrock_is_openai_gpt5(model_name: str | None) -> bool:
+    """GPT-5.x on Bedrock Converse (Sol/Terra/Luna), not gpt-oss."""
+    if not model_name:
+        return False
+    lowered = model_name.lower()
+    if "gpt-oss" in lowered:
+        return False
+    return bool(_GPT5_MODEL_RE.search(lowered))
+
+
+def _bedrock_is_openai(provider: str, model_name: str | None) -> bool:
+    if (provider or "").lower() == "openai":
+        return True
+    if not model_name:
+        return False
+    lowered = model_name.lower()
+    return (
+        "openai" in lowered
+        or "gpt-oss" in lowered
+        or bool(_GPT5_MODEL_RE.search(lowered))
+    )
+
+
+def _bedrock_is_deepseek_r1(model_name: str | None) -> bool:
+    if not model_name:
+        return False
+    lowered = model_name.lower()
+    return "deepseek" in lowered and "r1" in lowered
+
+
+def _bedrock_anthropic_uses_adaptive_thinking(model_name: str | None) -> bool:
+    """Claude models that reject budget_tokens and require thinking.type=adaptive.
+
+    Adaptive thinking is required for Claude 4.6+, Opus 4.7+, and Claude 5
+    families (including Fable/Mythos). Manual ``enabled`` + budget_tokens
+    returns 400 on those models.
+    """
+    if not model_name:
+        return False
+
+    lowered = model_name.lower()
+    if "claude" not in lowered:
+        return False
+
+    if any(token in lowered for token in ("fable", "mythos")):
+        return True
+
+    parsed = _parse_claude_version(model_name)
+    if parsed is not None:
+        _tier, major, minor = parsed
+        if major >= 5:
+            return True
+        if major == 4 and minor is not None and minor >= 6:
+            return True
+        return False
+
+    # IDs like ``claude-4-6`` with no tier token.
+    return bool(re.search(r"claude.*4[-_.]([67]|[6-9]\d)", lowered))
+
+
+def _resolve_bedrock_effort_input(reasoning_effort: str | None) -> str:
+    """Normalize UI effort for Bedrock, flooring explicit ``none`` to low.
+
+    Matches the platform-wide policy in ``_reasoning_effort_kwargs``: ``none``
+    is no longer offered in the UI and must not fully disable reasoning when
+    the model is flagged ``isReasoning``.
+    """
+    effort_input = reasoning_effort or DEFAULT_REASONING_EFFORT
+    if effort_input == "none":
+        return REASONING_MANDATORY_FALLBACK_EFFORT
+    return effort_input
+
+
+def _bedrock_additional_model_request_fields(
+    reasoning_effort: str | None,
+    config: dict[str, Any],
+    *,
+    provider_in_bedrock: str,
+    model_name: str | None,
+) -> Dict[str, Any]:
+    """Build Converse ``additional_model_request_fields`` for Bedrock reasoning.
+
+    Provider shapes differ (OpenAI ``reasoning_effort``, Anthropic ``thinking``,
+    Nova ``reasoningConfig``). DeepSeek R1 always reasons and rejects any
+    reasoning request fields.
+    """
+    if not config.get("isReasoning"):
+        return {}
+
+    if _bedrock_is_deepseek_r1(model_name):
+        return {}
+
+    effort_input = _resolve_bedrock_effort_input(reasoning_effort)
+    provider = (provider_in_bedrock or "").lower()
+
+    if _bedrock_is_openai(provider, model_name):
+        if _bedrock_is_gpt_oss(model_name):
+            effort = _BEDROCK_GPT_OSS_EFFORT_MAP.get(effort_input, effort_input)
+        else:
+            # GPT-5.6 (and future gpt-5* Converse models): pass UI effort
+            # through. ``none`` is already floored to low above.
+            effort = effort_input
+        return {"reasoning_effort": effort}
+
+    if provider == LLMProvider.ANTHROPIC.value or (
+        model_name and ("claude" in model_name.lower() or "anthropic" in model_name.lower())
+    ):
+        if _bedrock_anthropic_uses_adaptive_thinking(model_name):
+            effort = _ANTHROPIC_EFFORT_MAP.get(effort_input, effort_input)
+            return {
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": effort},
+            }
+        budget = _BEDROCK_ANTHROPIC_THINKING_BUDGETS.get(
+            effort_input, _BEDROCK_ANTHROPIC_THINKING_BUDGETS["high"]
+        )
+        budget = max(budget, _BEDROCK_MIN_THINKING_BUDGET_TOKENS)
+        return {
+            "thinking": {
+                "type": "enabled",
+                "budget_tokens": budget,
+            },
+        }
+
+    if _bedrock_is_nova_2(model_name):
+        effort = _BEDROCK_NOVA_EFFORT_MAP.get(effort_input, effort_input)
+        return {
+            "reasoningConfig": {
+                "type": "enabled",
+                "maxReasoningEffort": effort,
+            },
+        }
+
+    return {}
+
+
+def _bedrock_max_tokens_for_thinking(
+    model_name: str | None,
+    thinking: dict[str, Any] | None,
+) -> int:
+    """max_tokens for Bedrock Converse, with budget_tokens < max_tokens.
+
+    AWS and Anthropic require ``1024 <= budget_tokens < max_tokens`` when
+    ``thinking.type`` is ``enabled``. Unrecognised Claude IDs fall back to
+    4096, which collides with the high/max thinking budgets, so those
+    requests are lifted to at least the modern Claude output floor.
+    """
+    max_tokens = _get_anthropic_max_tokens(model_name or "")
+    if not isinstance(thinking, dict) or thinking.get("type") != "enabled":
+        return max_tokens
+    budget = thinking.get("budget_tokens")
+    if not isinstance(budget, int):
+        return max_tokens
+    if max_tokens > budget:
+        return max_tokens
+    return max(
+        MAX_OUTPUT_TOKENS_CLAUDE_MODERN,
+        budget + _BEDROCK_THINKING_OUTPUT_RESERVE_TOKENS,
+    )
+
+
+def _bedrock_temperature(
+    configuration: dict[str, Any],
+    *,
+    provider_in_bedrock: str,
+    model_name: str | None,
+    additional_fields: dict[str, Any],
+) -> float | None:
+    """Return Converse temperature, or ``None`` when the param must be omitted.
+
+    Rules (AWS / Anthropic / Nova / OpenAI):
+    - Claude models that dropped sampling params → omit.
+    - Claude with thinking / adaptive thinking enabled → omit (non-1 values 400).
+    - Nova 2 with ``maxReasoningEffort=high`` → omit (also forbids maxTokens).
+    - GPT-5.x on Bedrock typically rejects temperature → omit.
+    - Otherwise use configured temperature (default 0.2). Never force 1 for
+      Bedrock OpenAI gpt-oss (unlike direct OpenAI gpt-5.x).
+    """
+    provider = (provider_in_bedrock or "").lower()
+    is_anthropic = provider == LLMProvider.ANTHROPIC.value or (
+        model_name is not None
+        and ("claude" in model_name.lower() or "anthropic" in model_name.lower())
+    )
+
+    if _bedrock_is_openai_gpt5(model_name):
+        return None
+
+    if is_anthropic and not _anthropic_supports_sampling_params(model_name):
+        return None
+
+    thinking = additional_fields.get("thinking")
+    if is_anthropic and isinstance(thinking, dict) and thinking.get("type") in (
+        "enabled",
+        "adaptive",
+    ):
+        return None
+
+    reasoning_config = additional_fields.get("reasoningConfig")
+    if (
+        isinstance(reasoning_config, dict)
+        and reasoning_config.get("type") == "enabled"
+        and reasoning_config.get("maxReasoningEffort") == "high"
+    ):
+        return None
+
+    return configuration.get("temperature", 0.2)
+
+
+def _detect_bedrock_provider(model_name: str | None) -> str:
+    """Infer the Bedrock foundation-model provider from a model id."""
+    if not model_name:
+        return LLMProvider.ANTHROPIC.value
+
+    lowered = model_name.lower()
+    if "mistral" in lowered:
+        return LLMProvider.MISTRAL.value
+    if "claude" in lowered or "anthropic" in lowered:
+        return LLMProvider.ANTHROPIC.value
+    if "openai" in lowered or "gpt-oss" in lowered or _GPT5_MODEL_RE.search(lowered):
+        return "openai"
+    if "llama" in lowered or "meta" in lowered:
+        return "meta"
+    if "deepseek" in lowered:
+        return "deepseek"
+    if "titan" in lowered or "amazon" in lowered or "nova" in lowered:
+        return "amazon"
+    if "cohere" in lowered:
+        return "cohere"
+    if "ai21" in lowered or "jamba" in lowered:
+        return "ai21"
+    if "qwen" in lowered:
+        return "qwen"
+    return LLMProvider.ANTHROPIC.value
+
+
 def get_generator_model(
     provider: str,
     config: dict[str, Any],
@@ -989,7 +1314,7 @@ def get_generator_model(
         return ChatAnthropic(**anthropic_kwargs)
 
     elif provider == LLMProvider.AWS_BEDROCK.value:
-        from langchain_aws import ChatBedrock
+        from langchain_aws import ChatBedrockConverse
 
         # Determine the actual provider based on model name if not explicitly set
         provider_in_bedrock = configuration.get("provider")
@@ -1004,38 +1329,23 @@ def get_generator_model(
                 # Fall back to auto-detection if custom provider is not provided
                 provider_in_bedrock = None
 
-        # Auto-detect provider from model name if not explicitly set
         if not provider_in_bedrock:
-            if "mistral" in model_name.lower():
-                provider_in_bedrock = LLMProvider.MISTRAL.value
-            elif "claude" in model_name.lower() or "anthropic" in model_name.lower():
-                provider_in_bedrock = LLMProvider.ANTHROPIC.value
-            elif "llama" in model_name.lower() or "meta" in model_name.lower():
-                provider_in_bedrock = "meta"
-            elif "titan" in model_name.lower() or "amazon" in model_name.lower():
-                provider_in_bedrock = "amazon"
-            elif "cohere" in model_name.lower():
-                provider_in_bedrock = "cohere"
-            elif "ai21" in model_name.lower() or "jamba" in model_name.lower():
-                provider_in_bedrock = "ai21"
-            elif "qwen" in model_name.lower():
-                provider_in_bedrock = "qwen"
-            else:
-                # Default to anthropic for backwards compatibility
-                provider_in_bedrock = LLMProvider.ANTHROPIC.value
+            provider_in_bedrock = _detect_bedrock_provider(model_name)
 
         logger.info(f"Provider in Bedrock: {provider_in_bedrock} for model: {model_name}")
 
-        # Set model_kwargs based on the provider
-        # For Anthropic models in Bedrock, we need to pass max_tokens in model_kwargs
-        # but NOT anthropic_version (which causes the validation error)
-        if provider_in_bedrock == LLMProvider.ANTHROPIC.value:
-            max_tokens = _get_anthropic_max_tokens(model_name)
-            model_kwargs = {
-                "max_tokens": max_tokens,
-            }
-        else:
-            model_kwargs = {}
+        additional_fields = _bedrock_additional_model_request_fields(
+            reasoning_effort,
+            config,
+            provider_in_bedrock=provider_in_bedrock,
+            model_name=model_name,
+        )
+        temperature = _bedrock_temperature(
+            configuration,
+            provider_in_bedrock=provider_in_bedrock,
+            model_name=model_name,
+            additional_fields=additional_fields,
+        )
 
         bedrock_client = _create_bedrock_client(configuration)
 
@@ -1044,15 +1354,30 @@ def get_generator_model(
             client=bedrock_client,
             region_name=configuration.get("region"),
             provider=provider_in_bedrock,
-            model_kwargs=model_kwargs,
-            beta_use_converse_api=True,
         )
-        if (
-            provider_in_bedrock != LLMProvider.ANTHROPIC.value
-            or _anthropic_supports_sampling_params(model_name)
+        if additional_fields:
+            bedrock_kwargs["additional_model_request_fields"] = additional_fields
+
+        # Anthropic needs an explicit max_tokens on Converse. Any path that
+        # emits a thinking block must set it too (budget_tokens < max_tokens).
+        # Nova 2 with maxReasoningEffort=high forbids maxTokens — skip then.
+        thinking = additional_fields.get("thinking")
+        nova_high = (
+            isinstance(additional_fields.get("reasoningConfig"), dict)
+            and additional_fields["reasoningConfig"].get("maxReasoningEffort") == "high"
+        )
+        if not nova_high and (
+            isinstance(thinking, dict)
+            or provider_in_bedrock == LLMProvider.ANTHROPIC.value
         ):
-            bedrock_kwargs["temperature"] = 0.2
-        return ChatBedrock(**bedrock_kwargs)
+            bedrock_kwargs["max_tokens"] = _bedrock_max_tokens_for_thinking(
+                model_name, thinking if isinstance(thinking, dict) else None
+            )
+
+        if temperature is not None:
+            bedrock_kwargs["temperature"] = temperature
+
+        return ChatBedrockConverse(**bedrock_kwargs)
     elif provider == LLMProvider.AZURE_AI.value:
         from langchain_anthropic import ChatAnthropic
         from langchain_openai import ChatOpenAI

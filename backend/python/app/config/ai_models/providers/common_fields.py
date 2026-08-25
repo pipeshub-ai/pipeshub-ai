@@ -170,11 +170,13 @@ BEDROCK_PROVIDER = AIModelField(
     default_value="anthropic",
     options=[
         {"value": "anthropic", "label": "Anthropic (Claude)"},
+        {"value": "openai", "label": "OpenAI"},
         {"value": "mistral", "label": "Mistral"},
+        {"value": "meta", "label": "Meta (Llama)"},
         {"value": "qwen", "label": "Qwen"},
         {"value": "deepseek", "label": "DeepSeek"},
         {"value": "cohere", "label": "Cohere"},
-        {"value": "amazon", "label": "Amazon (Titan)"},
+        {"value": "amazon", "label": "Amazon (Nova / Titan)"},
         {"value": "ai21", "label": "AI21 Labs"},
         {"value": "other", "label": "Other (Custom)"},
     ],
@@ -188,7 +190,7 @@ BEDROCK_PROVIDER_EMBEDDING = AIModelField(
     default_value="cohere",
     options=[
         {"value": "cohere", "label": "Cohere"},
-        {"value": "amazon", "label": "Amazon (Titan)"},
+        {"value": "amazon", "label": "Amazon (Nova / Titan)"},
         {"value": "other", "label": "Other (Custom)"},
     ],
 )

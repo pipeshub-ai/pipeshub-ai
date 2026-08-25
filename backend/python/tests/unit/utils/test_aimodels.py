@@ -104,6 +104,30 @@ class TestGetAnthropicMaxTokens:
     def test_claude_3_opus(self):
         assert _get_anthropic_max_tokens("claude-3-opus") == MAX_OUTPUT_TOKENS
 
+    def test_claude_3_7_sonnet_dated_bedrock_id(self):
+        assert (
+            _get_anthropic_max_tokens("anthropic.claude-3-7-sonnet-20250219-v1:0")
+            == MAX_OUTPUT_TOKENS_CLAUDE_4_5
+        )
+
+    def test_claude_3_7_sonnet_inference_profile(self):
+        assert (
+            _get_anthropic_max_tokens("us.anthropic.claude-3-7-sonnet-20250219-v1:0")
+            == MAX_OUTPUT_TOKENS_CLAUDE_4_5
+        )
+
+    def test_claude_sonnet_4_dated_snapshot_not_treated_as_4_6(self):
+        assert (
+            _get_anthropic_max_tokens("anthropic.claude-sonnet-4-20250514-v1:0")
+            == MAX_OUTPUT_TOKENS_CLAUDE_4_5
+        )
+
+    def test_claude_sonnet_4_without_minor(self):
+        assert _get_anthropic_max_tokens("claude-sonnet-4") == MAX_OUTPUT_TOKENS_CLAUDE_4_5
+
+    def test_future_claude_family_major_5(self):
+        assert _get_anthropic_max_tokens("anthropic.claude-spirit-5") == MAX_OUTPUT_TOKENS_CLAUDE_MODERN
+
     def test_non_claude_model(self):
         assert _get_anthropic_max_tokens("gpt-4") == MAX_OUTPUT_TOKENS
 
@@ -817,7 +841,7 @@ class TestGetGeneratorModel:
         assert call_kwargs["max_tokens"] == MAX_OUTPUT_TOKENS_CLAUDE_4_5
 
     @patch("app.utils.aimodels._create_bedrock_client")
-    @patch("langchain_aws.ChatBedrock")
+    @patch("langchain_aws.ChatBedrockConverse")
     def test_bedrock(self, mock_cls, mock_create_client):
         mock_cls.return_value = MagicMock()
         mock_create_client.return_value = MagicMock()
@@ -827,7 +851,7 @@ class TestGetGeneratorModel:
         assert result is mock_cls.return_value
 
     @patch("app.utils.aimodels._create_bedrock_client")
-    @patch("langchain_aws.ChatBedrock")
+    @patch("langchain_aws.ChatBedrockConverse")
     def test_bedrock_auto_detects_mistral(self, mock_cls, mock_create_client):
         mock_cls.return_value = MagicMock()
         mock_create_client.return_value = MagicMock()
