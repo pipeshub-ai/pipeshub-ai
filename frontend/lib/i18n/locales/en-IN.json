@@ -3005,6 +3005,8 @@
       "connectorId": "Connector ID",
       "notAvailable": "N/A",
       "typeEmail": "Email",
+      "typeFile": "File",
+      "typeArtifact": "Artifact",
       "typeTicket": "Ticket",
       "typeWebpage": "Web page",
       "typeMessage": "Message",

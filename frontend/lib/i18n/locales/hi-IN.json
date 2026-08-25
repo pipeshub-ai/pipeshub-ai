@@ -3005,6 +3005,8 @@
       "connectorId": "कनेक्टर ID",
       "notAvailable": "लागू नहीं",
       "typeEmail": "ईमेल",
+      "typeFile": "फ़ाइल",
+      "typeArtifact": "आर्टिफ़ैक्ट",
       "typeTicket": "टिकट",
       "typeWebpage": "वेब पृष्ठ",
       "typeMessage": "संदेश",

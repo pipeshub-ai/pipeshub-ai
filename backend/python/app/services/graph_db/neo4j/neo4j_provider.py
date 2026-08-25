@@ -2028,12 +2028,41 @@ class Neo4jProvider(IGraphDBProvider):
         """
         Find the Slack burst MessageRecord whose startTs <= ts <= endTs.
 
-        NOTE: Neo4j implementation is not yet supported. Returns None.
+        Joins the Message type node (startTs / endTs) with Record via IS_OF_TYPE.
         """
-        self.logger.warning(
-            "find_slack_burst_record_by_ts is not implemented for Neo4j provider"
-        )
-        return None
+        query = """
+        MATCH (r:Record {connectorId: $connector_id, externalGroupId: $channel_id})
+        MATCH (r)-[:IS_OF_TYPE]->(m:Message)
+        WHERE m.startTs IS NOT NULL
+          AND m.endTs IS NOT NULL
+          AND m.startTs <= $ts
+          AND m.endTs >= $ts
+          AND m.startTs <> m.endTs
+        RETURN r, m
+        LIMIT 1
+        """
+        try:
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "connector_id": connector_id,
+                    "channel_id": channel_id,
+                    "ts": ts,
+                },
+                txn_id=transaction,
+            )
+            if not results:
+                return None
+
+            row = results[0]
+            record_dict = self._neo4j_to_arango_node(
+                dict(row["r"]), CollectionNames.RECORDS.value
+            )
+            type_doc = self._neo4j_to_arango_node(dict(row["m"]), "")
+            return self._create_typed_record_from_neo4j(record_dict, type_doc)
+        except Exception as exc:
+            self.logger.error(f"❌ find_slack_burst_record_by_ts({ts}) failed: {exc}")
+            return None
 
     async def get_record_key_by_external_id(
         self,

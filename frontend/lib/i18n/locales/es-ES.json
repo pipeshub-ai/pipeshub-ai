@@ -3004,6 +3004,8 @@
       "connectorId": "ID del conector",
       "notAvailable": "N/D",
       "typeEmail": "Correo",
+      "typeFile": "Archivo",
+      "typeArtifact": "Artefacto",
       "typeTicket": "Ticket",
       "typeWebpage": "Página web",
       "typeMessage": "Mensaje",
