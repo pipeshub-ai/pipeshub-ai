@@ -2928,7 +2928,13 @@ async def _build_toolsets_list_response(
         toolset_type = inst.get("toolsetType", "")
         meta = registry.get_toolset_metadata(toolset_type)
         auth_type = inst.get("authType")
-        auth_type_upper = (auth_type or "NONE").upper()
+        # Unknown/missing authType must NOT be treated as non-OAuth here — this
+        # flag gates whether raw stored credentials (auth_record["auth"], which
+        # may hold OAuth tokens) get exposed in the API response. Defaulting it
+        # to "NONE" would expose them for a malformed/corrupted instance whose
+        # real authType is actually OAUTH. Fail closed: only a KNOWN, explicit
+        # non-OAuth authType counts.
+        is_known_non_oauth = auth_type is not None and str(auth_type).upper() != "OAUTH"
         is_authenticated = _is_toolset_authenticated(auth_type, auth_record)
 
         meta_cfg = (meta.get("config") or {}) if meta else {}
@@ -2967,7 +2973,7 @@ async def _build_toolsets_list_response(
 
         if include_has_credentials:
             toolset_entry["hasCredentials"] = (
-                auth_type_upper != "OAUTH"
+                is_known_non_oauth
                 and auth_record is not None
                 and bool(auth_record.get("auth"))
             )
@@ -2979,7 +2985,7 @@ async def _build_toolsets_list_response(
         if expose_non_oauth_auth:
             toolset_entry["auth"] = (
                 auth_record.get("auth", None)
-                if auth_type_upper != "OAUTH" and auth_record is not None
+                if is_known_non_oauth and auth_record is not None
                 else None
             )
 
