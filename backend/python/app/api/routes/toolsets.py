@@ -34,7 +34,7 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
 )
-from app.connectors.core.registry.auth_builder import OAuthScopeType
+from app.connectors.core.registry.auth_builder import AuthType, OAuthScopeType
 from app.containers.connector import ConnectorAppContainer
 from app.services.featureflag.config.config import CONFIG
 from app.services.featureflag.platform_settings import read_platform_feature_flag
@@ -445,6 +445,23 @@ def _is_toolset_authenticated(
     if auth_type is not None and str(auth_type).upper() == "NONE":
         return True
     return bool(auth_record and auth_record.get("isAuthenticated", False))
+
+
+_NON_OAUTH_AUTH_TYPES = frozenset(
+    v for k, v in vars(AuthType).items()
+    if not k.startswith("_") and isinstance(v, str) and v not in ("OAUTH", "OAUTH_ADMIN_CONSENT")
+)
+
+
+def _is_known_non_oauth_auth_type(auth_type: str | None) -> bool:
+    """
+    True only for a value that's a KNOWN, non-OAuth AuthType member — not just
+    "not equal to the string OAUTH". A malformed/typo'd value (e.g. "UNKNOWN")
+    must fail closed here too, since this gates whether raw stored credentials
+    (which may hold OAuth tokens for a corrupted OAuth/OAUTH_ADMIN_CONSENT
+    instance) get exposed in the API response.
+    """
+    return auth_type is not None and str(auth_type).upper() in _NON_OAUTH_AUTH_TYPES
 
 
 # ============================================================================
@@ -2928,13 +2945,7 @@ async def _build_toolsets_list_response(
         toolset_type = inst.get("toolsetType", "")
         meta = registry.get_toolset_metadata(toolset_type)
         auth_type = inst.get("authType")
-        # Unknown/missing authType must NOT be treated as non-OAuth here — this
-        # flag gates whether raw stored credentials (auth_record["auth"], which
-        # may hold OAuth tokens) get exposed in the API response. Defaulting it
-        # to "NONE" would expose them for a malformed/corrupted instance whose
-        # real authType is actually OAUTH. Fail closed: only a KNOWN, explicit
-        # non-OAuth authType counts.
-        is_known_non_oauth = auth_type is not None and str(auth_type).upper() != "OAUTH"
+        is_known_non_oauth = _is_known_non_oauth_auth_type(auth_type)
         is_authenticated = _is_toolset_authenticated(auth_type, auth_record)
 
         meta_cfg = (meta.get("config") or {}) if meta else {}
