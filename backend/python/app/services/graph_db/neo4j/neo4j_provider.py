@@ -297,16 +297,31 @@ class Neo4jProvider(IGraphDBProvider):
         """
         Generate Neo4j unique constraints on 'id' property for all collections.
 
-        Automatically generates unique constraints for all collections in the schema registry,
-        ensuring every node type has a unique identifier constraint.
+        Covers the union of the schema registry and every record type-collection,
+        because those are two different lists: the registry holds collections that
+        have a validation schema, while RECORD_TYPE_COLLECTION_MAPPING holds every
+        collection a Record can be written into. Six type collections (codeFiles,
+        prs, sqlTables, sqlViews, products, deals) appear only in the latter.
+
+        Missing the constraint is not merely a validation gap — it removes the
+        index that backs it, so ``MERGE (n:Label {id: ...})`` degrades from a
+        NodeUniqueIndexSeek to a NodeByLabelScan. That makes every write scan all
+        existing nodes of that label, turning a sync into O(n^2): a 95k-file
+        repository was observed climbing from 30ms/record to 96ms/record and still
+        rising, purely because each new code file scanned every code file already
+        written.
 
         Returns:
             List of Cypher CREATE CONSTRAINT queries for unique id fields
         """
         constraints = []
 
-        # Iterate through ALL collections (even those without schemas need unique id)
-        for collection in NODE_SCHEMA_REGISTRY:
+        # dict.fromkeys preserves order while de-duplicating the two sources.
+        collections = dict.fromkeys(
+            [*NODE_SCHEMA_REGISTRY, *RECORD_TYPE_COLLECTION_MAPPING.values()]
+        )
+
+        for collection in collections:
             # Get the Neo4j label for this collection
             label = collection_to_label(collection)
 
