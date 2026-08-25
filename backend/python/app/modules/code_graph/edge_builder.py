@@ -107,6 +107,28 @@ async def _scan_blocks(graph_provider: IGraphDBProvider, org_id: str,
     return out
 
 
+async def _scan_file_paths(graph_provider: IGraphDBProvider, org_id: str,
+                           docs: list[dict]) -> dict[str, str]:
+    """recordId -> file path for every record the scan touched.
+
+    Resolution is path-driven -- a relative import resolves against the
+    importing file's directory, and the proximity guards score on it -- but the
+    path lives on the record, so it is fetched once per record rather than read
+    off every block.
+    """
+    record_ids = sorted({doc.get("recordId") for doc in docs if doc.get("recordId")})
+    if not record_ids:
+        return {}
+    paths: dict[str, str] = {}
+    for chunk in _chunks(record_ids, 2000):
+        paths.update(
+            await graph_provider.get_file_paths_for_records(
+                org_id=org_id, record_ids=chunk
+            )
+        )
+    return paths
+
+
 class _Builder:
     def __init__(self, index: SymbolIndex, org_id: str, record_group_id: str,
                  log: logging.Logger) -> None:
@@ -459,7 +481,8 @@ async def build_code_graph_edges(
     log = log or logger
 
     docs = await _scan_blocks(graph_provider, org_id, record_group_id)
-    index = build_symbol_index(docs)
+    paths = await _scan_file_paths(graph_provider, org_id, docs)
+    index = build_symbol_index(docs, paths)
 
     builder = _Builder(index, org_id, record_group_id, log)
     builder.result.blocks = len(docs)

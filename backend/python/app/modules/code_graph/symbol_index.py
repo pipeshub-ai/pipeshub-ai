@@ -1,4 +1,4 @@
-"""In-memory indexes built from one scan of a repo's blocks.
+"""In-memory indexes built from one scan of a repo's blocks, plus its file paths.
 
 The scan is unavoidable -- resolution needs a complete symbol table, and a
 partial one produces wrong edges rather than missing ones. Because pendingEdges
@@ -59,14 +59,21 @@ class BlockRow:
     type_table: dict[str, str]
 
     @staticmethod
-    def from_doc(doc: dict[str, Any]) -> "BlockRow":
+    def from_doc(doc: dict[str, Any], paths: dict[str, str]) -> "BlockRow":
+        """``paths`` maps recordId -> file path.
+
+        The path lives on the record, not the block: a directory rename moves
+        every file and changes no symbol, so storing it per block would mean ~30
+        stale copies per file.
+        """
+        record_id = doc.get("recordId") or ""
         return BlockRow(
             key=doc.get("_key") or doc.get("id") or "",
-            record_id=doc.get("recordId") or "",
+            record_id=record_id,
             name=doc.get("name"),
             kind=(doc.get("kind") or None),
             qualified_name=doc.get("qualifiedName"),
-            file_path=doc.get("filePath"),
+            file_path=paths.get(record_id),
             language=doc.get("language"),
             is_block_group=bool(doc.get("isBlockGroup")),
             parent_block_id=doc.get("parentBlockId"),
@@ -99,10 +106,13 @@ class SymbolIndex:
         return self.by_name.get(name, [])
 
 
-def build_symbol_index(docs: Iterable[dict[str, Any]]) -> SymbolIndex:
+def build_symbol_index(
+    docs: Iterable[dict[str, Any]], paths: dict[str, str] | None = None
+) -> SymbolIndex:
+    paths = paths or {}
     index = SymbolIndex()
     for doc in docs:
-        row = BlockRow.from_doc(doc)
+        row = BlockRow.from_doc(doc, paths)
         if not row.key:
             continue
         index.rows[row.key] = row

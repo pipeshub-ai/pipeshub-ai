@@ -1397,6 +1397,24 @@ class TestQueryAndFilterHelpers:
         assert kwargs["txn_id"] == "txn-f1"
 
     @pytest.mark.asyncio
+    async def test_get_nodes_by_filters_projects_key_from_id(self, neo4j_provider: Neo4jProvider) -> None:
+        """`_key` is stored as `id` on Neo4j nodes.
+
+        Projecting it verbatim yields null for every row, which silently empties
+        any caller that reads keys back -- block reconciliation among them.
+        """
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"_key": "b1"}])
+
+        result = await neo4j_provider.get_nodes_by_filters(
+            "blocks", {"recordId": "rec-a"}, return_fields=["_key"]
+        )
+
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "n.id AS _key" in query
+        assert "n._key AS _key" not in query
+        assert result == [{"_key": "b1"}]
+
+    @pytest.mark.asyncio
     async def test_get_nodes_by_filters_without_filters_returns_all(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(return_value=[{"n": {"id": "n1", "name": "A"}}])
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "n1", "name": "A"})  # type: ignore[method-assign]

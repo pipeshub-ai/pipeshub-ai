@@ -530,10 +530,19 @@ class Neo4jProvider(IGraphDBProvider):
         # carried the id uniqueness constraint, so every code-graph query was a
         # full label scan.
 
-        # COMPOSITE: orgId + filePath — the code tools address a symbol by file.
+        # COMPOSITE: orgId + recordId + qualifiedName — the code tools address a
+        # symbol by (file, name); the file resolves to a record on Codefiles
+        # first, so blocks are reached by record.
         indexes.append(
-            "CREATE INDEX block_org_file IF NOT EXISTS "
-            "FOR (n:Block) ON (n.orgId, n.filePath)"
+            "CREATE INDEX block_org_record_qualified_name IF NOT EXISTS "
+            "FOR (n:Block) ON (n.orgId, n.recordId, n.qualifiedName)"
+        )
+
+        # COMPOSITE: orgId + filePath on Codefiles — the single home of a code
+        # file's path, and what every path-prefix query now drives from.
+        indexes.append(
+            "CREATE INDEX code_file_org_path IF NOT EXISTS "
+            "FOR (n:Codefiles) ON (n.orgId, n.filePath)"
         )
 
         # COMPOSITE: orgId + qualifiedName — symbol lookup by identity.
@@ -566,7 +575,7 @@ class Neo4jProvider(IGraphDBProvider):
         """
         return [
             "CREATE FULLTEXT INDEX block_text IF NOT EXISTS "
-            "FOR (n:Block) ON EACH [n.name, n.qualifiedName, n.filePath]"
+            "FOR (n:Block) ON EACH [n.name, n.qualifiedName]"
         ]
 
     def _generate_required_field_constraints(self) -> list[str]:
@@ -1744,9 +1753,14 @@ class Neo4jProvider(IGraphDBProvider):
                 where_clause = ""
                 parameters = {}
 
-            # Build return clause
+            # Build return clause. `_key` is stored as `id` on Neo4j nodes, so
+            # projecting it verbatim returns null for every row and silently
+            # empties any caller that reads keys back.
             if return_fields:
-                return_expr = ", ".join([f"n.{field} AS {field}" for field in return_fields])
+                return_expr = ", ".join(
+                    f"n.{'id' if field == '_key' else field} AS {field}"
+                    for field in return_fields
+                )
             else:
                 return_expr = "n"
 
@@ -2039,20 +2053,29 @@ class Neo4jProvider(IGraphDBProvider):
                 "inbound": f"(block:{block_label})<-[rel:{relationship}]-(target)",
                 "any": f"(block:{block_label})-[rel:{relationship}]-(target)",
             }[direction]
+            record_label = collection_to_label(CollectionNames.RECORDS.value)
+            code_file_label = collection_to_label(CollectionNames.CODE_FILES.value)
+            # The prefix is matched on codeFiles -- one node per file rather than
+            # ~30 per file on blocks -- and the connector scope is re-applied per
+            # record, since codeFiles carries no connectorId. Grouped by record,
+            # not by path: the caller resolves ids to paths in one batch, so a
+            # moved file needs no rewrite here.
             query = f"""
+            MATCH (codeFile:{code_file_label})
+            WHERE codeFile.orgId = $orgId
+              AND codeFile.filePath STARTS WITH $prefix
+            MATCH (record:{record_label} {{id: codeFile.id}})
+            WHERE $connectorId IS NULL OR record.connectorId = $connectorId
+            WITH collect(record.id) AS scopedRecords
             MATCH {pattern}
-            WHERE block.orgId = $orgId
-              AND block.filePath STARTS WITH $prefix
+            WHERE block.recordId IN scopedRecords
               AND rel.relationshipType IN $relations
-              AND ($connectorId IS NULL OR block.connectorId = $connectorId)
             WITH block, target, rel,
                  CASE WHEN startNode(rel).id = block.id
                       THEN 'outbound' ELSE 'inbound' END AS dir
-            RETURN block.filePath AS srcPath,
-                   block.recordId AS srcRecord,
+            RETURN block.recordId AS srcRecord,
                    rel.relationshipType AS rel,
                    dir,
-                   target.filePath AS dstPath,
                    coalesce(target.recordId, target.id) AS dstRecord,
                    count(*) AS n
             LIMIT $limit
@@ -2081,14 +2104,20 @@ class Neo4jProvider(IGraphDBProvider):
         if not record_ids:
             return {}
         try:
-            block_label = collection_to_label(CollectionNames.BLOCKS.value)
+            record_label = collection_to_label(CollectionNames.RECORDS.value)
+            code_file_label = collection_to_label(CollectionNames.CODE_FILES.value)
+            # codeFiles is keyed by record id. recordName is the fallback for a
+            # source file that arrived without a codeFiles node -- a .py uploaded
+            # to a KB is a plain FILE record, and dispatch is by extension, so it
+            # still gets parsed and projected.
             query = f"""
-            MATCH (block:{block_label})
-            WHERE block.orgId = $orgId
-              AND block.recordId IN $record_ids
-              AND block.filePath IS NOT NULL
-            RETURN DISTINCT block.recordId AS recordId,
-                            block.filePath AS filePath
+            MATCH (record:{record_label})
+            WHERE record.orgId = $orgId
+              AND record.id IN $record_ids
+            OPTIONAL MATCH (codeFile:{code_file_label} {{id: record.id}})
+            WITH record, coalesce(codeFile.filePath, record.recordName) AS path
+            WHERE path IS NOT NULL
+            RETURN record.id AS recordId, path AS filePath
             """
             rows = await self.client.execute_query(
                 query,

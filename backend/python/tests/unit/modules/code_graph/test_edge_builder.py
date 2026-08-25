@@ -150,7 +150,10 @@ async def test_barrel_chain_resolves_to_the_defining_module(graph, index_file):
     await _build(graph)
 
     imports = graph.code_edges(RecordRelations.IMPORTS.value)
-    targets = {graph.blocks[e["_to"].split("/")[1]].get("filePath") for e in imports}
+    targets = {
+        graph.code_files.get(graph.blocks[e["_to"].split("/")[1]]["recordId"])
+        for e in imports
+    }
     assert "src/repo.ts" in targets  # walked through index.ts, not stopped at it
 
 
@@ -201,7 +204,8 @@ async def test_non_test_definition_wins_the_tie(graph, index_file):
 
     calls = graph.code_edges(RecordRelations.CALLS.value)
     assert len(calls) == 1
-    assert graph.blocks[calls[0]["_to"].split("/")[1]]["filePath"] == "src/impl.py"
+    target = graph.blocks[calls[0]["_to"].split("/")[1]]
+    assert graph.code_files[target["recordId"]] == "src/impl.py"
 
 
 @pytest.mark.asyncio

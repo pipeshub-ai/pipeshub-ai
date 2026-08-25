@@ -3,6 +3,11 @@
 Writes the structural relations whose endpoints are both known while parsing a
 single file -- CONTAINS, METHOD, DEFINES. Cross-file relations are carried on
 each node as ``pendingEdges`` and resolved later by ``edge_builder``.
+
+A block deliberately does not carry its file path. The path belongs to the
+record (``codeFiles.filePath``) and changes without the blocks changing -- a
+directory rename moves every file and touches no symbol -- so readers join on
+``recordId`` rather than storing ~30 copies per file that then go stale.
 """
 from __future__ import annotations
 
@@ -46,11 +51,10 @@ class BlockProjectionContext:
     record_id: str
     record_group_id: str | None
     connector_id: str | None
-    file_path: str | None
     language: str | None = None
 
 
-def block_key_for(record_group_id: str | None, record_id: str, qualified_name: str) -> str:
+def block_key_for(record_id: str, qualified_name: str) -> str:
     """Deterministic Arango ``_key`` for a symbol.
 
     Scoped by *record* rather than by file path. The qualified name is only
@@ -60,12 +64,15 @@ def block_key_for(record_group_id: str | None, record_id: str, qualified_name: s
     keeping the same id. A path-derived key would change on every rename, and
     since a pure rename emits no re-index event, nothing would ever repair it.
 
+    The record id is a uuid4, so nothing further is needed to make this unique.
+    `recordGroupId` in particular must stay out: a cross-group move keeps the
+    record and swaps the group, which would re-key every block of the file and
+    strand its edges -- the same failure a path-derived key has.
+
     Deterministic so re-runs produce identical keys and existing CONTAINS edges
     stay valid.
     """
-    digest = hashlib.sha256(
-        f"{record_group_id or ''}:{record_id}:{qualified_name}".encode("utf-8")
-    )
+    digest = hashlib.sha256(f"{record_id}:{qualified_name}".encode("utf-8"))
     return digest.hexdigest()[:32]
 
 
@@ -94,7 +101,6 @@ def serialize_block_for_graph(
         "recordId": ctx.record_id,
         "recordGroupId": ctx.record_group_id,
         "connectorId": ctx.connector_id,
-        "filePath": ctx.file_path,
         "name": item.name,
         "index": item.index,
         "isBlockGroup": is_block_group,
@@ -180,7 +186,7 @@ async def write_code_file_blocks_to_graph(
         meta = group.code_metadata
         if meta is None or not meta.qualified_name:
             continue
-        gid = block_key_for(context.record_group_id, context.record_id, meta.qualified_name)
+        gid = block_key_for(context.record_id, meta.qualified_name)
         group_ids[group.index] = gid
         doc = serialize_block_for_graph(
             group, context, block_id=gid, is_block_group=True, parent_block_id=None
@@ -199,9 +205,7 @@ async def write_code_file_blocks_to_graph(
             # The file-summary block has no symbol of its own; give it a fixed
             # identity so it still lands and can carry the file's type table.
             qualified_name = "file_summary:1"
-        block_ids[block.index] = block_key_for(
-            context.record_group_id, context.record_id, qualified_name
-        )
+        block_ids[block.index] = block_key_for(context.record_id, qualified_name)
 
     for block in block_containers.blocks:
         meta = block.code_metadata
@@ -314,3 +318,4 @@ async def _delete_edges_for_blocks(
             node_collection=CollectionNames.BLOCKS.value,
             edge_collection=CollectionNames.RECORD_RELATIONS.value,
         )
+
