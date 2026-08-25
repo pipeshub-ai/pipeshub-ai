@@ -1104,7 +1104,10 @@ class ZendeskConnector(BaseConnector):
             parent_group_id = None
             if parent_record.external_record_group_id and parent_record.external_record_group_id.startswith("group_"):
                 parent_group_id = parent_record.external_record_group_id.removeprefix("group_")
-            if existing_record is None:
+            # A full sync deleted this attachment's BELONGS_TO edge along with every
+            # other. Publishing only new attachments leaves the existing ones orphaned —
+            # present but unreachable — so re-emit them when the checkpoint is gone.
+            if existing_record is None or self._reemit_unchanged:
                 requester = {"email": getattr(parent_record, "reporter_email", None)}
                 records_with_permissions.append(
                     (file_record, self._record_permissions(parent_group_id, requester))
