@@ -482,6 +482,13 @@
     "record": "registro"
   },
   "chat": {
+    "recordActions": {
+      "preview": "Vista previa",
+      "open": "Abrir {{source}}",
+      "openIn": "Abrir en {{source}}",
+      "openInCollections": "Abrir en Colecciones",
+      "relevance": "Relevancia: {{percent}} %"
+    },
     "results": "Resultados",
     "greeting": "¿Qué quieres explorar hoy?",
     "heyUser": "Hola, {{name}} 👋",

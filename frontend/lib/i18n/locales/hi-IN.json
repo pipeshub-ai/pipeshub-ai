@@ -306,8 +306,8 @@
     "confirmDeleteMultiple": "क्या आप वाकई {{count}} आइटम हटाना चाहते हैं?",
     "cannotUndo": "यह कार्रवाई पूर्ववत नहीं की जा सकती।",
     "areYouSure": "क्या आप सुनिश्चित हैं?",
-    "deleteKeyword": "DELETE",
-    "typeDeleteToConfirm": "पुष्टि के लिए {{keyword}} टाइप करें",
+    "deleteKeyword": "हटाएं",
+    "typeDeleteToConfirm": "पुष्टि के लिए '{{keyword}}' टाइप करें",
     "knowledgeBase": "ज्ञान आधार",
     "in": "में",
     "willBeDeleted": "हटाया जाएगा",
@@ -483,6 +483,13 @@
     "record": "रिकॉर्ड"
   },
   "chat": {
+    "recordActions": {
+      "preview": "पूर्वावलोकन",
+      "open": "{{source}} खोलें",
+      "openIn": "{{source}} में खोलें",
+      "openInCollections": "कलेक्शन में खोलें",
+      "relevance": "प्रासंगिकता: {{percent}}%"
+    },
     "results": "परिणाम",
     "greeting": "आज आप क्या खोजना चाहेंगे?",
     "heyUser": "नमस्ते, {{name}} 👋",

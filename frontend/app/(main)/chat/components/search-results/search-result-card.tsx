@@ -1,7 +1,9 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Badge, Button } from '@radix-ui/themes';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { isLocalFsConnectorType } from '@/app/(main)/workspace/connectors/utils/local-fs-helpers';
 import { openRecordSource } from '@/chat/utils/open-record-source';
@@ -19,14 +21,20 @@ export function SearchResultCard({
   onOpenSource,
   onPreview,
 }: SearchResultCardProps) {
+  const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const { metadata, content, score } = result;
   const config = getConnectorConfig(metadata.connector);
 
   const isCollectionSource = metadata.origin === 'UPLOAD';
   const isLocalFsSource = isLocalFsConnectorType(metadata.connector ?? '');
-  let openInLabel = `Open ${config.label}`;
-  if (isLocalFsSource) openInLabel = `Open in ${config.label}`;
-  if (isCollectionSource) openInLabel = 'Open in Collections';
+  let openInLabel = t('chat.recordActions.open', { source: config.label });
+  if (isLocalFsSource) openInLabel = t('chat.recordActions.openIn', { source: config.label });
+  if (isCollectionSource) openInLabel = t('chat.recordActions.openInCollections');
+
+  // 44px minimum touch target on mobile (frontend/CLAUDE.md). Both header
+  // actions share the value so they stay the same height side by side.
+  const actionHeight = isMobile ? '44px' : '24px';
 
   const pageNums = metadata.pageNum?.filter((p): p is number => p !== null) ?? [];
   const blockNums = metadata.blockNum?.filter((b): b is number => b !== null) ?? [];
@@ -91,7 +99,7 @@ export function SearchResultCard({
                 asChild
                 onClick={handleOpenSource}
                 style={{
-                  height: '24px',
+                  height: actionHeight,
                   padding: '0 var(--space-2)',
                   display: 'inline-flex',
                   alignItems: 'center',
@@ -129,9 +137,9 @@ export function SearchResultCard({
                 size="1"
                 variant="solid"
                 onClick={() => onPreview(result)}
-                style={{ height: '24px', cursor: 'pointer' }}
+                style={{ height: actionHeight, cursor: 'pointer' }}
               >
-                Preview
+                {t('chat.recordActions.preview')}
               </Button>
             )}
           </Flex>
@@ -186,7 +194,7 @@ export function SearchResultCard({
             borderRadius: 'var(--radius-2)',
           }}
         >
-          Relevance: {Math.round(score * 100)}%
+          {t('chat.recordActions.relevance', { percent: Math.round(score * 100) })}
         </Badge>
 
         {/* Page / paragraph location badges */}
@@ -200,7 +208,7 @@ export function SearchResultCard({
                 color="gray"
                 style={{ fontWeight: 500 }}
               >
-                Page {p}
+                {t('filePreview.page', { number: p })}
               </Badge>
             ))}
             {blockNums.map((b) => (
@@ -211,7 +219,7 @@ export function SearchResultCard({
                 color="gray"
                 style={{ fontWeight: 500 }}
               >
-                Paragraph {b}
+                {t('filePreview.paragraph', { number: b })}
               </Badge>
             ))}
           </>

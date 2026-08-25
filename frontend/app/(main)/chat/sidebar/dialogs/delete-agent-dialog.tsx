@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Dialog, Flex, Text, TextField, Button, Box, VisuallyHidden } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import { matchesConfirmationKeyword } from '@/lib/utils/validators';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 
 interface DeleteAgentDialogProps {
@@ -26,7 +27,7 @@ export function DeleteAgentDialog({
   const { t } = useTranslation();
   const [confirmText, setConfirmText] = useState('');
   const deleteKeyword = t('dialog.deleteKeyword', { defaultValue: 'DELETE' });
-  const isConfirmed = confirmText.trim().toUpperCase() === deleteKeyword.trim().toUpperCase();
+  const isConfirmed = matchesConfirmationKeyword(confirmText, deleteKeyword);
 
   const handleConfirm = async () => {
     if (isConfirmed && !isDeleting) {

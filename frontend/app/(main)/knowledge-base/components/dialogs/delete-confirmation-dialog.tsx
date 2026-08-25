@@ -6,6 +6,7 @@ import { Dialog, Flex, Text, TextField, Button, Box, Callout, VisuallyHidden } f
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useTranslation } from 'react-i18next';
+import { matchesConfirmationKeyword } from '@/lib/utils/validators';
 
 interface DeleteConfirmationDialogProps {
   open: boolean;
@@ -29,7 +30,7 @@ export function DeleteConfirmationDialog({
   const { t } = useTranslation();
   const [confirmText, setConfirmText] = useState('');
   const deleteKeyword = t('dialog.deleteKeyword', { defaultValue: 'DELETE' });
-  const isConfirmed = confirmText.trim().toUpperCase() === deleteKeyword.trim().toUpperCase();
+  const isConfirmed = matchesConfirmationKeyword(confirmText, deleteKeyword);
 
   const handleConfirm = async () => {
     if (isConfirmed && !isDeleting) {

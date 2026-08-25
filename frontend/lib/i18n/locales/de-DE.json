@@ -483,6 +483,13 @@
     "record": "Datensatz"
   },
   "chat": {
+    "recordActions": {
+      "preview": "Vorschau",
+      "open": "{{source}} öffnen",
+      "openIn": "In {{source}} öffnen",
+      "openInCollections": "In Sammlungen öffnen",
+      "relevance": "Relevanz: {{percent}} %"
+    },
     "results": "Ergebnisse",
     "greeting": "Was möchten Sie heute erkunden?",
     "heyUser": "Hey, {{name}} 👋",

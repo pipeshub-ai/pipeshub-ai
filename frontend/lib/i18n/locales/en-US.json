@@ -501,6 +501,13 @@
     "record": "record"
   },
   "chat": {
+    "recordActions": {
+      "preview": "Preview",
+      "open": "Open {{source}}",
+      "openIn": "Open in {{source}}",
+      "openInCollections": "Open in Collections",
+      "relevance": "Relevance: {{percent}}%"
+    },
     "results": "Results",
     "greeting": "What do you want to explore today?",
     "heyUser": "Hey, {{name}} 👋",
