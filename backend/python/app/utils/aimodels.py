@@ -1287,7 +1287,7 @@ def get_generator_model(
     api_mode_store = get_llm_api_mode_store()
     api_mode = api_mode_store.get(config.get("modelKey"), model_name) if api_mode_store else None
 
-    logger.info(
+    logger.debug(
         f"Getting generator model: provider={provider}, model_name={model_name}, "
         f"reasoning_effort={reasoning_effort}, api_mode={api_mode}"
     )

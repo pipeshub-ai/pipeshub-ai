@@ -53,7 +53,7 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
         300,
       );
 
-      logger.info('AI service command success', {
+      logger.debug('AI service command success', {
         url: url,
         statusCode: response.status,
         statusText: response.statusText,

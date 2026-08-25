@@ -1088,7 +1088,7 @@ async def stream_record(
     """
     try:
         logger.info(f"Stream Record Start: {time.time()}")
-        logger.info(f"Convert To: {convertTo}")
+        logger.debug(f"Convert To: {convertTo}")
 
         # Use the already-authenticated user from the auth middleware
         user = request.state.user
@@ -1549,7 +1549,7 @@ async def get_record_by_id(
             org_id=org_id,
             record_id=record_id,
         )
-        logger.info(f"🚀 has_access: {has_access}")
+        logger.debug(f"🚀 has_access: {has_access}")
         if has_access:
             return has_access
         else:

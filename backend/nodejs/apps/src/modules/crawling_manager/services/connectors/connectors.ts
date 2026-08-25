@@ -60,7 +60,7 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
 
       await this.syncEventsService.publishEvent(event);
 
-      this.logger.info('Sync event published successfully', {
+      this.logger.debug('Sync event published successfully', {
         orgId,
         connector,
         connectorId,

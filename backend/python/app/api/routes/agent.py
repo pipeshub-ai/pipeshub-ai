@@ -3295,7 +3295,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         body = _parse_request_body(await request.body())
         chat_query = ChatQuery(**body)
         protocol = _resolve_protocol(chat_query, request)
-        logger.info("chat_stream: resolved protocol=%s (body.protocol=%r, query=%r)",
+        logger.debug("chat_stream: resolved protocol=%s (body.protocol=%r, query=%r)",
                      protocol, chat_query.protocol, request.query_params.get("protocol"))
 
         record_event("agent_run", {

@@ -1327,7 +1327,7 @@ export const getRecordById =
       );
 
       // Log successful retrieval
-      logger.info('Record retrieved successfully');
+      logger.debug('Record retrieved successfully');
     } catch (error: any) {
       logger.error('Error getting record by id', {
         recordId: req.params.recordId,

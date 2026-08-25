@@ -252,14 +252,13 @@ class KafkaUtils:
                     logger.error("Missing connector in event_type or payload")
                     return False
 
-                logger.info(f"Processing sync event: {event_type} for connector {connector}")
+                logger.debug(f"Processing sync event: {event_type} for connector {connector}")
 
                 event_service = EventService(
                     logger=logger,
                     graph_provider=graph_provider,
                     app_container=app_container,
                 )
-                logger.info(f"Processing sync event: {event_type} for {connector}")
                 return await event_service.process_event(event_type, payload)
 
             except Exception as e:
