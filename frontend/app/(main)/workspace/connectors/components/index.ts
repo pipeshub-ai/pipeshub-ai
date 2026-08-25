@@ -10,3 +10,4 @@ export { InstanceCard } from './instance-card';
 export { ConfigSuccessDialog } from './config-success-dialog';
 export { ConnectorDetailsLayout } from './connector-details-layout';
 export { InstanceManagementPanel } from './instance-panel';
+export { VectorStoreActions } from './vector-store-actions';

@@ -76,6 +76,7 @@ const oauthConfigListSchema = z.object({
       .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
       .optional(),
     search: z.string().optional(),
+    scope: z.enum(['personal', 'team']).optional(),
   }),
 });
 

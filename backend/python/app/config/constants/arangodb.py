@@ -43,6 +43,7 @@ class Connectors(Enum):
     MICROSOFT_TEAMS = "MICROSOFT TEAMS"
 
     NOTION = "NOTION"
+    NOTION_PERSONAL = "NOTION PERSONAL"
     SLACK = "SLACK"
     SLACK_WORKSPACE = "SLACK WORKSPACE"
 
@@ -645,6 +646,8 @@ class EventTypes(Enum):
     REINDEX_RECORD = "reindexRecord"
     REINDEX_FAILED = "reindexFailed"
     BULK_DELETE_RECORDS = "bulkDeleteRecords"
+    SYNC_VECTOR_MEMBERSHIP = "syncVectorMembership"
+    DELETE_VECTOR_COLLECTION = "deleteVectorCollection"
 
 
 class AccountType(Enum):

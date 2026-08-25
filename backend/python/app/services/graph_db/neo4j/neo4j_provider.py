@@ -80,6 +80,10 @@ from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.common.utils import build_connector_stats_response, dedupe_agents_by_id
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
+from app.services.graph_db.vector_membership_queries import (
+    build_app_needing_vector_membership_backfill_cypher,
+    build_page_records_for_vector_membership_backfill_cypher,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Constants
@@ -363,6 +367,14 @@ class Neo4jProvider(IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_connector_id IF NOT EXISTS "
             "FOR (n:Record) ON (n.connectorId)"
+        )
+
+        # COMPOSITE: the vector-membership backfill pages by connectorId and walks
+        # a keyset on id. Without id in the index the ORDER BY re-sorts the whole
+        # connector on every page.
+        indexes.append(
+            "CREATE INDEX record_connector_id_key IF NOT EXISTS "
+            "FOR (n:Record) ON (n.connectorId, n.id)"
         )
 
         # SINGLE: indexingStatus (pipeline queries)
@@ -2241,6 +2253,66 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get records by status failed: {str(e)}")
             return []
 
+    async def get_app_needing_vector_membership_backfill(
+        self,
+        transaction: str | None = None,
+    ) -> dict | None:
+        results = await self.client.execute_query(
+            build_app_needing_vector_membership_backfill_cypher(),
+            parameters={},
+            txn_id=transaction,
+        )
+        if not results:
+            return None
+        node = results[0].get("n") if isinstance(results[0], dict) else results[0]["n"]
+        if node is None:
+            return None
+        node_dict = dict(node)
+        return self._neo4j_to_arango_node(node_dict, CollectionNames.APPS.value)
+
+    async def page_records_for_vector_membership_backfill(
+        self,
+        connector_id: str,
+        after_key: str | None,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        try:
+            has_after_key = bool(after_key)
+            parameters: dict = {
+                "connector_id": connector_id,
+                "limit": max(1, int(limit)),
+            }
+            if has_after_key:
+                parameters["after_key"] = after_key
+            results = await self.client.execute_query(
+                build_page_records_for_vector_membership_backfill_cypher(
+                    has_after_key=has_after_key
+                ),
+                parameters=parameters,
+                txn_id=transaction,
+            )
+            if not results:
+                return []
+            rows = []
+            for record in results:
+                key = record["_key"] if "_key" in record else None
+                vrid = record["virtualRecordId"] if "virtualRecordId" in record else None
+                rows.append({"_key": key, "virtualRecordId": vrid})
+            return rows
+        except Exception as e:
+            self.logger.error(
+                "Failed to page records for vector membership backfill "
+                "connector %s: %s",
+                connector_id,
+                str(e),
+            )
+            # Must not degrade to []: the backfill scanner reads an empty page as
+            # "this connector is finished" and sets vectorMembershipBackfilled,
+            # so a swallowed error would permanently mark it done having
+            # processed nothing.
+            raise
+
     def _create_typed_record_from_neo4j(self, record_dict: dict, type_doc: dict | None) -> Record:
         """
         Factory method to create properly typed Record instances from Neo4j data.
@@ -3326,13 +3398,16 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def get_org_apps(
         self,
-        org_id: str
+        org_id: str,
+        *,
+        active_only: bool = True,
     ) -> list[dict]:
         """Get all apps for an organization"""
         try:
-            query = """
-            MATCH (o:Organization {id: $org_id})-[:ORG_APP_RELATION]->(app:App)
-            WHERE app.isActive = true
+            active_clause = "WHERE app.isActive = true" if active_only else ""
+            query = f"""
+            MATCH (o:Organization {{id: $org_id}})-[:ORG_APP_RELATION]->(app:App)
+            {active_clause}
             RETURN app
             """
 
@@ -3427,6 +3502,7 @@ class Neo4jProvider(IGraphDBProvider):
                 rg.isAgentActive = true,
                 rg.isConfigured = true,
                 rg.isAuthenticated = true,
+                rg.vectorMembershipBackfilled = false,
                 rg.hideConnector = true,
                 rg.createdBy = $created_by,
                 rg.orgId = $org_id,
@@ -3861,7 +3937,11 @@ class Neo4jProvider(IGraphDBProvider):
             size_in_bytes = ref_record.get("sizeInBytes")
 
             if not md5_checksum:
-                self.logger.warning(f"Record {record_id} missing md5Checksum")
+                # Expected, not a fault: duplicates are matched by md5Checksum
+                # alone, so a record without one (a folder, or anything with no
+                # content) can have none waiting on it. Warning-level here fires
+                # once per such record and drowns real problems.
+                self.logger.debug(f"Record {record_id} missing md5Checksum")
                 return None
 
             # Find the first queued duplicate record
@@ -3959,7 +4039,11 @@ class Neo4jProvider(IGraphDBProvider):
             size_in_bytes = ref_record.get("sizeInBytes")
 
             if not md5_checksum:
-                self.logger.warning(f"Record {record_id} missing md5Checksum")
+                # Expected, not a fault: duplicates are matched by md5Checksum
+                # alone, so a record without one (a folder, or anything with no
+                # content) can have none waiting on it. Warning-level here fires
+                # once per such record and drowns real problems.
+                self.logger.debug(f"Record {record_id} missing md5Checksum")
                 return 0
 
             # Find all queued duplicate records directly from RECORDS collection
@@ -10736,6 +10820,49 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to update records to {status}: {str(e)}")
 
+    async def reset_indexing_status_for_connector(
+        self,
+        connector_id: str,
+        status: str,
+        exclude_statuses: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> None:
+        if not connector_id:
+            return
+        excluded = [s for s in (exclude_statuses or []) if isinstance(s, str) and s]
+        try:
+            label = collection_to_label(CollectionNames.RECORDS.value)
+            exclude_clause = (
+                "AND NOT n.indexingStatus IN $exclude_statuses" if excluded else ""
+            )
+            query = f"""
+            MATCH (n:{label})
+            WHERE n.connectorId = $connector_id
+            {exclude_clause}
+            SET n.indexingStatus = $status
+            """
+            parameters: dict = {
+                "connector_id": connector_id,
+                "status": status,
+            }
+            if excluded:
+                parameters["exclude_statuses"] = excluded
+            await self.client.execute_query(
+                query,
+                parameters=parameters,
+                txn_id=transaction,
+            )
+        except Exception as e:
+            # Must not be swallowed: the rebuild drops the vector collection
+            # straight after this, and a connector whose records kept their old
+            # statuses is never re-indexed, so search stays silently empty.
+            self.logger.error(
+                "❌ Failed to reset indexing status for connector %s: %s",
+                connector_id,
+                str(e),
+            )
+            raise
+
     async def compare_and_set_indexing_status(
         self,
         record_ids: list[str],
@@ -10913,6 +11040,7 @@ class Neo4jProvider(IGraphDBProvider):
                 "mimeType": mime_type,
                 "summaryDocumentId": record.get("summaryDocumentId"),
                 "virtualRecordId": record.get("virtualRecordId"),
+                "connectorId": record.get("connectorId"),
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")

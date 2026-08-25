@@ -146,6 +146,12 @@ class TestRedisCollectionManagement:
         assert not any(str(a).startswith("$.") for a in args), (
             "ON HASH schema must not use JSONPath ($.field) prefixes"
         )
+        assert "connectorIds" in args
+        assert "recordGroupIds" in args
+        conn_idx = list(args).index("connectorIds")
+        assert args[conn_idx + 1] == "TAG"
+        rg_idx = list(args).index("recordGroupIds")
+        assert args[rg_idx + 1] == "TAG"
 
     @pytest.mark.asyncio
     async def test_create_collection_dimension_mismatch_raises(self, service, mock_redis_client):
@@ -508,6 +514,45 @@ class TestRedisDeletePointsEmptyFilter:
             await svc.delete_points("records", FilterExpression())
 
 
+class TestRedisSetPayload:
+    @pytest.mark.asyncio
+    async def test_empty_filter_raises(self):
+        from app.services.vector_db.models import FilterExpression
+
+        svc = _make_redis_service()
+        with pytest.raises(ValueError, match="empty filter"):
+            await svc.set_payload("records", {"connectorIds": ["c1"]}, FilterExpression())
+
+    @pytest.mark.asyncio
+    async def test_hset_joins_membership_lists_as_tags(self):
+        from app.services.vector_db.models import FieldCondition, FilterExpression
+
+        svc = _make_redis_service()
+        svc.client.execute_command = AsyncMock(return_value=[1, b"records:p1"])
+        pipeline = MagicMock()
+        pipeline.execute_command = MagicMock()
+        pipeline.execute = AsyncMock(return_value=[1])
+        svc.client.pipeline = MagicMock(return_value=pipeline)
+
+        filt = FilterExpression(
+            must=[FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
+        )
+        await svc.set_payload(
+            "records",
+            {"connectorIds": ["c1", "c2"], "recordGroupIds": ["g1"]},
+            filt,
+        )
+
+        pipeline.execute_command.assert_called_once()
+        args = pipeline.execute_command.call_args.args
+        assert args[0] == "HSET"
+        assert args[1] == b"records:p1"
+        fields = dict(zip(args[2::2], args[3::2]))
+        assert fields["connectorIds"] == "c1,c2"
+        assert fields["recordGroupIds"] == "g1"
+        assert "[" not in fields["connectorIds"]
+
+
 class TestRedisDeletePointsPaged:
     @pytest.mark.asyncio
     async def test_paged_delete_never_accumulates_all_keys(self):
@@ -690,6 +735,31 @@ class TestRedisScrollOffset:
         assert result.next_offset == "10"
 
     @pytest.mark.asyncio
+    async def test_scroll_cursor_advances_when_docs_fail_to_parse(self):
+        """Dropped documents must still move LIMIT, or the same page repeats."""
+        from app.services.vector_db.models import FilterExpression
+
+        svc = _make_redis_service()
+        reply = [10] + [
+            item
+            for idx in range(3)
+            for item in [
+                f"records:k{idx}".encode(),
+                [b"page_content", b"x"],
+            ]
+        ]
+        svc.client.execute_command = AsyncMock(return_value=reply)
+
+        with patch(
+            "app.services.vector_db.redis.redis_vector.decode_hash_doc",
+            side_effect=ValueError("undecodable"),
+        ):
+            result = await svc.scroll("records", FilterExpression(), limit=3)
+
+        assert result.points == []
+        assert result.next_offset == "3"
+
+    @pytest.mark.asyncio
     async def test_scroll_no_return_clause_used(self):
         """scroll must NOT use RETURN 1 $ (JSONPath is for ON JSON only)."""
         from app.services.vector_db.models import FilterExpression
@@ -857,16 +927,19 @@ class TestScrollPagination:
         assert len(keys) == 0
 
     @pytest.mark.asyncio
-    async def test_scroll_search_error_breaks_loop(self, service, mock_redis_client):
-        """_keys_matching_filter breaks on FT.SEARCH error."""
+    async def test_keys_matching_filter_raises_on_search_error(self, service, mock_redis_client):
+        """A partial key list must not be reported as the complete match set.
+
+        set_payload writes to exactly these keys, so silently returning fewer
+        would update part of a VRID's chunks and report success.
+        """
         mock_redis_client.execute_command = AsyncMock(side_effect=Exception("Search failed"))
-        
-        from app.services.vector_db.models import FilterExpression, FieldCondition
+
+        from app.services.vector_db.models import FieldCondition, FilterExpression
         filter_expr = FilterExpression(must=[FieldCondition(key="orgId", value="org1")])
-        
-        keys = await service._keys_matching_filter("test_collection", filter_expr)
-        
-        assert len(keys) == 0  # Returns empty list on error
+
+        with pytest.raises(RuntimeError, match="Key lookup"):
+            await service._keys_matching_filter("test_collection", filter_expr)
 
     @pytest.mark.asyncio
     async def test_scroll_invalid_response_format_breaks(self, service, mock_redis_client):
@@ -949,3 +1022,116 @@ class TestErrorPaths:
         # Should default to 0 on parse error
         assert result.points == []
 
+
+
+class TestRedisFailuresAreLoud:
+    """Partial results must never be reported as completed work."""
+
+    @pytest.mark.asyncio
+    async def test_paged_delete_raises_instead_of_reporting_success(
+        self, service, mock_redis_client
+    ):
+        """A silent partial delete lets the caller drop the VRID mapping next,
+        leaving the surviving points orphaned and undiscoverable."""
+        calls = {"n": 0}
+
+        full_page = [f"records:{i}".encode() for i in range(500)]
+
+        async def _search(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # A full page keeps the loop going to a second query.
+                return [1000, *full_page]
+            raise Exception("connection reset")
+
+        mock_redis_client.execute_command = AsyncMock(side_effect=_search)
+        mock_redis_client.delete = AsyncMock()
+
+        filter_expr = FilterExpression(
+            must=[FieldCondition(key="virtualRecordId", value="vr-1")]
+        )
+        with pytest.raises(RuntimeError, match="aborted after"):
+            await service.delete_points("records", filter_expr)
+
+    @pytest.mark.asyncio
+    async def test_collection_info_distinguishes_outage_from_missing(
+        self, service, mock_redis_client
+    ):
+        """An outage reported as exists=False makes callers try to re-create."""
+        mock_redis_client.execute_command = AsyncMock(
+            side_effect=ConnectionError("Connection refused")
+        )
+        with pytest.raises(ConnectionError):
+            await service.get_collection_info("records")
+
+    @pytest.mark.asyncio
+    async def test_collection_info_returns_missing_for_unknown_index(
+        self, service, mock_redis_client
+    ):
+        mock_redis_client.execute_command = AsyncMock(
+            side_effect=Exception("Unknown index name")
+        )
+        info = await service.get_collection_info("records")
+        assert info.exists is False
+
+    @pytest.mark.asyncio
+    async def test_overwrite_payload_rejects_empty_filter(self, service):
+        with pytest.raises(ValueError, match="empty filter"):
+            await service.overwrite_payload("records", {"k": "v"}, FilterExpression())
+
+    @pytest.mark.asyncio
+    async def test_payload_write_raises_on_failed_hset(self, service, mock_redis_client):
+        mock_redis_client.execute_command = AsyncMock(
+            return_value=[1, b"records:a"]
+        )
+        pipeline = mock_redis_client.pipeline.return_value
+        pipeline.execute = AsyncMock(return_value=[Exception("OOM")])
+
+        filter_expr = FilterExpression(
+            must=[FieldCondition(key="virtualRecordId", value="vr-1")]
+        )
+        with pytest.raises(RuntimeError, match="failed HSET"):
+            await service.set_payload("records", {"connectorIds": ["c1"]}, filter_expr)
+
+
+class TestRedisScrollCeilingAndFanOut:
+    @pytest.mark.asyncio
+    async def test_scroll_raises_at_result_ceiling(self, service, mock_redis_client):
+        """Returning next_offset=None at the ceiling is indistinguishable from
+        'last page', so the caller would stop believing it had everything."""
+        page = []
+        for i in range(100):
+            page.extend([f"records:{i}".encode(), [b"page_content", b"x"]])
+        mock_redis_client.execute_command = AsyncMock(return_value=[50000, *page])
+
+        with pytest.raises(RuntimeError, match="ceiling"):
+            await service.scroll("records", FilterExpression(), limit=100, offset="9950")
+
+    @pytest.mark.asyncio
+    async def test_scroll_returns_cursor_below_ceiling(self, service, mock_redis_client):
+        page = []
+        for i in range(10):
+            page.extend([f"records:{i}".encode(), [b"page_content", b"x"]])
+        mock_redis_client.execute_command = AsyncMock(return_value=[500, *page])
+
+        result = await service.scroll("records", FilterExpression(), limit=10)
+        assert result.next_offset == "10"
+
+    @pytest.mark.asyncio
+    async def test_query_fan_out_is_bounded(self, service):
+        import asyncio as _asyncio
+
+        active = {"n": 0, "max": 0}
+
+        async def _one(idx, col, req):
+            active["n"] += 1
+            active["max"] = max(active["max"], active["n"])
+            await _asyncio.sleep(0.005)
+            active["n"] -= 1
+            return []
+
+        service._run_single_hybrid_query = AsyncMock(side_effect=_one)
+        reqs = [HybridSearchRequest(dense_query=[0.1], limit=5) for _ in range(30)]
+
+        await service.query_nearest_points("records", reqs)
+        assert active["max"] <= 8, f"fan-out reached {active['max']}"

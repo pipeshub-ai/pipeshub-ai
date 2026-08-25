@@ -250,6 +250,18 @@ npm run dev
 
 Then open your browser to the displayed URL (typically `http://localhost:3001` when using `PORT=3001`; Next.js defaults to port 3000 if `PORT` is unset).
 
+### Verifying Setup and Debugging
+
+If you encounter generic connection errors or the UI fails to load, it is likely that one of the many background microservices failed to start correctly. 
+
+You can use the built-in health check script to instantly verify the status of the entire stack:
+```bash
+./scripts/check_system_health.sh
+```
+This script will ping the Node.js API, Next.js UI, and all core Python microservices on their respective local ports, explicitly highlighting any offline components to save you time digging through terminal logs. 
+
+*(Note: The Parsing and Extraction services are only checked if you run the script with `USE_PARSING_SERVICE=true`).*
+
 ## Project Architecture
 
 Our project consists of three main components:

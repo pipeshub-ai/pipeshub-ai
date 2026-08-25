@@ -11,6 +11,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
     RecordRelations,
+    EventTypes,
 )
 from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
@@ -1268,9 +1269,9 @@ class DataSourceEntitiesProcessor:
 
         For each move the existing DB vertex is reused (same ``id``), avoiding a
         delete-and-recreate cycle.  The parent-child edge is re-pointed to the new
-        parent.  A ``updateRecord`` Kafka event (triggering re-indexing) is emitted
-        **only** when the blob SHA changed; a pure rename without content change
-        produces no re-index event, which avoids redundant embedding work.
+        parent.          A ``updateRecord`` event (triggering re-indexing) is emitted only when
+        the blob SHA changed. A move without content change still publishes
+        ``syncVectorMembership`` so vector ``recordGroupIds`` stay current.
 
         Falls back to a plain ``_process_record`` add when the old record is not
         found in the DB (e.g. dotfile that was never stored, or first sync after a
@@ -1281,6 +1282,7 @@ class DataSourceEntitiesProcessor:
 
         records_to_reindex: list[Record] = []
         new_records_to_publish: list[Record] = []
+        membership_vrids: list[str] = []
 
         try:
             async with self.data_store_provider.transaction() as tx_store:
@@ -1347,6 +1349,15 @@ class DataSourceEntitiesProcessor:
                         if new_record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
                             new_record.indexing_status = ProgressStatus.QUEUED.value
                         records_to_reindex.append(new_record)
+                    else:
+                        # Carry the VRID across explicitly: the upsert below reuses
+                        # the existing vertex, so leaving this unset would null
+                        # virtualRecordId and orphan every vector point keyed by it.
+                        vrid = new_record.virtual_record_id or old_record.virtual_record_id
+                        if isinstance(vrid, str) and vrid:
+                            if not new_record.virtual_record_id:
+                                new_record.virtual_record_id = vrid
+                            membership_vrids.append(vrid)
 
                     await tx_store.batch_upsert_records([new_record])
 
@@ -1421,6 +1432,26 @@ class DataSourceEntitiesProcessor:
                     ],
                 )
 
+            unique_membership_vrids = list(dict.fromkeys(membership_vrids))
+            if unique_membership_vrids:
+                await self.messaging_producer.send_messages(
+                    "record-events",
+                    [
+                        (
+                            vrid,
+                            {
+                                "eventType": EventTypes.SYNC_VECTOR_MEMBERSHIP.value,
+                                "timestamp": get_epoch_timestamp_in_ms(),
+                                "payload": {
+                                    "virtualRecordId": vrid,
+                                    "orgId": self.org_id,
+                                },
+                            },
+                        )
+                        for vrid in unique_membership_vrids
+                    ],
+                )
+
         except Exception as e:
             self.logger.error(f"on_records_moved failed: {e}", exc_info=True)
             raise
@@ -1479,16 +1510,27 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def on_record_deleted(self, record_id: str) -> None:
-        """Shallow per-record delete for connectors (GitHub, GitLab, Drive, …).
-
-        Removes the record vertex, every edge on it, and its isOfType type doc.
-        Does not walk PARENT_CHILD / ATTACHMENT — connectors own hierarchy
-        (delete blobs then empty folders). Publishes deleteRecord when the
-        record had a virtualRecordId so indexing can drop Qdrant vectors.
-        """
+        # Connector per-record delete: remove the record vertex and its incoming
+        # PARENT_CHILD edge (so the parent's child-list keeps no dangling edge; the
+        # call is a no-op for root records with no parent). Capture VRID before the
+        # vertex is gone so indexing can strip/delete embeddings.
+        event_payload = None
         async with self.data_store_provider.transaction() as tx_store:
-            result = await tx_store.delete_single_record(record_id)
-        await self._publish_delete_events((result or {}).get("eventData"))
+            existing = await tx_store.get_record_by_key(record_id)
+            await tx_store.delete_parent_child_edge_to_record(record_id)
+            await tx_store.delete_record_by_key(record_id)
+            vrid = getattr(existing, "virtual_record_id", None) if existing is not None else None
+            if isinstance(vrid, str) and vrid:
+                event_payload = {
+                    "orgId": getattr(existing, "org_id", self.org_id),
+                    "recordId": getattr(existing, "id", None) or record_id,
+                    "version": getattr(existing, "version", 1),
+                    "virtualRecordId": vrid,
+                    "connectorId": getattr(existing, "connector_id", None),
+                }
+        await self._publish_delete_events(
+            {"payloads": [event_payload]} if event_payload else None
+        )
 
     @retry_on_deadlock()
     async def on_records_deleted_cascade(
@@ -1534,8 +1576,19 @@ class DataSourceEntitiesProcessor:
         return result
 
 
+    @staticmethod
+    def _reindex_event_payload(record: Record, *, vector_db_only: bool) -> dict:
+        payload = {**record.to_kafka_record(), "forceReindex": True}
+        if record.virtual_record_id:
+            payload.setdefault("virtualRecordId", record.virtual_record_id)
+        if vector_db_only:
+            payload["vectorDbOnly"] = True
+        return payload
+
     @retry_on_deadlock()
-    async def reindex_existing_records(self, records: list[Record]) -> None:
+    async def reindex_existing_records(
+        self, records: list[Record], *, vector_db_only: bool = False
+    ) -> None:
         """
         Publish reindex events for existing records without DB operations.
         Used for reindexing functionality where records already exist in DB.
@@ -1543,6 +1596,8 @@ class DataSourceEntitiesProcessor:
 
         Args:
             records: List of properly typed Record instances (FileRecord, MailRecord, etc.)
+            vector_db_only: When True, indexing reloads blob content and re-embeds
+                without re-parsing the source.
         """
         try:
             if not records:
@@ -1589,7 +1644,9 @@ class DataSourceEntitiesProcessor:
                             # already COMPLETED; without this the consumer's
                             # already-indexed guard skips it and reindex silently
                             # does nothing for a healthy corpus.
-                            "payload": {**record.to_kafka_record(), "forceReindex": True},
+                            "payload": self._reindex_event_payload(
+                                record, vector_db_only=vector_db_only
+                            ),
                         },
                     )
                     for record in to_publish

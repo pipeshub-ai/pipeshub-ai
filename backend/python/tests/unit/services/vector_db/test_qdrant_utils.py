@@ -215,6 +215,13 @@ class TestBuildConditions:
         assert len(result) == 1
         assert result[0].match == MatchValue(value=False)
 
+    def test_top_level_membership_fields_not_prefixed(self):
+        result = QdrantUtils.build_conditions_generic(
+            {"connectorIds": ["c1"], "recordGroupIds": ["g1"], "orgId": "o1"}
+        )
+        keys = {c.key for c in result}
+        assert keys == {"connectorIds", "recordGroupIds", "metadata.orgId"}
+
 
 # ---------------------------------------------------------------------------
 # QdrantService.filter_collection

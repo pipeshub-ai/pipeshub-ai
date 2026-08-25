@@ -735,7 +735,7 @@ class BlobStorage(Transformer):
 
         if existing_lookup and existing_lookup.get("record_doc_id"):
             existing_doc_id = existing_lookup["record_doc_id"]
-            self.logger.info(
+            self.logger.debug(
                 "📄 Existing storage doc found for vrid %s (doc_id=%s), uploading next version",
                 virtual_record_id, existing_doc_id
             )
@@ -1450,7 +1450,7 @@ class BlobStorage(Transformer):
 
             if success:
                 size_info = f", file_size={file_size_bytes} bytes" if file_size_bytes is not None else ""
-                self.logger.info("✅ Successfully stored virtual record mapping: virtual_record_id=%s, document_id=%s%s", virtual_record_id, document_id, size_info)
+                self.logger.debug("✅ Successfully stored virtual record mapping: virtual_record_id=%s, document_id=%s%s", virtual_record_id, document_id, size_info)
                 return True
             else:
                 self.logger.error("❌ Failed to store virtual record mapping")
@@ -1528,7 +1528,7 @@ class BlobStorage(Transformer):
                                 f"Failed to upload next version (status: {response.status})"
                             )
 
-                    self.logger.info("✅ Successfully uploaded next version for document: %s", document_id)
+                    self.logger.debug("✅ Successfully uploaded next version for document: %s", document_id)
                     return document_id, file_size_bytes
             else:
                 async with aiohttp.ClientSession() as session:
@@ -1541,7 +1541,7 @@ class BlobStorage(Transformer):
 
                     await self._upload_to_signed_url(session, signed_url, upload_data)
 
-                    self.logger.info("✅ Successfully uploaded next version for document: %s", document_id)
+                    self.logger.debug("✅ Successfully uploaded next version for document: %s", document_id)
                     return document_id, file_size_bytes
 
         except Exception as e:
@@ -1614,7 +1614,7 @@ class BlobStorage(Transformer):
                     [mapping_document],
                     CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
                 )
-                self.logger.info(
+                self.logger.debug(
                     "✅ Stored metadata mapping: %s -> record_metadata_doc_id=%s",
                     virtual_record_id, metadata_document_id
                 )
@@ -1696,7 +1696,7 @@ class BlobStorage(Transformer):
                         if not document_id:
                             raise Exception("No document ID in metadata upload response")
 
-                        self.logger.info("✅ Created metadata document: %s", document_id)
+                        self.logger.debug("✅ Created metadata document: %s", document_id)
                         return document_id
             else:
 
@@ -1748,7 +1748,7 @@ class BlobStorage(Transformer):
 
                     await self._upload_to_signed_url(session, signed_url, upload_data)
 
-                    self.logger.info("✅ Created metadata document: %s", document_id)
+                    self.logger.debug("✅ Created metadata document: %s", document_id)
                     return document_id
 
         except Exception as e:

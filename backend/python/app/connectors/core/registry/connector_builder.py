@@ -359,6 +359,7 @@ class ConnectorBuilder:
         self._oauth_configs: dict[str, OAuthConfig] = {}  # Store OAuth configs for auto-registration
         self.connector_info: str | None = None
         self.permission_model: PermissionModel | None = None
+        self.resilience_config: dict[str, Any] | None = None
 
     def in_group(self, app_group: str) -> 'ConnectorBuilder':
         """Set the app group"""
@@ -450,6 +451,38 @@ class ConnectorBuilder:
         self.app_description = description
         return self
 
+    def with_resilience_config(
+        self,
+        *,
+        rate_limit: float,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 60.0,
+        enabled: bool = True
+    ) -> 'ConnectorBuilder':
+        """Declare this connector's upstream rate limit and retry budget.
+
+        Read back via ``BaseConnector.resilience`` and handed to the connector's
+        HTTP client, which applies it below every request.
+
+        Args:
+            rate_limit: Sustained requests per second allowed by the upstream API.
+                Required — there is no sane default across providers, and one that
+                is wrong for a given API is worse than none.
+            max_retries: Retries after the first attempt, so ``3`` means 4 attempts.
+            base_delay: Starting point for exponential backoff, in seconds.
+            max_delay: Ceiling for any single wait, including ``Retry-After``.
+            enabled: Set False to keep the declared values but apply none of them.
+        """
+        self.resilience_config = {
+            'enabled': enabled,
+            'rate_limit': rate_limit,
+            'max_retries': max_retries,
+            'base_delay': base_delay,
+            'max_delay': max_delay,
+        }
+        return self
+
     def with_categories(self, categories: list[str]) -> 'ConnectorBuilder':
         """Set the app categories"""
         self.app_categories = categories
@@ -534,7 +567,8 @@ class ConnectorBuilder:
             app_categories=self.app_categories,
             config=config,
             connector_scopes=self.connector_scopes,
-            connector_info=self.connector_info
+            connector_info=self.connector_info,
+            resilience_config=self.resilience_config
         )
 
     def _validate_required_auth_fields(self, config: dict[str, Any]) -> None:

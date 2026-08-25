@@ -40,7 +40,16 @@ from app.services.embeddings.multimodal.config import MultimodalProviderConfig
 from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
 from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.vector_db.const.const import PAYLOAD_KEYWORD_INDEXES
 from app.services.vector_db.interface.vector_db import IVectorDBService
+from app.services.vector_db.membership import (
+    reset_membership_context,
+    resolve_vector_membership,
+    rewrite_or_delete_virtual_record,
+    set_membership_context,
+    sync_vector_membership,
+    vector_point_payload,
+)
 from app.services.vector_db.models import (
     CollectionConfig,
     SparseVector,
@@ -88,6 +97,7 @@ _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT = 50_000
 _OVERSIZED_CHUNK_SIZE = 1500
 _OVERSIZED_CHUNK_OVERLAP = 200
 _LANGUAGE_DETECTION_SAMPLE_CHARS = 2000
+_DEFAULT_SENTENCE_EMBED_MIN_WORDS = 100
 
 # Safety-net timeouts — prevent any single step from blocking the pipeline forever.
 # asyncio.to_thread / run_in_executor cannot actually kill the underlying thread on
@@ -121,6 +131,23 @@ def _detect_record_language(text_blocks: List) -> str:
     if not sample_parts:
         return "en"
     return detect_language(" ".join(sample_parts))
+
+
+def _min_words_for_sentence_embeddings() -> int:
+    """Blocks at or below this word count embed as one document (no sentence split).
+
+    ``EMBED_SENTENCE_MIN_WORDS`` (default 100). ``0`` restores splitting every
+    multi-sentence block.
+    """
+    raw = os.getenv("EMBED_SENTENCE_MIN_WORDS", str(_DEFAULT_SENTENCE_EMBED_MIN_WORDS))
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return _DEFAULT_SENTENCE_EMBED_MIN_WORDS
+
+
+def _word_count(text: str) -> int:
+    return len(text.split()) if text else 0
 
 
 def _chunk_oversized_text(
@@ -177,7 +204,15 @@ def _build_text_documents(
     """
     documents: List[Document] = []
     for block in text_blocks:
-        block_text = block.data
+        # A text block can legitimately carry no text. Blob storage strips keys
+        # whose value is "" (_clean_top_level_empty_values), so a block that was
+        # empty at parse time re-hydrates with data=None — which is why this only
+        # shows up on the blob-backed reindex path and not during normal
+        # indexing. There is nothing to embed either way: an empty document would
+        # just be a useless retrieval unit.
+        block_text = block.data or ""
+        if not block_text.strip():
+            continue
         metadata = {
             "virtualRecordId": virtual_record_id,
             "blockId": block.id,
@@ -196,12 +231,13 @@ def _build_text_documents(
             )
             continue
 
-        sentences = split_into_sentences(block_text, language=language)
-        if len(sentences) > 1:
-            documents.extend(
-                Document(page_content=sentence, metadata={**metadata, "isBlock": False})
-                for sentence in sentences
-            )
+        if _word_count(block_text) > _min_words_for_sentence_embeddings():
+            sentences = split_into_sentences(block_text, language=language)
+            if len(sentences) > 1:
+                documents.extend(
+                    Document(page_content=sentence, metadata={**metadata, "isBlock": False})
+                    for sentence in sentences
+                )
         documents.append(
             Document(
                 page_content=block_text,
@@ -253,6 +289,19 @@ def _process_text_blocks(
     """
     language = _detect_record_language(text_blocks)
     return _build_text_documents(text_blocks, virtual_record_id, org_id, language)
+
+
+def _storage_reconcile_enabled() -> bool:
+    """Whether to migrate an existing collection's storage layout on startup.
+
+    Defaults off: the rewrite is expensive and unattended-unsafe (see
+    VectorStore._reconcile_storage_layout).
+    """
+    return os.getenv("VECTOR_STORAGE_RECONCILE_ENABLED", "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 class VectorStore(Transformer):
@@ -443,6 +492,7 @@ class VectorStore(Transformer):
         embedding providers.
         """
         return normalize_image_to_base64(image_uri)
+
     async def index_record_summary(
         self,
         record_id: str,
@@ -457,10 +507,29 @@ class VectorStore(Transformer):
         if summary_doc is None:
             return
 
+        # The enrich phase can reach here without the index phase having built
+        # the model on this instance — vector-store indexing skipped, or
+        # enrichment deferred and resumed elsewhere. Without this
+        # self.dense_embeddings is still None and the first use surfaces as an
+        # AttributeError far from its cause, after the delete below has already
+        # dropped the old summary block.
+        if self.dense_embeddings is None:
+            try:
+                await self.get_embedding_model_instance()
+            except Exception as e:
+                raise IndexingError(
+                    "Failed to get embedding model instance: " + str(e),
+                    details={"error": str(e)},
+                )
+
         summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
         await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id)
-        await self._process_document_chunks([summary_doc], record_id)
-        self.logger.info("✅ Indexed record summary for record %s", record_id)
+        tokens = await self._bind_membership(virtual_record_id)
+        try:
+            await self._process_document_chunks([summary_doc], record_id)
+        finally:
+            reset_membership_context(tokens)
+        self.logger.debug("✅ Indexed record summary for record %s", record_id)
 
     async def describe_image_async(self, base64_string: str, vlm: BaseChatModel) -> str:
         message = HumanMessage(
@@ -521,27 +590,17 @@ class VectorStore(Transformer):
                 self.logger.debug(
                     f"Collection '{self.collection_name}' exists with correct dimension {embedding_size}."
                 )
+                await self._ensure_payload_indexes()
+                await self._reconcile_storage_layout(embedding_size, sparse_idf)
                 return
 
         try:
             await self.vector_db_service.create_collection(
                 collection_name=self.collection_name,
-                config=CollectionConfig(
-                    embedding_size=embedding_size,
-                    sparse_idf=sparse_idf,
-                    enable_sparse=self._capabilities.supports_sparse_vectors,
-                ),
+                config=self._collection_config(embedding_size, sparse_idf),
             )
             self.logger.info(f"✅ Created collection '{self.collection_name}'")
-            for field_name, schema in [
-                ("metadata.virtualRecordId", {"type": "keyword"}),
-                ("metadata.orgId", {"type": "keyword"}),
-            ]:
-                await self.vector_db_service.create_index(
-                    collection_name=self.collection_name,
-                    field_name=field_name,
-                    field_schema=schema,
-                )
+            await self._ensure_payload_indexes()
         except Exception as e:
             err_msg = str(e).lower()
             if "already exists" in err_msg:
@@ -560,12 +619,224 @@ class VectorStore(Transformer):
                             "required_dim": embedding_size,
                         },
                     )
+                await self._ensure_payload_indexes()
                 return
             self.logger.error(f"❌ Error creating collection '{self.collection_name}': {e}")
             raise VectorStoreError(
                 "Failed to create collection",
                 details={"collection": self.collection_name, "error": str(e)},
             )
+
+    def _collection_config(
+        self, embedding_size: int, sparse_idf: bool
+    ) -> CollectionConfig:
+        return CollectionConfig(
+            embedding_size=embedding_size,
+            sparse_idf=sparse_idf,
+            enable_sparse=self._capabilities.supports_sparse_vectors,
+        )
+
+    async def _reconcile_storage_layout(
+        self, embedding_size: int, sparse_idf: bool
+    ) -> None:
+        """Nudge a pre-existing collection toward the current storage layout.
+
+        Opt-in, and deliberately so. Each step makes the vector store rewrite
+        every segment: heavy I/O, a transient near-doubling of disk, and a memory
+        spike. Run automatically on every service start it would fire unattended,
+        on every replica, with no disk headroom check — and an interrupted rewrite
+        leaves both the old and new segments behind, so repeated interruptions
+        grow the collection until it can no longer be loaded at all.
+
+        Operators enable it once, with headroom confirmed, via
+        VECTOR_STORAGE_RECONCILE_ENABLED. Collections created after the on-disk
+        defaults need nothing; this exists only to migrate older ones.
+        """
+        if not _storage_reconcile_enabled():
+            return
+        try:
+            await self.vector_db_service.reconcile_storage_layout(
+                collection_name=self.collection_name,
+                config=self._collection_config(embedding_size, sparse_idf),
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Storage-layout reconcile skipped for %s: %s",
+                self.collection_name,
+                e,
+            )
+
+    async def _ensure_payload_indexes(self) -> None:
+        for field_name, schema in PAYLOAD_KEYWORD_INDEXES:
+            try:
+                await self.vector_db_service.create_index(
+                    collection_name=self.collection_name,
+                    field_name=field_name,
+                    field_schema=schema,
+                )
+            except Exception as e:
+                err = str(e).lower()
+                if "already exists" in err or "already exist" in err or "conflict" in err:
+                    continue
+                self.logger.warning(
+                    "Failed to create payload index %s on %s: %s",
+                    field_name,
+                    self.collection_name,
+                    e,
+                )
+
+    @staticmethod
+    def _is_collection_missing(error: Exception) -> bool:
+        err = str(error).lower()
+        return any(
+            token in err
+            for token in (
+                "not found",
+                "not exist",
+                "doesn't exist",
+                "does not exist",
+                "unknown collection",
+                "404",
+            )
+        )
+
+    async def recreate_records_collection(self) -> None:
+        """Drop the records collection and rebuild it for the current model.
+
+        Drop first, then initialise. ``get_embedding_model_instance`` ends by
+        calling ``_initialize_collection``, which *raises* on an embedding
+        dimension mismatch — so initialising before the drop would fail exactly
+        when the model has changed, which is the main reason to recreate at all.
+        Dropping first also avoids creating the collection twice.
+        """
+        try:
+            await self.vector_db_service.delete_collection(self.collection_name)
+        except Exception as e:
+            if not self._is_collection_missing(e):
+                raise
+            self.logger.info(
+                "Vector collection %s already absent; creating it",
+                self.collection_name,
+            )
+        # Re-derives the dimension from the live model and creates the collection
+        # with the current payload indexes and storage layout.
+        await self.get_embedding_model_instance()
+
+    async def _resync_membership_after_write(
+        self, virtual_record_id: str, record_id: Optional[str] = None
+    ) -> None:
+        """Re-apply membership from graph once the points for this VRID exist.
+
+        Membership is bound before embedding and the points land minutes later, so
+        any set_payload issued in between (a duplicate attach, a move) is either
+        overwritten by the upsert or lands while no points exist yet and silently
+        matches nothing. Recomputing after the write closes both windows and is
+        idempotent when nothing changed.
+
+        It also closes a window nothing else covers. The per-VRID lock guards the
+        membership write and the delete, but not the embed→upsert stretch between
+        them — and it cannot, because embedding takes minutes and holding it there
+        would block every delete for that VRID. If the record is deleted mid-embed,
+        the delete matches no points (none written yet) and removes the VRID→doc
+        mapping, and the upsert then lands points for a record that no longer
+        exists — unreachable, since the mapping that would find them is gone.
+
+        The orphan branch is entered only after positively confirming that the
+        record we just indexed is absent. Inferring it from an empty VRID lookup
+        instead would mean every ordinary index could delete the points it just
+        wrote if that lookup ever came back empty for an unrelated reason — far
+        more blast radius than the stale membership this method otherwise risks.
+        """
+        try:
+            if record_id and await self._record_is_gone(record_id):
+                self.logger.warning(
+                    "Record %s disappeared while it was being indexed; "
+                    "reconciling virtual record %s so its points are not orphaned",
+                    record_id,
+                    virtual_record_id,
+                )
+                # Deletes only when no record references the VRID, behind its own
+                # confirming re-read.
+                await rewrite_or_delete_virtual_record(
+                    self.vector_db_service,
+                    self.collection_name,
+                    self.graph_provider,
+                    virtual_record_id,
+                    self.logger,
+                )
+                return
+
+            await sync_vector_membership(
+                self.vector_db_service,
+                self.collection_name,
+                self.graph_provider,
+                virtual_record_id,
+                self.logger,
+            )
+        except Exception as e:
+            # Loud but non-fatal: the points are already written and correct
+            # apart from membership, so failing the whole index would discard
+            # good work. The per-connector backfill is the designed repair path,
+            # so this must be visible enough to trigger one.
+            self.logger.error(
+                "Post-index membership resync failed for %s: %s — points are "
+                "indexed but their connectorIds/recordGroupIds may be stale; "
+                "re-run the vector membership backfill for this connector",
+                virtual_record_id,
+                e,
+                exc_info=True,
+            )
+
+    async def _record_is_gone(self, record_id: str) -> bool:
+        """True only when the graph positively reports the record as absent.
+
+        A lookup failure returns False: not knowing is not the same as knowing it
+        is gone, and the caller uses this to decide whether deleting is allowed.
+        """
+        try:
+            return (
+                await self.graph_provider.get_document(
+                    record_id, CollectionNames.RECORDS.value
+                )
+            ) is None
+        except Exception as e:
+            self.logger.warning(
+                "Could not confirm whether record %s still exists: %s", record_id, e
+            )
+            return False
+
+    async def _bind_membership(
+        self, virtual_record_id: str, record: Optional["Record"] = None
+    ):
+        """Resolve VRID membership and bind it for the points about to be written.
+
+        A resolve failure must not degrade to empty arrays: points would be
+        indexed with membership that looks legitimately empty, and only a
+        backfill could tell the difference later. Fail the indexing attempt
+        instead so it retries.
+        """
+        try:
+            connector_ids, record_group_ids = await resolve_vector_membership(
+                self.graph_provider, virtual_record_id, current_record=record
+            )
+        except Exception as e:
+            self.logger.error(
+                "Failed to resolve vector membership for %s: %s",
+                virtual_record_id,
+                e,
+            )
+            raise VectorStoreError(
+                f"Could not resolve vector membership for virtual record {virtual_record_id}",
+                details={"virtual_record_id": virtual_record_id, "error": str(e)},
+            ) from e
+        if not connector_ids:
+            self.logger.error(
+                "Resolved no connectorIds for virtual record %s — points will be "
+                "written without membership and will be invisible to instance-scoped "
+                "vector filters until backfilled",
+                virtual_record_id,
+            )
+        return set_membership_context(connector_ids, record_group_ids)
 
     # ------------------------------------------------------------------
     # Embedding model initialisation
@@ -576,7 +847,7 @@ class VectorStore(Transformer):
 
         Returns True if multimodal embedding is active.
         """
-        self.logger.info("Getting embedding model")
+        self.logger.debug("Getting embedding model")
 
         ai_models = await self.config_service.get_config(
             config_node_constants.AI_MODELS.value, use_cache=False
@@ -613,7 +884,7 @@ class VectorStore(Transformer):
             or getattr(dense_embeddings, "model_id", None)
             or "unknown"
         )
-        self.logger.info(f"Using embedding model: {model_name}, size: {embedding_size}")
+        self.logger.debug(f"Using embedding model: {model_name}, size: {embedding_size}")
 
         await self._ensure_sparse_embeddings()
         await self._initialize_collection(embedding_size=embedding_size)
@@ -784,12 +1055,10 @@ class VectorStore(Transformer):
                 VectorPoint(
                     id=str(uuid.uuid4()),
                     dense_vector=result.embedding,
-                    payload={
-                        "metadata": chunk.get("metadata", {}),
-                        # Never the raw base64 URI — useless for lexical search and
-                        # bloats payloads. The URI stays recoverable via blockId.
-                        "page_content": chunk.get("description", ""),
-                    },
+                    payload=vector_point_payload(
+                        chunk.get("metadata", {}),
+                        chunk.get("description", ""),
+                    ),
                 )
             )
         return points
@@ -898,10 +1167,7 @@ class VectorStore(Transformer):
                 id=str(uuid.uuid4()),
                 dense_vector=dense,
                 sparse_vector=sparse,
-                payload={
-                    "page_content": doc.page_content,
-                    "metadata": doc.metadata,
-                },
+                payload=vector_point_payload(doc.metadata, doc.page_content),
             )
             for doc, dense, sparse in zip(documents, dense_embeddings, sparse_embeddings)
         ]
@@ -912,7 +1178,7 @@ class VectorStore(Transformer):
     async def _process_document_chunks(
         self, langchain_document_chunks: List[Document], record_id: str = ""
     ) -> None:
-        self.logger.info(
+        self.logger.debug(
             f"⏱️ Embedding {len(langchain_document_chunks)} document chunks"
         )
         use_local_sequential = self._is_local_cpu_embedding()
@@ -1035,6 +1301,7 @@ class VectorStore(Transformer):
         blocks = block_containers.blocks
         block_groups = block_containers.block_groups
 
+        tokens = await self._bind_membership(virtual_record_id, record)
         try:
             # On reconciliation: always refresh the record summary first
             if block_ids_to_delete or is_reconciliation:
@@ -1097,7 +1364,7 @@ class VectorStore(Transformer):
                 elif block_type in ["table", "table_cell"]:
                     table_blocks.append(block)
 
-            self.logger.info(
+            self.logger.debug(
                 f"📊 Processing {len(blocks)} blocks and {len(block_groups)} block_groups"
             )
             self.logger.debug(
@@ -1125,7 +1392,7 @@ class VectorStore(Transformer):
                         timeout=_TEXT_PROCESSING_TIMEOUT_S,
                     )
                     documents_to_embed.extend(text_documents)
-                    self.logger.info("✅ Added text documents for embedding")
+                    self.logger.debug("✅ Added text documents for embedding")
                 except asyncio.TimeoutError:
                     raise DocumentProcessingError(
                         f"Text processing timed out after {_TEXT_PROCESSING_TIMEOUT_S}s "
@@ -1410,6 +1677,7 @@ class VectorStore(Transformer):
             await self._cleanup_orphaned_embeddings_if_needed(
                 record_id, virtual_record_id, record
             )
+            await self._resync_membership_after_write(virtual_record_id, record_id)
             return True
 
         except (IndexingError, VectorStoreError, DocumentProcessingError, EmbeddingError):
@@ -1419,3 +1687,5 @@ class VectorStore(Transformer):
                 f"Unexpected error during indexing: {str(e)}",
                 details={"error_type": type(e).__name__},
             )
+        finally:
+            reset_membership_context(tokens)

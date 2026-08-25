@@ -1,5 +1,6 @@
 """Generic Event Service for handling connector-specific events"""
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -15,6 +16,7 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
@@ -75,8 +77,14 @@ class EventService:
 
         return None
 
-    def _store_connector(self, connector_id: str, connector: BaseConnector) -> None:
-        """Store a connector instance in the app_container."""
+    async def _store_connector(self, connector_id: str, connector: BaseConnector) -> None:
+        """Store a connector instance, releasing the one it replaces.
+
+        A superseded instance still owns an open HTTP connection pool; dropping
+        the reference without closing it leaks that pool for the life of the
+        process.
+        """
+        previous = self._get_connector(connector_id)
         connector_key = f"{connector_id}_connector"
         if hasattr(self.app_container, connector_key):
             getattr(self.app_container, connector_key).override(providers.Object(connector))
@@ -84,6 +92,25 @@ class EventService:
             if not hasattr(self.app_container, 'connectors_map'):
                 self.app_container.connectors_map = {}
             self.app_container.connectors_map[connector_id] = connector
+
+        if previous is None or previous is connector:
+            return
+
+        if sync_task_manager.is_running(connector_id):
+            # cleanup() nulls the connector's client and data source, so closing one
+            # mid-sync kills that sync. Leaking the pool is the lesser evil, and is
+            # what this did before it started cleaning up at all.
+            self.logger.warning(
+                f"Replaced the live {connector_id} connector instance while its sync is "
+                "running; leaving the previous instance open so the sync can finish"
+            )
+            return
+
+        self.logger.warning(f"Replaced the live {connector_id} connector instance; cleaning up the previous one")
+        try:
+            await previous.cleanup()
+        except Exception as e:
+            self.logger.warning(f"Failed to clean up the replaced {connector_id} connector instance: {e}")
 
     async def _ensure_connector(self, connector_name: str, connector_id: str) -> BaseConnector | None:
         """
@@ -95,10 +122,23 @@ class EventService:
         if connector:
             return connector
 
-        self.logger.warning(
-            f"{connector_name} connector {connector_id} not in memory — attempting auto-initialization"
-        )
+        async with connector_init_lock(connector_id):
+            # Re-check under the lock: every concurrent caller missed the check
+            # above, and each would otherwise build a duplicate instance with its
+            # own HTTP client and its own rate limiter.
+            connector = self._get_connector(connector_id)
+            if connector:
+                return connector
 
+            self.logger.warning(
+                f"{connector_name} connector {connector_id} not in memory — attempting auto-initialization"
+            )
+            return await self._auto_initialize_connector(connector_name, connector_id)
+
+    async def _auto_initialize_connector(
+        self, connector_name: str, connector_id: str
+    ) -> BaseConnector | None:
+        """Build and store a connector. Caller must hold ``connector_init_lock``."""
         try:
             connector_doc = await self.graph_provider.get_document(
                 document_key=connector_id,
@@ -140,7 +180,7 @@ class EventService:
                 )
                 return None
 
-            self._store_connector(connector_id, connector)
+            await self._store_connector(connector_id, connector)
             self.logger.info(
                 f"Auto-initialized {connector_name} connector {connector_id} successfully"
             )
@@ -185,6 +225,20 @@ class EventService:
 
     async def _handle_init(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Initializes the event service connector and its dependencies."""
+        connector_id = payload.get("connectorId")
+        if not connector_id:
+            self.logger.error(
+                f"'connectorId' is required in the payload for '{connector_name}.init' event."
+            )
+            return False
+
+        # Shares the lock with the lazy-init paths so an init event and a
+        # concurrent stream request cannot each build their own instance.
+        async with connector_init_lock(connector_id):
+            return await self._build_init_connector(connector_name, payload)
+
+    async def _build_init_connector(self, connector_name: str, payload: dict[str, Any]) -> bool:
+        """Build and store the connector. Caller must hold ``connector_init_lock``."""
         try:
             org_id = payload.get("orgId")
             connector_id = payload.get("connectorId")
@@ -233,7 +287,7 @@ class EventService:
 
             self.logger.info(f"✅ Successfully initialized {connector_name} connector")
 
-            self._store_connector(connector_id, connector)
+            await self._store_connector(connector_id, connector)
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize event service connector {connector_name} for org_id %s: %s", org_id, e, exc_info=True)
@@ -370,10 +424,23 @@ class EventService:
                 self.logger.error(f"❌ Failed to set SYNCING status for connector {connector_id}: {status_err}")
                 # Non-fatal: proceed with sync even if status write failed
 
-            await sync_task_manager.start_sync(
+            # Declined rather than restarted: a scheduled tick that lands while
+            # the previous sync is still running used to cancel it, so a sync
+            # slower than its own interval could be killed and restarted for
+            # ever and never finish. An explicit full sync still pre-empts,
+            # because asking for one is a deliberate act.
+            started = await sync_task_manager.start_if_idle(
                 connector_id,
                 self._run_sync_and_clear_status(connector, connector_id, org_id),
             )
+            if started is None:
+                self.logger.info(
+                    f"Sync already running for {connector_name} {connector_id}; "
+                    f"ignoring this request"
+                )
+                # Acknowledged, not failed: the work is already in progress, so
+                # redelivering this event would only repeat the decision.
+                return True
             self.logger.info(f"Started sync task for {connector_name} {connector_id}")
 
         return True
@@ -386,15 +453,27 @@ class EventService:
     ) -> None:
         """Wrap run_sync() so that status is cleared to null when the task finishes."""
         start = time.monotonic()
+        cancelled = False
         try:
             await connector.run_sync()
+        except asyncio.CancelledError:
+            # Distinguished from completion: the finally below reports success,
+            # so a pre-empted sync used to read in the logs exactly like one that
+            # finished its work.
+            cancelled = True
+            raise
         finally:
             elapsed = time.monotonic() - start
             mins, secs = divmod(elapsed, 60)
             elapsed_str = f"{int(mins)}m {secs:.1f}s" if mins else f"{secs:.1f}s"
-            self.logger.info(
-                f"✅ Sync finished for connector {connector_id} — total time: {elapsed_str}"
-            )
+            if cancelled:
+                self.logger.warning(
+                    f"⚠️ Sync cancelled for connector {connector_id} after {elapsed_str}"
+                )
+            else:
+                self.logger.info(
+                    f"✅ Sync finished for connector {connector_id} — total time: {elapsed_str}"
+                )
             try:
                 await self._update_app_status(connector_id, status=AppStatus.IDLE.value)
                 self.logger.info(f"✅ Cleared status for connector {connector_id} after sync")

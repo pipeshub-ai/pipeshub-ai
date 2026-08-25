@@ -19,12 +19,10 @@ test.describe('Workspace Prompts', () => {
     }
   });
 
-  test('displays all three mode sections including Agent', async ({ page }) => {
-    await expect(page.locator('text=Internal Search').first()).toBeVisible({ timeout: 5_000 });
-    await expect(page.locator('text=Web Search').first()).toBeVisible({ timeout: 5_000 });
-    await expect(page.locator('text=Agent').first()).toBeVisible({ timeout: 5_000 });
-    // Three independent editors — one per mode.
-    expect(await page.locator('textarea').count()).toBeGreaterThanOrEqual(3);
+  test('displays Agent mode section', async ({ page }) => {
+    const section = page.getByTestId('prompt-section-agent');
+    await expect(section).toBeVisible({ timeout: 5_000 });
+    await expect(section.locator('textarea')).toBeVisible();
   });
 
   test('shows Agent Builder scope callout', async ({ page }) => {
@@ -55,10 +53,7 @@ test.describe('Workspace Prompts', () => {
   });
 
   test('reset to default works', async ({ page }) => {
-    // Three identical editors render on this page, so both locators are scoped
-    // to one section — otherwise the textarea and the button could resolve to
-    // different modes and the assertion would pass for the wrong reason.
-    const section = page.getByTestId('prompt-section-internal-search');
+    const section = page.getByTestId('prompt-section-agent');
     const textarea = section.locator('textarea');
     const resetButton = section.getByRole('button', { name: 'Reset to Default', exact: true });
 
@@ -66,13 +61,9 @@ test.describe('Workspace Prompts', () => {
     await expect(resetButton).toHaveCount(1);
     await expect(textarea).toBeVisible({ timeout: 5_000 });
 
-    // `disabled={!value}` in prompts/page.tsx — an org with no override starts
-    // empty, so the button only becomes clickable once the editor has content.
     await textarea.fill('E2E reset probe');
     await expect(resetButton).toBeEnabled();
 
-    // Clearing the editor IS the default (no org override); nothing is saved,
-    // so this leaves no state behind.
     await resetButton.click();
     await expect(textarea).toHaveValue('');
   });

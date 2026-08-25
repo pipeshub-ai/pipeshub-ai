@@ -5,6 +5,7 @@ Handles automatic token refresh for OAuth connectors
 
 import asyncio
 import logging
+import weakref
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -32,6 +33,27 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Consecutive rejections before deactivating; guards against provider blips
 MAX_REFRESH_TOKEN_INVALID_FAILURES = 3
+
+# Refreshes for one connector must not run concurrently. Providers that rotate
+# refresh tokens (GitLab among them) invalidate the old token as soon as the
+# first refresh lands, so parallel callers holding the same token are guaranteed
+# to be rejected — and those rejections used to be counted as consecutive
+# failures and deactivate a perfectly healthy connector.
+#
+# Keyed by event loop as well as connector: an asyncio.Lock binds to the loop it
+# is first awaited on, so a module-level lock reused across loops raises.
+_refresh_locks: "weakref.WeakValueDictionary[tuple[int, str], asyncio.Lock]" = (
+    weakref.WeakValueDictionary()
+)
+
+
+def _connector_refresh_lock(connector_id: str) -> asyncio.Lock:
+    key = (id(asyncio.get_running_loop()), connector_id)
+    lock = _refresh_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _refresh_locks[key] = lock
+    return lock
 
 
 class TokenRefreshService:
@@ -530,11 +552,40 @@ class TokenRefreshService:
                 connector_id, connector_type, refresh_token
             )
         except RefreshTokenInvalidError as e:
-            await self._handle_refresh_token_invalid(connector_id, e)
+            await self._handle_refresh_token_invalid(connector_id, e, refresh_token)
             raise
 
-    async def _handle_refresh_token_invalid(self, connector_id: str, error: Exception) -> None:
+    async def _stored_refresh_token(self, connector_id: str) -> Optional[str]:
+        """The refresh token currently persisted for this connector, if any."""
+        try:
+            config = await self.configuration_service.get_config(
+                f"/services/connectors/{connector_id}/config"
+            )
+            return ((config or {}).get('credentials') or {}).get('refresh_token')
+        except Exception:
+            # Unknown beats wrong here: returning None makes the caller count the
+            # rejection, which is the existing behaviour.
+            return None
+
+    async def _handle_refresh_token_invalid(
+        self,
+        connector_id: str,
+        error: Exception,
+        refresh_token: Optional[str] = None,
+    ) -> None:
         """Deactivate the connector after MAX_REFRESH_TOKEN_INVALID_FAILURES consecutive rejections."""
+        if refresh_token is not None:
+            stored = await self._stored_refresh_token(connector_id)
+            if stored and stored != refresh_token:
+                # The token we were rejected for has already been rotated by a
+                # concurrent refresh, so this is a lost race rather than a dead
+                # credential. Counting it would deactivate a working connector.
+                self.logger.debug(
+                    f"Ignoring superseded refresh-token rejection for connector "
+                    f"{connector_id}"
+                )
+                return
+
         failures = self._invalid_refresh_failures.get(connector_id, 0) + 1
         self._invalid_refresh_failures[connector_id] = failures
 
@@ -654,12 +705,43 @@ class TokenRefreshService:
             ValueError: If config or credentials are missing
             Exception: If refresh fails
         """
+        async with _connector_refresh_lock(connector_id):
+            return await self._perform_token_refresh_locked(
+                connector_id, connector_type, refresh_token
+            )
+
+    async def _perform_token_refresh_locked(
+        self,
+        connector_id: str,
+        connector_type: str,
+        refresh_token: str
+    ) -> OAuthToken:
+        """Refresh body, serialised per connector by ``_perform_token_refresh``."""
         # 1. Load connector config
         config_key = f"/services/connectors/{connector_id}/config"
         config = await self.configuration_service.get_config(config_key)
 
         if not config:
             raise ValueError(f"No config found for connector {connector_id}")
+
+        # Someone refreshed while we waited for the lock. Calling the provider
+        # with our now-superseded token would be rejected and counted against
+        # this connector, so hand back what the winner stored instead.
+        # Requires an access_token too: a credentials blob holding only a refresh
+        # token cannot be handed back as a usable token, so fall through and
+        # refresh for real rather than failing to construct one.
+        stored_credentials = config.get('credentials') or {}
+        stored_refresh_token = stored_credentials.get('refresh_token')
+        if (
+            stored_refresh_token
+            and stored_refresh_token != refresh_token
+            and stored_credentials.get('access_token')
+        ):
+            self.logger.debug(
+                f"Reusing token refreshed concurrently for connector {connector_id}"
+            )
+            self._invalid_refresh_failures.pop(connector_id, None)
+            return OAuthToken.from_dict(stored_credentials)
 
         auth_config = config.get('auth', {})
 
@@ -683,14 +765,14 @@ class TokenRefreshService:
 
         try:
             # 5. Perform the token refresh
-            self.logger.info(f"🔄 Refreshing token for connector {connector_id}")
+            self.logger.debug(f"🔄 Refreshing token for connector {connector_id}")
             new_token = await oauth_provider.refresh_access_token(refresh_token)
             self.logger.info(f"✅ Successfully refreshed token for connector {connector_id}")
 
             # 6. Update stored credentials
             config['credentials'] = new_token.to_dict()
             await self.configuration_service.set_config(config_key, config)
-            self.logger.info(f"💾 Updated stored credentials for connector {connector_id}")
+            self.logger.debug(f"💾 Updated stored credentials for connector {connector_id}")
 
             self._invalid_refresh_failures.pop(connector_id, None)
 
@@ -761,12 +843,12 @@ class TokenRefreshService:
 
         # If token not expired, just schedule refresh
         if not token.is_expired:
-            self.logger.info(f"✅ Token not expired for connector {connector_id}, scheduling refresh")
+            self.logger.debug(f"✅ Token not expired for connector {connector_id}, scheduling refresh")
             await self.schedule_token_refresh(connector_id, connector_type, token)
             return
 
         # Token is expired - refresh it now
-        self.logger.info(f"🔄 Token expired for connector {connector_id}, refreshing now")
+        self.logger.debug(f"🔄 Token expired for connector {connector_id}, refreshing now")
         new_token = await self._perform_token_refresh(connector_id, connector_type, token.refresh_token)
 
         # Schedule next refresh for the new token
@@ -788,6 +870,10 @@ class TokenRefreshService:
 
         self._mark_connector_processing(connector_id)
 
+        # Bound before the try so the RefreshTokenInvalidError handler below can
+        # tell which token was rejected even when the load itself raised.
+        token = None
+
         try:
             # Load token from config
             token, has_credentials = await self._load_token_from_config(connector_id)
@@ -803,7 +889,9 @@ class TokenRefreshService:
             # Special handling for recursion errors
             self.logger.error(f"❌ Recursion error refreshing token for connector {connector_id}: {e}", exc_info=False)
         except RefreshTokenInvalidError as e:
-            await self._handle_refresh_token_invalid(connector_id, e)
+            await self._handle_refresh_token_invalid(
+                connector_id, e, getattr(token, "refresh_token", None)
+            )
         except Exception as e:
             # Use exc_info=False to avoid potential recursion in traceback formatting
             self.logger.error(f"❌ Error refreshing token for connector {connector_id}: {e}", exc_info=False)
@@ -858,7 +946,7 @@ class TokenRefreshService:
             self.logger.info(f"🔄 Immediate refresh completed for connector {connector_id}")
             return new_token, True
         except RefreshTokenInvalidError as e:
-            await self._handle_refresh_token_invalid(connector_id, e)
+            await self._handle_refresh_token_invalid(connector_id, e, token.refresh_token)
             return None, False
         except Exception as e:
             self.logger.error(f"❌ Failed to perform immediate refresh for connector {connector_id}: {e}", exc_info=False)
@@ -930,7 +1018,7 @@ class TokenRefreshService:
             self.logger.warning(f"⚠️ Token for connector {connector_id} has no expiry time, cannot schedule refresh")
             return
 
-        self.logger.info(f"🔄 Scheduling token refresh for connector {connector_id} (type: {connector_type})")
+        self.logger.debug(f"🔄 Scheduling token refresh for connector {connector_id} (type: {connector_type})")
 
         # Calculate refresh delay
         delay, refresh_time = self._calculate_refresh_delay(token)

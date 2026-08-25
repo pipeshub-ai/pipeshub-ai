@@ -436,7 +436,7 @@ class PipesHubAgentFactory:
             skill_manager = await build_skill_manager(context, transport_registry)
             if skill_manager is not None:
                 register_skill_tools(tool_registry, skill_manager)
-                logger.info(
+                logger.debug(
                     "PipesHubAgentFactory.create: skills enabled — %d skill(s) in catalog "
                     "(org_id=%s)", len(skill_manager.catalog_snapshot()), context.org_id,
                 )

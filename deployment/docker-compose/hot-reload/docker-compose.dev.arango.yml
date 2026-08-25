@@ -230,7 +230,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:bookworm
+    image: redis:7.4-bookworm
     restart: always
     ports:
       - "6379:6379"
@@ -340,6 +340,7 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.15
+    stop_grace_period: 120s
     ports:
       - "6333:6333"
       - "6334:6334"
@@ -349,9 +350,10 @@ services:
       - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=64
       - QDRANT__SERVICE__GRPC_PORT=6334
       - QDRANT__SERVICE__HTTP_PORT=6333
-      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=0  # Use all available CPUs
+      - QDRANT__STORAGE__ON_DISK_PAYLOAD=true
+      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=4
       - QDRANT__STORAGE__OPTIMIZERS__DEFAULT_SEGMENT_NUMBER=8
-      - QDRANT__STORAGE__OPTIMIZERS__MEMMAP_THRESHOLD=50000
+      - QDRANT__STORAGE__OPTIMIZERS__MEMMAP_THRESHOLD=10000  # KB, not points: memory-map any segment over 10 MB
       - QDRANT__STORAGE__WAL__WAL_CAPACITY_MB=256
       - QDRANT__CLUSTER__CONSENSUS__MAX_MESSAGE_QUEUE_SIZE=1000
     volumes:

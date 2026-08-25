@@ -88,13 +88,13 @@ class TestResolveAgentPolicy:
         p = resolve_agent_policy(AgentCapabilities(internal_search=False, web_search=True))
         assert p.has_knowledge is False
         assert p.include_web_search is True
-        assert p.system_prompt_key == "web_search"
+        assert p.system_prompt_key == "agent"
 
     def test_web_search_disabled_clears_web_search(self) -> None:
         p = resolve_agent_policy(AgentCapabilities(internal_search=True, web_search=False))
         assert p.has_knowledge is True
         assert p.include_web_search is False
-        assert p.system_prompt_key == "internal_search"
+        assert p.system_prompt_key == "agent"
 
     def test_both_disabled_neither_tool_available(self) -> None:
         p = resolve_agent_policy(AgentCapabilities(internal_search=False, web_search=False))

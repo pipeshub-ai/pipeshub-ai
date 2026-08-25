@@ -19,6 +19,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationRecipientRole
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.services.notification.notification_service import NotificationService
+from app.sources.client.resilience import ResiliencePolicy
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 DEFAULT_CONNECTOR_NOTIFICATION_LINK = "workspace/connectors/"
@@ -80,6 +81,30 @@ class BaseConnector(ABC):
         self._connector_group_permission: Optional[Permission] = None
         self._notification_service = None
         self._background_tasks: set[asyncio.Task] = set()
+        self._resilience: Optional[ResiliencePolicy] = None
+        self._resilience_loaded = False
+
+    @property
+    def connector_metadata(self) -> Dict[str, Any]:
+        """Metadata recorded by the ``@Connector`` decorator."""
+        return getattr(self.__class__, '_connector_metadata', {})
+
+    @property
+    def resilience(self) -> Optional[ResiliencePolicy]:
+        """Shared rate limit / retry policy, or None if the connector declares none.
+
+        Built once and cached for the life of the instance: ``init()`` is re-run on
+        live connectors after an auth failure, and rebuilding the policy there
+        would reset the rate limiter and discard an armed backoff mid-throttle.
+        """
+        if not self._resilience_loaded:
+            self._resilience = ResiliencePolicy.from_config(
+                self.connector_metadata.get('resilienceConfig'),
+                name=str(self.connector_name),
+                logger=self.logger,
+            )
+            self._resilience_loaded = True
+        return self._resilience
 
     @abstractmethod
     async def init(self) -> bool:

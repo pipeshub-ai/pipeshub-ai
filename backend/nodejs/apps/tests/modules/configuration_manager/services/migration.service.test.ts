@@ -54,7 +54,7 @@ describe('MigrationService', () => {
   })
 
   describe('runMigration', () => {
-    it('should call connectorSyncScheduleMigration, chatKbFiltersMigration and adminRoleMigration', async () => {
+    it('should call connectorSyncScheduleMigration, chatKbFiltersMigration, adminRoleMigration and documentOrgIdMigration', async () => {
       const service = new MigrationService(mockLogger, mockKeyValueStore)
       const mockScheduler = {
         scheduleJob: sinon.stub().resolves(),
@@ -68,6 +68,7 @@ describe('MigrationService', () => {
       const connectorStub = sinon.stub(service, 'connectorSyncScheduleMigration' as any).resolves()
       const chatStub = sinon.stub(service, 'chatKbFiltersMigration' as any).resolves()
       const adminStub = sinon.stub(service, 'adminRoleMigration' as any).resolves()
+      const documentOrgIdStub = sinon.stub(service, 'documentOrgIdMigration' as any).resolves()
 
       await service.runMigration({ scheduler: mockScheduler as any, appConfig: mockAppConfig as any })
 
@@ -75,6 +76,7 @@ describe('MigrationService', () => {
       expect(connectorStub.calledOnce).to.be.true
       expect(chatStub.calledOnce).to.be.true
       expect(adminStub.calledOnce).to.be.true
+      expect(documentOrgIdStub.calledOnce).to.be.true
       expect(mockLogger.info.calledWith('✅ Migration completed')).to.be.true
     })
   })
@@ -199,6 +201,57 @@ describe('MigrationService', () => {
       expect(mockLogger.error.calledOnce).to.be.true
       expect(mockLogger.error.firstCall.args[0]).to.equal('Chat KB-filters migration failed')
       expect(mockLogger.error.firstCall.args[1].error).to.equal('Unknown error')
+    })
+  })
+
+  describe('documentOrgIdMigration', () => {
+    let documentOrgIdMigrationStub: sinon.SinonStub
+
+    beforeEach(() => {
+      const DocumentOrgIdBackfillMigration = require('../../../../src/modules/configuration_manager/services/migrations/document_orgid_backfill.migration').DocumentOrgIdBackfillMigration
+      documentOrgIdMigrationStub = sinon.stub(DocumentOrgIdBackfillMigration.prototype, 'run')
+    })
+
+    afterEach(() => {
+      documentOrgIdMigrationStub.restore()
+    })
+
+    it('should run document orgId backfill successfully', async () => {
+      documentOrgIdMigrationStub.resolves({
+        updated: 5,
+        errored: 0,
+      })
+
+      const service = new MigrationService(mockLogger, mockKeyValueStore)
+      await service.documentOrgIdMigration()
+
+      expect(documentOrgIdMigrationStub.calledOnce).to.be.true
+      expect(mockLogger.info.calledWith('Migrating document orgId backfill')).to.be.true
+      expect(mockLogger.info.calledWith('✅ Document orgId migrated', sinon.match.object)).to.be.true
+    })
+
+    it('should warn when migration finishes with errors', async () => {
+      documentOrgIdMigrationStub.resolves({
+        updated: 3,
+        errored: 2,
+      })
+
+      const service = new MigrationService(mockLogger, mockKeyValueStore)
+      await service.documentOrgIdMigration()
+
+      expect(mockLogger.warn.calledWith(
+        '⚠️  Document orgId migration finished with errors — will retry on next boot',
+        sinon.match.object,
+      )).to.be.true
+    })
+
+    it('should catch and log migration errors', async () => {
+      documentOrgIdMigrationStub.rejects(new Error('DB connection failed'))
+
+      const service = new MigrationService(mockLogger, mockKeyValueStore)
+      await service.documentOrgIdMigration()
+
+      expect(mockLogger.error.calledWith('Document orgId migration failed', sinon.match.object)).to.be.true
     })
   })
 })

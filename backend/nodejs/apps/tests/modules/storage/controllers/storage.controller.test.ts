@@ -135,7 +135,7 @@ describe('StorageController', () => {
     it('should throw BadRequestError when documentId is missing', async () => {
       const req = {
         params: {},
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
       } as any
 
       await controller.getDocumentById(req, mockRes, mockNext)
@@ -148,7 +148,7 @@ describe('StorageController', () => {
       sinon.stub(DocumentModel, 'findOne').resolves(null)
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
       } as any
 
       await controller.getDocumentById(req, mockRes, mockNext)
@@ -162,7 +162,7 @@ describe('StorageController', () => {
       sinon.stub(DocumentModel, 'findOne').resolves(mockDoc as any)
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
       } as any
 
       await controller.getDocumentById(req, mockRes, mockNext)
@@ -175,7 +175,7 @@ describe('StorageController', () => {
       sinon.stub(DocumentModel, 'findOne').resolves(mockDoc as any)
       const req = {
         params: { documentId: 'doc-1' },
-        tokenPayload: { orgId: 'org-2' },
+        tokenPayload: { orgId: 'bbbbbbbbbbbbbbbbbbbbbbbb' },
       } as any
 
       await controller.getDocumentById(req, mockRes, mockNext)
@@ -191,7 +191,7 @@ describe('StorageController', () => {
       sinon.stub(DocumentModel, 'findOne').resolves(null)
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
       } as any
 
       await controller.deleteDocumentById(req, mockRes, mockNext)
@@ -209,7 +209,7 @@ describe('StorageController', () => {
       sinon.stub(DocumentModel, 'findOne').resolves(mockDoc as any)
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
       } as any
 
       await controller.deleteDocumentById(req, mockRes, mockNext)
@@ -227,7 +227,7 @@ describe('StorageController', () => {
       sinon.stub(DocumentModel, 'findOne').resolves(mockDoc as any)
       const req = {
         params: { documentId: 'doc-1' },
-        tokenPayload: { orgId: 'org-1' },
+        tokenPayload: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa' },
       } as any
 
       await controller.deleteDocumentById(req, mockRes, mockNext)
@@ -245,7 +245,7 @@ describe('StorageController', () => {
       sinon.stub(DocumentModel, 'findOne').resolves(mockDoc as any)
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
       } as any
 
       await controller.deleteDocumentById(req, mockRes, mockNext)
@@ -270,7 +270,7 @@ describe('StorageController', () => {
     it('should throw BadRequestError when documentName has extension', async () => {
       const req = {
         body: { documentName: 'test.pdf' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
       } as any
 
       mockKeyValueStoreService.get.resolves('{}')
@@ -282,7 +282,7 @@ describe('StorageController', () => {
     it('should throw BadRequestError when documentName has forward slash', async () => {
       const req = {
         body: { documentName: 'test/doc', extension: 'pdf' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
       } as any
 
       mockKeyValueStoreService.get.resolves('{}')
@@ -335,7 +335,7 @@ describe('StorageController', () => {
     it('should throw InternalServerError when storage config is null', async () => {
       sinon.stub(controller, 'getStorageConfig').resolves(null)
 
-      const req = { user: { orgId: 'org-1', userId: 'user-1' }, headers: {} } as any
+      const req = { user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' }, headers: {} } as any
       try {
         await controller.initializeStorageAdapter(req)
         expect.fail('Should have thrown')
@@ -401,7 +401,7 @@ describe('StorageController', () => {
       // but we can test the early return for cached config
       // by manually setting the cached value through the private reference
       const configStub = sinon.stub(controller, 'getStorageConfig').resolves(mockConfigResp as any)
-      const req = { user: { orgId: 'org-1', userId: 'user-1' }, headers: { authorization: 'Bearer token' } } as any
+      const req = { user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' }, headers: { authorization: 'Bearer token' } } as any
 
       const result = await controller.getStorageConfig(req, mockKeyValueStoreService, mockConfig)
       expect(result).to.deep.equal(mockConfigResp)
@@ -417,7 +417,7 @@ describe('StorageController', () => {
 
       const req = {
         body: { fileBuffer: { buffer: Buffer.from('x'), originalname: 'test.pdf', size: 1 } },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -432,7 +432,7 @@ describe('StorageController', () => {
 
       const req = {
         body: { fileBuffer: { buffer: Buffer.from('x'), originalname: 'test.pdf', size: 1 } },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -452,7 +452,7 @@ describe('StorageController', () => {
       const req = {
         params: { documentId: 'doc-1' },
         query: {},
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -472,7 +472,7 @@ describe('StorageController', () => {
       const req = {
         params: { documentId: 'doc-1' },
         query: { version: '5' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -494,7 +494,7 @@ describe('StorageController', () => {
       const req = {
         params: { documentId: 'doc-1' },
         query: { version: '0' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -517,7 +517,7 @@ describe('StorageController', () => {
       const req = {
         params: { documentId: 'doc-1' },
         query: {},
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -545,7 +545,7 @@ describe('StorageController', () => {
       const req = {
         params: { documentId: 'doc-1' },
         query: {},
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -570,7 +570,7 @@ describe('StorageController', () => {
       const req = {
         params: { documentId: 'doc-1' },
         query: {},
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -590,7 +590,7 @@ describe('StorageController', () => {
       const req = {
         params: { documentId: 'doc-1' },
         query: {},
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -607,7 +607,7 @@ describe('StorageController', () => {
       const req = {
         params: { documentId: 'doc-1' },
         query: { version: '5' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -627,7 +627,7 @@ describe('StorageController', () => {
       const req = {
         params: { documentId: 'doc-1' },
         query: {},
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -647,7 +647,7 @@ describe('StorageController', () => {
       const req = {
         params: { documentId: 'doc-1' },
         query: {},
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -667,7 +667,7 @@ describe('StorageController', () => {
         params: { documentId: 'doc-1' },
         body: { fileBuffer: { buffer: Buffer.from('x'), size: 1 } },
         query: {},
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -691,7 +691,7 @@ describe('StorageController', () => {
         params: { documentId: 'doc-1' },
         body: { fileBuffer: { buffer: Buffer.from('new-content'), size: 11 } },
         query: {},
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -714,7 +714,7 @@ describe('StorageController', () => {
         params: { documentId: 'doc-1' },
         body: { fileBuffer: { buffer: Buffer.from('x'), size: 1 } },
         query: {},
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -737,7 +737,7 @@ describe('StorageController', () => {
           currentVersionNote: 'note',
           nextVersionNote: 'next',
         },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -754,7 +754,7 @@ describe('StorageController', () => {
         body: {
           fileBuffer: { buffer: Buffer.from('x'), originalname: 'test.pdf', size: 1, mimetype: 'application/pdf' },
         },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -773,7 +773,7 @@ describe('StorageController', () => {
         body: {
           fileBuffer: { buffer: Buffer.from('x'), originalname: 'test.pdf', size: 1, mimetype: 'application/pdf' },
         },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -794,7 +794,7 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -809,7 +809,7 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -836,7 +836,7 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -865,7 +865,7 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -904,7 +904,7 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -927,7 +927,7 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -949,7 +949,7 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -971,7 +971,7 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -992,7 +992,7 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -1007,7 +1007,7 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -1026,7 +1026,7 @@ describe('StorageController', () => {
       const req = {
         params: { documentId: 'doc-1' },
         body: { version: '0', note: 'rollback' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -1106,13 +1106,13 @@ describe('StorageController', () => {
     })
 
     it('should throw BadRequestError when document name has extension', async () => {
-      sinon.stub(utils, 'extractOrgId').returns('org-1')
+      sinon.stub(utils, 'extractOrgId').returns('aaaaaaaaaaaaaaaaaaaaaaaa')
       sinon.stub(utils, 'extractUserId').returns('user-1')
       sinon.stub(utils, 'hasExtension').returns(true)
 
       const req = {
         body: { documentName: 'test.txt', extension: 'txt' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -1122,13 +1122,13 @@ describe('StorageController', () => {
     })
 
     it('should throw BadRequestError when document name has forward slash', async () => {
-      sinon.stub(utils, 'extractOrgId').returns('org-1')
+      sinon.stub(utils, 'extractOrgId').returns('aaaaaaaaaaaaaaaaaaaaaaaa')
       sinon.stub(utils, 'extractUserId').returns('user-1')
       sinon.stub(utils, 'hasExtension').returns(false)
 
       const req = {
         body: { documentName: 'path/test', extension: 'txt' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -1161,7 +1161,7 @@ describe('StorageController', () => {
       const req = {
         params: { documentId: 'doc-1' },
         query: { version: '0' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -1176,7 +1176,7 @@ describe('StorageController', () => {
   // -------------------------------------------------------------------------
   describe('deleteDocumentById - with service request', () => {
     it('should set deletedByUserId to undefined when userId is null', async () => {
-      sinon.stub(utils, 'extractOrgId').returns('org-1')
+      sinon.stub(utils, 'extractOrgId').returns('aaaaaaaaaaaaaaaaaaaaaaaa')
       sinon.stub(utils, 'extractUserId').returns(null as any)
 
       const mockDoc = {
@@ -1188,7 +1188,7 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        tokenPayload: { orgId: 'org-1' },
+        tokenPayload: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa' },
         headers: {},
       } as any
 
@@ -1324,12 +1324,12 @@ describe('StorageController', () => {
       }
 
       sinon.stub(DocumentModel, 'findOne').resolves(mockDoc as any)
-      sinon.stub(utils, 'extractOrgId').returns('org-1')
+      sinon.stub(utils, 'extractOrgId').returns('aaaaaaaaaaaaaaaaaaaaaaaa')
       sinon.stub(utils, 'extractUserId').returns(null as any)
 
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa' },
         headers: {},
       }
 
@@ -1767,7 +1767,7 @@ describe('StorageController', () => {
   // -------------------------------------------------------------------------
   describe('createPlaceholderDocument - userId branch', () => {
     it('should set initiatorUserId to null when userId is null', async () => {
-      sinon.stub(utils, 'extractOrgId').returns('org-1')
+      sinon.stub(utils, 'extractOrgId').returns('aaaaaaaaaaaaaaaaaaaaaaaa')
       sinon.stub(utils, 'extractUserId').returns(null as any)
       sinon.stub(utils, 'hasExtension').returns(false)
       sinon.stub(utils, 'getStorageVendor').returns(StorageVendor.Local)
@@ -1782,7 +1782,7 @@ describe('StorageController', () => {
           extension: 'txt',
           isVersionedFile: false,
         },
-        user: { orgId: 'org-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa' },
         headers: {},
       }
 
@@ -1795,7 +1795,7 @@ describe('StorageController', () => {
     })
 
     it('should set initiatorUserId when userId is present', async () => {
-      sinon.stub(utils, 'extractOrgId').returns('org-1')
+      sinon.stub(utils, 'extractOrgId').returns('aaaaaaaaaaaaaaaaaaaaaaaa')
       sinon.stub(utils, 'extractUserId').returns('507f1f77bcf86cd799439011')
       sinon.stub(utils, 'hasExtension').returns(false)
       sinon.stub(utils, 'getStorageVendor').returns(StorageVendor.Local)
@@ -1810,7 +1810,7 @@ describe('StorageController', () => {
           extension: 'txt',
           isVersionedFile: false,
         },
-        user: { userId: '507f1f77bcf86cd799439011', orgId: 'org-1' },
+        user: { userId: '507f1f77bcf86cd799439011', orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa' },
         headers: {},
       }
 
@@ -1823,7 +1823,7 @@ describe('StorageController', () => {
     })
 
     it('should throw when documentName contains forward slash', async () => {
-      sinon.stub(utils, 'extractOrgId').returns('org-1')
+      sinon.stub(utils, 'extractOrgId').returns('aaaaaaaaaaaaaaaaaaaaaaaa')
       sinon.stub(utils, 'extractUserId').returns('user-1')
       sinon.stub(utils, 'hasExtension').returns(false)
 
@@ -1833,7 +1833,7 @@ describe('StorageController', () => {
           documentPath: '/test',
           extension: 'txt',
         },
-        user: { userId: 'user-1', orgId: 'org-1' },
+        user: { userId: 'user-1', orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa' },
         headers: {},
       }
 
@@ -1963,7 +1963,7 @@ describe('StorageController', () => {
           currentVersionNote: 'v0',
           nextVersionNote: 'v1',
         },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -1999,7 +1999,7 @@ describe('StorageController', () => {
         body: {
           fileBuffer: { buffer: Buffer.from('new'), originalname: 'test.pdf', size: 3, mimetype: 'application/pdf' },
         },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -2044,7 +2044,7 @@ describe('StorageController', () => {
           currentVersionNote: 'initial version',
           nextVersionNote: 'update',
         },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -2085,7 +2085,7 @@ describe('StorageController', () => {
         body: {
           fileBuffer: { buffer: Buffer.from('x'), originalname: 'test.pdf', size: 1, mimetype: 'application/pdf' },
         },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -2122,7 +2122,7 @@ describe('StorageController', () => {
         body: {
           fileBuffer: { buffer: Buffer.from('x'), originalname: 'test.pdf', size: 1, mimetype: 'application/pdf' },
         },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -2167,7 +2167,7 @@ describe('StorageController', () => {
           currentVersionNote: 'auto-save',
           nextVersionNote: 'manual update',
         },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -2207,7 +2207,7 @@ describe('StorageController', () => {
         body: {
           fileBuffer: { buffer: Buffer.from('new'), originalname: 'test.pdf', size: 3, mimetype: 'application/pdf' },
         },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -2252,7 +2252,7 @@ describe('StorageController', () => {
         body: {
           fileBuffer: { buffer: Buffer.from('new'), originalname: 'test.pdf', size: 3, mimetype: 'application/pdf' },
         },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -2290,7 +2290,7 @@ describe('StorageController', () => {
         body: {
           fileBuffer: { buffer: Buffer.from('new'), originalname: 'test.pdf', size: 3, mimetype: 'application/pdf' },
         },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -2335,7 +2335,7 @@ describe('StorageController', () => {
         // Post-validation, query.version is already coerced to a number
         query: { version: 0 },
         body: { note: 'rollback to v0' },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -2377,7 +2377,7 @@ describe('StorageController', () => {
         query: {},
         // RollBackToPreviousVersionSchema requires body.version to be a number
         body: { version: 1, note: 'rollback to v1' },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -2401,7 +2401,7 @@ describe('StorageController', () => {
         params: { documentId: 'doc-1' },
         query: {},
         body: { note: 'rollback' },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -2426,7 +2426,7 @@ describe('StorageController', () => {
         // Post-validation, query.version is already coerced to a number
         query: { version: 1 },
         body: { note: 'rollback' },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -2457,7 +2457,7 @@ describe('StorageController', () => {
         params: { documentId: 'doc-1' },
         query: { version: '0' },
         body: { note: 'rollback' },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -2504,7 +2504,7 @@ describe('StorageController', () => {
         // Post-validation, query.version is already coerced to a number
         query: { version: 0 },
         body: { note: 'rollback to v0' },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -2552,7 +2552,7 @@ describe('StorageController', () => {
         // Post-validation, query.version is already coerced to a number
         query: { version: 0 },
         body: { note: 'rollback' },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
 
@@ -2590,7 +2590,7 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -2623,7 +2623,7 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -2656,7 +2656,7 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 
@@ -2689,7 +2689,7 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        user: { orgId: 'org-1', userId: 'user-1' },
+        user: { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', userId: 'user-1' },
         headers: {},
       } as any
 

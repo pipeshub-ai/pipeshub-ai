@@ -7,6 +7,7 @@ from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     ConnectorScopes,
+    ProgressStatus,
 )
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.factory.connector_factory import ConnectorFactory
@@ -458,6 +459,30 @@ class EntityEventService(BaseEventService):
             except Exception as cancel_err:
                 self.logger.error(f"❌ Failed to cancel sync for connector {connector_id}: {cancel_err}")
 
+            # Drain the backlog. Records already QUEUED have no event guard to
+            # catch them and no processingStartedAt, so stale recovery — which
+            # only scans IN_PROGRESS — can never reach them: they would sit in
+            # QUEUED for ever. Run this *after* cancelling the sync so nothing
+            # re-queues behind the sweep. IN_PROGRESS is excluded deliberately;
+            # those are mid-pipeline and are handled by stale recovery.
+            try:
+                await self.graph_provider.reset_indexing_status_for_connector(
+                    connector_id,
+                    ProgressStatus.AUTO_INDEX_OFF.value,
+                    exclude_statuses=[
+                        ProgressStatus.IN_PROGRESS.value,
+                        ProgressStatus.COMPLETED.value,
+                    ],
+                )
+                self.logger.info(
+                    f"✅ Moved queued records for connector {connector_id} to manual indexing"
+                )
+            except Exception as sweep_err:
+                self.logger.error(
+                    f"❌ Failed to move queued records to manual indexing for "
+                    f"connector {connector_id}: {sweep_err}"
+                )
+
             if (
                 hasattr(self.app_container, "connectors_map")
                 and connector_id in self.app_container.connectors_map
@@ -570,6 +595,7 @@ class EntityEventService(BaseEventService):
                 "isAgentActive": True,
                 "isConfigured": True,
                 "isAuthenticated": True,
+                "vectorMembershipBackfilled": True,
                 "hideConnector": True,
                 "createdAtTimestamp": current_timestamp,
                 "updatedAtTimestamp": current_timestamp,

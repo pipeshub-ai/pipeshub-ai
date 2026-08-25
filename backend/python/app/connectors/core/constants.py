@@ -101,6 +101,12 @@ class ConnectorStateKeys:
     IS_AUTHENTICATED = "isAuthenticated"
     IS_ACTIVE = "isActive"
     PENDING_FULL_SYNC = "pendingFullSync"
+    VECTOR_MEMBERSHIP_BACKFILLED = "vectorMembershipBackfilled"
+    VECTOR_MEMBERSHIP_BACKFILL_AFTER_KEY = "vectorMembershipBackfillAfterKey"
+    VECTOR_MEMBERSHIP_BACKFILL_FAILURES = "vectorMembershipBackfillFailures"
+    VECTOR_MEMBERSHIP_BACKFILL_ATTEMPTS = "vectorMembershipBackfillAttempts"
+    VECTOR_MEMBERSHIP_BACKFILL_VRIDS = "vectorMembershipBackfillVrids"
+    VECTOR_MEMBERSHIP_BACKFILL_EXHAUSTED = "vectorMembershipBackfillExhausted"
     UPDATED_AT_TIMESTAMP = "updatedAtTimestamp"
     UPDATED_BY = "updatedBy"
     CREATED_AT_TIMESTAMP = "createdAtTimestamp"
@@ -111,6 +117,16 @@ CONNECTOR_EMAIL_IDENTITY_INFO = (
     "This connector identifies users by email. Each person should sign in to the platform "
     "with the same address they use in the connected app, so only their own data and access "
     "rules apply. Different emails can mean missing content."
+)
+
+
+# Notion's API exposes no per-page sharing, so CONNECTOR_EMAIL_IDENTITY_INFO's
+# promise of per-user access rules cannot hold for it.
+CONNECTOR_NOTION_TEAM_ACCESS_INFO = (
+    "Important: Anything this connector syncs becomes searchable by everyone in your "
+    "Notion workspace. Notion's API does not expose per-page sharing, so access cannot be "
+    "restricted to the people a page is shared with. Use the Notion Personal connector if you "
+    "want your pages searchable only by you."
 )
 
 

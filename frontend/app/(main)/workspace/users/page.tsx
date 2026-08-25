@@ -510,7 +510,29 @@ function UsersPageContent() {
     setSelectedUsers(new Set());
   }, [selectedUsersList, addToast, t, setSelectedUsers]);
 
+  const showDemoteAdminBeforeCancelToast = useCallback(() => {
+    addToast({
+      variant: 'info',
+      title: t(
+        'workspace.users.actions.demoteAdminBeforeRemoveTitle',
+        'Cannot remove admin'
+      ),
+      description: t(
+        'workspace.users.actions.demoteAdminBeforeRemove',
+        'Demote the admin to member, then remove them.'
+      ),
+      duration: 5000,
+    });
+  }, [addToast, t]);
+
   const handleBulkCancelInvite = useCallback(async () => {
+    const hasAdminInvite = selectedUsersList.some(
+      (u) => (u.role || USER_ROLES.MEMBER) === USER_ROLES.ADMIN
+    );
+    if (hasAdminInvite) {
+      showDemoteAdminBeforeCancelToast();
+      return;
+    }
     const userIds = selectedUsersList.map((u) => u.userId);
     const { succeeded, failed } = await UsersApi.bulkCancelInvites(userIds);
     if (succeeded > 0) {
@@ -535,7 +557,14 @@ function UsersPageContent() {
     }
     setSelectedUsers(new Set());
     fetchUsers();
-  }, [selectedUsersList, addToast, t, setSelectedUsers, fetchUsers]);
+  }, [
+    selectedUsersList,
+    addToast,
+    t,
+    setSelectedUsers,
+    fetchUsers,
+    showDemoteAdminBeforeCancelToast,
+  ]);
 
   /** Bulk actions shown in the floating bar — varies by selection composition */
   const hasAdminSelected = useMemo(
@@ -557,9 +586,15 @@ function UsersPageContent() {
       if (isAdmin) {
         actions.push({
           key: 'cancel-invite',
-          label: t('workspace.users.bulk.cancelInvite', 'Cancel Invite'),
-          icon: 'cancel_schedule_send',
+          label: hasAdminSelected
+            ? t(
+                'workspace.users.bulk.adminInviteCantBeCancelled',
+                'Admin invites cannot be cancelled'
+              )
+            : t('workspace.users.bulk.cancelInvite', 'Cancel Invite'),
+          icon: hasAdminSelected ? 'block' : 'cancel_schedule_send',
           variant: 'danger',
+          disabled: hasAdminSelected,
           onClick: handleBulkCancelInvite,
         });
       }
@@ -675,8 +710,26 @@ function UsersPageContent() {
     }
   }, [removeTarget, fetchUsers, addToast, t]);
 
+  const requestCancelInvite = useCallback(
+    (user: User) => {
+      const role = user.role || USER_ROLES.MEMBER;
+      if (role === USER_ROLES.ADMIN) {
+        showDemoteAdminBeforeCancelToast();
+        return;
+      }
+      setCancelInviteTarget(user);
+    },
+    [showDemoteAdminBeforeCancelToast]
+  );
+
   const handleCancelInvite = useCallback(async () => {
     if (!cancelInviteTarget) return;
+    const role = cancelInviteTarget.role || USER_ROLES.MEMBER;
+    if (role === USER_ROLES.ADMIN) {
+      setCancelInviteTarget(null);
+      showDemoteAdminBeforeCancelToast();
+      return;
+    }
     setIsCancellingInvite(true);
     try {
       await UsersApi.deleteUser(cancelInviteTarget.userId);
@@ -699,7 +752,7 @@ function UsersPageContent() {
     } finally {
       setIsCancellingInvite(false);
     }
-  }, [cancelInviteTarget, fetchUsers, addToast, t]);
+  }, [cancelInviteTarget, fetchUsers, addToast, t, showDemoteAdminBeforeCancelToast]);
 
   const handleConfirmUnblock = useCallback(async () => {
     if (!unblockTarget) return;
@@ -891,11 +944,21 @@ function UsersPageContent() {
             onClick: () => handleEditInvite(user),
           },
           isAdmin && {
+            icon: 'manage_accounts',
+            label: t('workspace.users.actions.changeRole'),
+            subMenu: {
+              type: 'radio' as const,
+              value: currentRole,
+              onValueChange: (newRole: string) => handleChangeRole(user, newRole),
+              options: ROLE_SUB_MENU_OPTIONS,
+            },
+          },
+          isAdmin && {
             icon: 'cancel_schedule_send',
             label: t('workspace.users.actions.cancelInvite'),
             variant: 'danger' as const,
             separatorBefore: true,
-            onClick: () => setCancelInviteTarget(user),
+            onClick: () => requestCancelInvite(user),
           },
         ];
       } else if (isPendingExpired) {
@@ -906,11 +969,21 @@ function UsersPageContent() {
             onClick: () => handleResendInvite(user),
           },
           isAdmin && {
+            icon: 'manage_accounts',
+            label: t('workspace.users.actions.changeRole'),
+            subMenu: {
+              type: 'radio' as const,
+              value: currentRole,
+              onValueChange: (newRole: string) => handleChangeRole(user, newRole),
+              options: ROLE_SUB_MENU_OPTIONS,
+            },
+          },
+          isAdmin && {
             icon: 'cancel_schedule_send',
             label: t('workspace.users.actions.cancelInvite'),
             variant: 'danger' as const,
             separatorBefore: true,
-            onClick: () => setCancelInviteTarget(user),
+            onClick: () => requestCancelInvite(user),
           },
         ];
       } else if (isDeactivated) {
@@ -999,6 +1072,7 @@ function UsersPageContent() {
       requestChangeRole,
       handleResendInvite,
       handleEditInvite,
+      requestCancelInvite,
       ROLE_SUB_MENU_OPTIONS,
     ]
   );
