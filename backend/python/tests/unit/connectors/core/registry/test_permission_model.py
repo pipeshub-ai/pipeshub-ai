@@ -14,11 +14,12 @@ from app.connectors.core.registry.connector_builder import (
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
 
 # Connectors whose source has no per-record ACLs, so one connector-wide query
-# answers for every user. gitlab, gitlab_personal and rss were removed after
-# review: gitlab syncs per-project member ACLs, and the two personal-scope
-# connectors write creator-only permissions that the APP_LEVEL scan does not
-# re-check. Adding a connector here is a permissions decision, not a
-# performance one.
+# answers for every user. gitlab and rss stay out: gitlab syncs per-project
+# member ACLs, and rss still writes creator-only permissions the APP_LEVEL scan
+# does not re-check. The personal GitHub and GitLab connectors qualify because
+# the only USER_APP_RELATION either ever writes is the creator's, so reaching
+# the app already implies being the one principal the per-user ACL would match.
+# Adding a connector here is a permissions decision, not a performance one.
 APP_LEVEL_CONNECTORS = [
     "app.connectors.sources.s3.connector",
     "app.connectors.sources.minio.connector",
@@ -31,6 +32,7 @@ APP_LEVEL_CONNECTORS = [
     "app.connectors.sources.snowflake.connector",
     "app.connectors.sources.local_fs.connector",
     "app.connectors.sources.github.connector",
+    "app.connectors.sources.gitlab_personal.connector",
 ]
 
 

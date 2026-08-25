@@ -14,9 +14,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.connectors.sources.gitlab import repos as repos_module
 from app.connectors.sources.gitlab.repos import ReposSync
 
 from .conftest import make_mock_connector, paged_res, failed_res
+
+
+@pytest.fixture(autouse=True)
+def _no_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Zero the tree-page retry backoff so abort-path tests stay fast."""
+    monkeypatch.setattr(repos_module, "_GITLAB_TREE_PAGE_RETRY_BACKOFF_SECONDS", 0)
 
 pytestmark = pytest.mark.anyio
 
@@ -155,7 +162,9 @@ class TestSyncRepoFull:
         result = await repos._sync_repo_full(_PROJECT_ID, _PROJECT_PATH)
         assert result is False
 
-    async def test_no_tree_data_returns_true(self) -> None:
+    async def test_no_tree_data_returns_false(self) -> None:
+        """An empty response body is a failed request, not an empty repo: the
+        checkpoint must not advance past it."""
         c = make_mock_connector()
         repos = ReposSync(c)
 
@@ -165,28 +174,83 @@ class TestSyncRepoFull:
         c.runtime.ds_call_async = AsyncMock(return_value=res)
 
         result = await repos._sync_repo_full(_PROJECT_ID, _PROJECT_PATH)
-        assert result is True
+        assert result is False
 
-    async def test_graphql_errors_key_returns_false_on_blob_fetch(self) -> None:
-        """Blob page with top-level 'errors' key should abort."""
+    async def test_graphql_errors_key_returns_false(self) -> None:
+        """A page carrying a top-level errors key aborts the walk."""
         c = make_mock_connector()
         repos = ReposSync(c)
 
-        # Tree page (folder) succeeds with empty
-        tree_res = _graphql_tree_response([])
-        c.runtime.ds_call_async = AsyncMock(return_value=tree_res)
-
-        # Blob page has GraphQL errors
-        blob_err_res = MagicMock()
-        blob_err_res.success = True
-        blob_err_res.data = json.dumps({"errors": [{"message": "forbidden"}]})
-
-        repos._fetch_blob_page = AsyncMock(return_value=("abort", [], {}))
+        err_res = MagicMock()
+        err_res.success = True
+        err_res.data = json.dumps({"errors": [{"message": "forbidden"}]})
+        c.runtime.ds_call_async = AsyncMock(return_value=err_res)
         repos.build_code_file_records = AsyncMock()
 
         result = await repos._sync_repo_full(_PROJECT_ID, _PROJECT_PATH)
-        # abort from _fetch_blob_page → full sync returns False
         assert result is False
+
+    async def test_folders_and_files_come_from_one_walk(self) -> None:
+        """One page carries both node types, so a single-page repo costs exactly
+        one request instead of the two full walks this replaced."""
+        c = make_mock_connector()
+        repos = ReposSync(c)
+
+        page = {
+            "data": {"project": {"repository": {"paginatedTree": {
+                "nodes": [{
+                    "trees": {"nodes": [{
+                        "name": "src", "path": "src", "sha": "t1", "type": "tree",
+                        "webPath": "/ns/proj/-/tree/HEAD/src", "webUrl": "https://gitlab.com/x",
+                    }]},
+                    "blobs": {"nodes": [{
+                        "name": "a.py", "path": "src/a.py", "sha": "b1", "type": "blob",
+                        "webPath": "/ns/proj/-/blob/HEAD/src/a.py", "webUrl": "https://gitlab.com/y",
+                    }]},
+                }],
+                "pageInfo": {"hasNextPage": False, "endCursor": ""},
+            }}}}
+        }
+        res = MagicMock(success=True, error=None, data=json.dumps(page))
+        c.runtime.ds_call_async = AsyncMock(return_value=res)
+        repos._process_records = AsyncMock()
+        repos.build_code_file_records = AsyncMock()
+
+        result = await repos._sync_repo_full(_PROJECT_ID, _PROJECT_PATH)
+
+        assert result is True
+        assert c.runtime.ds_call_async.await_count == 1
+        repos._process_records.assert_awaited_once()
+        repos.build_code_file_records.assert_awaited_once()
+        assert repos.build_code_file_records.await_args.args[0][0]["path"] == "src/a.py"
+
+    async def test_persist_failure_withholds_the_checkpoint(self) -> None:
+        """A swallowed write must not report success. The walk itself completed,
+        but if the records never landed and the checkpoint advances, the next run
+        goes incremental from that SHA and they are never retried."""
+        c = make_mock_connector()
+        repos = ReposSync(c)
+
+        page = {
+            "data": {"project": {"repository": {"paginatedTree": {
+                "nodes": [{
+                    "trees": {"nodes": [{
+                        "name": "src", "path": "src", "sha": "t1", "type": "tree",
+                        "webPath": "/ns/proj/-/tree/HEAD/src", "webUrl": "https://gitlab.com/x",
+                    }]},
+                    "blobs": {"nodes": [{
+                        "name": "a.py", "path": "src/a.py", "sha": "b1", "type": "blob",
+                        "webPath": "/ns/proj/-/blob/HEAD/src/a.py", "webUrl": "https://gitlab.com/y",
+                    }]},
+                }],
+                "pageInfo": {"hasNextPage": False, "endCursor": ""},
+            }}}}
+        }
+        res = MagicMock(success=True, error=None, data=json.dumps(page))
+        c.runtime.ds_call_async = AsyncMock(return_value=res)
+        c.data_entities_processor.on_new_records = AsyncMock(side_effect=Exception("db down"))
+
+        assert await repos._sync_repo_full(_PROJECT_ID, _PROJECT_PATH) is False
 
 
 # ===========================================================================
@@ -364,25 +428,79 @@ class TestFullSyncFailureNoCheckpoint:
 
 
 # ===========================================================================
-# _fetch_blob_page — error path
+# _fetch_entries_page — error path
 # ===========================================================================
 
 
-class TestFetchBlobPageError:
+class TestFetchEntriesPageRetry:
+    async def test_transient_failure_then_success_continues(self) -> None:
+        """One flaky page must not abort a walk of a huge repository: the page
+        is retried and the walk carries on."""
+        c = make_mock_connector()
+        repos = ReposSync(c)
+
+        page = {
+            "data": {"project": {"repository": {"paginatedTree": {
+                "nodes": [{"trees": {"nodes": []}, "blobs": {"nodes": [{
+                    "name": "a.py", "path": "a.py", "sha": "b1", "type": "blob",
+                    "webPath": "/ns/proj/-/blob/HEAD/a.py", "webUrl": "https://gitlab.com/y",
+                }]}}],
+                "pageInfo": {"hasNextPage": False, "endCursor": ""},
+            }}}}
+        }
+        ok_res = MagicMock(success=True, error=None, data=json.dumps(page))
+        fail_res_ = MagicMock(success=False, error="ReadTimeout: ", data=None)
+        c.runtime.ds_call_async = AsyncMock(side_effect=[fail_res_, ok_res])
+        repos._process_records = AsyncMock()
+        repos.build_code_file_records = AsyncMock()
+
+        result = await repos._sync_repo_full(_PROJECT_ID, _PROJECT_PATH)
+
+        assert result is True
+        assert c.runtime.ds_call_async.await_count == 2
+        repos.build_code_file_records.assert_awaited_once()
+
+    async def test_graphql_errors_abort_without_retry(self) -> None:
+        """A GraphQL ``errors`` payload is semantic (permissions / query shape);
+        retrying cannot change it, so the walk aborts on the first attempt."""
+        c = make_mock_connector()
+        repos = ReposSync(c)
+
+        err_res = MagicMock(success=True, error=None,
+                            data=json.dumps({"errors": [{"message": "forbidden"}]}))
+        c.runtime.ds_call_async = AsyncMock(return_value=err_res)
+
+        kind, trees, blobs, page_info = await repos._fetch_entries_page(_PROJECT_PATH, _PROJECT_ID, "")
+        assert kind == "abort"
+        assert c.runtime.ds_call_async.await_count == 1
+
+    async def test_persistent_transport_failure_aborts_after_max_attempts(self) -> None:
+        c = make_mock_connector()
+        repos = ReposSync(c)
+
+        c.runtime.ds_call_async = AsyncMock(return_value=MagicMock(success=False, error="boom", data=None))
+
+        kind, trees, blobs, page_info = await repos._fetch_entries_page(_PROJECT_PATH, _PROJECT_ID, "")
+        assert kind == "abort"
+        assert c.runtime.ds_call_async.await_count == repos_module._GITLAB_TREE_PAGE_MAX_ATTEMPTS
+
+
+class TestFetchEntriesPageError:
     async def test_ds_call_async_raises_returns_abort(self) -> None:
-        """When ds_call_async raises, _fetch_blob_page returns abort."""
+        """When ds_call_async raises, _fetch_entries_page returns abort."""
         c = make_mock_connector()
         c.data_source = MagicMock()
         repos = ReposSync(c)
 
         c.runtime.ds_call_async = AsyncMock(side_effect=Exception("GraphQL error"))
 
-        kind, nodes, page_info = await repos._fetch_blob_page(_PROJECT_PATH, _PROJECT_ID, "")
+        kind, trees, blobs, page_info = await repos._fetch_entries_page(_PROJECT_PATH, _PROJECT_ID, "")
         assert kind == "abort"
-        assert nodes == []
+        assert trees == []
+        assert blobs == []
 
     async def test_api_failure_returns_abort(self) -> None:
-        """When ds_call_async returns failure, _fetch_blob_page returns abort."""
+        """When ds_call_async returns failure, _fetch_entries_page returns abort."""
         c = make_mock_connector()
         c.data_source = MagicMock()
         repos = ReposSync(c)
@@ -390,7 +508,7 @@ class TestFetchBlobPageError:
         fail_res = MagicMock(success=False, data=None, error="network error")
         c.runtime.ds_call_async = AsyncMock(return_value=fail_res)
 
-        kind, nodes, page_info = await repos._fetch_blob_page(_PROJECT_PATH, _PROJECT_ID, "")
+        kind, trees, blobs, page_info = await repos._fetch_entries_page(_PROJECT_PATH, _PROJECT_ID, "")
         assert kind == "abort"
 
 
@@ -453,12 +571,20 @@ class TestModuleLevelHelpers:
     def test_pagination_stop_on_no_next(self) -> None:
         """_should_continue_repo_tree_pagination returns False when hasNextPage=False."""
         from app.connectors.sources.gitlab.repos import _should_continue_repo_tree_pagination
-        cont, cursor = _should_continue_repo_tree_pagination(10, 10, {"hasNextPage": False, "endCursor": "abc"})
+        cont, cursor = _should_continue_repo_tree_pagination({"hasNextPage": False, "endCursor": "abc"})
         assert cont is False
 
     def test_pagination_continue_on_next(self) -> None:
         """_should_continue_repo_tree_pagination returns True when hasNextPage=True."""
         from app.connectors.sources.gitlab.repos import _should_continue_repo_tree_pagination
-        cont, cursor = _should_continue_repo_tree_pagination(10, 10, {"hasNextPage": True, "endCursor": "cursor1"})
+        cont, cursor = _should_continue_repo_tree_pagination({"hasNextPage": True, "endCursor": "cursor1"})
         assert cont is True
         assert cursor == "cursor1"
+
+    def test_pagination_continues_on_a_page_with_no_folders(self) -> None:
+        """A page of files and zero folders is ordinary mid-walk output, not the
+        end of the repository — the walk must not stop there."""
+        from app.connectors.sources.gitlab.repos import _should_continue_repo_tree_pagination
+        cont, cursor = _should_continue_repo_tree_pagination({"hasNextPage": True, "endCursor": "cursor2"})
+        assert cont is True
+        assert cursor == "cursor2"

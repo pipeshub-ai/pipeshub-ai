@@ -72,6 +72,21 @@ if TYPE_CHECKING:
     from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
 
 
+def _git_tree_entries(prefix: str, tree: Any) -> list[tuple[str, str, str, int | None]]:
+    """``(full_path, type, sha, size)`` for one Git Tree response, rebased on ``prefix``.
+
+    A recursive response already carries paths relative to the tree it was
+    fetched from, so prefixing is all that is needed to make them repo-relative.
+    """
+    entries: list[tuple[str, str, str, int | None]] = []
+    for el in tree.tree or []:
+        if not el.path:
+            continue
+        full_path = f"{prefix}/{el.path}" if prefix else el.path
+        entries.append((full_path, el.type, el.sha, getattr(el, "size", None)))
+    return entries
+
+
 class ReposSync:
     """Handles code repository (file/blob) synchronisation for ``GitHubTeamsConnector``."""
 
@@ -194,46 +209,133 @@ class ReposSync:
             for el in (tree.tree or [])
             if el.path
         ]
-        persisted_ok = await self._persist_tree_entries(repo, entries)
+        persisted_ok, folders, blobs = await self._persist_tree_entries(repo, entries)
+        self.logger.info(
+            "Full code sync for %s: %s folder(s), %s file(s) persisted in 1 tree call",
+            repo.full_name, folders, blobs,
+        )
         if persisted_ok:
             await self._prune_deleted_paths(repo, {path for path, *_ in entries})
         return persisted_ok
 
     async def _full_sync_untruncated(self, repo: GhObject, head_sha: str) -> bool:
-        """Per-subtree walk (non-recursive Git Tree calls) for repos too large for
-        a single recursive call. BFS from the root tree SHA."""
+        """Subtree walk for a repo whose recursive Git Tree came back truncated.
+
+        Each queued node is fetched *recursively*, so one call normally covers a
+        whole subtree; only a node that itself comes back truncated is split into
+        its immediate children and re-queued. A repo with a few dozen top-level
+        directories therefore costs tens of calls rather than one per directory,
+        and the recursion only deepens where the API limit is really hit.
+
+        Entries are persisted per node as the walk proceeds rather than
+        accumulated and written at the end — the same streaming shape the GitLab
+        connector uses. Memory stays flat and records land continuously, so a
+        walk that dies at 90% keeps the 90%. Out-of-order arrival is safe: a blob
+        whose parent folder has not been written yet gets a placeholder parent
+        from the data-entities processor, upgraded in place when the real folder
+        record arrives.
+        """
         c = self.c
         owner, name = repo.owner.login, repo.name
-        entries: list[tuple[str, str, str, int | None]] = []
         all_ok = True
-        queue: deque[tuple[str, str]] = deque([("", head_sha)])
-        while queue:
-            prefix, sha = queue.popleft()
-            res = await c.runtime.ds_call(c.data_source.get_git_tree, owner, name, sha, False)
-            if not res.success or res.data is None:
-                self.logger.warning("Subtree fetch failed for %s at %r (sha=%s): %s", repo.full_name, prefix, sha, res.error)
-                all_ok = False
-                continue
-            for el in res.data.tree or []:
-                if not el.path:
-                    continue
-                full_path = f"{prefix}/{el.path}" if prefix else el.path
-                entries.append((full_path, el.type, el.sha, getattr(el, "size", None)))
-                if el.type == "tree":
-                    queue.append((full_path, el.sha))
+        walked_paths: set[str] = set()
+        folders_walked = blobs_walked = tree_calls = 0
 
-        persisted_ok = await self._persist_tree_entries(repo, entries)
-        # Deliberately no pruning after a partial walk: a subtree fetch failure
-        # means anything "missing" may simply not have been walked.
-        if persisted_ok and all_ok:
-            await self._prune_deleted_paths(repo, {path for path, *_ in entries})
-        return persisted_ok and all_ok
+        # The root's recursive fetch already returned truncated — that is why
+        # this path is running — so it is seeded as pre-split instead of being
+        # re-fetched recursively just to be told the same thing again.
+        queue: deque[tuple[str, str, bool]] = deque([("", head_sha, True)])
+        while queue:
+            prefix, sha, known_truncated = queue.popleft()
+            entries: list[tuple[str, str, str, int | None]] | None = None
+            children: list[tuple[str, str]] = []
+
+            if not known_truncated:
+                tree_calls += 1
+                res = await c.runtime.ds_call(c.data_source.get_git_tree, owner, name, sha, True)
+                if not res.success or res.data is None:
+                    self.logger.warning(
+                        "Recursive subtree fetch failed for %s at %r (sha=%s): %s",
+                        repo.full_name, prefix, sha, res.error,
+                    )
+                    all_ok = False
+                    continue
+                if not getattr(res.data, "truncated", False):
+                    entries = _git_tree_entries(prefix, res.data)
+
+            if entries is None:
+                # Subtree too large for one recursive call: take only this level
+                # and walk each child directory on its own.
+                tree_calls += 1
+                res = await c.runtime.ds_call(c.data_source.get_git_tree, owner, name, sha, False)
+                if not res.success or res.data is None:
+                    self.logger.warning(
+                        "Subtree fetch failed for %s at %r (sha=%s): %s",
+                        repo.full_name, prefix, sha, res.error,
+                    )
+                    all_ok = False
+                    continue
+                if getattr(res.data, "truncated", False):
+                    # One directory with more direct children than the API will
+                    # return: there is no smaller unit left to split into, so the
+                    # walk is knowingly incomplete. Fail the sync so pruning is
+                    # skipped and the checkpoint withheld — silently accepting it
+                    # would let the next prune delete files that still exist.
+                    self.logger.error(
+                        "Directory %r in %s exceeds the Git Tree limit even without "
+                        "recursion; it cannot be split further, so this walk is "
+                        "incomplete. Not pruning and not advancing the checkpoint.",
+                        prefix or "<root>", repo.full_name,
+                    )
+                    all_ok = False
+                    continue
+                entries = _git_tree_entries(prefix, res.data)
+                children = [(p, sha_) for p, t, sha_, _sz in entries if t == "tree"]
+
+            if entries:
+                ok, n_folders, n_blobs = await self._persist_tree_entries(repo, entries)
+                all_ok = ok and all_ok
+                folders_walked += n_folders
+                blobs_walked += n_blobs
+                walked_paths.update(path for path, *_ in entries)
+                # One line per subtree rather than a fixed cadence: a subtree is
+                # a whole recursive call, so the count is proportional to real
+                # work (tens of lines, not thousands) and a stall is visible at
+                # the path it stalled on.
+            # Enqueue before logging so the reported queue depth includes the
+            # children this node just produced.
+            for child_path, child_sha in children:
+                queue.append((child_path, child_sha, False))
+
+            if entries:
+                self.logger.info(
+                    "Subtree walk %s: %s -> %s folder(s), %s file(s) "
+                    "[total %s folder(s), %s file(s); %s subtree(s) queued]",
+                    repo.full_name, prefix or "<root>", n_folders, n_blobs,
+                    folders_walked, blobs_walked, len(queue),
+                )
+
+        self.logger.info(
+            "Full code sync for %s: %s folder(s), %s file(s) persisted in %s tree call(s)%s",
+            repo.full_name, folders_walked, blobs_walked, tree_calls,
+            "" if all_ok else " (INCOMPLETE - checkpoint withheld)",
+        )
+        # Deliberately no pruning after a partial walk: anything "missing" may
+        # simply not have been walked.
+        if all_ok:
+            await self._prune_deleted_paths(repo, walked_paths)
+        return all_ok
 
     async def _persist_tree_entries(
         self, repo: GhObject, entries: list[tuple[str, str, str, int | None]]
-    ) -> bool:
-        """Persist a flat list of ``(path, type, sha, size)`` Git Tree entries:
-        folders top-down (parents before children), then blobs."""
+    ) -> tuple[bool, int, int]:
+        """Persist one batch of ``(path, type, sha, size)`` Git Tree entries.
+
+        Folders go first, shallowest level first, so a parent is written before
+        its children; blobs follow in processor-sized batches. Returns
+        ``(ok, folders_persisted, blobs_persisted)`` — the caller owns the
+        summary log, because the truncated path calls this once per subtree.
+        """
         c = self.c
         folders = [(p, s) for p, t, s, _sz in entries if t == "tree"]
         blobs = [(p, s, sz) for p, t, s, sz in entries if t == "blob"]
@@ -260,11 +362,7 @@ class ReposSync:
         if batch:
             all_ok = await self._process_records(batch) and all_ok
 
-        self.logger.info(
-            "Full code sync for %s: %s folder(s), %s file(s) persisted",
-            repo.full_name, len(folders), len(blobs),
-        )
-        return all_ok
+        return all_ok, len(folders), len(blobs)
 
     async def _prune_deleted_paths(self, repo: GhObject, walked_paths: set[str]) -> None:
         """Delete code records whose path is absent from a complete tree walk.
@@ -690,7 +788,7 @@ class ReposSync:
             mime_type=mime_type, external_revision_id=str(sha) if sha else "",
             # None, not "", for extensionless names (LICENSE, Dockerfile).
             extension=extension.lower() or None,
-            preview_renderable=extension.lower() in PREVIEW_RENDERABLE_EXTENSIONS,
+            preview_renderable=extension.lower() in PREVIEW_RENDERABLE_EXTENSIONS if extension else True,
             file_path=path, file_hash=sha,
             inherit_permissions=True, parent_external_record_id=parent_external_id,
             parent_record_type=(RecordType.FILE if parent_external_id else None),

@@ -60,6 +60,16 @@ class RuntimeHelper:
         # can reference it from inside the connector too.
         connector._gitlab_executor = self._executor
 
+        # Single-flight guard for reactive OAuth refresh. GitLab rotates
+        # refresh tokens (single-use): when N concurrent calls all hit 401 —
+        # e.g. the backfill's whole fan-out after token expiry — each would
+        # otherwise call refresh_now with the same soon-stale refresh token.
+        # The first wins; the rest burn invalid_grant failures, and three of
+        # those in a row deactivate the connector (token_refresh_service's
+        # consecutive-rejection counter). With this lock, one task refreshes
+        # and the rest just apply the rotated token.
+        self._token_refresh_lock = asyncio.Lock()
+
     # ------------------------------------------------------------------
     # Executor lifecycle
     # ------------------------------------------------------------------
@@ -149,7 +159,14 @@ class RuntimeHelper:
 
         Used reactively when a GitLab API call returns 401, so we do not wait for
         the background refresher to catch up.  No-op for ``API_TOKEN`` auth.
-        Returns ``True`` when the refresh succeeded.
+        Returns ``True`` when the client ends up holding a fresh token — whether
+        this call performed the refresh or a concurrent one already had.
+
+        Single-flight: concurrent 401s queue on ``_token_refresh_lock``. A waiter
+        that finds the client holding a different token than it did on entry
+        returns straight away — somebody refreshed while it queued. Only if the
+        client is unchanged does it look at etcd, apply a token the background
+        refresher rotated behind the client's back, or refresh for real.
         """
         c = self.c
         try:
@@ -162,31 +179,62 @@ class RuntimeHelper:
                 self.logger.error("Token refresh service unavailable; cannot refresh GitLab token.")
                 return False
 
-            config_path = f"/services/connectors/{c.connector_id}/config"
-            config = await c.config_service.get_config(config_path)
-            if not config:
-                self.logger.error("Connector config not found; cannot refresh GitLab token.")
-                return False
-
-            auth_config = config.get("auth", {}) or {}
-            if auth_config.get("authType", "OAUTH") == "API_TOKEN":
-                self.logger.debug("API_TOKEN auth does not use OAuth refresh.")
-                return False
-
-            refresh_token = (config.get("credentials") or {}).get("refresh_token")
-            if not refresh_token:
-                self.logger.error("No refresh token in connector config; cannot refresh GitLab token.")
-                return False
-
-            connector_type = (
-                c.connector_name.value if hasattr(c.connector_name, "value") else str(c.connector_name)
+            # Snapshot BEFORE queuing on the lock. The winner ends its critical
+            # section by pushing the rotated token into the client, so a waiter
+            # that only compares etcd against the client finds them equal and
+            # refreshes again. Worse than pointless: TokenRefreshService already
+            # serialises per connector and hands a waiter the winner's token for
+            # free when the token it passes is stale — re-reading config inside
+            # this lock passes a *fresh* token instead, defeating that
+            # short-circuit and turning N concurrent 401s into N provider
+            # refreshes. Comparing against the value held on entry is what
+            # actually detects "somebody refreshed while we waited".
+            token_at_entry = (
+                c.external_client.get_client().get_token() if c.external_client else None
             )
-            await refresh_service.refresh_now(
-                c.connector_id, connector_type, refresh_token, **self._get_refresh_kwargs(c)
-            )
-            # Sync the SDK with the new token from etcd
-            await self.refresh_token_if_needed()
-            return True
+            async with self._token_refresh_lock:
+                current_token = (
+                    c.external_client.get_client().get_token() if c.external_client else None
+                )
+                if token_at_entry and current_token and current_token != token_at_entry:
+                    self.logger.info(
+                        "GitLab token was refreshed while this 401 waited; reusing it."
+                    )
+                    return True
+
+                config_path = f"/services/connectors/{c.connector_id}/config"
+                config = await c.config_service.get_config(config_path)
+                if not config:
+                    self.logger.error("Connector config not found; cannot refresh GitLab token.")
+                    return False
+
+                auth_config = config.get("auth", {}) or {}
+                if auth_config.get("authType", "OAUTH") == "API_TOKEN":
+                    self.logger.debug("API_TOKEN auth does not use OAuth refresh.")
+                    return False
+
+                stored_access_token = (config.get("credentials") or {}).get("access_token", "")
+                if stored_access_token and current_token and stored_access_token != current_token:
+                    self.logger.info(
+                        "GitLab token already rotated by a concurrent refresh; applying it."
+                    )
+                    self._apply_access_token_to_clients(stored_access_token)
+                    return True
+
+                refresh_token = (config.get("credentials") or {}).get("refresh_token")
+                if not refresh_token:
+                    self.logger.error("No refresh token in connector config; cannot refresh GitLab token.")
+                    return False
+
+                connector_type = (
+                    c.connector_name.value if hasattr(c.connector_name, "value") else str(c.connector_name)
+                )
+                await refresh_service.refresh_now(
+                    c.connector_id, connector_type, refresh_token, **self._get_refresh_kwargs(c)
+                )
+                # Sync the SDK with the new token from etcd
+                await self.refresh_token_if_needed()
+                return True
         except Exception as e:
             self.logger.error("GitLab OAuth token refresh failed: %s", e, exc_info=True)
             return False

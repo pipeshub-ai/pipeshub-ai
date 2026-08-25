@@ -87,9 +87,22 @@ class IssuesSync:
         all_issues = issues_res.data
         self.logger.info("Fetched %s issues for project %s; processing in batches", len(all_issues), project_id)
 
+        # The sweep owns checkpoint advancement. The listing is sorted
+        # ``updated asc``, so committing a later batch's timestamp after an
+        # earlier batch failed would move the checkpoint past the failed
+        # items and they would never be re-fetched.
+        watermarks: dict[str, int] = {}
         for i in range(0, len(all_issues), c.batch_size):
             batch_records = await self._build_issue_records(all_issues[i : i + c.batch_size])
-            await self.process_new_records(batch_records)
+            if not await self.process_new_records(batch_records, watermarks):
+                self.logger.warning(
+                    "Issue batch failed for project %s at offset %s; stopping so the "
+                    "checkpoint stays behind the failure instead of skipping past it.",
+                    project_id, i,
+                )
+                return
+        for group_id, last_sync_time in watermarks.items():
+            await self._update_sync_checkpoint(group_id, last_sync_time)
 
     # ------------------------------------------------------------------
     # Record building
@@ -207,30 +220,45 @@ class IssuesSync:
     # Record persistence + checkpoint advancement
     # ------------------------------------------------------------------
 
-    async def process_new_records(self, batch_records: list[RecordUpdate]) -> None:
-        """Persist a batch of records and advance the appropriate sync checkpoint."""
+    async def process_new_records(
+        self, batch_records: list[RecordUpdate], watermarks: dict[str, int] | None = None
+    ) -> bool:
+        """Persist records; return ``False`` on the first failed write.
+
+        When ``watermarks`` is supplied the caller owns checkpoint advancement:
+        the highest ``source_updated_at`` per record group accumulates there and
+        is committed once the whole sweep succeeds. Without it (stream-time
+        attachment persists, whose records are FILEs) the checkpoint is written
+        inline — which is only safe for callers not walking an ``updated asc``
+        listing.
+        """
         c = self.c
-        need_sync_update: bool = True
+        if not batch_records:
+            return True
         for i in range(0, len(batch_records), c.batch_size):
             batch = batch_records[i : i + c.batch_size]
             batch_sent = [(ru.record, ru.new_permissions) for ru in batch]
             try:
                 await c.data_entities_processor.on_new_records(batch_sent)
-                if not need_sync_update:
-                    continue
-                last_sync_time = None
-                project_id: str | None = None
-                for record_update in batch:
-                    if record_update.record.record_type in (RecordType.TICKET, RecordType.PULL_REQUEST):
-                        last_sync_time = record_update.record.source_updated_at
-                        project_id = record_update.record.external_record_group_id
-                if project_id and last_sync_time:
-                    await self._update_sync_checkpoint(project_id, last_sync_time)
             except Exception as e:
-                self.logger.error("Error processing batch of records: %s", e)
-                need_sync_update = False
+                self.logger.error("Error processing batch of records: %s", e, exc_info=True)
+                return False
+            for record_update in batch:
+                if record_update.record.record_type not in (
+                    RecordType.TICKET.value, RecordType.PULL_REQUEST.value
+                ):
+                    continue
+                last_sync_time = record_update.record.source_updated_at
+                group_id = record_update.record.external_record_group_id
+                if not (group_id and last_sync_time):
+                    continue
+                if watermarks is None:
+                    await self._update_sync_checkpoint(group_id, last_sync_time)
+                else:
+                    watermarks[group_id] = max(watermarks.get(group_id, 0), last_sync_time)
 
         self.logger.info("Processed %s records", len(batch_records))
+        return True
 
     # ------------------------------------------------------------------
     # Content streaming (block building)

@@ -44,6 +44,9 @@ from app.modules.parsers.code_parser.lang_config import detect_language
 from .constants import (
     GITLAB_COMPARE_DIFF_LIMIT,
     PREVIEW_RENDERABLE_EXTENSIONS,
+    _GITLAB_BACKFILL_CONCURRENCY,
+    _GITLAB_TREE_PAGE_MAX_ATTEMPTS,
+    _GITLAB_TREE_PAGE_RETRY_BACKOFF_SECONDS,
 )
 from .models import GitlabLiterals, RecordUpdate
 
@@ -158,129 +161,57 @@ class ReposSync:
     # ------------------------------------------------------------------
 
     async def _sync_repo_full(self, project_id: int, project_path: str) -> bool:
-        """Full sync of default-branch folders and blobs via paginated GraphQL.
+        """Full sync of default-branch folders and blobs via one paginated GraphQL walk.
+
+        Each page's folders and blobs are persisted immediately so only ~2 pages
+        of entries are in memory at any time (the page being processed plus the
+        page being pre-fetched). When a blob arrives before its parent folder
+        the data-entities processor auto-creates a placeholder folder record;
+        the real folder record (from the same or a later page) upgrades it in
+        place — no data is lost.
 
         Returns ``True`` when sync completed without API errors, ``False`` on
         recoverable error (caller must not advance checkpoint).
         """
-        c = self.c
-        # Phase 1: collect all folder (tree) nodes
-        tree_list: list[dict[str, Any]] = []
         after_cursor = ""
-        while True:
-            try:
-                tree_res = await c.runtime.ds_call_async(
-                    c.data_source.get_repo_tree_g, project_id=project_path, ref="HEAD", after_cursor=after_cursor,
-                )
-            except Exception as e:
-                self.logger.error("Error fetching tree for project %s: %s", project_id, e)
-                return False
-            if not tree_res.data:
-                self.logger.info("No tree found for project %s", project_id)
-                return True
-            data: dict[str, Any] = json.loads(tree_res.data)
-            project = (data.get("data") or {}).get("project") or {}
-            repository = project.get("repository") or {}
-            paginated_tree = repository.get("paginatedTree") or {}
-            if not paginated_tree:
-                self.logger.info(
-                    "No repository tree for project %s (empty repo, missing scope, or archived); "
-                    "skipping code sync", project_id,
-                )
-                return True
-            project_nodes = paginated_tree.get("nodes") or []
-            page_info = paginated_tree.get("pageInfo") or {}
-            if not project_nodes:
-                if tree_list:
-                    break
-                self.logger.info("No project nodes found for project %s", project_id)
-                return True
-            t_nodes: dict[str, Any] = project_nodes[0]
-            file_path_nodes: list[dict[str, Any]] = (t_nodes.get("trees") or {}).get("nodes") or []
-            tree_list.extend(file_path_nodes)
-            continue_paging, after_cursor = _should_continue_repo_tree_pagination(
-                len(file_path_nodes), len(tree_list), page_info
-            )
-            if not continue_paging:
-                break
+        folders_walked = 0
+        blobs_walked = 0
+        any_data = False
+        all_ok = True
 
-        # Phase 2: persist folder records top-down (parents before children)
-        external_group_id = f"{project_id}-code-repository"
-        level_wise_files: dict[int, list[dict[str, Any]]] = {}
-        for item in tree_list:
-            if item.get("type") != "tree":
-                continue
-            level_wise_files.setdefault((item.get("path") or "").count("/"), []).append(item)
-
-        for _level, files in sorted(level_wise_files.items()):
-            list_records_new: list[RecordUpdate] = []
-            for file in files:
-                file_path = file.get("path") or ""
-                file_name = file.get("name")
-                file_hash = file.get("sha")
-                external_record_id = file.get("webPath")
-                weburl = file.get("webUrl")
-                if not external_record_id or not file_name:
-                    self.logger.warning("Skipping tree %s: missing webPath/name", file_path)
-                    continue
-                parent_external_record_id = (
-                    external_record_id.rpartition("/")[0] if "/" in file_path else None
-                )
-                tree_record = FileRecord(
-                    id=str(uuid.uuid4()),
-                    org_id=c.data_entities_processor.org_id,
-                    record_name=str(file_name),
-                    record_type=RecordType.FILE.value,
-                    connector_name=c.connector_name,
-                    connector_id=c.connector_id,
-                    external_record_id=external_record_id,
-                    version=0,
-                    origin=OriginTypes.CONNECTOR.value,
-                    record_group_type=RecordGroupType.PROJECT.value,
-                    external_record_group_id=external_group_id,
-                    mime_type=MimeTypes.FOLDER.value,
-                    external_revision_id=str(file_hash),
-                    preview_renderable=False,
-                    parent_external_record_id=parent_external_record_id,
-                    parent_record_type=(RecordType.FILE if parent_external_record_id else None),
-                    is_file=False,
-                    inherit_permissions=True,
-                    weburl=weburl,
-                )
-                list_records_new.append(RecordUpdate(
-                    record=tree_record, is_new=True, is_updated=False, is_deleted=False,
-                    metadata_changed=False, content_changed=False, permissions_changed=False,
-                    external_record_id=str(external_record_id), new_permissions=[], old_permissions=[],
-                ))
-            if list_records_new:
-                await self._process_records(list_records_new)
-
-        # Phase 3: depth-1 pipelining — fetch blob page N+1 while processing page N
-        after_cursor = ""
-        blobs_processed = 0
-        pending: asyncio.Task[tuple[str, list[dict[str, Any]], dict[str, Any]]] | None = (
-            asyncio.create_task(self._fetch_blob_page(project_path, project_id, after_cursor))
+        pending: asyncio.Task[tuple[str, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]] | None = (
+            asyncio.create_task(self._fetch_entries_page(project_path, project_id, after_cursor))
         )
         try:
             while pending is not None:
-                kind, file_path_nodes, page_info = await pending
+                kind, page_trees, page_blobs, page_info = await pending
                 pending = None
                 if kind == "abort":
                     return False
-                if kind == "no_nodes":
-                    if blobs_processed == 0:
-                        self.logger.info("No project nodes found for project %s", project_id)
+                if kind == "empty":
                     break
-                continue_paging, after_cursor = _should_continue_repo_tree_pagination(
-                    len(file_path_nodes), blobs_processed + len(file_path_nodes), page_info,
-                )
+                any_data = True
+                continue_paging, next_cursor = _should_continue_repo_tree_pagination(page_info)
+                if continue_paging and next_cursor == after_cursor:
+                    self.logger.error(
+                        "Repository walk for project %s stalled: cursor %r did not advance; "
+                        "stopping without advancing the checkpoint.",
+                        project_id, next_cursor,
+                    )
+                    return False
+                after_cursor = next_cursor
                 if continue_paging:
                     pending = asyncio.create_task(
-                        self._fetch_blob_page(project_path, project_id, after_cursor)
+                        self._fetch_entries_page(project_path, project_id, after_cursor)
                     )
-                if file_path_nodes:
-                    await self.build_code_file_records(file_path_nodes, project_id, project_path)
-                    blobs_processed += len(file_path_nodes)
+                if page_trees:
+                    all_ok = await self._persist_folder_records(page_trees, project_id) and all_ok
+                    folders_walked += len(page_trees)
+                if page_blobs:
+                    all_ok = await self.build_code_file_records(
+                        page_blobs, project_id, project_path
+                    ) and all_ok
+                    blobs_walked += len(page_blobs)
         finally:
             if pending is not None and not pending.done():
                 pending.cancel()
@@ -289,47 +220,139 @@ class ReposSync:
                 except (asyncio.CancelledError, Exception):
                     pass
 
+        if not any_data:
+            self.logger.info("No repository entries found for project %s", project_id)
+            return True
+
+        self.logger.info(
+            "Full code sync for project %s: %s folder(s), %s file(s) walked%s",
+            project_id, folders_walked, blobs_walked,
+            "" if all_ok else " (INCOMPLETE - checkpoint withheld)",
+        )
+        return all_ok
+
+    async def _persist_folder_records(
+        self, tree_nodes: list[dict[str, Any]], project_id: int
+    ) -> bool:
+        """Persist folder records from a single page in one batch."""
+        external_group_id = f"{project_id}-code-repository"
+        code_files_enabled = self._code_files_indexing_enabled()
+
+        updates: list[RecordUpdate] = []
+        for item in tree_nodes:
+            if item.get("type") != "tree":
+                continue
+            file_path = item.get("path") or ""
+            file_name = item.get("name")
+            external_record_id = item.get("webPath")
+            if not external_record_id or not file_name:
+                self.logger.warning("Skipping tree %s: missing webPath/name", file_path)
+                continue
+            parent_external_record_id = (
+                external_record_id.rpartition("/")[0] if "/" in file_path else None
+            )
+            tree_record = self._build_folder_record(
+                folder_name=str(file_name),
+                external_record_id=external_record_id,
+                weburl=item.get("webUrl"),
+                folder_hash=item.get("sha"),
+                external_group_id=external_group_id,
+                parent_external_record_id=parent_external_record_id,
+                code_files_enabled=code_files_enabled,
+            )
+            updates.append(RecordUpdate(
+                record=tree_record, is_new=True, is_updated=False, is_deleted=False,
+                metadata_changed=False, content_changed=False, permissions_changed=False,
+                external_record_id=str(external_record_id), new_permissions=[], old_permissions=[],
+            ))
+        if updates:
+            return await self._process_records(updates)
         return True
 
-    async def _fetch_blob_page(
+    async def _fetch_entries_page(
         self, project_path: str, project_id: int, after_cursor: str
-    ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
-        """Fetch a single ``paginatedTree`` blob page. Returns ``(kind, nodes, page_info)``."""
+    ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+        """Fetch one ``paginatedTree`` page. Returns ``(kind, trees, blobs, page_info)``.
+
+        ``kind`` is ``"data"``, ``"empty"`` (nothing left to walk — empty repo,
+        archived, missing scope, or a page past the end) or ``"abort"`` (the
+        caller must not advance the checkpoint).
+
+        Transport failures are retried ``_GITLAB_TREE_PAGE_MAX_ATTEMPTS`` times
+        with exponential backoff before aborting: one transiently slow page must
+        not throw away an otherwise-successful walk of a huge repository. A
+        GraphQL ``errors`` payload aborts immediately — that is a permissions or
+        query-shape problem a retry cannot change.
+        """
+        last_error: str | None = None
+        for attempt in range(1, _GITLAB_TREE_PAGE_MAX_ATTEMPTS + 1):
+            if attempt > 1:
+                delay = _GITLAB_TREE_PAGE_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 2))
+                self.logger.warning(
+                    "Retrying repository entries page for project %s "
+                    "(attempt %s/%s, cursor=%r) in %.0fs: %s",
+                    project_id, attempt, _GITLAB_TREE_PAGE_MAX_ATTEMPTS,
+                    after_cursor, delay, last_error,
+                )
+                await asyncio.sleep(delay)
+            kind, trees, blobs, page_info, last_error = await self._fetch_entries_page_once(
+                project_path, project_id, after_cursor
+            )
+            if kind != "retry":
+                return kind, trees, blobs, page_info
+
+        self.logger.error(
+            "Repository entries page failed after %s attempts for project %s "
+            "(cursor=%r): %s",
+            _GITLAB_TREE_PAGE_MAX_ATTEMPTS, project_id, after_cursor, last_error,
+        )
+        return "abort", [], [], {}
+
+    async def _fetch_entries_page_once(
+        self, project_path: str, project_id: int, after_cursor: str
+    ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], str | None]:
+        """One attempt at a ``paginatedTree`` page.
+
+        Returns ``(kind, trees, blobs, page_info, error)`` where ``kind`` adds
+        ``"retry"`` (transient transport failure) to the caller-facing kinds.
+        """
         c = self.c
         empty: list[dict[str, Any]] = []
         try:
-            tree_res = await c.runtime.ds_call_async(
-                c.data_source.get_file_tree_g, project_id=project_path, ref="HEAD", after_cursor=after_cursor,
+            res = await c.runtime.ds_call_async(
+                c.data_source.get_repo_entries_g,
+                project_id=project_path, ref="HEAD", after_cursor=after_cursor,
             )
         except Exception as e:
-            self.logger.error("Error fetching file tree for project %s: %s", project_id, e)
-            return "abort", empty, {}
-        if not tree_res.success or not tree_res.data:
-            self.logger.error("Error fetching file tree for project %s: %s", project_id, tree_res.error)
-            return "abort", empty, {}
+            return "retry", empty, empty, {}, f"{type(e).__name__}: {e}"
+        if not res.success or not res.data:
+            return "retry", empty, empty, {}, res.error or "empty response body"
         try:
-            data: dict[str, Any] = json.loads(tree_res.data)
+            data: dict[str, Any] = json.loads(res.data)
         except json.JSONDecodeError as e:
-            self.logger.error("Failed to parse file tree JSON for project %s: %s", project_id, e)
-            return "abort", empty, {}
+            # A truncated body is a transport problem, not a semantic one.
+            return "retry", empty, empty, {}, f"malformed JSON: {e}"
         if "errors" in data:
-            self.logger.error("GraphQL errors for project %s: %s", project_id, json.dumps(data["errors"]))
-            return "abort", empty, {}
+            self.logger.error(
+                "GraphQL errors for project %s: %s", project_id, json.dumps(data["errors"])
+            )
+            return "abort", empty, empty, {}, None
+
         project = (data.get("data") or {}).get("project") or {}
-        repository = project.get("repository") or {}
-        paginated_tree = repository.get("paginatedTree") or {}
+        paginated_tree = (project.get("repository") or {}).get("paginatedTree") or {}
         if not paginated_tree:
             self.logger.info(
                 "No repository tree for project %s (empty repo, missing scope, or archived)", project_id
             )
-            return "abort", empty, {}
-        project_nodes = paginated_tree.get("nodes") or []
+            return "empty", empty, empty, {}, None
+        nodes = paginated_tree.get("nodes") or []
         page_info = paginated_tree.get("pageInfo") or {}
-        if not project_nodes:
-            return "no_nodes", empty, page_info
-        t_nodes: dict[str, Any] = project_nodes[0]
-        file_path_nodes: list[dict[str, Any]] = (t_nodes.get("blobs") or {}).get("nodes") or []
-        return "data", file_path_nodes, page_info
+        if not nodes:
+            return "empty", empty, empty, page_info, None
+        entry: dict[str, Any] = nodes[0]
+        trees = (entry.get("trees") or {}).get("nodes") or []
+        blobs = (entry.get("blobs") or {}).get("nodes") or []
+        return "data", trees, blobs, page_info, None
 
     # ------------------------------------------------------------------
     # Incremental sync
@@ -510,6 +533,7 @@ class ReposSync:
                         name_map[str(entry_path)] = str(entry_name)
 
         external_group_id = f"{project_id}-code-repository"
+        code_files_enabled = self._code_files_indexing_enabled()
 
         moves: list[tuple[str, Any, list[Any]]] = []
         for old_path, new_path in renames:
@@ -537,6 +561,7 @@ class ReposSync:
                 blob_sha=blob_sha,
                 external_group_id=external_group_id,
                 parent_external_record_id=parent_external_record_id,
+                code_files_enabled=code_files_enabled,
             )
             old_external_id = _code_blob_web_path(project_path, old_path)
             moves.append((old_external_id, new_record, []))
@@ -594,7 +619,7 @@ class ReposSync:
                                "webPath": web_path, "webUrl": f"{c._gitlab_base_url}{web_path}"})
 
         if nodes:
-            await self.build_code_file_records(nodes, project_id, project_path)
+            all_ok = await self.build_code_file_records(nodes, project_id, project_path) and all_ok
         return all_ok
 
     async def _delete_code_files_by_paths(
@@ -615,7 +640,17 @@ class ReposSync:
     async def _ensure_folder_records_for_paths(
         self, project_id: int, project_path: str, file_paths: list[str], ref: str = "HEAD"
     ) -> None:
-        """Create missing folder records for parent directories of changed files."""
+        """Create missing folder records for parent directories of changed files.
+
+        No API call is needed: a file at ``a/b/c.py`` implies ``a`` and ``a/b``
+        exist in the tree, and the folder's name and web paths are derivable
+        from the path string. Only the DB existence check needs a lookup. The
+        previous version issued one ``list_repo_tree`` call per prefix purely to
+        read back a name it already had.
+
+        The folder's tree SHA is left unset for the same reason: it is not
+        needed to address the record, and fetching it was the whole cost.
+        """
         c = self.c
         prefixes: set[str] = set()
         for repo_path in file_paths:
@@ -624,47 +659,29 @@ class ReposSync:
                 prefixes.add("/".join(parts[:i]))
         if not prefixes:
             return
+
         external_group_id = f"{project_id}-code-repository"
+        code_files_enabled = self._code_files_indexing_enabled()
         record_updates: list[RecordUpdate] = []
 
         for prefix in sorted(prefixes, key=lambda p: p.count("/")):
-            tree_external_id = _code_tree_web_path(project_path, prefix)
-            existing = await c.data_entities_processor.get_record_by_external_id(c.connector_id, tree_external_id)
+            web_path = _code_tree_web_path(project_path, prefix)
+            existing = await c.data_entities_processor.get_record_by_external_id(
+                c.connector_id, web_path
+            )
             if existing:
                 continue
             parent_prefix = prefix.rpartition("/")[0] if "/" in prefix else None
-            tree_res = await c.runtime.paged_list(
-                c.data_source.list_repo_tree, project_id=project_id, ref=ref, path=parent_prefix, recursive=False,
-                progress_label=f"folder tree {parent_prefix or '/'} project {project_id}",
-            )
-            if not tree_res.success or not tree_res.data:
-                self.logger.warning("Could not list repo tree for folder %r in project %s", prefix, project_id)
-                continue
-            folder_entry = None
-            for entry in tree_res.data:
-                entry_path = entry.get("path") if isinstance(entry, dict) else getattr(entry, "path", None)
-                entry_type = entry.get("type") if isinstance(entry, dict) else getattr(entry, "type", None)
-                if entry_path == prefix and entry_type == "tree":
-                    folder_entry = entry
-                    break
-            if folder_entry is None:
-                continue
-            folder_name = folder_entry.get("name") if isinstance(folder_entry, dict) else getattr(folder_entry, "name", None)
-            folder_hash = folder_entry.get("id") if isinstance(folder_entry, dict) else getattr(folder_entry, "id", None)
-            if not folder_name:
-                continue
-            web_path = _code_tree_web_path(project_path, prefix)
-            weburl = f"{c._gitlab_base_url}{web_path}"
-            parent_external_record_id = _code_tree_web_path(project_path, parent_prefix) if parent_prefix else None
-            tree_record = FileRecord(
-                id=str(uuid.uuid4()), org_id=c.data_entities_processor.org_id, record_name=str(folder_name),
-                record_type=RecordType.FILE.value, connector_name=c.connector_name, connector_id=c.connector_id,
-                external_record_id=web_path, version=0, origin=OriginTypes.CONNECTOR.value,
-                record_group_type=RecordGroupType.PROJECT.value, external_record_group_id=external_group_id,
-                mime_type=MimeTypes.FOLDER.value, external_revision_id=str(folder_hash) if folder_hash else "",
-                preview_renderable=False, parent_external_record_id=parent_external_record_id,
-                parent_record_type=(RecordType.FILE if parent_external_record_id else None),
-                is_file=False, inherit_permissions=True, weburl=weburl,
+            tree_record = self._build_folder_record(
+                folder_name=prefix.rsplit("/", 1)[-1],
+                external_record_id=web_path,
+                weburl=f"{c._gitlab_base_url}{web_path}",
+                folder_hash=None,
+                external_group_id=external_group_id,
+                parent_external_record_id=(
+                    _code_tree_web_path(project_path, parent_prefix) if parent_prefix else None
+                ),
+                code_files_enabled=code_files_enabled,
             )
             record_updates.append(RecordUpdate(
                 record=tree_record, is_new=True, is_updated=False, is_deleted=False,
@@ -708,6 +725,51 @@ class ReposSync:
     # Code file record building
     # ------------------------------------------------------------------
 
+    def _build_folder_record(
+        self,
+        *,
+        folder_name: str,
+        external_record_id: str,
+        weburl: str | None,
+        folder_hash: str | None,
+        external_group_id: str,
+        parent_external_record_id: str | None,
+        code_files_enabled: bool,
+    ) -> FileRecord:
+        """Build the record for one repository folder.
+
+        Stamped with the same indexing flag as the code files it contains:
+        folders hold no content, so publishing indexing events for them while
+        their files are AUTO_INDEX_OFF is pure waste — one Kafka message, one
+        consumer dispatch and two status writes per folder, for a filter the
+        user explicitly turned off.
+        """
+        c = self.c
+        record = FileRecord(
+            id=str(uuid.uuid4()),
+            org_id=c.data_entities_processor.org_id,
+            record_name=folder_name,
+            record_type=RecordType.FILE.value,
+            connector_name=c.connector_name,
+            connector_id=c.connector_id,
+            external_record_id=external_record_id,
+            version=0,
+            origin=OriginTypes.CONNECTOR.value,
+            record_group_type=RecordGroupType.PROJECT.value,
+            external_record_group_id=external_group_id,
+            mime_type=MimeTypes.FOLDER.value,
+            external_revision_id=str(folder_hash) if folder_hash else "",
+            preview_renderable=False,
+            parent_external_record_id=parent_external_record_id,
+            parent_record_type=(RecordType.FILE if parent_external_record_id else None),
+            is_file=False,
+            inherit_permissions=True,
+            weburl=weburl,
+        )
+        if not code_files_enabled:
+            record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        return record
+
     def _build_blob_record(
         self,
         *,
@@ -718,6 +780,7 @@ class ReposSync:
         blob_sha: str | None,
         external_group_id: str,
         parent_external_record_id: str | None,
+        code_files_enabled: bool,
         source_created_at: int | None = None,
         source_updated_at: int | None = None,
     ) -> CodeFileRecord:
@@ -755,7 +818,7 @@ class ReposSync:
             mime_type=_blob_mime_type(file_name, extension),
             extension=extension,
             external_revision_id=str(blob_sha) if blob_sha else "",
-            preview_renderable=extension in PREVIEW_RENDERABLE_EXTENSIONS if extension else False,
+            preview_renderable=extension in PREVIEW_RENDERABLE_EXTENSIONS if extension else True,
             file_path=file_path,
             file_hash=blob_sha,
             inherit_permissions=True,
@@ -766,7 +829,7 @@ class ReposSync:
             source_updated_at=source_updated_at,
         )
 
-        if not self._code_files_indexing_enabled():
+        if not code_files_enabled:
             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         return record
 
@@ -777,6 +840,7 @@ class ReposSync:
         list_records_new: list[RecordUpdate] = []
         files_skipped = 0
         external_group_id = f"{project_id}-code-repository"
+        code_files_enabled = self._code_files_indexing_enabled()
 
         for file in code_file_list:
             file_path = file.get("path") or ""
@@ -808,6 +872,7 @@ class ReposSync:
                 blob_sha=file_hash,
                 external_group_id=external_group_id,
                 parent_external_record_id=parent_external_record_id,
+                code_files_enabled=code_files_enabled,
             )
             list_records_new.append(RecordUpdate(
                 record=blob_record, is_new=True, is_updated=False, is_deleted=False,
@@ -816,9 +881,11 @@ class ReposSync:
             ))
 
         if list_records_new:
-            await self._process_records(list_records_new)
+            ok = await self._process_records(list_records_new)
             if files_skipped:
                 self.logger.info("Processed %s code file records; %s skipped (non-indexable/missing metadata)", len(list_records_new), files_skipped)
+            return ok
+        return True
 
     # ------------------------------------------------------------------
     # Content streaming
@@ -901,7 +968,17 @@ class ReposSync:
             c._code_file_timestamp_backfill_task = None
 
     async def _run_code_file_timestamp_backfill(self, project_id: int) -> None:
-        """Backfill timestamps for code files with null created/updated timestamps."""
+        """Backfill timestamps for code files with null created/updated timestamps.
+
+        Never fabricates Record objects from raw graph nodes — that drops
+        type-document fields (file_path, extension, file_hash) and corrupts
+        the stored record on write-back. Instead, only record IDs and paths
+        are extracted from the node dicts, and timestamps are written via
+        ``batch_update_nodes`` (a partial merge that touches only the named
+        properties).
+        """
+        from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
         c = self.c
         batch_size = 100
         try:
@@ -916,17 +993,28 @@ class ReposSync:
                         "sourceCreatedAtTimestamp": None, "sourceLastModifiedTimestamp": None,
                     },
                 )
-            path_to_records: dict[str, list[CodeFileRecord]] = {}
+
+            path_to_record_ids: dict[str, list[str]] = {}
             for node in nodes:
                 if node.get("isDeleted"):
                     continue
-                code_file = CodeFileRecord.from_arango_record({}, node)
-                file_path = code_file.file_path or _repo_path_from_blob_web_url(code_file.weburl)
+                record_id = node.get("id") or node.get("_key")
+                external_id = node.get("externalRecordId") or ""
+                if not record_id:
+                    continue
+                file_path = _repo_path_from_blob_web_url(external_id)
+                if not file_path:
+                    file_path = _repo_path_from_blob_web_url(node.get("webUrl"))
                 if not file_path:
                     continue
-                path_to_records.setdefault(file_path, []).append(code_file)
+                path_to_record_ids.setdefault(file_path, []).append(record_id)
 
-            file_paths = list(path_to_records.keys())
+            file_paths = list(path_to_record_ids.keys())
+            if file_paths:
+                self.logger.info(
+                    "Timestamp backfill for project %s: %s file(s) pending.",
+                    project_id, len(file_paths),
+                )
             for offset in range(0, len(file_paths), batch_size):
                 await c.runtime.refresh_token_if_needed()
                 batch_paths = file_paths[offset:offset + batch_size]
@@ -935,23 +1023,27 @@ class ReposSync:
                 except Exception as e:
                     self.logger.warning("Failed to fetch timestamps for project %s: %s", project_id, e)
                     continue
+                patches: list[dict[str, Any]] = []
                 for file_path in batch_paths:
                     created_ms, updated_ms = timestamp_by_path.get(file_path, (None, None))
                     if created_ms is None and updated_ms is None:
                         continue
-                    for record in path_to_records[file_path]:
-                        if record.source_created_at == created_ms and record.source_updated_at == updated_ms:
-                            continue
-                        try:
-                            updated_record = record.model_copy(
-                                update={"source_created_at": created_ms, "source_updated_at": updated_ms}
-                            )
-                            await c.data_entities_processor.on_record_metadata_update(updated_record)
-                        except Exception as e:
-                            self.logger.warning(
-                                "Failed to update timestamps for record %s path %s: %s",
-                                record.id, file_path, e,
-                            )
+                    for record_id in path_to_record_ids[file_path]:
+                        patch: dict[str, Any] = {"id": record_id, "updatedAtTimestamp": get_epoch_timestamp_in_ms()}
+                        if created_ms is not None:
+                            patch["sourceCreatedAtTimestamp"] = created_ms
+                        if updated_ms is not None:
+                            patch["sourceLastModifiedTimestamp"] = updated_ms
+                        patches.append(patch)
+                if patches:
+                    try:
+                        async with c.data_store_provider.transaction() as tx_store:
+                            await tx_store.batch_update_nodes(patches, CollectionNames.RECORDS.value)
+                    except Exception as e:
+                        self.logger.warning(
+                            "Failed to patch %s timestamp(s) for project %s: %s",
+                            len(patches), project_id, e,
+                        )
         except Exception as e:
             self.logger.error(
                 "Code file timestamp backfill failed for project %s: %s", project_id, e, exc_info=True,
@@ -972,7 +1064,7 @@ class ReposSync:
 
     async def _fetch_code_file_timestamps_batch(self, project_id: int, paths: list[str]) -> dict[str, tuple[int | None, int | None]]:
         """Fetch commit-history timestamps for many paths (bounded concurrency)."""
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(_GITLAB_BACKFILL_CONCURRENCY)
         results: dict[str, tuple[int | None, int | None]] = {}
 
         async def fetch_one(path: str) -> None:
@@ -1001,15 +1093,23 @@ class ReposSync:
     # Record persistence helper
     # ------------------------------------------------------------------
 
-    async def _process_records(self, records: list[RecordUpdate]) -> None:
-        """Persist a batch of RecordUpdate objects."""
+    async def _process_records(self, records: list[RecordUpdate]) -> bool:
+        """Persist a batch of RecordUpdate objects; ``False`` if the write failed.
+
+        Callers walking a repository must fold this into their return value: a
+        swallowed failure that still advances the code-repo checkpoint sends the
+        next run down the incremental path, so the records that were never
+        written are never retried.
+        """
         if not records:
-            return
+            return True
         batch_sent = [(ru.record, ru.new_permissions) for ru in records]
         try:
             await self.c.data_entities_processor.on_new_records(batch_sent)
         except Exception as e:
             self.logger.error("Error persisting repo records: %s", e, exc_info=True)
+            return False
+        return True
 
 
 # ------------------------------------------------------------------
@@ -1030,15 +1130,18 @@ def _branch_head_commit_sha(branch_data: Any) -> str | None:
     return str(sha) if sha else None
 
 
-def _should_continue_repo_tree_pagination(
-    raw_nodes_fetched: int, total_collected: int, page_info: dict[str, Any]
-) -> tuple[bool, str]:
-    """Whether to fetch another ``paginatedTree`` page and the next cursor."""
+def _should_continue_repo_tree_pagination(page_info: dict[str, Any]) -> tuple[bool, str]:
+    """Whether to fetch another ``paginatedTree`` page, and the next cursor.
+
+    ``hasNextPage`` is the only safe terminator. An earlier version also
+    stopped when a page yielded no nodes of the type being collected, but
+    ``paginatedTree`` returns folders and files interleaved in one stream: a
+    directory holding 100+ files produces a page with zero folders, which is
+    ordinary mid-walk output, not the end of the repository.
+    """
     has_next = bool(page_info.get("hasNextPage"))
     end_cursor = page_info.get("endCursor") or ""
     if not has_next or not end_cursor:
-        return False, ""
-    if raw_nodes_fetched == 0 and total_collected > 0:
         return False, ""
     return True, end_cursor
 
