@@ -755,7 +755,7 @@ class BlobStorage(Transformer):
                     org_id, record_id, virtual_record_id, record_dict
                 )
         else:
-            self.logger.info(
+            self.logger.debug(
                 "📄 No existing storage doc for vrid %s, creating new document",
                 virtual_record_id
             )
@@ -1218,7 +1218,7 @@ class BlobStorage(Transformer):
             if nodes:
                 return self._shape_document_lookup(nodes[0])
             else:
-                self.logger.info("No document ID found for virtual record ID: %s", virtual_record_id)
+                self.logger.debug("No document ID found for virtual record ID: %s", virtual_record_id)
                 return None
         except Exception as e:
             self.logger.exception(
@@ -1356,7 +1356,7 @@ class BlobStorage(Transformer):
                 lookup_result = await self.get_document_id_by_virtual_record_id(virtual_record_id)
 
             if not lookup_result:
-                self.logger.info("No document ID found for virtual record ID: %s", virtual_record_id)
+                self.logger.debug("No document ID found for virtual record ID: %s", virtual_record_id)
                 return None
 
             document_id = lookup_result.get("record_doc_id")

@@ -411,7 +411,7 @@ export const getConnectorRegistry =
         throw new UnauthorizedError('User authentication required');
       }
 
-      logger.info(`Getting connector registry for user ${userId}`);
+      logger.debug(`Getting connector registry for user ${userId}`);
 
       const queryParams = new URLSearchParams();
       if (scope) {
@@ -1704,7 +1704,7 @@ async (
       throw new UnauthorizedError('User authentication required');
     }
 
-    logger.info(`Getting connector registry for user ${userId}`);
+    logger.debug(`Getting active agent instances for user ${userId}`);
 
     const queryParams = new URLSearchParams();
     if (scope) {

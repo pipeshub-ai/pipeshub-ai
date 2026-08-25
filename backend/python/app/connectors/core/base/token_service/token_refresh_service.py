@@ -235,7 +235,7 @@ class TokenRefreshService:
             # 2. Filter for authenticated OAuth connectors
             authenticated_connectors = await self._filter_authenticated_oauth_connectors(connectors)
 
-            self.logger.info(f"Found {len(authenticated_connectors)} authenticated OAuth connectors to refresh")
+            self.logger.debug(f"Found {len(authenticated_connectors)} authenticated OAuth connectors to refresh")
 
             # 3. Process each connector for refresh
             await self._process_connectors_for_refresh(authenticated_connectors)

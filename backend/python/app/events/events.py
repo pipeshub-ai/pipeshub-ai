@@ -336,7 +336,7 @@ class EventProcessor:
         from app.modules.transformers.transformer import TransformContext  # noqa: PLC0415
 
         # ── Step 1: Parse ────────────────────────────────────────────────────
-        self.logger.info(
+        self.logger.debug(
             "📤 Sending '%s' to Parsing Service (mime=%s ext=%s)", record_name, mime_type, extension
         )
         provider = ParserProvider(os.getenv("PARSER_BACKEND") or ParserProvider.DEFAULT.value)
@@ -349,7 +349,7 @@ class EventProcessor:
             provider=provider,
         )
         block_container = parse_result.block_container
-        self.logger.info(
+        self.logger.debug(
             "✅ Parsing complete via provider '%s' (%d blocks)",
             parse_result.provider_used.value if parse_result.provider_used else "unknown",
             len(block_container.blocks),
@@ -729,7 +729,7 @@ class EventProcessor:
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
             virtual_record_id = event_data.get("virtualRecordId")
-            self.logger.info(f"📥 Processing event: {event_type}: for record {record_id} with virtual_record_id {virtual_record_id}")
+            self.logger.debug(f"📥 Processing event: {event_type}: for record {record_id} with virtual_record_id {virtual_record_id}")
 
             if not record_id:
                 self.logger.error("❌ No record ID provided in event data")

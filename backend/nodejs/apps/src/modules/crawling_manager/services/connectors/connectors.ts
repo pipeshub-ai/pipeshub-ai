@@ -29,7 +29,7 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
     connector: string,
     connectorId: string,
   ): Promise<CrawlingResult> {
-    this.logger.info('Starting Connectors crawling', {
+    this.logger.debug('Starting Connectors crawling', {
       orgId,
       userId,
       config,
@@ -39,7 +39,7 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
 
     try {
       // TODO: Implement Connectors crawling logic
-      this.logger.info('Connectors crawling completed successfully', {
+      this.logger.debug('Connectors crawling completed successfully', {
         orgId,
         userId,
         connector,

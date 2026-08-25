@@ -1510,7 +1510,7 @@ class ConnectorRegistry:
                 )
                 return None
 
-            self.logger.info(f"Updated connector instance {connector_id}")
+            self.logger.debug(f"Updated connector instance {connector_id}")
             return updated_document
 
         except ValueError:

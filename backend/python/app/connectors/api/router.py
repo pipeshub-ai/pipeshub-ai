@@ -3742,11 +3742,11 @@ async def create_connector_instance(
         # Non-admin OAUTH validation is handled above (Section 7b)
         # Admin OAuth config creation/update happens below
         if config or oauth_config_id:
-            logger.info(f"Storing initial config for instance {connector_id}")
+            logger.debug(f"Storing initial config for instance {connector_id}")
 
             # Handle OAuth config creation/update if admin provides credentials
             if is_admin and config and config.get(OAuthConfigKeys.AUTH):
-                logger.info(f"Admin provided auth config, attempting OAuth config creation/update for {connector_type}")
+                logger.debug(f"Admin provided auth config, attempting OAuth config creation/update for {connector_type}")
                 logger.debug(f"Auth config keys: {list(config.get(OAuthConfigKeys.AUTH, {}).keys())}")
                 logger.debug(f"Connector authType: {selected_auth_type}")
 
@@ -3769,9 +3769,9 @@ async def create_connector_instance(
                     if OAuthConfigKeys.AUTH not in config:
                         config[OAuthConfigKeys.AUTH] = {}
                     config[OAuthConfigKeys.AUTH][OAuthConfigKeys.OAUTH_CONFIG_ID] = created_oauth_id
-                    logger.info(f"OAuth config created/updated for connector {connector_id}")
+                    logger.debug(f"OAuth config created/updated for connector {connector_id}")
                 else:
-                    logger.info(f"No OAuth config created for connector {connector_id} (credentials not provided or existing ID used)")
+                    logger.debug(f"No OAuth config created for connector {connector_id} (credentials not provided or existing ID used)")
             elif config and config.get(OAuthConfigKeys.AUTH):
                 logger.debug(f"Non-admin user provided auth config for {connector_id} - skipping OAuth config creation")
             else:

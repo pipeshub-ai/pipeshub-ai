@@ -64,7 +64,7 @@ export const getKnowledgeHubNodes =
         throw new UnauthorizedError('User not authenticated');
       }
 
-      logger.info('Getting knowledge hub nodes', {
+      logger.debug('Getting knowledge hub nodes', {
         userId,
         orgId,
         query: req.query,

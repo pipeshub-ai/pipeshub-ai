@@ -266,7 +266,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
         if model_name not in model_names:
             raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
 
-    logger.info(f"Getting embedding model: provider={provider}, model_name={model_name}")
+    logger.debug(f"Getting embedding model: provider={provider}, model_name={model_name}")
 
     raw_dims = configuration.get("dimensions")
     dimensions: int | None = None
