@@ -181,8 +181,13 @@ function isMailRecordType(recordType: string): boolean {
   return recordType === 'EMAIL' || recordType === 'MAIL' || recordType === 'GROUP_MAIL';
 }
 
-function formatDisplayType(record: RecordDetailsResponse['record']): string {
-  return record.recordType;
+function formatDisplayType(
+  record: RecordDetailsResponse['record'],
+  t: (key: string, options?: { defaultValue?: string }) => string,
+): string {
+  const key = `recordView.labels.recordTypes.${record.recordType}`;
+  const translated = t(key, { defaultValue: record.recordType });
+  return translated === key ? record.recordType : translated;
 }
 
 function formatFileSizeDisplay(record: RecordDetailsResponse['record']): string | undefined {
@@ -377,7 +382,7 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
       : record.connectorId;
 
   const fileSizeDisplay = formatFileSizeDisplay(record);
-  const typeDisplay = formatDisplayType(record);
+  const typeDisplay = formatDisplayType(record, t);
   const primaryLabel = primaryDocumentLabel(record, t);
   const primaryValue = primaryDocumentValue(record);
   const originText = originDisplay(record, t);

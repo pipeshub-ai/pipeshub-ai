@@ -55,9 +55,14 @@ class LocalDoclingParser:
         try:
             conv_res = await self._processor.parse_document(doc_name, content)
         except ConversionError as exc:
+            msg = str(exc)
+            if "File format not allowed" in msg:
+                code = ParseErrorCode.UNSUPPORTED_FORMAT
+            else:
+                code = ParseErrorCode.PARSE_FAILED
             raise ParseError(
-                ParseErrorCode.UNSUPPORTED_FORMAT,
-                str(exc),
+                code,
+                msg,
                 details={"record_name": record_name},
             ) from exc
 

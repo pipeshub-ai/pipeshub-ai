@@ -836,6 +836,51 @@ class TestImages:
         _assert_all_blocks_have_data(container)
         assert _blocks_by_type(container, BlockType.IMAGE) == []
 
+    # ------------------------------------------------------------------
+    # Regression: data URIs with spaces and optional titles
+    # ------------------------------------------------------------------
+
+    def test_data_uri_with_title_excludes_title_from_uri(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        """data: URI followed by a Markdown title must not include the title in the URI."""
+        md = '![Image_1](data:image/png;base64,abc "My Title")\n'
+        caption_map = {"Image_1": "data:image/png;base64,abc"}
+        container = converter.convert(md, caption_map=caption_map)
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+        assert len(image_blocks) == 1
+        assert image_blocks[0].data == {"uri": "data:image/png;base64,abc"}
+
+    def test_regex_data_uri_with_spaces_and_title_excludes_title(self):
+        """_MD_IMAGE_RE: data URI with spaces + title captures URI without title."""
+        from app.modules.parsers.markdown.markdown_to_blocks import _MD_IMAGE_RE
+
+        text = '![alt](data:image/png;base64,abc def "hover")'
+        m = _MD_IMAGE_RE.search(text)
+        assert m is not None
+        assert m.group(1) == "alt"
+        assert m.group(2) == "data:image/png;base64,abc def"
+
+    def test_regex_data_uri_with_spaces_no_title(self):
+        """_MD_IMAGE_RE: data URI with spaces but no title captures the full URI."""
+        from app.modules.parsers.markdown.markdown_to_blocks import _MD_IMAGE_RE
+
+        text = "![alt](data:image/png;base64,abc def)"
+        m = _MD_IMAGE_RE.search(text)
+        assert m is not None
+        assert m.group(1) == "alt"
+        assert m.group(2) == "data:image/png;base64,abc def"
+
+    def test_regex_data_uri_with_title_no_spaces(self):
+        """_MD_IMAGE_RE: data URI without spaces + title captures URI without title."""
+        from app.modules.parsers.markdown.markdown_to_blocks import _MD_IMAGE_RE
+
+        text = '![alt](data:image/png;base64,abc "My Title")'
+        m = _MD_IMAGE_RE.search(text)
+        assert m is not None
+        assert m.group(1) == "alt"
+        assert m.group(2) == "data:image/png;base64,abc"
+
 
 class TestBlockquotes:
     def test_blockquote_produces_text_section_group(self, converter: MarkdownToBlocksConverter):
