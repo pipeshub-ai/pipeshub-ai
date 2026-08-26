@@ -237,7 +237,7 @@ echo "== Compose: Hub slim empty ints are unset before start =="
 # Compose ${KEY:-} injects "". Hub slim int(os.getenv(KEY, default)) crashes
 # on that. The app entrypoint must unset blanks so the key is absent.
 compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
-check "app entrypoint unsets blank Hub-int env" "$compose" "unset \"\$\$k\""
+check "app entrypoint unsets blank Hub-int env" "$compose" 'printenv "$$k"'
 _hub_int_keys=(
   MAX_CONCURRENT_PARSING
   MAX_CONCURRENT_INDEXING
