@@ -1611,12 +1611,36 @@ if [[ -n "${FRONTEND_PUBLIC_URL:-}" ]]; then
   printf "  ${YELLOW}Note:${RESET} Ensure DNS for %s points to this machine\n" "${FRONTEND_PUBLIC_URL}"
   printf "  and that your reverse proxy (Nginx, Caddy, Cloudflare) is configured.\n"
 fi
+# curl | bash leaves the user's shell wherever they started. Clone users can
+# re-run the repo-root wrapper; standalone users must use this directory.
+_BANNER_CLI_DIR="$SCRIPT_DIR"
+_BANNER_IN_CLONE=false
+if [[ -f "${SCRIPT_DIR}/../../Dockerfile" && -f "${SCRIPT_DIR}/../../install.sh" ]]; then
+  _clone_root="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+  _compose_in_clone="$(cd "${_clone_root}/deployment/docker-compose" && pwd)"
+  if [[ "$SCRIPT_DIR" == "$_compose_in_clone" ]]; then
+    _BANNER_IN_CLONE=true
+    _BANNER_CLI_DIR="$_clone_root"
+  fi
+fi
+
+printf "\n  ${BOLD}This install${RESET}\n"
+printf "  ${DIM}%s${RESET}\n" "$(printf '─%.0s' {1..53})"
+printf "  ${CYAN}Files:${RESET}     %s\n" "$SCRIPT_DIR"
+printf "  ${CYAN}Commands:${RESET}  %s\n" "$_BANNER_CLI_DIR"
+
 printf "\n  ${BOLD}Useful commands${RESET}\n"
 printf "  ${DIM}%s${RESET}\n\n" "$(printf '─%.0s' {1..53})"
 printf "  ${DIM}# Check health from this host${RESET}\n"
 printf "  curl -fsS http://localhost:%s/api/v1/health/services\n\n" "$APP_PORT"
 printf "  ${DIM}# View logs${RESET}\n"
 printf "  docker compose -f %s -p %s logs -f pipeshub-ai\n\n" "$COMPOSE_FILE" "$PROJECT_NAME"
+if $_BANNER_IN_CLONE; then
+  printf "  ${DIM}# From the repository root${RESET}\n"
+else
+  printf "  ${DIM}# From the install directory (curl | bash does not cd your shell)${RESET}\n"
+fi
+printf "  cd %q\n" "$_BANNER_CLI_DIR"
 printf "  ${DIM}# Stop (data preserved)${RESET}\n"
 printf "  ./install.sh --stop\n\n"
 printf "  ${DIM}# Upgrade to latest images (or rebuild from source if IMAGE_SOURCE=local)${RESET}\n"

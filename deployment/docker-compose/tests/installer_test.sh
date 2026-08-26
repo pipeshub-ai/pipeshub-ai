@@ -178,6 +178,10 @@ check "host-side reachability check present" "$inner" "check_host_reachable"
 check "host reachability gates readiness" "$inner" "CONTAINER_HEALTHY && \$HOST_REACHABLE"
 check "ready banner is health-gated" "$inner" "PipesHub AI is ready!"
 check "not-ready banner exists" "$inner" "not confirmed ready yet"
+check "banner prints install file directory" "$inner" 'Files:'
+check "banner clone uses repo-root wrapper" "$inner" "From the repository root"
+check "banner standalone warns curl does not cd" "$inner" "curl | bash does not cd your shell"
+check "banner cds before ./install.sh" "$inner" 'cd %q'
 check "profile repair on reuse present" "$inner" "Repairing to"
 check "cross-directory guard present" "$inner" "Existing deployment detected"
 check "separate-instance prompt present" "$inner" "Install a separate instance here"
