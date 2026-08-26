@@ -46,6 +46,8 @@ interface ConnectorCatalogLayoutProps {
   onSetup?: (connector: Connector) => void;
   /** Called when "+" is used to add another instance (catalog active card). */
   onAddInstance?: (connector: Connector) => void;
+  /** Lock the labelled Setup button when create connector is denied. */
+  setupPermissionDenied?: boolean;
   /** Called when a connector card body is clicked (navigate to type page). */
   onCardClick?: (connector: Connector) => void;
   /** Whether data is loading. */
@@ -75,6 +77,7 @@ export function ConnectorCatalogLayout({
   activeConnectors,
   onSetup,
   onAddInstance,
+  setupPermissionDenied = false,
   onCardClick,
   isLoading = false,
   extraTabCounts,
@@ -273,6 +276,7 @@ export function ConnectorCatalogLayout({
               inactiveInstanceCount={inactiveCountByType[connector.type] ?? 0}
               onSetup={onSetup}
               onAddInstance={onAddInstance}
+              setupPermissionDenied={setupPermissionDenied}
               onCardClick={onCardClick}
             />
           ))}
