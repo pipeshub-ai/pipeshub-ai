@@ -568,7 +568,7 @@ class RSSConnector(BaseConnector):
             path=urlparse(article_url).path or "/",
             mime_type=MimeTypes.PLAIN_TEXT.value,
             md5_hash=content_md5_hash,
-            preview_renderable=False,
+            preview_renderable=True,
         )
 
         permissions = self._create_rss_permissions()
