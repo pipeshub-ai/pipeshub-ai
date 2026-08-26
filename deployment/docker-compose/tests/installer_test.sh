@@ -59,6 +59,7 @@ make_fake_inner() {
   cat >"$path" <<'EOF'
 #!/usr/bin/env bash
 echo "INNER_RAN args=[$*]"
+echo "PIPESHUB_INSTALL_REF=${PIPESHUB_INSTALL_REF:-}"
 EOF
   chmod +x "$path"
 }
@@ -120,6 +121,7 @@ echo "== Root wrapper: standalone mode downloads + execs =="
   out="$(PATH="$bindir:$PATH" bash "$work/install.sh" beta 2>&1)"
   check "standalone execs downloaded installer" "$out" "INNER_RAN"
   check "standalone forwards args" "$out" "args=[beta]"
+  check "standalone exports resolved release as install ref" "$out" "PIPESHUB_INSTALL_REF=v9.9.9"
   [[ -f "$PIPESHUB_DIR/docker-compose.yml" ]] && pass "compose file downloaded" || fail "compose file downloaded"
   [[ -f "$PIPESHUB_DIR/install.sh" ]] && pass "installer downloaded" || fail "installer downloaded"
   check "uses latest release tag in URL" "$(cat "$CURL_LOG")" "/v9.9.9/"
@@ -135,9 +137,10 @@ echo "== Root wrapper: PIPESHUB_REF override wins =="
   export RELEASE_JSON='{"tag_name":"v9.9.9"}'   # should be ignored
   export PIPESHUB_REF="my-branch"
   export PIPESHUB_DIR="$work/pipeshub"
-  PATH="$bindir:$PATH" bash "$work/install.sh" >/dev/null 2>&1
+  out="$(PATH="$bindir:$PATH" bash "$work/install.sh" 2>&1)"
   log="$(cat "$CURL_LOG")"
   check "explicit ref used in URL" "$log" "/my-branch/"
+  check "standalone exports PIPESHUB_REF as install ref" "$out" "PIPESHUB_INSTALL_REF=my-branch"
   if [[ "$log" == *"/v9.9.9/"* ]]; then fail "explicit ref must not fall back to release"; else pass "explicit ref overrides release tag"; fi
 )
 
@@ -179,6 +182,8 @@ check "host-side reachability check present" "$inner" "check_host_reachable"
 check "host reachability gates readiness" "$inner" "CONTAINER_HEALTHY && \$HOST_REACHABLE"
 check "ready banner is health-gated" "$inner" "PipesHub AI is ready!"
 check "not-ready banner exists" "$inner" "not confirmed ready yet"
+if [[ "$inner" == *"&& clear"* ]]; then fail "banner must not clear the screen"; else pass "banner must not clear the screen"; fi
+check "banner prints wrapper git ref" "$inner" 'PIPESHUB_INSTALL_REF'
 check "banner clone uses repo-root wrapper" "$inner" "From the repository root"
 check "banner standalone warns curl does not cd" "$inner" "curl | bash does not cd your shell"
 check "banner cds before ./install.sh" "$inner" 'cd %q'

@@ -101,6 +101,8 @@ dl "$base_url/install.sh" "$DEST/install.sh" \
 chmod +x "$DEST/install.sh"
 
 note "Launching installer..."
+# Inner banner prints this so the ref survives even if the terminal scrolls.
+export PIPESHUB_INSTALL_REF="$REF"
 # Reconnect stdin to the terminal so the installer's interactive prompts work
 # even though our own stdin is the piped script body (curl | bash). Probe that
 # /dev/tty is actually openable (it isn't in CI or a detached pipe, where the

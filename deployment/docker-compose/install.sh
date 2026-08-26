@@ -432,8 +432,9 @@ prompt_input() {
 
 # ==============================================================================
 # 1. BANNER
+# Do not clear the screen: curl | bash has just printed which git ref was
+# downloaded, and that line must stay visible above the ASCII banner.
 # ==============================================================================
-[[ -t 1 ]] && clear 2>/dev/null || true
 cat <<'BANNER'
 
   ██████╗ ██╗██████╗ ███████╗███████╗██╗  ██╗██╗   ██╗██████╗
@@ -444,7 +445,11 @@ cat <<'BANNER'
   ╚═╝     ╚═╝╚═╝     ╚══════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝
                         AI Platform Installer
 BANNER
-printf "  ${DIM}v%s${RESET}\n\n" "$INSTALLER_VERSION"
+printf "  ${DIM}v%s${RESET}\n" "$INSTALLER_VERSION"
+if [[ -n "${PIPESHUB_INSTALL_REF:-}" ]]; then
+  printf "  ${DIM}Git ref: %s${RESET}\n" "$PIPESHUB_INSTALL_REF"
+fi
+printf "\n"
 
 # ==============================================================================
 # 2. PRE-FLIGHT CHECKS
