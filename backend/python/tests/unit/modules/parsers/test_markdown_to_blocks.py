@@ -881,28 +881,47 @@ class TestImages:
         assert m.group(1) == "alt"
         assert m.group(2) == "data:image/png;base64,abc"
 
+    def test_regex_data_uri_unseparated_quote_not_treated_as_title(self):
+        """A quote not preceded by whitespace is URI content, not a title opener."""
+        from app.modules.parsers.markdown.markdown_to_blocks import _MD_IMAGE_RE
+
+        text = '![alt](data:image/png,foo bar"baz")'
+        m = _MD_IMAGE_RE.search(text)
+        assert m is not None
+        assert m.group(1) == "alt"
+        assert m.group(2) == 'data:image/png,foo bar"baz"'
+
     def test_regex_data_uri_long_spaces_linear_time(self):
         """_MD_IMAGE_RE must match data URIs with long space runs in linear time."""
+        import statistics
         import time
 
         from app.modules.parsers.markdown.markdown_to_blocks import _MD_IMAGE_RE
 
         n_small = 1_000
         n_large = 100_000
+        iterations = 7
 
         text_small = f"![alt](data:image/png;base64,{' ' * n_small})"
         text_large = f"![alt](data:image/png;base64,{' ' * n_large})"
 
-        start = time.perf_counter()
-        m_small = _MD_IMAGE_RE.search(text_small)
-        t_small = time.perf_counter() - start
+        times_small = []
+        times_large = []
+        for _ in range(iterations):
+            start = time.perf_counter()
+            m_small = _MD_IMAGE_RE.search(text_small)
+            times_small.append(time.perf_counter() - start)
 
-        start = time.perf_counter()
-        m_large = _MD_IMAGE_RE.search(text_large)
-        t_large = time.perf_counter() - start
+            start = time.perf_counter()
+            m_large = _MD_IMAGE_RE.search(text_large)
+            times_large.append(time.perf_counter() - start)
 
         assert m_small is not None
         assert m_large is not None
+
+        t_small = statistics.median(times_small)
+        t_large = statistics.median(times_large)
+
         # 100x input growth should yield at most ~200x time if linear (with overhead).
         # Quadratic would be ~10000x. Use 500x as a generous bound.
         assert t_large < t_small * 500 or t_large < 0.1, (
