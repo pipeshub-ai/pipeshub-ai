@@ -35,6 +35,7 @@ import { buildChatHref } from '@/chat/build-chat-url';
 import { invalidateModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getAgentBuilderPermissions } from './agent-builder-permissions';
+import { useUserPermission } from '@/config';
 import { toast } from '@/lib/store/toast-store';
 import {
   collectActiveToolsetTypeKeysFromNodes,
@@ -162,6 +163,9 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
   const { canPersist, isAgentStructureLocked, isServiceAccountToolsetOrgLocked, isServiceAccount } =
     useMemo(() => getAgentBuilderPermissions(loadedAgent), [loadedAgent]);
+  const canAccessServiceAgent = useUserPermission('accessServiceAgent');
+  const canDeleteAgentPermission = useUserPermission('deleteAgent');
+  const canShareAgent = useUserPermission('shareAgent');
 
   const paletteDragBlockedMessage = useMemo(() => {
     if (!isAgentStructureLocked) return '';
@@ -829,6 +833,9 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           onEnableServiceAccount={canPersist ? handleRequestServiceAccount : undefined}
           canDeleteAgent={Boolean(loadedAgent?.can_delete)}
           onRequestDeleteAgent={() => setAgentDeleteDialogOpen(true)}
+          serviceAccountPermissionDenied={!canAccessServiceAgent}
+          deletePermissionDenied={!canDeleteAgentPermission}
+          sharePermissionDenied={!canShareAgent}
           createdBy={loadedAgent?.createdBy ?? null}
         />
 

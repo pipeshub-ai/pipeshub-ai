@@ -17,6 +17,7 @@ import {
   DropdownMenu,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { PermissionLockIcon } from '@/config';
 import { useTranslation } from 'react-i18next';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
 
@@ -44,9 +45,12 @@ export function AgentBuilderHeader(props: {
   editing: boolean;
   /** Open service-account confirmation (create or convert). */
   onEnableServiceAccount?: () => void;
+  serviceAccountPermissionDenied?: boolean;
   /** When editing, show meatball → delete (opens confirmation in parent). */
   canDeleteAgent?: boolean;
+  deletePermissionDenied?: boolean;
   onRequestDeleteAgent?: () => void;
+  sharePermissionDenied?: boolean;
   /** MongoDB user ID from agent.createdBy — resolved via by-ids for display. */
   createdBy?: string | null;
   onShare?: () => void;
@@ -71,11 +75,14 @@ export function AgentBuilderHeader(props: {
     isServiceAccount,
     editing,
     onEnableServiceAccount,
+    serviceAccountPermissionDenied = false,
     canDeleteAgent = false,
+    deletePermissionDenied = false,
     onRequestDeleteAgent,
     createdBy = null,
     onShare,
     hideShareControls = false,
+    sharePermissionDenied = false,
   } = props;
 
   const [agentMenuTriggerHovered, setAgentMenuTriggerHovered] = useState(false);
@@ -226,8 +233,11 @@ export function AgentBuilderHeader(props: {
                   variant="solid"
                   color="jade"
                   size="2"
-                  disabled={saving}
-                  onClick={() => onEnableServiceAccount?.()}
+                  disabled={saving || serviceAccountPermissionDenied}
+                  onClick={() => {
+                    if (serviceAccountPermissionDenied) return;
+                    onEnableServiceAccount?.();
+                  }}
                   style={{ flexShrink: 0, whiteSpace: 'nowrap' }}
                 >
                   <Flex align="center" gap="2">
@@ -235,6 +245,7 @@ export function AgentBuilderHeader(props: {
                     {editing
                       ? t('agentBuilder.agentMenuConvertToServiceAgent')
                       : t('agentBuilder.agentMenuCreateAsServiceAgent')}
+                    {serviceAccountPermissionDenied && <PermissionLockIcon />}
                   </Flex>
                 </Button>
               </Tooltip>
@@ -273,24 +284,37 @@ export function AgentBuilderHeader(props: {
                 color="red"
                 onClick={(e) => {
                   e.stopPropagation();
+                  if (deletePermissionDenied) return;
                   onRequestDeleteAgent?.();
                 }}
+                disabled={deletePermissionDenied}
               >
                 <Flex align="center" gap="2">
                   <MaterialIcon name="delete" size={16} color="var(--red-11)" />
                   <Text size="2" style={{ color: 'var(--red-11)' }}>
                     {t('chat.deleteAgent')}
                   </Text>
+                  {deletePermissionDenied && <PermissionLockIcon />}
                 </Flex>
               </DropdownMenu.Item>
             </DropdownMenu.Content>
           </DropdownMenu.Root>
         ) : null}
         {!hideShareControls && (onShare ? (
-          <Button variant="outline" size="2" onClick={onShare}>
+          <Button
+            variant="outline"
+            size="2"
+            disabled={sharePermissionDenied}
+            onClick={() => {
+              if (sharePermissionDenied) return;
+              onShare();
+            }}
+            style={{ cursor: sharePermissionDenied ? 'not-allowed' : 'pointer' }}
+          >
             <Flex align="center" gap="2">
               <MaterialIcon name="person_add" size={16} />
               <Text size="2">{t('agentBuilder.share')}</Text>
+              {sharePermissionDenied && <PermissionLockIcon />}
             </Flex>
           </Button>
         ) : (
@@ -319,7 +343,7 @@ export function AgentBuilderHeader(props: {
               <Switch
                 checked={shareWithOrg || isServiceAccount}
                 onCheckedChange={onShareWithOrgChange}
-                disabled={isFlowStructureLocked || isServiceAccount}
+                disabled={isFlowStructureLocked || isServiceAccount || sharePermissionDenied}
               />
             </Flex>
           </Tooltip>

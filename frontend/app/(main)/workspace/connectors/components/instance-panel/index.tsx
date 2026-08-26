@@ -22,6 +22,7 @@ import type { ConnectorScope, InstancePanelTab } from '../../types';
 import { OverviewTab } from './overview-tab';
 import { SettingsTab } from './settings-tab';
 import { DisableFirstDialog } from '../disable-first-dialog';
+import { useUserPermission } from '@/config';
 
 // ========================================
 // InstanceManagementPanel
@@ -31,6 +32,7 @@ export function InstanceManagementPanel() {
   const pathname = usePathname();
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
+  const canDeleteConnector = useUserPermission('deleteConnector');
   const {
     isInstancePanelOpen,
     selectedInstance,
@@ -66,6 +68,7 @@ export function InstanceManagementPanel() {
   }, [selectedInstance, closeInstancePanel, openPanel, pathname]);
 
   const openRemoveDialog = useCallback(() => {
+    if (!canDeleteConnector) return;
     if (!selectedInstance?._key) return;
     if (selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING) {
       addToast({
@@ -82,13 +85,12 @@ export function InstanceManagementPanel() {
       return;
     }
     setDeleteOpen(true);
-  }, [selectedInstance, addToast, t]);
+  }, [selectedInstance, addToast, t, canDeleteConnector]);
 
   const removeConnectorDisabled =
     selectedInstance?.status === CONNECTOR_INSTANCE_STATUS.DELETING;
 
-    const removeConnectorDisabledTooltip =
-    selectedInstance?.status === CONNECTOR_INSTANCE_STATUS.DELETING
+  const removeConnectorDisabledTooltip = selectedInstance?.status === CONNECTOR_INSTANCE_STATUS.DELETING
       ? t('workspace.connectors.removeInstanceDialog.alreadyRemovingDescription')
       : undefined;
 
@@ -334,6 +336,7 @@ export function InstanceManagementPanel() {
               }
               removeDisabled={removeConnectorDisabled}
               removeDisabledTooltip={removeConnectorDisabledTooltip}
+              removePermissionLocked={!canDeleteConnector}
             />
           </Tabs.Content>
         </Tabs.Root>
