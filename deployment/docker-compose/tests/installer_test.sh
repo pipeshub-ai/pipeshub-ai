@@ -182,7 +182,11 @@ check "host-side reachability check present" "$inner" "check_host_reachable"
 check "host reachability gates readiness" "$inner" "CONTAINER_HEALTHY && \$HOST_REACHABLE"
 check "ready banner is health-gated" "$inner" "PipesHub AI is ready!"
 check "not-ready banner exists" "$inner" "not confirmed ready yet"
-if [[ "$inner" == *"&& clear"* ]]; then fail "banner must not clear the screen"; else pass "banner must not clear the screen"; fi
+if grep -qE '^[[:space:]]*(clear\b|tput[[:space:]]+clear)' "$INNER_INSTALLER" "$ROOT_INSTALLER"; then
+  fail "banner must not clear the screen"
+else
+  pass "banner must not clear the screen"
+fi
 check "banner prints wrapper git ref" "$inner" 'PIPESHUB_INSTALL_REF'
 check "banner clone uses repo-root wrapper" "$inner" "From the repository root"
 check "banner standalone warns curl does not cd" "$inner" "curl | bash does not cd your shell"
