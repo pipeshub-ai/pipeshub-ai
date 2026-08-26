@@ -339,6 +339,7 @@ async def start_vector_store_reindex(
         await processor.initialize()
         page_size = _page_size()
         exclude_statuses = [ProgressStatus.IN_PROGRESS.value]
+        seen_vrids: set[str] = set()
         for org_id, connector_id in apps:
             # Reset this app as we reach it rather than resetting every org
             # upfront: nothing consumes NOT_STARTED on its own, so a job that
@@ -372,7 +373,22 @@ async def start_vector_store_reindex(
                     )
                     break
                 after_key = last_id
-                await processor.reindex_existing_records(records, vector_db_only=True)
+                # Multiple records can share a virtualRecordId (N:1 dedup).
+                # Publishing a reindex event for each would re-embed the same
+                # blob N times, racing on the delete→upsert window and leaving
+                # duplicate points. Only the first record per VRID is needed.
+                deduplicated = []
+                for r in records:
+                    vrid = getattr(r, "virtual_record_id", None)
+                    if vrid and vrid in seen_vrids:
+                        continue
+                    if vrid:
+                        seen_vrids.add(vrid)
+                    deduplicated.append(r)
+                if deduplicated:
+                    await processor.reindex_existing_records(
+                        deduplicated, vector_db_only=True
+                    )
                 if fetched_count < page_size:
                     break
     except Exception:
