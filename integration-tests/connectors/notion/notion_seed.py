@@ -107,6 +107,10 @@ class NotionSeed:
     bulk_db_id: str = ""
     bulk_data_source_id: str = ""
     archived_db_id: str = ""
+    # The database's data source, which is what the connector actually records. Kept
+    # separately because a database id and its data-source id are different values, and
+    # mixing them silently disables the archived-skip check in TC-SYNC-001.
+    archived_data_source_id: str = ""
     root_database_id: str = ""
     root_data_source_id: str = ""
 
@@ -235,7 +239,7 @@ async def foreign_run_object_ids(
     after our baseline snapshot, so anything captured earlier would already be stale.
     """
     mine_pages = seed.expected_page_ids | {seed.archived_page_id}
-    mine_data_sources = seed.expected_data_source_ids | {seed.archived_db_id}
+    mine_data_sources = seed.expected_data_source_ids | {seed.archived_data_source_id}
 
     foreign_pages = {
         str(p["id"])
@@ -245,7 +249,8 @@ async def foreign_run_object_ids(
     foreign_data_sources = {
         str(d["id"])
         for d in await helper.search_objects("data_source")
-        if _plain_title(d).startswith(TITLE_PREFIX) and str(d["id"]) not in mine_data_sources
+        if _data_source_title(d).startswith(TITLE_PREFIX)
+        and str(d["id"]) not in mine_data_sources
     }
     return foreign_pages, foreign_data_sources
 
@@ -287,6 +292,18 @@ async def wait_for_swept_runs_gone(
             len(stale),
         )
         await asyncio.sleep(interval)
+
+
+def _data_source_title(data_source: dict[str, Any]) -> str:
+    """Data-source title as the connector reads it (``_transform_to_webpage_record``).
+
+    Not interchangeable with ``_plain_title``. A data source carries its title in the
+    top-level ``title`` rich-text array; its ``properties`` is the *column schema*, where
+    the title column's value is the empty config ``{}``. Reading it the page way therefore
+    returns "" for every data source rather than failing — which is how the foreign-run
+    filter silently matched nothing.
+    """
+    return "".join(t.get("plain_text", "") for t in data_source.get("title") or [])
 
 
 def _plain_title(page: dict[str, Any]) -> str:
@@ -373,9 +390,7 @@ async def _baseline_object_ids(helper: NotionSourceHelper) -> tuple[set[str], se
     }
     data_sources = {
         str(d["id"]) for d in await helper.search_objects("data_source")
-        if not "".join(
-            t.get("plain_text", "") for t in d.get("title") or []
-        ).startswith(TITLE_PREFIX)
+        if not _data_source_title(d).startswith(TITLE_PREFIX)
     }
     return pages, data_sources
 
@@ -483,6 +498,7 @@ async def seed_notion_workspace(
     archived_db = await helper.create_database(seed.fixture_page_id, ARCHIVED_DB_TITLE)
     seed.archived_db_id = _normalize_id(archived_db["id"])
     archived_ds_id = await helper.first_data_source_id(archived_db)
+    seed.archived_data_source_id = archived_ds_id
     await helper.trash_database(seed.archived_db_id)
 
     # ---------------------------------------------------------------- bulk (pagination)

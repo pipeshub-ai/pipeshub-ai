@@ -102,7 +102,14 @@ class TestMcpServerWiring:
 
         assert not any(g.name == MCP_PARENT for g in runtime.tool_registry.toolsets())
 
-    async def test_discovery_failure_falls_back_to_attached_tool_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_discovery_failure_registers_nothing_even_with_an_attached_tool_list(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The removed fallback used to synthesize a schema-less tool from
+        the attached tool list on a discovery failure — see
+        `mcp_tool_loader.py`'s module docstring for why that was worse than
+        no tool at all. A discovery failure must register nothing,
+        regardless of whether an attached tool list happens to be present."""
         async def _boom(*_args: Any, **_kwargs: Any) -> list[MCPToolInfo]:
             raise RuntimeError("connection refused")
 
@@ -115,7 +122,8 @@ class TestMcpServerWiring:
 
         _agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "quick", query="hello")
 
-        assert runtime.tool_registry.has("mcp_jira_mcp_search")
+        assert not runtime.tool_registry.has("mcp_jira_mcp_search")
+        assert context.mcp_tool_load_failures
 
     async def test_discovery_failure_with_no_fallback_records_load_failure(
         self, monkeypatch: pytest.MonkeyPatch,

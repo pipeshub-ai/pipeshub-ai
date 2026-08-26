@@ -413,15 +413,25 @@ export const ChatResponse = React.memo(function ChatResponse({
   const effectiveCitationMaps = isStreaming && streamingCitationMaps
     ? streamingCitationMaps
     : citationMaps;
+  // Read via ref (not a `useMemo` dep) by `wrappedCallbacks` below, so that
+  // object stays referentially stable across citation-only updates.
+  const effectiveCitationMapsRef = useRef(effectiveCitationMaps);
+  effectiveCitationMapsRef.current = effectiveCitationMaps;
 
   // Use streaming content when streaming, otherwise use the final answer.
   // Apply structural repair to in-progress content only — the final message
   // from the server is always complete and must not be patched.
   // Always strip backend citation links → `[N]` so `AnswerContent` can render chips.
-  const processedContent = processMarkdownContent(
-    isStreaming && streamingContent
-      ? repairStreamingMarkdown(streamingContent)
-      : answer,
+  // Memoized: these are whole-string regex passes, and `ChatResponse` can
+  // re-render for reasons unrelated to content (tab switch, citation
+  // arrival) — recomputing on every such render defeats the point of
+  // memoizing further down the tree in `AnswerContent`.
+  const processedContent = useMemo(
+    () =>
+      processMarkdownContent(
+        isStreaming && streamingContent ? repairStreamingMarkdown(streamingContent) : answer,
+      ),
+    [isStreaming, streamingContent, answer],
   );
   // Extract persisted artifact + legacy download-task markers so the markdown
   // pipeline doesn't try to render them as raw text. The backend appends these
@@ -484,15 +494,22 @@ export const ChatResponse = React.memo(function ChatResponse({
 
   // Wrap citation callbacks so that onPreview always receives this message's
   // citationMaps — the panel needs all citations for the previewed record.
+  // `effectiveCitationMaps` is read via `effectiveCitationMapsRef` instead of
+  // being a dependency here, so `wrappedCallbacks` keeps its identity across
+  // citation-only updates — it flows down as a prop to every citation badge
+  // (`answer-content.tsx`), whose `React.memo` compares `callbacks` by
+  // reference. Without this, a new citation batch arriving mid-stream would
+  // invalidate every badge on the page, not just the ones it actually affects.
   const wrappedCallbacks = useMemo<CitationCallbacks | undefined>(() => {
     if (!citationCallbacks) return undefined;
     return {
       ...citationCallbacks,
       onPreview: citationCallbacks.onPreview
-        ? (citation) => citationCallbacks.onPreview!(citation, effectiveCitationMaps)
+        ? (citation) => citationCallbacks.onPreview!(citation, effectiveCitationMapsRef.current)
         : undefined,
     };
-  }, [citationCallbacks, effectiveCitationMaps]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [citationCallbacks]);
 
   // Derive counts from citation maps
   const sourcesCount = effectiveCitationMaps.sourcesOrder.length;
@@ -570,6 +587,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                 content={displayContent}
                 citationMaps={effectiveCitationMaps}
                 citationCallbacks={wrappedCallbacks}
+                isStreaming={isStreaming}
               />
             )}
 

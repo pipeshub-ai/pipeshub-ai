@@ -19,12 +19,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.messages import SystemMessage as LCSystemMessage
 from langchain_core.messages import ToolMessage as LCToolMessage
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field, create_model
 
 from app.agent_loop_lib.core.messages import (
@@ -444,6 +443,12 @@ _JSON_SCHEMA_TYPE_MAP: dict[str, Any] = {
 }
 
 
+# Values a `Literal[...]` accepts as type arguments. JSON Schema allows an
+# `enum` member to be any value, including an object or array — those fall
+# through to the declared primitive type instead.
+_LITERAL_SAFE_TYPES = (str, int, bool, type(None))
+
+
 def _json_schema_to_python_type(schema: dict[str, Any], model_name: str, field_name: str) -> Any:  # noqa: ANN401
     """Best-effort JSON-schema-fragment -> Python type mapping for the flat,
     hand-authored schemas agent-loop's planner/critic/intent modules pass to
@@ -451,10 +456,24 @@ def _json_schema_to_python_type(schema: dict[str, Any], model_name: str, field_n
     no `$ref`/`$defs`, at most one level of `array`/`object` nesting).
     Anything unrecognized degrades to `Any` rather than raising — a
     too-loose field type is far cheaper than failing to bind tools at all.
+
+    Reached only from `output_schema_to_pydantic_model` — the tool-calling
+    path passes `input_schema` through verbatim (see
+    `convert_tool_schema_to_langchain_dict`) and never builds a model.
     """
     schema_type = schema.get("type")
+    enum_values = schema.get("enum")
 
-    if schema_type in _JSON_SCHEMA_TYPE_MAP:
+    if enum_values and all(isinstance(v, _LITERAL_SAFE_TYPES) for v in enum_values):
+        # `Literal` keeps the declared type AND the allowed values. Mapping
+        # the primitive type alone drops the enum; returning bare `Any` drops
+        # both, letting a provider's structured response put an object in a
+        # field declared `{"type": "string", "enum": [...]}`.
+        return Literal[tuple(enum_values)]
+
+    # `isinstance` guard, not a bare `in`: a list-valued `type` is unhashable
+    # and would raise `TypeError` from the dict lookup.
+    if isinstance(schema_type, str) and schema_type in _JSON_SCHEMA_TYPE_MAP:
         return _JSON_SCHEMA_TYPE_MAP[schema_type]
 
     if schema_type == "array":
@@ -465,12 +484,6 @@ def _json_schema_to_python_type(schema: dict[str, Any], model_name: str, field_n
     if schema_type == "object":
         nested_name = f"{model_name}_{field_name}".title().replace("_", "")
         return _json_schema_to_pydantic_model(nested_name, schema)
-
-    if "enum" in schema:
-        # Plain Python doesn't need a real Enum here — a Literal-free `Any`
-        # keeps this helper simple; the value is still validated downstream
-        # by the calling module's own post-processing, not by this schema.
-        return Any
 
     return Any
 
@@ -501,78 +514,80 @@ def output_schema_to_pydantic_model(output_schema: dict[str, Any]) -> type[BaseM
     return _json_schema_to_pydantic_model("StructuredOutput", output_schema)
 
 
-async def _unbound_tool_coroutine(**_kwargs: Any) -> Any:  # noqa: ANN401
-    raise RuntimeError(
-        "This LangChain tool object exists only to carry a schema for "
-        "LLM function-calling (LangChainTransport.complete/stream). Actual "
-        "execution happens through agent-loop's ToolExecutor calling the "
-        "matching registered Tool adapter, never through this StructuredTool."
-    )
+# Meta-keywords that carry no meaning inside a function-calling `parameters`
+# schema — a `$schema`/`$id` pointing at a draft URL describes the document,
+# not the arguments, so no provider has any use for it.
+_SCHEMA_META_KEYS_TO_STRIP = frozenset({"$schema", "$id"})
 
 
-_TOOL_MODEL_CACHE: dict[str, StructuredTool] = {}
-_TOOL_MODEL_CACHE_MAXSIZE = 512
+def _sanitize_tool_input_schema(schema: Any) -> Any:  # noqa: ANN401
+    """Strips `$schema`/`$id` and any leftover `$ref` from a tool's JSON
+    Schema before it reaches `bind_tools()`.
 
+    `MCPToolAdapter.raw_input_schema` (`mcp_tool_adapter.py`) already inlines
+    every `$ref`/`$defs` up front via `resolve_json_schema_refs`, so a `$ref`
+    surviving to here should not happen — this is a defensive backstop, not
+    the primary mechanism, which is why it drops the key rather than trying
+    to re-resolve it, and why it recurses (a stray `$ref` at any depth is
+    still a dangling pointer once `$defs` is gone).
 
-def _tool_schema_key(schema: ToolSchema) -> str:
-    """Content key for a tool schema.
-
-    `ToolSchema` is frozen but holds a dict, so it is unhashable, and
-    `ToolRegistry.schemas()` rebuilds these objects every turn — identity would
-    never match. Sorted-key JSON makes two equal schemas collide on purpose and
-    two different ones never.
+    Deliberately NOT an allow-list like `transport/gemini.py::sanitize_schema`:
+    every other JSON Schema keyword is kept. OpenAI, Anthropic, and Ollama
+    accept them verbatim, and `langchain_google_genai` filters unknown
+    keywords itself (`_format_json_schema_to_gapic`'s
+    `_ALLOWED_SCHEMA_FIELDS_SET`, which logs and skips), so stripping here
+    would only lose constraints the provider that DOES understand them wants.
+    The one shape Gemini cannot survive is a list-valued `type`, and that is
+    normalized upstream in `resolve_json_schema_refs` so both the native and
+    LangChain Gemini arms benefit.
     """
-    payload = json.dumps(
-        [schema.name, schema.description, schema.input_schema],
-        sort_keys=True,
-        default=str,
-    )
-    return hashlib.sha256(payload.encode()).hexdigest()
+    if isinstance(schema, list):
+        return [_sanitize_tool_input_schema(v) for v in schema]
+    if not isinstance(schema, dict):
+        return schema
+    return {
+        key: (_sanitize_tool_input_schema(value) if isinstance(value, (dict, list)) else value)
+        for key, value in schema.items()
+        if key not in _SCHEMA_META_KEYS_TO_STRIP and key != "$ref"
+    }
 
 
-def convert_tool_schema_to_langchain(schema: ToolSchema) -> StructuredTool:
-    """Build the LangChain tool object for `schema`, reusing a cached one.
+def convert_tool_schema_to_langchain_dict(schema: ToolSchema) -> dict[str, Any]:
+    """`ToolSchema` -> the OpenAI function-calling dict shape, mirroring
+    `OpenAITransport._format_tools` (`transport/openai.py:548`) exactly.
 
-    `create_model()` runs pydantic's full schema generation, and this ran once
-    per tool per LLM call — measured at 8.8% of query-service CPU, rebuilding
-    identical classes (26 tools on 1,820 of 1,842 binds over six hours). The
-    transport's own cache does not cover it: the transport is constructed per
-    request, so it starts empty on every chat.
+    `BaseChatModel.bind_tools()` accepts this shape across every LangChain
+    chat model integration configured in this app — verified: it's called
+    from exactly one place (`LangChainTransport._bind_tools`), and the only
+    non-stock `BaseChatModel` subclass in the repo, `ChatTogether`
+    (`app/utils/custom_chat_model.py`), extends `BaseChatOpenAI` and inherits
+    its dict-handling `bind_tools` rather than overriding it.
 
-    Caching the class also lets pydantic's internal schema cache serve the
-    `model_json_schema()` that `convert_to_openai_tool` calls on every send.
-
-    Safe to share: the object carries only a schema — `_unbound_tool_coroutine`
-    raises if anything tries to execute it — and `bind_tools` reads the tools to
-    build a separate list of dicts rather than mutating them.
+    Replaces the previous round-trip through a dynamically-built Pydantic
+    model (`_json_schema_to_pydantic_model`), which silently dropped `enum`,
+    `default`, `minimum`/`maximum`, `additionalProperties`, and collapsed
+    `anyOf`/`oneOf` unions to their first arm on every MCP tool schema.
+    `_json_schema_to_pydantic_model` itself is kept for
+    `output_schema_to_pydantic_model`, which `complete_structured` genuinely
+    needs a model class for.
     """
-    key = _tool_schema_key(schema)
-    cached = _TOOL_MODEL_CACHE.get(key)
-    if cached is not None:
-        return cached
-
-    args_model = _json_schema_to_pydantic_model(f"{schema.name}_Args", schema.input_schema)
-    tool = StructuredTool.from_function(
-        name=schema.name,
-        description=schema.description,
-        args_schema=args_model,
-        coroutine=_unbound_tool_coroutine,
-    )
-    # Cleared wholesale rather than evicted one at a time: the tool set is
-    # bounded by the registry, so this only fires if schemas are being generated
-    # dynamically, and a rebuild costs the same as the miss it replaces.
-    if len(_TOOL_MODEL_CACHE) >= _TOOL_MODEL_CACHE_MAXSIZE:
-        _TOOL_MODEL_CACHE.clear()
-    _TOOL_MODEL_CACHE[key] = tool
-    return tool
+    parameters = schema.input_schema or {"type": "object", "properties": {}}
+    return {
+        "type": "function",
+        "function": {
+            "name": schema.name,
+            "description": schema.description,
+            "parameters": _sanitize_tool_input_schema(parameters),
+        },
+    }
 
 
 def convert_tool_schemas_to_langchain(
     tools: list[ToolSchema] | None,
-) -> list[StructuredTool]:
+) -> list[dict[str, Any]]:
     if not tools:
         return []
-    return [convert_tool_schema_to_langchain(t) for t in tools]
+    return [convert_tool_schema_to_langchain_dict(t) for t in tools]
 
 
 __all__ = [
@@ -584,6 +599,6 @@ __all__ = [
     "convert_assistant_message_from_langchain",
     "token_usage_from_ai_message",
     "output_schema_to_pydantic_model",
-    "convert_tool_schema_to_langchain",
+    "convert_tool_schema_to_langchain_dict",
     "convert_tool_schemas_to_langchain",
 ]

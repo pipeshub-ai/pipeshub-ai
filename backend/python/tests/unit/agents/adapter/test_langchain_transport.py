@@ -1025,7 +1025,7 @@ class TestBindToolsCaching:
         )
 
         assert model.bind_calls == 2
-        assert [t.name for t in model.bind_tools_called_with] == ["a", "b"]
+        assert [t["function"]["name"] for t in model.bind_tools_called_with] == ["a", "b"]
 
     async def test_cache_is_per_transport_instance(self) -> None:
         model_a, model_b = self._CountingModel(), self._CountingModel()

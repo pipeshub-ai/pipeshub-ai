@@ -62,7 +62,7 @@ class DefaultPromptBuilder:
         identity = spec.system_prompt if isinstance(spec.system_prompt, str) else ""
         template.set("identity", identity)
         template.set("goal_brief", _render_goal_brief(goal))
-        template.set("toolset_overview", _render_toolset_overview(runtime))
+        template.set("toolset_overview", _render_toolset_overview(runtime, spec))
         template.set("skills_overview", render_skills_overview(runtime))
         template.set("todos", _render_todos(todos))
         template.set("mode", MODE_GUIDANCE.get(spec.mode, ""))
@@ -123,7 +123,19 @@ def _render_todos(todos: list[Todo] | None) -> str:
     return "\n".join(lines)
 
 
-def _render_toolset_overview(runtime: "AgentRuntime") -> str:
+def _render_toolset_overview(runtime: "AgentRuntime", spec: "AgentSpec") -> str:
+    """Only meaningful under lazy disclosure (`spec.tool_disclosure ==
+    "lazy"`) — under eager disclosure every tool's full schema is already
+    bound for this turn, so `list_toolsets`/`fetch_tools` have nothing left
+    to reveal. `ToolRegistry.has_toolsets()` alone used to gate this, which
+    misfired for any agent with MCP attached: `MCPToolProvider` always
+    registers the top-level `"mcp"` group the moment ANY instance loads
+    (see `mcp_tool_loader.py`), so `has_toolsets()` was true even for an
+    eager-disclosure agent that already has every MCP schema bound — the
+    model was told to call tools it didn't need and that did nothing extra.
+    """
+    if spec.tool_disclosure != "lazy":
+        return ""
     registry = runtime.tool_registry if runtime is not None else None
     if registry is None or not registry.has_toolsets():
         return ""

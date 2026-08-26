@@ -397,7 +397,12 @@ export function MessageList() {
   // During streaming, ResizeObserver fires ~60/sec. Writing to a ref
   // avoids a React rerender on every frame. The spacer div always exists
   // in the DOM (never conditionally rendered) so the ref is stable.
-  const recalcSpacerHeight = useCallback(() => {
+  const recalcSpacerHeight = useCallback((measured?: {
+    containerHeight: number;
+    lastMessageHeight: number;
+    scrollHeight: number;
+    scrollTop: number;
+  }) => {
     if (messageRefs.current.size === 0 || !lastMessageKeyRef.current || !scrollContainerRef.current) {
       if (spacerRef.current) spacerRef.current.style.minHeight = '0';
       debugLog.spacer('no messages or no container → height=0');
@@ -413,9 +418,14 @@ export function MessageList() {
       return;
     }
 
-    const containerHeight = container.clientHeight;
-    const lastMessageRect = element.getBoundingClientRect();
-    const totalScrollHeight = container.scrollHeight;
+    // A caller that already measured this frame (e.g. `syncStreamingMessageTail`)
+    // passes its numbers in so this doesn't force a second synchronous layout
+    // pass for the same geometry — a write (the minHeight assignment below)
+    // sandwiched between two independent read passes is what causes thrashing.
+    const containerHeight = measured?.containerHeight ?? container.clientHeight;
+    const lastMessageHeight = measured?.lastMessageHeight ?? element.getBoundingClientRect().height;
+    const totalScrollHeight = measured?.scrollHeight ?? container.scrollHeight;
+    const scrollTop = measured?.scrollTop ?? container.scrollTop;
     const isOverflowing = totalScrollHeight > containerHeight;
 
     let needed = 0;
@@ -424,14 +434,17 @@ export function MessageList() {
     // than it saves — the Figma mobile spec shows content flush against the input.
     // On desktop: add spacer only when content overflows or user has scrolled
     // away from the top (avoids unnecessary scrollbar on short conversations).
-    if (!isMobileRef.current && (isOverflowing || container.scrollTop > 0)) {
-      needed = Math.max(0, containerHeight - lastMessageRect.height);
+    if (!isMobileRef.current && (isOverflowing || scrollTop > 0)) {
+      needed = Math.max(0, containerHeight - lastMessageHeight);
     }
 
     if (spacerRef.current) {
-      spacerRef.current.style.minHeight = `${needed}px`;
+      const next = `${needed}px`;
+      if (spacerRef.current.style.minHeight !== next) {
+        spacerRef.current.style.minHeight = next;
+      }
     }
-    debugLog.spacer(`containerH=${containerHeight} lastMsgH=${Math.round(lastMessageRect.height)} overflow=${isOverflowing} → spacer=${needed}`);
+    debugLog.spacer(`containerH=${containerHeight} lastMsgH=${Math.round(lastMessageHeight)} overflow=${isOverflowing} → spacer=${needed}`);
   }, []);
 
   /**
@@ -537,23 +550,43 @@ export function MessageList() {
     const lastEl = key ? messageRefs.current.get(key) : null;
     if (!container || !lastEl) return;
 
-    recalcSpacerHeight();
+    // One read pass for this frame, shared with `recalcSpacerHeight` below —
+    // avoids two independent getBoundingClientRect()/scrollHeight passes
+    // (with the spacer's minHeight write forcing a reflow in between) on
+    // every streaming flush.
+    const containerRect = container.getBoundingClientRect();
+    const elementRect = lastEl.getBoundingClientRect();
+    const containerHeight = container.clientHeight;
+    const scrollTop = container.scrollTop;
+    const scrollHeight = container.scrollHeight;
 
-    const msgHeight = lastEl.getBoundingClientRect().height;
+    recalcSpacerHeight({
+      containerHeight,
+      lastMessageHeight: elementRect.height,
+      scrollHeight,
+      scrollTop,
+    });
+
     // Composer sits outside this scroll container (flex sibling), so clientHeight
     // is already the visible message viewport — do not subtract input height again.
-    const visibleHeight = container.clientHeight;
+    const visibleHeight = containerHeight;
+
+    let nextTop: number;
+    if (elementRect.height <= visibleHeight) {
+      const topBuffer = parseFloat(window.getComputedStyle(container).paddingTop) || 0;
+      nextTop = Math.max(0, elementRect.top - containerRect.top + scrollTop - topBuffer);
+    } else {
+      nextTop = scrollHeight - containerHeight;
+    }
+
+    // Already at the target position — skip the write (and the scroll-event
+    // churn / layout it triggers).
+    if (Math.abs(nextTop - scrollTop) < 1) {
+      lastTailSyncScrollTopRef.current = scrollTop;
+      return;
+    }
 
     isAutoScrollingRef.current = true;
-    let nextTop: number;
-    if (msgHeight <= visibleHeight) {
-      const containerRect = container.getBoundingClientRect();
-      const elementRect = lastEl.getBoundingClientRect();
-      const topBuffer = parseFloat(window.getComputedStyle(container).paddingTop) || 0;
-      nextTop = Math.max(0, elementRect.top - containerRect.top + container.scrollTop - topBuffer);
-    } else {
-      nextTop = container.scrollHeight - container.clientHeight;
-    }
     container.scrollTop = nextTop;
     lastTailSyncScrollTopRef.current = container.scrollTop;
     queueMicrotask(() => {
@@ -1092,7 +1125,10 @@ export function MessageList() {
         overflowX: 'hidden',
         overscrollBehavior: 'contain',
         scrollBehavior: isStreaming ? 'auto' : 'smooth',
-        overflowAnchor: 'auto',
+        // The tail is pinned manually during streaming (syncStreamingMessageTail
+        // writes scrollTop every frame) — native scroll anchoring would otherwise
+        // fight those writes whenever streamed table/content geometry shifts.
+        overflowAnchor: isStreaming ? 'none' : 'auto',
       }}
     >
       <Box
