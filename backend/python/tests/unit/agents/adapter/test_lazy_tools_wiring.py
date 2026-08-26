@@ -490,6 +490,38 @@ class TestPipesHubGlobalCatalogFallback:
         assert hits[0].name == "mcp_rovo__search_issues"
         assert hits[0].reason == "mcp_unavailable"
         assert "unavailable" in hits[0].description.lower()
+        # `name`, not `displayName` — `mcp_tool_loader.py::_mcp_group_name`
+        # normalizes `ResolvedMCPServer.name`, so reporting
+        # `mcp_atlassian_rovo` here would name a group no later
+        # `fetch_tools` call could resolve.
+        assert hits[0].toolset == "mcp_rovomcp"
+
+    async def test_mcp_hit_without_full_name_falls_back_to_the_namespaced_name(
+        self, monkeypatch,
+    ) -> None:
+        """With no `fullName` on the attachment, the reported name must still
+        be the one the tool registers under once discovery succeeds — that's
+        `build_namespaced_tool_name(typeId or name, tool)` (`discovery.py`),
+        the same discriminator `MCPToolProvider._attached_full_names` uses,
+        not the `{group}__{tool}` convention connector toolsets use."""
+        monkeypatch.setattr(
+            "app.agents.registry.toolset_registry.get_toolset_registry",
+            lambda: _FakeToolsetRegistry({}),
+        )
+        context = make_context(
+            mcp_servers=[{
+                "instanceId": "inst-1", "name": "RovoMCP", "displayName": "Atlassian Rovo",
+                "tools": [{"name": "search_issues", "description": "Search Jira issues via Rovo"}],
+            }],
+            mcp_server_configs={"inst-1": {"instance": {"typeId": "atlassian-rovo"}, "auth": {}}},
+            mcp_tool_load_failures=[{"instanceId": "inst-1", "name": "RovoMCP", "reason": "discovery_failed"}],
+        )
+
+        hits = await PipesHubGlobalCatalogFallback(context).search("jira issues", limit=5)
+
+        assert len(hits) == 1
+        assert hits[0].name == "mcp_atlassian_rovo_search_issues"
+        assert hits[0].toolset == "mcp_rovomcp"
 
     async def test_search_ignores_mcp_servers_that_did_not_fail(self, monkeypatch) -> None:
         monkeypatch.setattr(

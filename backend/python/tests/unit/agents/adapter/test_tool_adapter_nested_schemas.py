@@ -10,14 +10,15 @@ Also proves the fix survives the OTHER direction of this same round-trip —
 `LangChainTransport._bind_tools`) passes `ToolSchema.input_schema` straight
 through to the OpenAI function-calling dict shape; this suite checks the
 two ends actually connect for a realistic nested tool, plus the MCP-sourced
-schema-fidelity regressions (enum/default/bounds/additionalProperties/
-cyclic $defs) proven in the tool schema fidelity investigation.
+schema-loss regressions (enum/default/bounds/additionalProperties/cyclic
+$defs/list-valued type) proven in the tool-schema investigation.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
@@ -193,14 +194,14 @@ def _mcp_adapter(input_schema: dict[str, Any]) -> MCPToolAdapter:
     return MCPToolAdapter(_mcp_server(), tool_info, session_manager=None)
 
 
-class TestResolveJsonSchemaRefsFidelity:
-    """`resolve_json_schema_refs` only inlines `$ref`/`$defs` — every other
-    JSON-Schema keyword (`enum`, `default`, `minimum`/`maximum`,
-    `additionalProperties`, ...) must pass through completely untouched.
-    These are the exact losses proven in the MCP tool schema fidelity
-    investigation, now regression-guarded at the point they'd first
-    reappear if `_params_from_schema`'s lossy `ToolParameter` path were
-    ever substituted back in for `raw_input_schema`."""
+class TestResolveJsonSchemaRefs:
+    """`resolve_json_schema_refs` inlines `$ref`/`$defs` and normalizes
+    list-valued `type` keywords — every other JSON-Schema keyword (`enum`,
+    `default`, `minimum`/`maximum`, `additionalProperties`, ...) must pass
+    through completely untouched. These are the exact losses proven in the
+    MCP tool-schema investigation, now regression-guarded at the point
+    they'd first reappear if `_params_from_schema`'s lossy `ToolParameter`
+    path were ever substituted back in for `raw_input_schema`."""
 
     def test_enum_survives(self) -> None:
         schema = {
@@ -266,8 +267,127 @@ class TestResolveJsonSchemaRefsFidelity:
         # expansion or a dropped field.
         assert link["properties"]["parent"]["type"] == "object"
 
+    def test_ref_inside_a_sibling_of_another_ref_is_resolved_too(self) -> None:
+        """`$ref` alongside sibling keywords is legal from draft 2019-09 on. A
+        `$ref` nested inside one of those siblings used to be copied verbatim
+        and then deleted outright by `_sanitize_tool_input_schema`, losing the
+        nested constraint with no trace."""
+        schema = {
+            "$defs": {
+                "Page": {"type": "object", "properties": {"cursor": {"type": "string"}}},
+                "Item": {"type": "object", "properties": {"id": {"type": "integer"}}},
+            },
+            "type": "object",
+            "properties": {
+                "page": {"$ref": "#/$defs/Page", "items": {"$ref": "#/$defs/Item"}},
+            },
+        }
+        resolved = resolve_json_schema_refs(schema)
 
-class TestMCPAdapterRawSchemaFidelity:
+        page = resolved["properties"]["page"]
+        assert page["properties"]["cursor"]["type"] == "string"
+        assert page["items"]["properties"]["id"]["type"] == "integer"
+        assert "$ref" not in str(resolved)
+
+    def test_empty_schema_becomes_a_well_formed_object(self) -> None:
+        """A server that omits `inputSchema` for a zero-argument tool yields
+        `{}` (`discovery.py`'s `input_schema or {}`). `AnthropicTransport._format_tools`
+        forwards `input_schema` verbatim and the API rejects `{}`, which would
+        fail every tool in the request — they all go up in one call."""
+        assert resolve_json_schema_refs({}) == {"type": "object", "properties": {}}
+
+
+class TestListValuedTypeNormalization:
+    """`{"type": ["string", "null"]}` is a common MCP shape and a hard failure
+    on Gemini: `types.Schema.type` is a single enum, so the list reaches
+    `langchain_google_genai._format_json_schema_to_gapic` as `ValueError:
+    Invalid type` and `transport/gemini.py::_format_tools` as a pydantic
+    `ValidationError` — both non-retryable, both failing the whole turn.
+    Nothing had to handle the list form before schemas were passed through
+    verbatim, since `to_schema()` rebuilt them from `ToolParameter`."""
+
+    def test_single_concrete_type_plus_null_becomes_nullable(self) -> None:
+        resolved = resolve_json_schema_refs({
+            "type": "object",
+            "properties": {"assignee": {"type": ["string", "null"], "description": "user"}},
+        })
+        assignee = resolved["properties"]["assignee"]
+        assert assignee["type"] == "string"
+        assert assignee["nullable"] is True
+        assert assignee["description"] == "user"
+
+    def test_genuine_multi_type_union_becomes_any_of(self) -> None:
+        resolved = resolve_json_schema_refs({
+            "type": "object",
+            "properties": {"fields": {"type": ["string", "array"]}},
+        })
+        assert resolved["properties"]["fields"]["anyOf"] == [
+            {"type": "string"}, {"type": "array"},
+        ]
+        assert "type" not in resolved["properties"]["fields"]
+
+    def test_a_default_value_that_looks_like_a_schema_is_left_alone(self) -> None:
+        """`default`/`enum`/`const` values are data the server wants back
+        verbatim, not subschemas — normalizing inside one would silently
+        rewrite the literal the model is told to send."""
+        resolved = resolve_json_schema_refs({
+            "type": "object",
+            "properties": {
+                "template": {
+                    "type": "object",
+                    "default": {"type": ["draft", "final"], "oneOf": ["a"]},
+                },
+            },
+        })
+        assert resolved["properties"]["template"]["default"] == {
+            "type": ["draft", "final"], "oneOf": ["a"],
+        }
+
+    def test_normalization_reaches_nested_and_ref_resolved_branches(self) -> None:
+        resolved = resolve_json_schema_refs({
+            "$defs": {"Filter": {"type": "object", "properties": {"q": {"type": ["string", "null"]}}}},
+            "type": "object",
+            "properties": {
+                "filter": {"$ref": "#/$defs/Filter"},
+                "items": {"type": "array", "items": {"type": ["integer", "null"]}},
+            },
+        })
+        assert resolved["properties"]["filter"]["properties"]["q"]["type"] == "string"
+        assert resolved["properties"]["items"]["items"]["type"] == "integer"
+
+    def test_gemini_hostile_schema_binds_without_raising(self) -> None:
+        """The end-to-end proof: the same MCP schema through
+        `raw_input_schema` -> `to_schema()` -> `convert_tool_schema_to_langchain_dict`
+        -> langchain-google-genai's own converter, which is what
+        `bind_tools()` calls. Before normalization this raised `ValueError:
+        Invalid type: ['string', 'null']`, surfacing as a non-retryable
+        `TransportError`.
+
+        Unsupported-but-harmless keywords (`additionalProperties`, `oneOf`,
+        `exclusiveMinimum`, ...) are in here deliberately: that converter
+        allow-lists and logs them, so they must NOT need stripping on our
+        side — only the list-valued `type` is fatal."""
+        function_utils = pytest.importorskip("langchain_google_genai._function_utils")
+
+        adapter = _mcp_adapter({
+            "type": "object",
+            "properties": {
+                "assignee": {"type": ["string", "null"]},
+                "fields": {"type": ["string", "array"]},
+                "options": {"type": "object", "additionalProperties": {"type": "string"}},
+                "limit": {"type": "integer", "exclusiveMinimum": 0, "maximum": 100},
+                "mode": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
+            },
+            "required": ["assignee"],
+        })
+        lc_dict = convert_tool_schema_to_langchain_dict(adapter.to_schema())
+
+        declarations = function_utils.convert_to_genai_function_declarations([lc_dict])
+
+        assert len(declarations) == 1
+
+
+class TestMCPAdapterRawSchemaPassthrough:
     """End to end through `MCPToolAdapter.raw_input_schema` -> `to_schema()`
     -> `convert_tool_schema_to_langchain_dict` — the actual path a Rovo tool
     schema takes before reaching the LLM via the default LangChain

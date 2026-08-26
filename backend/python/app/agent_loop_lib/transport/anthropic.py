@@ -381,7 +381,14 @@ class AnthropicTransport(LLMTransport):
         if not tools:
             return None
         return [
-            {"name": t.name, "description": t.description, "input_schema": t.input_schema}
+            {
+                "name": t.name,
+                "description": t.description,
+                # The API rejects an empty schema, and a tool taking no
+                # arguments legitimately has one — same substitution the
+                # OpenAI/Gemini/Ollama transports make.
+                "input_schema": t.input_schema or {"type": "object", "properties": {}},
+            }
             for t in tools
         ]
 

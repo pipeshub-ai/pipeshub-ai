@@ -3,8 +3,10 @@ agent-loop's provider-agnostic types (`app/agents/agent_loop/converters.py`)."""
 
 from __future__ import annotations
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.messages import ToolMessage as LCToolMessage
+from pydantic import ValidationError
 
 from app.agent_loop_lib.core.messages import (
     MALFORMED_TOOL_CALL_ARGS_KEY,
@@ -491,10 +493,11 @@ class TestConvertToolSchemaToLangchainDict:
         assert result["function"]["parameters"] == {"type": "object", "properties": {}}
 
     def test_strips_schema_meta_keywords_but_keeps_everything_else(self) -> None:
-        """`$schema`/`$id` (and any leftover `$ref`) are stripped —
-        `langchain_google_genai` rejects unsupported keywords outright —
-        but `enum`/`default`/`additionalProperties` must survive, since
-        those are exactly what the previous Pydantic round-trip dropped."""
+        """`$schema`/`$id` (and any leftover `$ref`) are stripped because they
+        carry no meaning in a function-calling `parameters` schema, but
+        `enum`/`default`/`additionalProperties` must survive — those are
+        exactly what the previous Pydantic round-trip dropped, and every
+        provider either honors them or ignores them harmlessly."""
         schema = ToolSchema(
             name="t",
             description="d",
@@ -581,3 +584,46 @@ class TestOutputSchemaToPydanticModel:
         instance = model(route="a", meta={"count": 3})
         assert instance.route == "a"
         assert instance.meta.count == 3
+
+    def test_typed_enum_rejects_a_value_outside_the_enum(self) -> None:
+        """`{"type": "string", "enum": [...]}` must keep BOTH constraints. A
+        bare `Any` (or the primitive type alone) lets a provider's structured
+        response put an object — or an unlisted string — in the field, and
+        this model is exactly what `complete_structured` validates against."""
+        model = output_schema_to_pydantic_model({
+            "type": "object",
+            "properties": {"route": {"type": "string", "enum": ["a", "b"]}},
+            "required": ["route"],
+        })
+
+        assert model(route="b").route == "b"
+        with pytest.raises(ValidationError):
+            model(route={"invalid": "shape"})
+        with pytest.raises(ValidationError):
+            model(route="not_in_enum")
+
+    def test_enum_with_non_literal_members_falls_back_to_the_declared_type(self) -> None:
+        """JSON Schema allows an object as an `enum` member, which `Literal`
+        can't hold — the declared primitive type is still enforced rather
+        than degrading the field to `Any`."""
+        model = output_schema_to_pydantic_model({
+            "type": "object",
+            "properties": {"shape": {"type": "string", "enum": [{"a": 1}, {"b": 2}]}},
+            "required": ["shape"],
+        })
+
+        assert model(shape="anything").shape == "anything"
+        with pytest.raises(ValidationError):
+            model(shape={"a": 1})
+
+    def test_list_valued_type_does_not_raise(self) -> None:
+        """A list-valued `type` is unhashable, so looking it up in
+        `_JSON_SCHEMA_TYPE_MAP` without an `isinstance` guard raised
+        `TypeError` from inside the model build."""
+        model = output_schema_to_pydantic_model({
+            "type": "object",
+            "properties": {"note": {"type": ["string", "null"]}},
+            "required": [],
+        })
+
+        assert model(note="x").note == "x"

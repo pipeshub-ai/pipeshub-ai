@@ -77,6 +77,15 @@ def _coerce_primitive(value: Any, accepted_types: tuple[type, ...]) -> Any:  # n
     unambiguously one of `accepted_types`, so a genuine type mismatch
     (a dict where a string was expected) still fails validation instead of
     being silently passed through."""
+    if isinstance(value, bool):
+        # `isinstance(True, int)` is True, so bool has to be rejected up
+        # front or it coerces into every numeric parameter.
+        return _NO_COERCION
+    if isinstance(value, float) and int in accepted_types and float not in accepted_types:
+        # JSON has a single number type: `5.0` for an integer parameter means
+        # 5, but `isinstance(5.0, int)` is False. A fractional value is a real
+        # mismatch and still rejected.
+        return int(value) if value.is_integer() else _NO_COERCION
     if not isinstance(value, str):
         return _NO_COERCION
     if int in accepted_types and float not in accepted_types:
@@ -140,10 +149,40 @@ class MCPToolAdapter(Tool):
             return None
         return resolve_json_schema_refs(self._tool_info.input_schema)
 
+    def _properties_with_authoritative_type(self) -> frozenset[str]:
+        """Property names whose schema declares exactly ONE concrete JSON
+        type — the only ones a local type check can enforce without
+        contradicting the server's own contract.
+
+        `parameters` is a lossy view of the schema: `_tool_parameter_from_json_schema`
+        (`tool_adapter.py`) reports STRING for a property that declares no
+        `type` at all, and `_unwrap_any_of` collapses a union to its first
+        non-null arm. Type-checking against that view rejects calls the real
+        schema permits — an untyped property accepts any JSON value, a
+        `string | array` union accepts both — and because `ToolExecutor`'s
+        `_usage_hint` is built from the same `parameters`, the correction
+        handed back to the model repeats the wrong type, so it cannot
+        recover. Three such turns and `ToolErrorTracker` blocks the tool for
+        the rest of the request.
+        """
+        properties = (self.raw_input_schema or {}).get("properties")
+        if not isinstance(properties, dict):
+            return frozenset()
+        return frozenset(
+            name
+            for name, prop in properties.items()
+            if isinstance(prop, dict)
+            and isinstance(prop.get("type"), str)
+            and not prop.get("anyOf")
+            and not prop.get("oneOf")
+        )
+
     def validate(self, kwargs: dict[str, Any]) -> None:
         """Shallow validation against the MCP server's own schema (via
         `parameters`, sourced from the same `raw_input_schema` above):
-        required keys present, enum membership, and a loose primitive-type
+        required keys present, enum membership, and — only for a property
+        that declares a single concrete type (see
+        `_properties_with_authoritative_type`) — a loose primitive-type
         check that coerces the common case of an LLM stringifying a number
         or boolean rather than rejecting it outright.
 
@@ -159,6 +198,7 @@ class MCPToolAdapter(Tool):
         old no-op mixin at all.
         """
         params_by_name = {p.name: p for p in self.parameters}
+        typed_properties = self._properties_with_authoritative_type()
         for param in params_by_name.values():
             if param.name not in kwargs:
                 if param.required:
@@ -171,18 +211,24 @@ class MCPToolAdapter(Tool):
             if value is None:
                 continue
 
-            accepted_types = _PYTHON_TYPES.get(param.type)
-            is_bool_leaking_into_numeric = isinstance(value, bool) and param.type in (
-                ParameterType.INTEGER, ParameterType.FLOAT,
+            accepted_types = (
+                _PYTHON_TYPES.get(param.type) if param.name in typed_properties else None
             )
-            if accepted_types and (not isinstance(value, accepted_types) or is_bool_leaking_into_numeric):
-                coerced = _NO_COERCION if is_bool_leaking_into_numeric else _coerce_primitive(value, accepted_types)
-                if coerced is _NO_COERCION:
-                    raise ToolValidationError(
-                        f"{self.path}: argument '{param.name}' expected type "
-                        f"{param.type.value!r}, got {type(value).__name__!r}"
+            if accepted_types:
+                is_bool_leaking_into_numeric = isinstance(value, bool) and param.type in (
+                    ParameterType.INTEGER, ParameterType.FLOAT,
+                )
+                if not isinstance(value, accepted_types) or is_bool_leaking_into_numeric:
+                    coerced = (
+                        _NO_COERCION if is_bool_leaking_into_numeric
+                        else _coerce_primitive(value, accepted_types)
                     )
-                kwargs[param.name] = value = coerced
+                    if coerced is _NO_COERCION:
+                        raise ToolValidationError(
+                            f"{self.path}: argument '{param.name}' expected type "
+                            f"{param.type.value!r}, got {type(value).__name__!r}"
+                        )
+                    kwargs[param.name] = value = coerced
 
             if param.enum is not None and value not in param.enum:
                 matched = _fuzzy_match_enum(value, param.enum)

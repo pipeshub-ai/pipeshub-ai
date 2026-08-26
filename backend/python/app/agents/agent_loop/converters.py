@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.messages import SystemMessage as LCSystemMessage
@@ -443,6 +443,12 @@ _JSON_SCHEMA_TYPE_MAP: dict[str, Any] = {
 }
 
 
+# Values a `Literal[...]` accepts as type arguments. JSON Schema allows an
+# `enum` member to be any value, including an object or array — those fall
+# through to the declared primitive type instead.
+_LITERAL_SAFE_TYPES = (str, int, bool, type(None))
+
+
 def _json_schema_to_python_type(schema: dict[str, Any], model_name: str, field_name: str) -> Any:  # noqa: ANN401
     """Best-effort JSON-schema-fragment -> Python type mapping for the flat,
     hand-authored schemas agent-loop's planner/critic/intent modules pass to
@@ -450,19 +456,24 @@ def _json_schema_to_python_type(schema: dict[str, Any], model_name: str, field_n
     no `$ref`/`$defs`, at most one level of `array`/`object` nesting).
     Anything unrecognized degrades to `Any` rather than raising — a
     too-loose field type is far cheaper than failing to bind tools at all.
+
+    Reached only from `output_schema_to_pydantic_model` — the tool-calling
+    path passes `input_schema` through verbatim (see
+    `convert_tool_schema_to_langchain_dict`) and never builds a model.
     """
-    if "enum" in schema:
-        # Checked BEFORE `schema_type` below: a typed enum (e.g. `{"type":
-        # "string", "enum": [...]}`, the common shape) would otherwise
-        # match `_JSON_SCHEMA_TYPE_MAP` first and return here dead. Plain
-        # Python doesn't need a real Enum here — a Literal-free `Any` keeps
-        # this helper simple; the value is still validated downstream by
-        # the calling module's own post-processing, not by this schema.
-        return Any
-
     schema_type = schema.get("type")
+    enum_values = schema.get("enum")
 
-    if schema_type in _JSON_SCHEMA_TYPE_MAP:
+    if enum_values and all(isinstance(v, _LITERAL_SAFE_TYPES) for v in enum_values):
+        # `Literal` keeps the declared type AND the allowed values. Mapping
+        # the primitive type alone drops the enum; returning bare `Any` drops
+        # both, letting a provider's structured response put an object in a
+        # field declared `{"type": "string", "enum": [...]}`.
+        return Literal[tuple(enum_values)]
+
+    # `isinstance` guard, not a bare `in`: a list-valued `type` is unhashable
+    # and would raise `TypeError` from the dict lookup.
+    if isinstance(schema_type, str) and schema_type in _JSON_SCHEMA_TYPE_MAP:
         return _JSON_SCHEMA_TYPE_MAP[schema_type]
 
     if schema_type == "array":
@@ -504,9 +515,8 @@ def output_schema_to_pydantic_model(output_schema: dict[str, Any]) -> type[BaseM
 
 
 # Meta-keywords that carry no meaning inside a function-calling `parameters`
-# schema and that some LangChain-wrapped provider converters (notably
-# `langchain_google_genai`, which runs its own JSON-schema walk rather than
-# passing the dict straight through) reject outright rather than ignoring.
+# schema — a `$schema`/`$id` pointing at a draft URL describes the document,
+# not the arguments, so no provider has any use for it.
 _SCHEMA_META_KEYS_TO_STRIP = frozenset({"$schema", "$id"})
 
 
@@ -518,12 +528,18 @@ def _sanitize_tool_input_schema(schema: Any) -> Any:  # noqa: ANN401
     every `$ref`/`$defs` up front via `resolve_json_schema_refs`, so a `$ref`
     surviving to here should not happen — this is a defensive backstop, not
     the primary mechanism, which is why it drops the key rather than trying
-    to re-resolve it. Recursive: an unsupported keyword at any depth can fail
-    the whole tool declaration, not just its own level (see
-    `transport/gemini.py::sanitize_schema`, which this mirrors the shape of
-    for the same reason, but this one keeps every other JSON Schema keyword
-    — enum/default/minimum/additionalProperties/... — since OpenAI,
-    Anthropic, and Ollama's LangChain integrations accept those verbatim).
+    to re-resolve it, and why it recurses (a stray `$ref` at any depth is
+    still a dangling pointer once `$defs` is gone).
+
+    Deliberately NOT an allow-list like `transport/gemini.py::sanitize_schema`:
+    every other JSON Schema keyword is kept. OpenAI, Anthropic, and Ollama
+    accept them verbatim, and `langchain_google_genai` filters unknown
+    keywords itself (`_format_json_schema_to_gapic`'s
+    `_ALLOWED_SCHEMA_FIELDS_SET`, which logs and skips), so stripping here
+    would only lose constraints the provider that DOES understand them wants.
+    The one shape Gemini cannot survive is a list-valued `type`, and that is
+    normalized upstream in `resolve_json_schema_refs` so both the native and
+    LangChain Gemini arms benefit.
     """
     if isinstance(schema, list):
         return [_sanitize_tool_input_schema(v) for v in schema]
