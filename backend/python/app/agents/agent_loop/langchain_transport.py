@@ -332,17 +332,24 @@ class LangChainTransport(LLMTransport):
             self._bound_by_tools[cache_key] = bound
         return bound
 
-    def _to_langchain(self, messages: list[Message], system: str | None) -> list[BaseMessage]:
+    def _to_langchain(
+        self, messages: list[Message], system: str | None, *, relocate: bool | None = None,
+    ) -> list[BaseMessage]:
         """The single place message conversion picks up this transport's
         learned image-delivery shape, so `complete`/`complete_structured`/
-        `stream` can never drift on it."""
+        `stream` -- and the relocation retry -- can never drift on it.
+
+        `relocate` overrides the learned shape for the one caller still
+        discovering it (`_tool_image_fallback`); every other caller passes
+        None and gets what this transport has learned so far.
+        """
         if self._max_images_per_request is not None:
             messages = cap_images(messages, self._max_images_per_request)
         return convert_messages_to_langchain(
             messages,
             system,
             strip_tool_images=not self._supports_multipart_tool_result,
-            relocate_tool_images=self._tool_images_relocated,
+            relocate_tool_images=self._tool_images_relocated if relocate is None else relocate,
         )
 
     def _tool_image_fallback(
@@ -361,11 +368,17 @@ class LangChainTransport(LLMTransport):
         """
         if self._tool_images_relocated or not _is_tool_result_image_conflict(exc):
             return None
+        # Judged on the capped set, not the raw one. The retry has to carry the
+        # same images the first attempt did -- relocating every image in
+        # history would hand the provider more than it accepts, which is a
+        # second rejection -- and once the cap has taken the last tool image
+        # there is nothing left to move, so retrying would just resend the
+        # request that already failed.
+        if self._max_images_per_request is not None:
+            messages = cap_images(messages, self._max_images_per_request)
         if not has_tool_result_images(messages):
             return None
-        return convert_messages_to_langchain(
-            messages, system, relocate_tool_images=True,
-        )
+        return self._to_langchain(messages, system, relocate=True)
 
     def _wrap_error(self, exc: Exception, context: str) -> TransportError:
         status_code = getattr(exc, "status_code", None)

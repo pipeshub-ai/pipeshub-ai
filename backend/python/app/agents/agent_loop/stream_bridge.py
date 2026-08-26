@@ -292,11 +292,15 @@ async def run_agent_loop_stream(
     # direct access to AgentContext — chat_state IS tool_state in AgentContext.
     chat_state["event_sink"] = event_sink
     chat_state["sse_protocol"] = protocol
-    context = AgentContext.from_chat_state(chat_state, event_sink=event_sink, protocol=protocol)
-    # Thread model profile fields from etcd llm_config (passed from the route).
-    context.llm_provider = llm_provider
-    context.context_length = context_length
-    context.is_reasoning_model = is_reasoning_model
+    # Model profile fields from etcd llm_config go in at construction, not
+    # after: `model_post_init` resolves this request's image policy from
+    # `llm_provider`, and a later assignment would leave it on the
+    # unknown-provider default (2 images) while the wire cap used the real one.
+    context = AgentContext.from_chat_state(
+        chat_state, event_sink=event_sink, protocol=protocol,
+        llm_provider=llm_provider, context_length=context_length,
+        is_reasoning_model=is_reasoning_model,
+    )
 
     async def _produce() -> None:
         agent: Any = None

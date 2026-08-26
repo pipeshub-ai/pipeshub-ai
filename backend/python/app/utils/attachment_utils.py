@@ -275,7 +275,13 @@ def _extract_image_blocks(
                 ),
             ])
             if outcome.admitted:
-                result.append({"type": "image_url", "image_url": {"url": uri}})
+                # The admitted candidate, not `uri`: admission downscales an
+                # image that exceeds the model's per-image limits, and sending
+                # the source bytes would discard that.
+                result.append({
+                    "type": "image_url",
+                    "image_url": {"url": outcome.admitted[0].data_uri},
+                })
             else:
                 logger.debug(
                     "Skipping image from %s: %s",

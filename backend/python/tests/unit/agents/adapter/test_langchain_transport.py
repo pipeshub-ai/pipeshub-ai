@@ -1258,3 +1258,105 @@ class TestImageCapGuard:
 
         assert self._count_images(model.received_messages) == 20
 
+
+
+class TestToolImageRelocationRespectsTheCap:
+    """The relocation retry has to send the same image set the first attempt
+    did. It builds its own message list, and while it did so directly it
+    skipped `cap_images` — so a provider that rejected images in a tool result
+    was retried with every image in history, which is a second rejection on any
+    model whose cap is lower than that.
+    """
+
+    CONFLICT = (
+        "Invalid 'messages[5]'. Image URLs are only allowed for messages with role "
+        "'user', but this message with role 'tool' contains an image URL"
+    )
+
+    @staticmethod
+    def _messages(tool_images: int = 5) -> list:
+        messages = [UserMessage(content="what is in these?")]
+        for i in range(tool_images):
+            messages.append(ToolMessage(
+                content=[
+                    TextPart(text=f"[ref{i}] result {i}"),
+                    ImagePart(source=ImageSource(type="url", data=f"https://x/{i}.png")),
+                ],
+                tool_call_id=f"tc{i}",
+            ))
+        return messages
+
+    @staticmethod
+    def _image_count(lc_messages) -> int:
+        return sum(
+            sum(1 for p in m.content if isinstance(p, dict) and p.get("type") == "image_url")
+            for m in lc_messages
+            if isinstance(m.content, list)
+        )
+
+    def _transport(self, cap):
+        return LangChainTransport(_FakeModel(), model_name="m", max_images_per_request=cap)
+
+    @pytest.mark.parametrize("cap", [1, 2, 5, 10, None])
+    def test_the_retry_carries_what_the_first_attempt_carried(self, cap) -> None:
+        t = self._transport(cap)
+        messages = self._messages()
+
+        first = t._to_langchain(messages, None)
+        retry = t._tool_image_fallback(RuntimeError(self.CONFLICT), messages, None)
+
+        assert retry is not None
+        assert self._image_count(retry) == self._image_count(first)
+
+    def test_history_beyond_the_cap_is_not_relocated(self) -> None:
+        """The concrete regression: five tool images, a model that takes two."""
+        t = self._transport(2)
+
+        retry = t._tool_image_fallback(RuntimeError(self.CONFLICT), self._messages(), None)
+
+        assert self._image_count(retry) == 2
+
+    def test_the_images_still_land_on_a_user_message(self) -> None:
+        """Capping must not cost the relocation its point."""
+        from langchain_core.messages import HumanMessage
+        from langchain_core.messages import ToolMessage as LCToolMessage
+
+        from app.agents.agent_loop.converters import _RELOCATED_IMAGES_PREFIX
+
+        retry = self._transport(2)._tool_image_fallback(
+            RuntimeError(self.CONFLICT), self._messages(), None
+        )
+
+        assert isinstance(retry[-1], HumanMessage)
+        assert retry[-1].content[0] == {"type": "text", "text": _RELOCATED_IMAGES_PREFIX}
+        assert all(isinstance(m.content, str) for m in retry if isinstance(m, LCToolMessage))
+
+    def test_no_retry_when_the_cap_already_removed_every_tool_image(self) -> None:
+        """`cap_images` keeps the newest, so a user attachment can displace all
+        of them. Relocating nothing would resend the request that just failed."""
+        messages = [
+            *self._messages(),
+            UserMessage(content=[
+                TextPart(text="and this one"),
+                ImagePart(source=ImageSource(type="url", data="https://x/newest.png")),
+            ]),
+        ]
+
+        retry = self._transport(1)._tool_image_fallback(
+            RuntimeError(self.CONFLICT), messages, None
+        )
+
+        assert retry is None
+
+    def test_an_unrelated_error_is_not_a_relocation(self) -> None:
+        assert self._transport(2)._tool_image_fallback(
+            RuntimeError("429 rate limit exceeded"), self._messages(), None
+        ) is None
+
+    def test_once_pinned_the_shape_is_not_rediscovered(self) -> None:
+        """`_to_langchain` relocates on its own from then on — and caps."""
+        t = self._transport(2)
+        t._tool_images_relocated = True
+
+        assert t._tool_image_fallback(RuntimeError(self.CONFLICT), self._messages(), None) is None
+        assert self._image_count(t._to_langchain(self._messages(), None)) == 2

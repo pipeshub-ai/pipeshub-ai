@@ -470,6 +470,27 @@ def _admit_search_result_images(
     return decisions
 
 
+def record_image_uris(record: dict[str, Any]) -> list[str]:
+    """Every image URI in `record`, fragments included.
+
+    Used to warm image normalization off the event loop before the
+    synchronous render reaches it (`ImageAdmission.warm`). Deliberately wider
+    than `admit_record_images`'s candidate filter: a figure inside a table is
+    rendered too, and costs the same Pillow decode.
+    """
+    containers = record.get("block_containers") or {}
+    blocks = containers.get("blocks", []) if isinstance(containers, dict) else []
+    uris: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != BlockType.IMAGE.value:
+            continue
+        data = block.get("data")
+        uri = data.get("uri", "") if isinstance(data, dict) else (data if isinstance(data, str) else "")
+        if uri and is_base64_image(uri):
+            uris.append(uri)
+    return uris
+
+
 def admit_record_images(
     admission: "ImageAdmission", candidates: list["ImageCandidate"],
 ) -> dict[int, "DegradeReason | None"]:
@@ -3234,6 +3255,7 @@ def _render_blocks_with_images(
     image_budget: "ImageBudget | None" = None,
     collected_images: list[dict[str, Any]] | None = None,
     allow_inline_images: bool = True,
+    image_admission: "ImageAdmission | None" = None,
 ) -> list[dict[str, Any]]:
     """Render a list of block entries (with possible IMAGE types) into LLM content entries.
 
@@ -3253,9 +3275,19 @@ def _render_blocks_with_images(
     (a tool result with no `collected_images` sink joins text only), so an
     image that would be dropped downstream does not silently consume a slot
     of the shared `image_budget`.
+
+    `image_admission` is the request's arbiter. These images live inside a
+    table or group, so they are fragments -- and the caller's up-front
+    `admit_record_images` pass only collects blocks with no parent, which is
+    how a figure inside a table came to skip admission entirely: no per-model
+    cap, no dedup, and no downscale to the provider's per-image limits. Each
+    one is admitted here as it is reached. That is first-come rather than
+    ranked (the walk has already begun by this point), but it debits the same
+    budget and applies the same limits as every other image.
     """
     if image_budget is None:
         image_budget = ImageBudget(MAX_IMAGES_IN_CONVERSATION)
+    admission = admission_for(image_admission, image_budget)
     content: list[dict[str, Any]] = []
     for _block_idx, group_iter in groupby(blocks_list, key=lambda b: b.get("block_index")):
         group = list(group_iter)
@@ -3284,13 +3316,24 @@ def _render_blocks_with_images(
                         item_ref = item.get("citation_ref", "")
                         if img_uri and is_base64_image(img_uri):
                             deliverable = collected_images is not None or allow_inline_images
-                            if deliverable and image_budget.can_add():
-                                image_budget.try_consume(1)
+                            outcome = (
+                                admission.admit([ImageCandidate(
+                                    ref=item_ref,
+                                    data_uri=img_uri,
+                                    origin=ImageOrigin.FETCHED_RECORD,
+                                    block_index=int(item.get("block_index") or 0),
+                                    virtual_record_id=item.get("virtual_record_id"),
+                                )])
+                                if deliverable and is_multimodal_llm
+                                else None
+                            )
+                            if outcome is not None and outcome.admitted:
+                                wire_uri = outcome.admitted[0].data_uri
                                 if collected_images is not None:
                                     collected_images.append({
                                         "ref": item_ref,
                                         "block_index": item.get("block_index"),
-                                        "image_url": {"url": img_uri},
+                                        "image_url": {"url": wire_uri},
                                         "virtual_record_id": item.get("virtual_record_id"),
                                     })
                                     # Side-channel callers still need a text
@@ -3305,7 +3348,7 @@ def _render_blocks_with_images(
                                 else:
                                     content.append({
                                         "type": "image_url",
-                                        "image_url": {"url": img_uri}
+                                        "image_url": {"url": wire_uri},
                                     })
                             elif not deliverable:
                                 # No sink and no way to inline (a tool result
@@ -3580,6 +3623,11 @@ def record_to_message_content(
                 description = image_block_text(block)
                 image_uri = data.get("uri", "") if isinstance(data, dict) else ""
                 has_image = bool(image_uri) and is_base64_image(image_uri)
+                # What actually goes on the wire: admission downscales an image
+                # that exceeds the model's per-image limits, and the decision
+                # map carries only the verdict, so the bytes have to be looked
+                # up rather than re-read from the block.
+                wire_uri = admission.rendered_uri(image_uri) if has_image else image_uri
                 admitted = has_image and block_index in image_decisions and (
                     image_decisions[block_index] is None
                 )
@@ -3593,7 +3641,7 @@ def record_to_message_content(
                     collected_images.append({
                         "ref": ref,
                         "block_index": block_index,
-                        "image_url": {"url": image_uri},
+                        "image_url": {"url": wire_uri},
                         "virtual_record_id": record.get("virtual_record_id"),
                     })
                     marker = render_budget.take(image_marker_text(f"[{ref}]", description))
@@ -3613,7 +3661,7 @@ def record_to_message_content(
                         render_budget.stop_at(block_index)
                         break
                     content.append({"type": "text", "text": label})
-                    content.append({"type": "image_url", "image_url": {"url": image_uri}})
+                    content.append({"type": "image_url", "image_url": {"url": wire_uri}})
                     _renderable_rendered += 1
                     render_budget.count_block()
                 elif has_image or description:
@@ -3788,6 +3836,7 @@ def record_to_message_content(
                                 })
                                 content.extend(_render_blocks_with_images(
                                     child_results, is_multimodal_llm, image_budget, collected_images,
+                                    image_admission=admission,
                                 ))
                             _renderable_rendered += 1
                             render_budget.count_block()
@@ -3839,6 +3888,7 @@ def record_to_message_content(
                     content.append({"type": "text", "text": emitted})
                     content.extend(_render_blocks_with_images(
                         group_blocks, is_multimodal_llm, image_budget, collected_images,
+                        image_admission=admission,
                     ))
                 _renderable_rendered += 1
             else:
@@ -4288,7 +4338,7 @@ def build_message_content_array(
                             collected_images.append({
                                 "ref": ref,
                                 "block_index": block_index,
-                                "image_url": {"url": image_content},
+                                "image_url": {"url": admission.rendered_uri(image_content)},
                                 "virtual_record_id": virtual_record_id,
                             })
                             content.append({
@@ -4306,7 +4356,7 @@ def build_message_content_array(
                             })
                             content.append({
                                 "type": "image_url",
-                                "image_url": {"url": image_content}
+                                "image_url": {"url": admission.rendered_uri(image_content)},
                             })
                         else:
                             # from_tool=True with no collected_images sink:
@@ -4376,7 +4426,7 @@ def build_message_content_array(
                     })
                     content.extend(_render_blocks_with_images(
                         child_results, is_multimodal_llm, image_budget, _group_collected_images,
-                        allow_inline_images=not from_tool,
+                        allow_inline_images=not from_tool, image_admission=admission,
                     ))
             elif block_type == BlockType.TEXT.value:
                 current_record_has_blocks = True
@@ -4436,7 +4486,7 @@ def build_message_content_array(
                     })
                     content.extend(_render_blocks_with_images(
                         group_blocks, is_multimodal_llm, image_budget, _group_collected_images,
-                        allow_inline_images=not from_tool,
+                        allow_inline_images=not from_tool, image_admission=admission,
                     ))
             else:
                 continue

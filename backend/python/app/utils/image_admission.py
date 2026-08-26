@@ -34,6 +34,7 @@ Two properties the callers depend on:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from dataclasses import dataclass, field, replace
 from enum import Enum, IntEnum
@@ -232,6 +233,16 @@ class ImageAdmission:
         # Hashes already sent this request. Gives idempotent re-renders and a
         # stable image set across turns (see the module docstring).
         self._admitted_hashes: set[str] = set()
+        # Original hash -> the bytes actually admitted for it, whenever
+        # `_normalize` had to rewrite them. Kept because the renderers hold a
+        # decision, not a candidate, and re-read the source block's own URI:
+        # without somewhere to look the downscale would be computed and thrown
+        # away, and an image over the provider's per-image byte limit would go
+        # to the wire at full size. Only holds entries that actually changed.
+        self._normalized_by_hash: dict[str, str] = {}
+        # Hashes whose normalization has been decided, including the ones that
+        # needed no rewrite. Without it a no-op re-decodes on every render.
+        self._normalization_checked: set[str] = set()
 
     @property
     def allows_images(self) -> bool:
@@ -273,8 +284,10 @@ class ImageAdmission:
             digest = candidate.hash
             if digest in self._admitted_hashes:
                 # Already sent this request: free, and keeping it admitted is
-                # what makes the image set stable across turns.
-                admitted.append(candidate)
+                # what makes the image set stable across turns. Re-admitting
+                # returns the normalized bytes, not the source ones -- the
+                # first admission is what paid for the downscale.
+                admitted.append(self._as_admitted(candidate))
                 continue
             if digest in seen_in_batch:
                 # Deduplication is right whether or not slots are scarce --
@@ -327,18 +340,80 @@ class ImageAdmission:
         than at each renderer so every delivery path (tool result, user
         message, history replay) gets it from one place.
         """
-        from app.utils.image_utils import downscale_to_limits
-
-        normalized = downscale_to_limits(
-            candidate.data_uri,
-            max_long_edge_px=self.policy.max_long_edge_px,
-            max_bytes=self.policy.max_bytes_per_image,
-        )
-        if normalized is candidate.data_uri or normalized == candidate.data_uri:
+        self._decide_normalization(candidate.data_uri)
+        normalized = self._normalized_by_hash.get(candidate.hash)
+        if normalized is None:
             return candidate
         # Dimensions changed with the bytes; drop the stale ones rather than
         # letting a later token estimate quote the original raster.
         return replace(candidate, data_uri=normalized, width=None, height=None)
+
+    def _decide_normalization(self, data_uri: str) -> None:
+        """Work out the admitted bytes for `data_uri`, once.
+
+        Pure apart from the two caches it fills, and safe to run on a worker
+        thread -- which is the point: `downscale_to_limits` is a Pillow decode,
+        resize and re-encode, ~600 ms for a 4000x3000 image, and the render
+        that calls it sits on an async request path.
+        """
+        from app.utils.image_utils import downscale_to_limits
+
+        digest = content_hash(data_uri)
+        if digest in self._normalization_checked:
+            return
+        normalized = downscale_to_limits(
+            data_uri,
+            max_long_edge_px=self.policy.max_long_edge_px,
+            max_bytes=self.policy.max_bytes_per_image,
+        )
+        self._normalization_checked.add(digest)
+        if normalized is not data_uri and normalized != data_uri:
+            # Keyed by the ORIGINAL hash: that is what a renderer holds and
+            # what a later batch will present again.
+            self._normalized_by_hash[digest] = normalized
+
+    async def warm(self, data_uris: "list[str]") -> None:
+        """Precompute the downscales `data_uris` will need, off the event loop.
+
+        The render itself is synchronous and called from `async` tool paths;
+        letting it hit Pillow inline blocks the loop for every concurrent
+        request, not just this one. Doing the decode here leaves the render
+        with cache hits. Only the image work moves to the worker thread --
+        admission's own bookkeeping stays on the loop, since nothing here is
+        thread-safe against a second caller.
+        """
+        if not self.policy.allows_images:
+            return
+        todo = [
+            uri for uri in dict.fromkeys(data_uris)
+            if uri and content_hash(uri) not in self._normalization_checked
+        ]
+        if not todo:
+            return
+        await asyncio.to_thread(self._decide_all, todo)
+
+    def _decide_all(self, data_uris: list[str]) -> None:
+        for uri in data_uris:
+            self._decide_normalization(uri)
+
+    def _as_admitted(self, candidate: ImageCandidate) -> ImageCandidate:
+        """`candidate` carrying whatever bytes were admitted for its hash."""
+        normalized = self._normalized_by_hash.get(candidate.hash)
+        if normalized is None:
+            return candidate
+        return replace(candidate, data_uri=normalized, width=None, height=None)
+
+    def rendered_uri(self, data_uri: str) -> str:
+        """The bytes to actually send for `data_uri`.
+
+        The downscaled form when this image needed one to fit the model's
+        per-image limits, else `data_uri` unchanged. Renderers call this
+        instead of emitting the source block's URI, which is how the
+        normalization reaches the wire rather than being discarded.
+        """
+        if not data_uri:
+            return data_uri
+        return self._normalized_by_hash.get(content_hash(data_uri), data_uri)
 
 
 def admission_from_state(state: "dict[str, object] | None") -> ImageAdmission:

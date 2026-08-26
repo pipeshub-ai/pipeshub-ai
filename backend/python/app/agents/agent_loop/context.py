@@ -246,8 +246,11 @@ class AgentContext(BaseModel):
     model_name: str = ""
 
     # Model profile fields threaded from etcd llm_config at the route layer.
-    # Set alongside model_name in factory.create() so PipesHubPromptBuilder
-    # can inject tier-appropriate guidance without re-reading etcd.
+    # Passed to `from_chat_state` rather than assigned afterwards:
+    # `model_post_init` resolves this request's image policy from
+    # `llm_provider`, so a provider set after construction would leave the
+    # admission on the unknown-provider default while the wire cap
+    # (`factory.create`) used the real one.
     # `""` / None are safe defaults for tests and CLI runs that don't
     # go through get_llm_for_chat.
     llm_provider: str = ""
@@ -321,6 +324,8 @@ class AgentContext(BaseModel):
     @classmethod
     def from_chat_state(
         cls, state: dict[str, Any], *, event_sink: Any = None, protocol: str = "legacy",
+        llm_provider: str = "", context_length: int | None = None,
+        is_reasoning_model: bool = False,
     ) -> "AgentContext":
         """Builds an `AgentContext` from an already-built `ChatState` dict
         (Phase 8, `stream_bridge.py`) rather than re-deriving every field a
@@ -378,6 +383,9 @@ class AgentContext(BaseModel):
             previous_conversations=state.get("previous_conversations") or [],
             event_sink=event_sink,
             protocol=protocol,
+            llm_provider=llm_provider,
+            context_length=context_length,
+            is_reasoning_model=is_reasoning_model,
             tool_state=state,
         )
 

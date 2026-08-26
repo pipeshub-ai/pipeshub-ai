@@ -41,7 +41,7 @@ def _transport() -> AzureOpenAITransport:
         api_key="k",
         azure_endpoint="https://example.openai.azure.com",
         api_version="2024-10-01-preview",
-        deployment="gpt-5-4-mini",
+        deployment="gpt-5.6-luna",
     )
 
 

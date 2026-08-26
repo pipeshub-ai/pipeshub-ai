@@ -125,6 +125,7 @@ from app.agents.agent_loop.hooks import (
     shape_retrieved_image_injection,
     stash_tool_call_metadata,
 )
+from app.agents.agent_loop.image_guard import with_image_cap
 from app.agents.agent_loop.langchain_transport import (
     LangChainTransport,
     _supports_multipart_tool_result,
@@ -336,10 +337,15 @@ class PipesHubAgentFactory:
                 llm, model_name=model_name, model_key=model_key,
             )
             if direct is not None:
-                return direct
+                # The direct SDK transports have no image cap of their own --
+                # they live in `agent_loop_lib` and know nothing about
+                # PipesHub's per-provider policy -- so the same net the
+                # LangChain arm applies inline is wrapped around them here.
+                return with_image_cap(direct, image_cap)
             return LangChainTransport(
                 llm, model_name=model_name,
                 opik_project_name=opik_project_name, model_key=model_key,
+                max_images_per_request=image_cap,
             )
 
         transport_registry.register(

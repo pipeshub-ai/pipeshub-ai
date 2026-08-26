@@ -107,6 +107,7 @@ async def execute_fetch_record(
         ImageBudget,
         _renderable_block_indices,
         image_dict_to_part,
+        record_image_uris,
         record_to_message_content,
     )
     from app.utils.fetch_full_record import create_fetch_full_record_tool
@@ -194,6 +195,13 @@ async def execute_fetch_record(
                     org_id=context.org_id,
                     budget=budget,
                 )
+            # The render is synchronous and this path is not: an image that
+            # needs downscaling to the model's per-image limits is a Pillow
+            # decode/resize/encode (~600 ms for a 4000x3000 page scan), and
+            # inline that blocks every other request on the loop. Decide them
+            # on a worker thread first so the render only reads the cache.
+            if context.is_multimodal_llm:
+                await admission.warm(record_image_uris(record))
             content_list, ref_mapper = record_to_message_content(
                 record,
                 ref_mapper=ref_mapper,

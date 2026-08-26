@@ -302,6 +302,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     model_key: str | None = None,
     is_multimodal_llm: bool = False,
     context_length: int = 128000,
+    llm_provider: str = "",
     system_prompts_config: dict[str, Any] | None = None,
     supports_tool_calls: bool = True,
     protocol: str = "legacy",
@@ -387,7 +388,10 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     # direct access to AgentContext — chat_state IS tool_state in AgentContext.
     chat_state["event_sink"] = event_sink
     chat_state["sse_protocol"] = protocol
-    context = AgentContext.from_chat_state(chat_state, event_sink=event_sink, protocol=protocol)
+    context = AgentContext.from_chat_state(
+        chat_state, event_sink=event_sink, protocol=protocol,
+        llm_provider=llm_provider, context_length=context_length,
+    )
 
     async def _produce() -> None:
         agent: Any = None

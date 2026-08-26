@@ -14,11 +14,18 @@ where the count the source enforced is not the count that reaches the wire:
 The rule is the same one the renderers follow: drop pixels, never content. An
 image that loses its place here leaves its text behind, so the model still
 knows a figure existed and can ask for it again.
+
+Every transport has to enforce it, not just one. `LangChainTransport` calls
+`cap_images` itself; the direct SDK transports live in `agent_loop_lib` and
+know nothing about PipesHub's image policy, so `CappedImagesTransport` wraps
+them instead -- one decorator rather than the same three-method edit repeated
+per provider.
 """
 
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.messages import (
     ImagePart,
@@ -26,6 +33,14 @@ from app.agent_loop_lib.core.messages import (
     Part,
     TextPart,
 )
+from app.agent_loop_lib.transport.base import LLMTransport
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from app.agent_loop_lib.core.responses import ModelResponse, StructuredResponse
+    from app.agent_loop_lib.core.streaming import StreamEvent
+    from app.agent_loop_lib.core.tool_schema import ToolSchema
 
 logger = logging.getLogger(__name__)
 
@@ -87,4 +102,84 @@ def cap_images(messages: list[Message], max_images: int) -> list[Message]:
     return capped
 
 
-__all__ = ["cap_images", "count_images"]
+class CappedImagesTransport(LLMTransport):
+    """Decorates any `LLMTransport`, capping the images in every request.
+
+    Delegates unchanged apart from that: this is the transport-boundary net
+    `LangChainTransport` applies inline, made available to the direct SDK
+    transports without teaching each of them a policy that is not theirs to
+    know. Same decorator shape as `OpikTracingTransport`.
+    """
+
+    def __init__(self, inner: LLMTransport, max_images: int) -> None:
+        self._inner = inner
+        self._max_images = max_images
+
+    @property
+    def provider(self) -> str:
+        return self._inner.provider
+
+    @property
+    def model_name(self) -> str:
+        return self._inner.model_name
+
+    def _capped(self, messages: list[Message]) -> list[Message]:
+        return cap_images(messages, self._max_images)
+
+    # Signatures mirror `LLMTransport` rather than collecting `**kwargs`: a
+    # knob added to the base class should fail here loudly, not be swallowed
+    # and silently dropped before it reaches the provider.
+    async def complete(
+        self,
+        messages: list[Message],
+        tools: "list[ToolSchema] | None" = None,
+        system: str | None = None,
+        model: str | None = None,
+        thinking_budget: int | None = None,
+        effort: str | None = None,
+        system_blocks: list[str] | None = None,
+    ) -> "ModelResponse":
+        return await self._inner.complete(
+            self._capped(messages), tools, system, model,
+            thinking_budget, effort, system_blocks,
+        )
+
+    async def complete_structured(
+        self,
+        messages: list[Message],
+        output_schema: dict[str, Any],
+        system: str | None = None,
+        model: str | None = None,
+    ) -> "StructuredResponse":
+        return await self._inner.complete_structured(
+            self._capped(messages), output_schema, system, model,
+        )
+
+    def stream(
+        self,
+        messages: list[Message],
+        tools: "list[ToolSchema] | None" = None,
+        system: str | None = None,
+        model: str | None = None,
+        thinking_budget: int | None = None,
+        effort: str | None = None,
+        system_blocks: list[str] | None = None,
+    ) -> "AsyncIterator[StreamEvent]":
+        # Not `async def`: `stream` returns its iterator rather than awaiting
+        # one, so wrapping it in a coroutine would change the contract.
+        return self._inner.stream(
+            self._capped(messages), tools, system, model,
+            thinking_budget, effort, system_blocks,
+        )
+
+
+def with_image_cap(transport: LLMTransport, max_images: int | None) -> LLMTransport:
+    """`transport` capped at `max_images`, or unchanged when there is no cap
+    to apply. Keeps the "no policy configured behaves exactly as before" rule
+    every other image path follows."""
+    if max_images is None:
+        return transport
+    return CappedImagesTransport(transport, max_images)
+
+
+__all__ = ["CappedImagesTransport", "cap_images", "count_images", "with_image_cap"]

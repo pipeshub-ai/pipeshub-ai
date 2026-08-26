@@ -987,6 +987,7 @@ async def _generate_chat_stream_via_agent_loop(
         org_info=org_info,
         model_name=query_info.modelName, model_key=query_info.modelKey,
         is_multimodal_llm=is_multimodal_llm, context_length=context_length,
+        llm_provider=model_config.get("provider") or "",
         system_prompts_config=system_prompts_config, protocol=protocol,
         client_name=client_name,
     ):

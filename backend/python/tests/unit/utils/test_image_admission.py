@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import io
+from unittest.mock import patch
 
 import pytest
 
@@ -275,3 +276,261 @@ class TestAdmissionFromState:
         )
         assert admission.budget is replacement
         assert not admission.admit([_candidate(0)]).admitted
+
+
+class TestNormalizationReachesTheWire:
+    """`_normalize` downscales an admitted image to the model's per-image
+    limits. The renderers keep a decision, not a candidate, and re-read the
+    source block's URI — so without somewhere to look up the admitted bytes
+    the downscale was computed and thrown away, and an image over the
+    provider's byte limit still went out at full size.
+    """
+
+    @staticmethod
+    def _uri(width: int, height: int) -> str:
+        import base64
+        import io
+
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (width, height), (120, 60, 30)).save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    @staticmethod
+    def _admission() -> ImageAdmission:
+        from app.utils.image_policy import resolve_image_policy
+
+        return ImageAdmission(
+            resolve_image_policy(provider="anthropic", is_multimodal=True),
+            budget=ImageBudget(),
+        )
+
+    @staticmethod
+    def _candidate(uri: str, width: int, height: int) -> ImageCandidate:
+        return ImageCandidate(
+            ref="ref1", data_uri=uri, origin=ImageOrigin.FETCHED_RECORD,
+            block_index=7, width=width, height=height,
+        )
+
+    def test_an_oversized_image_is_downscaled_on_admission(self) -> None:
+        from app.utils.image_utils import read_image_dimensions
+
+        uri = self._uri(4000, 3000)
+        admission = self._admission()
+
+        admitted = admission.admit([self._candidate(uri, 4000, 3000)]).admitted[0]
+
+        assert read_image_dimensions(admitted.data_uri) == (1568, 1176)
+
+    def test_the_renderer_can_look_the_admitted_bytes_up(self) -> None:
+        """`rendered_uri` is what the renderers call: they hold the source URI
+        and nothing else."""
+        uri = self._uri(4000, 3000)
+        admission = self._admission()
+        admitted = admission.admit([self._candidate(uri, 4000, 3000)]).admitted[0]
+
+        assert admission.rendered_uri(uri) == admitted.data_uri
+        assert admission.rendered_uri(uri) != uri
+
+    def test_re_admission_returns_the_normalized_bytes(self) -> None:
+        """A repeat fetch in the same request re-admits for free — and used to
+        hand back the raw candidate, undoing the downscale the first admission
+        paid for."""
+        uri = self._uri(4000, 3000)
+        admission = self._admission()
+
+        first = admission.admit([self._candidate(uri, 4000, 3000)]).admitted[0]
+        second = admission.admit([self._candidate(uri, 4000, 3000)]).admitted[0]
+
+        assert second.data_uri == first.data_uri
+
+    def test_an_image_within_limits_is_returned_unchanged(self) -> None:
+        """No re-encode, and nothing cached: only images that actually needed
+        rewriting cost anything."""
+        uri = self._uri(100, 80)
+        admission = self._admission()
+        admission.admit([self._candidate(uri, 100, 80)])
+
+        assert admission.rendered_uri(uri) == uri
+
+    @pytest.mark.parametrize("uri", ["", "data:image/png;base64,ZZZ", "https://x/y.png"])
+    def test_an_uri_that_was_never_admitted_passes_through(self, uri: str) -> None:
+        assert self._admission().rendered_uri(uri) == uri
+
+    def test_the_record_renderer_emits_the_downscaled_bytes(self) -> None:
+        """End to end: what `collected_images` carries is what reaches the
+        provider."""
+        from app.models.blocks import BlockType
+        from app.utils.chat_helpers import CitationRefMapper, record_to_message_content
+        from app.utils.image_utils import read_image_dimensions
+
+        uri = self._uri(4000, 3000)
+        record = {
+            "id": "rec-1",
+            "virtual_record_id": "vr-1",
+            "block_containers": {
+                "blocks": [{
+                    "index": 0,
+                    "type": BlockType.IMAGE.value,
+                    "parent_index": None,
+                    "data": {"uri": uri},
+                }],
+                "block_groups": [],
+            },
+        }
+        collected: list[dict] = []
+        record_to_message_content(
+            record,
+            ref_mapper=CitationRefMapper(),
+            is_multimodal_llm=True,
+            collected_images=collected,
+            image_admission=self._admission(),
+        )
+
+        assert collected, "the image was not admitted at all"
+        assert read_image_dimensions(collected[0]["image_url"]["url"]) == (1568, 1176)
+
+
+class TestNormalizationOffTheEventLoop:
+    """`record_to_message_content` is synchronous and `execute_fetch_record`
+    is not. An image that needs downscaling is a Pillow decode, resize and
+    re-encode — ~600 ms for a 4000x3000 page scan — so doing it inline blocks
+    every concurrent request on the loop, not just this one.
+    """
+
+    @staticmethod
+    def _uri(width: int, height: int) -> str:
+        import base64
+        import io
+
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (width, height), (30, 90, 140)).save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    @staticmethod
+    def _admission(provider: str = "anthropic", multimodal: bool = True) -> ImageAdmission:
+        from app.utils.image_policy import resolve_image_policy
+
+        return ImageAdmission(
+            resolve_image_policy(provider=provider, is_multimodal=multimodal),
+            budget=ImageBudget(),
+        )
+
+    async def test_warming_makes_the_render_a_cache_hit(self) -> None:
+        from app.utils.image_utils import read_image_dimensions
+
+        uri = self._uri(4000, 3000)
+        admission = self._admission()
+
+        await admission.warm([uri])
+        # No Pillow work left for the synchronous path to do.
+        assert read_image_dimensions(admission.rendered_uri(uri)) == (1568, 1176)
+
+    async def test_the_admitted_bytes_are_the_same_either_way(self) -> None:
+        """Warming is an optimisation, not a behaviour change."""
+        uri = self._uri(4000, 3000)
+        cold = self._admission()
+        warmed = self._admission()
+
+        await warmed.warm([uri])
+        c = cold.admit([ImageCandidate(ref="r", data_uri=uri, origin=ImageOrigin.FETCHED_RECORD)])
+        w = warmed.admit([ImageCandidate(ref="r", data_uri=uri, origin=ImageOrigin.FETCHED_RECORD)])
+
+        assert c.admitted[0].data_uri == w.admitted[0].data_uri
+
+    async def test_the_pillow_work_runs_on_a_worker_thread(self) -> None:
+        """The whole point: the loop has to stay free while this happens."""
+        import threading
+
+        seen: list[str] = []
+        main = threading.current_thread().name
+
+        def spy(image_uri: str, **_kwargs) -> str:
+            seen.append(threading.current_thread().name)
+            return image_uri
+
+        admission = self._admission()
+        with patch("app.utils.image_utils.downscale_to_limits", side_effect=spy):
+            await admission.warm([self._uri(4000, 3000)])
+
+        assert seen and all(name != main for name in seen)
+
+    async def test_an_image_needing_no_change_is_decided_once(self) -> None:
+        """Without remembering the no-ops, every render re-decodes them."""
+        calls = 0
+
+        def spy(image_uri: str, **_kwargs) -> str:
+            nonlocal calls
+            calls += 1
+            return image_uri
+
+        uri = self._uri(100, 80)
+        admission = self._admission()
+        with patch("app.utils.image_utils.downscale_to_limits", side_effect=spy):
+            await admission.warm([uri])
+            await admission.warm([uri])
+            admission.admit([ImageCandidate(ref="r", data_uri=uri, origin=ImageOrigin.ATTACHMENT)])
+
+        assert calls == 1
+
+    async def test_duplicates_in_one_batch_are_decoded_once(self) -> None:
+        calls = 0
+
+        def spy(image_uri: str, **_kwargs) -> str:
+            nonlocal calls
+            calls += 1
+            return image_uri
+
+        uri = self._uri(200, 200)
+        with patch("app.utils.image_utils.downscale_to_limits", side_effect=spy):
+            await self._admission().warm([uri, uri, uri])
+
+        assert calls == 1
+
+    async def test_a_text_only_model_does_no_image_work_at_all(self) -> None:
+        with patch("app.utils.image_utils.downscale_to_limits") as spy:
+            await self._admission(multimodal=False).warm([self._uri(4000, 3000)])
+
+        spy.assert_not_called()
+
+    @pytest.mark.parametrize("uris", [[], [""], None])
+    async def test_nothing_to_warm_is_a_no_op(self, uris) -> None:
+        await self._admission().warm(uris or [])
+
+
+class TestRecordImageUris:
+    def test_it_finds_images_nested_in_a_table(self) -> None:
+        """Wider than the admission candidate filter on purpose: a figure
+        inside a table is rendered too, and costs the same decode."""
+        from app.models.blocks import BlockType
+        from app.utils.chat_helpers import record_image_uris
+
+        uri = TestNormalizationOffTheEventLoop._uri(50, 50)
+        record = {"block_containers": {"blocks": [
+            {"index": 0, "type": BlockType.IMAGE.value, "parent_block_index": None,
+             "data": {"uri": uri}},
+            {"index": 1, "type": BlockType.IMAGE.value, "parent_block_index": 0,
+             "data": {"uri": uri}},
+            {"index": 2, "type": BlockType.TEXT.value, "data": "not an image"},
+        ]}}
+
+        assert record_image_uris(record) == [uri, uri]
+
+    def test_a_non_image_uri_is_skipped(self) -> None:
+        from app.models.blocks import BlockType
+        from app.utils.chat_helpers import record_image_uris
+
+        record = {"block_containers": {"blocks": [
+            {"index": 0, "type": BlockType.IMAGE.value, "data": {"uri": "https://x/y.png"}},
+            {"index": 1, "type": BlockType.IMAGE.value, "data": {}},
+        ]}}
+
+        assert record_image_uris(record) == []
+
+    def test_a_record_with_no_blocks_is_empty(self) -> None:
+        from app.utils.chat_helpers import record_image_uris
+
+        assert record_image_uris({}) == []

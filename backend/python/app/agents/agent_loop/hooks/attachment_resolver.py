@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.middleware.pipeline import Middleware, Next
     from app.agents.agent_loop.context import AgentContext
     from app.utils.chat_helpers import ImageBudget
+    from app.utils.image_admission import ImageAdmission
 
 logger = logging.getLogger(__name__)
 
@@ -372,6 +373,7 @@ async def resolve_history_attachments(
     *,
     is_multimodal_llm: bool = False,
     image_budget: "ImageBudget | None" = None,
+    image_admission: "ImageAdmission | None" = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Resolve document and image attachments from blob for a historical turn.
 
@@ -391,6 +393,13 @@ async def resolve_history_attachments(
     against the same 50-image conversation cap, not a separate one.
     Defaults to a fresh (effectively unbounded for this call alone)
     budget when not supplied.
+
+    ``image_admission`` is the request's arbiter. Replayed images are
+    ``ImageOrigin.HISTORY`` -- the lowest tier -- and this runs during history
+    seeding, before any of the turn's own tool calls: on the raw budget alone,
+    old images spent the allowance ahead of the record the user is actually
+    asking about, and skipped dedup and the downscale to the provider's
+    per-image limits on the way.
 
     Returns ``(text, image_blocks)`` where *text* is the rendered
     ``<record>`` content (empty string if nothing resolved) and
@@ -448,7 +457,9 @@ async def resolve_history_attachments(
                     continue
                 if vrid not in vrmap:
                     vrmap[vrid] = record
-                blocks = _extract_image_urls_from_record(record, image_budget)
+                blocks = _extract_image_urls_from_record(
+                    record, image_budget, image_admission=image_admission,
+                )
                 image_blocks.extend(blocks)
             except Exception:
                 logger.warning(
@@ -460,22 +471,32 @@ async def resolve_history_attachments(
 
 
 def _extract_image_urls_from_record(
-    record: dict[str, Any], image_budget: "ImageBudget | None" = None,
+    record: dict[str, Any],
+    image_budget: "ImageBudget | None" = None,
+    *,
+    image_admission: "ImageAdmission | None" = None,
 ) -> list[dict[str, Any]]:
-    """Extract ``image_url`` blocks from a blob record's block_containers,
-    respecting the shared conversation-wide ``image_budget`` (defaults to a
-    fresh, effectively-unbounded one when not supplied)."""
-    from app.utils.chat_helpers import ImageBudget, is_base64_image
+    """Extract ``image_url`` blocks from a blob record's block_containers.
+
+    Goes through the request's `ImageAdmission` so a replayed image obeys the
+    same per-model cap, dedup and per-image downscale as every other source,
+    and is ranked as `ImageOrigin.HISTORY` rather than taking a slot simply
+    for being seeded first. Falls back to the shared conversation-wide
+    ``image_budget`` alone when no arbiter is supplied.
+    """
+    from app.utils.chat_helpers import ImageBudget, admission_for, is_base64_image
+    from app.utils.image_admission import ImageCandidate, ImageOrigin
 
     if image_budget is None:
         image_budget = ImageBudget()
+    admission = admission_for(image_admission, image_budget)
 
     block_containers = record.get("block_containers", {})
     blocks = (
         block_containers.get("blocks", [])
         if isinstance(block_containers, dict) else []
     )
-    result: list[dict[str, Any]] = []
+    candidates: list[ImageCandidate] = []
     for block in blocks:
         if not isinstance(block, dict) or block.get("type") != "image":
             continue
@@ -486,10 +507,27 @@ def _extract_image_urls_from_record(
             uri = data
         else:
             continue
-        if uri and is_base64_image(uri) and image_budget.can_add():
-            image_budget.try_consume(1)
-            result.append({"type": "image_url", "image_url": {"url": uri}})
-    return result
+        if not (uri and is_base64_image(uri)):
+            continue
+        candidates.append(ImageCandidate(
+            ref="",
+            data_uri=uri,
+            origin=ImageOrigin.HISTORY,
+            block_index=int(block.get("index") or 0),
+        ))
+
+    # One batch, not one call per image: dedup is per-batch, and admitting
+    # singly would re-admit the same logo on every page for free and emit a
+    # copy of it each time. Ranking also needs the whole set in hand.
+    outcome = admission.admit(candidates)
+    admitted_order = {c.block_index: c.data_uri for c in outcome.admitted}
+    return [
+        # The admitted candidate's bytes, which may have been downscaled to the
+        # model's per-image limits.
+        {"type": "image_url", "image_url": {"url": admitted_order[c.block_index]}}
+        for c in candidates
+        if c.block_index in admitted_order
+    ]
 
 
 # ---------------------------------------------------------------------------
