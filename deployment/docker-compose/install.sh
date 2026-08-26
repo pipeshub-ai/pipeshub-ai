@@ -269,6 +269,29 @@ suggest_separate_project_name() {
   printf '%s' "$base"
 }
 
+# Where to cd before ./install.sh after a successful install.
+# Dockerfile + install.sh two levels up is not enough to call this a clone:
+# curl | bash from ~/myservice/deploy can see the user's own files. Only treat
+# as clone when this script is that repo's deployment/docker-compose.
+# Sets BANNER_IN_CLONE (true|false) and BANNER_CLI_DIR.
+resolve_banner_dirs() {
+  local clone_root="" compose_in_clone=""
+  BANNER_IN_CLONE=false
+  BANNER_CLI_DIR="$SCRIPT_DIR"
+
+  if [[ -f "${SCRIPT_DIR}/../../Dockerfile" && -f "${SCRIPT_DIR}/../../install.sh" ]]; then
+    clone_root="$(cd "${SCRIPT_DIR}/../.." && pwd)" || true
+    if [[ -n "$clone_root" ]]; then
+      # Missing compose dir must not abort: this runs after the stack is up.
+      compose_in_clone="$(cd "${clone_root}/deployment/docker-compose" 2>/dev/null && pwd)" || true
+      if [[ -n "$compose_in_clone" && "$SCRIPT_DIR" == "$compose_in_clone" ]]; then
+        BANNER_IN_CLONE=true
+        BANNER_CLI_DIR="$clone_root"
+      fi
+    fi
+  fi
+}
+
 # PIPESHUB_PROJECT wins. Else COMPOSE_PROJECT_NAME in this directory's .env so
 # --stop / --uninstall only tear down this copy. Else the default name.
 resolve_project_name() {
@@ -1613,21 +1636,16 @@ if [[ -n "${FRONTEND_PUBLIC_URL:-}" ]]; then
 fi
 # curl | bash leaves the user's shell wherever they started. Clone users can
 # re-run the repo-root wrapper; standalone users must use this directory.
-_BANNER_CLI_DIR="$SCRIPT_DIR"
-_BANNER_IN_CLONE=false
-if [[ -f "${SCRIPT_DIR}/../../Dockerfile" && -f "${SCRIPT_DIR}/../../install.sh" ]]; then
-  _clone_root="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-  _compose_in_clone="$(cd "${_clone_root}/deployment/docker-compose" && pwd)"
-  if [[ "$SCRIPT_DIR" == "$_compose_in_clone" ]]; then
-    _BANNER_IN_CLONE=true
-    _BANNER_CLI_DIR="$_clone_root"
-  fi
-fi
+resolve_banner_dirs
 
 printf "\n  ${BOLD}This install${RESET}\n"
 printf "  ${DIM}%s${RESET}\n" "$(printf '─%.0s' {1..53})"
-printf "  ${CYAN}Files:${RESET}     %s\n" "$SCRIPT_DIR"
-printf "  ${CYAN}Commands:${RESET}  %s\n" "$_BANNER_CLI_DIR"
+if [[ "$SCRIPT_DIR" == "$BANNER_CLI_DIR" ]]; then
+  printf "  ${CYAN}Directory:${RESET}  %s\n" "$SCRIPT_DIR"
+else
+  printf "  ${CYAN}Files:${RESET}     %s\n" "$SCRIPT_DIR"
+  printf "  ${CYAN}Commands:${RESET}  %s\n" "$BANNER_CLI_DIR"
+fi
 
 printf "\n  ${BOLD}Useful commands${RESET}\n"
 printf "  ${DIM}%s${RESET}\n\n" "$(printf '─%.0s' {1..53})"
@@ -1635,12 +1653,12 @@ printf "  ${DIM}# Check health from this host${RESET}\n"
 printf "  curl -fsS http://localhost:%s/api/v1/health/services\n\n" "$APP_PORT"
 printf "  ${DIM}# View logs${RESET}\n"
 printf "  docker compose -f %s -p %s logs -f pipeshub-ai\n\n" "$COMPOSE_FILE" "$PROJECT_NAME"
-if $_BANNER_IN_CLONE; then
+if $BANNER_IN_CLONE; then
   printf "  ${DIM}# From the repository root${RESET}\n"
 else
   printf "  ${DIM}# From the install directory (curl | bash does not cd your shell)${RESET}\n"
 fi
-printf "  cd %q\n" "$_BANNER_CLI_DIR"
+printf "  cd %q\n\n" "$BANNER_CLI_DIR"
 printf "  ${DIM}# Stop (data preserved)${RESET}\n"
 printf "  ./install.sh --stop\n\n"
 printf "  ${DIM}# Upgrade to latest images (or rebuild from source if IMAGE_SOURCE=local)${RESET}\n"

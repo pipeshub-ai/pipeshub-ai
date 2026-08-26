@@ -10,8 +10,9 @@
 #   - Standalone PIPESHUB_REF resolution: explicit ref, latest-release tag, and
 #     the main fallback all hit the correct download URLs.
 #   - Regression guards on the in-tree installer edits (16 GB-class RAM floor,
-#     host-side reachability check, health-gated "ready" banner, plain compose
-#     progress, generous/overridable health-wait timeout).
+#     host-side reachability check, health-gated "ready" banner, clone vs
+#     standalone command directory, plain compose progress, generous/overridable
+#     health-wait timeout).
 #   - Compose app healthcheck stays reconciled with the installer's readiness
 #     check (core services only; embedding excluded).
 #   - Compose runtime robustness: HuggingFace offline mode is documented and
@@ -178,10 +179,13 @@ check "host-side reachability check present" "$inner" "check_host_reachable"
 check "host reachability gates readiness" "$inner" "CONTAINER_HEALTHY && \$HOST_REACHABLE"
 check "ready banner is health-gated" "$inner" "PipesHub AI is ready!"
 check "not-ready banner exists" "$inner" "not confirmed ready yet"
-check "banner prints install file directory" "$inner" 'Files:'
 check "banner clone uses repo-root wrapper" "$inner" "From the repository root"
 check "banner standalone warns curl does not cd" "$inner" "curl | bash does not cd your shell"
 check "banner cds before ./install.sh" "$inner" 'cd %q'
+check "banner cd is a preamble not bound to --stop" "$inner" 'cd %q\n\n'
+check "banner collapses equal paths to Directory" "$inner" 'Directory:'
+check "banner shows Files and Commands when they diverge" "$inner" 'Files:'
+check "banner uses resolve_banner_dirs" "$inner" "resolve_banner_dirs"
 check "profile repair on reuse present" "$inner" "Repairing to"
 check "cross-directory guard present" "$inner" "Existing deployment detected"
 check "separate-instance prompt present" "$inner" "Install a separate instance here"
@@ -533,6 +537,54 @@ if valid_compose_project_name "_work"; then fail "raw _work is invalid"; else pa
   SCRIPT_DIR="$repo/deployment/docker-compose"
   check "suggests repo root when run from compose dir" "$(suggest_separate_project_name)" "my-repo"
 )
+
+echo "== In-tree installer: success-banner directories (real function) =="
+eval "$(extract_fn resolve_banner_dirs "$INNER_INSTALLER")"
+(
+  set -euo pipefail
+  repo="$TMP_ROOT/banner-clone"
+  mkdir -p "$repo/deployment/docker-compose"
+  touch "$repo/Dockerfile" "$repo/install.sh"
+  SCRIPT_DIR="$(cd "$repo/deployment/docker-compose" && pwd)"
+  resolve_banner_dirs
+  check "clone commands use repo root" "$BANNER_CLI_DIR" "$(cd "$repo" && pwd)"
+  if $BANNER_IN_CLONE; then pass "clone is detected"; else fail "clone is detected"; fi
+)
+(
+  set -euo pipefail
+  stand="$TMP_ROOT/banner-stand/pipeshub"
+  mkdir -p "$stand"
+  SCRIPT_DIR="$(cd "$stand" && pwd)"
+  resolve_banner_dirs
+  check "plain standalone stays in SCRIPT_DIR" "$BANNER_CLI_DIR" "$SCRIPT_DIR"
+  if $BANNER_IN_CLONE; then fail "plain standalone is not a clone"; else pass "plain standalone is not a clone"; fi
+)
+(
+  set -euo pipefail
+  repo="$TMP_ROOT/banner-nested"
+  mkdir -p "$repo/deployment/docker-compose" "$repo/deployment/pipeshub"
+  touch "$repo/Dockerfile" "$repo/install.sh"
+  SCRIPT_DIR="$(cd "$repo/deployment/pipeshub" && pwd)"
+  resolve_banner_dirs
+  check "standalone nested in a clone stays SCRIPT_DIR" "$BANNER_CLI_DIR" "$SCRIPT_DIR"
+  if $BANNER_IN_CLONE; then fail "nested standalone is not a clone"; else pass "nested standalone is not a clone"; fi
+)
+(
+  set -euo pipefail
+  svc="$TMP_ROOT/myservice"
+  mkdir -p "$svc/deploy/pipeshub"
+  touch "$svc/Dockerfile" "$svc/install.sh"
+  SCRIPT_DIR="$(cd "$svc/deploy/pipeshub" && pwd)"
+  resolve_banner_dirs
+  printf 'survived\n' >"$TMP_ROOT/banner-landmine"
+  check "false clone guess stays SCRIPT_DIR" "$BANNER_CLI_DIR" "$SCRIPT_DIR"
+  if $BANNER_IN_CLONE; then fail "user Dockerfile is not a pipeshub clone"; else pass "user Dockerfile is not a pipeshub clone"; fi
+)
+if [[ -f "$TMP_ROOT/banner-landmine" ]]; then
+  pass "missing compose dir does not abort under set -e"
+else
+  fail "missing compose dir does not abort under set -e"
+fi
 
 eval "$(extract_fn project_has_pinned_container_names "$INNER_INSTALLER")"
 (
