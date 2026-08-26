@@ -553,7 +553,8 @@ eval "$(extract_fn resolve_banner_dirs "$INNER_INSTALLER")"
   set -euo pipefail
   repo="$TMP_ROOT/banner-clone"
   mkdir -p "$repo/deployment/docker-compose"
-  touch "$repo/Dockerfile" "$repo/install.sh"
+  touch "$repo/Dockerfile"
+  cp "$ROOT_INSTALLER" "$repo/install.sh"
   SCRIPT_DIR="$(cd "$repo/deployment/docker-compose" && pwd)"
   resolve_banner_dirs
   check "clone commands use repo root" "$BANNER_CLI_DIR" "$(cd "$repo" && pwd)"
@@ -572,7 +573,8 @@ eval "$(extract_fn resolve_banner_dirs "$INNER_INSTALLER")"
   set -euo pipefail
   repo="$TMP_ROOT/banner-nested"
   mkdir -p "$repo/deployment/docker-compose" "$repo/deployment/pipeshub"
-  touch "$repo/Dockerfile" "$repo/install.sh"
+  touch "$repo/Dockerfile"
+  cp "$ROOT_INSTALLER" "$repo/install.sh"
   SCRIPT_DIR="$(cd "$repo/deployment/pipeshub" && pwd)"
   resolve_banner_dirs
   check "standalone nested in a clone stays SCRIPT_DIR" "$BANNER_CLI_DIR" "$SCRIPT_DIR"
@@ -594,6 +596,17 @@ if [[ -f "$TMP_ROOT/banner-landmine" ]]; then
 else
   fail "missing compose dir does not abort under set -e"
 fi
+(
+  set -euo pipefail
+  other="$TMP_ROOT/other-app"
+  mkdir -p "$other/deployment/docker-compose"
+  touch "$other/Dockerfile"
+  printf '%s\n' '#!/bin/sh' 'echo my-app' >"$other/install.sh"
+  SCRIPT_DIR="$(cd "$other/deployment/docker-compose" && pwd)"
+  resolve_banner_dirs
+  check "unrelated compose-layout app stays SCRIPT_DIR" "$BANNER_CLI_DIR" "$SCRIPT_DIR"
+  if $BANNER_IN_CLONE; then fail "unrelated root install.sh is not a pipeshub clone"; else pass "unrelated root install.sh is not a pipeshub clone"; fi
+)
 
 eval "$(extract_fn project_has_pinned_container_names "$INNER_INSTALLER")"
 (

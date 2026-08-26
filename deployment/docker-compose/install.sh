@@ -270,9 +270,10 @@ suggest_separate_project_name() {
 }
 
 # Where to cd before ./install.sh after a successful install.
-# Dockerfile + install.sh two levels up is not enough to call this a clone:
-# curl | bash from ~/myservice/deploy can see the user's own files. Only treat
-# as clone when this script is that repo's deployment/docker-compose.
+# Dockerfile + install.sh two levels up is not enough: any containerized app
+# can look like that, including a copy of this installer at
+# <project>/deployment/docker-compose. Only treat as clone when the root
+# install.sh is the PipesHub wrapper (the thing clone users should re-run).
 # Sets BANNER_IN_CLONE (true|false) and BANNER_CLI_DIR.
 resolve_banner_dirs() {
   local clone_root="" compose_in_clone=""
@@ -281,7 +282,8 @@ resolve_banner_dirs() {
 
   if [[ -f "${SCRIPT_DIR}/../../Dockerfile" && -f "${SCRIPT_DIR}/../../install.sh" ]]; then
     clone_root="$(cd "${SCRIPT_DIR}/../.." && pwd)" || true
-    if [[ -n "$clone_root" ]]; then
+    if [[ -n "$clone_root" ]] \
+        && grep -q 'INNER_SUBPATH="deployment/docker-compose"' "${clone_root}/install.sh" 2>/dev/null; then
       # Missing compose dir must not abort: this runs after the stack is up.
       compose_in_clone="$(cd "${clone_root}/deployment/docker-compose" 2>/dev/null && pwd)" || true
       if [[ -n "$compose_in_clone" && "$SCRIPT_DIR" == "$compose_in_clone" ]]; then
