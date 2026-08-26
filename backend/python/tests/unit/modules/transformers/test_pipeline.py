@@ -182,9 +182,11 @@ class TestApplyEmptyMetadataPath:
         ctx.event_type = EventTypes.UPDATE_RECORD.value
         ctx.prev_virtual_record_id = "vr-1"
 
+        sink_orchestrator.vector_store.delete_embeddings = AsyncMock()
         sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(
             return_value="records/conn-1/Finance/doc.pdf"
         )
+        sink_orchestrator.blob_storage.save_reconciliation_metadata = AsyncMock()
 
         await pipeline.apply(ctx)
 
@@ -209,7 +211,9 @@ class TestApplyEmptyMetadataPath:
         ctx.event_type = EventTypes.REINDEX_RECORD.value
         ctx.prev_virtual_record_id = "vr-2"
 
+        sink_orchestrator.vector_store.delete_embeddings = AsyncMock()
         sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(return_value=None)
+        sink_orchestrator.blob_storage.save_reconciliation_metadata = AsyncMock()
 
         await pipeline.apply(ctx)
 

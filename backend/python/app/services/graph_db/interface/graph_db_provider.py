@@ -1600,6 +1600,14 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_record_path(
+        self,
+        record_id: str,
+        transaction: str | None = None
+    ) -> str | None:
+        pass
+
+    @abstractmethod
     async def get_file_record_by_id(
         self,
         record_id: str,

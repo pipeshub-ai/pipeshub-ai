@@ -620,6 +620,7 @@ async def test_blob_storage_failure_does_not_block_indexing() -> None:
     error is logged rather than propagated."""
     parsing_client = MagicMock()
     parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+    parsing_client.circuit_open = False
 
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock(return_value=None)
@@ -657,6 +658,7 @@ async def test_blob_storage_called_after_enrichment() -> None:
     a blob status update reflects the outcome of enrichment."""
     parsing_client = MagicMock()
     parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+    parsing_client.circuit_open = False
 
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock(return_value=None)
