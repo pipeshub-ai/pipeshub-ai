@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from starlette.requests import Request
 
-from app.telemetry.middleware import MetricsMiddleware, _normalize_path
+from app.telemetry.middleware import MetricsMiddleware
 
 
 def make_request(
@@ -37,18 +37,6 @@ def make_middleware(service_name="query_service") -> MetricsMiddleware:
     return MetricsMiddleware(app=MagicMock(), service_name=service_name)
 
 
-class TestNormalizePath:
-    def test_replaces_object_ids_uuids_and_numbers(self):
-        path = "/api/v1/users/507f1f77bcf86cd799439011/items/42/e2c1a1f0-1234-4abc-9def-1234567890ab"
-        assert _normalize_path(path) == "/api/v1/users/:id/items/:id/:id"
-
-    def test_keeps_plain_segments(self):
-        assert _normalize_path("/api/v1/search") == "/api/v1/search"
-
-    def test_empty_path_becomes_root(self):
-        assert _normalize_path("") == "/"
-
-
 class TestRouteTemplate:
     def test_prefers_matched_route_path_format(self):
         route = SimpleNamespace(path_format="/api/v1/agent/{id}", path="/raw")
@@ -62,10 +50,10 @@ class TestRouteTemplate:
 
         assert MetricsMiddleware._route_template(request) == "/api/v1/agent/{id}"
 
-    def test_normalizes_raw_path_when_no_route_matched(self):
+    def test_collapses_to_unmatched_when_no_route_matched(self):
         request = make_request(path="/api/v1/agent/12345")
 
-        assert MetricsMiddleware._route_template(request) == "/api/v1/agent/:id"
+        assert MetricsMiddleware._route_template(request) == "unmatched"
 
 
 class TestIdentityExtraction:
@@ -95,6 +83,7 @@ class TestDispatch:
         request = make_request(
             path="/api/v1/search",
             method="POST",
+            route=SimpleNamespace(path_format="/api/v1/search", path="/api/v1/search"),
             user={"orgId": "org-9", "email": "a@b.io"},
         )
         response = MagicMock(status_code=201)
@@ -116,7 +105,10 @@ class TestDispatch:
 
     async def test_records_500_when_handler_raises(self):
         middleware = make_middleware()
-        request = make_request(path="/api/v1/boom")
+        request = make_request(
+            path="/api/v1/boom",
+            route=SimpleNamespace(path_format="/api/v1/boom", path="/api/v1/boom"),
+        )
         call_next = AsyncMock(side_effect=RuntimeError("kaboom"))
 
         with (
