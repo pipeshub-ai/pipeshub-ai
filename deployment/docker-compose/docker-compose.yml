@@ -65,6 +65,20 @@ services:
         soft: 65536
         hard: 65536
     init: true
+    # Compose `${VAR:-}` injects "" when the key is blank. Hub slim still does
+    # int(os.getenv(KEY, default)) and crashes on "". Unset blanks so the key
+    # is absent (slim uses its built-in default; new Python sizes from CPU).
+    # A numeric value in .env is kept as an operator cap.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        for k in MAX_CONCURRENT_PARSING MAX_CONCURRENT_INDEXING
+        MAX_PENDING_INDEXING_TASKS EMBEDDING_SERVER_MAX_CONCURRENCY
+        EMBEDDING_BATCH_CONCURRENCY; do
+        eval "v=\$$k"; [ -z "$$v" ] && unset "$$k";
+        done;
+        exec /app/process_monitor.sh
     logging:
       driver: local
       options:
@@ -176,14 +190,11 @@ services:
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}
       - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-}
 
-      # Numeric defaults required: published Hub slim still does
-      # int(os.getenv(KEY, default)), and Compose `${KEY:-}` with an empty
-      # .env injects "" which crashes (the Python default is only used when
-      # the key is absent). 5/7/28 match this repo's legacy fallbacks
-      # (pending = max(5, 7) * 4). Raise them to lift the cap; do not clear
-      # them on a Hub slim install.
-      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
-      - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-7}
+      # Leave unset so new images size parse/index from CPU. Hub slim int()s
+      # empty strings; entrypoint unsets blanks before start. Set an integer
+      # to cap.
+      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-}
+      - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-}
       # Slots-per-CPU / indexing multiplier (in-tree defaults 1 / 10 / 100).
       # Empty is safe: Hub slim ignores these; new Python treats empty as unset.
       - GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU=${GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU:-}
@@ -199,7 +210,7 @@ services:
       # explicit MiB figure when the idle footprint is known. Growth-side
       # only — the shrink brake always reads true cgroup occupancy.
       - GOVERNOR_BASELINE_MEMORY_MB=${GOVERNOR_BASELINE_MEMORY_MB:-}
-      - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-28}
+      - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
@@ -214,9 +225,8 @@ services:
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
-      # Same Hub slim int("") trap as MAX_CONCURRENT_* above.
-      - EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-2}
-      - EMBEDDING_BATCH_CONCURRENCY=${EMBEDDING_BATCH_CONCURRENCY:-5}
+      - EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-}
+      - EMBEDDING_BATCH_CONCURRENCY=${EMBEDDING_BATCH_CONCURRENCY:-}
       # Skip per-sentence embeddings unless the block has more than this many
       # words (default 100). Set 0 to split every multi-sentence block.
       - EMBED_SENTENCE_MIN_WORDS=${EMBED_SENTENCE_MIN_WORDS:-100}

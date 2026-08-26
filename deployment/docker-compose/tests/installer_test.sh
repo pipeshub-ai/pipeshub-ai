@@ -233,10 +233,11 @@ fi
 echo "== Compose: app healthcheck reconciled with installer =="
 compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
 check "app healthcheck gates on core services" "$compose" "required=('query','connector','indexing','docling')"
-echo "== Compose: Hub slim cannot int() empty strings =="
-# int(os.getenv(KEY, default)) still crashes when KEY is set to "" because
-# the default is only used when the key is absent. Compose ${KEY:-} always
-# sets the key. These must have a numeric ${KEY:-N} in the shipped file.
+echo "== Compose: Hub slim empty ints are unset before start =="
+# Compose ${KEY:-} injects "". Hub slim int(os.getenv(KEY, default)) crashes
+# on that. The app entrypoint must unset blanks so the key is absent.
+compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
+check "app entrypoint unsets blank Hub-int env" "$compose" "unset \"\$\$k\""
 _hub_int_keys=(
   MAX_CONCURRENT_PARSING
   MAX_CONCURRENT_INDEXING
@@ -245,27 +246,43 @@ _hub_int_keys=(
   EMBEDDING_BATCH_CONCURRENCY
 )
 for _k in "${_hub_int_keys[@]}"; do
-  if grep -E "^[[:space:]]+- ${_k}=\\\$\\{${_k}:-\\}[[:space:]]*$" <<<"$compose" >/dev/null; then
-    fail "${_k} must not use empty Compose default (Hub slim int(\"\"))"
-  else
-    pass "${_k} is not empty-defaulted"
-  fi
+  check "entrypoint lists ${_k}" "$compose" "$_k"
   if grep -E "^[[:space:]]+- ${_k}=\\\$\\{${_k}:-[0-9]+\\}[[:space:]]*$" <<<"$compose" >/dev/null; then
-    pass "${_k} has a numeric Compose default"
+    fail "${_k} must not pin a numeric Compose default (caps new images)"
   else
-    fail "${_k} needs a numeric \${${_k}:-N} Compose default for Hub slim"
+    pass "${_k} is not numeric-defaulted"
   fi
 done
+if [[ "$inner" == *$'\nMAX_CONCURRENT_PARSING=5\n'* ]]; then
+  fail "installer must not pin MAX_CONCURRENT_PARSING=5"
+else
+  pass "installer does not pin parse concurrency 5"
+fi
+if [[ "$inner" == *$'\nMAX_CONCURRENT_INDEXING=7\n'* ]]; then
+  fail "installer must not pin MAX_CONCURRENT_INDEXING=7"
+else
+  pass "installer does not pin index concurrency 7"
+fi
+if [[ "$inner" == *$'\nMAX_PENDING_INDEXING_TASKS=28\n'* ]]; then
+  fail "installer must not pin MAX_PENDING_INDEXING_TASKS=28"
+else
+  pass "installer does not pin pending indexing tasks 28"
+fi
+if [[ "$inner" == *$'\nEMBEDDING_SERVER_MAX_CONCURRENCY=2\n'* ]]; then
+  fail "installer must not pin EMBEDDING_SERVER_MAX_CONCURRENCY=2"
+else
+  pass "installer does not pin embedding concurrency 2"
+fi
+if [[ "$inner" == *$'\nEMBEDDING_BATCH_CONCURRENCY=5\n'* ]]; then
+  fail "installer must not pin EMBEDDING_BATCH_CONCURRENCY=5"
+else
+  pass "installer does not pin embedding batch concurrency 5"
+fi
 if [[ "$inner" == *$'\nMAX_CONCURRENT_PARSING=\n'* ]]; then
   fail "installer must not write empty MAX_CONCURRENT_PARSING="
 else
-  pass "installer writes numeric MAX_CONCURRENT_PARSING"
+  pass "installer does not write empty MAX_CONCURRENT_PARSING="
 fi
-check "installer writes parse concurrency 5" "$inner" "MAX_CONCURRENT_PARSING=5"
-check "installer writes index concurrency 7" "$inner" "MAX_CONCURRENT_INDEXING=7"
-check "installer writes pending indexing tasks 28" "$inner" "MAX_PENDING_INDEXING_TASKS=28"
-check "installer writes embedding concurrency 2" "$inner" "EMBEDDING_SERVER_MAX_CONCURRENCY=2"
-check "installer writes embedding batch concurrency 5" "$inner" "EMBEDDING_BATCH_CONCURRENCY=5"
 check "wizard port scan skips this project's own port" "$inner" 'port_in_use "$APP_PORT" 2>/dev/null && ! port_owned_by_project "$APP_PORT"'
 check "reconfigure seeds port from existing .env" "$inner" 'get_existing_val APP_PORT "$DEFAULT_APP_PORT"'
 if [[ "$compose" == *"container_name:"* ]]; then
@@ -307,9 +324,21 @@ envtmpl="$(cat "$COMPOSE_DIR/env.template")"
 check "env.template documents HF_HUB_OFFLINE" "$envtmpl" "HF_HUB_OFFLINE"
 check "env.template documents TRANSFORMERS_OFFLINE" "$envtmpl" "TRANSFORMERS_OFFLINE"
 check "env.template documents COMPOSE_PROJECT_NAME" "$envtmpl" "COMPOSE_PROJECT_NAME"
-check "env.template pins parse concurrency (Hub slim)" "$envtmpl" "MAX_CONCURRENT_PARSING=5"
-check "env.template pins index concurrency (Hub slim)" "$envtmpl" "MAX_CONCURRENT_INDEXING=7"
-check "env.template pins pending indexing tasks (Hub slim)" "$envtmpl" "MAX_PENDING_INDEXING_TASKS=28"
+if [[ "$envtmpl" == *$'\nMAX_CONCURRENT_PARSING=5\n'* ]]; then
+  fail "env.template must not pin MAX_CONCURRENT_PARSING=5"
+else
+  pass "env.template does not pin parse concurrency 5"
+fi
+if [[ "$envtmpl" == *$'\nMAX_CONCURRENT_INDEXING=7\n'* ]]; then
+  fail "env.template must not pin MAX_CONCURRENT_INDEXING=7"
+else
+  pass "env.template does not pin index concurrency 7"
+fi
+if [[ "$envtmpl" == *$'\nMAX_PENDING_INDEXING_TASKS=28\n'* ]]; then
+  fail "env.template must not pin MAX_PENDING_INDEXING_TASKS=28"
+else
+  pass "env.template does not pin pending indexing tasks 28"
+fi
 
 echo "== In-tree installer: crash-loop detection (real function) =="
 eval "$(extract_fn crash_looping_containers "$INNER_INSTALLER")"

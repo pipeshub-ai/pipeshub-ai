@@ -1104,18 +1104,14 @@ MONGO_PASSWORD=${MONGO_PASSWORD}
 QDRANT_API_KEY=${QDRANT_API_KEY}
 
 # ── Indexing concurrency ─────────────────────────────────────────────────────
-# Published Hub slim still does int(os.getenv(...)); empty values crash
-# indexing. 5/7/28 match this repo's legacy fallbacks (pending = max(5,7)*4).
-# Raise them to lift the cap. Governor slot ratios (1 / 10 / 100) stay empty.
-MAX_CONCURRENT_PARSING=5
-MAX_CONCURRENT_INDEXING=7
+# Do not write MAX_CONCURRENT_* / EMBEDDING_*_CONCURRENCY here. Empty values
+# crash Hub slim (int("")); omitting them lets slim use built-in defaults and
+# lets new images size from CPU. Set an integer in .env only to cap.
+# Governor slot ratios (1 / 10 / 100) stay empty.
 GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU=
 GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU=
 GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT=
 GOVERNOR_HEAVY_PARSE_WORKING_SET_GB=
-MAX_PENDING_INDEXING_TASKS=28
-EMBEDDING_SERVER_MAX_CONCURRENCY=2
-EMBEDDING_BATCH_CONCURRENCY=5
 INDEXING_UVICORN_WORKERS=1
 PARSING_UVICORN_WORKERS=1
 DOCLING_UVICORN_WORKERS=1

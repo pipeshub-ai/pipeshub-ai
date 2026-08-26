@@ -325,16 +325,15 @@ Override the base images with `PYTHON_DEPS_IMAGE` / `RUNTIME_BASE_IMAGE` environ
 The indexing/parsing pipeline sizes its own concurrency from the
 `pipeshub-ai` container's CPU quota — one heavy-parse slot per CPU, ten
 light-parse slots per CPU, and 100× the wider parse tier for indexing —
-capped by `MAX_CONCURRENT_PARSING` / `MAX_CONCURRENT_INDEXING` (see
-[`env.template`](env.template)). The compose/installer path pins those
-caps at 5 / 7 (and `MAX_PENDING_INDEXING_TASKS` at 28) so published Hub
-slim images start: those images still `int()` the env vars and crash on
-the empty string Compose would otherwise inject. Raise the pins to give
-the governor more headroom; clearing them is not safe against Hub slim.
-The indexing figure is the budget for heavy and light records *combined*,
-and it is fixed for the life of the process. Only parsing and downloads
-adapt at runtime. These two runs are a manual regression check before a
-release; they are not part of CI.
+capped by `MAX_CONCURRENT_PARSING` / `MAX_CONCURRENT_INDEXING` when those
+are set (see [`env.template`](env.template)). Leave them unset so new
+images size from CPU. Hub slim still `int()`s empty strings; compose
+unsets blanks at start so slim uses its built-in defaults instead of
+crashing. Set an integer only if you want a hard cap. The indexing
+figure is the budget for heavy and light records *combined*, and it is
+fixed for the life of the process. Only parsing and downloads adapt at
+runtime. These two runs are a manual regression check before a release;
+they are not part of CI.
 
 Both commands below assume the compose project is up (`docker compose -p
 pipeshub-ai up -d`) and run against the always-on `pipeshub-ai` container —
@@ -363,9 +362,8 @@ memory pressure, keep small files completing while large ones are still
 parsing, and finish every record without an OOM kill — with or without an
 operator-pinned `MAX_CONCURRENT_INDEXING`.
 
-1. In `.env`, set `APP_MEMORY_LIMIT=8G`. Keep the shipped
-   `MAX_CONCURRENT_PARSING=5` / `MAX_CONCURRENT_INDEXING=7` /
-   `MAX_PENDING_INDEXING_TASKS=28` pins (required for Hub slim).
+1. In `.env`, set `APP_MEMORY_LIMIT=8G`. Leave `MAX_CONCURRENT_PARSING` /
+   `MAX_CONCURRENT_INDEXING` / `MAX_PENDING_INDEXING_TASKS` unset.
 2. `docker compose -p pipeshub-ai up -d --force-recreate pipeshub-ai`
 3. Upload roughly 200 files through a knowledge base: ~150 small
    Markdown/CSV files and ~50 large PDFs, including a few scanned
