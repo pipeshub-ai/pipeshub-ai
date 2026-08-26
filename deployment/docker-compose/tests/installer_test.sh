@@ -218,10 +218,11 @@ check ".env chmod is guarded" "$inner" '&& ! chmod 600 "$ENV_FILE"; then'
 check ".env chmod failure calls die" "$inner" 'die "Could not restrict permissions on $ENV_FILE"'
 check ".env backup locked to owner-only" "$inner" 'chmod 600 "$_backup"'
 check "crash-loop wait has 90s startup grace" "$inner" "ELAPSED >= 90"
-# Compose animates progress with cursor escapes that explode into hundreds of
-# duplicated frames when output is captured; force append-only plain progress.
-check "plain progress flag defined" "$inner" "_PROGRESS=(--progress plain)"
-check "plain progress applied to compose up/pull" "$inner" 'docker compose "${_PROGRESS[@]}"'
+# Interactive TTY: Compose tty progress (in-place). Captured stdout: plain
+# (append-only) so cursor-escape frames do not explode in CI logs.
+check "tty progress when stdout is a TTY" "$inner" "_PROGRESS=(--progress tty)"
+check "plain progress when stdout is captured" "$inner" "_PROGRESS=(--progress plain)"
+check "progress flag applied to compose up/pull" "$inner" 'docker compose "${_PROGRESS[@]}"'
 # First start (embedding model download + cold stack) can edge past 5 min; the
 # default must be generous and overridable so it does not falsely report failure.
 check "health wait default is 420s and overridable" "$inner" 'HEALTH_WAIT_SECS="${HEALTH_WAIT_SECS:-420}"'

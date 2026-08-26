@@ -1350,12 +1350,16 @@ export COMPOSE_PROFILES="${COMPOSE_PROFILES:-}"
 _USE_BUILD=false
 [[ "${IMAGE_SOURCE:-prebuilt}" == "local" ]] && _USE_BUILD=true
 
-# Compose's default "tty" progress redraws a single block via cursor-movement
-# escapes. When stdout is captured (terminal logs, `curl | bash`, CI), those
-# escapes don't collapse and every frame is recorded, producing hundreds of
-# duplicated "[+] Running N/17" blocks. Plain progress is append-only and stays
-# readable in every context.
-_PROGRESS=(--progress plain)
+# TTY: Compose redraws one progress block in place. Captured stdout (CI, piped
+# logs): `--progress plain` is append-only so cursor-escape frames do not
+# explode. Do not force plain on a TTY — that prints a new line per layer tick
+# and turns a multi-GB pull into thousands of Downloading/Extracting lines.
+# Same TTY vs captured split as the health-wait spinner vs heartbeat.
+if [[ -t 1 ]]; then
+  _PROGRESS=(--progress tty)
+else
+  _PROGRESS=(--progress plain)
+fi
 
 # Decide whether to refresh the prebuilt image from the registry before starting.
 # Pure decision (no side effects) so it is unit-testable in isolation.
