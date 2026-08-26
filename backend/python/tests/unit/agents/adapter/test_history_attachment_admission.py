@@ -90,6 +90,25 @@ class TestReplayedImagesAreAdmitted:
 
         assert len(blocks) == 1
 
+    def test_an_image_admitted_earlier_is_not_replayed_a_second_time(self) -> None:
+        """Two history records carrying the same picture, replayed one batch
+        each. `admitted_uri` answers "did this win a slot in the request",
+        which is still yes for the copy the first batch sent — so emitting on
+        that alone attached the same image twice while the cap counted it
+        once, and the transport guard then cut a different picture to fit."""
+        uri = _uri()
+        admission = _admission()
+
+        first = _extract_image_urls_from_record(
+            _record(uri), ImageBudget(), image_admission=admission,
+        )
+        second = _extract_image_urls_from_record(
+            _record(uri), ImageBudget(), image_admission=admission,
+        )
+
+        assert len(first) == 1
+        assert second == []
+
     def test_replayed_images_debit_the_shared_budget(self) -> None:
         """History and the turn's own tool calls share one ceiling."""
         budget = ImageBudget()
