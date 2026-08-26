@@ -6,10 +6,12 @@ inner `properties`/`items` structure in the `ToolSchema` the LLM actually
 sees, not collapse to a bare `{"type": "object"}`/`{"type": "array"}`.
 
 Also proves the fix survives the OTHER direction of this same round-trip —
-`converters.py::convert_tool_schema_to_langchain` (used by `LangChainTransport
-._bind_tools`) already recursively rebuilds a Pydantic model from a JSON
-schema fragment; this suite checks the two ends actually connect for a
-realistic nested tool.
+`converters.py::convert_tool_schema_to_langchain_dict` (used by
+`LangChainTransport._bind_tools`) passes `ToolSchema.input_schema` straight
+through to the OpenAI function-calling dict shape; this suite checks the
+two ends actually connect for a realistic nested tool, plus the MCP-sourced
+schema-fidelity regressions (enum/default/bounds/additionalProperties/
+cyclic $defs) proven in the tool schema fidelity investigation.
 """
 
 from __future__ import annotations
@@ -20,8 +22,15 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.tools.base import ParameterType
-from app.agents.agent_loop.converters import convert_tool_schema_to_langchain
-from app.agents.agent_loop.tool_adapter import PipesHubStructuredToolAdapter, _params_from_schema
+from app.agents.agent_loop.converters import convert_tool_schema_to_langchain_dict
+from app.agents.agent_loop.tool_adapter import (
+    PipesHubStructuredToolAdapter,
+    _params_from_schema,
+    resolve_json_schema_refs,
+)
+from app.agents.agent_loop.mcp_access import ResolvedMCPServer
+from app.agents.agent_loop.mcp_tool_adapter import MCPToolAdapter
+from app.agents.mcp.models import MCPToolInfo
 
 
 class _JiraFilter(BaseModel):
@@ -142,8 +151,9 @@ class TestToolAdapterToSchemaRoundTrip:
     """`PipesHubStructuredToolAdapter.to_schema()` (inherited default from
     `Tool`) must carry the nested structure all the way into
     `ToolSchema.input_schema`, and `LangChainTransport._bind_tools`'s
-    conversion back to a Pydantic model (via `convert_tool_schema_to_langchain`)
-    must be able to consume it without errors and without flattening it away."""
+    conversion to the OpenAI function-calling dict shape (via
+    `convert_tool_schema_to_langchain_dict`) must pass it through without
+    flattening it away."""
 
     def test_to_schema_input_schema_has_nested_properties(self) -> None:
         adapter = _make_jira_search_adapter()
@@ -154,24 +164,153 @@ class TestToolAdapterToSchemaRoundTrip:
         assert filters_schema["items"]["properties"]["field"]["type"] == "string"
 
     def test_langchain_round_trip_preserves_nested_array_of_objects(self) -> None:
+        """`convert_tool_schema_to_langchain_dict` passes `input_schema`
+        straight through (mirroring `openai.py::_format_tools`) rather than
+        rebuilding a Pydantic model from it, so the nested structure must
+        survive verbatim, not merely be reconstructible from `$defs`."""
         adapter = _make_jira_search_adapter()
 
         tool_schema = adapter.to_schema()
-        lc_tool = convert_tool_schema_to_langchain(tool_schema)
+        lc_dict = convert_tool_schema_to_langchain_dict(tool_schema)
 
-        args_model = lc_tool.args_schema
-        rebuilt_schema = args_model.model_json_schema()
-        filters_field = rebuilt_schema["properties"]["filters"]
-        # `filters` isn't in the tool schema's top-level `required` list
-        # (only `project` is), so Pydantic wraps the rebuilt field as
-        # `Optional[...]` (`anyOf: [<array type>, null]`) — same as any
-        # other optional field, unwrap it the same way real callers would.
-        array_variant = next(v for v in filters_field["anyOf"] if v.get("type") == "array")
-        assert array_variant["type"] == "array"
-        # The item type is itself a dynamically-built nested model — walk
-        # through $defs the same way the LLM-facing schema had to, proving
-        # the nested object survived the round trip intact.
-        item_ref = array_variant["items"]["$ref"]
-        item_def_name = item_ref.rsplit("/", 1)[-1]
-        item_def = rebuilt_schema["$defs"][item_def_name]
-        assert set(item_def["properties"].keys()) == {"field", "value"}
+        filters_field = lc_dict["function"]["parameters"]["properties"]["filters"]
+        assert filters_field["type"] == "array"
+        assert set(filters_field["items"]["properties"].keys()) == {"field", "value"}
+
+
+def _mcp_server() -> ResolvedMCPServer:
+    return ResolvedMCPServer(
+        instance_id="inst-1", name="RovoMCP", display_name="Atlassian Rovo",
+        instance={"authMode": "none"}, auth={}, owner_id="user-1", attached_tools=None,
+    )
+
+
+def _mcp_adapter(input_schema: dict[str, Any]) -> MCPToolAdapter:
+    tool_info = MCPToolInfo(
+        name="search_issues", namespaced_name="mcp_rovo__search_issues",
+        description="Search issues", input_schema=input_schema,
+    )
+    return MCPToolAdapter(_mcp_server(), tool_info, session_manager=None)
+
+
+class TestResolveJsonSchemaRefsFidelity:
+    """`resolve_json_schema_refs` only inlines `$ref`/`$defs` — every other
+    JSON-Schema keyword (`enum`, `default`, `minimum`/`maximum`,
+    `additionalProperties`, ...) must pass through completely untouched.
+    These are the exact losses proven in the MCP tool schema fidelity
+    investigation, now regression-guarded at the point they'd first
+    reappear if `_params_from_schema`'s lossy `ToolParameter` path were
+    ever substituted back in for `raw_input_schema`."""
+
+    def test_enum_survives(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"expand": {"type": "string", "enum": ["summary", "status"]}},
+        }
+        resolved = resolve_json_schema_refs(schema)
+        assert resolved["properties"]["expand"]["enum"] == ["summary", "status"]
+
+    def test_default_survives(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "max_results": {"type": "integer", "default": 50},
+                "fields": {"type": "array", "default": ["summary", "status"], "items": {"type": "string"}},
+            },
+        }
+        resolved = resolve_json_schema_refs(schema)
+        assert resolved["properties"]["max_results"]["default"] == 50
+        assert resolved["properties"]["fields"]["default"] == ["summary", "status"]
+
+    def test_minimum_and_maximum_survive(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 100}},
+        }
+        resolved = resolve_json_schema_refs(schema)
+        assert resolved["properties"]["limit"]["minimum"] == 1
+        assert resolved["properties"]["limit"]["maximum"] == 100
+
+    def test_additional_properties_map_keeps_its_value_type(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "options": {"type": "object", "additionalProperties": {"type": "string"}},
+            },
+        }
+        resolved = resolve_json_schema_refs(schema)
+        assert resolved["properties"]["options"]["additionalProperties"] == {"type": "string"}
+
+    def test_cyclic_defs_does_not_raise_and_keeps_sibling_fields_typed(self) -> None:
+        """A Jira-style `IssueLink` schema whose `parent` field `$ref`s back
+        to itself must resolve without a `RecursionError`, and — critically
+        — must not degrade sibling fields on the SAME object to untyped
+        fallbacks the way the old unguarded `except Exception` did."""
+        schema = {
+            "$defs": {
+                "IssueLink": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "parent": {"$ref": "#/$defs/IssueLink"},
+                    },
+                },
+            },
+            "type": "object",
+            "properties": {"link": {"$ref": "#/$defs/IssueLink"}},
+        }
+        resolved = resolve_json_schema_refs(schema)
+        link = resolved["properties"]["link"]
+        assert link["properties"]["id"]["type"] == "string"
+        # The recursive branch is a bounded placeholder, not an infinite
+        # expansion or a dropped field.
+        assert link["properties"]["parent"]["type"] == "object"
+
+
+class TestMCPAdapterRawSchemaFidelity:
+    """End to end through `MCPToolAdapter.raw_input_schema` -> `to_schema()`
+    -> `convert_tool_schema_to_langchain_dict` — the actual path a Rovo tool
+    schema takes before reaching the LLM via the default LangChain
+    transport."""
+
+    def test_enum_default_and_bounds_reach_the_langchain_dict_unmodified(self) -> None:
+        input_schema = {
+            "type": "object",
+            "properties": {
+                "expand": {"type": "string", "enum": ["summary", "status"]},
+                "max_results": {"type": "integer", "default": 50, "minimum": 1, "maximum": 100},
+                "options": {"type": "object", "additionalProperties": {"type": "string"}},
+            },
+            "required": [],
+        }
+        adapter = _mcp_adapter(input_schema)
+        tool_schema = adapter.to_schema()
+        lc_dict = convert_tool_schema_to_langchain_dict(tool_schema)
+
+        parameters = lc_dict["function"]["parameters"]
+        assert parameters["properties"]["expand"]["enum"] == ["summary", "status"]
+        assert parameters["properties"]["max_results"]["default"] == 50
+        assert parameters["properties"]["max_results"]["minimum"] == 1
+        assert parameters["properties"]["max_results"]["maximum"] == 100
+        assert parameters["properties"]["options"]["additionalProperties"] == {"type": "string"}
+
+    def test_cyclic_defs_tool_still_produces_a_bindable_schema(self) -> None:
+        input_schema = {
+            "$defs": {
+                "IssueLink": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "parent": {"$ref": "#/$defs/IssueLink"},
+                    },
+                },
+            },
+            "type": "object",
+            "properties": {"link": {"$ref": "#/$defs/IssueLink"}},
+        }
+        adapter = _mcp_adapter(input_schema)
+        lc_dict = convert_tool_schema_to_langchain_dict(adapter.to_schema())
+
+        link = lc_dict["function"]["parameters"]["properties"]["link"]
+        assert link["properties"]["id"]["type"] == "string"
+        assert "$ref" not in str(lc_dict)

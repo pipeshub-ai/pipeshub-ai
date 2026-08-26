@@ -393,9 +393,13 @@ class PipesHubAgentFactory:
         # Registered unconditionally (not just when lazy disclosure ends up
         # active — see `register_lazy_tool_meta_tools`'s docstring):
         # `search_tools` provides auth-aware global discovery in eager mode
-        # too, and `list_toolsets`/`fetch_tools` are harmless no-ops when
-        # nothing is grouped. Every tool-name list assembled below has
-        # `META_TOOL_NAMES` appended so they're always in the grant.
+        # too. Every tool-name list assembled below has `META_TOOL_NAMES`
+        # appended so all three are candidates for the grant, but
+        # `list_toolsets`/`fetch_tools` are pruned back out below once
+        # `tool_disclosure` is actually decided (see the `tool_disclosure
+        # != "lazy"` prune near `top_level_lazy_tools`) — under eager
+        # disclosure every schema is already bound, so they have nothing to
+        # reveal and are not worth two extra bound schemas every turn.
         register_lazy_tool_meta_tools(tool_registry, context)
 
         # Resolved ONCE per request and threaded into every surface the
@@ -556,11 +560,12 @@ class PipesHubAgentFactory:
 
         # `tool_registry.names()` already includes them (registered above),
         # but the curated lists (composed/planning tools) do not — append
-        # unconditionally so `search_tools`/`list_toolsets`/`fetch_tools`
-        # are callable regardless of `tool_disclosure` (see
-        # `register_lazy_tool_meta_tools`'s docstring for why eager mode
-        # needs this too: `tool_schemas_for_turn` binds exactly
-        # `spec.tool_names` when disclosure is eager). EXCEPT deep mode's
+        # here so all three are CANDIDATES for the grant regardless of
+        # `tool_disclosure` (`tool_schemas_for_turn` binds exactly
+        # `spec.tool_names`, so a name has to be in this list to ever be
+        # bound at all). `list_toolsets`/`fetch_tools` get pruned back out
+        # below once `tool_disclosure` is actually decided, if it's eager —
+        # see the prune near `top_level_lazy_tools`. EXCEPT deep mode's
         # orchestrator: its own grant must stay exactly the four
         # coordination tools (see `lazy_tools_wiring.py`'s module
         # docstring — deep mode is out of scope for this pass; its spawn
@@ -727,6 +732,18 @@ class PipesHubAgentFactory:
             context=context,
         )
         tool_names, tool_disclosure = top_level_lazy_tools(tool_registry, tool_names)
+        # `list_toolsets`/`fetch_tools` were appended unconditionally above
+        # (before this decision existed) so they'd be available to append
+        # again — a no-op — if disclosure went lazy. If it didn't, they have
+        # nothing to reveal (see `_render_toolset_overview`'s prompt-side
+        # gating in `agent_loop_lib/agent/prompt.py`, which now stays silent
+        # about them in eager mode too) but were still being bound as two
+        # extra schemas on every turn regardless. Prune them from the final
+        # eager-mode grant; `search_tools` stays — it's the one meta-tool
+        # that does real work in eager mode (auth-aware global discovery,
+        # including now the MCP `mcp_unavailable` hits from step 5).
+        if tool_disclosure != "lazy":
+            tool_names = [n for n in tool_names if n not in ("list_toolsets", "fetch_tools")]
         # Every toolset group `group_connector_toolsets` was told to leave
         # alone (skills, plus whichever internal toolsets loaded with
         # `essential=True` metadata this request — see

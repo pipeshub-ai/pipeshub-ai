@@ -1,24 +1,20 @@
-"""Tool-schema conversion cache (agents/agent_loop/converters.py).
+"""Tool-schema conversion (agents/agent_loop/converters.py).
 
-Building the LangChain tool object runs pydantic's full schema generation, and
-it used to run once per tool per LLM call for output that never varies. These
-guard the two properties that make caching it safe: equal schemas must reuse the
-same object, and the schema handed to the model must not change.
+`convert_tool_schema_to_langchain_dict` replaced a per-call round-trip
+through a dynamically-built Pydantic model (cached in `_TOOL_MODEL_CACHE`,
+since `create_model()` was 8.8% of query-service CPU) with a direct OpenAI
+function-calling dict built from `ToolSchema.input_schema`. Building a dict
+is cheap enough that the cache was dropped entirely rather than ported —
+these tests guard the properties that made the old cache correct even
+without one: equal schemas must produce equal (JSON-comparable) output, and
+the conversion must not mutate or lose any of the input schema's content.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-import pytest
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
-
 from app.agent_loop_lib.core.tool_schema import ToolSchema
-from app.agents.agent_loop import converters as conv
 from app.agents.agent_loop.converters import (
-    convert_tool_schema_to_langchain,
+    convert_tool_schema_to_langchain_dict,
     convert_tool_schemas_to_langchain,
 )
 
@@ -40,94 +36,66 @@ def _schema(name: str = "search", description: str = "Search records", **overrid
     )
 
 
-@pytest.fixture(autouse=True)
-def _clear_cache() -> "Iterator[None]":
-    conv._TOOL_MODEL_CACHE.clear()
-    yield
-    conv._TOOL_MODEL_CACHE.clear()
-
-
-class TestCacheIdentity:
-    def test_same_schema_object_is_converted_once(self) -> None:
-        schema = _schema()
-        assert convert_tool_schema_to_langchain(schema) is convert_tool_schema_to_langchain(schema)
-
-    def test_equal_but_distinct_schemas_share_an_entry(self) -> None:
-        """ToolRegistry.schemas() rebuilds ToolSchema objects every turn, so
-        keying on identity rather than content would never hit."""
+class TestDeterminism:
+    def test_equal_but_distinct_schemas_produce_equal_output(self) -> None:
+        """`ToolRegistry.schemas()` rebuilds `ToolSchema` objects every
+        turn, so this must hold on content equality, not object identity —
+        the old cache relied on the same property."""
         first, second = _schema(), _schema()
         assert first is not second
-        assert convert_tool_schema_to_langchain(first) is convert_tool_schema_to_langchain(second)
-        assert len(conv._TOOL_MODEL_CACHE) == 1
+        assert convert_tool_schema_to_langchain_dict(first) == convert_tool_schema_to_langchain_dict(second)
 
-    def test_property_order_does_not_split_the_entry(self) -> None:
+    def test_property_order_does_not_change_the_result(self) -> None:
         reordered = dict(SEARCH_SCHEMA)
         reordered["properties"] = {
             "limit": SEARCH_SCHEMA["properties"]["limit"],
             "query": SEARCH_SCHEMA["properties"]["query"],
         }
-        a = convert_tool_schema_to_langchain(_schema())
-        b = convert_tool_schema_to_langchain(_schema(input_schema=reordered))
-        assert a is b
+        a = convert_tool_schema_to_langchain_dict(_schema())
+        b = convert_tool_schema_to_langchain_dict(_schema(input_schema=reordered))
+        assert a == b
+
+    def test_does_not_mutate_the_input_schema(self) -> None:
+        """The sanitizer (`_sanitize_tool_input_schema`) must return a new
+        structure, not strip keys from the caller's own dict in place —
+        `ToolSchema.input_schema` can be shared/reused across calls."""
+        original = {"type": "object", "properties": {}, "$schema": "http://json-schema.org/draft-07/schema#"}
+        schema = _schema(input_schema=original)
+        convert_tool_schema_to_langchain_dict(schema)
+        assert "$schema" in original
 
 
-class TestCacheSeparation:
-    @pytest.mark.parametrize(
-        "kwargs",
-        [
-            {"name": "other_tool"},
-            {"description": "a different description"},
-            {"input_schema": {"type": "object", "properties": {"q": {"type": "string"}}}},
-        ],
-    )
-    def test_any_field_change_gets_its_own_entry(self, kwargs: dict) -> None:
-        base = convert_tool_schema_to_langchain(_schema())
-        other = convert_tool_schema_to_langchain(_schema(**kwargs))
-        assert base is not other
-        assert len(conv._TOOL_MODEL_CACHE) == 2
+class TestFieldSeparation:
+    def test_any_field_change_changes_the_output(self) -> None:
+        base = convert_tool_schema_to_langchain_dict(_schema())
+        other_name = convert_tool_schema_to_langchain_dict(_schema(name="other_tool"))
+        other_desc = convert_tool_schema_to_langchain_dict(_schema(description="a different description"))
+        other_schema = convert_tool_schema_to_langchain_dict(
+            _schema(input_schema={"type": "object", "properties": {"q": {"type": "string"}}})
+        )
+        assert base != other_name
+        assert base != other_desc
+        assert base != other_schema
 
 
-class TestOutputUnchanged:
-    def test_cached_tool_exposes_the_same_schema_as_a_fresh_build(self) -> None:
-        """The model must see byte-identical tool JSON; a cache hit that
-        changed the schema would silently alter behaviour."""
-        cached = convert_tool_schema_to_langchain(_schema())
-        conv._TOOL_MODEL_CACHE.clear()
-        fresh = convert_tool_schema_to_langchain(_schema())
+class TestOutputContent:
+    def test_required_and_optional_fields_survive_conversion(self) -> None:
+        parameters = convert_tool_schema_to_langchain_dict(_schema())["function"]["parameters"]
+        assert parameters["properties"]["query"]["description"] == "what to look for"
+        assert "limit" in parameters["properties"]
+        assert parameters["required"] == ["query"]
 
-        assert cached is not fresh
-        assert cached.name == fresh.name
-        assert cached.description == fresh.description
-        assert cached.args_schema.model_json_schema() == fresh.args_schema.model_json_schema()
-
-    def test_required_and_optional_fields_survive_caching(self) -> None:
-        schema = convert_tool_schema_to_langchain(_schema()).args_schema.model_json_schema()
-        assert schema["properties"]["query"]["description"] == "what to look for"
-        assert "limit" in schema["properties"]
+    def test_repeated_conversion_of_the_same_schema_is_stable(self) -> None:
+        schema = _schema()
+        assert convert_tool_schema_to_langchain_dict(schema) == convert_tool_schema_to_langchain_dict(schema)
 
 
 class TestListConversion:
-    def test_list_helper_reuses_cached_entries(self) -> None:
+    def test_list_helper_converts_every_tool_in_order(self) -> None:
         tools = [_schema(), _schema(name="fetch")]
-        first = convert_tool_schemas_to_langchain(tools)
-        second = convert_tool_schemas_to_langchain([_schema(), _schema(name="fetch")])
-
-        assert [t.name for t in first] == ["search", "fetch"]
-        assert all(a is b for a, b in zip(first, second, strict=True))
-        assert len(conv._TOOL_MODEL_CACHE) == 2
+        result = convert_tool_schemas_to_langchain(tools)
+        assert [t["function"]["name"] for t in result] == ["search", "fetch"]
 
     def test_empty_list_still_returns_empty(self) -> None:
         assert convert_tool_schemas_to_langchain([]) == []
         assert convert_tool_schemas_to_langchain(None) == []
-        assert not conv._TOOL_MODEL_CACHE
-
-
-class TestBounding:
-    def test_cache_clears_wholesale_when_full(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(conv, "_TOOL_MODEL_CACHE_MAXSIZE", 3)
-        for i in range(3):
-            convert_tool_schema_to_langchain(_schema(name=f"tool_{i}"))
-        assert len(conv._TOOL_MODEL_CACHE) == 3
-
-        convert_tool_schema_to_langchain(_schema(name="overflow"))
-        assert len(conv._TOOL_MODEL_CACHE) == 1

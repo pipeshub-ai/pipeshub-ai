@@ -42,15 +42,34 @@ def _resolve_parameter_type(raw_type: str) -> ParameterType:
     return _JSON_TYPE_TO_PARAMETER_TYPE.get((raw_type or "").lower(), ParameterType.STRING)
 
 
-def _resolve_json_refs(node: Any, defs: dict[str, Any]) -> Any:  # noqa: ANN401
+def _resolve_json_refs(node: Any, defs: dict[str, Any], seen: frozenset[str] = frozenset()) -> Any:  # noqa: ANN401
+    """Inlines every `$ref`/`$defs` indirection in `node` into a single
+    self-contained schema fragment.
+
+    `seen` guards against a self-referential (directly or mutually)
+    `$defs` entry — e.g. a Jira `IssueLink` schema whose `parent` field
+    `$ref`s back to `IssueLink` itself. Without it, resolving such a ref
+    recurses forever and raises `RecursionError`, which callers used to
+    catch and silently fall back to a flattened, typeless schema for the
+    WHOLE tool (see `_params_from_schema`'s `except` below) — not just the
+    recursive branch. Once a ref name is on the current resolution path, a
+    revisit returns a bounded placeholder instead of recursing again; every
+    OTHER branch of the schema still resolves normally.
+    """
     if isinstance(node, dict):
         ref = node.get("$ref")
         if ref:
-            resolved = _resolve_json_refs(defs.get(ref.rsplit("/", 1)[-1], {}), defs)
+            ref_name = ref.rsplit("/", 1)[-1]
+            if ref_name in seen:
+                return {
+                    "type": "object",
+                    "description": f"(recursive reference to '{ref_name}', not expanded further)",
+                }
+            resolved = _resolve_json_refs(defs.get(ref_name, {}), defs, seen | {ref_name})
             return {**resolved, **{k: v for k, v in node.items() if k != "$ref"}}
-        return {k: _resolve_json_refs(v, defs) for k, v in node.items() if k != "$defs"}
+        return {k: _resolve_json_refs(v, defs, seen) for k, v in node.items() if k != "$defs"}
     if isinstance(node, list):
-        return [_resolve_json_refs(item, defs) for item in node]
+        return [_resolve_json_refs(item, defs, seen) for item in node]
     return node
 
 
@@ -78,6 +97,16 @@ def _json_schema_dict_from_source(schema: Any) -> dict[str, Any] | None:  # noqa
         return None
     defs = raw.get("$defs") or raw.get("definitions") or {}
     return _resolve_json_refs(raw, defs) if defs else raw
+
+
+def resolve_json_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
+    """Public entry point for `_resolve_json_refs`/`_json_schema_dict_from_source`
+    — used by `MCPToolAdapter.raw_input_schema` to inline an MCP server's own
+    `$ref`/`$defs` once, up front, so every transport downstream (native and
+    LangChain alike) sees a self-contained schema instead of having to
+    understand JSON Schema indirection itself."""
+    resolved = _json_schema_dict_from_source(schema)
+    return resolved if resolved is not None else {"type": "object", "properties": {}}
 
 
 def _tool_parameter_from_json_schema(name: str, prop_schema: dict[str, Any], required: bool) -> ToolParameter:
@@ -108,7 +137,7 @@ def _tool_parameter_from_json_schema(name: str, prop_schema: dict[str, Any], req
     )
 
 
-def _params_from_schema(schema: Any) -> list[ToolParameter]:  # noqa: ANN401
+def _params_from_schema(schema: Any, tool_name: str | None = None) -> list[ToolParameter]:  # noqa: ANN401
     if schema is None:
         return []
     try:
@@ -121,7 +150,14 @@ def _params_from_schema(schema: Any) -> list[ToolParameter]:  # noqa: ANN401
                 for param_name, prop_schema in properties.items()
             ]
     except Exception:
-        logger.debug("Full JSON-schema extraction failed for %r, falling back to flat extraction", schema, exc_info=True)
+        # This flattens EVERY parameter of the tool to an untyped fallback
+        # (below), not just the branch that failed to resolve — worth a
+        # WARNING with the tool's identity, not a DEBUG nobody sees.
+        logger.warning(
+            "Full JSON-schema extraction failed for tool %r, falling back to flat "
+            "extraction (parameters will lose type/enum/nesting information)",
+            tool_name or "<unknown>", exc_info=True,
+        )
 
     extracted = _extract_parameters_from_schema(schema, logger)
     return [
@@ -212,7 +248,7 @@ class PipesHubStructuredToolAdapter(_PermissiveValidationMixin, Tool):
 
     @property
     def parameters(self) -> list[ToolParameter]:
-        return _params_from_schema(getattr(self._structured_tool, "args_schema", None))
+        return _params_from_schema(getattr(self._structured_tool, "args_schema", None), self.name)
 
     def validate(self, kwargs: dict[str, Any]) -> None:
         """Permissive validation — dynamic tools handle their own input normalization."""
@@ -241,5 +277,6 @@ def split_original_tool_name(structured_tool: "StructuredTool") -> tuple[str, st
 __all__ = [
     "PipesHubStructuredToolAdapter",
     "_to_tool_output",
+    "resolve_json_schema_refs",
     "split_original_tool_name",
 ]

@@ -6,6 +6,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
+
+from app.agent_loop_lib.core.types import ToolCall
+from app.agent_loop_lib.tools.errors import ToolValidationError
+from app.agent_loop_lib.tools.executor import ToolExecutor
+from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agents.agent_loop.mcp_access import ResolvedMCPServer
 from app.agents.agent_loop.mcp_tool_adapter import MCPToolAdapter
 from app.agents.mcp.client import MCPConnectionError
@@ -83,8 +89,139 @@ class TestIdentity:
         params = _make_adapter(_FakeSessionManager()).parameters
         assert any(p.name == "query" and p.required for p in params)
 
-    def test_validate_is_permissive(self) -> None:
-        _make_adapter(_FakeSessionManager()).validate({"unexpected": 1})  # must not raise
+    def test_raw_input_schema_returns_the_mcp_schema_verbatim(self) -> None:
+        adapter = _make_adapter(_FakeSessionManager())
+        assert adapter.raw_input_schema == {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "search text"}},
+            "required": ["query"],
+        }
+
+    def test_raw_input_schema_is_empty_object_when_tool_has_no_schema(self) -> None:
+        """`MCPToolInfo.input_schema` defaults to `{}` (never `None`), which
+        is what the schema-less path (`input_schema={}` narrowed at the
+        frontend/API boundary, see `mcp_tool_loader.py`'s module docstring)
+        actually produces."""
+        adapter = MCPToolAdapter(_server(), _tool_info(input_schema={}), _FakeSessionManager())
+        assert adapter.raw_input_schema == {}
+
+
+class TestValidate:
+    """Real validation against the MCP server's own schema (`raw_input_schema`
+    via `parameters`), replacing the old `_PermissiveValidationMixin` no-op —
+    see `MCPToolAdapter.validate`'s docstring for why it's still shallower
+    than `Tool.validate()`'s default (unknown keys are allowed)."""
+
+    def test_missing_required_argument_raises(self) -> None:
+        adapter = _make_adapter(_FakeSessionManager())
+        with pytest.raises(ToolValidationError, match="missing required argument 'query'"):
+            adapter.validate({})
+
+    def test_out_of_enum_value_raises_naming_allowed_values(self) -> None:
+        adapter = MCPToolAdapter(
+            _server(),
+            _tool_info(input_schema={
+                "type": "object",
+                "properties": {"status": {"type": "string", "enum": ["open", "closed"]}},
+                "required": ["status"],
+            }),
+            _FakeSessionManager(),
+        )
+        with pytest.raises(ToolValidationError, match=r"must be one of .*open.*closed"):
+            adapter.validate({"status": "archived"})
+
+    def test_stringified_integer_is_coerced_not_rejected(self) -> None:
+        adapter = MCPToolAdapter(
+            _server(),
+            _tool_info(input_schema={
+                "type": "object",
+                "properties": {"limit": {"type": "integer"}},
+                "required": [],
+            }),
+            _FakeSessionManager(),
+        )
+        kwargs = {"limit": "5"}
+        adapter.validate(kwargs)
+        assert kwargs["limit"] == 5
+
+    def test_boolean_does_not_leak_into_a_numeric_field(self) -> None:
+        """`isinstance(True, int)` is `True` in Python, so a naive numeric
+        check would silently accept a boolean where an integer/float was
+        expected — must be rejected instead."""
+        adapter = MCPToolAdapter(
+            _server(),
+            _tool_info(input_schema={
+                "type": "object",
+                "properties": {"limit": {"type": "integer"}},
+                "required": [],
+            }),
+            _FakeSessionManager(),
+        )
+        with pytest.raises(ToolValidationError, match="expected type 'integer'"):
+            adapter.validate({"limit": True})
+
+    def test_unknown_extra_keys_are_allowed(self) -> None:
+        """Deliberately more permissive than `Tool.validate()`'s default: an
+        MCP `additionalProperties` schema can legitimately allow keys
+        `parameters` doesn't know about, and a false local rejection would
+        block a call that would have succeeded server-side."""
+        adapter = _make_adapter(_FakeSessionManager())
+        adapter.validate({"query": "x", "unexpected": 1})  # must not raise
+
+    def test_none_value_for_optional_argument_is_allowed(self) -> None:
+        adapter = MCPToolAdapter(
+            _server(),
+            _tool_info(input_schema={
+                "type": "object",
+                "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+                "required": ["query"],
+            }),
+            _FakeSessionManager(),
+        )
+        adapter.validate({"query": "x", "limit": None})  # must not raise
+
+
+class TestValidationBlocksExecutionViaToolExecutor:
+    """The point of real validation: a bad call must fail locally, in one
+    turn, WITHOUT a network round trip to the MCP server — proven end to
+    end through `ToolExecutor.call_tool`, the only path production code
+    uses to reach `Tool.execute()`."""
+
+    async def test_missing_required_argument_never_reaches_session_manager(self) -> None:
+        session_manager = _FakeSessionManager()
+        adapter = _make_adapter(session_manager)
+        registry = ToolRegistry()
+        registry.register_tool(adapter)
+        executor = ToolExecutor(registry)
+
+        result = await executor.call_tool(ToolCall(id="c1", name=adapter.name, arguments={}))
+
+        assert result.is_error is True
+        assert "missing required argument 'query'" in result.content
+        assert session_manager.calls == []
+
+    async def test_out_of_enum_value_never_reaches_session_manager(self) -> None:
+        session_manager = _FakeSessionManager()
+        adapter = MCPToolAdapter(
+            _server(),
+            _tool_info(input_schema={
+                "type": "object",
+                "properties": {"status": {"type": "string", "enum": ["open", "closed"]}},
+                "required": ["status"],
+            }),
+            session_manager,
+        )
+        registry = ToolRegistry()
+        registry.register_tool(adapter)
+        executor = ToolExecutor(registry)
+
+        result = await executor.call_tool(
+            ToolCall(id="c1", name=adapter.name, arguments={"status": "archived"})
+        )
+
+        assert result.is_error is True
+        assert "must be one of" in result.content
+        assert session_manager.calls == []
 
 
 class TestExecuteSuccess:

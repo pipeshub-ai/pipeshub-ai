@@ -3,7 +3,6 @@ agent-loop's provider-agnostic types (`app/agents/agent_loop/converters.py`)."""
 
 from __future__ import annotations
 
-import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.messages import ToolMessage as LCToolMessage
 
@@ -29,7 +28,7 @@ from app.agents.agent_loop.converters import (
     convert_message_to_langchain,
     convert_messages_to_langchain,
     convert_tool_call_from_langchain,
-    convert_tool_schema_to_langchain,
+    convert_tool_schema_to_langchain_dict,
     convert_tool_schemas_to_langchain,
     output_schema_to_pydantic_model,
     token_usage_from_ai_message,
@@ -452,38 +451,91 @@ class TestTokenUsage:
         assert usage.cache_write_tokens == 1
 
 
-class TestToolSchemaConversion:
-    def test_convert_tool_schema_to_langchain_builds_structured_tool(self) -> None:
+class TestConvertToolSchemaToLangchainDict:
+    """`convert_tool_schema_to_langchain_dict` replaced a round-trip through
+    a dynamically-built Pydantic model (`StructuredTool.args_schema`) with a
+    direct OpenAI function-calling dict, matching `openai.py::_format_tools`
+    exactly and passing `ToolSchema.input_schema` through unmodified —
+    `bind_tools()` accepts this dict shape on every LangChain chat model
+    integration in use (see the function's own docstring)."""
+
+    def test_builds_openai_function_dict_verbatim(self) -> None:
+        input_schema = {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "search text"},
+                "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": 100},
+                "expand": {"type": "string", "enum": ["summary", "status"]},
+            },
+            "required": ["query"],
+        }
         schema = ToolSchema(
             name="jira_search_issues",
             description="Search Jira issues",
+            input_schema=input_schema,
+        )
+        result = convert_tool_schema_to_langchain_dict(schema)
+
+        assert result == {
+            "type": "function",
+            "function": {
+                "name": "jira_search_issues",
+                "description": "Search Jira issues",
+                "parameters": input_schema,
+            },
+        }
+
+    def test_empty_input_schema_defaults_to_empty_object(self) -> None:
+        schema = ToolSchema(name="t", description="d", input_schema={})
+        result = convert_tool_schema_to_langchain_dict(schema)
+        assert result["function"]["parameters"] == {"type": "object", "properties": {}}
+
+    def test_strips_schema_meta_keywords_but_keeps_everything_else(self) -> None:
+        """`$schema`/`$id` (and any leftover `$ref`) are stripped —
+        `langchain_google_genai` rejects unsupported keywords outright —
+        but `enum`/`default`/`additionalProperties` must survive, since
+        those are exactly what the previous Pydantic round-trip dropped."""
+        schema = ToolSchema(
+            name="t",
+            description="d",
             input_schema={
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "$id": "https://example.com/schema.json",
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "search text"},
-                    "limit": {"type": "integer", "description": "max results"},
+                    "opts": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                    },
                 },
-                "required": ["query"],
             },
         )
-        structured_tool = convert_tool_schema_to_langchain(schema)
-        assert structured_tool.name == "jira_search_issues"
-        assert structured_tool.description == "Search Jira issues"
-        fields = structured_tool.args_schema.model_fields
-        assert "query" in fields
-        assert "limit" in fields
-
-    def test_convert_tool_schema_coroutine_is_unbound(self) -> None:
-        schema = ToolSchema(name="t", description="d", input_schema={"type": "object", "properties": {}})
-        structured_tool = convert_tool_schema_to_langchain(schema)
-        import asyncio
-
-        with pytest.raises(RuntimeError):
-            asyncio.run(structured_tool.coroutine())
+        result = convert_tool_schema_to_langchain_dict(schema)
+        parameters = result["function"]["parameters"]
+        assert "$schema" not in parameters
+        assert "$id" not in parameters
+        assert parameters["properties"]["opts"]["additionalProperties"] == {"type": "string"}
 
     def test_convert_tool_schemas_empty_list(self) -> None:
         assert convert_tool_schemas_to_langchain(None) == []
         assert convert_tool_schemas_to_langchain([]) == []
+
+    def test_convert_tool_schemas_matches_openai_format_tools_shape(self) -> None:
+        """Parity guard: the dict shape this emits for `bind_tools()` must be
+        indistinguishable from `OpenAITransport._format_tools`'s own output
+        for the same `ToolSchema`, since that's the shape every LangChain
+        chat model integration in this app already accepts."""
+        from app.agent_loop_lib.transport.openai import OpenAITransport
+
+        schema = ToolSchema(
+            name="search",
+            description="search",
+            input_schema={"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]},
+        )
+        openai_transport = OpenAITransport(api_key="test-key")
+        lc_dicts = convert_tool_schemas_to_langchain([schema])
+        openai_dicts = openai_transport._format_tools([schema])
+        assert lc_dicts == openai_dicts
 
 class TestClampToolCallId:
     """The OpenAI/Azure API hard-rejects `tool_calls[].id` longer than 64
@@ -512,7 +564,7 @@ class TestClampToolCallId:
         assert _clamp_tool_call_id(a) != _clamp_tool_call_id(b)
 
 
-class TestToolSchemaConversion:
+class TestOutputSchemaToPydanticModel:
     def test_output_schema_to_pydantic_model_handles_nested_object(self) -> None:
         schema = {
             "type": "object",
