@@ -1632,14 +1632,32 @@ class TestRecordImageAdmission:
         assert len(refs) == 12
         assert len(collected) == 1
 
-    def test_the_same_record_fetched_twice_does_not_double_charge(self) -> None:
+    def test_the_same_record_fetched_twice_sends_its_images_once(self) -> None:
+        """The model re-reads a record it already fetched -- to continue past
+        a truncation point, or because the first result was cleared. Each
+        fetch builds its own tool result, so a second batch of `collected`
+        images is a second copy of the same pictures on the wire, counted once
+        by the cap and cut by the transport guard at the expense of images the
+        model had not seen."""
         admission = self._admission("anthropic")
-        for _ in range(2):
-            collected: list = []
-            record_to_message_content(
-                self._record(5), ref_mapper=CitationRefMapper(), is_multimodal_llm=True,
-                collected_images=collected, image_admission=admission,
-            )
-            assert len(collected) == 5
+
+        first: list = []
+        record_to_message_content(
+            self._record(5), ref_mapper=CitationRefMapper(), is_multimodal_llm=True,
+            collected_images=first, image_admission=admission,
+        )
+        second: list = []
+        blocks, _ = record_to_message_content(
+            self._record(5), ref_mapper=CitationRefMapper(), is_multimodal_llm=True,
+            collected_images=second, image_admission=admission,
+        )
+
+        assert len(first) == 5
+        assert second == []
         assert admission.budget.used == 5
+        # The re-read still renders every block's text, and says where the
+        # pixels went rather than claiming they were dropped.
+        text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        assert "shown above" in text
+        assert "not shown" not in text
 

@@ -169,3 +169,78 @@ def test_replay_uses_the_history_origin(origin_name: str) -> None:
     _extract_image_urls_from_record(_record(_uri()), ImageBudget(), image_admission=admission)
 
     assert captured and captured[0].origin is getattr(ImageOrigin, origin_name)
+
+
+class TestBlocksWithoutAnIndex:
+    """`Block.index` defaults to `None` (`models/blocks.py`), and records come
+    from blob storage, so an image block with no usable index is representable.
+    Keying the admitted lookup on `int(index or 0)` collapsed every such block
+    to 0 — emitting one image twice and losing the other.
+    """
+
+    @staticmethod
+    def _blocks(*uris: str) -> list[dict]:
+        return [{"type": "image", "data": {"uri": u}} for u in uris]
+
+    def test_two_unindexed_images_both_survive(self) -> None:
+        a, b = _uri(61, 61), _uri(62, 62)
+
+        urls = [
+            block["image_url"]["url"]
+            for block in _extract_image_urls_from_record(
+                {"block_containers": {"blocks": self._blocks(a, b)}},
+                ImageBudget(), image_admission=_admission(),
+            )
+        ]
+
+        assert sorted(urls) == sorted([a, b])
+
+    def test_an_explicitly_null_index_behaves_the_same(self) -> None:
+        """What a serialized `Block()` actually carries."""
+        a, b = _uri(61, 61), _uri(62, 62)
+        blocks = [{"type": "image", "index": None, "data": {"uri": u}} for u in (a, b)]
+
+        urls = [
+            block["image_url"]["url"]
+            for block in _extract_image_urls_from_record(
+                {"block_containers": {"blocks": blocks}},
+                ImageBudget(), image_admission=_admission(),
+            )
+        ]
+
+        assert sorted(urls) == sorted([a, b])
+
+    def test_duplicate_bytes_still_collapse_to_one(self) -> None:
+        """Keying by hash must not resurrect the duplicate it replaced."""
+        a = _uri(61, 61)
+
+        blocks = _extract_image_urls_from_record(
+            {"block_containers": {"blocks": self._blocks(a, a, a)}},
+            ImageBudget(), image_admission=_admission(),
+        )
+
+        assert len(blocks) == 1
+
+    def test_the_cap_still_applies_without_indices(self) -> None:
+        blocks = _extract_image_urls_from_record(
+            {"block_containers": {"blocks": self._blocks(*[_uri(60 + i, 60) for i in range(5)])}},
+            ImageBudget(), image_admission=_admission("ollama"),
+        )
+
+        assert len(blocks) == 1
+
+    def test_indexed_blocks_are_unaffected(self) -> None:
+        a, b = _uri(61, 61), _uri(62, 62)
+        blocks = [
+            {"type": "image", "index": i, "data": {"uri": u}} for i, u in enumerate((a, b))
+        ]
+
+        urls = [
+            block["image_url"]["url"]
+            for block in _extract_image_urls_from_record(
+                {"block_containers": {"blocks": blocks}},
+                ImageBudget(), image_admission=_admission(),
+            )
+        ]
+
+        assert urls == [a, b], "document order is preserved"

@@ -337,8 +337,18 @@ def image_marker_text(
     withheld = reason is not None and reason in (
         _Reason.TEXT_ONLY_MODEL, _Reason.OVER_REQUEST_CAP, _Reason.OVER_CONVERSATION_CAP,
     )
+    # A duplicate's pixels are in the request already, attached to the first
+    # copy. Saying "not shown" would send the model looking for an image it
+    # can see; saying plain "(image)" would point it at pixels that are not
+    # at this block.
+    duplicate = reason is _Reason.DUPLICATE
     if text:
-        label = "(image, not shown)" if withheld else "(image)"
+        if withheld:
+            label = "(image, not shown)"
+        elif duplicate:
+            label = "(image, shown above)"
+        else:
+            label = "(image)"
         return f"{marker} {label} {text}\n\n"
     if reason is _Reason.OVER_CONVERSATION_CAP:
         return (
@@ -350,6 +360,8 @@ def image_marker_text(
             f"{marker} (image block - visual content not shown; this model's "
             "image limit for one request was reached)\n\n"
         )
+    if duplicate:
+        return f"{marker} (image block - the same image is shown above)\n\n"
     return f"{marker} (image)\n\n"
 
 
@@ -3360,10 +3372,16 @@ def _render_blocks_with_images(
                                     "text": f"    [{item_ref}] (image)\n",
                                 })
                             else:
+                                degraded_reason = (
+                                    outcome.degraded[0].reason
+                                    if outcome is not None and outcome.degraded
+                                    else None
+                                )
                                 content.append({
                                     "type": "text",
-                                    "text": f"    [{item_ref}] (image block - visual content "
-                                            "not shown due to conversation image limit)\n",
+                                    "text": "    " + image_marker_text(
+                                        f"[{item_ref}]", reason=degraded_reason,
+                                    ).rstrip() + "\n",
                                 })
                     continue
                 content.append({
@@ -3891,6 +3909,13 @@ def record_to_message_content(
                         image_admission=admission,
                     ))
                 _renderable_rendered += 1
+                # A group is one renderable unit, the same as a table or a
+                # top-level block. Without this it cost nothing against
+                # `max_blocks`, and left `blocks_rendered` at zero -- which is
+                # what `execute_fetch_record` reads to decide a resumed fetch
+                # found nothing, so it appended "no blocks at offset N" under
+                # the group it had just rendered.
+                render_budget.count_block()
             else:
                 continue
 

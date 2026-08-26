@@ -25,11 +25,18 @@ Two properties the callers depend on:
 * **Nothing vanishes.** `admit()` returns every candidate, partitioned --
   each one either admitted or degraded with a reason. A caller that renders
   both lists cannot silently drop content.
-* **Admission is stable.** An image already admitted in this request is
-  admitted again for free on a later render (same content hash, no second
-  slot). Re-fetching a record mid-conversation therefore neither
-  double-charges the budget nor reshuffles what the model already saw, which
-  would invalidate the provider's prompt cache on every turn.
+* **One picture, one copy.** An image already admitted in this request is a
+  duplicate on every later `admit()`, not a second admission. It still costs
+  no second slot and no second charge against the budget, and the copy that
+  did go out stays exactly where it was -- so re-fetching a record
+  mid-conversation neither double-charges nor reshuffles what the model
+  already saw, which would invalidate the provider's prompt cache. What it no
+  longer does is hand the caller another copy to materialize: every caller
+  attaches what it is given, so an image that arrived as a search hit and
+  again in a fetch of the record it lives in used to reach the wire twice
+  while the cap counted it once. The transport guard then had to cut the
+  overflow, evicting pictures the model had not seen to keep repeats of one
+  it had (`agents/agent_loop/image_guard.py`).
 """
 
 from __future__ import annotations
@@ -282,16 +289,12 @@ class ImageAdmission:
 
         for candidate in candidates:
             digest = candidate.hash
-            if digest in self._admitted_hashes:
-                # Already sent this request: free, and keeping it admitted is
-                # what makes the image set stable across turns. Re-admitting
-                # returns the normalized bytes, not the source ones -- the
-                # first admission is what paid for the downscale.
-                admitted.append(self._as_admitted(candidate))
-                continue
-            if digest in seen_in_batch:
-                # Deduplication is right whether or not slots are scarce --
-                # the same bytes twice teach the model nothing.
+            # The same bytes twice teach the model nothing, and that holds
+            # whether the copy that won the slot went out in this batch or an
+            # earlier one this request. Deduplication is right whether or not
+            # slots are scarce; the pixels are already in the request, and the
+            # caller renders this one's text either way.
+            if digest in self._admitted_hashes or digest in seen_in_batch:
                 degraded.append(DegradedImage(candidate, DegradeReason.DUPLICATE))
                 continue
             seen_in_batch.add(digest)
@@ -396,12 +399,26 @@ class ImageAdmission:
         for uri in data_uris:
             self._decide_normalization(uri)
 
-    def _as_admitted(self, candidate: ImageCandidate) -> ImageCandidate:
-        """`candidate` carrying whatever bytes were admitted for its hash."""
-        normalized = self._normalized_by_hash.get(candidate.hash)
-        if normalized is None:
-            return candidate
-        return replace(candidate, data_uri=normalized, width=None, height=None)
+    def admitted_uri(self, data_uri: str) -> str | None:
+        """The bytes to send for `data_uri`, or None if it was not admitted.
+
+        `admit()` returns *normalized* candidates, whose hash is the hash of
+        the downscaled bytes -- so a caller holding the source URI cannot look
+        its verdict up in that list. `_admitted_hashes` is keyed by the
+        original, which is what a caller actually has. Answers both questions
+        from one hash: these are sha256 over the whole base64 payload, and at
+        tens of megabytes per image that cost is worth counting.
+
+        Answers "did this image win a slot in this request", not "did MY
+        batch win it": a duplicate of something admitted earlier still has an
+        admitted hash. A caller that materializes what it looks up therefore
+        has to skip what its own `admit()` returned as degraded first, or it
+        re-emits the copy that call just rejected.
+        """
+        digest = content_hash(data_uri)
+        if digest not in self._admitted_hashes:
+            return None
+        return self._normalized_by_hash.get(digest, data_uri)
 
     def rendered_uri(self, data_uri: str) -> str:
         """The bytes to actually send for `data_uri`.

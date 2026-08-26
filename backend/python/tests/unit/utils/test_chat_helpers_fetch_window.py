@@ -229,3 +229,75 @@ class TestLegacyCallers:
 
         assert len(text) > 45_000, "no character cap for a caller that asked for none"
         assert "block truncated" not in text
+
+
+class TestBlockGroupsCountAsBlocks:
+    """A block group is one renderable unit, like a table or a top-level
+    block. It was the one branch of the walk that rendered content without
+    charging `count_block()`, so it cost nothing against `max_blocks` and left
+    `blocks_rendered` at zero — which `execute_fetch_record` reads to decide a
+    resumed fetch found nothing.
+    """
+
+    @staticmethod
+    def _group_record(record_id: str, lines: int = 4) -> dict:
+        # List position must equal `index`: `build_group_blocks` indexes the
+        # block list positionally.
+        blocks = [
+            {"index": i, "type": BlockType.TEXT.value, "parent_index": 0,
+             "data": f"group line {i}"}
+            for i in range(lines)
+        ]
+        group = {
+            "type": GroupType.LIST.value,
+            "data": {},
+            "children": {"block_ranges": [{"start": 0, "end": lines - 1}]},
+        }
+        return _record(record_id, blocks, [group])
+
+    def test_a_rendered_group_is_counted(self) -> None:
+        budget = RenderBudget(max_chars=100_000)
+        budget.begin_record("rec-g")
+
+        text = _render(self._group_record("rec-g"), budget)
+
+        assert "group line 2" in text
+        assert budget.outcome("rec-g").blocks_rendered == 1
+
+    def test_a_resumed_fetch_does_not_report_an_empty_read(self) -> None:
+        """The concrete regression: `execute_fetch_record` appends
+        "[No blocks at offset N]" when `blocks_rendered == 0`, and used to do
+        so directly underneath the group it had just rendered."""
+        budget = RenderBudget(max_chars=100_000)
+        budget.begin_record("rec-g")
+
+        text = _render(self._group_record("rec-g"), budget, start_block=1)
+
+        assert "group line 2" in text, "content was rendered"
+        assert budget.outcome("rec-g").blocks_rendered > 0, "so it must not read as empty"
+
+    def test_groups_consume_the_block_cap(self) -> None:
+        """Otherwise a record of many groups renders past `max_blocks`."""
+        blocks, groups = [], []
+        for g in range(6):
+            blocks.append({"index": g, "type": BlockType.TEXT.value,
+                           "parent_index": g, "data": f"group {g} body"})
+            groups.append({"type": GroupType.LIST.value, "data": {},
+                           "children": {"block_ranges": [{"start": g, "end": g}]}})
+        budget = RenderBudget(max_chars=100_000, max_blocks=2)
+        budget.begin_record("rec-m")
+
+        _render(_record("rec-m", blocks, groups), budget)
+
+        assert budget.outcome("rec-m").blocks_rendered == 2
+        assert budget.outcome("rec-m").complete is False
+
+    def test_counting_does_not_change_completeness(self) -> None:
+        """`complete` reads `stopped_at_block`/`table_truncation`, never
+        `blocks_rendered` — a fully rendered group is still complete."""
+        budget = RenderBudget(max_chars=100_000)
+        budget.begin_record("rec-g")
+
+        _render(self._group_record("rec-g"), budget)
+
+        assert budget.outcome("rec-g").complete is True

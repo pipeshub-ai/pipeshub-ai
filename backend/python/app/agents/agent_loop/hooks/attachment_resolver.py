@@ -516,18 +516,37 @@ def _extract_image_urls_from_record(
             block_index=int(block.get("index") or 0),
         ))
 
-    # One batch, not one call per image: dedup is per-batch, and admitting
-    # singly would re-admit the same logo on every page for free and emit a
-    # copy of it each time. Ranking also needs the whole set in hand.
+    # One batch, not one call per image: ranking needs the whole set in hand.
     outcome = admission.admit(candidates)
-    admitted_order = {c.block_index: c.data_uri for c in outcome.admitted}
-    return [
-        # The admitted candidate's bytes, which may have been downscaled to the
-        # model's per-image limits.
-        {"type": "image_url", "image_url": {"url": admitted_order[c.block_index]}}
-        for c in candidates
-        if c.block_index in admitted_order
-    ]
+    # `admitted_uri` answers "did this win a slot in the request", which is
+    # yes for an image some earlier batch already put on the wire. Emitting on
+    # that alone attaches a second copy of it here.
+    #
+    # Identity, not the URI: within one batch the copies this call rejected as
+    # duplicates carry the SAME `data_uri` as the copy it admitted, so keying
+    # on the string would withhold the winner along with them and the image
+    # would vanish. `outcome.degraded` holds the very objects passed in, and
+    # `candidates` outlives the loop, so `id()` is both exact and free of a
+    # sha256 over a multi-megabyte payload.
+    withheld = {id(degraded.candidate) for degraded in outcome.degraded}
+    # Looked up per source URI rather than keyed by `block_index`. A record is
+    # blob data and `Block.index` defaults to None, so several image blocks can
+    # collapse to index 0 -- which made this emit one image twice and lose the
+    # other. Not keyed off `admit()`'s returned list either: those candidates
+    # carry the *normalized* bytes, so their hash never matches the source.
+    result: list[dict[str, Any]] = []
+    emitted: set[str] = set()
+    for candidate in candidates:
+        if id(candidate) in withheld:
+            continue
+        # The admitted bytes, downscaled if the model's per-image limits
+        # required it; None when this image did not win a slot.
+        uri = admission.admitted_uri(candidate.data_uri)
+        if uri is None or uri in emitted:
+            continue
+        emitted.add(uri)
+        result.append({"type": "image_url", "image_url": {"url": uri}})
+    return result
 
 
 # ---------------------------------------------------------------------------

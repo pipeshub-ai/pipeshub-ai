@@ -1191,8 +1191,11 @@ class TestImageCapGuard:
     sub-agent can run a smaller one."""
 
     @staticmethod
-    def _image_part() -> ImagePart:
-        return ImagePart(source=ImageSource(type="base64", media_type="image/png", data="abc"))
+    def _image_part(tag: str = "abc") -> ImagePart:
+        """Distinct `tag` means a distinct picture. The cap counts distinct
+        images, so a test that wants N of them has to vary this — reusing one
+        payload N times exercises the duplicate path instead."""
+        return ImagePart(source=ImageSource(type="base64", media_type="image/png", data=tag))
 
     class _Capture(_FakeModel):
         def __init__(self, *a: Any, **kw: Any) -> None:
@@ -1218,7 +1221,7 @@ class TestImageCapGuard:
     async def test_images_beyond_the_cap_become_text(self) -> None:
         model = self._Capture(AIMessage(content="ok"))
         transport = LangChainTransport(model, max_images_per_request=2)
-        message = UserMessage(content=[TextPart(text="look"), *[self._image_part() for _ in range(5)]])
+        message = UserMessage(content=[TextPart(text="look"), *[self._image_part(f"img{i}") for i in range(5)]])
 
         await transport.complete([message])
 
@@ -1227,7 +1230,7 @@ class TestImageCapGuard:
     async def test_a_capped_request_keeps_its_text(self) -> None:
         model = self._Capture(AIMessage(content="ok"))
         transport = LangChainTransport(model, max_images_per_request=1)
-        message = UserMessage(content=[TextPart(text="the question"), self._image_part(), self._image_part()])
+        message = UserMessage(content=[TextPart(text="the question"), self._image_part("a"), self._image_part("b")])
 
         await transport.complete([message])
 
@@ -1248,11 +1251,57 @@ class TestImageCapGuard:
 
         assert self._count_images(model.received_messages) == 1
 
+    async def test_repeats_of_one_image_do_not_spend_slots(self) -> None:
+        """Regression: one request materializes the same picture more than
+        once — a figure returned as a search hit and again when the model
+        fetches the record it lives in, or a record fetched twice to read past
+        a truncation point. Admission charges the first copy a slot and hands
+        back the rest free, so the wire count outran the cap and the guard
+        cut distinct images to make room for duplicates of one."""
+        model = self._Capture(AIMessage(content="ok"))
+        transport = LangChainTransport(model, max_images_per_request=3)
+        repeated = [self._image_part("chart") for _ in range(6)]
+        distinct = [self._image_part(f"fig{i}") for i in range(3)]
+        message = UserMessage(content=[TextPart(text="look"), *repeated, *distinct])
+
+        await transport.complete([message])
+
+        # 4 distinct images, cap 3: the 5 extra copies of "chart" must not
+        # evict a distinct figure, so 3 different pictures reach the wire.
+        sent = [
+            block["image_url"]["url"]
+            for m in model.received_messages if isinstance(getattr(m, "content", None), list)
+            for block in m.content
+            if isinstance(block, dict) and block.get("type") == "image_url"
+        ]
+        assert len(sent) == 3
+        assert len(set(sent)) == 3
+
+    async def test_a_repeat_is_not_labelled_as_missing(self) -> None:
+        """A copy whose pixels appear later in the request must not say the
+        image is unavailable — the model is about to see it."""
+        model = self._Capture(AIMessage(content="ok"))
+        transport = LangChainTransport(model, max_images_per_request=1)
+        message = UserMessage(
+            content=[TextPart(text="q"), self._image_part("same"), self._image_part("same")],
+        )
+
+        await transport.complete([message])
+
+        text = " ".join(
+            block.get("text", "")
+            for m in model.received_messages if isinstance(getattr(m, "content", None), list)
+            for block in m.content if isinstance(block, dict) and block.get("type") == "text"
+        )
+        assert "image not shown" not in text
+        assert "same image" in text
+        assert self._count_images(model.received_messages) == 1
+
     async def test_no_cap_configured_leaves_messages_alone(self) -> None:
         """Callers that have not wired a policy must behave exactly as before."""
         model = self._Capture(AIMessage(content="ok"))
         transport = LangChainTransport(model)
-        message = UserMessage(content=[*[self._image_part() for _ in range(20)]])
+        message = UserMessage(content=[*[self._image_part(f"img{i}") for i in range(20)]])
 
         await transport.complete([message])
 

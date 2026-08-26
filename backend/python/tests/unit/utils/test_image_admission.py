@@ -165,18 +165,32 @@ class TestDeduplication:
         assert sum(c.data_uri == logo for c in result.admitted) == 1
         assert len(result.admitted) == 4
 
-    def test_re_admitting_an_image_is_free_and_stable(self) -> None:
-        """Re-fetching a record must not spend a second slot, and must keep
-        showing the model the same image -- reshuffling it every turn would
-        invalidate the provider's prompt cache."""
+    def test_re_admitting_an_image_is_a_duplicate_not_a_second_copy(self) -> None:
+        """Re-fetching a record must not spend a second slot -- and must not
+        hand back another copy to attach. Callers materialize whatever they
+        are given, so a second admission put the same picture on the wire
+        twice while the cap still counted it once."""
         admission = _admission(max_images=2)
         first = admission.admit([_candidate(0)])
         assert len(first.admitted) == 1
         assert admission.budget.used == 1
 
         again = admission.admit([_candidate(0)])
-        assert len(again.admitted) == 1
+        assert again.admitted == []
+        assert [d.reason for d in again.degraded] == [DegradeReason.DUPLICATE]
         assert admission.budget.used == 1, "no second charge for the same image"
+
+    def test_a_duplicate_does_not_release_the_slot_it_reuses(self) -> None:
+        """The first copy still holds the slot: a duplicate must not look like
+        a free one and let a later image over the cap."""
+        admission = _admission(max_images=1)
+        admission.admit([_candidate(0)])
+        admission.admit([_candidate(0)])
+
+        later = admission.admit([_candidate(1)])
+
+        assert later.admitted == []
+        assert [d.reason for d in later.degraded] == [DegradeReason.OVER_REQUEST_CAP]
 
 
 class TestRanking:
@@ -333,17 +347,20 @@ class TestNormalizationReachesTheWire:
         assert admission.rendered_uri(uri) == admitted.data_uri
         assert admission.rendered_uri(uri) != uri
 
-    def test_re_admission_returns_the_normalized_bytes(self) -> None:
-        """A repeat fetch in the same request re-admits for free — and used to
-        hand back the raw candidate, undoing the downscale the first admission
-        paid for."""
+    def test_a_repeat_fetch_still_resolves_to_the_normalized_bytes(self) -> None:
+        """A repeat fetch in the same request is a duplicate, so it gets no
+        second copy — but a renderer holding the source URI must still resolve
+        it to the downscaled bytes the first admission paid for, since those
+        are what the model is actually looking at."""
         uri = self._uri(4000, 3000)
         admission = self._admission()
 
         first = admission.admit([self._candidate(uri, 4000, 3000)]).admitted[0]
-        second = admission.admit([self._candidate(uri, 4000, 3000)]).admitted[0]
+        second = admission.admit([self._candidate(uri, 4000, 3000)])
 
-        assert second.data_uri == first.data_uri
+        assert second.admitted == []
+        assert admission.rendered_uri(uri) == first.data_uri
+        assert admission.admitted_uri(uri) == first.data_uri
 
     def test_an_image_within_limits_is_returned_unchanged(self) -> None:
         """No re-encode, and nothing cached: only images that actually needed

@@ -47,6 +47,10 @@ logger = logging.getLogger(__name__)
 # What an image that is cut here leaves behind. Deliberately terse: this is a
 # safety net, and the record's own text is already in the message.
 _DROPPED_NOTE = "[image not shown: this model's per-request image limit]"
+# A repeat of pixels that are already attached further down the request. Says
+# so rather than reusing `_DROPPED_NOTE`, which would tell the model the image
+# is missing when it is about to see it.
+_DUPLICATE_NOTE = "[same image as shown below]"
 
 
 def count_images(messages: list[Message]) -> int:
@@ -59,12 +63,32 @@ def count_images(messages: list[Message]) -> int:
     )
 
 
+def _identity(part: ImagePart) -> tuple[str, str | None, str]:
+    """What makes two image parts the same picture on the wire.
+
+    A tuple of the source's own strings rather than a digest: these strings
+    already exist and Python caches their hashes, so recognizing a repeat
+    costs no re-encode of a multi-megabyte payload.
+    """
+    return (part.source.type, part.source.media_type, part.source.data)
+
+
 def cap_images(messages: list[Message], max_images: int) -> list[Message]:
     """Return `messages` with at most `max_images` image parts.
 
-    Keeps the LAST `max_images` images: in an agent loop the most recent are
-    the ones the current step is reasoning about, while the oldest have
-    usually been summarized into text already.
+    Keeps the LAST `max_images` DISTINCT images: in an agent loop the most
+    recent are the ones the current step is reasoning about, while the oldest
+    have usually been summarized into text already.
+
+    Repeats of a picture already kept do not spend a slot. One request can
+    materialize the same image several times over -- a figure that arrives as
+    a search hit and again when the model fetches the record it lives in, or a
+    record fetched twice to read past a truncation point. Upstream admission
+    charges each distinct image one slot and hands back every later copy for
+    free (`ImageAdmission.admit`), so the count on the wire outruns the count
+    it approved. Spending the cap on those copies is the worst way to spend
+    it: the duplicates teach the model nothing it is not already looking at,
+    and each one evicts a different picture it would otherwise have seen.
 
     Returns the input list unchanged when it is already within the cap, so the
     common path allocates nothing.
@@ -73,8 +97,14 @@ def cap_images(messages: list[Message], max_images: int) -> list[Message]:
     if max_images < 0 or total <= max_images:
         return messages
 
-    # Walk backwards keeping the newest images; everything earlier is cut.
+    # Walk backwards keeping the newest distinct images; everything earlier is
+    # cut. `kept` are the ones whose pixels survive, so an earlier copy can
+    # point at them; `seen` also holds images that lost, whose earlier copies
+    # must say "not shown" rather than point at pixels that are not there.
     keep_from_end = max_images
+    kept: set[tuple[str, str | None, str]] = set()
+    seen: set[tuple[str, str | None, str]] = set()
+    duplicates = 0
     capped: list[Message] = []
     for message in reversed(messages):
         if not isinstance(message.content, list):
@@ -85,8 +115,18 @@ def cap_images(messages: list[Message], max_images: int) -> list[Message]:
             if not isinstance(part, ImagePart):
                 new_content.append(part)
                 continue
+            identity = _identity(part)
+            if identity in kept:
+                duplicates += 1
+                new_content.append(TextPart(text=_DUPLICATE_NOTE))
+                continue
+            if identity in seen:
+                new_content.append(TextPart(text=_DROPPED_NOTE))
+                continue
+            seen.add(identity)
             if keep_from_end > 0:
                 keep_from_end -= 1
+                kept.add(identity)
                 new_content.append(part)
             else:
                 new_content.append(TextPart(text=_DROPPED_NOTE))
@@ -95,9 +135,11 @@ def cap_images(messages: list[Message], max_images: int) -> list[Message]:
     capped.reverse()
 
     logger.warning(
-        "Image guard: request carried %d images but this model accepts %d; "
-        "%d were replaced with a text note",
-        total, max_images, total - max_images,
+        "Image guard: request carried %d image part(s) (%d distinct) but this "
+        "model accepts %d; kept %d, %d were repeats of a kept image, %d were "
+        "replaced with a text note",
+        total, len(seen), max_images, len(kept), duplicates,
+        total - len(kept) - duplicates,
     )
     return capped
 
