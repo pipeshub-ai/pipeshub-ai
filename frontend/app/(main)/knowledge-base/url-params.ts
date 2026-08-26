@@ -18,6 +18,7 @@ import type {
   DateFilterType,
   NodeOrigin,
 } from './types';
+import { RECORD_TYPES } from '@/lib/utils/record-type-labels';
 import { useKnowledgeBaseStore } from './store';
 
 // URL param keys
@@ -49,7 +50,7 @@ const DEFAULTS = {
 };
 
 // Valid enum values for parsing
-const VALID_RECORD_TYPES = new Set<string>(['FILE', 'WEBPAGE', 'MESSAGE', 'EMAIL', 'TICKET', 'ARTIFACT']);
+const VALID_RECORD_TYPES = new Set<string>([...RECORD_TYPES, 'EMAIL']);
 /** Must match `IndexingStatus` in ./types — used so URL round-trip keeps filter state */
 const VALID_INDEXING_STATUS = new Set<string>([
   'COMPLETED',

@@ -3008,6 +3008,8 @@
       "connectorId": "Konnektor-ID",
       "notAvailable": "k. A.",
       "typeEmail": "E-Mail",
+      "typeFile": "Datei",
+      "typeArtifact": "Artefakt",
       "typeTicket": "Ticket",
       "typeWebpage": "Webseite",
       "typeMessage": "Nachricht",

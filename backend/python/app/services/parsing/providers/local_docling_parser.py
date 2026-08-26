@@ -8,6 +8,8 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from docling.exceptions import ConversionError
+
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.services.parsing.interface import (
     IParser,
@@ -50,7 +52,20 @@ class LocalDoclingParser:
         stem = Path(record_name).stem
         doc_name = f"{stem}{target_ext}"
 
-        conv_res = await self._processor.parse_document(doc_name, content)
+        try:
+            conv_res = await self._processor.parse_document(doc_name, content)
+        except ConversionError as exc:
+            msg = str(exc)
+            if "File format not allowed" in msg:
+                code = ParseErrorCode.UNSUPPORTED_FORMAT
+            else:
+                code = ParseErrorCode.PARSE_FAILED
+            raise ParseError(
+                code,
+                msg,
+                details={"record_name": record_name},
+            ) from exc
+
         if conv_res is None or conv_res is False:
             raise ParseError(
                 ParseErrorCode.PARSE_FAILED,

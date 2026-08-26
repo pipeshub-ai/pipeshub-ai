@@ -71,7 +71,7 @@ afterEach(() => cleanup());
 describe('VectorStoreActions', () => {
   it('does not call the API until the confirmation token is typed', async () => {
     renderActions();
-    openDialog(/clean up embeddings/i);
+    openDialog(/clean up$/i);
 
     const confirm = confirmButton(/delete embeddings/i);
     expect(confirm.disabled).toBe(true);
@@ -89,7 +89,7 @@ describe('VectorStoreActions', () => {
 
   it('rejects the wrong token, including the other operation’s', () => {
     renderActions();
-    openDialog(/clean up embeddings/i);
+    openDialog(/clean up$/i);
 
     typeConfirmation('REINDEX');
     expect(confirmButton(/delete embeddings/i).disabled).toBe(true);
@@ -98,17 +98,17 @@ describe('VectorStoreActions', () => {
 
   it('warns that search stays broken until a reindex finishes', () => {
     renderActions();
-    openDialog(/clean up embeddings/i);
+    openDialog(/clean up$/i);
 
     expect(
       screen.getByText(/stays broken until a reindex has finished/i)
     ).toBeTruthy();
-    expect(screen.getByText(/records are not deleted/i)).toBeTruthy();
+    expect(screen.getByText(/records are not deleted — only their embeddings/i)).toBeTruthy();
   });
 
   it('requires its own token for reindex and then starts the job', async () => {
     renderActions();
-    openDialog(/reindex embeddings/i);
+    openDialog(/reindex$/i);
 
     expect(confirmButton(/start reindex/i).disabled).toBe(true);
     typeConfirmation('REINDEX');
@@ -129,7 +129,7 @@ describe('VectorStoreActions', () => {
   it('keeps the dialog open when the API rejects, so the operator can retry', async () => {
     cleanupVectorStore.mockRejectedValueOnce(new Error('409 conflict'));
     renderActions();
-    openDialog(/clean up embeddings/i);
+    openDialog(/clean up$/i);
     typeConfirmation('DELETE');
     fireEvent.click(screen.getByRole('button', { name: /delete embeddings/i }));
 

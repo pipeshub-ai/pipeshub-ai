@@ -80,6 +80,7 @@ from app.edition_config import (
     resolve_stats_org_id,
     schedule_token_refresh_kwargs,
     strip_redacted_fields,
+    vector_store_rebuild_available,
 )
 from app.edition_services import get_data_entities_processor_cls
 from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
@@ -129,6 +130,7 @@ from app.core.signed_url import SignedUrlHandler
 from app.models.entities import Record, RecordType
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
+from app.services.featureflag.platform_settings import read_platform_feature_flag
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.rebuild_state import PHASE_DROPPING, get_cleanup_phase
 from app.utils.api_call import make_api_call
@@ -144,6 +146,26 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 logger = create_logger("connector_service")
 
 router = APIRouter()
+
+
+async def _require_vector_store_rebuild_enabled(request: Request) -> None:
+    """FastAPI dependency — rejects with 403 when vector-store rebuild is
+    unavailable. Applied to the cleanup and reindex endpoints."""
+    if not vector_store_rebuild_available:
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail="Vector store rebuild is not available in this edition.",
+        )
+    container = getattr(request.app, "container", None)
+    config_service = container.config_service() if container else None
+    if config_service and not await read_platform_feature_flag(
+        CONFIG.ENABLE_VECTOR_STORE_REBUILD, config_service, default=False,
+    ):
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail="Vector store rebuild is disabled by the administrator.",
+        )
+
 
 OAUTH_INSTANCE_NAME = "oauthInstanceName"
 
@@ -2370,7 +2392,10 @@ async def _accept_vector_store_job(
 @router.post(
     "/api/v1/connectors/vector-store/cleanup",
     status_code=HttpStatusCode.ACCEPTED.value,
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))],
+    dependencies=[
+        Depends(_require_vector_store_rebuild_enabled),
+        Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)),
+    ],
 )
 @inject
 async def cleanup_vector_store(
@@ -2386,7 +2411,10 @@ async def cleanup_vector_store(
 @router.post(
     "/api/v1/connectors/vector-store/reindex",
     status_code=HttpStatusCode.ACCEPTED.value,
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))],
+    dependencies=[
+        Depends(_require_vector_store_rebuild_enabled),
+        Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)),
+    ],
 )
 @inject
 async def reindex_vector_store(
