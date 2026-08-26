@@ -9,6 +9,7 @@ import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import type { Schema } from 'hast-util-sanitize';
+import type { PluggableList } from 'unified';
 import 'katex/dist/katex.min.css';
 import { Box, Flex, Text, Heading } from '@radix-ui/themes';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -26,6 +27,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { useTranslation } from 'react-i18next';
 import type { Root, Blockquote } from 'mdast';
+import { splitMarkdownBlocks } from '../../utils/split-streaming-markdown';
 
 /**
  * rehype-sanitize schema.
@@ -283,10 +285,27 @@ function remarkCallouts() {
   return (tree: Root) => walk(tree);
 }
 
+// Hoisted to module scope so react-markdown (which re-runs its unified
+// pipeline whenever any prop's identity changes, not just `children`) sees a
+// stable `remarkPlugins` / `rehypePlugins` reference across every render
+// instead of a fresh array literal each time.
+const REMARK_PLUGINS: PluggableList = [
+  remarkGfm,
+  [remarkMath, { singleDollarTextMath: false }],
+  remarkCallouts,
+];
+const REHYPE_PLUGINS: PluggableList = [
+  rehypeRaw,
+  [rehypeSanitize, SANITIZE_SCHEMA],
+  rehypeKatex,
+];
+
 interface AnswerContentProps {
   content: string;
   citationMaps?: CitationMaps;
   citationCallbacks?: CitationCallbacks;
+  /** Only while true is `content` split into independently-memoized blocks. */
+  isStreaming?: boolean;
 }
 
 export interface CitationMatch {
@@ -1150,10 +1169,54 @@ export function createMarkdownComponents(
   };
 }
 
-export function AnswerContent({
+interface MarkdownBlockProps {
+  source: string;
+  components: ReturnType<typeof createMarkdownComponents>;
+  /**
+   * Not read directly by this component — `components`' closures (p, td,
+   * a, …) pull citation data from a ref that `AnswerContent` keeps fresh on
+   * every render. This prop exists purely so `React.memo` below invalidates
+   * the block when it changes: citation data for a `[N]` marker can arrive
+   * on a LATER SSE flush than the block's own text (the citation batch and
+   * the text chunk that references it don't always land in the same
+   * flush), so a block whose `source` string hasn't changed still needs to
+   * re-render once new citation data lands for it.
+   */
+  citationMaps: CitationMaps | undefined;
+}
+
+function MarkdownBlockImpl({ source, components }: MarkdownBlockProps) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={REHYPE_PLUGINS}
+      components={components}
+    >
+      {source}
+    </ReactMarkdown>
+  );
+}
+
+/**
+ * Each block gets its own memoized react-markdown instance. While streaming,
+ * every already-settled block (all but the one still growing) bails out of
+ * `React.memo` entirely — skipping unified's parse → transform → render
+ * pipeline — instead of every block re-parsing the whole answer on every
+ * SSE flush.
+ */
+const MarkdownBlock = React.memo(
+  MarkdownBlockImpl,
+  (prev, next) =>
+    prev.source === next.source &&
+    prev.components === next.components &&
+    prev.citationMaps === next.citationMaps,
+);
+
+export const AnswerContent = React.memo(function AnswerContent({
   content,
   citationMaps,
   citationCallbacks,
+  isStreaming,
 }: AnswerContentProps) {
   const citationMapsRef = useRef(citationMaps);
   citationMapsRef.current = citationMaps;
@@ -1171,21 +1234,30 @@ export function AnswerContent({
   //    so remark treats them as HTML blocks, not indented code blocks
   // 3. preprocessMath            — \[..\] / \(..\) → $$..$$  (both forms)
   //    (skips fenced blocks created by step 1)
-  const normalizedContent = preprocessMath(
-    preprocessHtmlIndentation(
-      preprocessHtmlCodeBlocks(content)
-    )
+  const normalizedContent = useMemo(
+    () => preprocessMath(preprocessHtmlIndentation(preprocessHtmlCodeBlocks(content))),
+    [content],
+  );
+
+  // Splitting only helps while streaming — it lets settled blocks skip
+  // re-parsing on every flush (see `MarkdownBlock`). The persisted / final
+  // answer never changes after mount, so it keeps rendering as one block,
+  // identical to the pre-split behavior.
+  const blocks = useMemo(
+    () => (isStreaming ? splitMarkdownBlocks(normalizedContent) : [normalizedContent]),
+    [isStreaming, normalizedContent],
   );
 
   return (
     <Box>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkCallouts]}
-        rehypePlugins={[rehypeRaw, [rehypeSanitize, SANITIZE_SCHEMA], rehypeKatex]}
-        components={components}
-      >
-        {normalizedContent}
-      </ReactMarkdown>
+      {blocks.map((block, i) => (
+        <MarkdownBlock
+          key={i}
+          source={block}
+          components={components}
+          citationMaps={citationMaps}
+        />
+      ))}
     </Box>
   );
-}
+});

@@ -240,11 +240,18 @@ class TestNotionPersonalPermissions:
         connector._sync_objects_by_type = AsyncMock(
             side_effect=lambda kind: calls.append(f"sync_{kind}")
         )
+        # This run_sync does not call super(), so the sweep is wired in separately here;
+        # without it the personal connector keeps accumulating UUID-named parent stubs.
+        connector._sweep_placeholder_records = AsyncMock(
+            side_effect=lambda: calls.append("sweep")
+        )
 
         with patch(_FILTERS, new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
             await connector.run_sync()
 
-        assert calls == ["ensure_group", "sync_users", "sync_data_source", "sync_page"]
+        assert calls == [
+            "ensure_group", "sync_users", "sync_data_source", "sync_page", "sweep",
+        ]
 
     @pytest.mark.asyncio
     async def test_run_sync_continues_without_creator_email(self):

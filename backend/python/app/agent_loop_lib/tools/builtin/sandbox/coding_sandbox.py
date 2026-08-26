@@ -75,6 +75,21 @@ _TYPESCRIPT_SIGNALS: tuple[re.Pattern, ...] = (
 _LANGUAGE_MISMATCH_MIN_SIGNALS = 2
 
 
+def _reuse_id(sandbox_id: str | None) -> str | None:
+    """Blank means "no sandbox", not "a sandbox named blank".
+
+    `sandbox_id` is optional, but models routinely fill an optional string
+    parameter with `""` instead of omitting it. Passing that through makes
+    the manager look up an id that can never exist, so a first-ever
+    `run_code` fails with `UnknownSandboxError` and the guidance text tells
+    the model to do what it already did.
+    """
+    if sandbox_id is None:
+        return None
+    stripped = sandbox_id.strip()
+    return stripped or None
+
+
 def unknown_sandbox_guidance(error: Exception) -> str:
     """Turn a bare `UnknownSandboxError` into something the model can act on.
 
@@ -405,6 +420,7 @@ class CodingSandboxTool(Tool):
         timeout: float | None = None,
         **kwargs: Any,
     ) -> ToolOutput:
+        sandbox_id = _reuse_id(sandbox_id)
         is_fresh_sandbox = sandbox_id is None
         _logger.info(
             "CodingSandboxTool.execute: language=%s packages=%s sandbox_id=%s "
@@ -537,6 +553,7 @@ class InstallPackagesTool(Tool):
         sandbox_id: str | None = None,
         **kwargs: Any,
     ) -> ToolOutput:
+        sandbox_id = _reuse_id(sandbox_id)
         is_fresh_sandbox = sandbox_id is None
         try:
             resolved_id, backend = await self._manager.get_or_create(SandboxType.CODING, sandbox_id)

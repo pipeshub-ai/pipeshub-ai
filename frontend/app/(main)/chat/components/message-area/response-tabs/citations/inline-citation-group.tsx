@@ -27,7 +27,7 @@ interface InlineCitationGroupProps {
  * shows the connector icon + filename once, followed by one compact numbered
  * circle per citation.
  */
-export function InlineCitationGroup({ items, callbacks }: InlineCitationGroupProps) {
+function InlineCitationGroupImpl({ items, callbacks }: InlineCitationGroupProps) {
   const [isHovered, setIsHovered] = useState(false);
 
   const first = items[0]?.citation;
@@ -95,3 +95,30 @@ export function InlineCitationGroup({ items, callbacks }: InlineCitationGroupPro
     </Flex>
   );
 }
+
+/** See `inlineCitationBadgePropsEqual` in `inline-citation-badge.tsx` for why
+ * this compares identity fields instead of relying on default reference
+ * equality — same rationale, applied per item in the group. */
+function inlineCitationGroupPropsEqual(
+  prev: InlineCitationGroupProps,
+  next: InlineCitationGroupProps,
+): boolean {
+  if (prev.callbacks !== next.callbacks) return false;
+  if (prev.items.length !== next.items.length) return false;
+  for (let i = 0; i < prev.items.length; i += 1) {
+    const a = prev.items[i];
+    const b = next.items[i];
+    if (
+      a.chunkIndex !== b.chunkIndex ||
+      a.occurrenceKey !== b.occurrenceKey ||
+      a.citation.citationId !== b.citation.citationId ||
+      a.citation.recordName !== b.citation.recordName ||
+      a.citation.webUrl !== b.citation.webUrl
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export const InlineCitationGroup = React.memo(InlineCitationGroupImpl, inlineCitationGroupPropsEqual);

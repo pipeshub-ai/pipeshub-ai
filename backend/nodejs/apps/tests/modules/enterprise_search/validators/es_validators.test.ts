@@ -1547,7 +1547,7 @@ describe('enterprise_search/validators/es_validators', () => {
           models: [
             {
               provider: 'openAI',
-              modelName: 'gpt-5.4',
+              modelName: 'gpt-5.6-terra',
               modelKey: '8c26d3bf-0e95-42f0-b81d-d65e9d1eecc0',
               isReasoning: true,
             },

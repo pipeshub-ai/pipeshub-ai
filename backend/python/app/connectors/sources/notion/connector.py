@@ -10,7 +10,7 @@ import mimetypes
 from collections import defaultdict
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, NoReturn, Optional, Tuple, Union
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
@@ -20,7 +20,13 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -86,6 +92,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.sources.client.notion.notion import NotionClient
 from app.sources.external.notion.notion import NotionDataSource
+from app.utils.concurrency import gather_with_concurrency
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
@@ -102,6 +109,27 @@ TOKEN_URL = "https://api.notion.com/v1/oauth/token"
 # permanent would drop the image for good; it needs a retry so the block is
 # re-read with a fresh URL.
 _PERMANENT_IMAGE_STATUSES = frozenset({404, 410, 415})
+
+# Notion answers 404 object_not_found both for "deleted" and for "not shared with this
+# integration" — the two are indistinguishable over the API, which is why a 404 never
+# deletes a record that already has content. It only stops us re-queueing it forever.
+_NOT_FOUND_STATUS = 404
+
+
+class _RecordGone:
+    """Sentinel: the source object is definitively unreachable (404).
+
+    Distinct from ``None``, which every caller already reads as "unchanged, reindex it".
+    Conflating the two is what re-published a reindex event for a 404 page on every pass.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "<RECORD_GONE>"
+
+
+RECORD_GONE = _RecordGone()
 
 
 class UnconvertibleImageError(Exception):
@@ -224,6 +252,10 @@ class NotionConnector(BaseConnector):
     MIN_PARTS_NEW_FORMAT = 2  # Minimum parts for ID format: {id}_{hash}
     # Notion API page size for users/search pagination (API max is 100).
     _SYNC_PAGE_SIZE = 20
+    # Above the connector's own rate_limit=3 the limiter just serializes them anyway.
+    _PLACEHOLDER_SWEEP_CONCURRENCY = 3
+    # Runaway backstop only — `visited` already guarantees termination.
+    _PLACEHOLDER_SWEEP_SAFETY_MAX = 10000
 
     def __init__(
         self,
@@ -365,6 +397,14 @@ class NotionConnector(BaseConnector):
             # along with all page attachments and comments
             await self._sync_objects_by_type("page")
 
+            # Step 4: Reconcile parent stubs the passes above left behind. Deliberately
+            # outside the raising path — a sweep failure must not fail a sync whose records
+            # all landed.
+            try:
+                await self._sweep_placeholder_records()
+            except Exception as e:
+                self.logger.error(f"Placeholder sweep failed: {e}", exc_info=True)
+
             self.logger.info("✅ Notion sync completed successfully")
 
         except Exception as e:
@@ -374,6 +414,236 @@ class NotionConnector(BaseConnector):
     async def run_incremental_sync(self) -> None:
         """Run incremental sync (delegates to full sync)."""
         await self.run_sync()
+
+    # ==================== Placeholder reconciliation ====================
+
+    # Which endpoint answers for a stub of each record type. A stub whose type is absent
+    # here (FILE, or a block id that leaked in) is left alone rather than guessed at.
+    _PLACEHOLDER_OBJECT_TYPES = {
+        RecordType.WEBPAGE: "page",
+        RecordType.DATASOURCE: "data_source",
+        RecordType.DATABASE: "database",
+    }
+
+    async def _fetch_placeholder_object(self, stub: Record) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """Resolve one stub against Notion. Returns (verdict, payload).
+
+        Verdicts: ``in_scope`` (payload set), ``gone``, ``unknown``. Only a real 404 or an
+        explicitly archived object is ``gone``; every other failure is ``unknown`` and the
+        stub is left for the next sync. Getting this wrong the other way would tear down
+        good hierarchy on a rate limit.
+        """
+        object_type = self._PLACEHOLDER_OBJECT_TYPES.get(stub.record_type)
+        if not object_type or not stub.external_record_id:
+            return "unknown", None
+
+        datasource = await self._get_fresh_datasource()
+        if object_type == "page":
+            response = await datasource.retrieve_page(stub.external_record_id)
+        elif object_type == "data_source":
+            response = await datasource.retrieve_data_source_by_id(stub.external_record_id)
+        else:
+            response = await datasource.retrieve_database(stub.external_record_id)
+
+        if self._is_definitive_not_found(response):
+            return "gone", None
+        if not response or not response.success or not response.data:
+            return "unknown", None
+
+        payload = response.data.json()
+        if not isinstance(payload, dict):
+            return "unknown", None
+        if payload.get("archived") or payload.get("in_trash"):
+            # Trashed objects still answer 200. Sync skips them (see _sync_objects_by_type),
+            # so they will never become real records — treat as gone. A restore bumps
+            # last_edited_time, so the object re-syncs and the link re-forms on its own.
+            return "gone", None
+        return "in_scope", payload
+
+    async def _detach_placeholder_children(self, stub: Record) -> int:
+        """Clear the dangling parent pointer on a stub's children, before deleting it.
+
+        Deleting the stub on its own is not enough: the record-group root listing selects
+        on the persisted ``externalParentId`` while child expansion walks edges, so a child
+        left pointing at a deleted parent is excluded from the root *and* has nothing to
+        expand from — it disappears from the browse tree entirely.
+
+        Writes the base node directly rather than going through ``on_new_records``: that
+        path gates its only upsert on a revision change, so the field write would be
+        silently dropped, and it would republish indexing events for these records.
+        """
+        children = await self.data_entities_processor.get_records_by_parent(
+            self.connector_id, stub.external_record_id
+        )
+        if not children:
+            return 0
+
+        nodes = []
+        for child in children:
+            child.parent_external_record_id = None
+            child.parent_record_type = None
+            nodes.append(child.to_arango_base_record())
+
+        async with self.data_store_provider.transaction() as tx_store:
+            # Base node only — batch_upsert_records would also rewrite the type doc, and
+            # these come back as base Records whose type payload is the wrong shape.
+            updated = await tx_store.batch_update_nodes(nodes, CollectionNames.RECORDS.value)
+
+        # The providers report a partial write by returning False, not by raising. Deleting
+        # the stub anyway would strand whichever children kept their now-dangling parent
+        # pointer — the exact orphaning this method exists to prevent — so refuse to let the
+        # caller proceed and leave the stub for the next sweep to retry.
+        if updated is not True:
+            raise RuntimeError(
+                f"detach of {len(children)} child record(s) from {stub.external_record_id} "
+                f"did not fully apply (batch_update_nodes returned {updated!r})"
+            )
+        return len(children)
+
+    async def _sweep_placeholder_records(self) -> None:
+        """Reconcile parent stubs left behind when a child synced but its parent did not.
+
+        Notion lets a user share individual nested pages, so "child in scope, parent out of
+        scope" is a permanent state, not a race — the framework's stub would otherwise wait
+        forever to be reconciled and stay visible as a raw UUID. Resolving each stub by id
+        also reaches parents the search pass cannot, since a fetch by id ignores the
+        last_edited_time watermark.
+
+        Runs at the tail of every sync; idempotent and keyed by external id, so an
+        interrupted sweep is finished by the next one.
+        """
+        try:
+            seeds = await self.data_entities_processor.get_placeholder_records(self.connector_id)
+        except Exception as e:
+            self.logger.error(f"Placeholder sweep: could not load placeholders: {e}", exc_info=True)
+            return
+
+        visited: set = set()
+        frontier: List[Record] = []
+        for stub in seeds:
+            if stub.external_record_id and stub.external_record_id not in visited:
+                visited.add(stub.external_record_id)
+                frontier.append(stub)
+
+        if not frontier:
+            return
+
+        self.logger.info(f"Placeholder sweep: {len(frontier)} stub(s) to reconcile")
+        promoted = detached = untouched = 0
+        total = 0
+
+        while frontier:
+            results = await gather_with_concurrency(
+                self._PLACEHOLDER_SWEEP_CONCURRENCY,
+                *[self._fetch_placeholder_object(stub) for stub in frontier],
+                return_exceptions=True,
+            )
+
+            next_frontier: List[Record] = []
+            for stub, result in zip(frontier, results):
+                if isinstance(result, BaseException):
+                    self.logger.warning(
+                        "Placeholder sweep: %s failed, leaving stub for next sync: %s",
+                        stub.external_record_id, result,
+                    )
+                    untouched += 1
+                    continue
+
+                verdict, payload = result
+                try:
+                    if verdict == "in_scope":
+                        parent_ref = await self._materialize_placeholder(stub, payload)
+                        promoted += 1
+                        if parent_ref and parent_ref not in visited:
+                            visited.add(parent_ref)
+                            parent_record = await self.data_entities_processor.get_record_by_external_id(
+                                self.connector_id, parent_ref
+                            )
+                            if parent_record is not None and parent_record.is_placeholder:
+                                next_frontier.append(parent_record)
+                    elif verdict == "gone":
+                        moved = await self._detach_placeholder_children(stub)
+                        await self.data_entities_processor.on_record_deleted(stub.id)
+                        detached += 1
+                        self.logger.info(
+                            "Placeholder sweep: %s is not reachable in Notion; removed the "
+                            "stub and moved %d child record(s) to the workspace root",
+                            stub.external_record_id, moved,
+                        )
+                    else:
+                        untouched += 1
+                except Exception as e:
+                    self.logger.error(
+                        "Placeholder sweep: failed to reconcile %s: %s",
+                        stub.external_record_id, e, exc_info=True,
+                    )
+                    untouched += 1
+
+            total += len(frontier)
+            if total > self._PLACEHOLDER_SWEEP_SAFETY_MAX:
+                self.logger.error(
+                    f"Placeholder sweep exceeded safety bound "
+                    f"({self._PLACEHOLDER_SWEEP_SAFETY_MAX}); aborting"
+                )
+                break
+            frontier = next_frontier
+
+        self.logger.info(
+            "Placeholder sweep done: %d promoted, %d removed, %d left for next sync",
+            promoted, detached, untouched,
+        )
+
+    async def _materialize_placeholder(
+        self, stub: Record, payload: Dict[str, Any]
+    ) -> Optional[str]:
+        """Turn a resolvable stub into the real record. Returns its own parent external id.
+
+        ``on_new_records`` promotes in place: the processor matches on external id, reuses
+        the stub's record id, and flips ``is_placeholder`` to False once a real record with
+        the same id is upserted.
+        """
+        object_type = self._PLACEHOLDER_OBJECT_TYPES.get(stub.record_type)
+        database_parent_id = None
+        database_parent_record_type = None
+        if object_type == "data_source":
+            parent = payload.get("parent", {}) or {}
+            if parent.get("type") == "database_id" and parent.get("database_id"):
+                # A failure here must not upsert with parent=None — that would clear the
+                # PARENT_CHILD edge — so leave the stub alone and retry next sync.
+                database_parent_id, database_parent_record_type = (
+                    await self._get_database_parent_ref(parent["database_id"])
+                )
+
+        record = await self._transform_to_webpage_record(
+            payload,
+            object_type,
+            database_parent_id=database_parent_id,
+            database_parent_record_type=database_parent_record_type,
+        )
+        if not record:
+            raise RuntimeError(f"could not transform {object_type} {stub.external_record_id}")
+
+        record.id = stub.id
+        record.record_group_id = stub.record_group_id
+        if not record.external_record_group_id:
+            record.external_record_group_id = stub.external_record_group_id or self.workspace_id
+        record.inherit_permissions = True
+
+        # Same gate the search pass applies (see _sync_objects_by_type). Without it the
+        # sweep is a way in for content the user filtered off: promoting a stub publishes a
+        # newRecord event and indexes a page whose type has indexing disabled.
+        indexing_enabled = self.indexing_filters.is_enabled(
+            IndexingFilterKey.PAGES if object_type == "page" else IndexingFilterKey.DATABASES
+        )
+        if not indexing_enabled:
+            record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+        await self.data_entities_processor.on_new_records([(record, [])])
+        self.logger.info(
+            "Placeholder sweep: resolved %s -> %r",
+            stub.external_record_id, record.record_name,
+        )
+        return record.parent_external_record_id
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
         """
@@ -650,16 +920,33 @@ class NotionConnector(BaseConnector):
 
             updated_records: List[Tuple[Record, List[Permission]]] = []
             non_updated_records: List[Record] = []
+            gone_count = 0
             for record in records:
                 try:
                     updated = await self._check_and_fetch_updated_record(record)
+                    if updated is RECORD_GONE:
+                        # Unreachable at source. Republishing would make the indexing
+                        # pipeline fetch it, 404, and store an empty document — on every
+                        # pass, forever. Keep the record; just stop re-queueing it.
+                        gone_count += 1
+                        continue
                     if updated:
                         updated_records.append(updated)
                     else:
                         non_updated_records.append(record)
                 except Exception as e:
+                    # Deliberately still reindexed. Only a definitive 404 suppresses a
+                    # record; an unrecognised failure here must not silently turn reindex
+                    # into a no-op for the whole connector.
                     self.logger.error("Error checking Notion record %s at source: %s", record.id, e,)
                     non_updated_records.append(record)
+
+            if gone_count:
+                self.logger.info(
+                    "Notion reindex: %d record(s) unreachable at source (404); "
+                    "kept in the graph, reindex skipped",
+                    gone_count,
+                )
 
             if updated_records:
                 await self.data_entities_processor.on_new_records(updated_records)
@@ -672,9 +959,24 @@ class NotionConnector(BaseConnector):
             self.logger.error(f"Error during Notion reindex: {e}", exc_info=True)
             raise
 
+    @staticmethod
+    def _is_definitive_not_found(response: Any) -> bool:
+        """True only for a real HTTP 404 — never for a transient failure.
+
+        ``NotionResponse`` keeps the ``HTTPResponse`` in ``.data`` on non-2xx, but the
+        generated wrappers' ``except`` branch returns ``data=None`` for transport errors,
+        so the status has to be read defensively. The ``isinstance`` check also matters:
+        test doubles build ``.data`` as a bare ``MagicMock``, whose auto-created ``status``
+        would otherwise sail through any comparison.
+        """
+        if response is None or getattr(response, "success", False):
+            return False
+        status = getattr(getattr(response, "data", None), "status", None)
+        return isinstance(status, int) and status == _NOT_FOUND_STATUS
+
     async def _check_and_fetch_updated_record(
         self, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> Optional[Union[Tuple[Record, List[Permission]], _RecordGone]]:
         if not record.external_record_id or record.record_type == RecordType.FILE:
             return None
 
@@ -691,21 +993,30 @@ class NotionConnector(BaseConnector):
         else:
             return None
 
+        if self._is_definitive_not_found(response):
+            return RECORD_GONE
+
         if not response or not response.success or not response.data:
             return None
 
         obj_data = response.data.json()
-        if not isinstance(obj_data, dict) or obj_data.get("archived") or obj_data.get("in_trash"):
+        if not isinstance(obj_data, dict):
             return None
+        if obj_data.get("archived") or obj_data.get("in_trash"):
+            return RECORD_GONE
 
         database_parent_id = None
+        database_parent_record_type = None
         if object_type == "data_source":
             parent = obj_data.get("parent", {})
             if parent.get("type") == "database_id":
                 database_id = parent.get("database_id")
                 if database_id:
                     try:
-                        database_parent_id = await self._get_database_parent_page_id(database_id)
+                        (
+                            database_parent_id,
+                            database_parent_record_type,
+                        ) = await self._get_database_parent_ref(database_id)
                     except Exception as e:
                         self.logger.error(
                             "Error fetching database parent for data source %s: %s. "
@@ -716,7 +1027,10 @@ class NotionConnector(BaseConnector):
                         return None
 
         updated = await self._transform_to_webpage_record(
-            obj_data, object_type, database_parent_id=database_parent_id
+            obj_data,
+            object_type,
+            database_parent_id=database_parent_id,
+            database_parent_record_type=database_parent_record_type,
         )
         if not updated or updated.external_revision_id == record.external_revision_id:
             return None
@@ -1108,13 +1422,20 @@ class NotionConnector(BaseConnector):
                         continue
 
                     # Delta sync check: if have a sync point, stop when records older than it is found
-                    # Since records are sorted in descending order, records are newest first
+                    # Since records are sorted in descending order, records are newest first.
+                    #
+                    # Strictly older, not "older or equal": Notion truncates last_edited_time to
+                    # the minute, and the checkpoint is the newest one we processed — so it always
+                    # sits exactly on a minute. Stopping on equality drops everything else written
+                    # during that minute, and drops it permanently, because the timestamp never
+                    # moves again. The cost of `<` is re-processing the records sharing the newest
+                    # minute; that upsert is a no-op when the revision is unchanged.
                     if last_sync_time and last_edited_time:
                         # Compare timestamps (ISO format strings)
-                        if last_edited_time <= last_sync_time:
+                        if last_edited_time < last_sync_time:
                             self.logger.info(
                                 f"Reached sync point threshold for {object_type}s. "
-                                f"Record {obj_id} has last_edited_time {last_edited_time} <= sync point {last_sync_time}. "
+                                f"Record {obj_id} has last_edited_time {last_edited_time} < sync point {last_sync_time}. "
                             )
                             should_stop = True
                             break
@@ -1123,13 +1444,17 @@ class NotionConnector(BaseConnector):
                     # upsert with parent=None (that clears PARENT_CHILD) and must abort the
                     # sync so the checkpoint is not advanced past this record.
                     database_parent_id = None
+                    database_parent_record_type = None
                     if object_type == "data_source":
                         parent = obj_data.get("parent", {})
                         if parent.get("type") == "database_id":
                             database_id = parent.get("database_id")
                             if database_id:
                                 try:
-                                    database_parent_id = await self._get_database_parent_page_id(database_id)
+                                    (
+                                        database_parent_id,
+                                        database_parent_record_type,
+                                    ) = await self._get_database_parent_ref(database_id)
                                     # None is valid when database parent is workspace
                                 except Exception as e:
                                     self.logger.error(
@@ -1142,7 +1467,8 @@ class NotionConnector(BaseConnector):
                     record = await self._transform_to_webpage_record(
                         obj_data,
                         object_type,
-                        database_parent_id=database_parent_id
+                        database_parent_id=database_parent_id,
+                        database_parent_record_type=database_parent_record_type,
                     )
 
                     if record:
@@ -3194,15 +3520,22 @@ class NotionConnector(BaseConnector):
             )
             return None, None
 
-    async def _get_database_parent_page_id(self, database_id: str) -> Optional[str]:
+    async def _get_database_parent_ref(
+        self, database_id: str
+    ) -> Tuple[Optional[str], Optional[RecordType]]:
         """
-        Fetch a database and return its parent ID (page_id, database_id, block_id, or data_source_id).
+        Fetch a database and return its parent as an (id, record_type) pair.
+
+        The type travels with the id because a database's parent is not always a page: it
+        can be another database or a data source. Callers used to assume WEBPAGE, which
+        minted parent stubs of the wrong type keyed by a database id.
 
         Args:
             database_id: Notion database ID
 
         Returns:
-            Parent ID if database has a parent, None when parent is workspace / absent.
+            (parent_id, parent_record_type), or (None, None) when the parent is the
+            workspace / absent.
 
         Raises:
             RuntimeError: If the database cannot be retrieved (API failure). Callers must not
@@ -3226,26 +3559,26 @@ class NotionConnector(BaseConnector):
         database_parent = database_data.get("parent", {}) or {}
         parent_type = database_parent.get("type")
         if parent_type == "page_id":
-            return database_parent.get("page_id")
+            return database_parent.get("page_id"), RecordType.WEBPAGE
         if parent_type == "database_id":
-            return database_parent.get("database_id")
+            return database_parent.get("database_id"), RecordType.DATABASE
         if parent_type == "block_id":
             block_id = database_parent.get("block_id")
             if block_id:
-                resolved_parent_id, _ = await self._resolve_block_parent_recursive(block_id)
-                return resolved_parent_id
-            return None
+                return await self._resolve_block_parent_recursive(block_id)
+            return None, None
         if parent_type == "data_source_id":
-            return database_parent.get("data_source_id")
+            return database_parent.get("data_source_id"), RecordType.DATASOURCE
 
         # parent_type is None or workspace
-        return None
+        return None, None
 
     async def _transform_to_webpage_record(
         self,
         obj_data: Dict[str, Any],
         object_type: str,
-        database_parent_id: Optional[str] = None
+        database_parent_id: Optional[str] = None,
+        database_parent_record_type: Optional[RecordType] = None,
     ) -> Optional[WebpageRecord]:
         """
         Unified transform for pages, databases, and data_sources to WebpageRecord.
@@ -3293,9 +3626,10 @@ class NotionConnector(BaseConnector):
                 # Data Source: use the database's parent ID if provided
                 if database_parent_id:
                     parent_id = database_parent_id
-                    # For datasources, parent is typically a page (WEBPAGE)
-                    # This allows _handle_parent_record to create a placeholder if parent doesn't exist yet
-                    parent_record_type = RecordType.WEBPAGE
+                    # The kind travels with the id: a database's parent can be a page,
+                    # another database, or a data source. Assuming WEBPAGE here minted
+                    # parent stubs of the wrong type keyed by a database id.
+                    parent_record_type = database_parent_record_type or RecordType.WEBPAGE
                 # When database_parent_id is None (e.g., database parent is workspace),
                 # parent_id and parent_record_type remain None - datasource connects only to record group
             else:
@@ -3861,8 +4195,17 @@ class NotionConnector(BaseConnector):
             return None
 
     def _get_current_iso_time(self) -> str:
-        """Get current time in ISO 8601 format with Z suffix (matching Notion format)."""
-        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        """Now, in the exact shape Notion emits: minute-truncated, millisecond-padded.
+
+        Used only to seed the delta checkpoint when a sync processes no records, and that
+        value is later string-compared against Notion's own ``last_edited_time``. Notion
+        truncates to the minute and always writes ``.000Z``, so a wall-clock timestamp with
+        real seconds compares as *newer* than anything edited in the same minute and skips
+        it for good. ``isoformat()`` also drops the fractional part entirely at exactly
+        zero microseconds, and ``'Z' > '.'``, which flips the comparison the other way —
+        hence the explicit format rather than a ``replace()``.
+        """
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:00.000Z")
 
     def _is_embed_platform_url(self, url: Optional[str]) -> bool:
         """

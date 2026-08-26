@@ -12,9 +12,10 @@ from app.utils.attachment_utils import (
     build_multimodal_content,
     ensure_attachment_blocks,
     inject_attachment_blocks,
-    resolve_attachments,
     resolve_attachment_blocks_simple,
+    resolve_attachments,
 )
+from app.utils.image_admission import ImageOrigin
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -23,6 +24,12 @@ from app.utils.attachment_utils import (
 _PNG_URI = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
     "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+# A second, byte-different image: several helpers need two attachments that
+# are genuinely two pictures rather than one sent twice.
+_OTHER_PNG_URI = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42m"
+    "P8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
 _LOGGER = logging.getLogger("test_attachment_utils")
 
@@ -417,8 +424,9 @@ class TestResolveAttachments:
         att = {"mimeType": "application/pdf", "recordName": "doc.pdf", "virtualRecordId": "vrid1"}
         captured: dict = {}
 
-        def fake_rtc(record, ref_mapper=None, is_multimodal_llm=False, image_budget=None):
+        def fake_rtc(record, ref_mapper=None, **kwargs):
             captured["ref_mapper"] = ref_mapper
+            captured.update(kwargs)
             return ([{"type": "text", "text": "ok"}], ref_mapper)
 
         with patch(
@@ -429,6 +437,9 @@ class TestResolveAttachments:
                 [att], blob, "org1", False, logger, ref_mapper=mapper
             )
         assert captured.get("ref_mapper") is mapper
+        # Attachments must be tagged as such: origin is what keeps a user's
+        # own upload ahead of retrieved images when slots are scarce.
+        assert captured.get("image_origin") is ImageOrigin.ATTACHMENT
         assert result == [{"type": "text", "text": "ok"}]
 
     async def test_pdf_out_records_populated(self, logger):
@@ -498,7 +509,11 @@ class TestResolveAttachments:
 
     async def test_multiple_attachments_processed(self, logger):
         blob = AsyncMock()
-        blob.get_record_from_storage.return_value = _make_image_record(_PNG_URI)
+        # Distinct bytes per record: two attachments carrying the SAME image
+        # are one picture, and admission collapses them by design.
+        blob.get_record_from_storage.side_effect = [
+            _make_image_record(_PNG_URI), _make_image_record(_OTHER_PNG_URI),
+        ]
         atts = [
             {"mimeType": "image/png", "recordName": "a.png", "virtualRecordId": "v1"},
             {"mimeType": "image/png", "recordName": "b.png", "virtualRecordId": "v2"},
@@ -506,6 +521,19 @@ class TestResolveAttachments:
         result = await resolve_attachments(atts, blob, "org1", True, logger)
         image_blocks = [b for b in result if b.get("type") == "image_url"]
         assert len(image_blocks) == 2
+
+    async def test_the_same_image_attached_twice_is_sent_once(self, logger):
+        """Two attachments, one picture: sending it twice spends a slot the
+        model's cap counts, evicting an image it has not seen."""
+        blob = AsyncMock()
+        blob.get_record_from_storage.return_value = _make_image_record(_PNG_URI)
+        atts = [
+            {"mimeType": "image/png", "recordName": "a.png", "virtualRecordId": "v1"},
+            {"mimeType": "image/png", "recordName": "copy.png", "virtualRecordId": "v2"},
+        ]
+        result = await resolve_attachments(atts, blob, "org1", True, logger)
+
+        assert len([b for b in result if b.get("type") == "image_url"]) == 1
 
     async def test_image_with_no_image_blocks_in_record(self, logger):
         """When record_to_message_content returns empty content and there are no

@@ -1220,6 +1220,8 @@
       "configUpdateModel": "मॉडल अपडेट करें",
       "configFillRequiredTooltip": "सभी आवश्यक फ़ील्ड भरें",
       "configSaveErrorFallback": "मॉडल कॉन्फ़िगरेशन सहेजा नहीं जा सका",
+      "configSaveOutboundError": "PipesHub कंटेनर से इस मॉडल प्रदाता तक नहीं पहुँच सकता। क्लाउड प्रदाताओं के लिए आउटबाउंड इंटरनेट आवश्यक है — देखें deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
+      "configSaveTimeoutError": "मॉडल सत्यापित करते समय अनुरोध का समय समाप्त हो गया। क्लाउड प्रदाताओं के लिए PipesHub कंटेनर से आउटबाउंड इंटरनेट आवश्यक है — देखें deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
       "configNoConfigRequired": "इस प्रदाता के लिए कोई कॉन्फ़िगरेशन आवश्यक नहीं।",
       "configDefaultModelNotice": "\"{{modelName}}\" सिस्टम द्वारा डिफ़ॉल्ट रूप से उपयोग किया जाएगा।",
       "configSectionModelConfiguration": "मॉडल कॉन्फ़िगरेशन",

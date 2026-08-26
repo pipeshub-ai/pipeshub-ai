@@ -2872,8 +2872,8 @@ describe('ConfigurationManager Controller', () => {
     })
 
     it('should prefer modelFriendlyName over configuration.model in the 409 message', async () => {
-      // User card shows "gpt" (friendly), even though the technical model is "gpt-5.4-mini".
-      // The 409 must show "gpt", not "gpt-5.4-mini".
+      // User card shows "gpt" (friendly), even though the technical model is "gpt-5.6-luna".
+      // The 409 must show "gpt", not "gpt-5.6-luna".
       const aiModels = {
         llm: [
           {
@@ -2881,7 +2881,7 @@ describe('ConfigurationManager Controller', () => {
             isDefault: false,
             provider: 'azureOpenAI',
             modelFriendlyName: 'gpt',
-            configuration: { model: 'gpt-5.4-mini' },
+            configuration: { model: 'gpt-5.6-luna' },
           },
         ],
       }
@@ -2902,7 +2902,7 @@ describe('ConfigurationManager Controller', () => {
 
       const err = next.firstCall.args[0]
       expect(err.message).to.include("'gpt'")
-      expect(err.message).to.not.include('gpt-5.4-mini')
+      expect(err.message).to.not.include('gpt-5.6-luna')
       expect(err.message).to.include("'jira-agent-2'")
     })
 

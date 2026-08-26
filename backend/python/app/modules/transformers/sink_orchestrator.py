@@ -13,6 +13,7 @@ from app.models.blocks import (
 )
 from app.models.entities import Record, RecordGroupType
 from app.modules.transformers.blob_storage import BlobStorage
+from app.modules.transformers.image_description import ImageDescriber, harvest_descriptions
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.modules.transformers.vectorstore import VectorStore
@@ -32,6 +33,10 @@ class SinkOrchestrator(Transformer):
         self.vector_store = vector_store
         self.graph_provider = graph_provider
         self.logger = logger
+        # Runs before the blob write below, which is the only reason it lives
+        # here: a description generated later would never reach the stored
+        # record, and the stored record is what `fetch_record` serves.
+        self.image_describer = ImageDescriber(logger, vector_store.config_service)
 
     # This is not a good long-term solution and should be improved in the future.
     LIMIT_SQL_ROW_BLOCKS_TO = 10
@@ -135,6 +140,8 @@ class SinkOrchestrator(Transformer):
                     full_block_containers, self.LIMIT_SQL_ROW_BLOCKS_TO
                 )
 
+            await self._describe_images(ctx)
+
             try:
                 await self.blob_storage.apply(ctx)
             finally:
@@ -192,6 +199,42 @@ class SinkOrchestrator(Transformer):
             await self._update_indexing_status(ctx)
             # await self.graphdb.apply(ctx)
             await self._save_reconciliation_metadata(ctx)
+
+    # A record with a handful of images is cheaper to describe outright than
+    # to fetch its previous version for; past this many, the fetch pays for
+    # itself several times over.
+    _INHERIT_DESCRIPTIONS_THRESHOLD = 5
+
+    async def _describe_images(self, ctx: TransformContext) -> None:
+        """Annotate image blocks with prose before the record is stored.
+
+        Text is the only representation of an image that always reaches the
+        model -- see `ImageDescriber`. Failure-isolated: an undescribed record
+        still indexes.
+        """
+        record = ctx.record
+        containers = record.block_containers
+        if not containers or not containers.blocks:
+            return
+        image_count = sum(1 for b in containers.blocks if b.type == BlockType.IMAGE)
+        if not image_count:
+            return
+
+        inherited: dict[str, str] = {}
+        if image_count >= self._INHERIT_DESCRIPTIONS_THRESHOLD and record.virtual_record_id:
+            try:
+                previous = await self.blob_storage.get_record_from_storage(
+                    virtual_record_id=record.virtual_record_id, org_id=record.org_id,
+                )
+                inherited = harvest_descriptions(previous)
+            except Exception:
+                # A missing or unreadable previous version just means paying
+                # for the descriptions again, not failing the record.
+                self.logger.debug(
+                    "No previous version to inherit image descriptions from", exc_info=True,
+                )
+
+        await self.image_describer.annotate(containers, inherited=inherited)
 
     async def _update_indexing_status(self, ctx: TransformContext) -> None:
         """Mark indexingStatus=COMPLETED without touching extractionStatus."""

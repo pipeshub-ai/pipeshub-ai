@@ -59,7 +59,7 @@ _OPENROUTER_TTS_FORMAT = AIModelField(
     .with_color("#6366F1") \
     .popular() \
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \
-    .add_field(model_field("e.g., anthropic/claude-sonnet-4, openai/gpt-4o"), ModelCapability.TEXT_GENERATION) \
+    .add_field(model_field("e.g., anthropic/claude-sonnet-5, openai/gpt-5.6-luna"), ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[0], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \

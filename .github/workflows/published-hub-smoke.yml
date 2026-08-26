@@ -1,0 +1,100 @@
+name: Published Hub first-run
+
+# Pair this checkout's compose + installer with the Hub image users actually
+# pull. Integration tests build from source and cannot catch that mismatch.
+#
+# pull_request: slim only (default curl | bash path).
+# schedule + workflow_dispatch: slim and full (Hub :latest + Kafka) in parallel.
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'deployment/docker-compose/docker-compose.yml'
+      - 'deployment/docker-compose/install.sh'
+      - 'deployment/docker-compose/env.template'
+      - 'deployment/docker-compose/tests/published_hub_smoke.sh'
+      - 'install.sh'
+      - '.github/workflows/published-hub-smoke.yml'
+  schedule:
+    # Hub images can drift from main compose with no PR. Monday 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      profiles:
+        description: 'Which published first-run path to smoke'
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - slim
+          - full
+
+permissions:
+  contents: read
+
+concurrency:
+  group: published-hub-smoke-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  slim:
+    name: slim (Hub slim)
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      && (github.event_name != 'workflow_dispatch' || github.event.inputs.profiles != 'full')
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    timeout-minutes: 40
+    env:
+      PIPESHUB_DEPLOY_TYPE: slim
+      PIPESHUB_VERSION: slim
+      PIPESHUB_SMOKE_PORT: 3997
+      PUBLISHED_HUB_SMOKE_DIAG: ${{ github.workspace }}/published-hub-smoke-diag
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: First-run smoke
+        run: bash deployment/docker-compose/tests/published_hub_smoke.sh
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-hub-smoke-slim
+          path: published-hub-smoke-diag/
+          if-no-files-found: ignore
+
+  full:
+    name: full (Hub latest)
+    if: >-
+      github.event_name != 'pull_request'
+      && (github.event_name != 'workflow_dispatch' || github.event.inputs.profiles != 'slim')
+    # 4 CPU is the installer floor. Full adds Kafka + Zookeeper on the same
+    # size; if this job flakes on RAM, raise the runner before the timeout.
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    timeout-minutes: 50
+    env:
+      PIPESHUB_DEPLOY_TYPE: full
+      PIPESHUB_VERSION: latest
+      PIPESHUB_SMOKE_PORT: 3998
+      PUBLISHED_HUB_SMOKE_DIAG: ${{ github.workspace }}/published-hub-smoke-diag
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: First-run smoke
+        run: bash deployment/docker-compose/tests/published_hub_smoke.sh
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-hub-smoke-full
+          path: published-hub-smoke-diag/
+          if-no-files-found: ignore
