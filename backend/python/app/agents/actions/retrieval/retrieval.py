@@ -16,9 +16,13 @@ from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
-from app.agents.actions.util.tool_summaries import as_text, bullet_list, parse_json_maybe
-from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope
+from app.agents.actions.util.tool_summaries import (
+    as_text,
+    bullet_list,
+    parse_json_maybe,
+)
+from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.models.entities import RecordType
 from app.modules.agents.context.source_catalog import SourceCatalog
@@ -33,6 +37,7 @@ from app.utils.chat_helpers import (
     get_record_id_shortener_if_enabled,
     image_dict_to_part,
 )
+from app.utils.image_admission import admission_from_state
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.messages import Part
@@ -672,6 +677,7 @@ class Retrieval:
                 record_id_shortener=record_id_shortener,
                 collected_images=collected_images,
                 image_budget=image_budget,
+                image_admission=admission_from_state(self.state),
             )
             self.state["citation_ref_mapper"] = ref_mapper
 

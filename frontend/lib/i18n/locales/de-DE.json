@@ -1257,7 +1257,7 @@
         "sectionTitle": "Modell-Rollenzuweisungen",
         "sectionDescription": "Weisen Sie bestimmten Aufgaben dedizierte Modelle zu. Wenn keine Zuweisung erfolgt, wird das Standardmodell verwendet.",
         "onboardingTitle": "Wie werden Ihre Modelle eingesetzt?",
-        "onboardingTip": "Verwenden Sie ein kleines, kostengünstiges Modell (z. B. gpt-5.4-mini, gemini-2.5-flash) für Indizierungsaufgaben wie Zusammenfassung und Klassifizierung. Behalten Sie Ihr leistungsstärkstes Modell (z. B. gpt-5.5, claude-sonnet) für Abfragen und Agenten, wo Reasoning-Qualität am meisten zählt.",
+        "onboardingTip": "Verwenden Sie ein kleines, kostengünstiges Modell (z. B. gpt-5.6-luna, gemini-2.5-flash) für Indizierungsaufgaben wie Zusammenfassung und Klassifizierung. Behalten Sie Ihr leistungsstärkstes Modell (z. B. gpt-5.6-terra, claude-sonnet) für Abfragen und Agenten, wo Reasoning-Qualität am meisten zählt.",
         "queryRole": "Abfrage & Chat",
         "queryRoleSubtitle": "Suche, Agenten & Konversationen",
         "queryRoleDescription": "Beantwortet Suchanfragen, Fragen und KI-Agentenantworten. Verwenden Sie hier Ihr leistungsfähigstes Modell.",

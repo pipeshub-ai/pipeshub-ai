@@ -24,6 +24,7 @@ from app.agent_loop_lib.core.messages import (
 )
 from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agents.agent_loop.converters import (
+    _RELOCATED_IMAGES_PREFIX,
     _clamp_tool_call_id,
     convert_assistant_message_from_langchain,
     convert_message_from_langchain,
@@ -32,6 +33,7 @@ from app.agents.agent_loop.converters import (
     convert_tool_call_from_langchain,
     convert_tool_schema_to_langchain_dict,
     convert_tool_schemas_to_langchain,
+    has_tool_result_images,
     output_schema_to_pydantic_model,
     token_usage_from_ai_message,
 )
@@ -192,6 +194,49 @@ class TestMessageToLangchain:
         )
         converted = convert_messages_to_langchain([msg], strip_tool_images=True)
         assert isinstance(converted[0].content, str)
+
+    def test_relocate_tool_images_moves_images_to_a_trailing_user_message(self) -> None:
+        """The runtime recovery path (a provider that rejected an image
+        inside a tool result) must strip the tool message like the Ollama
+        fallback does AND re-attach the images to a user message — dropping
+        them would leave the retry answering about an image it never saw."""
+        messages = [
+            UserMessage(content="what is in the screenshot?"),
+            ToolMessage(
+                content=[
+                    TextPart(text="[ref1] (image)"),
+                    ImagePart(source=ImageSource(type="url", data="https://x/y.png")),
+                ],
+                tool_call_id="tc1",
+            ),
+        ]
+        converted = convert_messages_to_langchain(messages, relocate_tool_images=True)
+
+        assert isinstance(converted[1], LCToolMessage)
+        assert converted[1].content == "[ref1] (image)"
+        assert isinstance(converted[-1], HumanMessage)
+        assert converted[-1].content == [
+            {"type": "text", "text": _RELOCATED_IMAGES_PREFIX},
+            {"type": "image_url", "image_url": {"url": "https://x/y.png"}},
+        ]
+
+    def test_relocate_tool_images_adds_no_message_when_there_are_no_images(self) -> None:
+        messages = [
+            UserMessage(content="hi"),
+            ToolMessage(content=[TextPart(text="text only")], tool_call_id="tc1"),
+        ]
+        converted = convert_messages_to_langchain(messages, relocate_tool_images=True)
+        assert len(converted) == 2
+
+    def test_has_tool_result_images(self) -> None:
+        image = ImagePart(source=ImageSource(type="url", data="https://x/y.png"))
+        assert has_tool_result_images(
+            [ToolMessage(content=[TextPart(text="t"), image], tool_call_id="tc1")]
+        ) is True
+        assert has_tool_result_images(
+            [ToolMessage(content=[TextPart(text="t")], tool_call_id="tc1")]
+        ) is False
+        assert has_tool_result_images([UserMessage(content=[image])]) is False
 
     def test_plain_string_tool_message_still_serializes_as_string(self) -> None:
         """Backward compatibility: the overwhelmingly common str-content

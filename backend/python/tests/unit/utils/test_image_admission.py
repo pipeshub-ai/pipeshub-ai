@@ -1,0 +1,277 @@
+"""`app/utils/image_admission.py` — which images get pixels, and which degrade
+to text.
+
+The invariant every renderer depends on is that nothing vanishes: `admit()`
+returns every candidate, either admitted or degraded with a reason.
+"""
+
+from __future__ import annotations
+
+import base64
+import io
+
+import pytest
+
+from app.utils.image_admission import (
+    MAX_IMAGES_IN_CONVERSATION,
+    DegradeReason,
+    ImageAdmission,
+    ImageBudget,
+    ImageCandidate,
+    ImageOrigin,
+    admission_from_state,
+)
+from app.utils.image_policy import permissive_policy, resolve_image_policy
+
+_PNG_1PX = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+
+def _uri(seed: int) -> str:
+    """A distinct data URI per seed, so candidates hash differently."""
+    return f"{_PNG_1PX}#{seed}"
+
+
+def _candidate(
+    seed: int = 0,
+    *,
+    origin: ImageOrigin = ImageOrigin.SEARCH_HIT,
+    width: int | None = 800,
+    height: int | None = 600,
+    relevance: float = 0.0,
+    data_uri: str | None = None,
+    block_index: int | None = None,
+) -> ImageCandidate:
+    return ImageCandidate(
+        ref=f"ref{seed}",
+        data_uri=data_uri if data_uri is not None else _uri(seed),
+        origin=origin,
+        relevance=relevance,
+        block_index=seed if block_index is None else block_index,
+        width=width,
+        height=height,
+    )
+
+
+def _admission(max_images: int = 10, budget: ImageBudget | None = None) -> ImageAdmission:
+    return ImageAdmission(permissive_policy(max_images), budget=budget)
+
+
+class TestNothingVanishes:
+    def test_every_candidate_comes_back_admitted_or_degraded(self) -> None:
+        candidates = [_candidate(i) for i in range(25)]
+        result = _admission(max_images=8).admit(candidates)
+        assert result.total == len(candidates)
+        assert len(result.admitted) == 8
+        assert {c.ref for c in result.admitted} | {
+            d.candidate.ref for d in result.degraded
+        } == {c.ref for c in candidates}
+
+    def test_text_only_model_degrades_everything_with_that_reason(self) -> None:
+        admission = ImageAdmission(resolve_image_policy(provider="openAI", is_multimodal=False))
+        result = admission.admit([_candidate(0), _candidate(1)])
+        assert not result.admitted
+        assert all(d.reason is DegradeReason.TEXT_ONLY_MODEL for d in result.degraded)
+
+    def test_empty_input_is_not_an_error(self) -> None:
+        assert _admission().admit([]).total == 0
+
+
+class TestCaps:
+    def test_admits_no_more_than_the_model_accepts(self) -> None:
+        admission = ImageAdmission(resolve_image_policy(provider="ollama", is_multimodal=True))
+        result = admission.admit([_candidate(i) for i in range(5)])
+        assert len(result.admitted) == 1
+        assert all(d.reason is DegradeReason.OVER_REQUEST_CAP for d in result.degraded)
+
+    def test_conversation_ceiling_binds_when_it_is_tighter(self) -> None:
+        budget = ImageBudget(max_images=2)
+        admission = _admission(max_images=10, budget=budget)
+        result = admission.admit([_candidate(i) for i in range(4)])
+        assert len(result.admitted) == 2
+        assert {d.reason for d in result.degraded} == {DegradeReason.OVER_CONVERSATION_CAP}
+
+    def test_cap_applies_across_separate_calls(self) -> None:
+        """Slots are per request, not per render: a second tool call cannot
+        start the allowance over."""
+        admission = _admission(max_images=3)
+        first = admission.admit([_candidate(i) for i in range(2)])
+        second = admission.admit([_candidate(i) for i in range(10, 14)])
+        assert len(first.admitted) == 2
+        assert len(second.admitted) == 1
+
+    def test_exhausted_budget_reports_capacity_not_size(self) -> None:
+        """With no slots left there is nothing to choose between, so the
+        reason must name the ceiling rather than the image."""
+        budget = ImageBudget(max_images=1)
+        budget.try_consume(1)
+        result = _admission(budget=budget).admit([_candidate(0, width=10, height=10)])
+        assert [d.reason for d in result.degraded] == [DegradeReason.OVER_CONVERSATION_CAP]
+
+
+class TestPrefilter:
+    def test_icons_rules_and_thumbnails_lose_to_real_figures(self) -> None:
+        figures = [_candidate(i, width=1200, height=900) for i in range(3)]
+        junk = [
+            _candidate(10, width=32, height=32),      # icon
+            _candidate(11, width=1200, height=40),    # divider
+            _candidate(12, width=60, height=200),     # narrow strip
+        ]
+        result = _admission(max_images=3).admit(junk + figures)
+        assert {c.ref for c in result.admitted} == {c.ref for c in figures}
+        assert {d.reason for d in result.degraded} <= {
+            DegradeReason.TOO_SMALL, DegradeReason.DECORATIVE,
+        }
+
+    def test_prefilter_does_not_run_when_everything_fits(self) -> None:
+        """A record whose one image is a small diagram must still be sent --
+        the filter exists to stop crowding, and nothing is crowded here."""
+        result = _admission(max_images=8).admit([_candidate(0, width=40, height=40)])
+        assert len(result.admitted) == 1
+
+    def test_unmeasured_images_are_never_filtered_out(self) -> None:
+        """Most images arrive unmeasured; dropping them on a size rule would
+        lose real figures with no trace."""
+        unmeasured = [_candidate(i, width=None, height=None) for i in range(4)]
+        result = _admission(max_images=2).admit(unmeasured)
+        assert len(result.admitted) == 2
+        assert all(d.reason is DegradeReason.OVER_REQUEST_CAP for d in result.degraded)
+
+    def test_a_users_own_small_attachment_is_never_filtered(self) -> None:
+        """Someone who uploads a 40x40 image is asking about that image."""
+        attachment = _candidate(0, origin=ImageOrigin.ATTACHMENT, width=40, height=40)
+        crowd = [_candidate(i, width=1200, height=900) for i in range(1, 6)]
+        result = _admission(max_images=3).admit([*crowd, attachment])
+        assert attachment.ref in {c.ref for c in result.admitted}
+
+
+class TestDeduplication:
+    def test_the_same_image_twice_costs_one_slot(self) -> None:
+        same = _uri(1)
+        result = _admission(max_images=8).admit([
+            _candidate(0, data_uri=same), _candidate(1, data_uri=same),
+        ])
+        assert len(result.admitted) == 1
+        assert [d.reason for d in result.degraded] == [DegradeReason.DUPLICATE]
+
+    def test_a_repeated_logo_cannot_starve_the_figures(self) -> None:
+        logo = _uri(99)
+        candidates = [_candidate(i, data_uri=logo, width=300, height=300) for i in range(20)]
+        candidates += [_candidate(50 + i, width=1600, height=1200) for i in range(3)]
+        result = _admission(max_images=4).admit(candidates)
+        assert sum(c.data_uri == logo for c in result.admitted) == 1
+        assert len(result.admitted) == 4
+
+    def test_re_admitting_an_image_is_free_and_stable(self) -> None:
+        """Re-fetching a record must not spend a second slot, and must keep
+        showing the model the same image -- reshuffling it every turn would
+        invalidate the provider's prompt cache."""
+        admission = _admission(max_images=2)
+        first = admission.admit([_candidate(0)])
+        assert len(first.admitted) == 1
+        assert admission.budget.used == 1
+
+        again = admission.admit([_candidate(0)])
+        assert len(again.admitted) == 1
+        assert admission.budget.used == 1, "no second charge for the same image"
+
+
+class TestRanking:
+    def test_origin_outranks_relevance_and_size(self) -> None:
+        attachment = _candidate(0, origin=ImageOrigin.ATTACHMENT, width=100, height=100)
+        search_hit = _candidate(1, origin=ImageOrigin.SEARCH_HIT, width=4000, height=3000, relevance=0.99)
+        result = _admission(max_images=1).admit([search_hit, attachment])
+        assert [c.ref for c in result.admitted] == [attachment.ref]
+
+    def test_relevance_decides_between_peers(self) -> None:
+        low = _candidate(0, relevance=0.1, width=2000, height=2000)
+        high = _candidate(1, relevance=0.9, width=800, height=600)
+        result = _admission(max_images=1).admit([low, high])
+        assert [c.ref for c in result.admitted] == [high.ref]
+
+    def test_size_breaks_ties_between_equally_relevant_images(self) -> None:
+        small = _candidate(0, width=200, height=200)
+        large = _candidate(1, width=1600, height=1200)
+        result = _admission(max_images=1).admit([small, large])
+        assert [c.ref for c in result.admitted] == [large.ref]
+
+    def test_selection_is_deterministic_for_identical_keys(self) -> None:
+        candidates = [_candidate(i, width=800, height=600) for i in range(6)]
+        first = _admission(max_images=3).admit(candidates)
+        second = _admission(max_images=3).admit(candidates)
+        assert [c.ref for c in first.admitted] == [c.ref for c in second.admitted]
+
+    def test_admitted_images_come_back_in_document_order(self) -> None:
+        """Ranking decides membership; presentation follows the record, so
+        refs and reading order still line up."""
+        candidates = [
+            _candidate(5, relevance=0.9, block_index=5),
+            _candidate(1, relevance=0.5, block_index=1),
+            _candidate(3, relevance=0.7, block_index=3),
+        ]
+        result = _admission(max_images=3).admit(candidates)
+        assert [c.block_index for c in result.admitted] == [1, 3, 5]
+
+
+class TestNormalization:
+    @staticmethod
+    def _png(width: int, height: int) -> str:
+        pillow = pytest.importorskip("PIL.Image")
+        buffer = io.BytesIO()
+        pillow.new("RGB", (width, height), (10, 90, 160)).save(buffer, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
+
+    def test_an_oversized_admitted_image_is_downscaled(self) -> None:
+        oversized = self._png(3000, 2000)
+        admission = ImageAdmission(resolve_image_policy(provider="anthropic", is_multimodal=True))
+        admitted = admission.admit([
+            _candidate(0, data_uri=oversized, width=3000, height=2000),
+        ]).admitted[0]
+        assert admitted.data_uri != oversized
+        assert len(admitted.data_uri) < len(oversized)
+
+    def test_an_image_within_limits_is_left_alone(self) -> None:
+        fine = self._png(600, 400)
+        admission = ImageAdmission(resolve_image_policy(provider="anthropic", is_multimodal=True))
+        admitted = admission.admit([
+            _candidate(0, data_uri=fine, width=600, height=400),
+        ]).admitted[0]
+        assert admitted.data_uri == fine
+
+    def test_a_degraded_image_is_never_re_encoded(self) -> None:
+        """Normalization is for pixels that are actually being sent."""
+        oversized = self._png(3000, 2000)
+        result = _admission(max_images=0).admit([
+            _candidate(0, data_uri=oversized, width=3000, height=2000),
+        ])
+        assert result.degraded[0].candidate.data_uri == oversized
+
+
+class TestAdmissionFromState:
+    def test_returns_the_seeded_arbiter(self) -> None:
+        seeded = _admission(max_images=3)
+        state = {"image_admission": seeded, "image_budget": seeded.budget}
+        assert admission_from_state(state) is seeded
+
+    def test_builds_a_permissive_one_for_state_that_predates_it(self) -> None:
+        budget = ImageBudget()
+        admission = admission_from_state({"image_budget": budget})
+        assert admission.budget is budget
+        assert admission.policy.max_images_per_request == MAX_IMAGES_IN_CONVERSATION
+
+    def test_missing_state_still_yields_a_working_arbiter(self) -> None:
+        assert admission_from_state(None).allows_images
+
+    def test_a_replaced_budget_in_state_wins(self) -> None:
+        """The state's budget is authoritative: an entry point that swaps it
+        must not leave the arbiter counting against an orphan."""
+        seeded = _admission(max_images=5)
+        replacement = ImageBudget(max_images=1)
+        replacement.try_consume(1)
+        admission = admission_from_state(
+            {"image_admission": seeded, "image_budget": replacement},
+        )
+        assert admission.budget is replacement
+        assert not admission.admit([_candidate(0)]).admitted

@@ -144,7 +144,10 @@ from app.agents.agent_loop.loops.orchestrator import (
     install_phase_gate,
     register_coordination_tools,
 )
-from app.agents.agent_loop.loops.plan_execute import PLANNING_TOOL_NAMES, register_planning_tools
+from app.agents.agent_loop.loops.plan_execute import (
+    PLANNING_TOOL_NAMES,
+    register_planning_tools,
+)
 from app.agents.agent_loop.mcp_tool_loader import MCPToolProvider
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
@@ -168,6 +171,7 @@ from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
 from app.agents.mcp.service import is_mcp_enabled
+from app.utils.image_policy import resolve_image_policy
 
 
 def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:
@@ -291,6 +295,12 @@ class PipesHubAgentFactory:
         # (`utils/streaming.py`).
         opik_active = resolve_opik_gate(True)
         opik_project_name = os.getenv("OPIK_PROJECT_NAME")
+        # Enforced again at the wire because the count admitted at the source
+        # was decided for whichever model owned that tool state -- a sub-agent
+        # on a smaller model shares it. See `image_guard`.
+        image_cap = resolve_image_policy(
+            provider=context.llm_provider, is_multimodal=context.is_multimodal_llm,
+        ).max_images_per_request
 
         transport_registry = TransportRegistry()
         transport_registry.register(
@@ -298,6 +308,7 @@ class PipesHubAgentFactory:
             traced_transport_factory(
                 lambda: LangChainTransport(
                     llm, model_name=model_name, opik_project_name=opik_project_name, model_key=model_key,
+                    max_images_per_request=image_cap,
                 ),
                 opik_active=opik_active,
                 project_name=opik_project_name,
@@ -875,12 +886,13 @@ class PipesHubAgentFactory:
         # interactions or future shapers that don't use safe_tail_boundary.
         hooks.on(HookEvent.PRE_MODEL).use(shape_image_injection(context))     # L0
         if not supports_multipart_tool_result:
-            # Ollama's transport (see `LangChainTransport`/`converters.py`)
-            # strips images out of every ToolMessage before it reaches the
-            # provider — this is the fallback that gets them to the model
+            # Providers that reject images inside a tool result (Ollama,
+            # OpenAI-family models on Chat Completions — see
+            # `_supports_multipart_tool_result`) have them stripped before the
+            # request leaves; this is the fallback that gets them to the model
             # anyway, via the same UserMessage-injection mechanism as L0.
             # Only registered for providers that actually need it so
-            # OpenAI/Anthropic never see an image delivered twice.
+            # Anthropic/Gemini never see an image delivered twice.
             hooks.on(HookEvent.PRE_MODEL).use(shape_retrieved_image_injection(context))  # L0.1
         hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction())           # L1
         hooks.on(HookEvent.PRE_MODEL).use(shape_artifact_compaction(          # L2
@@ -997,6 +1009,7 @@ class PipesHubAgentFactory:
 
         is_multimodal = context.is_multimodal_llm
         from app.utils.chat_helpers import ImageBudget  # noqa: PLC0415
+        from app.utils.image_admission import admission_from_state  # noqa: PLC0415
         image_budget: ImageBudget = state.setdefault("image_budget", ImageBudget())
 
         ctx = ContextManager()
@@ -1014,6 +1027,7 @@ class PipesHubAgentFactory:
                         attachments, blob_store, org_id, ref_mapper, vrmap,
                         is_multimodal_llm=is_multimodal,
                         image_budget=image_budget,
+                        image_admission=admission_from_state(state),
                     )
                     msg = messages[0]
                     if extra_text:

@@ -12,9 +12,10 @@ from app.utils.attachment_utils import (
     build_multimodal_content,
     ensure_attachment_blocks,
     inject_attachment_blocks,
-    resolve_attachments,
     resolve_attachment_blocks_simple,
+    resolve_attachments,
 )
+from app.utils.image_admission import ImageOrigin
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -417,8 +418,9 @@ class TestResolveAttachments:
         att = {"mimeType": "application/pdf", "recordName": "doc.pdf", "virtualRecordId": "vrid1"}
         captured: dict = {}
 
-        def fake_rtc(record, ref_mapper=None, is_multimodal_llm=False, image_budget=None):
+        def fake_rtc(record, ref_mapper=None, **kwargs):
             captured["ref_mapper"] = ref_mapper
+            captured.update(kwargs)
             return ([{"type": "text", "text": "ok"}], ref_mapper)
 
         with patch(
@@ -429,6 +431,9 @@ class TestResolveAttachments:
                 [att], blob, "org1", False, logger, ref_mapper=mapper
             )
         assert captured.get("ref_mapper") is mapper
+        # Attachments must be tagged as such: origin is what keeps a user's
+        # own upload ahead of retrieved images when slots are scarce.
+        assert captured.get("image_origin") is ImageOrigin.ATTACHMENT
         assert result == [{"type": "text", "text": "ok"}]
 
     async def test_pdf_out_records_populated(self, logger):

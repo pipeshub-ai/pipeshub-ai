@@ -1259,7 +1259,7 @@
         "sectionTitle": "Asignación de roles de modelos",
         "sectionDescription": "Asigne modelos dedicados para tareas específicas. Si no se asigna, se usa el modelo predeterminado.",
         "onboardingTitle": "¿Cómo se usarán sus modelos?",
-        "onboardingTip": "Asigne un modelo pequeño y económico (p. ej. gpt-5.4-mini, gemini-2.5-flash) para tareas de indexación como resumen y clasificación. Reserve su modelo más potente (p. ej. gpt-5.5 claude-sonnet) para consultas y agentes donde más importa la calidad del razonamiento.",
+        "onboardingTip": "Asigne un modelo pequeño y económico (p. ej. gpt-5.6-luna, gemini-2.5-flash) para tareas de indexación como resumen y clasificación. Reserve su modelo más potente (p. ej. gpt-5.6-terra claude-sonnet) para consultas y agentes donde más importa la calidad del razonamiento.",
         "queryRole": "Consulta y Chat",
         "queryRoleSubtitle": "Búsqueda, agentes y conversaciones",
         "queryRoleDescription": "Gestiona búsquedas, preguntas y respuestas de agentes IA. Use aquí su modelo más potente.",

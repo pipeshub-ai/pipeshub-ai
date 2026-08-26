@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from botocore.client import BaseClient
+    from botocore.config import Config as BotocoreConfig
 
 from langchain_core.embeddings.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -22,6 +23,7 @@ from app.config.constants.ai_models import (
     AzureOpenAILLM,
 )
 from app.utils.embedding_server_client import get_embedding_server_embeddings
+from app.utils.env_utils import env_int
 from app.utils.llm_api_mode_store import (
     REASONING_MANDATORY_FALLBACK_EFFORT,
     LLMApiMode,
@@ -161,6 +163,38 @@ def get_default_embedding_model() -> Embeddings:
 
 logger = create_logger("aimodels")
 
+# botocore's defaults are 60s connect, 60s read and legacy retries (up to 5
+# attempts), so a wrong region, a model not enabled in it, or an endpoint that
+# does not resolve becomes ~300s of silent retrying. Nothing upstream can tell
+# that apart from a slow model, so the health check reports a timeout and the
+# admin learns nothing.
+#
+# A connection that cannot be made fails fast; a request that reached Bedrock
+# is given room, because extended thinking legitimately takes a while.
+_BEDROCK_CONNECT_TIMEOUT_S = 10
+_BEDROCK_READ_TIMEOUT_S = 120
+_BEDROCK_MAX_ATTEMPTS = 2
+
+
+def _bedrock_client_config() -> "BotocoreConfig":
+    from botocore.config import Config
+
+    return Config(
+        connect_timeout=env_int(
+            "PIPESHUB_BEDROCK_CONNECT_TIMEOUT", _BEDROCK_CONNECT_TIMEOUT_S, lo=1, hi=120,
+        ),
+        read_timeout=env_int(
+            "PIPESHUB_BEDROCK_READ_TIMEOUT", _BEDROCK_READ_TIMEOUT_S, lo=5, hi=900,
+        ),
+        retries={
+            "mode": "standard",
+            "max_attempts": env_int(
+                "PIPESHUB_BEDROCK_MAX_ATTEMPTS", _BEDROCK_MAX_ATTEMPTS, lo=1, hi=5,
+            ),
+        },
+    )
+
+
 def _create_bedrock_client(configuration: dict[str, Any], service_name: str = "bedrock-runtime") -> BaseClient:
     """Create a boto3 Bedrock client with proper credential handling.
 
@@ -189,7 +223,7 @@ def _create_bedrock_client(configuration: dict[str, Any], service_name: str = "b
         )
         session = boto3.Session(region_name=region)
 
-    return session.client(service_name)
+    return session.client(service_name, config=_bedrock_client_config())
 
 
 def _create_vertex_credentials(service_account_json: str) -> Any:
@@ -1232,9 +1266,24 @@ def _bedrock_temperature(
 
 
 def _detect_bedrock_provider(model_name: str | None) -> str:
-    """Infer the Bedrock foundation-model provider from a model id."""
+    """Infer the Bedrock foundation-model provider from a model id.
+
+    Falls back to Anthropic when the id says nothing recognizable; use
+    `_identify_bedrock_provider` when the difference between "it is Anthropic"
+    and "cannot tell" matters.
+    """
+    return _identify_bedrock_provider(model_name) or LLMProvider.ANTHROPIC.value
+
+
+def _identify_bedrock_provider(model_name: str | None) -> str | None:
+    """The provider a Bedrock model id names, or None when it names none.
+
+    Bedrock ids namespace their provider (`global.amazon.nova-2-lite-v1:0`,
+    `anthropic.claude-...`), so when this is confident it is authoritative --
+    more so than a value picked from a dropdown.
+    """
     if not model_name:
-        return LLMProvider.ANTHROPIC.value
+        return None
 
     lowered = model_name.lower()
     if "mistral" in lowered:
@@ -1255,7 +1304,43 @@ def _detect_bedrock_provider(model_name: str | None) -> str:
         return "ai21"
     if "qwen" in lowered:
         return "qwen"
-    return LLMProvider.ANTHROPIC.value
+    return None
+
+
+def bedrock_provider_mismatch(configured: str | None, model_name: str | None) -> str | None:
+    """The provider a Bedrock model id names, when it contradicts `configured`.
+
+    `None` means there is nothing to report: the two agree, the id names no
+    provider, or none was configured.
+    """
+    identified = _identify_bedrock_provider(model_name)
+    if not identified or not configured:
+        return None
+    configured_key = configured.strip().lower()
+    if configured_key in ("", "other"):
+        return None
+    return identified if identified != configured_key else None
+
+
+def resolve_bedrock_provider(configured: str | None, model_name: str | None) -> str:
+    """Which foundation-model provider to build the request for.
+
+    The model id wins over a configured value that contradicts it. Bedrock ids
+    namespace their provider (`global.amazon.nova-2-lite-v1:0`), so a mismatch
+    is a mis-set dropdown, not an intent -- and honouring it sends Anthropic's
+    `thinking` block to a Nova model, which Bedrock rejects with "extraneous
+    key [thinking] is not permitted": an error that names neither the setting
+    at fault nor the model it was set on.
+    """
+    identified = bedrock_provider_mismatch(configured, model_name)
+    if identified:
+        logger.warning(
+            "Bedrock provider is set to %r but the model id names %r (%s); "
+            "using %r. Correct the provider on this model to silence this.",
+            configured, identified, model_name, identified,
+        )
+        return identified
+    return configured or _detect_bedrock_provider(model_name)
 
 
 def get_generator_model(
@@ -1329,8 +1414,7 @@ def get_generator_model(
                 # Fall back to auto-detection if custom provider is not provided
                 provider_in_bedrock = None
 
-        if not provider_in_bedrock:
-            provider_in_bedrock = _detect_bedrock_provider(model_name)
+        provider_in_bedrock = resolve_bedrock_provider(provider_in_bedrock, model_name)
 
         logger.info(f"Provider in Bedrock: {provider_in_bedrock} for model: {model_name}")
 

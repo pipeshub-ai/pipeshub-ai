@@ -1344,7 +1344,7 @@
         "sectionTitle": "模型角色分配",
         "sectionDescription": "为特定任务分配专用模型。未分配时将使用默认模型。",
         "onboardingTitle": "您的模型将如何使用？",
-        "onboardingTip": "为摘要和分类等索引任务分配一个小型、高性价比的模型（例如 gpt-5.4-mini、gemini-2.5-flash）。将您能力最强的模型（例如 gpt-5.5、claude-sonnet）保留给最需要推理质量的查询和智能体场景。",
+        "onboardingTip": "为摘要和分类等索引任务分配一个小型、高性价比的模型（例如 gpt-5.6-luna、gemini-2.5-flash）。将您能力最强的模型（例如 gpt-5.6-terra、claude-sonnet）保留给最需要推理质量的查询和智能体场景。",
         "queryRole": "查询与聊天",
         "queryRoleSubtitle": "搜索、智能体与对话",
         "queryRoleDescription": "负责搜索、问答和 AI 智能体回复。请在此使用您能力最强的模型。",

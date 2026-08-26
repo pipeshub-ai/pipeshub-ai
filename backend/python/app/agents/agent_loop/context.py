@@ -85,6 +85,11 @@ class AgentContext(BaseModel):
     has_slack_connector: bool = False
     has_slack_knowledge: bool = False
     is_multimodal_llm: bool = False
+    # The user's question for this turn. Reaches tools that need to know what
+    # is being asked -- `fetch_record` ranks an over-budget record's blocks
+    # against it (see `record_block_selection`). Empty when a caller builds a
+    # context without one; every consumer treats that as "no opinion".
+    query: str = ""
 
     # TEMPORARY token-savings experiment — see `RecordIdShortener` in
     # `utils/chat_helpers.py`. Opt-in per request (`ChatQuery.
@@ -290,7 +295,10 @@ class AgentContext(BaseModel):
         per streamed chunk). Imported lazily to avoid a hard import-time
         dependency from this narrow adapter-context module onto the
         protocol package."""
-        from app.agents.agent_loop.protocol.formatter import AGUI_FORMATTER, LEGACY_FORMATTER
+        from app.agents.agent_loop.protocol.formatter import (
+            AGUI_FORMATTER,
+            LEGACY_FORMATTER,
+        )
 
         return AGUI_FORMATTER if self.protocol == "agui" else LEGACY_FORMATTER
 
@@ -358,6 +366,7 @@ class AgentContext(BaseModel):
             has_slack_connector=bool(state.get("has_slack_connector", False)),
             has_slack_knowledge=bool(state.get("has_slack_knowledge", False)),
             is_multimodal_llm=bool(state.get("is_multimodal_llm", False)),
+            query=str(state.get("query") or ""),
             enable_record_id_shortening=bool(state.get("enable_record_id_shortening", False)),
             system_prompt=state.get("system_prompt"),
             instructions=state.get("instructions"),
@@ -391,16 +400,30 @@ class AgentContext(BaseModel):
         creating (`final_results`, `tool_records`, ...) beyond their empty
         defaults, so `.setdefault()` never clobbers accumulated state on a
         second call into `_seed_tool_state`."""
-        from app.utils.chat_helpers import ImageBudget  # noqa: PLC0415
+        from app.utils.image_admission import (  # noqa: PLC0415
+            ImageAdmission,
+            ImageBudget,
+        )
+        from app.utils.image_policy import resolve_image_policy  # noqa: PLC0415
+
+        # One budget instance, and one arbiter that composes it. The budget is
+        # the conversation-wide ceiling every image source debits; the
+        # admission adds the cap the model in use actually accepts, which is
+        # far lower for Azure (10 per request) and Ollama (1) than the 50 the
+        # ceiling allows. Resolved here rather than at each renderer so a
+        # sub-agent on a different model gets its own — see
+        # `resolve_image_policy`.
+        image_budget = ImageBudget()
 
         return {
-            # Conversation-wide 50-image cap shared by EVERY image source
-            # for this request — attachments, history replay, and every
-            # search/fetch/prefetch tool call all debit the SAME instance
-            # via `context.tool_state["image_budget"]` (also `.setdefault()`
-            # here defensively for callers/tests that build `tool_state`
-            # without going through `AgentContext`).
-            "image_budget": ImageBudget(),
+            "image_budget": image_budget,
+            "image_admission": ImageAdmission(
+                resolve_image_policy(
+                    provider=self.llm_provider,
+                    is_multimodal=self.is_multimodal_llm,
+                ),
+                budget=image_budget,
+            ),
             "logger": self.logger,
             "llm": self.llm,
             "retrieval_service": self.retrieval_service,
@@ -433,6 +456,7 @@ class AgentContext(BaseModel):
             "has_slack_connector": self.has_slack_connector,
             "has_slack_knowledge": self.has_slack_knowledge,
             "is_multimodal_llm": self.is_multimodal_llm,
+            "query": self.query,
             "enable_record_id_shortening": self.enable_record_id_shortening,
             "system_prompt": self.system_prompt,
             "instructions": self.instructions,

@@ -50,23 +50,23 @@ class TestOpenRouterLLM:
     @patch("langchain_openai.ChatOpenAI")
     def test_dispatch_creates_chatopenai_with_openrouter_base_url(self, mock_cls):
         mock_cls.return_value = MagicMock()
-        get_generator_model(LLMProvider.OPENROUTER.value, _config("anthropic/claude-sonnet-4"))
+        get_generator_model(LLMProvider.OPENROUTER.value, _config("anthropic/claude-sonnet-5"))
         mock_cls.assert_called_once()
         kwargs = mock_cls.call_args.kwargs
         assert kwargs["base_url"] == OPENROUTER_BASE_URL
-        assert kwargs["model"] == "anthropic/claude-sonnet-4"
+        assert kwargs["model"] == "anthropic/claude-sonnet-5"
         assert kwargs["api_key"] == "sk-or-test"
 
     @patch("langchain_openai.ChatOpenAI")
     def test_normal_model_uses_default_temperature(self, mock_cls):
         mock_cls.return_value = MagicMock()
-        get_generator_model(LLMProvider.OPENROUTER.value, _config("openai/gpt-4o"))
+        get_generator_model(LLMProvider.OPENROUTER.value, _config("openai/gpt-5.6-luna"))
         assert mock_cls.call_args.kwargs["temperature"] == pytest.approx(0.2)
 
     @patch("langchain_openai.ChatOpenAI")
     def test_stream_usage_enabled(self, mock_cls):
         mock_cls.return_value = MagicMock()
-        get_generator_model(LLMProvider.OPENROUTER.value, _config("openai/gpt-4o"))
+        get_generator_model(LLMProvider.OPENROUTER.value, _config("openai/gpt-5.6-luna"))
         assert mock_cls.call_args.kwargs["stream_usage"] is True
 
 

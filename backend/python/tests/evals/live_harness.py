@@ -31,7 +31,7 @@ Running against both tiers
     from tests.evals.live_harness import run_golden_evals, GOLDEN_CASES
     from app.agent_loop_lib.agent.spec import ModelSpec
 
-    frontier = ModelSpec(provider="anthropic", model="claude-sonnet-4-6")
+    frontier = ModelSpec(provider="anthropic", model="claude-sonnet-5")
     small    = ModelSpec(provider="ollama",    model="llama3.2:3b")
 
     for spec in (frontier, small):

@@ -180,14 +180,14 @@ def convert_message_to_langchain(
     """Convert one agent-loop `Message` to its LangChain equivalent.
 
     `strip_tool_images`: True for chat models whose provider does not
-    accept image content in a tool-result message (Ollama's `/api/chat` —
-    see `LangChainTransport._supports_multipart_tool_result`). Every other
-    LangChain-wrapped provider (OpenAI, Anthropic, Gemini, Bedrock, ...)
-    accepts multipart tool results and keeps images inline here; the
-    stripped images are recovered from `context.tool_state
-    ["pending_tool_images"]` and re-injected into a `UserMessage` by the
-    `shape_retrieved_image_injection` PRE_MODEL fallback hook
-    (`attachment_resolver.py`).
+    accept image content in a tool-result message (Ollama's `/api/chat`,
+    OpenAI-family models on Chat Completions — see
+    `LangChainTransport._supports_multipart_tool_result`). Providers that
+    do accept multipart tool results (Anthropic, Gemini, Bedrock, ...) keep
+    images inline here; the stripped images are recovered from
+    `context.tool_state["pending_tool_images"]` and re-injected into a
+    `UserMessage` by the `shape_retrieved_image_injection` PRE_MODEL
+    fallback hook (`attachment_resolver.py`).
     """
     if message.role == MessageRole.SYSTEM:
         return LCSystemMessage(content=message.content)
@@ -236,18 +236,64 @@ def convert_message_to_langchain(
     raise ValueError(f"Unsupported agent-loop message role: {message.role!r}")
 
 
+# Prefix for the user message `relocate_tool_images` parks tool-sourced images
+# under, so the model can tell them apart from what the user itself attached.
+_RELOCATED_IMAGES_PREFIX = "Images returned by the tool results above:"
+
+
 def convert_messages_to_langchain(
-    messages: list[Message], system: str | None = None, *, strip_tool_images: bool = False,
+    messages: list[Message],
+    system: str | None = None,
+    *,
+    strip_tool_images: bool = False,
+    relocate_tool_images: bool = False,
 ) -> list[BaseMessage]:
     """Convert a full agent-loop message list, prepending `system` as a
     LangChain `SystemMessage` when provided (mirrors `LLMTransport.complete`'s
-    contract: `system` arrives as a separate kwarg, not inside `messages`)."""
+    contract: `system` arrives as a separate kwarg, not inside `messages`).
+
+    `relocate_tool_images`: strip images out of tool results (as
+    `strip_tool_images` does) but re-attach them to a trailing `HumanMessage`
+    instead of dropping them. Used by `LangChainTransport`'s runtime recovery
+    from a provider that rejects images in a tool-result message
+    (`is_tool_result_image_conflict`) — that path has no
+    `shape_retrieved_image_injection` hook registered to recover the images
+    from `pending_tool_images`, since the factory registers that hook only for
+    providers `_supports_multipart_tool_result` rejects up front, so without
+    re-attaching them here the retry would answer about images it never saw.
+    """
     converted = [
-        convert_message_to_langchain(m, strip_tool_images=strip_tool_images) for m in messages
+        convert_message_to_langchain(
+            m, strip_tool_images=strip_tool_images or relocate_tool_images,
+        )
+        for m in messages
     ]
+    if relocate_tool_images:
+        blocks = [
+            _image_part_to_block(part)
+            for m in messages
+            if m.role == MessageRole.TOOL and isinstance(m.content, list)
+            for part in m.content
+            if isinstance(part, ImagePart)
+        ]
+        if blocks:
+            converted.append(HumanMessage(
+                content=[{"type": "text", "text": _RELOCATED_IMAGES_PREFIX}, *blocks],
+            ))
     if system:
         return [LCSystemMessage(content=system), *converted]
     return converted
+
+
+def has_tool_result_images(messages: list[Message]) -> bool:
+    """Whether any tool result carries an `ImagePart` — i.e. whether
+    `relocate_tool_images` has anything to move."""
+    return any(
+        m.role == MessageRole.TOOL
+        and isinstance(m.content, list)
+        and any(isinstance(part, ImagePart) for part in m.content)
+        for m in messages
+    )
 
 
 # OpenAI's Chat Completions/Responses APIs hard-reject any tool/function

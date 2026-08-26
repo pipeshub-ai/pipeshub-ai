@@ -2585,8 +2585,12 @@ export const createAIModelsConfig =
         aiConfig.llm.forEach((llm: any, index: number) => {
           const modelKey = randomUUID();
           llm.modelKey = modelKey;
-          llm.isMultimodal = false;
-          llm.isReasoning = false;
+          // Keep what the caller declared and the health check just verified.
+          // These used to be forced to false here, so a vision model onboarded
+          // through this route was registered text-only and never sent an
+          // image, whatever the health check had proved.
+          llm.isMultimodal = llm.isMultimodal ?? false;
+          llm.isReasoning = llm.isReasoning ?? false;
           llm.isDefault = index === 0;
         });
       }
@@ -2595,7 +2599,7 @@ export const createAIModelsConfig =
         aiConfig.embedding.forEach((embedding: any, index: number) => {
           const modelKey = randomUUID();
           embedding.modelKey = modelKey;
-          embedding.isMultimodal = false;
+          embedding.isMultimodal = embedding.isMultimodal ?? false;
           embedding.isDefault = index === 0;
         });
       }
@@ -3591,7 +3595,7 @@ export const deleteAIModelProvider =
           .map((a: { name?: string }) => a?.name)
           .filter((n: unknown): n is string => typeof n === 'string' && n.length > 0);
         // Prefer the user-defined friendly name (what the UI card shows, e.g. "gpt").
-        // Fall back through the technical model id (e.g. "gpt-5.4-mini") and finally
+        // Fall back through the technical model id (e.g. "gpt-5.6-luna") and finally
         // the opaque modelKey so the message is never empty.
         const modelDisplayName: string =
           (deletedModel?.modelFriendlyName as string | undefined) ||

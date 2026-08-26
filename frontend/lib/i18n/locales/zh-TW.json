@@ -1344,7 +1344,7 @@
         "sectionTitle": "模型角色指派",
         "sectionDescription": "為特定任務指派專用模型。未指派時將使用預設模型。",
         "onboardingTitle": "您的模型將如何使用？",
-        "onboardingTip": "為摘要與分類等索引任務指派小型、具成本效益的模型（例如 gpt-5.4-mini、gemini-2.5-flash）。將最強大的模型（例如 gpt-5.5、claude-sonnet）保留給最重視推理品質的查詢與代理。",
+        "onboardingTip": "為摘要與分類等索引任務指派小型、具成本效益的模型（例如 gpt-5.6-luna、gemini-2.5-flash）。將最強大的模型（例如 gpt-5.6-terra、claude-sonnet）保留給最重視推理品質的查詢與代理。",
         "queryRole": "查詢與對話",
         "queryRoleSubtitle": "搜尋、代理與對話",
         "queryRoleDescription": "負責搜尋、問答與 AI 代理回應。請在此使用您最強大的模型。",

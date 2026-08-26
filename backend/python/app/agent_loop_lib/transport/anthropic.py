@@ -52,7 +52,7 @@ class AnthropicTransport(LLMTransport):
     this class — all callers see only the LLMTransport interface.
     """
 
-    DEFAULT_MODEL = "claude-sonnet-4-6"
+    DEFAULT_MODEL = "claude-sonnet-5"
 
     # 20k stays under the SDK's ~21.3k non-streaming ceiling (it refuses
     # non-streaming requests expected to run past its 10-minute timeout)

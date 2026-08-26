@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import ipaddress
 import os
 import shutil
@@ -9,7 +10,11 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import APIRouter, Body, HTTPException, Request  #type: ignore
 from fastapi.responses import JSONResponse  #type: ignore
-from langchain_core.messages import HumanMessage  #type: ignore
+from langchain_core.embeddings import Embeddings  #type: ignore
+from langchain_core.language_models.chat_models import BaseChatModel  #type: ignore
+from langchain_core.messages import BaseMessage, HumanMessage  #type: ignore
+from langchain_core.tools import StructuredTool  #type: ignore
+from pydantic import BaseModel, Field
 
 from app.services.vector_db.const.const import ORG_ID_FIELD, VIRTUAL_RECORD_ID_FIELD
 from app.services.vector_db.models import CollectionConfig
@@ -25,7 +30,6 @@ from app.utils.aimodels import (
     get_stt_model,
     get_tts_model,
 )
-from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter()
@@ -36,6 +40,12 @@ SPARSE_IDF = False
 _LOCAL_LLM_PROVIDERS = frozenset({"ollama", "lmStudio"})
 _OUTBOUND_PROBE_URL = "https://1.1.1.1/"
 _OUTBOUND_PROBE_TIMEOUT_S = 5.0
+
+# Model types `/health-check/{model_type}` can actually verify. Anything else
+# is rejected rather than reported healthy -- Node's model-type validator is
+# wider than this set (`ocr`, `slm`, `reasoning`, `multiModal`), and a type
+# that falls through would register a model nothing had checked.
+SUPPORTED_HEALTH_CHECK_TYPES = frozenset({"llm", "embedding", "imageGeneration", "tts", "stt"})
 
 # Outer cap vs I/O timeouts in web_search_tool / fetch_url (DDG 15s, httpx 30s).
 _WEB_SEARCH_HEALTH_TIMEOUTS_S = {
@@ -189,6 +199,114 @@ def _extract_error_message(e: Exception) -> str:
 
     return str(e)
 
+# HTTP statuses that mean "ask again later", never "this model cannot do it".
+_TRANSIENT_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+
+# Substrings providers emit when a request asked for something the model or
+# deployment genuinely does not support. Matched case-insensitively; the SDKs
+# involved share no exception hierarchy, so this is the only portable signal.
+_CAPABILITY_ERROR_MARKERS = (
+    "does not support",
+    "doesn't support",
+    "not supported",
+    "unsupported",
+    "invalid content type",
+    "only allowed for messages with role",
+    "image input",
+    "vision",
+    "multimodal",
+    "unrecognized request argument",
+    "unknown parameter",
+)
+
+
+def _is_capability_error(exc: Exception) -> bool:
+    """Whether `exc` says the model cannot do the thing, as opposed to the
+    request having failed for a reason that says nothing about the model.
+
+    A rate limit, a gateway 5xx, a timeout or a bad key must never be reported
+    as "this model has no vision support" -- that verdict tells an admin to
+    turn off a capability their model actually has.
+    """
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if isinstance(status, int):
+        if status in _TRANSIENT_STATUSES or status in (401, 403):
+            return False
+        if status == 400:
+            return True
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError, ConnectionError)):
+        return False
+    message = str(exc).lower()
+    return any(marker in message for marker in _CAPABILITY_ERROR_MARKERS)
+
+
+def _config_error(
+    message: str, config: dict, model_name: str, **extra: object
+) -> JSONResponse:
+    """A rejected *configuration* -- the admin has to change something.
+
+    400 rather than 500 so the caller can tell "you typed the wrong model
+    name" apart from "the service broke"; `cm_controller.ts` surfaces this
+    message verbatim in the model dialog.
+    """
+    return JSONResponse(
+        status_code=400,
+        content={
+            "status": "error",
+            "message": message,
+            "details": {
+                "provider": config.get("provider"),
+                "model": model_name,
+                **extra,
+            },
+        },
+    )
+
+
+def _response_text(response: object) -> str:
+    """Readable text from a LangChain response, for a user-facing message.
+
+    Interpolating the response object itself puts `additional_kwargs={...}
+    usage_metadata={...}` in front of an admin.
+    """
+    content = getattr(response, "content", response)
+    if isinstance(content, list):
+        content = " ".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    text = str(content or "").strip()
+    return text[:300]
+
+
+async def _invoke_with_timeout(
+    model: BaseChatModel, payload: str | list[BaseMessage], timeout: float,
+) -> BaseMessage:
+    """Call a chat model, preferring its async path.
+
+    `asyncio.wait_for(asyncio.to_thread(...))` abandons the *await* on timeout
+    while the worker thread keeps running until the provider's own timeout
+    (360 s by default) -- a leaked thread per timed-out health check. The async
+    client cancels for real.
+    """
+    if inspect.iscoroutinefunction(getattr(model, "ainvoke", None)):
+        return await asyncio.wait_for(model.ainvoke(payload), timeout=timeout)
+    return await asyncio.wait_for(asyncio.to_thread(model.invoke, payload), timeout=timeout)
+
+
+async def _embed_with_timeout(
+    model: Embeddings, texts: list[str], timeout: float,
+) -> list[list[float]]:
+    """Embed documents, preferring the async path -- see `_invoke_with_timeout`."""
+    # `hasattr` is not enough: a wrapper can expose a non-async `aembed_documents`,
+    # and awaiting its return value fails at runtime.
+    if inspect.iscoroutinefunction(getattr(model, "aembed_documents", None)):
+        return await asyncio.wait_for(model.aembed_documents(texts), timeout=timeout)
+    return await asyncio.wait_for(
+        asyncio.to_thread(model.embed_documents, texts), timeout=timeout,
+    )
+
+
 def _load_test_image() -> str:
     """Loads the base64 encoded test image from a file."""
     file_path = os.path.join(os.path.dirname(__file__), '..', '..', 'assets', 'test_image.b64')
@@ -297,31 +415,39 @@ async def web_search_health_check(request: Request, provider_config: dict = Body
 
 @router.post("/llm-health-check")
 async def llm_health_check(request: Request, llm_configs: list[dict] = Body(...)) -> JSONResponse:
-    """Health check endpoint to validate user-provided LLM configurations"""
-    try:
-        app = request.app
-        llm, _ = await get_llm(app.container.config_service(), llm_configs, reasoning_effort="low")
+    """Validate a batch of LLM configurations (used by the bulk config write).
 
-        # Make a simple test call to the LLM with the provided configurations
-        await llm.ainvoke("Test message to verify LLM health.")
-
+    Delegates to `perform_llm_health_check`, the same implementation the
+    per-model route uses. These two used to be separate code paths that
+    checked different things -- this one resolved a model through `get_llm`
+    and sent one prompt, while the per-model route probed vision and
+    capabilities -- so which checks ran depended on which screen the admin
+    happened to use.
+    """
+    logger = request.app.container.logger()
+    if not llm_configs:
         return JSONResponse(
-            status_code=200,
+            status_code=400,
             content={
-                "status": "healthy",
-                "message": "LLM service is responding",
+                "status": "error",
+                "message": "No LLM configurations provided",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "not healthy",
-                "error": f"LLM service health check failed: {str(e)}",
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
+
+    for llm_config in llm_configs:
+        response = await perform_llm_health_check(llm_config, logger)
+        if response.status_code != 200:
+            return response
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "healthy",
+            "message": f"All {len(llm_configs)} LLM configuration(s) are responding",
+            "timestamp": get_epoch_timestamp_in_ms(),
+        },
+    )
 
 async def initialize_embedding_model(request: Request, embedding_configs: list[dict]) -> tuple[Any, Any, Any]:
     """Initialize the embedding model and return necessary components."""
@@ -594,131 +720,270 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
             },
         )
 
+_LLM_HEALTH_TIMEOUT_S = 120.0
+# A check now makes up to three calls per model (text, image, tools) and may
+# cover several models, so each call having its own ceiling does not bound the
+# request. Kept under the caller's own timeout (`ai.service.command.ts`).
+_LLM_HEALTH_TOTAL_TIMEOUT_S = 420.0
+# A stream is expected to start promptly even when the full answer is long;
+# this only waits for the first content chunk.
+_STREAM_PROBE_TIMEOUT_S = 60.0
+
+# What the platform assumes when a model's context window is not configured
+# (`chatbot.py`'s DEFAULT_CONTEXT_LENGTH). Worth reporting rather than
+# assuming quietly: the value sizes how much of a document one read returns
+# and which prompt scaffolding the model gets (`model_tier.py`), so an unset
+# window silently caps a 1M-token model at the default.
+ASSUMED_CONTEXT_LENGTH = 128_000
+# Outside this range the value is a typo, not a window.
+MIN_PLAUSIBLE_CONTEXT_LENGTH = 1_024
+MAX_PLAUSIBLE_CONTEXT_LENGTH = 20_000_000
+# The tool probe repeats a prompt the model has already answered once, so it
+# gets a tighter budget: a model is now checked with up to three calls (text,
+# image, tools) and the caller's own ceiling has to cover all of them.
+_TOOL_PROBE_TIMEOUT_S = 60.0
+
+_TEXT_PROBE = (
+    "Hello, this is a health check test. Please respond with "
+    "'Health check successful' if you can read this message."
+)
+# The image is a solid-colour square (see `assets/test_image.b64`); asking
+# about it means a model that cannot actually see the image answers wrongly
+# or not at all instead of returning something generic that still "passes".
+_IMAGE_PROBE = "What is in this image? Answer in a few words."
+
+
+class _HealthProbe(BaseModel):
+    """Trivial tool used only to check that the model accepts bound tools."""
+
+    query: str = Field(description="Anything at all; this tool is never run.")
+
+
+async def _check_tool_calling(llm_model: BaseChatModel, logger: Logger) -> bool:
+    """Whether this model accepts bound tools.
+
+    Every agent turn binds tools, and `LangChainTransport._bind_tools` fails
+    the turn rather than silently dropping them, so a model that cannot take
+    them is unusable for agents even though it answers plain prompts. Reported
+    rather than fatal: the same model may still be a fine choice for the
+    indexing and image-description roles.
+    """
+    try:
+        bound = llm_model.bind_tools([
+            StructuredTool.from_function(
+                func=lambda query: query,
+                name="health_probe",
+                description="A no-op probe used by the health check.",
+                args_schema=_HealthProbe,
+            ),
+        ])
+    except Exception as exc:
+        logger.info("Model does not accept bound tools: %s", exc)
+        return False
+
+    try:
+        await _invoke_with_timeout(bound, _TEXT_PROBE, _TOOL_PROBE_TIMEOUT_S)
+    except Exception as exc:
+        if _is_capability_error(exc):
+            logger.info("Model rejected a request carrying tools: %s", exc)
+            return False
+        # A rate limit or a gateway blip says nothing about tool support;
+        # the plain-text probe already proved the model answers.
+        logger.warning("Tool-calling probe inconclusive, assuming supported: %s", exc)
+    return True
+
+
+def _configuration_warnings(llm_config: dict, model_names: list[str]) -> list[str]:
+    """Settings that are wrong, or missing, but no longer fatal.
+
+    An unset context length is the quiet one: the platform falls back to a
+    default that decides how much of a document one read returns, so a 1M-token
+    model configured without a window behaves like a 128k one.
+
+    A Bedrock model id names its own provider, so a contradicting dropdown is
+    corrected at request time rather than sent to Bedrock (which rejects it
+    with "extraneous key [thinking] is not permitted" -- an error naming
+    neither the setting at fault nor the model it was set on). The check still
+    reports it: silently fixing a wrong setting leaves it wrong, and the next
+    person to read the config sees a provider that is not what runs.
+
+    Bedrock nests its providers -- the outer one is "bedrock", and
+    `configuration.provider` names the foundation model's own vendor.
+    """
+    from app.utils.aimodels import bedrock_provider_mismatch
+
+    warnings: list[str] = []
+    if _configured_context_length(llm_config) is None:
+        warnings.append(
+            f"Note: this model's context length is not set, so "
+            f"{ASSUMED_CONTEXT_LENGTH:,} tokens is assumed. That value decides how much "
+            f"of a document a single read returns — set it to the model's real window."
+        )
+
+    if _normalize_provider_key(llm_config.get("provider")) != "bedrock":
+        return warnings
+
+    configured = (llm_config.get("configuration") or {}).get("provider")
+    for model_name in model_names:
+        identified = bedrock_provider_mismatch(configured, model_name)
+        if identified:
+            warnings.append(
+                f"Note: this model's provider is set to '{configured}', but the model id "
+                f"identifies it as '{identified}'. It was used as '{identified}' for this "
+                f"check — update the provider on this model."
+            )
+    return warnings
+
+
+def _normalize_provider_key(provider: str | None) -> str:
+    return (provider or "").strip().lower().replace("-", "").replace("_", "")
+
+
+async def _check_streaming(llm_model: BaseChatModel, logger: Logger) -> bool:
+    """Whether this model streams.
+
+    Every answer reaches the user through `astream`, so a model that only
+    supports a blocking call still works but delivers the whole reply at once
+    after a long silence. Reported rather than fatal: the indexing and
+    image-description roles never stream.
+    """
+    if not hasattr(llm_model, "astream"):
+        return False
+    try:
+        async with asyncio.timeout(_STREAM_PROBE_TIMEOUT_S):
+            async for chunk in llm_model.astream(_TEXT_PROBE):
+                if getattr(chunk, "content", None):
+                    return True
+        return False
+    except Exception as exc:
+        if _is_capability_error(exc):
+            logger.info("Model does not support streaming: %s", exc)
+            return False
+        # A rate limit or a gateway blip says nothing about streaming, and the
+        # plain probe already proved the model answers.
+        logger.warning("Streaming probe inconclusive, assuming supported: %s", exc)
+        return True
+
+
+def _configured_context_length(llm_config: dict) -> int | None:
+    """The window an admin set, in either shape the config manager sends."""
+    for source in (llm_config, llm_config.get("configuration") or {}):
+        raw = source.get("contextLength")
+        if raw in (None, ""):
+            continue
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return -1        # present and unusable: reported, never ignored
+    return None
+
+
+def _effective_context_length(llm_config: dict) -> int:
+    configured = _configured_context_length(llm_config)
+    return configured if configured and configured > 0 else ASSUMED_CONTEXT_LENGTH
+
+
+def _validate_context_length(llm_config: dict, model_string: str) -> JSONResponse | None:
+    """Reject a window that cannot be one, before spending a provider call."""
+    configured = _configured_context_length(llm_config)
+    if configured is None:
+        return None
+    if not (MIN_PLAUSIBLE_CONTEXT_LENGTH <= configured <= MAX_PLAUSIBLE_CONTEXT_LENGTH):
+        return _config_error(
+            f"Context length {configured} is not a usable window. Set it to the model's "
+            f"context window in tokens (between {MIN_PLAUSIBLE_CONTEXT_LENGTH:,} and "
+            f"{MAX_PLAUSIBLE_CONTEXT_LENGTH:,}), or leave it empty to assume "
+            f"{ASSUMED_CONTEXT_LENGTH:,}.",
+            llm_config, model_string,
+        )
+    return None
+
+
 async def perform_llm_health_check(
     llm_config: dict,
     logger: Logger,
-) -> dict[str, Any]:
-    """Perform health check for LLM models"""
+) -> JSONResponse:
+    """Verify an LLM configuration against the real provider.
+
+    Checks, in order: the model answers at all; if flagged multimodal, that it
+    can actually read an image; and whether it accepts bound tools, which every
+    agent turn requires.
+    """
     provider = llm_config.get("provider", "") or ""
     configuration = llm_config.get("configuration") or {}
     if not isinstance(configuration, dict):
         configuration = {}
+    model_string = configuration.get("model") or ""
+    # Bound before anything can fail so the error handlers below always have
+    # something to report.
     model_name = ""
+    friendly_name = llm_config.get("modelFriendlyName", "")
+
     try:
-        logger.info(f"Performing LLM health check for {provider} with configuration model {configuration.get('model', '')}")
-        # Use the first model from comma-separated list
-        model_string = configuration.get("model", "") or ""
-        model_names = [name.strip() for name in model_string.split(",") if name.strip()]
-
+        logger.info("Performing LLM health check for %s with model %s", provider, model_string)
+        model_names = [name.strip() for name in str(model_string).split(",") if name.strip()]
         if not model_names:
-            logger.error(f"No valid model names found in configuration for {provider} with configuration model {configuration.get('model', '')}")
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "status": "error",
-                    "message": "No valid model names found in configuration",
-                    "details": {
-                    "provider": provider,
-                    "model": configuration.get("model", "")
-                    },
-                },
+            logger.error("No valid model names in configuration for %s", provider)
+            return _config_error(
+                "No valid model names found in configuration", llm_config, model_string,
             )
 
-        model_name = model_names[0]
-        logger.debug("Getting generator model")
+        context_error = _validate_context_length(llm_config, model_string)
+        if context_error is not None:
+            return context_error
 
-        config_keys = list(configuration.keys())
-        logger.debug(f"LLM health check configuration keys for {provider}: {config_keys}")
+        # Node registers every name in the list as its own model
+        # (`cm_controller.ts`'s model flattening), so every name is checked.
+        results: list[dict[str, Any]] = []
+        async with asyncio.timeout(_LLM_HEALTH_TOTAL_TIMEOUT_S):
+            for model_name in model_names:
+                result = await _check_one_llm(llm_config, model_name, logger)
+                if isinstance(result, JSONResponse):
+                    return result
+                results.append(result)
 
-        # Create LLM model
-        llm_model = await asyncio.to_thread(
-            get_generator_model,
-            provider=llm_config.get("provider"),
-            config=llm_config,
-            model_name=model_name,
-        )
-
-        logger.debug("Generator model created")
-
-        # Check if multimodal is enabled
-        is_multimodal = llm_config.get("isMultimodal", False) or configuration.get("isMultimodal", False)
-
-        # Set timeout for the test
-        if is_multimodal:
-            # For multimodal models, test image first, then text if image fails
-            logger.info("Multimodal model detected - testing with image first")
-            test_image_url = _get_test_image()
-
-            # Create multimodal message content
-            multimodal_content = [
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": test_image_url
-                    }
-                }
-            ]
-
-            try:
-                test_message = HumanMessage(content=multimodal_content)
-                test_response = await asyncio.wait_for(
-                    asyncio.to_thread(llm_model.invoke, [test_message]),
-                    timeout=120.0  # 120 second timeout
-                )
-                logger.info(f"Image test passed for multimodal model: {test_response}")
-            except asyncio.TimeoutError:
-                raise
-            except Exception as image_error:
-                logger.error(f"Image test failed for multimodal model: {str(image_error)}")
-
-                # Image test failed, now try text test to determine if model works at all
-                logger.info("Image test failed - testing with text to verify model functionality")
-                test_prompt = "Hello, this is a health check test. Please respond with 'Health check successful' if you can read this message."
-                try:
-                    text_response = await asyncio.wait_for(
-                        asyncio.to_thread(llm_model.invoke, test_prompt),
-                        timeout=120.0  # 120 second timeout
-                    )
-                    logger.info(f"Text test passed for multimodal model: {text_response}")
-
-                    # Text works but image doesn't - model doesn't support images
-                    return JSONResponse(
-                        status_code=500,
-                        content={
-                            "status": "error",
-                            "message": "Model doesn't support images/vision. Disable Multimodal checkbox.",
-                            "details": {
-                                "provider": llm_config.get("provider"),
-                                "model": model_name,
-                                "error": str(image_error)
-                            },
-                        },
-                    )
-                except Exception as text_error:
-                    # Both tests failed - pass the original error as-is
-                    logger.error(f"Both image and text tests failed for multimodal model: {str(text_error)}")
-                    raise text_error
-        else:
-            # Test with a simple text prompt
-            test_prompt = "Hello, this is a health check test. Please respond with 'Health check successful' if you can read this message."
-            test_response = await asyncio.wait_for(
-                asyncio.to_thread(llm_model.invoke, test_prompt),
-                timeout=120.0  # 120 second timeout
+        tool_calling = all(r["tool_calling"] for r in results)
+        streaming = all(r["streaming"] for r in results)
+        message = f"LLM model is responding. Sample response: {results[0]['sample']}"
+        for warning in _configuration_warnings(llm_config, model_names):
+            message += f" {warning}"
+        if not tool_calling:
+            message += (
+                " Note: this model did not accept bound tools, so it cannot be "
+                "used for agents. It can still be used for indexing."
             )
-
+        if not streaming:
+            message += (
+                " Note: this model did not stream a response. Answers are streamed to "
+                "the user, so replies from this model may arrive only when complete."
+            )
         return JSONResponse(
             status_code=200,
             content={
                 "status": "healthy",
-                "message": f"LLM model is responding. Sample response: {test_response}",
+                "message": message,
+                "capabilities": {
+                    "tool_calling": tool_calling,
+                    "streaming": streaming,
+                    "multimodal": bool(
+                        llm_config.get("isMultimodal", False)
+                        or configuration.get("isMultimodal", False)
+                    ),
+                    # What the platform will actually use: the configured
+                    # window, or the assumption standing in for it.
+                    "context_length": _effective_context_length(llm_config),
+                },
+                "models": [r["model"] for r in results],
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
 
     except asyncio.TimeoutError:
-        logger.error(f"LLM health check timed out for {provider} with model {model_name} ({llm_config.get('modelFriendlyName', '')})")
+        logger.error(
+            "LLM health check timed out for %s model %s (%s)", provider, model_string, friendly_name,
+        )
         return JSONResponse(
-            status_code=500,
+            status_code=504,
             content={
                 "status": "error",
                 "message": (
@@ -729,22 +994,28 @@ async def perform_llm_health_check(
                 "details": {
                     "error_code": "health_check_timeout",
                     "provider": provider,
-                    "model": model_name,
-                    "timeout_seconds": 120,
+                    "model": model_name or model_string,
+                    "timeout_seconds": int(_LLM_HEALTH_TIMEOUT_S),
                 },
             },
         )
     except HTTPException as he:
-        logger.error(f"LLM health check failed for {provider} with model {model_name} ({llm_config.get('modelFriendlyName', '')}): {str(he)}")
+        logger.error("LLM health check failed for %s model %s: %s", provider, model_string, he)
         return JSONResponse(status_code=he.status_code, content=he.detail)
     except Exception as e:
-        logger.error(f"LLM health check failed for {provider} with model {model_name} ({llm_config.get('modelFriendlyName', '')}): {str(e)}")
+        logger.error(
+            "LLM health check failed for %s model %s (%s): %s",
+            provider, model_string, friendly_name, e,
+        )
+        # A refused connection from a cloud provider usually means the
+        # container has no egress at all, which no amount of re-typing the API
+        # key will fix -- so say that instead of relaying the socket error.
         if (
             _looks_like_connectivity_error(e)
             and _llm_health_check_needs_outbound(provider, configuration)
             and not await _probe_outbound_connectivity()
         ):
-            return _outbound_connectivity_error_response(provider, model_name)
+            return _outbound_connectivity_error_response(provider, model_name or model_string)
         clean_msg = _extract_error_message(e)
         return JSONResponse(
             status_code=500,
@@ -752,18 +1023,191 @@ async def perform_llm_health_check(
                 "status": "error",
                 "message": f"LLM health check failed: {clean_msg}",
                 "details": {
-                    "provider": llm_config.get("provider"),
-                    "model": model_name,
-                    "error_type": type(e).__name__
-                }
+                    "provider": provider,
+                    "model": model_name or model_string,
+                    "error_type": type(e).__name__,
+                },
             },
         )
+
+
+async def _check_one_llm(
+    llm_config: dict, model_name: str, logger: Logger,
+) -> "dict[str, Any] | JSONResponse":
+    """Probe a single model. Returns its capabilities, or the JSONResponse to
+    return to the caller when the model itself is the problem."""
+    provider = llm_config.get("provider", "")
+    configuration = llm_config.get("configuration") or {}
+    is_multimodal = bool(
+        llm_config.get("isMultimodal", False) or configuration.get("isMultimodal", False)
+    )
+
+    llm_model = await asyncio.to_thread(
+        get_generator_model, provider=provider, config=llm_config, model_name=model_name,
+    )
+    logger.debug("Generator model created for %s", model_name)
+
+    # Text first: it establishes that the model answers at all, which is what
+    # makes a later image failure interpretable.
+    text_response = await _invoke_with_timeout(llm_model, _TEXT_PROBE, _LLM_HEALTH_TIMEOUT_S)
+    sample = _response_text(text_response)
+    if not sample:
+        return _config_error(
+            "Model accepted the request but returned an empty response",
+            llm_config, model_name,
+        )
+
+    if is_multimodal:
+        image_error = await _probe_vision(llm_model, logger)
+        if image_error is not None:
+            return _config_error(
+                image_error, llm_config, model_name,
+                hint="Uncheck Multimodal for this model, or choose a vision model.",
+            )
+
+    return {
+        "model": model_name,
+        "sample": sample,
+        "tool_calling": await _check_tool_calling(llm_model, logger),
+        "streaming": await _check_streaming(llm_model, logger),
+    }
+
+
+async def _probe_vision(llm_model: BaseChatModel, logger: Logger) -> str | None:
+    """None when the model demonstrably read the image, else why not.
+
+    The probe carries a question alongside the image: a bare image block lets a
+    model that ignored it still return something, and some gateways reject an
+    image-only user turn outright.
+    """
+    message = HumanMessage(content=[
+        {"type": "text", "text": _IMAGE_PROBE},
+        {"type": "image_url", "image_url": {"url": _get_test_image()}},
+    ])
+    try:
+        response = await _invoke_with_timeout(llm_model, [message], _LLM_HEALTH_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        raise
+    except Exception as image_error:
+        if _is_capability_error(image_error):
+            logger.info("Model rejected image input: %s", image_error)
+            return f"Model doesn't support images/vision: {_extract_error_message(image_error)}"
+        # Rate limit, gateway 5xx, auth: says nothing about vision support, so
+        # reporting "no vision" here would tell the admin to disable a
+        # capability the model may well have.
+        logger.error("Image probe failed for a reason unrelated to vision: %s", image_error)
+        raise
+
+    if not _response_text(response):
+        return "Model accepted the image but returned an empty response"
+    logger.info("Image probe passed")
+    return None
+
+
+def _is_multimodal(config: dict) -> bool:
+    """The deployment's own multimodal flag, in either of the two shapes the
+    Node config manager sends it."""
+    return bool(
+        config.get("isMultimodal", False)
+        or (config.get("configuration") or {}).get("isMultimodal", False)
+    )
+
+
+async def _probe_image_embedding(
+    embedding_config: dict, model_name: str, text_dimension: int, logger: Logger,
+) -> str | None:
+    """None when this model really can embed an image, else why not.
+
+    Uses the same `MultimodalEmbeddingFactory` the indexing pipeline uses, so a
+    provider with no implementation is caught here rather than by images
+    quietly missing from the index.
+    """
+    from app.services.embeddings.multimodal.config import MultimodalProviderConfig
+    from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
+
+    provider = embedding_config.get("provider", "")
+    configuration = embedding_config.get("configuration") or {}
+    try:
+        multimodal_provider = MultimodalEmbeddingFactory.create(
+            MultimodalProviderConfig(
+                provider=provider,
+                model_name=model_name,
+                api_key=configuration.get("apiKey"),
+                base_url=configuration.get("endpoint") or configuration.get("baseUrl"),
+                region_name=configuration.get("region"),
+                aws_access_key_id=configuration.get("awsAccessKeyId"),
+                aws_secret_access_key=configuration.get("awsSecretAccessKey"),
+                embedding_size=text_dimension,
+                logger=logger,
+            )
+        )
+    except Exception as exc:
+        logger.warning("Could not build a multimodal embedding provider: %s", exc)
+        return f"This provider cannot embed images: {_extract_error_message(exc)}"
+
+    if multimodal_provider is None or not multimodal_provider.supports_multimodal():
+        return (
+            f"Provider '{provider}' has no image-embedding support in PipesHub, "
+            "so images would never be indexed for this model."
+        )
+
+    try:
+        results = await asyncio.wait_for(
+            multimodal_provider.embed_images([_get_test_image()]),
+            timeout=_LLM_HEALTH_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        raise
+    except Exception as exc:
+        if _is_capability_error(exc):
+            return f"Model cannot embed images: {_extract_error_message(exc)}"
+        raise
+
+    first = results[0] if results else None
+    embedding = getattr(first, "embedding", None)
+    if not embedding:
+        error = getattr(first, "error", None)
+        return f"Image embedding returned nothing{f': {error}' if error else ''}"
+    if len(embedding) != text_dimension:
+        # A collection holds one vector width; text and image points must agree.
+        return (
+            f"Image embeddings are {len(embedding)}-dimensional but text embeddings "
+            f"are {text_dimension}-dimensional; both share one collection."
+        )
+    return None
+
+
+async def _check_collection_compatibility(
+    request: Request, dense_embeddings: Embeddings, embedding_dimension: int, logger: Logger,
+) -> JSONResponse | None:
+    """Run the bulk route's collection guard for a single-model check.
+
+    Returns the response to send when the change is refused, else None. A
+    vector store that is unreachable is not this check's problem -- the guard
+    itself already treats connectivity errors as non-fatal.
+    """
+    try:
+        retrieval_service = await request.app.container.retrieval_service()
+    except Exception:
+        logger.debug("No retrieval service available; skipping collection check", exc_info=True)
+        return None
+
+    try:
+        await check_collection_info(
+            retrieval_service, dense_embeddings, embedding_dimension, logger,
+        )
+    except HTTPException as he:
+        detail = he.detail if isinstance(he.detail, dict) else {"message": str(he.detail)}
+        detail.setdefault("message", detail.get("error", "Embedding model change refused"))
+        return JSONResponse(status_code=he.status_code, content=detail)
+    return None
+
 
 async def perform_embedding_health_check(
     request: Request,
     embedding_config: dict,
     logger: Logger,
-) -> dict[str, Any]:
+) -> JSONResponse:
     """Perform health check for embedding models"""
     try:
         logger.info(f"Performing embedding health check for {embedding_config.get('provider')} with configuration model {embedding_config.get('configuration', {}).get('model', '')}")
@@ -772,17 +1216,9 @@ async def perform_embedding_health_check(
         model_names = [name.strip() for name in model_string.split(",") if name.strip()]
 
         if not model_names:
-            logger.error(f"No valid model names found in configuration for {embedding_config.get('provider')} with configuration model {embedding_config.get('configuration', {}).get('model', '')}")
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "status": "error",
-                    "message": "No valid model names found in configuration",
-                    "details": {
-                    "provider": embedding_config.get("provider"),
-                    "model": embedding_config.get("configuration", {}).get("model", "")
-                    },
-                },
+            logger.error("No valid model names in configuration for %s", embedding_config.get("provider"))
+            return _config_error(
+                "No valid model names found in configuration", embedding_config, model_string,
             )
 
         model_name = model_names[0]
@@ -806,37 +1242,71 @@ async def perform_embedding_health_check(
         HEALTH_CHECK_TIMEOUT = 600.0
 
         try:
-            test_embeddings = await asyncio.wait_for(
-                asyncio.to_thread(embedding_model.embed_documents, test_texts),
-                timeout=HEALTH_CHECK_TIMEOUT,
+            test_embeddings = await _embed_with_timeout(
+                embedding_model, test_texts, HEALTH_CHECK_TIMEOUT,
             )
 
             logger.info(f"Test embeddings length: {len(test_embeddings)}")
-            if not test_embeddings or len(test_embeddings) == 0:
-                logger.error(f"Embedding model returned empty results for {embedding_config.get('provider')} with configuration model {embedding_config.get('configuration', {}).get('model', '')}")
-                return JSONResponse(
-                    status_code=500,
-                    content={
-                        "status": "error",
-                        "message": "Embedding model returned empty results",
-                        "details": {
-                        "provider": embedding_config.get("provider"),
-                        "model": model_name
-                        },
-                    },
+            if not test_embeddings:
+                logger.error("Embedding model returned empty results for %s", embedding_config.get("provider"))
+                return _config_error(
+                    "Embedding model returned empty results", embedding_config, model_name,
                 )
 
-            # Validate embedding dimensions
-            embedding_dimension = len(test_embeddings[0]) if test_embeddings else 0
-            all(len(emb) == embedding_dimension for emb in test_embeddings)
+            # Validate embedding dimensions. The result of this comparison
+            # used to be discarded, which made it look like a check while
+            # letting a ragged response through to the vector store.
+            embedding_dimension = len(test_embeddings[0])
+            if any(len(emb) != embedding_dimension for emb in test_embeddings):
+                return _config_error(
+                    "Embedding model returned vectors of differing sizes",
+                    embedding_config, model_name,
+                )
 
-            
+            # A provider that silently ignores a `dimensions` override would
+            # otherwise build a collection of the wrong width, discovered only
+            # when the first query returns nothing.
+            requested = embedding_config.get("configuration", {}).get("dimensions")
+            if isinstance(requested, int) and requested > 0 and requested != embedding_dimension:
+                return _config_error(
+                    f"Model ignored the requested dimensions: asked for {requested}, "
+                    f"got {embedding_dimension}",
+                    embedding_config, model_name,
+                )
+
+            # `isMultimodal` on an embedding model is what makes indexing send
+            # images down the image-embedding path at all, and only a handful
+            # of providers implement one. Claiming it without checking means
+            # images silently never get indexed
+            # (`vectorstore._process_image_embeddings` warns and returns []).
+            if _is_multimodal(embedding_config):
+                image_error = await _probe_image_embedding(
+                    embedding_config, model_name, embedding_dimension, logger,
+                )
+                if image_error is not None:
+                    return _config_error(
+                        image_error, embedding_config, model_name,
+                        hint="Uncheck Multimodal for this model, or choose one that embeds images.",
+                    )
+
+            # The same collection-compatibility guard the bulk route runs. Without
+            # it, changing dimensions from the model dialog reports healthy and is
+            # discovered when queries start returning nothing.
+            collection_error = await _check_collection_compatibility(
+                request, embedding_model, embedding_dimension, logger,
+            )
+            if collection_error is not None:
+                return collection_error
 
             return JSONResponse(
                 status_code=200,
                 content={
                     "status": "healthy",
                     "message": f"Embedding model is responding. Sample embedding size: {embedding_dimension}",
+                    "capabilities": {
+                        "multimodal": _is_multimodal(embedding_config),
+                        "dimensions": embedding_dimension,
+                    },
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
@@ -849,7 +1319,7 @@ async def perform_embedding_health_check(
                 HEALTH_CHECK_TIMEOUT,
             )
             return JSONResponse(
-                status_code=500,
+                status_code=504,
                 content={
                     "status": "error",
                     "message": (
@@ -864,9 +1334,6 @@ async def perform_embedding_health_check(
                     },
                 },
             )
-        except Exception as e:
-            raise e
-
     except HTTPException as he:
         return JSONResponse(status_code=he.status_code, content=he.detail)
     except Exception as e:
@@ -879,7 +1346,7 @@ async def perform_embedding_health_check(
                 "message": f"Embedding health check failed: {clean_msg}",
                 "details": {
                     "provider": embedding_config.get("provider"),
-                    "model": embedding_config.get("configuration").get("model"),
+                    "model": embedding_config.get("configuration", {}).get("model"),
                     "error_type": type(e).__name__
                 },
             },
@@ -1319,8 +1786,8 @@ async def perform_stt_health_check(
 async def health_check(request: Request, model_type: str, model_config: dict = Body(...)) -> JSONResponse:
     """Health check endpoint to validate the health of the application."""
 
+    logger = request.app.container.logger()
     try:
-        logger = request.app.container.logger()
         logger.info(f"Health check endpoint called for {model_type}")
 
         if model_type == "embedding":
@@ -1352,6 +1819,20 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
             )
             return await perform_stt_health_check(model_config, logger)
 
+        logger.error("No health check implemented for model type %r", model_type)
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "error",
+                "message": (
+                    f"No health check exists for model type '{model_type}'. "
+                    f"Supported types: {', '.join(sorted(SUPPORTED_HEALTH_CHECK_TYPES))}."
+                ),
+                "details": {"modelType": model_type},
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
+
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}", exc_info=True)
         return JSONResponse(
@@ -1362,9 +1843,4 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
-
-    return JSONResponse(
-        status_code=200,
-        content={"status": "healthy", "message": "Application is responding"}
-    )
 

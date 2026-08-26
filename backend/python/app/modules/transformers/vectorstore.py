@@ -20,8 +20,6 @@ import uuid
 from typing import List, Optional
 
 from langchain_core.documents import Document
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage
 
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
@@ -33,7 +31,6 @@ from app.exceptions.indexing_exceptions import (
 )
 from app.models.blocks import Block, BlockType, BlocksContainer, SemanticMetadata
 from app.models.entities import Record
-from app.modules.extraction.prompt_template import prompt_for_image_description
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.embeddings.multimodal.config import MultimodalProviderConfig
@@ -58,13 +55,11 @@ from app.services.vector_db.models import (
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.utils.aimodels import (
     EmbeddingProvider,
-    coerce_message_content_to_text,
     get_default_embedding_model,
     get_embedding_model,
     is_local_cpu_embedding_provider,
 )
 from app.utils.image_utils import normalize_image_to_base64
-from app.utils.llm import get_llm
 
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 
@@ -468,14 +463,20 @@ class VectorStore(Transformer):
 
         Image ``page_content`` must never hold the raw base64 data URI — it is
         useless for lexical/BM25 search, bloats point payloads, and can leak
-        image bytes into DB text indexes. Prefer caption/footnote/annotation
-        metadata captured by parsers (e.g. markdown/HTML alt text); fall back
-        to an empty string when no textual description exists. The base64 URI
-        itself always remains recoverable from blob storage via blockId.
+        image bytes into DB text indexes. The base64 URI itself always remains
+        recoverable from blob storage via blockId.
+
+        Prefers the description `ImageDescriber` wrote before the record was
+        stored, since parser-captured captions are empty for most PDFs; falls
+        back to caption/footnote/annotation metadata (e.g. markdown/HTML alt
+        text), then to an empty string.
         """
         image_metadata = getattr(block, "image_metadata", None)
         if image_metadata is None:
             return ""
+        described = getattr(image_metadata, "description", None)
+        if isinstance(described, str) and described.strip():
+            return described.strip()
         parts: List[str] = []
         for field in ("captions", "footnotes", "annotations"):
             values = getattr(image_metadata, field, None)
@@ -530,33 +531,6 @@ class VectorStore(Transformer):
         finally:
             reset_membership_context(tokens)
         self.logger.debug("✅ Indexed record summary for record %s", record_id)
-
-    async def describe_image_async(self, base64_string: str, vlm: BaseChatModel) -> str:
-        message = HumanMessage(
-            content=[
-                {"type": "text", "text": prompt_for_image_description},
-                {"type": "image_url", "image_url": {"url": base64_string}},
-            ]
-        )
-        response = await vlm.ainvoke([message])
-        return coerce_message_content_to_text(response.content)
-
-    async def describe_images(
-        self, base64_images: List[str], vlm: BaseChatModel
-    ) -> List[dict]:
-        concurrency_limit = 10
-        semaphore = asyncio.Semaphore(concurrency_limit)
-
-        async def describe(i: int, b64: str) -> dict:
-            async with semaphore:
-                try:
-                    desc = await self.describe_image_async(b64, vlm)
-                    return {"index": i, "success": True, "description": desc.strip()}
-                except Exception as e:
-                    return {"index": i, "success": False, "error": str(e)}
-
-        tasks = [describe(i, img) for i, img in enumerate(base64_images)]
-        return await asyncio.gather(*tasks)
 
     # ------------------------------------------------------------------
     # Collection initialisation
@@ -1292,12 +1266,10 @@ class VectorStore(Transformer):
                 details={"error": str(e)},
             )
 
-        try:
-            llm, config = await get_llm(self.config_service, reasoning_effort="low")
-            is_multimodal_llm = config.get("isMultimodal")
-        except Exception as e:
-            raise IndexingError("Failed to get LLM: " + str(e), details={"error": str(e)})
-
+        # No LLM is resolved here any more: the only thing it was used for was
+        # describing images, which now happens before the record is stored
+        # (`ImageDescriber`). Text-only indexing no longer fails on a
+        # deployment with no chat model configured.
         blocks = block_containers.blocks
         block_groups = block_containers.block_groups
 
@@ -1412,45 +1384,37 @@ class VectorStore(Transformer):
                         b for b in image_blocks
                         if isinstance(b.data, dict) and b.data.get("uri")
                     ]
-                    images_uris = [b.data.get("uri") for b in valid_image_blocks]
-                    if images_uris:
-                        if is_multimodal_embedding:
-                            for block in valid_image_blocks:
+                    if valid_image_blocks:
+                        # `ImageDescriber` already wrote the prose before this
+                        # record was stored (see `SinkOrchestrator.index`), so
+                        # both branches read one description instead of each
+                        # deriving its own -- and the text-embedding branch no
+                        # longer pays a second vision call per image.
+                        for block in valid_image_blocks:
+                            description = self._image_block_description(block)
+                            point_metadata = {
+                                "virtualRecordId": virtual_record_id,
+                                "blockId": block.id,
+                                "blockIndex": block.index,
+                                "orgId": org_id,
+                                "isBlock": True,
+                                "isBlockGroup": False,
+                                "blockType": BlockType.IMAGE.value,
+                                "isImage": True,
+                            }
+                            if is_multimodal_embedding:
+                                documents_to_embed.append({
+                                    "image_uri": block.data.get("uri"),
+                                    "description": description,
+                                    "metadata": point_metadata,
+                                })
+                            elif description:
+                                # Text-only embeddings: the description IS the
+                                # image as far as this index is concerned, so
+                                # an image without one has nothing to embed.
                                 documents_to_embed.append(
-                                    {
-                                        "image_uri": block.data.get("uri"),
-                                        "description": self._image_block_description(block),
-                                        "metadata": {
-                                            "virtualRecordId": virtual_record_id,
-                                            "blockId": block.id,
-                                            "blockIndex": block.index,
-                                            "orgId": org_id,
-                                            "isBlock": True,
-                                            "isBlockGroup": False,
-                                            "blockType": BlockType.IMAGE.value,
-                                            "isImage": True,
-                                        },
-                                    }
+                                    Document(page_content=description, metadata=point_metadata),
                                 )
-                        elif is_multimodal_llm:
-                            description_results = await self.describe_images(images_uris, llm)
-                            for result, block in zip(description_results, valid_image_blocks):
-                                if result["success"]:
-                                    documents_to_embed.append(
-                                        Document(
-                                            page_content=result["description"],
-                                            metadata={
-                                                "virtualRecordId": virtual_record_id,
-                                                "blockId": block.id,
-                                                "blockIndex": block.index,
-                                                "orgId": org_id,
-                                                "isBlock": True,
-                                                "isBlockGroup": False,
-                                                "blockType": BlockType.IMAGE.value,
-                                                "isImage": True,
-                                            },
-                                        )
-                                    )
                 except Exception as e:
                     raise DocumentProcessingError(
                         "Failed to create image document objects: " + str(e),

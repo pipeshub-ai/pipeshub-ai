@@ -51,7 +51,7 @@ def _openai():
     return _named(
         "ChatOpenAI",
         openai_api_key=SecretStr("sk-x"),
-        model_name="gpt-5.4-mini",
+        model_name="gpt-5.6-luna",
         temperature=1.0,
         reasoning={"effort": "high"},
         use_responses_api=True,
@@ -137,7 +137,7 @@ class TestCapturedConfigReachesTheTransport:
     credentials but not behaviour silently sends a different request."""
 
     def test_openai_captures_reasoning_and_endpoint_choice(self) -> None:
-        t = build_direct_transport(_openai(), model_name="gpt-5.4-mini")
+        t = build_direct_transport(_openai(), model_name="gpt-5.6-luna")
         assert t._defaults.reasoning == {"effort": "high"}
         assert t._wants_responses() is True
 

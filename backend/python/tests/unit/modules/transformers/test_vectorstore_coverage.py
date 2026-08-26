@@ -231,13 +231,8 @@ class TestIndexDocumentsDeeper:
         container.blocks = [block]
         container.block_groups = []
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            with pytest.raises((RuntimeError, IndexingError)):
-                await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        with pytest.raises((RuntimeError, IndexingError)):
+            await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
     @pytest.mark.asyncio
     async def test_block_group_non_table_type_skipped(self):
@@ -252,14 +247,9 @@ class TestIndexDocumentsDeeper:
         container.blocks = []
         container.block_groups = [bg]
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "text/plain"
-            )
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "text/plain"
+        )
 
         # blocks=[] but block_groups=[bg], so "not blocks and not block_groups" is False
         # But no documents_to_embed -> returns True
@@ -280,14 +270,9 @@ class TestIndexDocumentsDeeper:
         container.blocks = [block]
         container.block_groups = []
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "image/png"
-            )
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "image/png"
+        )
 
         assert result is True
 
@@ -306,14 +291,9 @@ class TestIndexDocumentsDeeper:
         container.blocks = [block]
         container.block_groups = []
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "image/png"
-            )
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "image/png"
+        )
 
         assert result is True
 
@@ -332,14 +312,9 @@ class TestIndexDocumentsDeeper:
         container.blocks = []
         container.block_groups = [bg]
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "text/plain"
-            )
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "text/plain"
+        )
 
         assert result is True
 
@@ -359,14 +334,9 @@ class TestIndexDocumentsDeeper:
         container.blocks = [block]
         container.block_groups = []
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "image/png"
-            )
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "image/png"
+        )
 
         # images_uris would be [None] -> truthy, then proceeds
         assert result is True
@@ -386,15 +356,10 @@ class TestIndexDocumentsDeeper:
         container.blocks = [block]
         container.block_groups = []
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            # Not multimodal LLM either
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "image/png"
-            )
+        # Not multimodal LLM either
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "image/png"
+        )
 
         # images_uris has data but neither multimodal embedding nor multimodal LLM
         # -> no documents_to_embed from images -> returns True
@@ -416,14 +381,9 @@ class TestIndexDocumentsDeeper:
         container.blocks = [block]
         container.block_groups = []
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "image/png"
-            )
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "image/png"
+        )
 
         assert result is True
         vs._create_embeddings.assert_awaited_once()
@@ -444,44 +404,33 @@ class TestIndexDocumentsDeeper:
         container.blocks = [block]
         container.block_groups = []
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "text/plain"
-            )
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "text/plain"
+        )
 
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_image_describe_failure_skipped(self):
-        """When describe_images returns success=False for an image, it's skipped."""
+    async def test_image_without_a_description_is_skipped(self):
+        """An image block carrying no prose has nothing to embed under
+        text-only embeddings."""
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
-        vs.describe_images = AsyncMock(
-            return_value=[{"index": 0, "success": False, "error": "VLM failed"}]
-        )
 
         block = MagicMock()
         block.type = "image"
         block.index = 0
         block.data = {"uri": "base64data"}
+        block.image_metadata = None
 
         container = MagicMock()
         container.blocks = [block]
         container.block_groups = []
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "image/png"
-            )
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "image/png"
+        )
 
         # No documents_to_embed from failed descriptions -> returns True
         assert result is True

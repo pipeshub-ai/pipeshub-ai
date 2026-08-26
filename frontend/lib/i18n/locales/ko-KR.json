@@ -1344,7 +1344,7 @@
         "sectionTitle": "모델 역할 할당",
         "sectionDescription": "특정 작업에 전용 모델을 할당합니다. 할당하지 않으면 기본 모델이 사용됩니다.",
         "onboardingTitle": "모델을 어떻게 사용하시겠습니까?",
-        "onboardingTip": "요약 및 분류 같은 인덱싱 작업에는 작고 비용 효율적인 모델(예: gpt-5.4-mini, gemini-2.5-flash)을 할당하세요. 추론 품질이 가장 중요한 질의와 에이전트에는 가장 성능이 뛰어난 모델(예: gpt-5.5, claude-sonnet)을 사용하세요.",
+        "onboardingTip": "요약 및 분류 같은 인덱싱 작업에는 작고 비용 효율적인 모델(예: gpt-5.6-luna, gemini-2.5-flash)을 할당하세요. 추론 품질이 가장 중요한 질의와 에이전트에는 가장 성능이 뛰어난 모델(예: gpt-5.6-terra, claude-sonnet)을 사용하세요.",
         "queryRole": "질의 및 채팅",
         "queryRoleSubtitle": "검색, 에이전트 및 대화",
         "queryRoleDescription": "검색, 질문 답변, AI 에이전트 응답을 처리합니다. 가장 성능이 뛰어난 모델을 여기에 사용하세요.",

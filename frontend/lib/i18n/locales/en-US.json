@@ -1347,7 +1347,7 @@
         "sectionTitle": "Model Role Assignments",
         "sectionDescription": "Assign dedicated models for specific tasks. When not assigned, the default model is used.",
         "onboardingTitle": "How will your models be used?",
-        "onboardingTip": "Assign a small, cost-efficient model (e.g. gpt-5.4-mini, gemini-2.5-flash) for indexing tasks like summarisation and classification. Keep your most capable model (e.g. gpt-5.5 claude-sonnet) for query and agents where reasoning quality matters most.",
+        "onboardingTip": "Assign a small, cost-efficient model (e.g. gpt-5.6-luna, gemini-2.5-flash) for indexing tasks like summarisation and classification. Keep your most capable model (e.g. gpt-5.6-terra claude-sonnet) for query and agents where reasoning quality matters most.",
         "queryRole": "Query & Chat",
         "queryRoleSubtitle": "Search, agents & conversations",
         "queryRoleDescription": "Handles search, question answering, and AI agent responses. Use your most capable model here.",

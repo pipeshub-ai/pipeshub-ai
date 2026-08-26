@@ -787,44 +787,6 @@ class TestCreateEmbeddings:
 
         vs._process_document_chunks.assert_awaited_once()
         vs._process_image_embeddings.assert_not_awaited()
-
-
-# ===================================================================
-# describe_image_async / describe_images
-# ===================================================================
-
-class TestDescribeImages:
-    """Tests for VectorStore.describe_image_async and describe_images."""
-
-    @pytest.mark.asyncio
-    async def test_describe_image_async(self):
-        vs = _make_vectorstore()
-        mock_vlm = AsyncMock()
-        mock_vlm.ainvoke.return_value = MagicMock(content="A cat sitting on a desk")
-
-        result = await vs.describe_image_async("base64data", mock_vlm)
-        assert result == "A cat sitting on a desk"
-
-    @pytest.mark.asyncio
-    async def test_describe_images_success(self):
-        vs = _make_vectorstore()
-        mock_vlm = AsyncMock()
-        mock_vlm.ainvoke.return_value = MagicMock(content="Description")
-
-        results = await vs.describe_images(["img1", "img2"], mock_vlm)
-        assert len(results) == 2
-        assert results[0]["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_describe_images_failure(self):
-        vs = _make_vectorstore()
-        mock_vlm = AsyncMock()
-        mock_vlm.ainvoke.side_effect = RuntimeError("API error")
-
-        results = await vs.describe_images(["img1"], mock_vlm)
-        assert results[0]["success"] is False
-
-
 # ===================================================================
 # _create_custom_tokenizer
 # ===================================================================
@@ -843,12 +805,10 @@ class TestIndexDocuments:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(
-                BlocksContainer(blocks=[], block_groups=[]),
-                "org-1", "rec-1", "vr-1",
-            )
+        result = await vs.index_documents(
+            BlocksContainer(blocks=[], block_groups=[]),
+            "org-1", "rec-1", "vr-1",
+        )
 
         assert result is None
 
@@ -863,9 +823,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="text", format="txt", data="Hello world", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
         vs._create_embeddings.assert_awaited_once()
@@ -881,9 +839,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="text", format="txt", data="First sentence. Second sentence.", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
         chunks = vs._create_embeddings.call_args[0][0]
@@ -901,9 +857,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="image", format="bin", data={"uri": "base64data"}, comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
         chunks = vs._create_embeddings.call_args[0][0]
@@ -933,40 +887,60 @@ class TestIndexDocuments:
         )
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         chunks = vs._create_embeddings.call_args[0][0]
         image_chunk = next(c for c in chunks if isinstance(c, dict) and "image_uri" in c)
         assert image_chunk["description"] == "Architecture diagram"
 
     @pytest.mark.asyncio
-    async def test_image_blocks_with_multimodal_llm_describes(self):
-        """Image blocks described by LLM when embedding not multimodal but LLM is."""
+    async def test_image_blocks_embed_the_description_written_at_parse_time(self):
+        """With text-only embeddings the description IS the image as far as the
+        index is concerned. It is written before the record is stored (see
+        `ImageDescriber`), so indexing embeds it rather than paying a second
+        vision call for text it already has."""
+        from langchain_core.documents import Document
+
+        from app.models.blocks import Block, BlocksContainer, ImageMetadata
+        vs = _make_vectorstore()
+        vs.get_embedding_model_instance = AsyncMock(return_value=False)
+        vs._create_embeddings = AsyncMock()
+
+        block = Block(
+            index=0, type="image", format="bin", data={"uri": "base64data"}, comments=[],
+            image_metadata=ImageMetadata(description="A photo"),
+        )
+        container = BlocksContainer(blocks=[block], block_groups=[])
+
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+
+        assert result is True
+        chunks = vs._create_embeddings.call_args[0][0]
+        vlm_doc = next(c for c in chunks if isinstance(c, Document) and c.page_content == "A photo")
+        assert vlm_doc.metadata["blockType"] == "image"
+        assert vlm_doc.metadata["isImage"] is True
+
+    @pytest.mark.asyncio
+    async def test_image_block_without_a_description_is_not_embedded_as_text(self):
+        """Nothing to embed: an image with no prose and text-only embeddings
+        contributes no point rather than an empty one."""
         from langchain_core.documents import Document
 
         from app.models.blocks import Block, BlocksContainer
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
-        vs.describe_images = AsyncMock(return_value=[
-            {"index": 0, "success": True, "description": "A photo"}
-        ])
 
         block = Block(index=0, type="image", format="bin", data={"uri": "base64data"}, comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
-        assert result is True
-        vs.describe_images.assert_awaited_once()
-        chunks = vs._create_embeddings.call_args[0][0]
-        vlm_doc = next(c for c in chunks if isinstance(c, Document) and c.page_content == "A photo")
-        assert vlm_doc.metadata["blockType"] == "image"
-        assert vlm_doc.metadata["isImage"] is True
+        chunks = vs._create_embeddings.call_args[0][0] if vs._create_embeddings.call_args else []
+        assert not [
+            c for c in chunks
+            if isinstance(c, Document) and c.metadata.get("isImage")
+        ]
 
     @pytest.mark.asyncio
     async def test_table_block_groups_create_summary_embeddings(self):
@@ -981,9 +955,7 @@ class TestIndexDocuments:
         bg.data = {"table_summary": "Summary of the table"}
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
 
@@ -1003,9 +975,7 @@ class TestIndexDocuments:
         )
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
         from langchain_core.documents import Document
@@ -1025,9 +995,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="divider", format="txt", data="test", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
 
@@ -1043,9 +1011,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="heading", format="txt", data="Main Heading", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
 
@@ -1064,22 +1030,6 @@ class TestIndexDocuments:
             )
 
     @pytest.mark.asyncio
-    async def test_get_llm_failure_raises(self):
-        """Raises IndexingError when get_llm fails."""
-        from app.models.blocks import BlocksContainer
-        from app.exceptions.indexing_exceptions import IndexingError
-        vs = _make_vectorstore()
-        vs.get_embedding_model_instance = AsyncMock(return_value=False)
-
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.side_effect = RuntimeError("llm fail")
-            with pytest.raises(IndexingError, match="Failed to get LLM"):
-                await vs.index_documents(
-                    BlocksContainer(blocks=[], block_groups=[]),
-                    "org-1", "rec-1", "vr-1",
-                )
-
-    @pytest.mark.asyncio
     async def test_create_embeddings_failure_raises(self):
         """Raises IndexingError when _create_embeddings raises an unknown exception."""
         from app.models.blocks import Block, BlocksContainer
@@ -1092,10 +1042,8 @@ class TestIndexDocuments:
         block = Block(index=0, type="text", format="txt", data="Hello", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            with pytest.raises(IndexingError, match="Unexpected error during indexing"):
-                await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        with pytest.raises(IndexingError, match="Unexpected error during indexing"):
+            await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
     @pytest.mark.asyncio
     async def test_paragraph_blocks_processed_as_text(self):
@@ -1109,9 +1057,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="paragraph", format="txt", data="A paragraph", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
 
@@ -1127,9 +1073,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="quote", format="txt", data="A quote", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
 
@@ -1145,9 +1089,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="table_cell", format="txt", data={"cell": "value"}, comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         # table_cell blocks have no summary, so no documents to embed => True
         assert result is True
@@ -1853,63 +1795,6 @@ class TestCreateEmbeddings:
         doc = Document(page_content="text", metadata={})
         with pytest.raises(VectorStoreError, match="Failed to store documents in vector store"):
             await vs._create_embeddings([doc], "rec-1", "vr-1")
-
-
-# ===================================================================
-# describe_image_async & describe_images (lines 914-943)
-# ===================================================================
-
-class TestDescribeImages:
-    """Tests for describe_image_async and describe_images."""
-
-    @pytest.mark.asyncio
-    async def test_describe_image_async(self):
-        """Should invoke VLM and return content."""
-        vs = _make_vectorstore()
-        mock_vlm = AsyncMock()
-        mock_vlm.ainvoke.return_value = MagicMock(content="A diagram showing flow.")
-        result = await vs.describe_image_async("base64data", mock_vlm)
-        assert result == "A diagram showing flow."
-
-    @pytest.mark.asyncio
-    async def test_describe_images_success_and_failure(self):
-        """Should return success and failure results."""
-        vs = _make_vectorstore()
-        mock_vlm = AsyncMock()
-        # First call succeeds, second fails
-        mock_vlm.ainvoke = AsyncMock(side_effect=[
-            MagicMock(content="Description 1"),
-            Exception("VLM failed"),
-        ])
-        results = await vs.describe_images(["img1", "img2"], mock_vlm)
-        assert len(results) == 2
-        assert results[0]["success"] is True
-        assert results[1]["success"] is False
-
-    @pytest.mark.asyncio
-    async def test_describe_image_async_flattens_content_blocks(self):
-        """OpenAI's Responses API returns `content` as a list of blocks
-        (reasoning + text) rather than a plain string."""
-        vs = _make_vectorstore()
-        mock_vlm = AsyncMock()
-        mock_vlm.ainvoke.return_value = MagicMock(content=[
-            {"type": "reasoning", "summary": [], "id": "rs_1"},
-            {"type": "text", "text": "A diagram showing flow.", "annotations": []},
-        ])
-        result = await vs.describe_image_async("base64data", mock_vlm)
-        assert result == "A diagram showing flow."
-
-    @pytest.mark.asyncio
-    async def test_describe_images_with_content_blocks(self):
-        vs = _make_vectorstore()
-        mock_vlm = AsyncMock()
-        mock_vlm.ainvoke.return_value = MagicMock(content=[
-            {"type": "text", "text": "  A red square.  ", "annotations": []},
-        ])
-        results = await vs.describe_images(["img1"], mock_vlm)
-        assert results == [{"index": 0, "success": True, "description": "A red square."}]
-
-
 # ===================================================================
 # index_documents additional paths (lines 1051-1052, 1064->1061, etc.)
 # ===================================================================
@@ -1932,9 +1817,7 @@ class TestIndexDocumentsAdditional:
         )
         container = BlocksContainer(blocks=[img_block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
         # Should have called _create_embeddings with image dict
@@ -1942,29 +1825,25 @@ class TestIndexDocumentsAdditional:
         assert any(isinstance(d, dict) and "image_uri" in d for d in args[0])
 
     @pytest.mark.asyncio
-    async def test_image_blocks_with_multimodal_llm(self):
-        """Image blocks with multimodal LLM should describe and embed."""
-        from app.models.blocks import Block, BlocksContainer
+    async def test_image_blocks_index_without_a_second_vision_call(self):
+        """The vision call happens once, before the record is stored; indexing
+        reads what it wrote."""
+        from app.models.blocks import Block, BlocksContainer, ImageMetadata
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)  # not multimodal embedding
         vs._create_embeddings = AsyncMock()
-        vs.describe_images = AsyncMock(return_value=[
-            {"index": 0, "success": True, "description": "A cat"},
-        ])
         vs.nlp = MagicMock(return_value=MagicMock(sents=[]))
 
         img_block = Block(
             index=0, type="image", format="base64",
-            data={"uri": "data:image/png;base64,abc"}, comments=[]
+            data={"uri": "data:image/png;base64,abc"}, comments=[],
+            image_metadata=ImageMetadata(description="A cat"),
         )
         container = BlocksContainer(blocks=[img_block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
-        vs.describe_images.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_table_blocks_with_summary(self):
@@ -1985,9 +1864,7 @@ class TestIndexDocumentsAdditional:
         )
         container = BlocksContainer(blocks=[table_row], block_groups=[table_bg])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
         from langchain_core.documents import Document
@@ -2011,9 +1888,7 @@ class TestIndexDocumentsAdditional:
 
         container = BlocksContainer(blocks=[], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is None
 
@@ -2041,15 +1916,13 @@ class TestIndexDocumentsAdditional:
             topics=["onboarding"],
         )
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(
-                container,
-                "org-1",
-                "rec-1",
-                "vr-1",
-                record=record,
-            )
+        result = await vs.index_documents(
+            container,
+            "org-1",
+            "rec-1",
+            "vr-1",
+            record=record,
+        )
 
         assert result is True
         from app.modules.transformers.vectorstore import VectorStore as VS
@@ -2083,20 +1956,6 @@ class TestIndexDocumentsAdditional:
             await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
     @pytest.mark.asyncio
-    async def test_get_llm_failure(self):
-        """When get_llm fails, should raise IndexingError."""
-        from app.exceptions.indexing_exceptions import IndexingError
-        from app.models.blocks import BlocksContainer
-        vs = _make_vectorstore()
-        vs.get_embedding_model_instance = AsyncMock(return_value=False)
-
-        container = BlocksContainer(blocks=[], block_groups=[])
-
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock, side_effect=Exception("LLM failed")):
-            with pytest.raises(IndexingError, match="Failed to get LLM"):
-                await vs.index_documents(container, "org-1", "rec-1", "vr-1")
-
-    @pytest.mark.asyncio
     async def test_no_documents_to_embed_returns_true(self):
         """When image blocks exist but have no uri, no documents created, returns True."""
         from app.models.blocks import Block, BlocksContainer
@@ -2108,9 +1967,7 @@ class TestIndexDocumentsAdditional:
         block = Block(index=0, type="image", format="base64", data={"no_uri": True}, comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
 
@@ -2127,10 +1984,8 @@ class TestIndexDocumentsAdditional:
         block = Block(index=0, type="text", format="txt", data="Hello world", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            with pytest.raises(IndexingError, match="Unexpected error during indexing"):
-                await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        with pytest.raises(IndexingError, match="Unexpected error during indexing"):
+            await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
 
 # ===================================================================
@@ -2469,25 +2324,22 @@ class TestGetEmbeddingModelInstanceUnknown:
 # ===================================================================
 
 class TestIndexDocumentsImageDescription:
-    """Test image description path where some descriptions fail."""
+    """Images whose description could not be written earlier in the pipeline."""
 
     @pytest.mark.asyncio
-    async def test_image_description_failure_skipped(self):
-        """Image descriptions that fail are skipped - returns True with no embeddings."""
+    async def test_image_without_a_description_is_skipped(self):
+        """A vision call that failed before the blob write leaves the block with
+        no prose; with text-only embeddings there is nothing to embed, and the
+        record still indexes."""
         from app.models.blocks import Block, BlocksContainer
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
-        vs.describe_images = AsyncMock(return_value=[
-            {"index": 0, "success": False, "error": "API error"}
-        ])
 
         block = Block(index=0, type="image", format="bin", data={"uri": "base64data"}, comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         # When all image descriptions fail and no text blocks, returns True (no docs to embed)
         assert result is True
@@ -2505,9 +2357,7 @@ class TestIndexDocumentsImageDescription:
         bg.data = {"table_summary": "Revenue data by quarter"}
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
         chunks = vs._create_embeddings.call_args[0][0]
@@ -2525,9 +2375,7 @@ class TestIndexDocumentsImageDescription:
         block = Block(index=0, type="textsection", format="txt", data="A text section", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
         vs._create_embeddings.assert_awaited_once()
@@ -2558,11 +2406,9 @@ class TestRecordSummaryEdgeCases:
             categories=[],
         )
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", record=record,
-            )
+        await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", record=record,
+        )
 
         chunks = vs._create_embeddings.await_args.args[0]
         summary_docs = [
@@ -2590,11 +2436,9 @@ class TestRecordSummaryEdgeCases:
         record = MagicMock()
         record.semantic_metadata = None
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1",
-            )
+        await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1",
+        )
 
         chunks = vs._create_embeddings.await_args.args[0]
         summary_docs = [
