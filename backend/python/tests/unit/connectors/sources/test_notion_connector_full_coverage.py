@@ -2398,10 +2398,10 @@ class TestResolveBlockParentRecursive:
 
 
 # ===================================================================
-# _get_database_parent_page_id
+# _get_database_parent_ref
 # ===================================================================
 
-class TestGetDatabaseParentPageId:
+class TestGetDatabaseParentRef:
     @pytest.mark.asyncio
     async def test_page_parent(self):
         conn = _make_connector()
@@ -2410,8 +2410,8 @@ class TestGetDatabaseParentPageId:
             "parent": {"type": "page_id", "page_id": "page-p"}
         }))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
-        result = await conn._get_database_parent_page_id("db-1")
-        assert result == "page-p"
+        result = await conn._get_database_parent_ref("db-1")
+        assert result == ("page-p", RecordType.WEBPAGE)
 
     @pytest.mark.asyncio
     async def test_database_parent(self):
@@ -2421,8 +2421,8 @@ class TestGetDatabaseParentPageId:
             "parent": {"type": "database_id", "database_id": "db-p"}
         }))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
-        result = await conn._get_database_parent_page_id("db-1")
-        assert result == "db-p"
+        result = await conn._get_database_parent_ref("db-1")
+        assert result == ("db-p", RecordType.DATABASE)
 
     @pytest.mark.asyncio
     async def test_block_parent(self):
@@ -2433,8 +2433,8 @@ class TestGetDatabaseParentPageId:
         }))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
         conn._resolve_block_parent_recursive = AsyncMock(return_value=("resolved-page", RecordType.WEBPAGE))
-        result = await conn._get_database_parent_page_id("db-1")
-        assert result == "resolved-page"
+        result = await conn._get_database_parent_ref("db-1")
+        assert result == ("resolved-page", RecordType.WEBPAGE)
 
     @pytest.mark.asyncio
     async def test_data_source_parent(self):
@@ -2444,8 +2444,8 @@ class TestGetDatabaseParentPageId:
             "parent": {"type": "data_source_id", "data_source_id": "ds-p"}
         }))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
-        result = await conn._get_database_parent_page_id("db-1")
-        assert result == "ds-p"
+        result = await conn._get_database_parent_ref("db-1")
+        assert result == ("ds-p", RecordType.DATASOURCE)
 
     @pytest.mark.asyncio
     async def test_workspace_parent(self):
@@ -2455,8 +2455,8 @@ class TestGetDatabaseParentPageId:
             "parent": {"type": "workspace"}
         }))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
-        result = await conn._get_database_parent_page_id("db-1")
-        assert result is None
+        result = await conn._get_database_parent_ref("db-1")
+        assert result == (None, None)
 
     @pytest.mark.asyncio
     async def test_api_failure(self):
@@ -2465,14 +2465,14 @@ class TestGetDatabaseParentPageId:
         ds.retrieve_database = AsyncMock(return_value=_api_resp(False, error="rate limited"))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
         with pytest.raises(RuntimeError, match="Failed to retrieve database"):
-            await conn._get_database_parent_page_id("db-1")
+            await conn._get_database_parent_ref("db-1")
 
     @pytest.mark.asyncio
     async def test_exception(self):
         conn = _make_connector()
         conn._get_fresh_datasource = AsyncMock(side_effect=Exception("fail"))
         with pytest.raises(Exception, match="fail"):
-            await conn._get_database_parent_page_id("db-1")
+            await conn._get_database_parent_ref("db-1")
 
     @pytest.mark.asyncio
     async def test_block_parent_no_block_id(self):
@@ -2482,8 +2482,8 @@ class TestGetDatabaseParentPageId:
             "parent": {"type": "block_id"}
         }))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
-        result = await conn._get_database_parent_page_id("db-1")
-        assert result is None
+        result = await conn._get_database_parent_ref("db-1")
+        assert result == (None, None)
 
 
 # ===================================================================
