@@ -50,6 +50,7 @@ jobs:
       PIPESHUB_DEPLOY_TYPE: slim
       PIPESHUB_VERSION: slim
       PIPESHUB_SMOKE_PORT: 3997
+      PUBLISHED_HUB_SMOKE_DIAG: ${{ github.workspace }}/published-hub-smoke-diag
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -59,17 +60,28 @@ jobs:
       - name: First-run smoke
         run: bash deployment/docker-compose/tests/published_hub_smoke.sh
 
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-hub-smoke-slim
+          path: published-hub-smoke-diag/
+          if-no-files-found: ignore
+
   full:
     name: full (Hub latest)
     if: >-
       github.event_name != 'pull_request'
       && (github.event_name != 'workflow_dispatch' || github.event.inputs.profiles != 'slim')
+    # 4 CPU is the installer floor. Full adds Kafka + Zookeeper on the same
+    # size; if this job flakes on RAM, raise the runner before the timeout.
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
     timeout-minutes: 50
     env:
       PIPESHUB_DEPLOY_TYPE: full
       PIPESHUB_VERSION: latest
       PIPESHUB_SMOKE_PORT: 3998
+      PUBLISHED_HUB_SMOKE_DIAG: ${{ github.workspace }}/published-hub-smoke-diag
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -78,3 +90,11 @@ jobs:
 
       - name: First-run smoke
         run: bash deployment/docker-compose/tests/published_hub_smoke.sh
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-hub-smoke-full
+          path: published-hub-smoke-diag/
+          if-no-files-found: ignore
