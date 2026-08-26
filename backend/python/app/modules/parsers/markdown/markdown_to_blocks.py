@@ -27,7 +27,7 @@ from app.modules.parsers.text_splitting import split_long_text
 
 _MD_IMAGE_RE = re.compile(
     r'!\[((?:[^\[\]]|\[[^\]]*\])*)\]\('
-    r'(data:(?:[^"\s)]+|\s+(?!"[^"]*"\s*\))|"[^")]*)*|[^\s)]+)'
+    r'(data:(?:[^"\s)]|\s+(?!"[^"]*"\s*\))|"[^")]*)*|[^\s)]+)'
     r'(?:\s+"[^"]*")?\)'
 )
 _HTML_IMG_ALT_RE = re.compile(
