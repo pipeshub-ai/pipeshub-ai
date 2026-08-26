@@ -174,12 +174,13 @@ if [[ -z "$APP_ID" ]]; then
 fi
 
 GOT_IMAGE="$(docker inspect "$APP_ID" --format '{{.Config.Image}}' 2>/dev/null || true)"
-case "$GOT_IMAGE" in
-  *"${EXPECTED_IMAGE_PREFIX}:${IMAGE_TAG}"*) ;;
-  *)
-    die "expected image ${EXPECTED_IMAGE_PREFIX}:${IMAGE_TAG}, container is running ${GOT_IMAGE:-unknown}"
-    ;;
-esac
+# Allow docker.io/ prefix and a digest suffix. Do not accept a longer tag
+# (pipeshubai/pipeshub-ai:latest-canary must not pass IMAGE_TAG=latest).
+_got_image="${GOT_IMAGE#docker.io/}"
+_got_image="${_got_image%%@*}"
+if [[ "$_got_image" != "${EXPECTED_IMAGE_PREFIX}:${IMAGE_TAG}" ]]; then
+  die "expected image ${EXPECTED_IMAGE_PREFIX}:${IMAGE_TAG}, container is running ${GOT_IMAGE:-unknown}"
+fi
 
 RESTARTS="$(docker inspect "$APP_ID" --format '{{.RestartCount}}' 2>/dev/null || echo 0)"
 if [[ "${RESTARTS:-0}" -ge 2 ]]; then
@@ -191,7 +192,7 @@ if ! curl --connect-timeout 10 --max-time 30 -sf "$HEALTH_URL" -o "$WORK/health.
   die "host cannot reach ${HEALTH_URL}"
 fi
 
-python3 - "$WORK/health.json" <<'PY'
+if ! python3 - "$WORK/health.json" <<'PY'
 import json, sys
 path = sys.argv[1]
 with open(path, encoding="utf-8") as fh:
@@ -200,11 +201,16 @@ services = data.get("services") or {}
 required = ("query", "connector", "indexing", "docling")
 missing = [k for k in required if services.get(k) != "healthy"]
 if missing:
-    raise SystemExit(
+    print(
         "published_hub_smoke: core services not healthy: "
-        + ", ".join(f"{k}={services.get(k)!r}" for k in missing)
+        + ", ".join(f"{k}={services.get(k)!r}" for k in missing),
+        file=sys.stderr,
     )
+    sys.exit(1)
 PY
+then
+  die "core services are not healthy at ${HEALTH_URL}"
+fi
 
 UI_CODE="$(curl --connect-timeout 10 --max-time 30 -s -o /dev/null -w '%{http_code}' \
   "http://localhost:${PORT}/" || echo fail)"
