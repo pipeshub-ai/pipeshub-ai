@@ -1,3 +1,5 @@
+'use client';
+
 export {
   useAuthStore,
   type User,
