@@ -101,6 +101,8 @@ BATCH_PROCESSING_SIZE = 100
 # Zendesk rejects an incremental start_time inside the last minute.
 INCREMENTAL_SAFETY_LAG_SECONDS = 60
 RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+HTTP_ERROR_STATUS = 400
+CDN_FETCH_TIMEOUT_SECONDS = 60.0
 # Zendesk reports trashed tickets in the incremental export under this status.
 DELETED_TICKET_STATUS = "deleted"
 # Base64 inflates by a third and the result is held in the record body.
@@ -357,7 +359,17 @@ class ZendeskConnector(BaseConnector):
             )
         self.logger.info(f"Zendesk: synced {len(org_user_groups)} organizations")
 
-        ticket_count = await self._sync_tickets()
+        # Without those AppUserGroups the group grant is dropped, and the advanced sync
+        # point would stop any later run repairing it.
+        if users_complete and memberships_complete:
+            ticket_count = await self._sync_tickets()
+        else:
+            ticket_count = 0
+            self.logger.error(
+                "Zendesk: skipping ticket sync — group membership was not written, so "
+                "every ticket would land without its group grant and the advanced sync "
+                "point would stop any later run from repairing it"
+            )
         article_count = await self._sync_help_center_articles()
         self.logger.info(
             f"Zendesk sync completed for connector {self.connector_id}: "
@@ -432,7 +444,7 @@ class ZendeskConnector(BaseConnector):
         bool,
     ]:
         datasource = await self._get_fresh_datasource()
-        groups_data = await self._fetch_paginated_list(
+        groups_data, groups_complete = await self._fetch_paginated_list_checked(
             datasource.list_groups,
             "groups",
             exclude_deleted=True,
@@ -491,7 +503,8 @@ class ZendeskConnector(BaseConnector):
             ]
             record_groups.append((record_group, permissions))
 
-        return record_groups, user_groups, memberships_complete
+        # Both feed a rebuild-from-scratch that would revoke whatever fell off the end.
+        return record_groups, user_groups, groups_complete and memberships_complete
 
     async def _fetch_organizations(self) -> Tuple[List[Tuple[AppUserGroup, List[AppUser]]], bool]:
         """Sync Zendesk organizations as user groups.
@@ -600,8 +613,17 @@ class ZendeskConnector(BaseConnector):
                 if record_tuple:
                     records_with_permissions.append(record_tuple)
             if records_with_permissions:
-                await self.data_entities_processor.on_new_records(records_with_permissions)
+                for start in range(0, len(records_with_permissions), BATCH_PROCESSING_SIZE):
+                    await self.data_entities_processor.on_new_records(
+                        records_with_permissions[start:start + BATCH_PROCESSING_SIZE]
+                    )
                 synced += len(records_with_permissions)
+                # An unchanged ticket stays COMPLETED, so no index event fires and
+                # stream_record — which rebuilds the attachments — never runs.
+                if self._reemit_unchanged:
+                    await self.data_entities_processor.reindex_existing_records(
+                        [record for record, _ in records_with_permissions]
+                    )
 
             # Cursor export returns no end_time; resume from the newest ticket seen.
             for ticket_data in tickets:
@@ -653,11 +675,8 @@ class ZendeskConnector(BaseConnector):
     async def _resolve_removable_record_ids(self, tickets: List[Dict[str, Any]]) -> List[str]:
         """Record ids for tickets that must not stay in the graph.
 
-        Covers deletion at source and tickets the filters no longer admit. Narrowing
-        a filter marks the connector pendingFullSync, so the next export replays every
-        ticket and the out-of-scope ones land here. Skipping them instead would leave
-        the records behind: unreachable from the App, so the UI count looks right,
-        but still in the vector store and still answering queries.
+        Deleted at source, or no longer admitted by the filters. Skipping them instead
+        leaves the records unreachable but still answering queries from the vector store.
         """
         record_ids: List[str] = []
         removable = [t for t in tickets if t.get("id") and not self._is_ticket_in_scope(t)]
@@ -708,7 +727,14 @@ class ZendeskConnector(BaseConnector):
         status = self.value_mapper.map_status(ticket_data.get("status")) or Status.UNKNOWN
         priority = self.value_mapper.map_priority(ticket_data.get("priority")) or Priority.UNKNOWN
         item_type = self.value_mapper.map_type(ticket_data.get("type")) or ItemType.UNKNOWN
-        external_group_id = f"group_{group_id}" if group_id else None
+        # A group we never synced would be auto-created unnamed, org-less and App-less.
+        known_group = group_id is not None and str(group_id) in self._group_id_to_data
+        external_group_id = f"group_{group_id}" if known_group else None
+        if group_id and not known_group:
+            self.logger.warning(
+                "Zendesk: ticket %s references unknown group %s — filing it without a "
+                "record group rather than inventing one", ticket_id, group_id,
+            )
 
         record = TicketRecord(
             id=record_id,
@@ -744,6 +770,7 @@ class ZendeskConnector(BaseConnector):
             related_external_records=self._parse_ticket_links(ticket_data),
             labels=ticket_data.get("tags") or [],
             indexing_status=ProgressStatus.NOT_STARTED.value,
+            preview_renderable=False,
         )
         permissions = self._record_permissions(
             group_id, requester, ticket_data.get("organization_id")
@@ -788,16 +815,30 @@ class ZendeskConnector(BaseConnector):
             return 0
 
         # Sections first: a record with no record group is unreachable from the App.
-        await self._sync_help_center_sections()
+        if not await self._sync_help_center_sections():
+            return 0
 
         datasource = await self._get_fresh_datasource()
-        articles = await self._fetch_paginated_list(
+        articles, articles_complete = await self._fetch_paginated_list_checked(
             datasource.list_articles,
             "articles",
             sort_by="updated_at",
             sort_order="asc",
             include="users,sections,categories",
         )
+        if not articles_complete:
+            # A short list would read as "deleted" to the removal pass below.
+            self.logger.error("Zendesk: article list truncated — skipping this pass")
+            return 0
+        removed_ids = await self._resolve_removable_article_ids(articles)
+        if removed_ids:
+            await self.data_entities_processor.on_records_deleted_cascade(
+                removed_ids, self.connector_id
+            )
+            self.logger.info(
+                f"Zendesk: removed {len(removed_ids)} articles no longer published org-wide"
+            )
+
         records_with_permissions: List[Tuple[Record, List[Permission]]] = []
         for article_data in articles:
             record_tuple = await self._article_to_record(article_data)
@@ -809,9 +850,17 @@ class ZendeskConnector(BaseConnector):
             )
         return len(records_with_permissions)
 
-    async def _sync_help_center_sections(self) -> None:
+    async def _sync_help_center_sections(self) -> bool:
         datasource = await self._get_fresh_datasource()
-        sections = await self._fetch_paginated_list(datasource.list_sections, "sections")
+        sections, sections_complete = await self._fetch_paginated_list_checked(
+            datasource.list_sections, "sections"
+        )
+        if not sections_complete:
+            self.logger.error(
+                "Zendesk: section list truncated — articles under the missing sections "
+                "would be filed under an invented record group, so skipping this pass"
+            )
+            return False
         record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
         for section_data in sections:
             section_id = section_data.get("id")
@@ -840,23 +889,49 @@ class ZendeskConnector(BaseConnector):
         if record_groups:
             await self.data_entities_processor.on_new_record_groups(record_groups)
         self.logger.info(f"Zendesk: synced {len(record_groups)} Help Center sections")
+        return True
+
+    def _is_article_in_scope(self, article_data: Dict[str, Any]) -> bool:
+        """Whether this article may be published to the whole tenant.
+
+        user_segment_id is the article's entire ACL and segments are not synced, so one
+        that becomes restricted must lose the org-wide grant it already has.
+        """
+        if article_data.get("draft"):
+            return False
+        if article_data.get("user_segment_id") is not None or article_data.get("user_segment_ids"):
+            return False
+        return self._is_allowed_by_date_filters(
+            self._parse_datetime(article_data.get("created_at")),
+            self._parse_datetime(article_data.get("updated_at")),
+        )
+
+    async def _resolve_removable_article_ids(self, articles: List[Dict[str, Any]]) -> List[str]:
+        """Record ids for articles that must not stay published."""
+        record_ids: List[str] = []
+        removable = [a for a in articles if a.get("id") and not self._is_article_in_scope(a)]
+        if not removable:
+            return record_ids
+        async with self.data_store_provider.transaction() as tx_store:
+            for article_data in removable:
+                existing = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=f"article_{article_data['id']}",
+                )
+                if existing:
+                    record_ids.append(existing.id)
+        return record_ids
 
     async def _article_to_record(self, article_data: Dict[str, Any]) -> Optional[Tuple[Record, List[Permission]]]:
         article_id = article_data.get("id")
         if not article_id:
             return None
 
-        # user_segment_id is the article's whole ACL. Restricted articles and drafts
-        # are skipped, not published — segments need roles this connector has no sync for.
-        if article_data.get("draft"):
-            return None
-        if article_data.get("user_segment_id") is not None or article_data.get("user_segment_ids"):
+        if not self._is_article_in_scope(article_data):
             return None
 
         created_at = self._parse_datetime(article_data.get("created_at"))
         updated_at = self._parse_datetime(article_data.get("updated_at"))
-        if not self._is_allowed_by_date_filters(created_at, updated_at):
-            return None
 
         existing_record = None
         async with self.data_store_provider.transaction() as tx_store:
@@ -895,6 +970,7 @@ class ZendeskConnector(BaseConnector):
             source_created_at=created_at,
             source_updated_at=updated_at,
             indexing_status=ProgressStatus.NOT_STARTED.value,
+            preview_renderable=False,
         )
         # Restricted articles were filtered out above, so ORG is the right grant.
         permissions = [
@@ -1084,6 +1160,8 @@ class ZendeskConnector(BaseConnector):
                 record_type=RecordType.FILE,
                 external_record_id=external_id,
                 parent_external_record_id=parent_record.external_record_id,
+                # Omitted, the processor writes PARENT_CHILD instead of ATTACHMENT.
+                parent_record_type=parent_record.record_type,
                 external_record_group_id=parent_record.external_record_group_id,
                 record_group_type=parent_record.record_group_type,
                 version=version,
@@ -1122,7 +1200,6 @@ class ZendeskConnector(BaseConnector):
         return child_records
 
     async def _process_file_for_streaming(self, record: Record) -> bytes:
-        datasource = await self._get_fresh_datasource()
         content_url = await self._resolve_attachment_url(record)
         if not content_url:
             raise ValueError("Zendesk attachment missing content URL")
@@ -1130,16 +1207,28 @@ class ZendeskConnector(BaseConnector):
             raise ValueError(
                 f"Refusing to fetch Zendesk attachment from untrusted host: {urlparse(content_url).hostname}"
             )
-        # CDN URLs are pre-signed and the host is shared across tenants.
-        headers = (
-            datasource.http.headers.copy()
-            if self._is_tenant_api_url(content_url)
-            else {}
-        )
-        response = await datasource.http.execute(HTTPRequest(url=content_url, method="GET", headers=headers))
-        if response.status >= 400:
-            raise Exception(f"Failed to download Zendesk attachment {record.external_record_id}: {response.status}")
-        return response.bytes()
+
+        if self._is_tenant_api_url(content_url):
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.http.execute(HTTPRequest(url=content_url, method="GET"))
+            if response.status >= HTTP_ERROR_STATUS:
+                raise Exception(
+                    f"Failed to download Zendesk attachment {record.external_record_id}: {response.status}"
+                )
+            return response.bytes()
+
+        # Shared-tenant CDN. HTTPClient merges its own headers, so the credential can
+        # only be withheld by a client that never had it.
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=CDN_FETCH_TIMEOUT_SECONDS
+        ) as cdn_client:
+            cdn_response = await cdn_client.get(content_url)
+        if cdn_response.status_code >= HTTP_ERROR_STATUS:
+            raise Exception(
+                f"Failed to download Zendesk attachment {record.external_record_id}: "
+                f"{cdn_response.status_code}"
+            )
+        return cdn_response.content
 
     async def _resolve_attachment_url(self, record: Record) -> Optional[str]:
         """Ask Zendesk for the attachment's current content_url.
@@ -1273,12 +1362,9 @@ class ZendeskConnector(BaseConnector):
     async def _call_incremental(self, method_name: str, **kwargs: Any) -> Any:
         """Incremental exports are capped at 10 req/min, so 429s are routine here.
 
-        Resolves the data source per page, not once per stage: at that rate a large
-        export outlives the ~30 minute OAuth token, and a client pinned for the whole
-        stage would 401 partway through with no way to pick up the rotated token.
-
-        Returns None once retries are exhausted; the caller must then treat the
-        export as truncated rather than as a complete result set.
+        Resolved per page, not per stage: at that rate a large export outlives the
+        ~30 minute OAuth token. Returns None once retries are exhausted, which the
+        caller must treat as a truncated export.
         """
         datasource = await self._get_fresh_datasource()
         try:
@@ -1373,10 +1459,8 @@ class ZendeskConnector(BaseConnector):
     def _org_shares_tickets(self, organization_id: Any) -> bool:
         """Whether an organization's members may read each other's tickets.
 
-        Zendesk gates that on the organization's own ``shared_tickets`` flag, which is
-        false by default. Granting org-wide without checking it hands every end user in
-        a company every ticket that company ever raised. An organization missing from
-        the cache means the export did not reach it, so withhold rather than guess.
+        Zendesk's ``shared_tickets`` is false by default; an org missing from the cache
+        was never exported, so withhold rather than guess.
         """
         org_data = self._org_id_to_data.get(str(organization_id))
         if org_data is None:
