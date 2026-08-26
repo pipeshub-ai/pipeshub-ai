@@ -49,9 +49,10 @@ import os
 import sys
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncGenerator
 
 import pytest
+import pytest_asyncio
 
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
@@ -237,6 +238,7 @@ class TestNotionFullSync:
         # File ids come from block traversal, so a concurrent run's attachments cannot be
         # recognised by title the way its pages can. Only relax this when that run has
         # already been detected above, and name what was dropped so the signal is not lost.
+        foreign_files: set[str] = set()
         if foreign_pages or foreign_data_sources:
             foreign_files = graph_files - notion_seed.expected_file_ids
             if foreign_files:
@@ -257,8 +259,11 @@ class TestNotionFullSync:
         )
 
         # Archived page / database were created then trashed — they must never have synced.
+        # The database's *data source* is what the connector would record, and it is a
+        # different id: asserting on archived_db_id compared a database id against a set of
+        # data-source ids, which can never match and so never caught anything.
         assert notion_seed.archived_page_id not in graph_pages
-        assert notion_seed.archived_db_id not in graph_data_sources
+        assert notion_seed.archived_data_source_id not in graph_data_sources
 
         # Pagination is only proven if the seed actually exceeds the connector's page_size of 20.
         assert len(graph_pages) > 20, (
@@ -270,8 +275,16 @@ class TestNotionFullSync:
 
         # Structural invariants (graph self-consistency, no Notion dependency).
         total = await graph_provider.count_records(connector_id, scoped=True)
-        assert total == len(graph_pages) + len(graph_data_sources) + len(graph_files), (
-            f"scoped record total {total} != pages+data_sources+files (unexpected record types)"
+        # The three sets above had a concurrent run's objects removed; this count did not,
+        # so drop the same objects here or the comparison measures the other run instead.
+        # The edge invariants below deliberately keep the raw total: every record needs its
+        # edges, whichever run created it.
+        foreign_total = len(foreign_pages) + len(foreign_data_sources) + len(foreign_files)
+        assert total - foreign_total == (
+            len(graph_pages) + len(graph_data_sources) + len(graph_files)
+        ), (
+            f"scoped record total {total} (minus {foreign_total} from a concurrent run) "
+            f"!= pages+data_sources+files (unexpected record types)"
         )
         rg_edges = await graph_provider.count_record_group_edges(connector_id)
         assert rg_edges == total, (
@@ -1148,6 +1161,130 @@ class TestNotionStreaming:
 # =============================================================================
 
 
+@pytest_asyncio.fixture(scope="class", loop_scope="session")
+async def incr_additions(
+    notion_connector: dict[str, Any],
+    notion_seed: NotionSeed,
+    notion_source_helper: NotionSourceHelper,
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """One create-and-sync cycle shared by the purely *additive* incremental cases.
+
+    TC-INCR-PAGE-001 / DS-001 / DS-004 / CMT-001 / CMT-002 each used to create its own
+    object, wait out Notion's search index, and run its own incremental sync — five ~40s
+    syncs and five index waits to answer five questions that never look at each other's
+    objects. Creating all five up front and syncing once is safe here for two reasons that
+    must keep holding:
+
+    1. **The objects are disjoint.** Each case asserts on an id it alone created; none
+       mutates anything another case reads.
+    2. **No assertion is a global count.** Every one is "this record has these fields /
+       edges / streamed text", so extra records in the same sync cannot change an outcome.
+
+    Deliberately NOT extended to the mutation cases (PAGE-002/003, DS-002/003, PAGE-005,
+    ATT-001/002) or to TestNotionDeltaSync. Those assert on a before→after transition, and
+    TC-DELTA-001 asserts that an *untouched* record is not rewritten: batching unrelated
+    writes into its sync window would leave it green while testing nothing.
+
+    The cost of sharing is shared failure — if the sync itself breaks, all five report. That
+    is the same trade the module-scoped ``notion_connector`` fixture already makes for the
+    21 read-only cases, and the ids are logged below so the culprit stays identifiable.
+    """
+    connector_id = notion_connector["connector_id"]
+
+    # Both checkpoints, because this batch creates pages *and* a data source; a write that
+    # lands in the checkpoint's own minute is the bug TC-INCR-CMT-002 used to hit.
+    await wait_past_checkpoint(graph_provider, connector_id, "page")
+    await wait_past_checkpoint(graph_provider, connector_id, "data_source")
+
+    created: dict[str, Any] = {}
+
+    # TC-INCR-PAGE-001 — a plain new page.
+    page = await _scratch_page(
+        notion_source_helper, notion_seed, "IncrPage",
+        [paragraph_block("Incremental page body.")],
+    )
+    created["page_id"] = str(page["id"])
+
+    # TC-INCR-DS-001 — a new database under the scratch page.
+    database = await notion_source_helper.create_database(
+        notion_seed.scratch_page_id, f"{TITLE_PREFIX}IncrDB-{uuid.uuid4().hex[:6]}"
+    )
+    created["database_id"] = str(database["id"])
+    created["data_source_id"] = await notion_source_helper.first_data_source_id(database)
+
+    # TC-INCR-DS-004 — a new row in the seeded fixture data source.
+    created["row_title"] = f"{TITLE_PREFIX}IncrRow-{uuid.uuid4().hex[:6]}"
+    row = await notion_source_helper.create_row_page(
+        notion_seed.fixture_data_source_id,
+        {"Name": {"title": rich_text(created["row_title"])}},
+    )
+    created["row_id"] = str(row["id"])
+
+    # TC-INCR-CMT-001 — page-level, block-level and threaded comments.
+    comment_page = await _scratch_page(
+        notion_source_helper, notion_seed, "IncrComment",
+        [paragraph_block("Comment target paragraph.")],
+    )
+    created["comment_page_id"] = str(comment_page["id"])
+    blocks = await notion_source_helper.list_block_children(created["comment_page_id"])
+    target_block_id = str(blocks[0]["id"])
+    await notion_source_helper.create_comment(
+        page_id=created["comment_page_id"], text="Incremental page comment."
+    )
+    block_comment = await notion_source_helper.create_comment(
+        block_id=target_block_id, text="Incremental block comment."
+    )
+    await notion_source_helper.create_comment(
+        discussion_id=str(block_comment["discussion_id"]),
+        text="Incremental threaded reply.",
+    )
+
+    # TC-INCR-CMT-002 — a comment carrying a file attachment.
+    attach_page = await _scratch_page(notion_source_helper, notion_seed, "IncrCommentFile")
+    created["attach_page_id"] = str(attach_page["id"])
+    upload_id = await notion_source_helper.upload_sample_file(
+        COMMENT_ATTACHMENT_SAMPLE_PATH, "application/pdf"
+    )
+    attach_comment = await notion_source_helper.create_comment(
+        page_id=created["attach_page_id"],
+        text="Incremental comment with attachment.",
+        file_upload_ids=[upload_id],
+    )
+    created["attach_comment"] = attach_comment
+    created["attach_comment_id"] = str(attach_comment["id"])
+
+    logger.info(
+        "INCR-ADD: page=%s ds=%s row=%s comments=%s attachment=%s",
+        created["page_id"], created["data_source_id"], created["row_id"],
+        created["comment_page_id"], created["attach_page_id"],
+    )
+
+    try:
+        # The waits overlap in wall time — by the time the last object is created the first
+        # is usually already indexed — which is where the saving over five cycles comes from.
+        for object_type, external_id in (
+            ("page", created["page_id"]),
+            ("data_source", created["data_source_id"]),
+            ("page", created["row_id"]),
+            ("page", created["comment_page_id"]),
+            ("page", created["attach_page_id"]),
+        ):
+            await wait_for_search_visibility(notion_source_helper, object_type, external_id)
+
+        await incremental_sync(pipeshub_client, graph_provider, connector_id)
+        yield created
+    finally:
+        await notion_source_helper.trash_database(created["database_id"])
+        for page_id in (
+            created["page_id"], created["row_id"],
+            created["comment_page_id"], created["attach_page_id"],
+        ):
+            await notion_source_helper.trash_page(page_id)
+
+
+
 class TestNotionIncremental:
     """Create / update / move / archive at the source, then re-sync and assert by external id."""
 
@@ -1157,35 +1294,25 @@ class TestNotionIncremental:
         notion_connector: dict[str, Any],
         notion_seed: NotionSeed,
         notion_source_helper: NotionSourceHelper,
-        pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
+        incr_additions: dict[str, Any],
     ) -> None:
         """TC-INCR-PAGE-001: a newly created page is picked up with correct fields and edges."""
         connector_id = notion_connector["connector_id"]
-        await wait_past_checkpoint(graph_provider, connector_id, "page")
-        page = await _scratch_page(
-            notion_source_helper, notion_seed, "IncrPage",
-            [paragraph_block("Incremental page body.")],
-        )
-        page_id = str(page["id"])
-        try:
-            await wait_for_search_visibility(notion_source_helper, "page", page_id)
-            await incremental_sync(pipeshub_client, graph_provider, connector_id)
+        page_id = incr_additions["page_id"]
 
-            actual = await graph_provider.get_typed_record_by_external_id(connector_id, page_id)
-            assert actual is not None, f"new page {page_id} not synced"
-            expected = NotionExpected.webpage_record(
-                await notion_source_helper.retrieve_page(page_id),
-                connector_id=connector_id, workspace_id=notion_seed.workspace_id,
-            )
-            await assert_graph_entity_with_edges(
-                expected, actual, entity="webpage_record",
-                connector_id=connector_id, graph_provider=graph_provider,
-                skip_compare=RECORD_SKIP_COMPARE,
-            )
-            logger.info("TC-INCR-PAGE-001 passed: %s", page_id)
-        finally:
-            await notion_source_helper.trash_page(page_id)
+        actual = await graph_provider.get_typed_record_by_external_id(connector_id, page_id)
+        assert actual is not None, f"new page {page_id} not synced"
+        expected = NotionExpected.webpage_record(
+            await notion_source_helper.retrieve_page(page_id),
+            connector_id=connector_id, workspace_id=notion_seed.workspace_id,
+        )
+        await assert_graph_entity_with_edges(
+            expected, actual, entity="webpage_record",
+            connector_id=connector_id, graph_provider=graph_provider,
+            skip_compare=RECORD_SKIP_COMPARE,
+        )
+        logger.info("TC-INCR-PAGE-001 passed: %s", page_id)
 
     @pytest.mark.order(24)
     async def test_tc_incr_page_002_content_updated(
@@ -1310,30 +1437,20 @@ class TestNotionIncremental:
         notion_connector: dict[str, Any],
         notion_seed: NotionSeed,
         notion_source_helper: NotionSourceHelper,
-        pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
+        incr_additions: dict[str, Any],
     ) -> None:
         """TC-INCR-DS-001: a new database syncs as a DATASOURCE record under its parent page."""
         connector_id = notion_connector["connector_id"]
-        await wait_past_checkpoint(graph_provider, connector_id, "data_source")
-        database = await notion_source_helper.create_database(
-            notion_seed.scratch_page_id, f"{TITLE_PREFIX}IncrDB-{uuid.uuid4().hex[:6]}"
-        )
-        database_id = str(database["id"])
-        data_source_id = await notion_source_helper.first_data_source_id(database)
-        try:
-            await wait_for_search_visibility(notion_source_helper, "data_source", data_source_id)
-            await incremental_sync(pipeshub_client, graph_provider, connector_id)
+        data_source_id = incr_additions["data_source_id"]
 
-            record = await graph_provider.get_record_by_external_id(
-                connector_id, data_source_id
-            )
-            assert record is not None, f"new data source {data_source_id} not synced"
-            assert record.record_type == RecordType.DATASOURCE
-            assert str(record.parent_external_record_id) == notion_seed.scratch_page_id
-            logger.info("TC-INCR-DS-001 passed")
-        finally:
-            await notion_source_helper.trash_database(database_id)
+        record = await graph_provider.get_record_by_external_id(
+            connector_id, data_source_id
+        )
+        assert record is not None, f"new data source {data_source_id} not synced"
+        assert record.record_type == RecordType.DATASOURCE
+        assert str(record.parent_external_record_id) == notion_seed.scratch_page_id
+        logger.info("TC-INCR-DS-001 passed")
 
     @pytest.mark.order(29)
     async def test_tc_incr_ds_002_and_003_properties_and_schema(
@@ -1404,29 +1521,20 @@ class TestNotionIncremental:
         notion_connector: dict[str, Any],
         notion_seed: NotionSeed,
         notion_source_helper: NotionSourceHelper,
-        pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
+        incr_additions: dict[str, Any],
     ) -> None:
         """TC-INCR-DS-004: a new database row syncs as a page parented to the data source."""
         connector_id = notion_connector["connector_id"]
-        row_title = f"{TITLE_PREFIX}IncrRow-{uuid.uuid4().hex[:6]}"
-        await wait_past_checkpoint(graph_provider, connector_id, "page")
-        row = await notion_source_helper.create_row_page(
-            notion_seed.fixture_data_source_id, {"Name": {"title": rich_text(row_title)}}
-        )
-        row_id = str(row["id"])
-        try:
-            await wait_for_search_visibility(notion_source_helper, "page", row_id)
-            await incremental_sync(pipeshub_client, graph_provider, connector_id)
+        row_id = incr_additions["row_id"]
+        row_title = incr_additions["row_title"]
 
-            record = await graph_provider.get_record_by_external_id(connector_id, row_id)
-            assert record is not None, f"new database row {row_id} not synced"
-            assert record.record_type == RecordType.WEBPAGE
-            assert record.record_name == row_title
-            assert str(record.parent_external_record_id) == notion_seed.fixture_data_source_id
-            logger.info("TC-INCR-DS-004 passed")
-        finally:
-            await notion_source_helper.trash_page(row_id)
+        record = await graph_provider.get_record_by_external_id(connector_id, row_id)
+        assert record is not None, f"new database row {row_id} not synced"
+        assert record.record_type == RecordType.WEBPAGE
+        assert record.record_name == row_title
+        assert str(record.parent_external_record_id) == notion_seed.fixture_data_source_id
+        logger.info("TC-INCR-DS-004 passed")
 
     @pytest.mark.order(32)
     async def test_tc_incr_att_001_and_002_attachment_added_and_removed(
@@ -1480,49 +1588,26 @@ class TestNotionIncremental:
         notion_source_helper: NotionSourceHelper,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
+        incr_additions: dict[str, Any],
     ) -> None:
         """TC-INCR-CMT-001: page-level, block-level and threaded comments all reach the stream."""
         connector_id = notion_connector["connector_id"]
-        await wait_past_checkpoint(graph_provider, connector_id, "page")
-        page = await _scratch_page(
-            notion_source_helper, notion_seed, "IncrComment",
-            [paragraph_block("Comment target paragraph.")],
+        page_id = incr_additions["comment_page_id"]
+
+        container = await _stream_container(
+            pipeshub_client, graph_provider, connector_id, page_id
         )
-        page_id = str(page["id"])
-        try:
-            blocks = await notion_source_helper.list_block_children(page_id)
-            target_block_id = str(blocks[0]["id"])
+        text = _all_text(container)
+        for expected in (
+            "Incremental page comment.",
+            "Incremental block comment.",
+            "Incremental threaded reply.",
+        ):
+            assert expected in text, f"{expected!r} missing from the streamed page"
 
-            await wait_past_checkpoint(graph_provider, connector_id, "page")
-            await notion_source_helper.create_comment(
-                page_id=page_id, text="Incremental page comment."
-            )
-            block_comment = await notion_source_helper.create_comment(
-                block_id=target_block_id, text="Incremental block comment."
-            )
-            await notion_source_helper.create_comment(
-                discussion_id=str(block_comment["discussion_id"]),
-                text="Incremental threaded reply.",
-            )
-            await wait_for_search_visibility(notion_source_helper, "page", page_id)
-            await incremental_sync(pipeshub_client, graph_provider, connector_id)
-
-            container = await _stream_container(
-                pipeshub_client, graph_provider, connector_id, page_id
-            )
-            text = _all_text(container)
-            for expected in (
-                "Incremental page comment.",
-                "Incremental block comment.",
-                "Incremental threaded reply.",
-            ):
-                assert expected in text, f"{expected!r} missing from the streamed page"
-
-            threads = groups_of_sub_type(container, GroupSubType.COMMENT_THREAD.value)
-            assert threads, "page-level comment produced no COMMENT_THREAD group"
-            logger.info("TC-INCR-CMT-001 passed")
-        finally:
-            await notion_source_helper.trash_page(page_id)
+        threads = groups_of_sub_type(container, GroupSubType.COMMENT_THREAD.value)
+        assert threads, "page-level comment produced no COMMENT_THREAD group"
+        logger.info("TC-INCR-CMT-001 passed")
 
     @pytest.mark.order(35)
     async def test_tc_incr_cmt_002_comment_with_attachment(
@@ -1530,38 +1615,23 @@ class TestNotionIncremental:
         notion_connector: dict[str, Any],
         notion_seed: NotionSeed,
         notion_source_helper: NotionSourceHelper,
-        pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
+        incr_additions: dict[str, Any],
     ) -> None:
         """TC-INCR-CMT-002: a comment attachment syncs as ``ca_{comment_id}_{filename}``."""
         connector_id = notion_connector["connector_id"]
-        await wait_past_checkpoint(graph_provider, connector_id, "page")
-        page = await _scratch_page(notion_source_helper, notion_seed, "IncrCommentFile")
-        page_id = str(page["id"])
-        try:
-            upload_id = await notion_source_helper.upload_sample_file(
-                COMMENT_ATTACHMENT_SAMPLE_PATH, "application/pdf"
-            )
-            await wait_past_checkpoint(graph_provider, connector_id, "page")
-            comment = await notion_source_helper.create_comment(
-                page_id=page_id,
-                text="Incremental comment with attachment.",
-                file_upload_ids=[upload_id],
-            )
-            comment_id = str(comment["id"])
-            await wait_for_search_visibility(notion_source_helper, "page", page_id)
-            await incremental_sync(pipeshub_client, graph_provider, connector_id)
+        page_id = incr_additions["attach_page_id"]
 
-            # Derive the id from the attachment Notion stored — the connector takes the
-            # filename from the signed URL path, not from the upload name.
-            external_id = comment_attachment_external_id(comment, comment_id)
-            record = await graph_provider.get_record_by_external_id(connector_id, external_id)
-            assert record is not None, f"comment attachment {external_id} not synced"
-            assert str(record.parent_external_record_id) == page_id
-            assert record.mime_type == MimeTypes.PDF.value or record.record_name.endswith(".pdf")
-            logger.info("TC-INCR-CMT-002 passed")
-        finally:
-            await notion_source_helper.trash_page(page_id)
+        # Derive the id from the attachment Notion stored — the connector takes the
+        # filename from the signed URL path, not from the upload name.
+        external_id = comment_attachment_external_id(
+            incr_additions["attach_comment"], incr_additions["attach_comment_id"]
+        )
+        record = await graph_provider.get_record_by_external_id(connector_id, external_id)
+        assert record is not None, f"comment attachment {external_id} not synced"
+        assert str(record.parent_external_record_id) == page_id
+        assert record.mime_type == MimeTypes.PDF.value or record.record_name.endswith(".pdf")
+        logger.info("TC-INCR-CMT-002 passed")
 
 
 # =============================================================================
@@ -1583,8 +1653,8 @@ class TestNotionDeltaSync:
     ) -> None:
         """TC-DELTA-001: an untouched page is not rewritten while an edited one is reprocessed.
 
-        The connector sorts descending by ``last_edited_time`` and stops at the first record at
-        or below the checkpoint. The observable consequence is that an unmodified page's record
+        The connector sorts descending by ``last_edited_time`` and stops at the first record
+        strictly below the checkpoint. The observable consequence is that an unmodified page's record
         is left alone — neither its version nor its graph ``updated_at`` moves — while the
         edited page picks up the new revision. If the early stop regresses, every page is
         re-enumerated and rewritten on each run.

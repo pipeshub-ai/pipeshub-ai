@@ -273,6 +273,14 @@ class NotionPersonalConnector(NotionConnector):
             await self._sync_objects_by_type("data_source")
             await self._sync_objects_by_type("page")
 
+            # Inherited from NotionConnector, but this run_sync does not call super(),
+            # so the sweep has to be invoked here too or personal connectors keep
+            # accumulating UUID-named parent stubs.
+            try:
+                await self._sweep_placeholder_records()
+            except Exception as e:
+                self.logger.error(f"Placeholder sweep failed: {e}", exc_info=True)
+
             self.logger.info("✅ Notion Personal sync completed successfully")
 
         except Exception as e:
