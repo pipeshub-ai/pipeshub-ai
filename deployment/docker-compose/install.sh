@@ -215,7 +215,9 @@ persist_env_var() {
   [[ -f "$ENV_FILE" ]] || return 0
   tmp="$(mktemp)"
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" == "${key}="* ]]; then
+    # Also match the commented placeholder form ("# KEY=hint") so turning a
+    # documented knob on replaces its hint instead of leaving both lines.
+    if [[ "$line" == "${key}="* || "$line" == "# ${key}="* ]]; then
       printf '%s=%s\n' "$key" "$val"; found=true
     else
       printf '%s\n' "$line"
@@ -1536,6 +1538,48 @@ crash_looping_containers() {
   done
 }
 
+# MongoDB 8.x segfaults (exit 139) on some newer host kernels because of a glibc
+# rseq/TCMalloc interaction. env.template documents MONGO_GLIBC_TUNABLES for
+# exactly this case, but an operator only discovers it after the install has
+# already failed -- and the generic exit-139 advice below points at recreating
+# the data volume, which destroys data without addressing this cause.
+#
+# Detect the specific signature (the mongodb service, restart-looping, last exit
+# 139) and apply the documented fix once. Reacting to the observed crash rather
+# than pre-screening the host kernel keeps rseq=0 -- the faster TCMalloc default
+# that #2677 deliberately preserved -- on every machine that does not need the
+# workaround, and needs no list of affected kernel versions to stay current.
+MONGO_RSEQ_HEAL_TRIED=false
+MONGO_HEAL_GRACE_SECS=180
+
+heal_mongo_rseq() {
+  local id exit_code
+  if $MONGO_RSEQ_HEAL_TRIED; then return 1; fi
+  # Never override a value the operator chose for themselves.
+  if [[ -n "$(get_existing_val MONGO_GLIBC_TUNABLES "")" ]]; then return 1; fi
+
+  for id in $(docker ps -aq \
+      --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=mongodb" 2>/dev/null); do
+    exit_code="$(docker inspect "$id" --format '{{.State.ExitCode}}' 2>/dev/null || echo '')"
+    if [[ "$exit_code" != "139" ]]; then continue; fi
+
+    MONGO_RSEQ_HEAL_TRIED=true
+    warn "MongoDB keeps restarting after a segfault (exit 139)."
+    warn "That is the known glibc rseq/TCMalloc crash on newer host kernels."
+    info "Setting MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1 in .env and restarting MongoDB..."
+    persist_env_var MONGO_GLIBC_TUNABLES "glibc.pthread.rseq=1"
+    if docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" \
+         up -d --force-recreate mongodb >/dev/null 2>&1; then
+      success "MongoDB restarted with the rseq tunable; waiting for it to settle."
+      return 0
+    fi
+    error "Could not restart MongoDB after setting the tunable."
+    return 1
+  done
+  return 1
+}
+
 # Poll until healthy or the deadline passes. Uses _is_tty from launch (same
 # flag as Compose progress). On a TTY, redraw a single spinner line in place;
 # when stdout is captured (CI, tee, redirect) emit a sparse heartbeat instead.
@@ -1557,6 +1601,12 @@ while (( ELAPSED < HEALTH_WAIT_SECS )); do
   # not recover on its own, so there is no point waiting out the full timeout.
   if (( ELAPSED >= 90 && ELAPSED % 15 == 0 )); then
     _CRASH_REPORT="$(crash_looping_containers)"
+    # A MongoDB rseq segfault has a known one-line fix. Apply it and keep
+    # waiting instead of failing an install that is one restart from working.
+    if [[ -n "$_CRASH_REPORT" ]] && heal_mongo_rseq; then
+      _CRASH_REPORT=""
+      HEALTH_WAIT_SECS=$(( ELAPSED + MONGO_HEAL_GRACE_SECS ))
+    fi
     [[ -n "$_CRASH_REPORT" ]] && break
   fi
   if $_is_tty; then
@@ -1610,7 +1660,12 @@ elif [[ -n "${_CRASH_REPORT:-}" ]]; then
   fi
   warn "  • exit 137 / oom=true → out of memory. Free RAM, or switch to the lighter"
   warn "      'slim' profile (Redis broker + KV; drops Kafka/Zookeeper): ./install.sh --reconfigure"
-  warn "  • exit 139            → the service crashed (segfault). Usually a corrupted data"
+  warn "  • exit 139 on mongodb → set MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1 in .env and"
+  warn "      re-run ./install.sh --upgrade. The installer normally applies this for you; if"
+  warn "      you are seeing this, it was already set or the restart did not take. Try this"
+  warn "      before touching the data volume — recreating the volume destroys your data and"
+  warn "      does not fix this cause."
+  warn "  • exit 139 elsewhere  → the service crashed (segfault). Usually a corrupted data"
   warn "      volume from an earlier hard kill — recreate it and re-run ./install.sh. If it"
   warn "      recurs on a fresh volume, it is an incompatible host kernel/CPU (see docker logs)."
   warn "  • anything else       → read 'docker logs' above for the specific error"
