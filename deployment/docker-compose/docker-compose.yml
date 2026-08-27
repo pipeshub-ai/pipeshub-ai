@@ -24,7 +24,6 @@ services:
   # ---------------------------------------------------------------------------
   pipeshub-ai:
     image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
-    container_name: pipeshub-ai
     restart: always
     # build: is used only when `docker compose up --build` (or install.sh --build) is run.
     # It is ignored for the default prebuilt-image path. context is the repo root.
@@ -66,6 +65,21 @@ services:
         soft: 65536
         hard: 65536
     init: true
+    # Compose `${VAR:-}` injects "" when the key is blank. Hub slim still does
+    # int(os.getenv(KEY, default)) and crashes on "". Unset blanks so the key
+    # is absent (slim uses its built-in default; new Python sizes from CPU).
+    # A numeric value in .env is kept as an operator cap.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        for k in MAX_CONCURRENT_PARSING MAX_CONCURRENT_INDEXING
+        MAX_PENDING_INDEXING_TASKS EMBEDDING_SERVER_MAX_CONCURRENCY
+        EMBEDDING_BATCH_CONCURRENCY; do
+        v=$$(printenv "$$k" || true);
+        [ -z "$$v" ] && unset "$$k";
+        done;
+        exec /app/process_monitor.sh
     logging:
       driver: local
       options:
@@ -170,18 +184,20 @@ services:
       # ML threading
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 
-      # Indexing concurrency — upper caps on the CPU-derived slot counts
-      # (heavy parse: 1 slot/CPU, light parse: 3 slots/CPU, indexing: 2x the
-      # wider parse tier, as one budget for heavy and light records
-      # together). Leave unset (empty) to use the derived numbers as is.
-      # The parse numbers are ceilings, not starting points: parsing ramps
-      # up from its floor as samples prove the headroom, and heavy parsing
-      # is held further back whenever free memory can't hold that many at
-      # once. The indexing budget is fixed at startup.
+      # HuggingFace Hub offline mode. Leave unset so slim images can download
+      # the embedding model on first use. The dense loader tries the local
+      # cache first; sparse BM25 does the same. Set both to 1 only for
+      # air-gapped hosts that already have models cached (the full `latest` image).
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-}
+
+      # Leave unset so new images size parse/index from CPU. Hub slim int()s
+      # empty strings; entrypoint unsets blanks before start. Set an integer
+      # to cap.
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-}
-      # Slots-per-CPU and the indexing multiplier above, for a workload whose
-      # documents are unusually cheap or expensive. Leave unset for 1 / 3 / 2.
+      # Slots-per-CPU / indexing multiplier (in-tree defaults 1 / 10 / 100).
+      # Empty is safe: Hub slim ignores these; new Python treats empty as unset.
       - GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU=${GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU:-}
       - GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU=${GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU:-}
       - GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT=${GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT:-}
@@ -210,9 +226,6 @@ services:
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
-      # Leave unset to default to max(2, cpu_count) at startup; set an
-      # explicit integer to pin a hard ceiling on concurrent model.encode()
-      # calls (embedding_main.py).
       - EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-}
       - EMBEDDING_BATCH_CONCURRENCY=${EMBEDDING_BATCH_CONCURRENCY:-}
       # Skip per-sentence embeddings unless the block has more than this many
@@ -278,11 +291,16 @@ services:
       - "host.docker.internal:host-gateway"
 
     healthcheck:
+      # Gate on the core services only. embedding is intentionally excluded: it
+      # may be absent (not deployed) or sit 'unhealthy' for minutes while it
+      # downloads its model on first run, and it is not required for the app to
+      # be usable. This mirrors the installer's readiness check so `docker ps`
+      # health agrees with what install.sh reports.
       test:
         - CMD-SHELL
         - >
           curl -sf http://localhost:3000/api/v1/health/services -o /tmp/hc.json &&
-          python3 -c "import json,sys; d=json.load(open('/tmp/hc.json')); s=d.get('services',{}) or {}; required=('query','connector','indexing','docling'); sys.exit(0 if all(s.get(k)=='healthy' for k in required) and s.get('embedding') in ('healthy','starting') else 1)"
+          python3 -c "import json,sys; d=json.load(open('/tmp/hc.json')); s=d.get('services',{}) or {}; required=('query','connector','indexing','docling'); sys.exit(0 if all(s.get(k)=='healthy' for k in required) else 1)"
       interval: 15s
       timeout: 10s
       retries: 5
@@ -295,7 +313,6 @@ services:
   mongodb:
     # Pin via MONGO_IMAGE_TAG to recover from host-specific MongoDB 8.x crashes.
     image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
-    container_name: mongodb
     restart: always
     # Shared ~16 GB hosts: WiredTiger otherwise grabs ~half of RAM. Cap cache at
     # 1 GB / container at 2 GB. Sibling deploy.limits (app/graph/vector) are OOM
@@ -325,7 +342,6 @@ services:
 
   redis:
     image: redis:7.4-bookworm
-    container_name: redis
     restart: always
     command: >
       sh -c "redis-server
@@ -345,7 +361,6 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.15
     stop_grace_period: 120s
-    container_name: qdrant
     restart: always
     environment:
       - QDRANT__STORAGE__ON_DISK_PAYLOAD=true
@@ -391,7 +406,6 @@ services:
     build:
       context: ../../deployment/sandbox
       dockerfile: Dockerfile
-    container_name: sandbox-image
     restart: "no"
     command: ["sh", "-c", "echo 'sandbox image ready'"]
     networks:
@@ -403,7 +417,6 @@ services:
   arango:
     profiles: ["graph-arango"]
     image: arangodb:3.12.4
-    container_name: arango
     restart: always
     environment:
       - ARANGO_ROOT_PASSWORD=${ARANGO_PASSWORD:-}
@@ -423,7 +436,6 @@ services:
   neo4j:
     profiles: ["graph-neo4j"]
     image: neo4j:5.26.0
-    container_name: neo4j
     restart: always
     environment:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-}
@@ -459,7 +471,6 @@ services:
   etcd:
     profiles: ["kv-etcd"]
     image: quay.io/coreos/etcd:v3.5.17
-    container_name: etcd
     restart: always
     command: >
       etcd
@@ -487,7 +498,6 @@ services:
   zookeeper:
     profiles: ["broker-kafka"]
     image: confluentinc/cp-zookeeper:7.9.0
-    container_name: zookeeper
     restart: always
     environment:
       - ZOOKEEPER_CLIENT_PORT=2181
@@ -506,7 +516,6 @@ services:
   kafka-1:
     profiles: ["broker-kafka"]
     image: confluentinc/cp-kafka:7.9.0
-    container_name: kafka-1
     restart: always
     depends_on:
       zookeeper:
@@ -571,4 +580,3 @@ volumes:
 networks:
   pipeshub:
     driver: bridge
-    name: pipeshub-ai_network

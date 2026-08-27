@@ -3101,11 +3101,14 @@ class TestGetFlattenedResults:
         assert len(results) >= 1
 
     @pytest.mark.asyncio
-    async def test_image_multimodal_no_uri_skipped(self):
-        """Image block with multimodal LLM but no URI should be skipped."""
+    async def test_image_multimodal_no_uri_keeps_its_description(self):
+        """An image point carries only a text description when embeddings are
+        text-only (`VectorStore.describe_images`). Dropping the hit because it
+        has no URI loses a block that matched the query — the description is
+        the only representation of that image the index holds."""
         img_block = {
             "type": BlockType.IMAGE.value,
-            "data": {"description": "no uri here"},
+            "data": {"description": "a bar chart of Q3 revenue"},
             "citation_metadata": None,
             "parent_index": None,
             "index": 0,
@@ -3127,7 +3130,36 @@ class TestGetFlattenedResults:
             result_set, blob_store, "org-1", True, vr_map
         )
         image_results = [r for r in results if r.get("block_type") == BlockType.IMAGE.value]
-        assert len(image_results) == 0
+        assert len(image_results) == 1
+        assert image_results[0]["content"] == "a bar chart of Q3 revenue"
+
+    @pytest.mark.asyncio
+    async def test_image_multimodal_no_uri_and_no_text_is_skipped(self):
+        """Nothing to send at all — neither pixels nor text — stays dropped."""
+        img_block = {
+            "type": BlockType.IMAGE.value,
+            "data": {"uri": None},
+            "citation_metadata": None,
+            "parent_index": None,
+            "index": 0,
+        }
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [img_block]
+
+        blob_store = self._make_blob_store(record)
+        vr_map = {"vr-1": record}
+
+        result_set = [
+            {
+                "content": "",
+                "score": 0.8,
+                "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": False},
+            },
+        ]
+        results = await get_flattened_results(
+            result_set, blob_store, "org-1", True, vr_map
+        )
+        assert [r for r in results if r.get("block_type") == BlockType.IMAGE.value] == []
 
     @pytest.mark.asyncio
     async def test_image_non_multimodal_no_data_uri_passthrough(self):

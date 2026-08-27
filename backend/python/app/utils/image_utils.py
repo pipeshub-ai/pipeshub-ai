@@ -68,6 +68,192 @@ def get_mime_type_from_base64(b64: str) -> str | None:
 
     return None
 
+def read_image_dimensions(image_uri: str | None) -> tuple[int, int] | None:
+    """`(width, height)` of an image, read from its header bytes alone.
+
+    Selection needs a size signal for every image, but only the pdfplumber
+    parser records `image_metadata.image_size` -- Docling, HTML and Markdown
+    do not -- so most images arrive unmeasured. A full decode per image on the
+    request path would be far too expensive; every format below states its
+    dimensions within the first few dozen bytes, so ~200 decoded bytes answer
+    the question.
+
+    Returns None when the format is unrecognized or the header is truncated.
+    Callers must treat None as "unknown", never as "too small" -- dropping a
+    real figure because its header was unusual is the expensive mistake.
+    """
+    b64 = normalize_image_to_base64(image_uri)
+    if not b64:
+        return None
+    try:
+        # 512 base64 chars -> 384 bytes: past the JPEG APPn/EXIF blocks that
+        # commonly precede the SOF marker, and a multiple of 4.
+        header = base64.b64decode(b64[:512] + "=" * ((-len(b64[:512])) % 4))
+    except Exception:
+        return None
+
+    try:
+        if header[:8] == b"\x89PNG\r\n\x1a\n" and header[12:16] == b"IHDR":
+            return (
+                int.from_bytes(header[16:20], "big"),
+                int.from_bytes(header[20:24], "big"),
+            )
+        if header[:6] in (b"GIF87a", b"GIF89a"):
+            return (
+                int.from_bytes(header[6:8], "little"),
+                int.from_bytes(header[8:10], "little"),
+            )
+        if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+            return _webp_dimensions(header)
+        if header[:2] == b"\xff\xd8":
+            return _jpeg_dimensions(header)
+        if header[:2] == b"BM" and len(header) >= 26:
+            return (
+                int.from_bytes(header[18:22], "little", signed=True),
+                abs(int.from_bytes(header[22:26], "little", signed=True)),
+            )
+    except Exception:
+        return None
+    return None
+
+
+def _webp_dimensions(header: bytes) -> tuple[int, int] | None:
+    """WebP stores dimensions differently in each of its three chunk types."""
+    chunk = header[12:16]
+    if chunk == b"VP8X" and len(header) >= 30:
+        return (
+            int.from_bytes(header[24:27], "little") + 1,
+            int.from_bytes(header[27:30], "little") + 1,
+        )
+    if chunk == b"VP8L" and len(header) >= 25:
+        bits = int.from_bytes(header[21:25], "little")
+        return ((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
+    if chunk == b"VP8 " and len(header) >= 30:
+        return (
+            int.from_bytes(header[26:28], "little") & 0x3FFF,
+            int.from_bytes(header[28:30], "little") & 0x3FFF,
+        )
+    return None
+
+
+# JPEG frame markers that carry dimensions. DHT/DAC/RST/SOS and the
+# arithmetic-coded variants at 0xC4/0xC8/0xCC are not frame headers.
+_JPEG_SOF_MARKERS = frozenset(
+    {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+)
+
+
+def _jpeg_dimensions(header: bytes) -> tuple[int, int] | None:
+    """Walk JPEG segment headers to the first SOF, which holds the size."""
+    i = 2
+    end = len(header)
+    while i + 9 < end:
+        if header[i] != 0xFF:
+            i += 1
+            continue
+        marker = header[i + 1]
+        if marker in _JPEG_SOF_MARKERS:
+            return (
+                int.from_bytes(header[i + 7:i + 9], "big"),
+                int.from_bytes(header[i + 5:i + 7], "big"),
+            )
+        segment_length = int.from_bytes(header[i + 2:i + 4], "big")
+        if segment_length < 2:
+            return None
+        i += 2 + segment_length
+    return None
+
+
+# What separates a figure from page furniture. Used on both sides of the
+# system -- indexing asks it before paying a VLM to describe an image, the
+# query path asks it before spending a scarce image slot -- so the two can
+# never disagree about what counts as content.
+#
+# Deliberately loose: a false keep costs one model call or one slot, a false
+# drop loses content with no trace.
+MIN_CONTENT_SHORT_EDGE_PX = 64      # below this: bullets, inline icons, spacers
+MIN_CONTENT_AREA_PX = 10_000        # favicons, badges, avatars
+MAX_CONTENT_ASPECT_RATIO = 10.0     # rules, dividers, gradient strips
+
+
+def is_below_content_size(width: int | None, height: int | None) -> bool:
+    """Too small to be a figure. Unknown dimensions are never "too small"."""
+    if not width or not height:
+        return False
+    return min(width, height) < MIN_CONTENT_SHORT_EDGE_PX or width * height < MIN_CONTENT_AREA_PX
+
+
+def is_extreme_aspect_ratio(width: int | None, height: int | None) -> bool:
+    """Long and thin: a rule or a divider, not content."""
+    if not width or not height:
+        return False
+    short_edge = min(width, height)
+    return short_edge > 0 and (max(width, height) / short_edge) > MAX_CONTENT_ASPECT_RATIO
+
+
+def is_decorative_image(width: int | None, height: int | None) -> bool:
+    return is_below_content_size(width, height) or is_extreme_aspect_ratio(width, height)
+
+
+def downscale_to_limits(
+    image_uri: str,
+    *,
+    max_long_edge_px: int,
+    max_bytes: int,
+) -> str:
+    """Re-encode `image_uri` to fit a model's limits, or return it unchanged.
+
+    Only does work when the image actually exceeds a limit: providers cap both
+    dimensions and payload size (Bedrock rejects an image over 3.75 MB;
+    Anthropic tightens per-image dimensions once a request carries more than
+    20 image blocks), and every model downscales internally anyway, so
+    resolution beyond its native raster costs tokens and buys nothing.
+
+    Never raises: an image we cannot re-encode is still better sent as-is than
+    dropped, and the provider's own limits are enforced again at the wire.
+    """
+    b64 = normalize_image_to_base64(image_uri)
+    if not b64:
+        return image_uri
+
+    dimensions = read_image_dimensions(image_uri)
+    too_large = bool(dimensions) and max(dimensions) > max_long_edge_px  # type: ignore[arg-type]
+    # 4 base64 chars per 3 bytes; compare against the encoded size, which is
+    # what actually travels.
+    too_heavy = (len(b64) * 3) // 4 > max_bytes
+    if not (too_large or too_heavy):
+        return image_uri
+
+    try:
+        import io
+
+        from PIL import Image
+
+        with Image.open(io.BytesIO(base64.b64decode(b64))) as source:
+            image = source.convert("RGB") if source.mode not in ("RGB", "L") else source.copy()
+        if max(image.size) > max_long_edge_px:
+            ratio = max_long_edge_px / max(image.size)
+            image = image.resize(
+                (max(1, int(image.width * ratio)), max(1, int(image.height * ratio))),
+                Image.LANCZOS,
+            )
+        # JPEG at 85 is the standard "no visible artifacts" setting; heavier
+        # compression starts making small text in screenshots unreadable,
+        # which is usually the thing the model was sent the image to read.
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=85, optimize=True)
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    except Exception:
+        logger.debug("Could not downscale image; sending it unchanged", exc_info=True)
+        return image_uri
+
+    if len(encoded) >= len(b64) and not too_large:
+        # Re-encoding made it bigger (already-optimized PNG line art): keep
+        # the original rather than paying more bytes for fewer pixels.
+        return image_uri
+    return f"data:image/jpeg;base64,{encoded}"
+
+
 def get_extension_from_mimetype(mime_type: str | None) -> str | None:
     return mime_to_extension.get(mime_type)
 

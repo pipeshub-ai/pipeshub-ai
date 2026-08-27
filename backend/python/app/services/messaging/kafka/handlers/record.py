@@ -21,7 +21,7 @@ from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.events.events import EventProcessor
 from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
-from app.models.blocks import BlocksContainer
+from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.modules.transformers.transformer import TransformContext
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.messaging.config import (
@@ -272,6 +272,11 @@ class RecordEventHandler(BaseEventService):
             record_obj.block_containers = BlocksContainer.model_validate(
                 blob["block_containers"]
             )
+            raw_semantic = blob.get("semantic_metadata")
+            if raw_semantic:
+                record_obj.semantic_metadata = SemanticMetadata.model_validate(
+                    raw_semantic
+                )
             ctx = TransformContext(
                 record=record_obj,
                 settings={"skip_blob": True},

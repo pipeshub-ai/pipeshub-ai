@@ -13,6 +13,7 @@
 import React, { useState, useRef, useMemo, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import type { PluggableList } from 'unified';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
@@ -345,7 +346,12 @@ function AgentActivityPart({ part, isStreaming, citationMaps, citationCallbacks 
 // the raw text. Strip the trailer here so it doesn't render as prose.
 const CONFIDENCE_TRAILER_RE = /(?:\n*-{3,}\s*\n)?\s*Confidence:\s*(?:Very High|High|Medium|Low)\s*$/i;
 
-function NarrationText({ content, citationMaps, citationCallbacks }: { content: string; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks }) {
+// Hoisted so react-markdown sees a stable `remarkPlugins` reference across
+// renders instead of a fresh array literal each time (see the equivalent
+// constant in `answer-content.tsx`).
+const NARRATION_REMARK_PLUGINS: PluggableList = [remarkGfm];
+
+function NarrationTextImpl({ content, citationMaps, citationCallbacks }: { content: string; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks }) {
   const { text: withoutArtifacts } = parseArtifactMarkers(content);
   const { text: afterDownloads } = parseDownloadMarkers(withoutArtifacts);
   const withoutConfidence = afterDownloads.replace(CONFIDENCE_TRAILER_RE, '');
@@ -371,19 +377,26 @@ function NarrationText({ content, citationMaps, citationCallbacks }: { content: 
 
   return (
     <Box className="narration-text agent-activity-enter" style={{ color: 'var(--slate-12)', fontSize: 'var(--font-size-2)', lineHeight: 1.6 }}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} components={components}>
         {cleanContent}
       </ReactMarkdown>
     </Box>
   );
 }
 
+/**
+ * Settled narration text stops changing once its part is marked settled —
+ * memoizing avoids re-parsing it every time an unrelated sibling part (a
+ * live tool call, the still-growing live narration below) re-renders.
+ */
+const NarrationText = React.memo(NarrationTextImpl);
+
 /** The still-unsettled trailing text of a multi-step response, rendered
  * live in the timeline (instead of `AnswerContent`) while its fate —
  * narration vs. the final answer — is still undetermined. The Lottie rail
  * animation (see `TimelineRow`) signals "in progress" instead of an
  * in-text cursor, so this doesn't need its own accent bar. */
-function LiveNarrationText({ content, citationMaps, citationCallbacks }: { content: string; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks }) {
+function LiveNarrationTextImpl({ content, citationMaps, citationCallbacks }: { content: string; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks }) {
   const cleanContent = processMarkdownContent(content);
 
   const citMapsRef = useRef(citationMaps);
@@ -409,12 +422,14 @@ function LiveNarrationText({ content, citationMaps, citationCallbacks }: { conte
         lineHeight: 1.6,
       }}
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} components={components}>
         {cleanContent}
       </ReactMarkdown>
     </Box>
   );
 }
+
+const LiveNarrationText = React.memo(LiveNarrationTextImpl);
 
 /** Status indicator ("Thinking...", "Using Jira Search...") rendered as a
  * timeline entry rather than a standalone element below the answer — see

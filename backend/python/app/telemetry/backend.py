@@ -45,6 +45,11 @@ class MetricsBackend(ABC):
         """Serialize all registered metrics in the backend's exposition format."""
         ...
 
+    @abstractmethod
+    def reset(self) -> None:
+        """Drop all recorded series."""
+        ...
+
 
 class _PromCounter:
     def __init__(self, metric: Counter) -> None:
@@ -81,22 +86,33 @@ class PrometheusBackend(MetricsBackend):
         # exactly what is exported and a double import can't raise
         # duplicate-registration errors.
         self._registry = CollectorRegistry()
+        self._instruments: list[Counter | Gauge | Histogram] = []
 
     def counter(self, name: str, help: str, labels: Sequence[str]) -> CounterHandle:
-        return _PromCounter(Counter(name, help, list(labels), registry=self._registry))
+        metric = Counter(name, help, list(labels), registry=self._registry)
+        self._instruments.append(metric)
+        return _PromCounter(metric)
 
     def gauge(self, name: str, help: str, labels: Sequence[str]) -> GaugeHandle:
-        return _PromGauge(Gauge(name, help, list(labels), registry=self._registry))
+        metric = Gauge(name, help, list(labels), registry=self._registry)
+        self._instruments.append(metric)
+        return _PromGauge(metric)
 
     def histogram(
         self, name: str, help: str, labels: Sequence[str], buckets: Sequence[float]
     ) -> HistogramHandle:
-        return _PromHistogram(
-            Histogram(name, help, list(labels), registry=self._registry, buckets=tuple(buckets))
-        )
+        metric = Histogram(name, help, list(labels), registry=self._registry, buckets=tuple(buckets))
+        self._instruments.append(metric)
+        return _PromHistogram(metric)
 
     def serialize(self) -> str:
         return generate_latest(self._registry).decode("utf-8")
+
+    def reset(self) -> None:
+        for metric in self._instruments:
+            # clear() raises on unlabelled metrics
+            if getattr(metric, "_labelnames", ()):
+                metric.clear()
 
 
 # One backend per process, owned by the telemetry layer.

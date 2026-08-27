@@ -50,7 +50,12 @@ class TestCreateBedrockClient:
                 aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
                 region_name="us-east-1",
             )
-            mock_session.client.assert_called_once_with("bedrock-runtime")
+            # A client without timeouts turns a wrong region into ~300s of
+            # botocore retrying, reported upstream only as "timed out".
+            service_name, kwargs = mock_session.client.call_args
+            assert service_name == ("bedrock-runtime",)
+            assert kwargs["config"].connect_timeout <= 15
+            assert kwargs["config"].retries["max_attempts"] <= 3
 
     def test_without_explicit_keys(self):
         config = {"region": "us-west-2"}
@@ -471,7 +476,7 @@ class TestBedrockReasoningAndTemperature:
 
     def test_anthropic_adaptive_reasoning(self):
         config = self._make_config(
-            "us.anthropic.claude-sonnet-4-6",
+            "us.anthropic.claude-sonnet-5",
             provider="anthropic",
             is_reasoning=True,
         )

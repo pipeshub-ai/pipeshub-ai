@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import math
+
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
+    ImagePart,
     Message,
     SystemMessage,
     TextPart,
@@ -24,6 +27,21 @@ _CHARS_PER_TOKEN = 4
 # Every message costs a few tokens of protocol overhead (role marker,
 # separators) regardless of content, on top of raw character count.
 _MESSAGE_OVERHEAD_TOKENS = 4
+
+# Images used to count as zero here, which is how a request could carry tens
+# of thousands of visual tokens while every shaper believed the context was
+# nearly empty and compaction never fired. Providers tile images at roughly
+# this granularity (Anthropic 28x28 visual tokens, OpenAI 32x32 patches,
+# Gemini 768px tiles at a flat rate), so one grid is close enough for a
+# heuristic whose job is only to decide when to compact.
+_IMAGE_PATCH_PX = 28
+# Ceiling per image, matching the point where providers stop charging more
+# because they have downscaled the image to their native raster.
+_MAX_IMAGE_TOKENS = 1_600
+# What an unmeasured image is assumed to cost. Deliberately near the ceiling:
+# under-counting is the failure that broke compaction, over-counting only
+# makes it slightly eager.
+_UNKNOWN_IMAGE_TOKENS = 1_500
 
 
 def extract_text(message: Message) -> str:
@@ -53,15 +71,32 @@ def extract_text(message: Message) -> str:
             return ""
 
 
+def count_image_tokens(part: ImagePart) -> int:
+    """Visual-token cost of one image, from its dimensions when known."""
+    if not part.width or not part.height:
+        return _UNKNOWN_IMAGE_TOKENS
+    patches = (
+        math.ceil(part.width / _IMAGE_PATCH_PX)
+        * math.ceil(part.height / _IMAGE_PATCH_PX)
+    )
+    return min(patches, _MAX_IMAGE_TOKENS)
+
+
 def count_message_tokens(message: Message) -> int:
-    """Estimate tokens for a single message (content + tool_calls + overhead)."""
+    """Estimate tokens for a single message (content + images + tool_calls +
+    overhead)."""
     text = extract_text(message)
     total_chars = len(text)
     tool_calls = getattr(message, "tool_calls", None)
     if tool_calls:
         for tc in tool_calls:
             total_chars += len(tc.name) + len(str(tc.arguments))
-    return _MESSAGE_OVERHEAD_TOKENS + (total_chars // _CHARS_PER_TOKEN)
+    content = getattr(message, "content", None)
+    image_tokens = (
+        sum(count_image_tokens(p) for p in content if isinstance(p, ImagePart))
+        if isinstance(content, list) else 0
+    )
+    return _MESSAGE_OVERHEAD_TOKENS + (total_chars // _CHARS_PER_TOKEN) + image_tokens
 
 
 def count_tokens(messages: list[Message]) -> int:

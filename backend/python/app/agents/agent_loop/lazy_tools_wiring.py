@@ -101,6 +101,16 @@ CONNECTORS_PARENT = "connectors"
 # out of `group_connector_toolsets`'s candidate set (it only considers groups
 # with `parent is None`), so an MCP server is never mistaken for a connector
 # toolset and re-parented under `CONNECTORS_PARENT` instead.
+#
+# That exclusion used to ALSO suppress lazy activation outright: an agent
+# with only MCP servers attached (no connector toolsets at all) produced an
+# empty `candidates` list and `group_connector_toolsets` returned `False`,
+# which `_decide` reads as "nothing to gain from going lazy" and pins to
+# `"eager"` — binding every MCP tool's full schema on every turn no matter
+# how many were attached. `group_connector_toolsets` now checks for MCP
+# activity independently of `candidates` (see `has_mcp_activity` there) so
+# that case can still flip to lazy without re-parenting anything under
+# `MCP_PARENT`.
 MCP_PARENT = "mcp"
 
 META_TOOL_NAMES: tuple[str, ...] = ("list_toolsets", "fetch_tools", "search_tools")
@@ -167,9 +177,17 @@ def group_connector_toolsets(
     (e.g. once for the top-level grant, once for a domain child's own
     claim, both against the SAME shared `tool_registry`) is safe and cheap.
 
-    Returns whether anything was actually grouped — `False` means nothing
-    in `tool_names` belonged to a groupable, non-excluded toolset, so the
-    caller has nothing to gain from flipping `tool_disclosure` to `"lazy"`.
+    Returns whether there is anything worth hiding behind `fetch_tools` at
+    all — which is NOT the same question as "did this function re-parent
+    anything". An MCP instance group never needs re-parenting (it's
+    registered under `MCP_PARENT` from the start — see that constant's
+    docstring), so it's excluded from `candidates` above, but an MCP-only
+    agent with zero connector toolsets would otherwise make this return
+    `False` regardless of how many MCP tools/schemas it's carrying, pinning
+    it to eager disclosure with no way to ever go lazy. `has_mcp_activity`
+    below answers the real question directly: does an already-`MCP_PARENT`-
+    nested group have a member in THIS turn's grant, independent of
+    `candidates`/re-parenting.
     """
     tool_name_set = set(tool_names)
     candidates = [
@@ -180,9 +198,13 @@ def group_connector_toolsets(
         and group.name not in exclude
         and any(name in tool_name_set for name in group.tool_names)
     ]
+    has_mcp_activity = any(
+        group.parent == MCP_PARENT and any(name in tool_name_set for name in group.tool_names)
+        for group in tool_registry.toolsets()
+    )
 
     if not candidates:
-        return False
+        return has_mcp_activity
 
     tool_registry.register_toolset(
         CONNECTORS_PARENT,
@@ -204,6 +226,24 @@ def group_connector_toolsets(
     return True
 
 
+def _mcp_group_name_from_server_name(server_name: str) -> str:
+    """Same normalization as `mcp_tool_loader.py::_mcp_group_name`, duplicated
+    (not imported) to avoid a cycle — that module imports `MCP_PARENT` from
+    this one. Takes the plain string since the only caller here
+    (`PipesHubGlobalCatalogFallback._mcp_hits`) has no `ResolvedMCPServer` to
+    read `.name` off of — discovery already failed for these instances, so
+    nothing built one this request.
+
+    Must be fed the instance's `name`, never its `displayName`: the loader
+    normalizes `ResolvedMCPServer.name`, so an instance named `RovoMCP` with
+    display name `Atlassian Rovo` registers under `mcp_rovomcp`. Reporting
+    `mcp_atlassian_rovo` here would name a group no `fetch_tools` call can
+    resolve once the server is reachable again.
+    """
+    normalized = server_name.lower().strip().replace(" ", "_").replace("-", "_")
+    return f"mcp_{normalized}"
+
+
 class PipesHubGlobalCatalogFallback:
     """Adapts PipesHub's process-wide toolset catalog (`ToolsetRegistry` —
     every toolset the app knows how to build, across every org, whether or
@@ -222,6 +262,13 @@ class PipesHubGlobalCatalogFallback:
     is configured, you just need to authenticate it" instead of a flat
     "this doesn't exist" when a query names an unauthenticated toolset.
 
+    MCP-aware the same way: a query matching a tool belonging to an attached
+    MCP instance in `context.mcp_tool_load_failures` (runtime discovery
+    failed this request — see `mcp_tool_loader.py`) is reported with reason
+    `"mcp_unavailable"` instead of falling through to the connector-toolset
+    scan below (an MCP instance is never in `ToolsetRegistry`, so it would
+    otherwise just miss silently).
+
     Simple keyword/substring match over each toolset's discovered tool
     name + description — good enough for a rare fallback path; the primary
     ranked search stays in `ToolIndex`/`KeywordToolIndex`.
@@ -238,7 +285,10 @@ class PipesHubGlobalCatalogFallback:
         query_terms = [t for t in query.lower().split() if t]
         failures = self._context.toolset_load_failures if self._context is not None else {}
 
-        hits: list[GlobalToolHit] = []
+        hits: list[GlobalToolHit] = self._mcp_hits(query_terms, limit)
+        if len(hits) >= limit:
+            return hits[:limit]
+
         for ts_name, ts_meta in get_toolset_registry().get_all_toolsets().items():
             if ts_meta.get("isInternal", False):
                 # Never a user-facing "go attach/authenticate this" suggestion —
@@ -278,6 +328,65 @@ class PipesHubGlobalCatalogFallback:
                         if reason == "not_authenticated" else description
                     ),
                     reason=reason,
+                ))
+                if len(hits) >= limit:
+                    return hits
+        return hits
+
+    def _mcp_hits(self, query_terms: list[str], limit: int) -> list["GlobalToolHit"]:
+        """Matches `query_terms` against the attached (but unavailable) tool
+        list of every MCP instance in `context.mcp_tool_load_failures`.
+
+        Reads `context.mcp_servers`' own `tools` list (the attachment's
+        name/description, same source `mcp_tool_loader.py` used to build the
+        removed schema-less fallback tool from) rather than live discovery —
+        by definition, discovery already failed for these instances this
+        request, so there is nothing live left to read.
+        """
+        from app.agent_loop_lib.tools.global_fallback import GlobalToolHit
+        from app.agents.mcp.discovery import build_namespaced_tool_name
+
+        if self._context is None:
+            return []
+        failed_ids = {f.get("instanceId") for f in self._context.mcp_tool_load_failures if f.get("instanceId")}
+        if not failed_ids:
+            return []
+
+        hits: list[GlobalToolHit] = []
+        for server in self._context.mcp_servers:
+            instance_id = server.get("instanceId")
+            if instance_id not in failed_ids:
+                continue
+            # `displayName` is for prose only — see
+            # `_mcp_group_name_from_server_name` on why the group key has to
+            # come from `name`.
+            server_name = server.get("name") or instance_id
+            display_name = server.get("displayName") or server_name
+            group_name = _mcp_group_name_from_server_name(server_name)
+            # Same discriminator `MCPToolProvider._attached_full_names` uses,
+            # so the fallback name below matches what the tool registers under
+            # once discovery succeeds.
+            instance = (self._context.mcp_server_configs.get(instance_id) or {}).get("instance") or {}
+            server_type = instance.get("typeId") or server_name
+
+            for tool in server.get("tools") or []:
+                tool_name = tool.get("name") or ""
+                if not tool_name:
+                    continue
+                description = tool.get("description") or f"{display_name} {tool_name}"
+                haystack = f"{tool_name} {description}".lower()
+                if query_terms and not any(term in haystack for term in query_terms):
+                    continue
+                hits.append(GlobalToolHit(
+                    name=tool.get("fullName") or build_namespaced_tool_name(server_type, tool_name),
+                    toolset=group_name,
+                    description=(
+                        f"{description} — {display_name} is attached but "
+                        "unreachable right now (connection/timeout, not a "
+                        "missing capability); tell the user it's temporarily "
+                        "unavailable and to try again shortly."
+                    ),
+                    reason="mcp_unavailable",
                 ))
                 if len(hits) >= limit:
                     return hits

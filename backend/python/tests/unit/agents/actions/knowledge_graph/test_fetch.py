@@ -19,43 +19,43 @@ class TestResolveBlockCap:
     def test_default_when_env_unset(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PIPESHUB_FULL_RECORD_MAX_BLOCKS", None)
-            assert resolve_block_cap("gpt-4", None) == 200
+            assert resolve_block_cap(None) == 200
 
     def test_env_override(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "50"}):
-            assert resolve_block_cap("gpt-4", None) == 50
+            assert resolve_block_cap(None) == 50
 
     def test_requested_max_lower_than_env(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "100"}):
-            assert resolve_block_cap("gpt-4", 30) == 30
+            assert resolve_block_cap(30) == 30
 
     def test_requested_max_higher_than_env(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "50"}):
-            assert resolve_block_cap("gpt-4", 200) == 50
+            assert resolve_block_cap(200) == 50
 
     def test_zero_env_uses_default(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "0"}):
-            assert resolve_block_cap("gpt-4", None) == 200
+            assert resolve_block_cap(None) == 200
 
     def test_negative_env_uses_default(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "-5"}):
-            assert resolve_block_cap("gpt-4", None) == 200
+            assert resolve_block_cap(None) == 200
 
     def test_invalid_env_uses_default(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "abc"}):
-            assert resolve_block_cap("gpt-4", None) == 200
+            assert resolve_block_cap(None) == 200
 
     def test_whitespace_env_uses_default(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "  "}):
-            assert resolve_block_cap("gpt-4", None) == 200
+            assert resolve_block_cap(None) == 200
 
     def test_requested_max_zero_ignored(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "100"}):
-            assert resolve_block_cap("gpt-4", 0) == 100
+            assert resolve_block_cap(0) == 100
 
     def test_requested_max_negative_ignored(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "100"}):
-            assert resolve_block_cap("gpt-4", -1) == 100
+            assert resolve_block_cap(-1) == 100
 
 
 def _make_context(**overrides: Any) -> SimpleNamespace:
@@ -67,6 +67,11 @@ def _make_context(**overrides: Any) -> SimpleNamespace:
         "full_records_fetched": set(),
         "tool_state": {},
         "is_multimodal_llm": False,
+        # Sizes the render budget; `None` falls back to the platform default.
+        "context_length": 128_000,
+        # Ranks an over-budget record's blocks — see `record_block_selection`.
+        "query": "",
+        "retrieval_service": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -425,3 +430,81 @@ class TestExecuteFetchRecordImageDelivery:
             )
 
         assert budget.used == 1
+
+
+class TestWholeDocumentRequests:
+    """A summary, an overview, "does it mention X anywhere" — the answer is a
+    property of the whole document, and the parts relevance would drop are the
+    ones whose absence changes it. The router already classifies the request."""
+
+    @staticmethod
+    def _record(blocks: int = 400) -> dict:
+        return {
+            "id": "rec-1",
+            "virtual_record_id": "vr-1",
+            "frontend_url": "",
+            "context_metadata": "Record ID: rec-1",
+            "block_containers": {
+                "blocks": [
+                    {"index": i, "type": "text", "parent_index": None,
+                     "parent_block_index": None, "data": f"section {i} " + "x" * 400}
+                    for i in range(blocks)
+                ],
+                "block_groups": [],
+            },
+        }
+
+    @staticmethod
+    def _retrieval() -> MagicMock:
+        service = MagicMock()
+        service.search_with_filters = AsyncMock(return_value={"searchResults": [
+            {"metadata": {"virtualRecordId": "vr-1", "blockIndex": 200}},
+        ]})
+        return service
+
+    async def _run(self, *, needs_whole_document: bool) -> tuple[str, MagicMock]:
+        retrieval = self._retrieval()
+        context = _make_context(
+            context_length=128_000,
+            query="explain this report",
+            retrieval_service=retrieval,
+            needs_whole_document=needs_whole_document,
+            tool_state={"needs_whole_document": needs_whole_document},
+        )
+        structured = MagicMock()
+        structured.coroutine = AsyncMock(return_value={
+            "ok": True, "records": [self._record()], "not_available_ids": [],
+        })
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=structured,
+        ):
+            output, _ = await execute_fetch_record(
+                context=context, virtual_records={}, citation_ref_mapper=None,
+                record_ids=["rec-1"], reason="the full document is needed to summarize it",
+            )
+        return output.data, retrieval
+
+    @pytest.mark.asyncio
+    async def test_a_summary_request_reads_in_order_without_ranking(self) -> None:
+        text, retrieval = await self._run(needs_whole_document=True)
+
+        retrieval.search_with_filters.assert_not_awaited()
+        assert "section 0 " in text
+        assert "section 1 " in text, "contiguous, not a relevance sample"
+
+    @pytest.mark.asyncio
+    async def test_a_targeted_request_still_ranks(self) -> None:
+        _text, retrieval = await self._run(needs_whole_document=False)
+
+        retrieval.search_with_filters.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_either_way_the_allowance_is_filled(self) -> None:
+        """The complaint that started this: far fewer blocks than the window
+        could hold."""
+        whole, _ = await self._run(needs_whole_document=True)
+        targeted, _ = await self._run(needs_whole_document=False)
+
+        for text in (whole, targeted):
+            assert len(text) > 60_000, "the window was left unused"

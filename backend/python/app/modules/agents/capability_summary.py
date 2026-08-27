@@ -196,19 +196,31 @@ def build_capability_summary(state: dict[str, Any]) -> str:
     separately by ``_build_knowledge_context`` / ``SourceCatalog.render()``,
     so it appears exactly once in the prompt.
 
-    Returns "" when the agent has no tools at all — a header followed by
-    "No tools configured" tells the model only what it already knows and
-    just burns prompt tokens.
+    Returns "" when the agent has no tools at all AND no load failures to
+    report — a header followed by "No tools configured" would tell the
+    model only what it already knows and just burn prompt tokens. An agent
+    whose only configured capability is an unauthenticated toolset or an
+    unreachable MCP server DOES have something worth saying here even
+    though `domains` is empty — that's the exact "MCP-only agent, server
+    down" shape this function's `mcp_tool_load_failures` section exists
+    for, and skipping the whole summary would silently swallow it.
     """
     domains, domain_notes = _get_all_tool_domains(state)
+    toolset_failures: dict[str, Any] = state.get("toolset_load_failures") or {}
+    has_failures = (
+        any(reason == "not_authenticated" for reason in toolset_failures.values())
+        or bool(state.get("mcp_tool_load_failures"))
+    )
 
-    if not domains:
+    if not domains and not has_failures:
         return ""
 
     parts: list[str] = ["## Capability Summary", ""]
 
-    _build_actions_section(domains=domains, domain_notes=domain_notes, parts=parts)
+    if domains:
+        _build_actions_section(domains=domains, domain_notes=domain_notes, parts=parts)
     _build_auth_status_section(state=state, parts=parts)
+    _build_mcp_failures_section(state=state, parts=parts)
 
     return "\n".join(parts)
 
@@ -242,6 +254,38 @@ def _build_auth_status_section(state: dict[str, Any], *, parts: list[str]) -> No
         "Toolsets to connect it, instead of saying the toolset doesn't exist:"
     )
     for name in unauthenticated:
+        parts.append(f"- {name}")
+    parts.append("")
+
+
+def _build_mcp_failures_section(state: dict[str, Any], *, parts: list[str]) -> None:
+    """Append an "Unavailable MCP Servers" subsection for every attached MCP
+    instance `MCPToolProvider` couldn't load this request
+    (`state["mcp_tool_load_failures"]`, populated by `mcp_tool_loader.py`;
+    see `AgentContext.mcp_tool_load_failures`'s docstring).
+
+    Since `mcp_tool_loader.py` stopped registering a schema-less fallback
+    tool for a failed instance (there is no fallback now — the instance's
+    tools simply don't exist for this request), this is the ONLY place that
+    tells the model the server exists and is attached, just unreachable
+    right now — without it, a query naming it gets "I don't have that
+    tool", identical to a server that was never attached at all.
+
+    Deliberately omitted when empty, same as `_build_auth_status_section`.
+    """
+    failures: list[dict[str, Any]] = state.get("mcp_tool_load_failures") or []
+    if not failures:
+        return
+
+    parts.append("### Unavailable MCP Servers")
+    parts.append(
+        "The following attached MCP servers could not be reached this "
+        "request (connection/timeout, not a missing capability) — if the "
+        "user's query targets one of these, tell them it's temporarily "
+        "unavailable rather than saying the capability doesn't exist:"
+    )
+    for failure in failures:
+        name = failure.get("name") or failure.get("instanceId") or "unknown"
         parts.append(f"- {name}")
     parts.append("")
 

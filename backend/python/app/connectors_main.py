@@ -39,6 +39,7 @@ from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
+from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.connectors.sources.localKB.api.knowledge_hub_router import (
     get_knowledge_hub_service,
@@ -394,6 +395,15 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
         except Exception as e:
             logger.error(f"Error closing configuration service: {e}")
 
+        # Last, and the only place the shared pool is ever shut down — connector
+        # cleanup() only drains its own lease, since other connectors share this.
+        thread_pool = getattr(container, "connector_thread_pool", None)
+        if thread_pool is not None:
+            try:
+                thread_pool.shutdown(wait=False)
+            except Exception as e:
+                logger.warning(f"Error shutting down connector thread pool: {e}")
+
         logger.info("✅ All container resources shut down successfully")
 
     except Exception as e:
@@ -467,6 +477,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.connector_metrics_task = asyncio.create_task(
         refresh_connector_metrics(graph_provider, logger, interval_s=60*5), name="connector_metrics_refresh"
+    )
+
+    # Every connector's blocking vendor-SDK calls run here, each through a capped
+    # lease. Created before _post_startup so resume_sync_services and the event
+    # service both find it already on the container.
+    app_container.connector_thread_pool = get_shared_connector_thread_pool()
+    logger.info(
+        "✅ Shared connector thread pool ready (max_workers=%d)",
+        app_container.connector_thread_pool.max_workers,
     )
 
     # Start token refresh service at app startup (database-agnostic)

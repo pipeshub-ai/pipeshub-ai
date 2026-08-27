@@ -22,7 +22,6 @@ import {
   ConnectorDetailsLayout,
   InstanceManagementPanel,
   ConfigSuccessDialog,
-  VectorStoreActions,
 } from '../components';
 import { AdminAccessRequiredDialog } from '../components/admin-access-required-dialog';
 import type { AdminAccessDialogPhase } from '../components/admin-access-required-dialog';
@@ -516,9 +515,6 @@ function TeamConnectorsPageContent() {
       <ConnectorCatalogLayout
         title={t('workspace.sidebar.nav.connectors')}
         subtitle={t('workspace.connectors.subtitle')}
-        // Admin-only: this page is already behind TeamConnectorsAccessGate, and
-        // the routes themselves re-check admin server-side.
-        headerActions={<VectorStoreActions />}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         tabs={teamTabs}

@@ -169,7 +169,15 @@ class MetricsPusher:
         timeout = aiohttp.ClientTimeout(total=PUSH_TIMEOUT_S)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(cfg["url"], json=payload, headers=headers) as resp:
-                if resp.status >= 400:
+                if resp.status == 413:
+                    # The registry only grows, so a 413 would otherwise recur until restart.
+                    body = await resp.text()
+                    self._logger.warning(
+                        "Collector rejected metrics payload as too large; "
+                        f"resetting metric registry: {body[:200]}"
+                    )
+                    METRICS_BACKEND.reset()
+                elif resp.status >= 400:
                     body = await resp.text()
                     self._logger.warning(
                         f"Metrics push rejected: status={resp.status} body={body[:200]}"

@@ -138,6 +138,86 @@ async def test_init_does_not_block_event_loop():
     assert called_in_thread, "Model construction must be dispatched via asyncio.to_thread"
 
 
+def test_build_model_tries_cache_before_download(monkeypatch):
+    """Offline cache load first; Hub download only if cache miss and not HF_HUB_OFFLINE."""
+    import os
+    import sys
+
+    calls = []
+
+    class FakeSparse:
+        def __init__(self, model_name):
+            calls.append(os.environ.get("HF_HUB_OFFLINE"))
+            if len(calls) == 1:
+                raise RuntimeError("not in cache")
+            self.model_name = model_name
+
+    fake_module = MagicMock()
+    fake_module.SparseTextEmbedding = FakeSparse
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    with patch.dict(sys.modules, {"fastembed": fake_module}):
+        embedder = SparseEmbedder()
+        model = embedder._build_model()
+    assert calls == ["1", None]
+    assert model.model_name == "Qdrant/bm25"
+
+
+def test_build_model_does_not_download_when_explicitly_offline(monkeypatch):
+    import os
+    import sys
+
+    calls = []
+
+    class FakeSparse:
+        def __init__(self, model_name):
+            calls.append(os.environ.get("HF_HUB_OFFLINE"))
+            raise RuntimeError("not in cache")
+
+    fake_module = MagicMock()
+    fake_module.SparseTextEmbedding = FakeSparse
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    with patch.dict(sys.modules, {"fastembed": fake_module}):
+        embedder = SparseEmbedder()
+        with pytest.raises(RuntimeError, match="not in cache"):
+            embedder._build_model()
+    assert calls == ["1"]
+    assert os.environ.get("HF_HUB_OFFLINE") == "1"
+
+
+def test_concurrent_build_does_not_leave_hub_offline_set(monkeypatch):
+    import os
+    import sys
+    import threading
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+
+    class FakeSparse:
+        def __init__(self, model_name):
+            if os.environ.get("HF_HUB_OFFLINE") == "1":
+                raise RuntimeError("not in cache")
+            self.model_name = model_name
+
+    fake_module = MagicMock()
+    fake_module.SparseTextEmbedding = FakeSparse
+    errors: list[BaseException] = []
+
+    def worker():
+        try:
+            SparseEmbedder()._build_model()
+        except BaseException as exc:
+            errors.append(exc)
+
+    with patch.dict(sys.modules, {"fastembed": fake_module}):
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+    assert errors == []
+    assert os.environ.get("HF_HUB_OFFLINE") is None
+
+
 @pytest.mark.asyncio
 async def test_embed_documents_empty_returns_empty():
     """embed_documents([]) must short-circuit and return [] without touching the model."""

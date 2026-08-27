@@ -14,7 +14,7 @@ import type { AgentListRecord } from '@/app/(main)/agents/types';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { ChatSectionHeader } from './chat-section-header';
 import { SidebarItem } from './sidebar-item';
-import { AgentSidebarListRow } from '@/config';
+import { AgentSidebarListRow, useUserPermission, usePermissionDeniedDialog } from '@/config';
 import { ChatItemSkeleton } from './chat-section-element';
 import {
   MAX_VISIBLE_AGENTS_IN_SIDEBAR,
@@ -37,6 +37,8 @@ export const MyAgentsSection = React.memo(function MyAgentsSection() {
   const currentAgentId = searchParams.get('agentId');
   const onChatRoute = useIsMainChatRoute();
   const { t } = useTranslation();
+  const canCreateAgent = useUserPermission('createAgent');
+  const permissionDenied = usePermissionDeniedDialog();
   const toggleAgentsSidebar = useChatStore((s) => s.toggleAgentsSidebar);
   const openMobileSidebar = useMobileSidebarStore((s) => s.open);
   const isMobile = useIsMobile();
@@ -92,9 +94,10 @@ export const MyAgentsSection = React.memo(function MyAgentsSection() {
     <Flex direction="column" style={{ flexShrink: 0 }}>
       <ChatSectionHeader
         title={t('chat.myAgents')}
-        onAdd={goCreateAgent}
+        onAdd={permissionDenied.guard(canCreateAgent, goCreateAgent)}
         addAriaLabel={t('chat.newAgent')}
       />
+      {permissionDenied.dialog}
 
       {loadError ? (
         <Text

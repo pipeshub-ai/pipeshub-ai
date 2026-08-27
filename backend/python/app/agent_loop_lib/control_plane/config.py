@@ -280,7 +280,7 @@ class ControlPlaneConfig(BaseModel):
     # OllamaTransport.DEFAULT_BASE_URL when left None).
     transport: str = "anthropic"
     api_key: str | None = None
-    model: str = "claude-sonnet-4-6"
+    model: str = "claude-sonnet-5"
     # Keep in sync with AnthropicTransport.DEFAULT_MAX_TOKENS — 8k proved
     # too small for report-synthesis outputs and caused silent truncation
     # of task_complete arguments.

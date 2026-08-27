@@ -225,6 +225,20 @@ class _FetchFullRecordTool(Tool):
     def validate(self, kwargs: dict[str, Any]) -> None:
         return
 
+    @staticmethod
+    def _coerce_start_block(raw: Any) -> int:  # noqa: ANN401
+        """`start_block` is model input. A float or a numeric string is an
+        honest mistake and is accepted; anything else is a tool error rather
+        than a traceback, and a negative offset means the beginning."""
+        if raw is None or raw == "":
+            return 0
+        try:
+            return max(0, int(float(raw)))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"start_block must be a whole number, got {raw!r}."
+            ) from exc
+
     def _live_virtual_records(self) -> dict[str, Any]:
         """The mapping `_fetch_multiple_records_impl` writes downloaded records
         back into, so it must be the object in `tool_state` and NOT
@@ -257,14 +271,36 @@ class _FetchFullRecordTool(Tool):
                 ),
             )
 
+        record_ids = kwargs.get("record_ids") or []
+        if isinstance(record_ids, str):
+            record_ids = [record_ids]
+
+        try:
+            start_block = self._coerce_start_block(kwargs.get("start_block"))
+        except ValueError as exc:
+            return ToolOutput(success=False, error=str(exc))
+
+        # One offset cannot continue several records: applied to all of them it
+        # re-reads whichever stopped later and skips the start of the others.
+        # Continuation is therefore one record at a time.
+        if start_block > 0 and len(record_ids) > 1:
+            return ToolOutput(
+                success=False,
+                error=(
+                    "start_block continues one record at a time — it would be applied "
+                    f"to all {len(record_ids)} ids. Call again with a single record_id "
+                    "(the one named in the truncation hint) plus its start_block."
+                ),
+            )
+
         ref_mapper_in = self._collector.citation_ref_mapper
         output, ref_mapper = await execute_fetch_record(
             context=self._context,
             virtual_records=self._live_virtual_records(),
             citation_ref_mapper=ref_mapper_in,
-            record_ids=kwargs.get("record_ids") or [],
+            record_ids=record_ids,
             reason=kwargs.get("reason") or _DEFAULT_FETCH_REASON,
-            start_block=int(kwargs.get("start_block") or 0),
+            start_block=start_block,
             max_blocks=kwargs.get("max_blocks"),
         )
         if ref_mapper is not ref_mapper_in:

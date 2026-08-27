@@ -7,7 +7,11 @@ import { Flex, Box, Text, TextField, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { WorkspaceRightPanel } from '../../components/workspace-right-panel';
 import { isValidEmail } from '@/lib/utils/validators';
+import { CONFIG_SECRET_PLACEHOLDER } from '@/lib/constants/config-secret-placeholder';
+import { InheritedConfigNotice } from '@/config';
 import type { SmtpConfig, SmtpFormData, SmtpFormErrors } from '../types';
+
+const INHERITABLE_SECRET_KEYS = ['host', 'username', 'fromEmail', 'password'] as const;
 
 // ============================================================
 // Types
@@ -90,6 +94,8 @@ export function SmtpConfigurePanel({
   const [errors, setErrors] = useState<SmtpFormErrors>({});
   const [isSaving, setIsSaving] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [touched, setTouched] = useState<Set<keyof SmtpFormData>>(new Set());
+  const isInherited = !!initialConfig?.inherited;
 
   // ── Sync initial config in ──────────────────────────────
   useEffect(() => {
@@ -107,6 +113,7 @@ export function SmtpConfigurePanel({
     }
     setErrors({});
     setShowPassword(false);
+    setTouched(new Set());
   }, [open, initialConfig]);
 
   // ── Field change handler ────────────────────────────────
@@ -118,13 +125,27 @@ export function SmtpConfigurePanel({
         [field]: field === 'port' ? (raw === '' ? '' : parseInt(raw, 10) || '') : raw,
       }));
       setErrors((prev) => ({ ...prev, [field]: undefined }));
+      setTouched((prev) => (prev.has(field) ? prev : new Set(prev).add(field)));
     },
     [],
   );
 
+
+  const resolveEffectiveForm = (raw: SmtpFormData): SmtpFormData => {
+    if (!isInherited) return raw;
+    const effective = { ...raw };
+    for (const key of INHERITABLE_SECRET_KEYS) {
+      if (!touched.has(key)) {
+        effective[key] = CONFIG_SECRET_PLACEHOLDER;
+      }
+    }
+    return effective;
+  };
+
   // ── Save ────────────────────────────────────────────────
   const handleSave = async () => {
-    const errs = validate(form, t);
+    const effectiveForm = resolveEffectiveForm(form);
+    const errs = validate(effectiveForm, t);
     if (Object.keys(errs).length > 0) {
       setErrors(errs);
       return;
@@ -133,11 +154,11 @@ export function SmtpConfigurePanel({
     setIsSaving(true);
     try {
       const payload: SmtpConfig = {
-        host: form.host.trim(),
-        port: Number(form.port),
-        fromEmail: form.fromEmail.trim(),
-        ...(form.username.trim() ? { username: form.username.trim() } : {}),
-        ...(form.password ? { password: form.password } : {}),
+        host: effectiveForm.host.trim(),
+        port: Number(effectiveForm.port),
+        fromEmail: effectiveForm.fromEmail.trim(),
+        ...(effectiveForm.username.trim() ? { username: effectiveForm.username.trim() } : {}),
+        ...(effectiveForm.password ? { password: effectiveForm.password } : {}),
       };
       await onSave(payload);
       onSaveSuccess();
@@ -177,6 +198,8 @@ export function SmtpConfigurePanel({
       iconSize={20}
     >
       <Flex direction="column" gap="5">
+        <InheritedConfigNotice show={isInherited} />
+
         {/* ── Info banner ── */}
         <Box
           style={{

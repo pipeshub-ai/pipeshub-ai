@@ -28,6 +28,17 @@ API_SHAPE_CONFLICT_MARKERS = (
 # for this endpoint and cannot be disabled."
 REASONING_MANDATORY_CONFLICT_MARKERS = ("reasoning is mandatory",)
 
+# Emitted when a provider accepts image blocks only on ``role: "user"`` messages
+# and the request carried one inside a tool result. OpenAI/Azure Chat
+# Completions: "Invalid 'messages[5]'. Image URLs are only allowed for messages
+# with role 'user', but this message with role 'tool' contains an image URL."
+# Recovering means moving those images into a user message, not changing the
+# model's configuration -- see `LangChainTransport._tool_image_fallback`.
+TOOL_RESULT_IMAGE_MARKERS = (
+    "only allowed for messages with role 'user'",
+    'only allowed for messages with role "user"',
+)
+
 
 def is_api_shape_conflict(exc: Exception) -> bool:
     message = str(exc).lower()
@@ -37,6 +48,11 @@ def is_api_shape_conflict(exc: Exception) -> bool:
 def is_reasoning_mandatory_conflict(exc: Exception) -> bool:
     message = str(exc).lower()
     return any(marker in message for marker in REASONING_MANDATORY_CONFLICT_MARKERS)
+
+
+def is_tool_result_image_conflict(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(marker in message for marker in TOOL_RESULT_IMAGE_MARKERS)
 
 
 def wants_responses_api(exc: Exception) -> bool:

@@ -43,9 +43,15 @@ const DEVELOPER_SETTINGS_ITEMS: NavItem[] = [
 
 const PEOPLE_SUB_ITEMS = [
   { labelKey: 'workspace.sidebar.nav.users', route: '/workspace/users' },
-  { labelKey: 'workspace.sidebar.nav.groups', route: '/workspace/groups', adminOnly: true },
   { labelKey: 'workspace.sidebar.nav.teams', route: '/workspace/teams' },
 ];
+
+const GROUPS_NAV_ITEM: NavItem = {
+  icon: 'group',
+  labelKey: 'workspace.sidebar.nav.groups',
+  route: '/workspace/groups',
+  adminOnly: true,
+};
 
 const WORKSPACE_ITEMS: NavItem[] = [
   { icon: 'security', labelKey: 'workspace.sidebar.nav.authentication', route: '/workspace/authentication', adminOnly: true },
@@ -107,6 +113,7 @@ export default function WorkspaceSidebar() {
     ...DEVELOPER_SETTINGS_ITEMS.map((item) => item.route),
     ...PERSONAL_ITEMS.filter(isNavItemVisible).map((item) => item.route),
     ...PEOPLE_SUB_ITEMS.map((item) => item.route),
+    GROUPS_NAV_ITEM.route,
     '/workspace/actions',
   ];
 
@@ -125,7 +132,7 @@ export default function WorkspaceSidebar() {
 
   const visibleOverviewItems = OVERVIEW_ITEMS.filter(isNavItemVisible);
   const visibleWorkspaceItems = WORKSPACE_ITEMS.filter(isNavItemVisible);
-  const visiblePeopleItems = PEOPLE_SUB_ITEMS.filter((item) => isAdmin || !item.adminOnly);
+  const visiblePeopleItems = PEOPLE_SUB_ITEMS;
   const visiblePersonalItems = PERSONAL_ITEMS.filter(isNavItemVisible);
 
   return (
@@ -170,6 +177,15 @@ export default function WorkspaceSidebar() {
                 />
               ))}
             </CollapsibleSection>
+          )}
+
+          {isAdmin && (
+            <WorkspaceSidebarItem
+              icon={<MaterialIcon name={GROUPS_NAV_ITEM.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+              label={t(GROUPS_NAV_ITEM.labelKey)}
+              href={`${GROUPS_NAV_ITEM.route}/`}
+              isActive={isActive(GROUPS_NAV_ITEM.route)}
+            />
           )}
         </Flex>
 

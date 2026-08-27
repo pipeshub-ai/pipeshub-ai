@@ -24,6 +24,7 @@ from app.agents.agent_loop.lazy_tools_wiring import (
     register_lazy_tool_meta_tools,
     should_apply_lazy_tools,
 )
+from tests.unit.agents.adapter.conftest import make_context
 
 
 class _ConnectorTool(Tool):
@@ -230,6 +231,48 @@ class TestGroupConnectorToolsets:
         mcp_group = next(g for g in registry.toolsets() if g.name == "mcp_jiramcp")
         assert mcp_group.parent == MCP_PARENT
 
+    def test_mcp_only_registry_activates_lazy_without_reparenting(self) -> None:
+        """An agent with ONLY MCP servers attached (no connector toolsets at
+        all — the reported request's exact shape) must still be able to
+        reach lazy disclosure. Before this fix, `candidates` was always
+        empty for such a registry (MCP groups are excluded from it by
+        design), so the function returned `False` unconditionally and
+        `_decide` pinned the agent to eager forever, regardless of how many
+        MCP tools/schemas it carried."""
+        registry = ToolRegistry()
+        registry.register_tool(_ConnectorTool("jira_mcp", "search"))
+        registry.register_tool(_ConnectorTool("jira_mcp", "create"))
+        registry.register_toolset(MCP_PARENT, "Attached MCP servers", [])
+        registry.register_toolset(
+            "mcp_jiramcp", "Jira MCP server tools",
+            ["jira_mcp_search", "jira_mcp_create"], parent=MCP_PARENT,
+        )
+
+        grouped_anything = group_connector_toolsets(
+            registry, ["jira_mcp_search", "jira_mcp_create"],
+        )
+
+        assert grouped_anything is True
+        # No re-parenting happened — there were no top-level candidates to
+        # re-parent, and the MCP group must stay exactly where
+        # `MCPToolProvider` put it.
+        assert registry.children_of("connectors") == []
+        mcp_group = next(g for g in registry.toolsets() if g.name == "mcp_jiramcp")
+        assert mcp_group.parent == MCP_PARENT
+
+    def test_mcp_group_with_no_member_in_this_turns_grant_does_not_activate_lazy(self) -> None:
+        """The MCP group exists on the shared registry but none of its
+        tools are in THIS turn's `tool_names` (e.g. a domain child's own
+        narrower claim) — must not spuriously flip to lazy."""
+        registry = ToolRegistry()
+        registry.register_tool(_ConnectorTool("jira_mcp", "search"))
+        registry.register_toolset(MCP_PARENT, "Attached MCP servers", [])
+        registry.register_toolset("mcp_jiramcp", "Jira MCP server tools", ["jira_mcp_search"], parent=MCP_PARENT)
+
+        grouped_anything = group_connector_toolsets(registry, ["some_other_tool"])
+
+        assert grouped_anything is False
+
 
 class TestRegisterLazyToolMetaTools:
     def test_registers_all_three_meta_tools(self) -> None:
@@ -394,7 +437,10 @@ class TestPipesHubGlobalCatalogFallback:
         monkeypatch.setattr(
             "app.agents.registry.toolset_registry.get_toolset_registry", lambda: fake_registry,
         )
-        context = SimpleNamespace(toolset_load_failures={"jira": "not_authenticated"})
+        context = SimpleNamespace(
+            toolset_load_failures={"jira": "not_authenticated"},
+            mcp_tool_load_failures=[], mcp_servers=[],
+        )
 
         fallback = PipesHubGlobalCatalogFallback(context)
         hits = await fallback.search("jira issue", limit=5)
@@ -416,3 +462,82 @@ class TestPipesHubGlobalCatalogFallback:
         hits = await fallback.search("jira issue", limit=5)
 
         assert hits[0].reason == "not_attached"
+
+    async def test_search_reports_mcp_unavailable_for_a_failed_instance(self, monkeypatch) -> None:
+        """A query matching a tool that belongs to an attached MCP instance
+        whose live discovery failed this request must come back as
+        `"mcp_unavailable"`, not silently miss — an MCP instance group is
+        never in `ToolsetRegistry`, so without `_mcp_hits` this would fall
+        straight through the connector-toolset scan below and find
+        nothing, telling the model the capability doesn't exist at all."""
+        monkeypatch.setattr(
+            "app.agents.registry.toolset_registry.get_toolset_registry",
+            lambda: _FakeToolsetRegistry({}),
+        )
+        context = make_context(
+            mcp_servers=[{
+                "instanceId": "inst-1", "name": "RovoMCP", "displayName": "Atlassian Rovo",
+                "tools": [{"name": "search_issues", "fullName": "mcp_rovo__search_issues",
+                           "description": "Search Jira issues via Rovo"}],
+            }],
+            mcp_tool_load_failures=[{"instanceId": "inst-1", "name": "RovoMCP", "reason": "discovery_failed"}],
+        )
+
+        fallback = PipesHubGlobalCatalogFallback(context)
+        hits = await fallback.search("jira issues", limit=5)
+
+        assert len(hits) == 1
+        assert hits[0].name == "mcp_rovo__search_issues"
+        assert hits[0].reason == "mcp_unavailable"
+        assert "unavailable" in hits[0].description.lower()
+        # `name`, not `displayName` — `mcp_tool_loader.py::_mcp_group_name`
+        # normalizes `ResolvedMCPServer.name`, so reporting
+        # `mcp_atlassian_rovo` here would name a group no later
+        # `fetch_tools` call could resolve.
+        assert hits[0].toolset == "mcp_rovomcp"
+
+    async def test_mcp_hit_without_full_name_falls_back_to_the_namespaced_name(
+        self, monkeypatch,
+    ) -> None:
+        """With no `fullName` on the attachment, the reported name must still
+        be the one the tool registers under once discovery succeeds — that's
+        `build_namespaced_tool_name(typeId or name, tool)` (`discovery.py`),
+        the same discriminator `MCPToolProvider._attached_full_names` uses,
+        not the `{group}__{tool}` convention connector toolsets use."""
+        monkeypatch.setattr(
+            "app.agents.registry.toolset_registry.get_toolset_registry",
+            lambda: _FakeToolsetRegistry({}),
+        )
+        context = make_context(
+            mcp_servers=[{
+                "instanceId": "inst-1", "name": "RovoMCP", "displayName": "Atlassian Rovo",
+                "tools": [{"name": "search_issues", "description": "Search Jira issues via Rovo"}],
+            }],
+            mcp_server_configs={"inst-1": {"instance": {"typeId": "atlassian-rovo"}, "auth": {}}},
+            mcp_tool_load_failures=[{"instanceId": "inst-1", "name": "RovoMCP", "reason": "discovery_failed"}],
+        )
+
+        hits = await PipesHubGlobalCatalogFallback(context).search("jira issues", limit=5)
+
+        assert len(hits) == 1
+        assert hits[0].name == "mcp_atlassian_rovo_search_issues"
+        assert hits[0].toolset == "mcp_rovomcp"
+
+    async def test_search_ignores_mcp_servers_that_did_not_fail(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "app.agents.registry.toolset_registry.get_toolset_registry",
+            lambda: _FakeToolsetRegistry({}),
+        )
+        context = make_context(
+            mcp_servers=[{
+                "instanceId": "inst-1", "name": "RovoMCP", "displayName": "Atlassian Rovo",
+                "tools": [{"name": "search_issues", "fullName": "mcp_rovo__search_issues",
+                           "description": "Search Jira issues via Rovo"}],
+            }],
+            mcp_tool_load_failures=[],
+        )
+
+        fallback = PipesHubGlobalCatalogFallback(context)
+        hits = await fallback.search("jira issues", limit=5)
+
+        assert hits == []

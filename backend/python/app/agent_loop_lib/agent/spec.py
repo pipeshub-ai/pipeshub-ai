@@ -30,7 +30,7 @@ class ModelSpec(BaseModel):
     new `ModelSpec`, never mutating one shared across agents."""
 
     provider: str = "anthropic"
-    model: str = "claude-sonnet-4-6"
+    model: str = "claude-sonnet-5"
     thinking_budget: int | None = None
     effort: str | None = None
 

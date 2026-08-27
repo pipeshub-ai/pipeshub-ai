@@ -462,6 +462,7 @@ export default function WebSearchPage() {
         provider={panelProvider}
         providerMeta={panelMeta}
         existingProvider={existingPanelProvider}
+        inherited={inherited}
         onClose={handlePanelClose}
         onSaveSuccess={handleConfigureSaveSuccess}
         onDeleteSuccess={handleConfigureDeleteSuccess}

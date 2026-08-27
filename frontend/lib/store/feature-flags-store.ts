@@ -87,3 +87,6 @@ export const selectFeatureFlagsLoaded = (s: FeatureFlagsStore) => s.flags !== nu
 export const selectMcpEnabled = (s: FeatureFlagsStore) => s.flags?.ENABLE_MCP === true;
 /** Actions defaults to enabled, so an unloaded/absent flag must NOT read as disabled (unlike MCP). */
 export const selectActionsEnabled = (s: FeatureFlagsStore) => s.flags?.ENABLE_ACTIONS !== false;
+/** Vector store rebuild defaults to disabled; admins opt in from Labs. */
+export const selectVectorStoreRebuildEnabled = (s: FeatureFlagsStore) =>
+  s.flags?.ENABLE_VECTOR_STORE_REBUILD === true;

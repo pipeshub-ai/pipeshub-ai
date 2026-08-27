@@ -6,6 +6,7 @@ import { Flex, Text, Button, TextField, Callout } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { WorkspaceRightPanel } from '../../components/workspace-right-panel';
 import { ConfirmationDialog } from '../../components/confirmation-dialog';
+import { InheritedConfigNotice } from '@/config';
 import { isProcessedError } from '@/lib/api';
 import { WebSearchApi } from '../api';
 import type {
@@ -24,6 +25,7 @@ interface ConfigurePanelProps {
   provider: ConfigurableProvider | null;
   providerMeta: WebSearchProviderMeta | null;
   existingProvider: ConfiguredWebSearchProvider | null;
+  inherited?: boolean;
   onClose: () => void;
   onSaveSuccess: (params: { provider: ConfigurableProvider; isEdit: boolean }) => void;
   onDeleteSuccess: (params: {
@@ -41,6 +43,7 @@ export function ConfigurePanel({
   provider,
   providerMeta,
   existingProvider,
+  inherited = false,
   onClose,
   onSaveSuccess,
   onDeleteSuccess,
@@ -186,7 +189,9 @@ export function ConfigurePanel({
             {providerMeta.description}
           </Text>
 
-          {isEdit && (
+          <InheritedConfigNotice show={isEdit && inherited} />
+
+          {isEdit && !inherited && (
             <Callout.Root color="blue" size="1" variant="soft">
               <Callout.Icon>
                 <MaterialIcon name="info" size={14} color="var(--blue-11)" />

@@ -3,6 +3,24 @@ import type { AIModelConfiguration } from '../types/ai-models.types';
 /** Placeholder shown in API responses when sensitive values are hidden. */
 export const CONFIG_SECRET_PLACEHOLDER = '****************';
 
+export function stripSecretKeys<T extends Record<string, unknown>>(
+  config: T,
+  secretKeys: readonly string[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...config };
+  for (const key of secretKeys) {
+    delete out[key];
+  }
+  return out;
+}
+
+export function omitInheritedSecrets<T extends Record<string, unknown>>(
+  config: T,
+  secretKeys: readonly string[],
+): Record<string, unknown> {
+  return { ...stripSecretKeys(config, secretKeys), inherited: true };
+}
+
 /**
  * Keys inside an AI model `configuration` object that are NOT secrets and
  * should always be returned to the client as-is.
@@ -117,83 +135,49 @@ export function mergeSmtpConfigPlaceholders<T extends Record<string, unknown>>(
   return out as T;
 }
 
-/**
- * Mask sensitive fields in a Google auth config object.
- * `clientId` is the only credential; `enableJit` is left as-is.
- */
+export const GOOGLE_AUTH_SECRET_KEYS = ['clientId'] as const;
+
+
+export const MICROSOFT_AUTH_SECRET_KEYS = ['clientId', 'tenantId', 'authority'] as const;
+
+export const OAUTH_SECRET_KEYS = ['clientId', 'clientSecret'] as const;
+
+export const GITHUB_AUTH_SECRET_KEYS = ['clientId', 'clientSecret'] as const;
+
+export const WEB_SEARCH_SECRET_KEYS = ['apiKey'] as const;
+
+function maskKeys<T extends Record<string, unknown>>(config: T, keys: readonly string[]): T {
+  if (!config || typeof config !== 'object') {
+    return config;
+  }
+  const out = { ...config } as Record<string, unknown>;
+  for (const key of keys) {
+    if (typeof out[key] === 'string' && (out[key] as string).length > 0) {
+      out[key] = CONFIG_SECRET_PLACEHOLDER;
+    }
+  }
+  return out as T;
+}
+
 export function maskGoogleAuthConfig<T extends Record<string, unknown>>(config: T): T {
-  if (!config || typeof config !== 'object') {
-    return config;
-  }
-  const out = { ...config } as Record<string, unknown>;
-  if (typeof out['clientId'] === 'string' && out['clientId'].length > 0) {
-    out['clientId'] = CONFIG_SECRET_PLACEHOLDER;
-  }
-  return out as T;
+  return maskKeys(config, GOOGLE_AUTH_SECRET_KEYS);
 }
 
-/**
- * Mask sensitive fields in a Microsoft / Azure AD auth config object.
- * `clientId`, `tenantId`, and `authority` (which embeds the tenantId) are
- * considered secrets; `enableJit` is left as-is.
- */
 export function maskMicrosoftAuthConfig<T extends Record<string, unknown>>(config: T): T {
-  if (!config || typeof config !== 'object') {
-    return config;
-  }
-  const out = { ...config } as Record<string, unknown>;
-  for (const key of ['clientId', 'tenantId', 'authority'] as const) {
-    if (typeof out[key] === 'string' && (out[key] as string).length > 0) {
-      out[key] = CONFIG_SECRET_PLACEHOLDER;
-    }
-  }
-  return out as T;
+  return maskKeys(config, MICROSOFT_AUTH_SECRET_KEYS);
 }
 
-/**
- * Mask sensitive fields in a generic OAuth 2.0 config object.
- * `clientId` and `clientSecret` are secrets; all other fields
- * (providerName, authorizationUrl, tokenEndpoint, etc.) are left as-is.
- */
 export function maskOAuthConfig<T extends Record<string, unknown>>(config: T): T {
-  if (!config || typeof config !== 'object') {
-    return config;
-  }
-  const out = { ...config } as Record<string, unknown>;
-  for (const key of ['clientId', 'clientSecret'] as const) {
-    if (typeof out[key] === 'string' && (out[key] as string).length > 0) {
-      out[key] = CONFIG_SECRET_PLACEHOLDER;
-    }
-  }
-  return out as T;
+  return maskKeys(config, OAUTH_SECRET_KEYS);
 }
 
-/**
- * Mask sensitive fields in a GitHub OAuth config object.
- * Both `clientId` and `clientSecret` are considered secrets.
- */
+/** Mask sensitive fields in a GitHub OAuth config object. */
 export function maskGithubAuthConfig<T extends Record<string, unknown>>(config: T): T {
-  if (!config || typeof config !== 'object') {
-    return config;
-  }
-  const out = { ...config } as Record<string, unknown>;
-  for (const key of ['clientId', 'clientSecret'] as const) {
-    if (typeof out[key] === 'string' && (out[key] as string).length > 0) {
-      out[key] = CONFIG_SECRET_PLACEHOLDER;
-    }
-  }
-  return out as T;
+  return maskKeys(config, GITHUB_AUTH_SECRET_KEYS);
 }
 
 export function maskWebSearchProvider<T extends Record<string, unknown>>(configuration: T): T {
-  if (!configuration || typeof configuration !== 'object') {
-    return configuration;
-  }
-  const out = { ...configuration } as Record<string, unknown>;
-  if (typeof out['apiKey'] === 'string' && out['apiKey'].length > 0) {
-    out['apiKey'] = CONFIG_SECRET_PLACEHOLDER;
-  }
-  return out as T;
+  return maskKeys(configuration, WEB_SEARCH_SECRET_KEYS);
 }
 
 export function mergeWebSearchProviderPlaceholders<T extends Record<string, unknown>>(

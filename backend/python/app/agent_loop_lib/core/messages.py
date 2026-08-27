@@ -109,6 +109,11 @@ class ThinkingPart(BaseModel):
 class ImagePart(BaseModel):
     type: Literal["image"] = "image"
     source: ImageSource
+    # Pixel dimensions when the producer measured them, so `count_tokens` can
+    # size the image without decoding it on every shaper pass. `None` means
+    # unmeasured, never zero-cost -- see `tokens.py`.
+    width: int | None = None
+    height: int | None = None
 
 
 # Open/Closed: adding a new content shape (e.g. DocumentPart) means adding a

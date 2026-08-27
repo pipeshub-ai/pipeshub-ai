@@ -13,3 +13,7 @@ class CONFIG:
     # Defaults to enabled — unlike ENABLE_MCP, this is pre-existing
     # functionality; admins may opt out from Labs.
     ENABLE_ACTIONS = "ENABLE_ACTIONS"
+    # Controls whether the admin vector-store cleanup (delete all embeddings)
+    # and reindex operations are available. Defaults to disabled;
+    # admins opt in from Labs.
+    ENABLE_VECTOR_STORE_REBUILD = "ENABLE_VECTOR_STORE_REBUILD"
