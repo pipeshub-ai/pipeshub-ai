@@ -70,6 +70,8 @@ import {
   mergeSmtpConfigPlaceholders,
   maskAiModelsStoredConfig,
   maskAiModelEntry,
+  maskWebSearchProvider,
+  mergeWebSearchProviderPlaceholders,
 } from '../utils/maskConfigSecrets';
 import {
   buildS3HealthCheckErrorMessage,
@@ -4176,12 +4178,17 @@ export const getWebSearchProviders =
       const storedProviders = Array.isArray(webSearchConfig.providers)
         ? webSearchConfig.providers
         : [];
+      const hideSecrets = shouldHideSecrets();
       const providers = [
         {
           ...DUCKDUCKGO_WEB_SEARCH_PROVIDER,
           isDefault: !storedProviders.some((p) => p.isDefault),
         },
-        ...storedProviders,
+        ...storedProviders.map((p) =>
+          hideSecrets && p.configuration
+            ? { ...p, configuration: maskWebSearchProvider(p.configuration) }
+            : p,
+        ),
       ];
       const settings = normalizeWebSearchSettings(webSearchConfig.settings);
 
@@ -4405,29 +4412,6 @@ export const updateWebSearchProvider =
         return;
       }
 
-      // Health check: verify provider credentials before updating
-      const webSearchHealthCheckOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/web-search-health-check`,
-        method: HttpMethod.POST,
-        headers: req.headers as Record<string, string>,
-        body: { provider, configuration },
-      };
-
-      logger.debug('Health check for web search provider before updating');
-
-      const webSearchHealthCheckCommand = new AIServiceCommand(webSearchHealthCheckOptions);
-      const webSearchHealthCheckResponse = (await webSearchHealthCheckCommand.execute()) as AIServiceResponse;
-
-      if (!webSearchHealthCheckResponse?.data || webSearchHealthCheckResponse.statusCode !== 200) {
-        const errData: any = webSearchHealthCheckResponse?.data ?? {};
-        res.status(webSearchHealthCheckResponse?.statusCode ?? 500).json({
-          status: 'error',
-          message: errData.error ?? 'Failed to validate web search provider configuration',
-          details: errData,
-        });
-        return;
-      }
-
       const configManagerConfig = loadConfigurationManagerConfig();
       const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
         configPaths.webSearch,
@@ -4461,9 +4445,39 @@ export const updateWebSearchProvider =
         return;
       }
 
+      // Restore any resubmitted "****************" placeholder from the
+      // provider's own stored config before it reaches the health check.
+      const effectiveConfiguration = mergeWebSearchProviderPlaceholders(
+        configuration,
+        targetProvider.configuration,
+      );
+
+      // Health check: verify provider credentials before updating
+      const webSearchHealthCheckOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/web-search-health-check`,
+        method: HttpMethod.POST,
+        headers: req.headers as Record<string, string>,
+        body: { provider, configuration: effectiveConfiguration },
+      };
+
+      logger.debug('Health check for web search provider before updating');
+
+      const webSearchHealthCheckCommand = new AIServiceCommand(webSearchHealthCheckOptions);
+      const webSearchHealthCheckResponse = (await webSearchHealthCheckCommand.execute()) as AIServiceResponse;
+
+      if (!webSearchHealthCheckResponse?.data || webSearchHealthCheckResponse.statusCode !== 200) {
+        const errData: any = webSearchHealthCheckResponse?.data ?? {};
+        res.status(webSearchHealthCheckResponse?.statusCode ?? 500).json({
+          status: 'error',
+          message: errData.error ?? 'Failed to validate web search provider configuration',
+          details: errData,
+        });
+        return;
+      }
+
       // Update the provider configuration
       targetProvider.provider = provider;
-      targetProvider.configuration = configuration;
+      targetProvider.configuration = effectiveConfiguration;
       targetProvider.isDefault = isDefault;
 
       // If this is set as default, remove default flag from other providers
@@ -4481,10 +4495,19 @@ export const updateWebSearchProvider =
         configManagerConfig.secretKey,
       ).encrypt(JSON.stringify(webSearchConfig));
 
-      await keyValueStoreService.set<string>(
+      const casSuccess = await keyValueStoreService.compareAndSet<string>(
         configPaths.webSearch,
+        encryptedWebSearchConfig,
         encryptedUpdatedConfig,
       );
+      
+      if (!casSuccess) {
+        res.status(409).json({
+          status: 'error',
+          message: 'Unable to save changes. Please retry.',
+        });
+        return;
+      }
 
       res.status(200).json({
         status: 'success',
