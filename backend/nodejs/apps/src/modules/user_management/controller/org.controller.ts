@@ -314,6 +314,9 @@ export class OrgController {
       await this.eventService.stop();
       res.status(200).json(org);
     } catch (error) {
+      if (error instanceof BadRequestError || error instanceof NotFoundError) {
+        throw error;
+      }
       throw new InternalServerError(
         error instanceof Error ? error.message : 'Error retrieving users',
       );

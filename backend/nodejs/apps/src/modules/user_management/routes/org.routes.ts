@@ -7,6 +7,7 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { userAdminCheck } from '../middlewares/userAdminCheck';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { OrgController } from '../controller/org.controller';
+import { passwordValidator } from '../../auth/utils/passwordValidator';
 import { attachContainerMiddleware } from '../../auth/middlewares/attachContainer.middleware';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -20,7 +21,13 @@ export const OrgCreationBody = z
     contactEmail: z.string().email('Invalid email format'),
     registeredName: z.string().optional(), // Will be enforced conditionally
     adminFullName: z.string().min(1, 'Admin full name required'),
-    password: z.string().min(8, 'Minimum 8 characters password required'),
+    password: z
+      .string()
+      .min(8, 'Minimum 8 characters password required')
+      .refine(passwordValidator, {
+        message:
+          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number and one special character',
+      }),
     sendEmail: z.boolean().optional(),
     permanentAddress: z
       .object({
