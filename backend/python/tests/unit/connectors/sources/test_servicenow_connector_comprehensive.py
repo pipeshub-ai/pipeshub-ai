@@ -641,8 +641,10 @@ class TestFetchAllGroups:
             side_effect=ServiceNowAPIError(500, "API error", None)
         )
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        groups = await connector._fetch_all_groups()
-        assert groups == []
+        # An empty list reads as "this instance has no groups", so the
+        # failure has to leave the loop rather than be answered with one.
+        with pytest.raises(ServiceNowAPIError):
+            await connector._fetch_all_groups()
 
 
 class TestFetchAllMemberships:

@@ -916,8 +916,11 @@ class ServiceNowConnector(BaseConnector):
                     )
                     
                 except ServiceNowAPIError as e:
-                    self.logger.error(f"❌ API error: {e.message} (status: {e.status_code})")
-                    break
+                    # A short list is indistinguishable from a complete one to
+                    # everything downstream, so the sync would report success over
+                    # whatever this page did not return.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 # Extract users from response
                 users_data = response.result
@@ -1068,8 +1071,11 @@ class ServiceNowConnector(BaseConnector):
                         sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
                     )
                     
-                except ServiceNowAPIError:
-                    break
+                except ServiceNowAPIError as e:
+                    # A partial list makes the caller delete permission edges that
+                    # it cannot rebuild, so stop the sync instead.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 if not response.result:
                     break
@@ -1130,8 +1136,11 @@ class ServiceNowConnector(BaseConnector):
                         sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
                     )
                     
-                except ServiceNowAPIError:
-                    break
+                except ServiceNowAPIError as e:
+                    # A partial list makes the caller delete permission edges that
+                    # it cannot rebuild, so stop the sync instead.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 if not response.result:
                     break
@@ -1278,8 +1287,11 @@ class ServiceNowConnector(BaseConnector):
                         sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
                     )
                     
-                except ServiceNowAPIError:
-                    break
+                except ServiceNowAPIError as e:
+                    # A partial list makes the caller delete permission edges that
+                    # it cannot rebuild, so stop the sync instead.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 if not response.result:
                     break
@@ -1339,8 +1351,11 @@ class ServiceNowConnector(BaseConnector):
                         sysparm_no_count=ServiceNowQueryValues.NO_COUNT_TRUE,
                         sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
                     )
-                except ServiceNowAPIError:
-                    break
+                except ServiceNowAPIError as e:
+                    # A partial list makes the caller delete permission edges that
+                    # it cannot rebuild, so stop the sync instead.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 if not response.result:
                     break
@@ -1397,8 +1412,11 @@ class ServiceNowConnector(BaseConnector):
                         sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
                     )
                     
-                except ServiceNowAPIError:
-                    break
+                except ServiceNowAPIError as e:
+                    # A partial list makes the caller delete permission edges that
+                    # it cannot rebuild, so stop the sync instead.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 if not response.result:
                     break
@@ -1604,8 +1622,11 @@ class ServiceNowConnector(BaseConnector):
                     )
                     
                 except ServiceNowAPIError as e:
-                    self.logger.error(f"❌ API error: {e.message} (status: {e.status_code})")
-                    break
+                    # A short list is indistinguishable from a complete one to
+                    # everything downstream, so the sync would report success over
+                    # whatever this page did not return.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 # Extract entities from response
                 entities_data = response.result
@@ -1715,9 +1736,15 @@ class ServiceNowConnector(BaseConnector):
                     )
                     
                 except ServiceNowAPIError as e:
-                    if "Expecting value" not in str(e):
-                        self.logger.error(f"❌ API error: {e.message} (status: {e.status_code})")
-                    break
+                    # An empty page comes back as a body that is not JSON, so this
+                    # particular failure is how the read ends, not a fault.
+                    if "Expecting value" in str(e):
+                        break
+                    # A short list is indistinguishable from a complete one to
+                    # everything downstream, so the sync would report success over
+                    # whatever this page did not return.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 # Extract KBs from response
                 kbs_data = response.result
@@ -1856,9 +1883,12 @@ class ServiceNowConnector(BaseConnector):
                         sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
                     )
                     
+                    # A short list is indistinguishable from a complete one to
+                    # everything downstream, so the sync would report success over
+                    # whatever this page did not return.
                 except ServiceNowAPIError as e:
-                    self.logger.error(f"❌ API error: {e.message} (status: {e.status_code}")
-                    break
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 # Extract categories from response
                 categories_data = response.result
@@ -1935,6 +1965,7 @@ class ServiceNowConnector(BaseConnector):
             offset = ServiceNowDefaults.PAGINATION_OFFSET
             total_articles_synced = 0
             total_attachments_synced = 0
+            total_records_dropped = 0
             latest_update_time = None
 
             # Paginate through all articles
@@ -1970,8 +2001,11 @@ class ServiceNowConnector(BaseConnector):
                     )
                     
                 except ServiceNowAPIError as e:
-                    self.logger.error(f"❌ API error: {e.message} (status: {e.status_code})")
-                    break
+                    # A short list is indistinguishable from a complete one to
+                    # everything downstream, so the sync would report success over
+                    # whatever this page did not return.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 # Extract articles from response
                 articles_data = response.result
@@ -2000,7 +2034,7 @@ class ServiceNowConnector(BaseConnector):
 
                 # Process batch of RecordUpdates
                 if record_updates:
-                    await self._process_record_updates_batch(record_updates)
+                    total_records_dropped += await self._process_record_updates_batch(record_updates)
 
                 # Move to next batch
                 offset += batch_size
@@ -2013,7 +2047,11 @@ class ServiceNowConnector(BaseConnector):
             if latest_update_time:
                 await self.article_sync_point.update_sync_point(ServiceNowSyncPointKeys.ARTICLES, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: latest_update_time})
 
-            self.logger.info(f"✅ Articles synced: {total_articles_synced} articles, {total_attachments_synced} attachments")
+            self.logger.info(
+                f"✅ Articles synced: {total_articles_synced} articles, "
+                f"{total_attachments_synced} attachments, "
+                f"{total_records_dropped} record(s) dropped without permissions"
+            )
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing articles: {e}", exc_info=True)
@@ -2117,7 +2155,7 @@ class ServiceNowConnector(BaseConnector):
             self.logger.error(f"Failed to process article {article_data.get('sys_id')}: {e}", exc_info=True)
             return []
 
-    async def _process_record_updates_batch(self, record_updates: List[RecordUpdate]) -> None:
+    async def _process_record_updates_batch(self, record_updates: List[RecordUpdate]) -> int:
         """
         Process a batch of RecordUpdates using the data entities processor.
 
@@ -2126,20 +2164,39 @@ class ServiceNowConnector(BaseConnector):
 
         Args:
             record_updates: List of RecordUpdate objects
+
+        Returns:
+            int: Number of records dropped because they carry no permissions.
         """
         try:
             if not record_updates:
-                return
+                return 0
 
             # Convert RecordUpdates to (Record, Permissions) tuples
             records_with_permissions = []
+            dropped_external_ids = []
             for update in record_updates:
-                if update.record and update.new_permissions:
+                if not update.record:
+                    continue
+                if update.new_permissions:
                     records_with_permissions.append((update.record, update.new_permissions))
+                else:
+                    dropped_external_ids.append(update.external_record_id)
+
+            # A record with no principal reaches nobody, so it is not written. Name
+            # the records, otherwise the sync reports a count it did not store.
+            if dropped_external_ids:
+                self.logger.warning(
+                    "Dropped %d record(s) with no permissions: %s",
+                    len(dropped_external_ids),
+                    dropped_external_ids,
+                )
 
             # Use processor's batch method
             if records_with_permissions:
                 await self.data_entities_processor.on_new_records(records_with_permissions)
+
+            return len(dropped_external_ids)
 
         except Exception as e:
             self.logger.error(f"Failed to process record updates batch: {e}", exc_info=True)

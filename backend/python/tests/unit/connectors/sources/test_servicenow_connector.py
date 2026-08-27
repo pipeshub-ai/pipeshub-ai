@@ -671,15 +671,16 @@ class TestFetchAllGroups:
             result = await servicenow_connector._fetch_all_groups()
             assert result == []
 
-    async def test_api_failure(self, servicenow_connector):
+    async def test_api_failure_propagates(self, servicenow_connector):
+        """A partial group list would make the caller delete edges it cannot rebuild."""
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
                 side_effect=ServiceNowAPIError(500, "Error", None)
             )
             mock_ds.return_value = mock_datasource
-            result = await servicenow_connector._fetch_all_groups()
-            assert result == []
+            with pytest.raises(ServiceNowAPIError):
+                await servicenow_connector._fetch_all_groups()
 
 
 # ===========================================================================
@@ -1183,11 +1184,14 @@ class TestSyncSingleOrganizationalEntity:
         )
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        with patch.object(servicenow_connector.logger, "error") as mock_error:
+        with patch.object(servicenow_connector.logger, "error") as mock_error, \
+             pytest.raises(ServiceNowAPIError):
             await servicenow_connector._sync_single_organizational_entity(
                 "company", ORGANIZATIONAL_ENTITIES["company"]
             )
-            mock_error.assert_called()
+        mock_error.assert_called()
+        # A page that failed must not leave a checkpoint claiming it was read.
+        sync_point.update_sync_point.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_sync_point_read_exception_propagates(self, servicenow_connector):
@@ -1487,7 +1491,9 @@ class TestSyncCategories:
         )
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        await servicenow_connector._sync_categories()
+        with pytest.raises(ServiceNowAPIError):
+            await servicenow_connector._sync_categories()
+        servicenow_connector.category_sync_point.update_sync_point.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_sync_categories_skips_invalid_transform(self, servicenow_connector, mock_data_entities_processor):
@@ -1562,6 +1568,27 @@ class TestFetchAllGroupsDeep:
 # ===========================================================================
 
 class TestFetchAllMembershipsDeep:
+    @pytest.mark.asyncio
+    async def test_a_failed_page_does_not_yield_a_partial_membership_list(self, servicenow_connector):
+        """A partial list makes the caller delete edges it cannot rebuild."""
+        sync_point = AsyncMock()
+        sync_point.read_sync_point = AsyncMock(return_value=None)
+        sync_point.update_sync_point = AsyncMock()
+        servicenow_connector.group_sync_point = sync_point
+
+        full_page = _table_api_response([
+            {"sys_id": f"m{i}", "user": f"u{i}", "group": "g1", "sys_updated_on": "2026-08-01 10:00:00"}
+            for i in range(100)
+        ])
+        mock_ds = AsyncMock()
+        mock_ds.get_now_table_tableName = AsyncMock(
+            side_effect=[full_page, ServiceNowAPIError(500, "page two failed", None)]
+        )
+        servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        with pytest.raises(ServiceNowAPIError):
+            await servicenow_connector._fetch_all_memberships()
+
     async def test_paginates_memberships(self, servicenow_connector):
         page1 = [{"sys_id": f"m{i}", "user": f"u{i}", "group": "g1", "sys_updated_on": "2024-01-01"} for i in range(100)]
         page2 = [{"sys_id": "m100", "user": "u100", "group": "g1", "sys_updated_on": "2024-01-02"}]
@@ -1588,15 +1615,16 @@ class TestFetchAllMembershipsDeep:
 # ===========================================================================
 
     @pytest.mark.asyncio
-    async def test_fetch_all_memberships_api_error_breaks(self, servicenow_connector):
+    async def test_fetch_all_memberships_api_error_propagates(self, servicenow_connector):
+        """A partial membership list would silently remove users from their groups."""
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(
             side_effect=ServiceNowAPIError(500, "fail", None)
         )
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await servicenow_connector._fetch_all_memberships()
-        assert result == []
+        with pytest.raises(ServiceNowAPIError):
+            await servicenow_connector._fetch_all_memberships()
 
 
 class TestGetAdminUsersDeep:
@@ -1670,8 +1698,11 @@ class TestSyncUsersErrors:
                 side_effect=ServiceNowAPIError(401, "Unauthorized", None)
             )
             mock_ds.return_value = mock_datasource
-            await servicenow_connector._sync_users()
+            with pytest.raises(ServiceNowAPIError):
+                await servicenow_connector._sync_users()
             servicenow_connector.data_entities_processor.on_new_app_users.assert_not_called()
+            # A page that failed must not leave a checkpoint claiming it was read.
+            servicenow_connector.user_sync_point.update_sync_point.assert_not_awaited()
 
     async def test_exception_propagated(self, servicenow_connector):
         servicenow_connector.user_sync_point = AsyncMock()
@@ -1704,7 +1735,8 @@ class TestSyncKnowledgeBasesDeep:
                 side_effect=ServiceNowAPIError(500, "Server error", None)
             )
             mock_ds.return_value = mock_datasource
-            await servicenow_connector._sync_knowledge_bases([])
+            with pytest.raises(ServiceNowAPIError):
+                await servicenow_connector._sync_knowledge_bases([])
 
     async def test_exception_in_kb_sync_propagated(self, servicenow_connector):
         servicenow_connector._get_fresh_datasource = AsyncMock(
@@ -2189,15 +2221,15 @@ class TestFlattenAndRoles:
         assert len(result) == 101
 
     @pytest.mark.asyncio
-    async def test_fetch_all_role_assignments_api_error(self, servicenow_connector):
+    async def test_fetch_all_role_assignments_api_error_propagates(self, servicenow_connector):
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(
             side_effect=ServiceNowAPIError(500, "fail", None)
         )
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await servicenow_connector._fetch_all_role_assignments()
-        assert result == []
+        with pytest.raises(ServiceNowAPIError):
+            await servicenow_connector._fetch_all_role_assignments()
 
     @pytest.mark.asyncio
     async def test_fetch_role_hierarchy_empty_results(self, servicenow_connector):
@@ -2209,26 +2241,26 @@ class TestFlattenAndRoles:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_fetch_role_hierarchy_api_error(self, servicenow_connector):
+    async def test_fetch_role_hierarchy_api_error_propagates(self, servicenow_connector):
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(
             side_effect=ServiceNowAPIError(500, "fail", None)
         )
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await servicenow_connector._fetch_role_hierarchy()
-        assert result == []
+        with pytest.raises(ServiceNowAPIError):
+            await servicenow_connector._fetch_role_hierarchy()
 
     @pytest.mark.asyncio
-    async def test_fetch_all_roles_api_error(self, servicenow_connector):
+    async def test_fetch_all_roles_api_error_propagates(self, servicenow_connector):
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(
             side_effect=ServiceNowAPIError(500, "fail", None)
         )
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await servicenow_connector._fetch_all_roles()
-        assert result == []
+        with pytest.raises(ServiceNowAPIError):
+            await servicenow_connector._fetch_all_roles()
 
 
 # ===========================================================================
@@ -2399,6 +2431,28 @@ class TestProcessRecordUpdatesBatch:
         )
         await servicenow_connector._process_record_updates_batch([update])
         mock_data_entities_processor.on_new_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_process_record_updates_batch_reports_dropped_records(self, servicenow_connector, mock_data_entities_processor):
+        """A dropped record is never written, so the caller must be able to count it."""
+        granted = _record_update(
+            record=MagicMock(spec=WebpageRecord),
+            new_permissions=[Permission(email="u@test.com", type=PermissionType.READ, entity_type=EntityType.USER)],
+            external_record_id="art1",
+        )
+        dropped = _record_update(
+            record=MagicMock(spec=WebpageRecord),
+            new_permissions=[],
+            external_record_id="art2",
+        )
+        servicenow_connector.logger = MagicMock()
+
+        dropped_count = await servicenow_connector._process_record_updates_batch([granted, dropped])
+
+        assert dropped_count == 1
+        written = mock_data_entities_processor.on_new_records.call_args.args[0]
+        assert len(written) == 1
+        assert servicenow_connector.logger.warning.call_args.args[2] == ["art2"]
 
 
 # ===========================================================================
@@ -2642,9 +2696,11 @@ class TestSyncArticles:
         )
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        await servicenow_connector._sync_articles()
+        with pytest.raises(ServiceNowAPIError):
+            await servicenow_connector._sync_articles()
         mock_data_entities_processor = servicenow_connector.data_entities_processor
         mock_data_entities_processor.on_new_records.assert_not_called()
+        servicenow_connector.article_sync_point.update_sync_point.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_sync_articles_updates_sync_checkpoint(self, servicenow_connector):
