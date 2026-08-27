@@ -1382,6 +1382,61 @@ if ! $FLAG_YES && ! $FLAG_UPGRADE; then
   esac
 fi
 
+# MongoDB 8.x segfaults (exit 139) on some newer host kernels because of a glibc
+# rseq/TCMalloc interaction. env.template documents MONGO_GLIBC_TUNABLES for
+# exactly this case, but an operator only discovers it after the install has
+# already failed -- and the generic exit-139 advice points at recreating the data
+# volume, which destroys data without addressing this cause.
+#
+# Reacting to the observed crash rather than pre-screening the host kernel keeps
+# rseq=0 -- the faster TCMalloc default that #2677 deliberately preserved -- on
+# every machine that does not need the workaround, and needs no list of affected
+# kernel versions to stay accurate.
+MONGO_RSEQ_HEAL_TRIED=false
+MONGO_HEAL_GRACE_SECS=180
+
+# True when a mongodb container in this project is crash-looping on exit 139.
+#
+# A single inspect is not enough. A restart-looping container flaps between
+# `restarting`, where .State.ExitCode reports the last exit, and `running`, where
+# it reports 0 -- so whether the 139 is visible depends on when you happen to
+# look. Sample for a few seconds and accept the first 139 seen. This only runs
+# after a start has already failed, so the wait costs nothing on a healthy host.
+MONGO_RSEQ_PROBE_SECS=12
+
+mongo_rseq_crashed() {
+  local id exit_code restarts elapsed=0
+  while (( elapsed < MONGO_RSEQ_PROBE_SECS )); do
+    for id in $(docker ps -aq \
+        --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
+        --filter "label=com.docker.compose.service=mongodb" 2>/dev/null); do
+      restarts="$(docker inspect "$id" --format '{{.RestartCount}}' 2>/dev/null || echo 0)"
+      exit_code="$(docker inspect "$id" --format '{{.State.ExitCode}}' 2>/dev/null || echo '')"
+      # RestartCount rules out a container that exited 139 once and stayed down
+      # for an unrelated reason; the loop is what identifies this failure.
+      if [[ "$exit_code" == "139" ]] && (( ${restarts:-0} >= 1 )); then return 0; fi
+    done
+    sleep 1
+    elapsed=$(( elapsed + 1 ))
+  done
+  return 1
+}
+
+# Write the documented tunable, once per run, and never over a value the operator
+# chose. Returns 0 when it changed something, so the caller can retry the start.
+apply_mongo_rseq_tunable() {
+  if $MONGO_RSEQ_HEAL_TRIED; then return 1; fi
+  if [[ -n "$(get_existing_val MONGO_GLIBC_TUNABLES "")" ]]; then return 1; fi
+  if ! mongo_rseq_crashed; then return 1; fi
+
+  MONGO_RSEQ_HEAL_TRIED=true
+  warn "MongoDB exited 139 (segfault) and is not coming up."
+  warn "That is the known glibc rseq/TCMalloc crash on newer host kernels."
+  info "Setting MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1 in .env and retrying..."
+  persist_env_var MONGO_GLIBC_TUNABLES "glibc.pthread.rseq=1"
+  return 0
+}
+
 # ==============================================================================
 # 15. LAUNCH
 # ==============================================================================
@@ -1438,9 +1493,25 @@ if $_USE_BUILD; then
       -p "$PROJECT_NAME" \
       --env-file "$ENV_FILE" \
       up -d --build; then
-    error "docker compose up --build failed. Last 30 lines of container logs:"
-    docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true
-    die "Fix the build error above and re-run install.sh."
+    # A MongoDB rseq segfault fails `up` within seconds rather than later: the
+    # app's `depends_on: mongodb: condition: service_healthy` is never satisfied,
+    # so compose reports "dependency failed to start" and exits non-zero long
+    # before the health poll below could react. Heal here and retry the whole
+    # `up` -- recreating only mongodb would leave every dependent still created
+    # but never started.
+    if apply_mongo_rseq_tunable; then
+      if ! docker compose "${_PROGRESS[@]}" -f "$COMPOSE_FILE" -p "$PROJECT_NAME" \
+           --env-file "$ENV_FILE" up -d --build; then
+        error "docker compose up failed again after applying the MongoDB tunable."
+        docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true
+        die "Fix the error above and re-run install.sh."
+      fi
+      success "Startup recovered after applying the MongoDB rseq tunable."
+    else
+      error "docker compose up --build failed. Last 30 lines of container logs:"
+      docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true
+      die "Fix the build error above and re-run install.sh."
+    fi
   fi
 else
   if [[ "$_DO_PULL" == true ]]; then
@@ -1471,9 +1542,25 @@ else
       -p "$PROJECT_NAME" \
       --env-file "$ENV_FILE" \
       up -d; then
-    error "docker compose up failed. Last 30 lines of container logs:"
-    docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true
-    die "Fix the error above and re-run install.sh."
+    # A MongoDB rseq segfault fails `up` within seconds rather than later: the
+    # app's `depends_on: mongodb: condition: service_healthy` is never satisfied,
+    # so compose reports "dependency failed to start" and exits non-zero long
+    # before the health poll below could react. Heal here and retry the whole
+    # `up` -- recreating only mongodb would leave every dependent still created
+    # but never started.
+    if apply_mongo_rseq_tunable; then
+      if ! docker compose "${_PROGRESS[@]}" -f "$COMPOSE_FILE" -p "$PROJECT_NAME" \
+           --env-file "$ENV_FILE" up -d; then
+        error "docker compose up failed again after applying the MongoDB tunable."
+        docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true
+        die "Fix the error above and re-run install.sh."
+      fi
+      success "Startup recovered after applying the MongoDB rseq tunable."
+    else
+      error "docker compose up failed. Last 30 lines of container logs:"
+      docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true
+      die "Fix the error above and re-run install.sh."
+    fi
   fi
 fi
 
@@ -1538,48 +1625,6 @@ crash_looping_containers() {
   done
 }
 
-# MongoDB 8.x segfaults (exit 139) on some newer host kernels because of a glibc
-# rseq/TCMalloc interaction. env.template documents MONGO_GLIBC_TUNABLES for
-# exactly this case, but an operator only discovers it after the install has
-# already failed -- and the generic exit-139 advice below points at recreating
-# the data volume, which destroys data without addressing this cause.
-#
-# Detect the specific signature (the mongodb service, restart-looping, last exit
-# 139) and apply the documented fix once. Reacting to the observed crash rather
-# than pre-screening the host kernel keeps rseq=0 -- the faster TCMalloc default
-# that #2677 deliberately preserved -- on every machine that does not need the
-# workaround, and needs no list of affected kernel versions to stay current.
-MONGO_RSEQ_HEAL_TRIED=false
-MONGO_HEAL_GRACE_SECS=180
-
-heal_mongo_rseq() {
-  local id exit_code
-  if $MONGO_RSEQ_HEAL_TRIED; then return 1; fi
-  # Never override a value the operator chose for themselves.
-  if [[ -n "$(get_existing_val MONGO_GLIBC_TUNABLES "")" ]]; then return 1; fi
-
-  for id in $(docker ps -aq \
-      --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
-      --filter "label=com.docker.compose.service=mongodb" 2>/dev/null); do
-    exit_code="$(docker inspect "$id" --format '{{.State.ExitCode}}' 2>/dev/null || echo '')"
-    if [[ "$exit_code" != "139" ]]; then continue; fi
-
-    MONGO_RSEQ_HEAL_TRIED=true
-    warn "MongoDB keeps restarting after a segfault (exit 139)."
-    warn "That is the known glibc rseq/TCMalloc crash on newer host kernels."
-    info "Setting MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1 in .env and restarting MongoDB..."
-    persist_env_var MONGO_GLIBC_TUNABLES "glibc.pthread.rseq=1"
-    if docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" \
-         up -d --force-recreate mongodb >/dev/null 2>&1; then
-      success "MongoDB restarted with the rseq tunable; waiting for it to settle."
-      return 0
-    fi
-    error "Could not restart MongoDB after setting the tunable."
-    return 1
-  done
-  return 1
-}
-
 # Poll until healthy or the deadline passes. Uses _is_tty from launch (same
 # flag as Compose progress). On a TTY, redraw a single spinner line in place;
 # when stdout is captured (CI, tee, redirect) emit a sparse heartbeat instead.
@@ -1603,9 +1648,20 @@ while (( ELAPSED < HEALTH_WAIT_SECS )); do
     _CRASH_REPORT="$(crash_looping_containers)"
     # A MongoDB rseq segfault has a known one-line fix. Apply it and keep
     # waiting instead of failing an install that is one restart from working.
-    if [[ -n "$_CRASH_REPORT" ]] && heal_mongo_rseq; then
-      _CRASH_REPORT=""
-      HEALTH_WAIT_SECS=$(( ELAPSED + MONGO_HEAL_GRACE_SECS ))
+    if [[ -n "$_CRASH_REPORT" ]] && apply_mongo_rseq_tunable; then
+      # Full `up -d`, not `--force-recreate mongodb`: dependents that never
+      # started will not appear just because mongodb was recreated.
+      if docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" \
+           --env-file "$ENV_FILE" up -d >/dev/null 2>&1; then
+        _CRASH_REPORT=""
+        # Extend the deadline, never shorten it: at t=90 a bare ELAPSED+180
+        # would cut the default 420s wait down to 270.
+        _healed_deadline=$(( ELAPSED + MONGO_HEAL_GRACE_SECS ))
+        if (( _healed_deadline > HEALTH_WAIT_SECS )); then
+          HEALTH_WAIT_SECS=$_healed_deadline
+        fi
+        success "MongoDB restarted with the rseq tunable; waiting for it to settle."
+      fi
     fi
     [[ -n "$_CRASH_REPORT" ]] && break
   fi
