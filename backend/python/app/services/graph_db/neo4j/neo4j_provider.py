@@ -2422,7 +2422,9 @@ class Neo4jProvider(IGraphDBProvider):
                    rel.relationshipType AS relationshipType,
                    rel.sourceLineNumber AS sourceLineNumber,
                    rel.sourceColumnNumber AS sourceColumnNumber,
-                   rel.provenance AS provenance
+                   rel.provenance AS provenance,
+                   rel.line AS line,
+                   rel.confidence AS confidence
             LIMIT $limit
             """
             results = await self.client.execute_query(
@@ -2444,6 +2446,8 @@ class Neo4jProvider(IGraphDBProvider):
                     "sourceLineNumber": row.get("sourceLineNumber"),
                     "sourceColumnNumber": row.get("sourceColumnNumber"),
                     "provenance": row.get("provenance"),
+                    "line": row.get("line"),
+                    "confidence": row.get("confidence"),
                 })
             return neighbours
         except Exception as e:
@@ -2494,7 +2498,9 @@ class Neo4jProvider(IGraphDBProvider):
                    rel.relationshipType AS relationshipType,
                    rel.sourceLineNumber AS sourceLineNumber,
                    rel.sourceColumnNumber AS sourceColumnNumber,
-                   rel.provenance AS provenance
+                   rel.provenance AS provenance,
+                   rel.line AS line,
+                   rel.confidence AS confidence
             LIMIT $limit
             """
             results = await self.client.execute_query(
@@ -2518,6 +2524,8 @@ class Neo4jProvider(IGraphDBProvider):
                     "sourceLineNumber": row.get("sourceLineNumber"),
                     "sourceColumnNumber": row.get("sourceColumnNumber"),
                     "provenance": row.get("provenance"),
+                    "line": row.get("line"),
+                    "confidence": row.get("confidence"),
                 })
             return neighbours
         except Exception as e:

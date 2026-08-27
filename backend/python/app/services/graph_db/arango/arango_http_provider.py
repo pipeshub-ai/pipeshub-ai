@@ -3514,7 +3514,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 relationshipType: edge.relationshipType,
                 sourceLineNumber: edge.sourceLineNumber,
                 sourceColumnNumber: edge.sourceColumnNumber,
-                provenance: edge.provenance
+                provenance: edge.provenance,
+                    line: edge.line,
+                    confidence: edge.confidence
             }}
         """
 
@@ -3571,7 +3573,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     relationshipType: edge.relationshipType,
                     sourceLineNumber: edge.sourceLineNumber,
                     sourceColumnNumber: edge.sourceColumnNumber,
-                    provenance: edge.provenance
+                    provenance: edge.provenance,
+                    line: edge.line,
+                    confidence: edge.confidence
                 }}
             """
 

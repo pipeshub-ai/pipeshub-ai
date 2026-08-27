@@ -29,7 +29,7 @@ __all__ = [
     "attach_file_paths",
     "find_call_neighbors_impl",
     "find_symbol_path_impl",
-    "get_symbol_code_impl",
+    "read_code_impl",
     "resolve_symbol",
 ]
 
@@ -309,10 +309,15 @@ async def find_call_neighbors_impl(
             continue
         ref = SymbolRef.from_block(block)
         ref["relation"] = row.get("relationshipType")
+        if row.get("line") is not None:
+            ref["line"] = row.get("line")
+        if row.get("confidence"):
+            ref["confidence"] = row.get("confidence")
         neighbors.append(ref)
 
     return {
         "symbol": SymbolRef.from_block(anchor),
+        "connector_id": connector_id,
         "direction": direction,
         "neighbors": neighbors,
     }
@@ -322,7 +327,7 @@ async def find_call_neighbors_impl(
 # Tool 2 — the symbol's source
 # ---------------------------------------------------------------------------
 
-async def get_symbol_code_impl(
+async def read_code_impl(
     *,
     graph_provider: Any,
     connector_id: str,
@@ -330,15 +335,40 @@ async def get_symbol_code_impl(
     org_id: str,
     user_id: str,
     file_path: str,
-    qualified_name: str,
+    qualified_name: str | None = None,
+    lines: str | None = None,
 ) -> dict[str, Any]:
-    block = await resolve_symbol(graph_provider, org_id, file_path, qualified_name, connector_id)
-    if block is None:
-        return {"error": f"No symbol {qualified_name!r} in {file_path!r}"}
+    """Source for one symbol, one line range, or a whole file.
 
-    record_id = block.get("recordId")
+    All three modes cost the same single blob fetch -- ``get_record_from_storage``
+    returns every block of the file regardless -- so reading five symbols from
+    one file should be one call, not five downloads of the same blob.
+
+    A range matters only for the tail: 95% of files in a real repo are under
+    500 lines, but the hub files that architecture questions land on are the
+    ones over a thousand.
+    """
+    if qualified_name:
+        block = await resolve_symbol(
+            graph_provider, org_id, file_path, qualified_name, connector_id
+        )
+        if block is None:
+            return {"error": f"No symbol {qualified_name!r} in {file_path!r}"}
+        record_id = block.get("recordId")
+    else:
+        block = None
+        # The path lives on `codeFiles`, not on blocks, so the record is
+        # looked up there. More than one id means two connectors indexed the
+        # same path; the caller's connector picks between them.
+        record_ids = await _records_for_path(graph_provider, org_id, file_path)
+        record_id = await _record_in_connector(
+            graph_provider, org_id, record_ids, connector_id
+        )
+        if record_id is None:
+            return {"error": f"No indexed file at {file_path!r}"}
+
     if not await _user_can_read(graph_provider, user_id, org_id, record_id):
-        return {"error": f"No symbol {qualified_name!r} in {file_path!r}"}
+        return {"error": f"No indexed file at {file_path!r}"}
     if blob_store is None:
         return {"error": "Blob storage is not available."}
 
@@ -359,13 +389,92 @@ async def get_symbol_code_impl(
     if not record:
         return {"error": f"No stored content for {file_path!r}"}
 
-    found = _find_blob_block(record, qualified_name)
-    if found is None:
-        return {"error": f"No stored content for symbol {qualified_name!r}"}
+    if qualified_name:
+        found = _find_blob_block(record, qualified_name)
+        if found is None:
+            return {"error": f"No stored content for symbol {qualified_name!r}"}
+        ref = SymbolRef.from_block(block)
+        ref["connector_id"] = connector_id
+        ref["code"] = found
+        return ref
 
-    ref = SymbolRef.from_block(block)
-    ref["code"] = found
-    return ref
+    span = _parse_line_range(lines)
+    if lines and span is None:
+        return {"error": f"lines must look like '40-80', got {lines!r}"}
+    return _file_code(record, file_path, connector_id, span)
+
+
+async def _record_in_connector(
+    graph_provider: Any, org_id: str, record_ids: list[str], connector_id: str
+) -> str | None:
+    """Pick the record from *record_ids* that belongs to this connector."""
+    if not record_ids:
+        return None
+    for record_id in record_ids:
+        rows = await graph_provider.get_nodes_by_filters(
+            collection=_BLOCKS,
+            filters={"orgId": org_id, "recordId": record_id, "connectorId": connector_id},
+        )
+        if rows:
+            return record_id
+    return None
+
+
+def _parse_line_range(lines: str | None) -> tuple[int, int] | None:
+    """``"40-80"`` -> ``(40, 80)``; ``None`` for absent, invalid stays ``None``."""
+    if not lines:
+        return None
+    head, sep, tail = lines.partition("-")
+    if not sep:
+        head = tail = lines
+    try:
+        start, end = int(head.strip()), int(tail.strip())
+    except ValueError:
+        return None
+    if start < 1 or end < start:
+        return None
+    return start, end
+
+
+def _file_code(
+    record: dict[str, Any],
+    file_path: str,
+    connector_id: str,
+    span: tuple[int, int] | None,
+) -> dict[str, Any]:
+    """Every block of a file, in source order, optionally clipped to a range.
+
+    Blocks tile the file exactly, so concatenating them reconstructs it; a
+    range keeps the blocks that overlap it rather than slicing text, which
+    keeps every returned fragment a whole symbol.
+    """
+    containers = record.get("block_containers") or {}
+    items: list[tuple[int, dict[str, Any]]] = []
+    for bucket in ("blocks", "block_groups"):
+        for item in containers.get(bucket) or []:
+            meta = item.get("code_metadata") or {}
+            start = meta.get("start_line") or 0
+            end = meta.get("end_line") or start
+            if span and (end < span[0] or start > span[1]):
+                continue
+            data = item.get("data")
+            text = data.get("text") if isinstance(data, dict) else None
+            if not text:
+                continue
+            items.append((start, {
+                "qualified_name": meta.get("qualified_name"),
+                "kind": meta.get("kind"),
+                "start_line": start,
+                "end_line": end,
+                "code": text,
+            }))
+    items.sort(key=lambda pair: pair[0])
+    return {
+        "file_path": file_path,
+        "connector_id": connector_id,
+        "lines": f"{span[0]}-{span[1]}" if span else None,
+        "blocks": [entry for _, entry in items],
+    }
 
 
 def _find_blob_block(record: dict[str, Any], qualified_name: str) -> str | None:
@@ -449,7 +558,7 @@ async def find_symbol_path_impl(
             "direction": edge["direction"],
         })
 
-    return {"found": True, "hops": hops}
+    return {"found": True, "connector_id": connector_id, "hops": hops}
 
 
 async def _bfs_edges(
