@@ -4,7 +4,7 @@ Four tools over the blocks + recordRelations graph the indexing pipeline builds:
 
   query_code_graph    — find symbols, relationships, module structure
   find_call_neighbors — who calls a symbol, or what it calls
-  get_symbol_code     — the actual source of a symbol
+  read_code           — source for a symbol, a line range, or a whole file
   find_symbol_path    — how two symbols are connected, by any relation
 
 A symbol is addressed as ``(file_path, qualified_name)``. Both appear in the code
@@ -38,7 +38,7 @@ from .ops import (
     DEFAULT_NEIGHBOR_LIMIT,
     find_call_neighbors_impl,
     find_symbol_path_impl,
-    get_symbol_code_impl,
+    read_code_impl,
 )
 from .query import (
     DEFAULT_QUERY_LIMIT,
@@ -75,9 +75,12 @@ class QueryCodeGraphArgs(BaseModel):
     select: str = Field(
         ...,
         description=(
-            "What to start from: free text ('payment webhook'), a repo-relative "
-            "path or glob ('backend/python/app/**'), or an exact qualified "
-            "name ('function:analyze_game')"
+            "What to start from, resolved by shape: a directory "
+            "('backend/python/app/agents/') lists its files and subdirectories; "
+            "a file ('.../router.py') lists the symbols it defines; a glob "
+            "('backend/python/app/**') spans a subtree; a qualified name "
+            "('function:analyze_game') is that exact symbol; anything else is "
+            "free text matched against symbol names."
         ),
     )
     relations: list[str] | None = Field(
@@ -106,6 +109,14 @@ class QueryCodeGraphArgs(BaseModel):
             f"One of: {', '.join(GROUP_BY_CHOICES)}"
         ),
     )
+    kinds: list[str] | None = Field(
+        default=None,
+        description=(
+            "Keep only these block kinds, e.g. ['function','class','method']. "
+            "A file otherwise returns the spans that tile it — imports, "
+            "statements, header — alongside its definitions."
+        ),
+    )
     limit: int = Field(
         default=DEFAULT_QUERY_LIMIT, description=f"Maximum results (default {DEFAULT_QUERY_LIMIT})"
     )
@@ -126,15 +137,21 @@ class FindCallNeighborsArgs(BaseModel):
     limit: int = Field(default=DEFAULT_NEIGHBOR_LIMIT, description="Maximum neighbours to return")
 
 
-class GetSymbolCodeArgs(BaseModel):
+class ReadCodeArgs(BaseModel):
     connector_id: str = _CONNECTOR_FIELD
-    file_path: str = Field(..., description="Repo-relative path of the file holding the symbol")
-    qualified_name: str = Field(
-        ...,
+    file_path: str = Field(..., description="Repo-relative path of the file to read")
+    qualified_name: str | None = Field(
+        default=None,
         description=(
-            "Qualified name, as shown after '#' in a code block header — e.g. "
-            "'function:parse_config' or 'method:Client.fetch'. Case-sensitive, "
-            "though a differently-cased spelling still resolves."
+            "Read one symbol — e.g. 'function:parse_config', 'method:Client.fetch', "
+            "as shown after '#' in a code block header. Omit to read the file."
+        ),
+    )
+    lines: str | None = Field(
+        default=None,
+        description=(
+            "Read a line range instead, e.g. '380-420'. Useful on large files — "
+            "pair it with the `line` an edge reports to land on a call site."
         ),
     )
 
@@ -195,6 +212,7 @@ def create_code_graph_tools(
         direction: str = "any",
         depth: int = 0,
         group_by: str = "none",
+        kinds: list[str] | None = None,
         limit: int = DEFAULT_QUERY_LIMIT,
     ) -> dict[str, Any]:
         """Explore the code graph: find symbols, their relationships, and module structure.
@@ -224,7 +242,7 @@ def create_code_graph_tools(
         select='**' returns top-level directories, 'backend/**' the layers inside
         backend, 'backend/python/app/**' the modules inside app. For a high-level
         design, start broad with group_by='directory' and re-ask with a longer
-        path for each module worth opening. Use get_symbol_code to read anything
+        path for each module worth opening. Use read_code to read anything
         it names.
         """
         denied = _in_scope(connector_id)
@@ -234,7 +252,8 @@ def create_code_graph_tools(
             return await query_code_graph_impl(
                 graph_provider=graph_provider, org_id=org_id, user_id=user_id,
                 connector_id=connector_id, select=select, relations=relations,
-                direction=direction, depth=depth, group_by=group_by, limit=limit,
+                direction=direction, depth=depth, group_by=group_by,
+                kinds=kinds, limit=limit,
             )
         except Exception as exc:
             logger.exception("query_code_graph failed")
@@ -253,7 +272,8 @@ def create_code_graph_tools(
         Give it a symbol you already hold — `(file_path, qualified_name)` as shown in
         a code block header — and a direction: 'caller' for what calls it,
         'callee' for what it calls. Returns the addresses of the neighbours,
-        which you can then read with get_symbol_code.
+        which you can then read with read_code — each carries the `line` of the
+        call site, so pair it with read_code(lines=...) to see the call itself.
         """
         denied = _in_scope(connector_id)
         if denied:
@@ -268,28 +288,32 @@ def create_code_graph_tools(
             logger.exception("find_call_neighbors failed")
             return {"error": f"Failed to walk the call graph: {exc}"}
 
-    @tool("get_symbol_code", args_schema=GetSymbolCodeArgs)
-    async def get_symbol_code(
-        connector_id: str, file_path: str, qualified_name: str
+    @tool("read_code", args_schema=ReadCodeArgs)
+    async def read_code(
+        connector_id: str,
+        file_path: str,
+        qualified_name: str | None = None,
+        lines: str | None = None,
     ) -> dict[str, Any]:
-        """Read the actual source of one symbol.
+        """Read source: one symbol, one line range, or a whole file.
 
-        Takes the `(file_path, qualified_name)` address shown in a code block header
-        or returned by the other code-graph tools, and returns that symbol's
-        code — the function or class body, not the whole file.
+        Give `qualified_name` for a single symbol, `lines` for a window
+        ('380-420'), or neither to read the whole file as its symbols in source
+        order. All three cost the same single fetch, so reading a file once
+        beats reading five of its symbols separately.
         """
         denied = _in_scope(connector_id)
         if denied:
             return denied
         try:
-            return await get_symbol_code_impl(
+            return await read_code_impl(
                 graph_provider=graph_provider, org_id=org_id, user_id=user_id,
                 connector_id=connector_id, blob_store=blob_store,
-                file_path=file_path, qualified_name=qualified_name,
+                file_path=file_path, qualified_name=qualified_name, lines=lines,
             )
         except Exception as exc:
-            logger.exception("get_symbol_code failed")
-            return {"error": f"Failed to read the symbol: {exc}"}
+            logger.exception("read_code failed")
+            return {"error": f"Failed to read the code: {exc}"}
 
     @tool("find_symbol_path", args_schema=FindSymbolPathArgs)
     async def find_symbol_path(
@@ -321,4 +345,4 @@ def create_code_graph_tools(
             logger.exception("find_symbol_path failed")
             return {"error": f"Failed to search for a path: {exc}"}
 
-    return [query_code_graph, find_call_neighbors, get_symbol_code, find_symbol_path]
+    return [query_code_graph, find_call_neighbors, read_code, find_symbol_path]
