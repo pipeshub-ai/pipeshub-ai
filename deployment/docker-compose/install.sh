@@ -173,6 +173,21 @@ get_existing_val() {
   printf '%s' "${val:-$default}"
 }
 
+# Render an optional knob for .env: the operator's value when one is set,
+# otherwise a commented hint. .env is rewritten from scratch whenever the wizard
+# runs, so a knob documented only in env.template is invisible after a fresh
+# install and is dropped by --reconfigure. Callers must pass a value already
+# resolved by get_existing_val -- .env is being truncated by the time the
+# here-document that calls this is expanded.
+optional_env_line() {
+  local key="$1" val="$2" hint="$3"
+  if [[ -n "$val" ]]; then
+    printf '%s=%s' "$key" "$val"
+  else
+    printf '# %s=%s' "$key" "$hint"
+  fi
+}
+
 # Derive the COMPOSE_PROFILES that the *currently configured* services require,
 # from the canonical selectors persisted in .env. The app talks to whatever
 # DATA_STORE / MESSAGE_BROKER / KV_STORE_TYPE say, so the profiles that start the
@@ -1028,6 +1043,15 @@ if ! ${SKIP_WIZARD:-false}; then
   REDIS_PASSWORD="$(get_existing_val REDIS_PASSWORD "$(gen_secret 16)")"
   QDRANT_API_KEY="$(get_existing_val QDRANT_API_KEY "$(gen_secret 20)")"
 
+  # Optional MongoDB knobs from env.template. The wizard never asks about these,
+  # but .env is rewritten in full below, so read back anything the operator set
+  # by hand -- otherwise --reconfigure silently reverts their tuning and MongoDB
+  # goes back to the defaults that made them set it in the first place.
+  MONGO_GLIBC_TUNABLES="$(get_existing_val MONGO_GLIBC_TUNABLES "")"
+  MONGO_IMAGE_TAG="$(get_existing_val MONGO_IMAGE_TAG "")"
+  MONGO_CACHE_GB="$(get_existing_val MONGO_CACHE_GB "")"
+  MONGO_MEMORY_LIMIT="$(get_existing_val MONGO_MEMORY_LIMIT "")"
+
   if [[ "$DATA_STORE" == "arangodb" ]]; then
     ARANGO_PASSWORD="$(get_existing_val ARANGO_PASSWORD "$(gen_secret 16)")"; NEO4J_PASSWORD=""
   else
@@ -1137,6 +1161,16 @@ REDIS_PASSWORD=${REDIS_PASSWORD}
 # ── MongoDB ──────────────────────────────────────────────────────────────────
 MONGO_USERNAME=${MONGO_USERNAME}
 MONGO_PASSWORD=${MONGO_PASSWORD}
+# If MongoDB crash-loops with a segfault (exit 139) on a newer host kernel, try
+# the rseq tunable first so the supported MongoDB version can stay pinned.
+$(optional_env_line MONGO_GLIBC_TUNABLES "$MONGO_GLIBC_TUNABLES" "glibc.pthread.rseq=1")
+# Fallback only: pin an older image. MongoDB 8.x data is not readable by 7.x, so
+# wipe the mongo volume before downgrading.
+$(optional_env_line MONGO_IMAGE_TAG "$MONGO_IMAGE_TAG" "8.0.17")
+# WiredTiger cache cap and container memory limit. Raise both together on
+# larger or dedicated hosts; avoid dropping the cache below 1 GB.
+$(optional_env_line MONGO_CACHE_GB "$MONGO_CACHE_GB" "1")
+$(optional_env_line MONGO_MEMORY_LIMIT "$MONGO_MEMORY_LIMIT" "2G")
 
 # ── Qdrant ───────────────────────────────────────────────────────────────────
 QDRANT_API_KEY=${QDRANT_API_KEY}
