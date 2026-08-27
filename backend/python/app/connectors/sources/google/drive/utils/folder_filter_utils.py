@@ -26,6 +26,7 @@ from app.config.constants.arangodb import MimeTypes
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_FOLDER_EXPANSION_GET_FIELDS,
     DRIVE_FOLDER_EXPANSION_LIST_FIELDS,
@@ -47,6 +48,23 @@ ANCESTOR_FETCH_CONCURRENCY = 5
 # (even on cyclic source data). If a sweep ever exceeds this many distinct ancestors,
 # something is wrong.
 PLACEHOLDER_SWEEP_SAFETY_MAX = 10000
+
+# Drive surfaces rate limiting as HTTP 403 with one of these reasons, not a distinct
+# status code, so a blanket "403 = permanently inaccessible" check on shared-folder
+# expansion would wrongly discard a folder subtree that just needs to be retried.
+RETRYABLE_403_REASONS = {"rateLimitExceeded", "userRateLimitExceeded"}
+
+
+def is_retryable_403(error: HttpError) -> bool:
+    """True if `error` is Drive-side rate limiting rather than a permission loss.
+
+    Both surface as HTTP 403; only the `reason` in `error_details` tells them apart.
+    """
+    if error.resp.status != HttpStatusCode.FORBIDDEN.value:
+        return False
+    error_details = getattr(error, "error_details", None) or []
+    reasons = {d.get("reason") for d in error_details if isinstance(d, dict)}
+    return bool(reasons & RETRYABLE_403_REASONS)
 
 
 class FolderScopeExpansion(NamedTuple):
@@ -343,6 +361,7 @@ async def fetch_folder_children(
     get_data_source: DriveDataSourceProvider,
     *,
     fields: str,
+    drive_scoped: bool = True,
 ) -> AsyncGenerator[List[dict], None]:
     """
     Recursively fetch all descendants (files and folders) of a folder that
@@ -353,19 +372,25 @@ async def fetch_folder_children(
     folders. Children already present in `changes_ids` (the current
     changes_list page) are skipped so they aren't processed twice: they
     are already flowing through the regular changes loop.
+
+    `drive_scoped=False` skips resolving driveId, leaving the query on the default
+    user corpus. Callers walking a shared drive they are not a member of need that:
+    corpora=drive requires membership, while the user corpus still resolves children
+    of a folder the caller holds an individual grant on.
     """
     # Resolve driveId once so shared-drive subtrees use corpora=drive.
     root_drive_id: Optional[str] = None
-    try:
-        data_source = await get_data_source()
-        probe = await data_source.files_get(
-            fileId=folder_id,
-            fields="driveId",
-            supportsAllDrives=True,
-        )
-        root_drive_id = (probe or {}).get("driveId") or None
-    except Exception:
-        root_drive_id = None
+    if drive_scoped:
+        try:
+            data_source = await get_data_source()
+            probe = await data_source.files_get(
+                fileId=folder_id,
+                fields="driveId",
+                supportsAllDrives=True,
+            )
+            root_drive_id = (probe or {}).get("driveId") or None
+        except Exception:
+            root_drive_id = None
 
     queue: List[str] = [folder_id]
     drive_ids: Dict[str, Optional[str]] = {folder_id: root_drive_id}

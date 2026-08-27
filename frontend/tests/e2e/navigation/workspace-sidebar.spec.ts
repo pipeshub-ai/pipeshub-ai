@@ -33,6 +33,23 @@ test.describe('Workspace Sidebar Navigation', () => {
     }
   });
 
+  test('navigates to Groups and shows the Enterprise placeholder', async ({ page }) => {
+    // Works either way: Groups under People (this branch) or top-level (other PR).
+    const sidebarLink = page.getByRole('link', { name: 'Groups' }).first();
+    if (!(await sidebarLink.isVisible())) {
+      await page.getByRole('button', { name: 'People' }).click();
+    }
+    await expect(sidebarLink).toBeVisible({ timeout: 5_000 });
+    await sidebarLink.click();
+    await page.waitForURL('**/workspace/groups/**', { timeout: 5_000 });
+    await expect(page).toHaveURL(/\/workspace\/groups\//);
+    await expect(
+      page.getByRole('heading', {
+        name: /Group permissions are available in the Enterprise Edition/i,
+      })
+    ).toBeVisible({ timeout: 10_000 });
+  });
+
   for (const item of SIDEBAR_ITEMS) {
     test(`navigates to ${item.label}`, async ({ page }) => {
       const sidebarLink = page.locator(`text="${item.label}"`).first();

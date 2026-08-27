@@ -16,7 +16,7 @@ import { useDebouncedSearch } from '@/knowledge-base/hooks/use-debounced-search'
 import { AgentsApi } from '@/app/(main)/agents/api';
 import type { AgentListRecord } from '@/app/(main)/agents/types';
 import { AGENTS_SIDEBAR_PAGE_SIZE } from '@/chat/constants';
-import { AgentSidebarListRow } from '@/config';
+import { AgentSidebarListRow, useUserPermission, usePermissionDeniedDialog } from '@/config';
 
 interface AgentsSidebarProps {
   onBack: () => void;
@@ -32,6 +32,8 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
   const chatAgentId = searchParams.get('agentId');
   const onChatRoute = useIsMainChatRoute();
   const { t } = useTranslation();
+  const canCreateAgent = useUserPermission('createAgent');
+  const permissionDenied = usePermissionDeniedDialog();
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
   const isMobile = useIsMobile();
 
@@ -157,6 +159,7 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
   const hasNextPage = pagination?.hasNext ?? false;
 
   return (
+    <>
     <SecondaryPanel
       header={
         <Flex
@@ -178,7 +181,7 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
             variant="ghost"
             color="gray"
             size="2"
-            onClick={handleCreateAgent}
+            onClick={permissionDenied.guard(canCreateAgent, handleCreateAgent)}
             aria-label={t('chat.newAgent')}
           >
             <MaterialIcon name="add" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />
@@ -264,5 +267,7 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
         </Flex>
       </Flex>
     </SecondaryPanel>
+    {permissionDenied.dialog}
+    </>
   );
 });

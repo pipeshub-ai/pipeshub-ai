@@ -47,6 +47,12 @@
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong> is the open-source Context Layer for Enterprise AI. Connect enterprise knowledge across your organization, preserve access permissions, generate trustworthy citations, and build AI agents, enterprise search, RAG applications, MCP servers, and agentic workflows on a single governed context layer.
 
+> [!TIP]
+> Deploy with a single command:
+> ```bash
+> curl -fsSL https://get.pipeshub.com/install | bash
+> ```
+
 ## Features
 
 - 📝 **Explainable Answers:** PipesHub delivers grounded answers with precise block citations to the original documents.
@@ -241,7 +247,7 @@ PipesHub provides developer SDKs for Python, TypeScript, and Go to help you inte
 <li>✅ 🤖 <strong>Workplace AI agents</strong>: first-class no-code agent builder</li>
 <li>✅ 🔗 <strong>MCP (Model Context Protocol)</strong> support, both server and client</li>
 <li>✅ 🧰 <strong>Developers SDKs</strong></li>
-<li>✅ 🔍 <strong>Code search</strong> across GitHub, GitLab, and Bitbucket</li>
+<li>✅ 🔍 <strong>Code search</strong> across GitHub and GitLab</li>
 <li>⬜ 👤 <strong>Personalized search</strong> based on team, role, and history</li>
 <li>✅ ☸️ <strong>Production Kubernetes</strong> deployment with HA defaults</li>
 <li>⬜ 📈 <strong>PageRank-augmented relevance</strong> across the knowledge graph</li>

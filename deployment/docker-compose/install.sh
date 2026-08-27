@@ -294,6 +294,14 @@ resolve_banner_dirs() {
   fi
 }
 
+# Compose --progress tty|plain from a TTY flag. Keep this explicit instead of
+# `--progress auto`: auto is the same split inside Compose, but would re-detect
+# independently of the health-wait spinner. One _is_tty drives both.
+resolve_compose_progress() { # args: is_tty (true|false) -> tty|plain
+  [[ "$1" == true ]] && { echo tty; return; }
+  echo plain
+}
+
 # PIPESHUB_PROJECT wins. Else COMPOSE_PROJECT_NAME in this directory's .env so
 # --stop / --uninstall only tear down this copy. Else the default name.
 resolve_project_name() {
@@ -1350,12 +1358,13 @@ export COMPOSE_PROFILES="${COMPOSE_PROFILES:-}"
 _USE_BUILD=false
 [[ "${IMAGE_SOURCE:-prebuilt}" == "local" ]] && _USE_BUILD=true
 
-# Compose's default "tty" progress redraws a single block via cursor-movement
-# escapes. When stdout is captured (terminal logs, `curl | bash`, CI), those
-# escapes don't collapse and every frame is recorded, producing hundreds of
-# duplicated "[+] Running N/17" blocks. Plain progress is append-only and stays
-# readable in every context.
-_PROGRESS=(--progress plain)
+# One TTY check for Compose pull/up progress and the health-wait spinner below.
+# curl | bash pipes stdin only; stdout stays on the terminal, so in-place
+# progress is the majority install path. Forced `--progress plain` on a TTY
+# prints a new line per layer tick and floods the log. Captured stdout (CI,
+# tee, redirect) still gets plain so cursor-escape frames do not explode.
+_is_tty=false; [[ -t 1 ]] && _is_tty=true
+_PROGRESS=(--progress "$(resolve_compose_progress "$_is_tty")")
 
 # Decide whether to refresh the prebuilt image from the registry before starting.
 # Pure decision (no side effects) so it is unit-testable in isolation.
@@ -1493,9 +1502,9 @@ crash_looping_containers() {
   done
 }
 
-# Poll until healthy or the deadline passes. On a TTY, redraw a single spinner
-# line in place (clean, one line); when output is captured (logs, curl | bash,
-# CI) emit a sparse heartbeat instead so transcripts don't fill with frames.
+# Poll until healthy or the deadline passes. Uses _is_tty from launch (same
+# flag as Compose progress). On a TTY, redraw a single spinner line in place;
+# when stdout is captured (CI, tee, redirect) emit a sparse heartbeat instead.
 ELAPSED=0
 CHECK_EVERY=5
 HEARTBEAT_EVERY=30
@@ -1503,7 +1512,6 @@ START_TS=$SECONDS
 _spinner=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
 _spin=0
 _CRASH_REPORT=""
-_is_tty=false; [[ -t 1 ]] && _is_tty=true
 
 while (( ELAPSED < HEALTH_WAIT_SECS )); do
   if (( ELAPSED % CHECK_EVERY == 0 )) && app_is_healthy; then
