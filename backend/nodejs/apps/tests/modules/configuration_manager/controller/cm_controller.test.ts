@@ -42,6 +42,7 @@ import {
   getAIModelsConfig,
   getAIModelsProviders,
   getWebSearchProviders,
+  updateWebSearchProvider,
   getModelsByType,
   getAvailableModelsByType,
   deleteAIModelProvider,
@@ -1197,6 +1198,199 @@ describe('ConfigurationManager Controller', () => {
       })
       const handler = getWebSearchProviders(kvs)
       const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(Error)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // updateWebSearchProvider
+  // -----------------------------------------------------------------------
+  describe('updateWebSearchProvider', () => {
+    const appConfig = { aiBackend: 'http://ai:8000', cmBackend: 'http://cm:3001' } as any
+    const existingConfig = {
+      providers: [
+        {
+          provider: 'serper',
+          providerKey: 'serper-key-1',
+          configuration: { apiKey: 'old-key' },
+          isDefault: true,
+        },
+      ],
+    }
+
+    it('should return 400 when provider or configuration is missing', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = updateWebSearchProvider(kvs, appConfig)
+      const req = createMockRequest({
+        params: { providerKey: 'serper-key-1' },
+        body: { provider: 'serper' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(kvs.get.called).to.be.false
+    })
+
+    it('should return 404 when no web search configuration exists', async () => {
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(null) })
+      const handler = updateWebSearchProvider(kvs, appConfig)
+      const req = createMockRequest({
+        params: { providerKey: 'serper-key-1' },
+        body: { provider: 'serper', configuration: { apiKey: 'new-key' } },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(404)).to.be.true
+      expect(res.json.firstCall.args[0].message).to.equal('No web search configuration found')
+    })
+
+    it('should return 404 when providerKey does not match any stored provider', async () => {
+      const encrypted = mockEncService.encrypt(JSON.stringify(existingConfig))
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(encrypted) })
+      const handler = updateWebSearchProvider(kvs, appConfig)
+      const req = createMockRequest({
+        params: { providerKey: 'nonexistent' },
+        body: { provider: 'serper', configuration: { apiKey: 'new-key' } },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(404)).to.be.true
+      expect(kvs.compareAndSet.called).to.be.false
+    })
+
+    it('should not write when the health check fails', async () => {
+      const encrypted = mockEncService.encrypt(JSON.stringify(existingConfig))
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(encrypted) })
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 422,
+        data: { error: 'Invalid API key' },
+      })
+      const handler = updateWebSearchProvider(kvs, appConfig)
+      const req = createMockRequest({
+        params: { providerKey: 'serper-key-1' },
+        body: { provider: 'serper', configuration: { apiKey: 'bad-key' } },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(422)).to.be.true
+      expect(kvs.compareAndSet.called).to.be.false
+    })
+
+    it('should update the provider and CAS against the exact snapshot it read', async () => {
+      const encrypted = mockEncService.encrypt(JSON.stringify(existingConfig))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(encrypted),
+        compareAndSet: sinon.stub().resolves(true),
+      })
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { healthy: true },
+      })
+      const handler = updateWebSearchProvider(kvs, appConfig)
+      const req = createMockRequest({
+        params: { providerKey: 'serper-key-1' },
+        body: { provider: 'serper', configuration: { apiKey: 'new-key' }, isDefault: true },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(kvs.compareAndSet.calledOnce).to.be.true
+      // The CAS "expected" argument must be the untouched value read at the
+      // top of the handler -- not a re-derived or mutated copy -- or the
+      // comparison against the store would be meaningless.
+      expect(kvs.compareAndSet.firstCall.args[1]).to.equal(encrypted)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it('should return 409 and preserve the concurrent write when the config changed between read and save (lost-update protection)', async () => {
+      const encryptedInitial = mockEncService.encrypt(JSON.stringify(existingConfig))
+
+      // Simulate a second request (e.g. addWebSearchProvider or
+      // updateWebSearchSettings) landing its own write on the same key
+      // after this request already read `encryptedInitial`.
+      const concurrentConfig = {
+        providers: [
+          ...existingConfig.providers,
+          {
+            provider: 'tavily',
+            providerKey: 'tavily-key-2',
+            configuration: { apiKey: 'other-key' },
+            isDefault: false,
+          },
+        ],
+      }
+      const encryptedAfterConcurrentWrite = mockEncService.encrypt(JSON.stringify(concurrentConfig))
+
+      // Model compareAndSet against a mutable "store" instead of a canned
+      // boolean, so the test proves real lost-update protection rather than
+      // just that the handler branches on a stubbed return value.
+      let storeValue = encryptedAfterConcurrentWrite
+      const compareAndSetStub = sinon.stub().callsFake(async (_key: string, expected: string, newValue: string) => {
+        if (expected !== storeValue) return false
+        storeValue = newValue
+        return true
+      })
+
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(encryptedInitial),
+        compareAndSet: compareAndSetStub,
+      })
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { healthy: true },
+      })
+
+      const handler = updateWebSearchProvider(kvs, appConfig)
+      const req = createMockRequest({
+        params: { providerKey: 'serper-key-1' },
+        body: { provider: 'serper', configuration: { apiKey: 'new-key' }, isDefault: true },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(compareAndSetStub.calledOnce).to.be.true
+      expect(compareAndSetStub.firstCall.args[1]).to.equal(encryptedInitial)
+      expect(res.status.calledWith(409)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.status).to.equal('error')
+      expect(response.message).to.equal('Unable to save changes. Please retry.')
+      // The concurrent writer's data must survive untouched -- this is the
+      // lost-update bug the CAS check exists to prevent.
+      expect(storeValue).to.equal(encryptedAfterConcurrentWrite)
+    })
+
+    it('should call next on unexpected error', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().rejects(new Error('kv unavailable')),
+      })
+      const handler = updateWebSearchProvider(kvs, appConfig)
+      const req = createMockRequest({
+        params: { providerKey: 'serper-key-1' },
+        body: { provider: 'serper', configuration: { apiKey: 'new-key' } },
+      })
       const res = createMockResponse()
       const next = createMockNext()
 

@@ -4495,10 +4495,19 @@ export const updateWebSearchProvider =
         configManagerConfig.secretKey,
       ).encrypt(JSON.stringify(webSearchConfig));
 
-      await keyValueStoreService.set<string>(
+      const casSuccess = await keyValueStoreService.compareAndSet<string>(
         configPaths.webSearch,
+        encryptedWebSearchConfig,
         encryptedUpdatedConfig,
       );
+      
+      if (!casSuccess) {
+        res.status(409).json({
+          status: 'error',
+          message: 'Unable to save changes. Please retry.',
+        });
+        return;
+      }
 
       res.status(200).json({
         status: 'success',
