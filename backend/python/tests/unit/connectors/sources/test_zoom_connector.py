@@ -1557,25 +1557,19 @@ class TestCreateConnector:
         logger = MagicMock()
         data_store_provider = MagicMock()
         config_service = AsyncMock()
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-        with patch(
-            "app.connectors.sources.zoom.connector.DataSourceEntitiesProcessor"
-        ) as MockProcessor:
-            processor = MagicMock()
-            processor.initialize = AsyncMock()
-            MockProcessor.return_value = processor
+        connector = await ZoomConnector.create_connector(
+            logger=logger,
+            data_store_provider=data_store_provider,
+            config_service=config_service,
+            connector_id="zoom-new",
+            scope="team",
+            created_by="creator-1",
+            data_entities_processor=processor,
+        )
 
-            connector = await ZoomConnector.create_connector(
-                logger=logger,
-                data_store_provider=data_store_provider,
-                config_service=config_service,
-                connector_id="zoom-new",
-                scope="team",
-                created_by="creator-1",
-            )
-
-        MockProcessor.assert_called_once_with(logger, data_store_provider, config_service)
-        processor.initialize.assert_awaited_once()
         assert isinstance(connector, ZoomConnector)
         assert connector.connector_id == "zoom-new"
 

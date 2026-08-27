@@ -9,6 +9,7 @@ import {
 } from './citation-popover-control';
 import { useInlineCitationPopoverStore } from './citation-popover-store';
 import { getCitationCopyHref } from './utils';
+import { useOrgHref } from '@/lib/navigation';
 
 interface CitationNumberCircleProps {
   /** The `[N]` number from the markdown text (used as the circle label) */
@@ -39,7 +40,7 @@ interface CitationNumberCircleProps {
  * Radix's `modal={false}` dismiss-layer treated other Radix triggers as safe
  * targets, leaving the previous popover briefly open).
  */
-export function CitationNumberCircle({
+function CitationNumberCircleImpl({
   chunkIndex,
   occurrenceKey,
   citation,
@@ -74,7 +75,7 @@ export function CitationNumberCircle({
   const openPopover = useInlineCitationPopoverStore((s) => s.open);
   const closePopover = useInlineCitationPopoverStore((s) => s.close);
 
-  const copyHref = getCitationCopyHref(citation);
+  const copyHref = useOrgHref(getCitationCopyHref(citation));
 
   // When this badge (re)mounts — e.g. because react-markdown recreated its
   // component tree after streamingCitationMaps updated — and it is still the
@@ -214,3 +215,23 @@ export function CitationNumberCircle({
     </button>
   );
 }
+
+/** See `inlineCitationBadgePropsEqual` in `inline-citation-badge.tsx` for the
+ * rationale — identity fields, not object identity, since the SSE pipeline
+ * can hand back a differently-referenced but logically identical
+ * `CitationData` across flushes. */
+function citationNumberCirclePropsEqual(
+  prev: CitationNumberCircleProps,
+  next: CitationNumberCircleProps,
+): boolean {
+  return (
+    prev.chunkIndex === next.chunkIndex &&
+    prev.occurrenceKey === next.occurrenceKey &&
+    prev.callbacks === next.callbacks &&
+    prev.citation.citationId === next.citation.citationId &&
+    prev.citation.recordName === next.citation.recordName &&
+    prev.citation.webUrl === next.citation.webUrl
+  );
+}
+
+export const CitationNumberCircle = React.memo(CitationNumberCircleImpl, citationNumberCirclePropsEqual);

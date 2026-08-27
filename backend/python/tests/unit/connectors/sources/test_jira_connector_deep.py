@@ -474,13 +474,14 @@ class TestDeleteAttachmentRecord:
     @pytest.mark.asyncio
     async def test_deletes_record(self):
         c, dep, dsp, cs, tx = _make_connector()
+        c.data_entities_processor.delete_records_and_relations = AsyncMock()
         record = MagicMock()
         record.id = "r1"
         record.external_record_id = "att_123"
         record.record_name = "file.pdf"
 
-        await c._delete_attachment_record(record, "PROJ-1", tx, "test reason")
-        tx.delete_records_and_relations.assert_called_once_with(
+        await c._delete_attachment_record(record, "PROJ-1", "test reason")
+        c.data_entities_processor.delete_records_and_relations.assert_called_once_with(
             record_key="r1", hard_delete=True
         )
 
@@ -496,21 +497,21 @@ class TestFindAttachmentRecordById:
     async def test_finds_record(self):
         c, dep, dsp, cs, tx = _make_connector()
         mock_record = MagicMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=mock_record)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=mock_record)
 
-        result = await c._find_attachment_record_by_id("12345", tx)
+        result = await c._find_attachment_record_by_id("12345")
         assert result == mock_record
-        tx.get_record_by_external_id.assert_called_with(
+        c.data_entities_processor.get_record_by_external_id.assert_called_with(
             connector_id="conn-jira-deep",
-            external_id="attachment_12345"
+            external_record_id="attachment_12345"
         )
 
     @pytest.mark.asyncio
     async def test_not_found(self):
         c, dep, dsp, cs, tx = _make_connector()
-        tx.get_record_by_external_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
-        result = await c._find_attachment_record_by_id("99999", tx)
+        result = await c._find_attachment_record_by_id("99999")
         assert result is None
 
 
@@ -524,16 +525,18 @@ class TestHandleAttachmentDeletionsFromChangelog:
     @pytest.mark.asyncio
     async def test_no_changelog(self):
         c, dep, dsp, cs, tx = _make_connector()
+        c.data_entities_processor.delete_records_and_relations = AsyncMock()
         issue = {"id": "10001", "key": "PROJ-1"}
-        await c._handle_attachment_deletions_from_changelog(issue, tx)
-        tx.delete_records_and_relations.assert_not_called()
+        await c._handle_attachment_deletions_from_changelog(issue)
+        c.data_entities_processor.delete_records_and_relations.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_empty_histories(self):
         c, dep, dsp, cs, tx = _make_connector()
+        c.data_entities_processor.delete_records_and_relations = AsyncMock()
         issue = {"id": "10001", "key": "PROJ-1", "changelog": {"histories": []}}
-        await c._handle_attachment_deletions_from_changelog(issue, tx)
-        tx.delete_records_and_relations.assert_not_called()
+        await c._handle_attachment_deletions_from_changelog(issue)
+        c.data_entities_processor.delete_records_and_relations.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_explicit_attachment_deletion(self):
@@ -542,7 +545,8 @@ class TestHandleAttachmentDeletionsFromChangelog:
         mock_record.id = "r1"
         mock_record.external_record_id = "att_555"
         mock_record.record_name = "deleted.pdf"
-        tx.get_record_by_external_id = AsyncMock(return_value=mock_record)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=mock_record)
+        c.data_entities_processor.delete_records_and_relations = AsyncMock()
 
         issue = {
             "id": "10001",
@@ -559,8 +563,8 @@ class TestHandleAttachmentDeletionsFromChangelog:
                 }]
             }
         }
-        await c._handle_attachment_deletions_from_changelog(issue, tx)
-        tx.delete_records_and_relations.assert_called()
+        await c._handle_attachment_deletions_from_changelog(issue)
+        c.data_entities_processor.delete_records_and_relations.assert_called()
 
 
 # ===========================================================================

@@ -9,7 +9,7 @@ actually builds the instance.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -303,27 +303,22 @@ class TestDelegationAndCleanup:
 
 class TestCreateConnector:
     async def test_factory_builds_initialized_instance(self) -> None:
-        with patch(
-            "app.connectors.sources.github_teams.connector.DataSourceEntitiesProcessor"
-        ) as MockProcessor:
-            mock_dep = MagicMock()
-            mock_dep.org_id = "org-1"
-            mock_dep.initialize = AsyncMock()
-            MockProcessor.return_value = mock_dep
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            connector = await GitHubTeamsConnector.create_connector(
-                logger=MagicMock(),
-                data_store_provider=MagicMock(),
-                config_service=MagicMock(),
-                connector_id="conn-1",
-                scope="team",
-                created_by="user-1",
-            )
+        connector = await GitHubTeamsConnector.create_connector(
+            logger=MagicMock(),
+            data_store_provider=MagicMock(),
+            config_service=MagicMock(),
+            connector_id="conn-1",
+            scope="team",
+            created_by="user-1",
+            data_entities_processor=processor,
+        )
 
         assert isinstance(connector, GitHubTeamsConnector)
         assert connector.connector_id == "conn-1"
         assert connector.created_by == "user-1"
-        mock_dep.initialize.assert_awaited_once()
 
 
 class TestGitHubTeamsApp:

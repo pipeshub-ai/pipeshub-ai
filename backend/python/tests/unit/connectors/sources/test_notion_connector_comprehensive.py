@@ -34,19 +34,11 @@ def mock_deps():
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.reindex_existing_records = AsyncMock()
+    data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
+    data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
 
     data_store_provider = MagicMock()
-    mock_tx_store = AsyncMock()
-    mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-    mock_tx_store.get_record_group_by_external_id = AsyncMock(return_value=None)
-
-    class FakeTx:
-        async def __aenter__(self):
-            return mock_tx_store
-        async def __aexit__(self, *args):
-            pass
-
-    data_store_provider.transaction = MagicMock(return_value=FakeTx())
     config_service = AsyncMock()
 
     return {
@@ -54,7 +46,6 @@ def mock_deps():
         "data_entities_processor": data_entities_processor,
         "data_store_provider": data_store_provider,
         "config_service": config_service,
-        "mock_tx_store": mock_tx_store,
     }
 
 
@@ -499,9 +490,9 @@ class TestResolveBlockParentRecursive:
 
 
 # ===========================================================================
-# _get_database_parent_page_id
+# _get_database_parent_ref
 # ===========================================================================
-class TestGetDatabaseParentPageId:
+class TestGetDatabaseParentRef:
     async def test_page_parent(self, connector):
         mock_ds = MagicMock()
         mock_response = MagicMock()
@@ -512,8 +503,8 @@ class TestGetDatabaseParentPageId:
         mock_ds.retrieve_database = AsyncMock(return_value=mock_response)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await connector._get_database_parent_page_id("db-1")
-        assert result == "parent-page"
+        result = await connector._get_database_parent_ref("db-1")
+        assert result == ("parent-page", RecordType.WEBPAGE)
 
     async def test_workspace_parent_returns_none(self, connector):
         mock_ds = MagicMock()
@@ -525,8 +516,8 @@ class TestGetDatabaseParentPageId:
         mock_ds.retrieve_database = AsyncMock(return_value=mock_response)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await connector._get_database_parent_page_id("db-2")
-        assert result is None
+        result = await connector._get_database_parent_ref("db-2")
+        assert result == (None, None)
 
     async def test_api_failure_raises(self, connector):
         mock_ds = MagicMock()
@@ -538,12 +529,12 @@ class TestGetDatabaseParentPageId:
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         with pytest.raises(RuntimeError, match="Failed to retrieve database"):
-            await connector._get_database_parent_page_id("db-3")
+            await connector._get_database_parent_ref("db-3")
 
     async def test_exception_propagates(self, connector):
         connector._get_fresh_datasource = AsyncMock(side_effect=Exception("Error"))
         with pytest.raises(Exception, match="Error"):
-            await connector._get_database_parent_page_id("db-4")
+            await connector._get_database_parent_ref("db-4")
 
     async def test_database_parent(self, connector):
         mock_ds = MagicMock()
@@ -555,8 +546,8 @@ class TestGetDatabaseParentPageId:
         mock_ds.retrieve_database = AsyncMock(return_value=mock_response)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await connector._get_database_parent_page_id("db-5")
-        assert result == "parent-db"
+        result = await connector._get_database_parent_ref("db-5")
+        assert result == ("parent-db", RecordType.DATABASE)
 
 
 # ===========================================================================
@@ -566,31 +557,12 @@ class TestResolvePageTitleById:
     async def test_from_db(self, connector):
         mock_record = MagicMock()
         mock_record.record_name = "Cached Title"
-
-        mock_tx = AsyncMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=mock_record)
-
-        class FakeTx:
-            async def __aenter__(self):
-                return mock_tx
-            async def __aexit__(self, *args):
-                pass
-
-        connector.data_store_provider.transaction = MagicMock(return_value=FakeTx())
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=mock_record)
         result = await connector.resolve_page_title_by_id("page-1")
         assert result == "Cached Title"
 
     async def test_from_api(self, connector):
-        mock_tx = AsyncMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-
-        class FakeTx:
-            async def __aenter__(self):
-                return mock_tx
-            async def __aexit__(self, *args):
-                pass
-
-        connector.data_store_provider.transaction = MagicMock(return_value=FakeTx())
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         mock_ds = MagicMock()
         mock_response = MagicMock()
@@ -607,7 +579,7 @@ class TestResolvePageTitleById:
         assert result == "API Title"
 
     async def test_exception_returns_none(self, connector):
-        connector.data_store_provider.transaction = MagicMock(
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
             side_effect=Exception("DB error")
         )
         result = await connector.resolve_page_title_by_id("page-3")

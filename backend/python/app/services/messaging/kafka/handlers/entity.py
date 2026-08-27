@@ -7,6 +7,7 @@ from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     ConnectorScopes,
+    ProgressStatus,
 )
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.factory.connector_factory import ConnectorFactory
@@ -14,6 +15,7 @@ from app.connectors.core.sync.task_manager import reindex_task_manager, sync_tas
 from app.containers.connector import (
     ConnectorAppContainer,
 )
+from app.edition_services import get_data_entities_processor_cls
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -34,21 +36,21 @@ class EntityEventService(BaseEventService):
         try:
             self.logger.info(f"Processing entity event: {event_type}")
             if event_type == "orgCreated":
-                return await self.__handle_org_created(payload)
+                return await self._handle_org_created(payload)
             elif event_type == "orgUpdated":
-                return await self.__handle_org_updated(payload)
+                return await self._handle_org_updated(payload)
             elif event_type == "orgDeleted":
-                return await self.__handle_org_deleted(payload)
+                return await self._handle_org_deleted(payload)
             elif event_type == "userAdded":
-                return await self.__handle_user_added(payload)
+                return await self._handle_user_added(payload)
             elif event_type == "userUpdated":
-                return await self.__handle_user_updated(payload)
+                return await self._handle_user_updated(payload)
             elif event_type == "userDeleted":
-                return await self.__handle_user_deleted(payload)
+                return await self._handle_user_deleted(payload)
             elif event_type == "appEnabled":
-                return await self.__handle_app_enabled(payload)
+                return await self._handle_app_enabled(payload)
             elif event_type == "appDisabled":
-                return await self.__handle_app_disabled(payload)
+                return await self._handle_app_disabled(payload)
             else:
                 self.logger.error(f"Unknown entity event type: {event_type}")
                 return False
@@ -56,7 +58,7 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"Error processing entity event: {str(e)}")
             return False
 
-    async def __handle_sync_event(self,event_type: str, value: dict) -> bool:
+    async def _handle_sync_event(self,event_type: str, value: dict) -> bool:
         """Handle sync-related events by sending them to the sync-events topic"""
         try:
             # Prepare the message
@@ -80,7 +82,7 @@ class EntityEventService(BaseEventService):
             return False
 
     # ORG EVENTS
-    async def __handle_org_created(self, payload: dict) -> bool:
+    async def _handle_org_created(self, payload: dict) -> bool:
         """Handle organization creation event"""
 
         accountType = (
@@ -139,7 +141,7 @@ class EntityEventService(BaseEventService):
                 )
 
             # Create "All" team for the org (first user will be added with OWNER in userAdded)
-            await self.__create_all_team_for_org(payload['orgId'], payload.get('userId'))
+            await self._create_all_team_for_org(payload['orgId'], payload.get('userId'))
 
             return True
 
@@ -147,7 +149,7 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"❌ Error creating organization: {str(e)}")
             return False
 
-    async def __handle_org_updated(self, payload: dict) -> bool:
+    async def _handle_org_updated(self, payload: dict) -> bool:
         """Handle organization update event"""
         try:
             self.logger.info(f"📥 Processing org updated event: {payload}")
@@ -173,7 +175,7 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"❌ Error updating organization: {str(e)}")
             return False
 
-    async def __handle_org_deleted(self, payload: dict) -> bool:
+    async def _handle_org_deleted(self, payload: dict) -> bool:
         """Handle organization deletion event"""
         try:
             self.logger.info(f"📥 Processing org deleted event: {payload}")
@@ -200,7 +202,7 @@ class EntityEventService(BaseEventService):
             return False
 
     # USER EVENTS
-    async def __handle_user_added(self, payload: dict) -> bool:
+    async def _handle_user_added(self, payload: dict) -> bool:
         """Handle user creation event"""
         try:
             self.logger.info(f"📥 Processing user added event: {payload}")
@@ -269,10 +271,10 @@ class EntityEventService(BaseEventService):
 
             # Get or create knowledge base for the user (creates app + all edges)
             kb_name = self._kb_name_from_user_added_payload(payload)
-            await self.__get_or_create_knowledge_base(user_key, payload["userId"], payload["orgId"], name=kb_name)
+            await self._get_or_create_knowledge_base(user_key, payload["userId"], payload["orgId"], name=kb_name)
 
             # Get or create "All" team for org and add user with PERMISSION edge
-            await self.__get_or_create_all_team_and_add_user(payload["orgId"], user_key)
+            await self._get_or_create_all_team_and_add_user(payload["orgId"], user_key)
 
             self.logger.info(
                 f"✅ Successfully created/updated user: {payload['email']}"
@@ -283,7 +285,7 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"❌ Error creating/updating user: {str(e)}")
             return False
 
-    async def __handle_user_updated(self, payload: dict) -> bool:
+    async def _handle_user_updated(self, payload: dict) -> bool:
         """Handle user update event"""
         try:
             self.logger.info(f"📥 Processing user updated event: {payload}")
@@ -340,7 +342,7 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"❌ Error updating user: {str(e)}")
             return False
 
-    async def __handle_user_deleted(self, payload: dict) -> bool:
+    async def _handle_user_deleted(self, payload: dict) -> bool:
         """Handle user deletion event"""
         try:
             self.logger.info(f"📥 Processing user deleted event: {payload}")
@@ -372,7 +374,7 @@ class EntityEventService(BaseEventService):
             return False
 
     # APP EVENTS
-    async def __handle_app_enabled(self, payload: dict) -> bool:
+    async def _handle_app_enabled(self, payload: dict) -> bool:
         """Handle app enabled event"""
         try:
             self.logger.info(f"📥 Processing app enabled event: {payload}")
@@ -393,7 +395,7 @@ class EntityEventService(BaseEventService):
             for app_name in apps:
                 if sync_action == "immediate":
                     # Start sync for each app (connector already initialized for standard connectors)
-                    await self.__handle_sync_event(
+                    await self._handle_sync_event(
                         event_type=f"{app_name.lower()}.start",
                         value={
                             "orgId": org_id,
@@ -411,7 +413,7 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"❌ Error enabling apps: {str(e)}")
             return False
 
-    async def __handle_app_disabled(self, payload: dict) -> bool:
+    async def _handle_app_disabled(self, payload: dict) -> bool:
         """Handle app disabled event"""
         try:
             org_id = payload["orgId"]
@@ -458,6 +460,30 @@ class EntityEventService(BaseEventService):
             except Exception as cancel_err:
                 self.logger.error(f"❌ Failed to cancel sync for connector {connector_id}: {cancel_err}")
 
+            # Drain the backlog. Records already QUEUED have no event guard to
+            # catch them and no processingStartedAt, so stale recovery — which
+            # only scans IN_PROGRESS — can never reach them: they would sit in
+            # QUEUED for ever. Run this *after* cancelling the sync so nothing
+            # re-queues behind the sweep. IN_PROGRESS is excluded deliberately;
+            # those are mid-pipeline and are handled by stale recovery.
+            try:
+                await self.graph_provider.reset_indexing_status_for_connector(
+                    connector_id,
+                    ProgressStatus.AUTO_INDEX_OFF.value,
+                    exclude_statuses=[
+                        ProgressStatus.IN_PROGRESS.value,
+                        ProgressStatus.COMPLETED.value,
+                    ],
+                )
+                self.logger.info(
+                    f"✅ Moved queued records for connector {connector_id} to manual indexing"
+                )
+            except Exception as sweep_err:
+                self.logger.error(
+                    f"❌ Failed to move queued records to manual indexing for "
+                    f"connector {connector_id}: {sweep_err}"
+                )
+
             if (
                 hasattr(self.app_container, "connectors_map")
                 and connector_id in self.app_container.connectors_map
@@ -487,9 +513,9 @@ class EntityEventService(BaseEventService):
             return f"{email}'s Private"
         return "Private"
 
-    async def __create_all_team_for_org(self, org_id: str, created_by_user_id: str | None = None) -> None:
+    async def _create_all_team_for_org(self, org_id: str, created_by_user_id: str | None = None) -> None:
         """
-        Create the "All" team when an org is created. Called from __handle_org_created.
+        Create the "All" team when an org is created. Called from _handle_org_created.
         created_by_user_id is the external userId (e.g. MongoDB id); graph user key is set when first user is added.
         """
         try:
@@ -512,7 +538,7 @@ class EntityEventService(BaseEventService):
         except Exception as e:
             self.logger.error(f"Failed to create 'All' team for org {org_id}: {str(e)}", exc_info=True)
 
-    async def __get_or_create_all_team_and_add_user(self, org_id: str, user_key: str) -> None:
+    async def _get_or_create_all_team_and_add_user(self, org_id: str, user_key: str) -> None:
         """
         Add the specific user to the org's "All" team.
         Ensures team exists and creates PERMISSION edge for this user only.
@@ -526,7 +552,7 @@ class EntityEventService(BaseEventService):
                 exc_info=True
             )
 
-    async def __get_or_create_knowledge_base(
+    async def _get_or_create_knowledge_base(
         self,
         user_key: str,
         userId: str,
@@ -570,6 +596,7 @@ class EntityEventService(BaseEventService):
                 "isAgentActive": True,
                 "isConfigured": True,
                 "isAuthenticated": True,
+                "vectorMembershipBackfilled": True,
                 "hideConnector": True,
                 "createdAtTimestamp": current_timestamp,
                 "updatedAtTimestamp": current_timestamp,
@@ -646,6 +673,7 @@ class EntityEventService(BaseEventService):
                     scope=ConnectorScopes.PERSONAL.value,
                     created_by=userId,
                     org_id=orgId,
+                    data_entities_processor_cls=get_data_entities_processor_cls(),
                     notification_service=self.app_container.connector_notification_service(),
                 )
                 if connector:

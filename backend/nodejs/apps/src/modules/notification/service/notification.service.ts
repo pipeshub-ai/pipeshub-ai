@@ -103,7 +103,7 @@ export class NotificationService {
         return;
       }
 
-      this.logger.info('User connected', {
+      this.logger.debug('User connected', {
         userId,
         orgId,
       });
@@ -112,7 +112,7 @@ export class NotificationService {
         // Join a room with the user's ID for direct messaging
         socket.join(userId);
         this.connectedUsers.add(userId);
-        this.logger.info(
+        this.logger.debug(
           `User connected: userId: ${userId} & socketId: ${socket.id}`,
         );
 

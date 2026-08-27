@@ -319,7 +319,8 @@
     "confirmDeleteMultiple": "確定要刪除 {{count}} 個項目嗎？",
     "cannotUndo": "此操作無法復原。",
     "areYouSure": "確定要繼續嗎？",
-    "typeDeleteToConfirm": "輸入 DELETE 以確認",
+    "deleteKeyword": "刪除",
+    "typeDeleteToConfirm": "輸入「{{keyword}}」以確認",
     "knowledgeBase": "知識庫",
     "in": "位於",
     "willBeDeleted": "將被刪除",
@@ -499,6 +500,14 @@
     "record": "記錄"
   },
   "chat": {
+    "recordActions": {
+      "preview": "預覽",
+      "open": "開啟 {{source}}",
+      "openIn": "在 {{source}} 中開啟",
+      "openInCollections": "在集合中開啟",
+      "relevance": "相關度：{{percent}}%"
+    },
+    "results": "結果",
     "greeting": "今天想探索什麼？",
     "heyUser": "嗨，{{name}} 👋",
     "heyUserDefaultName": "您好",
@@ -1335,7 +1344,7 @@
         "sectionTitle": "模型角色指派",
         "sectionDescription": "為特定任務指派專用模型。未指派時將使用預設模型。",
         "onboardingTitle": "您的模型將如何使用？",
-        "onboardingTip": "為摘要與分類等索引任務指派小型、具成本效益的模型（例如 gpt-5.4-mini、gemini-2.5-flash）。將最強大的模型（例如 gpt-5.5、claude-sonnet）保留給最重視推理品質的查詢與代理。",
+        "onboardingTip": "為摘要與分類等索引任務指派小型、具成本效益的模型（例如 gpt-5.6-luna、gemini-2.5-flash）。將最強大的模型（例如 gpt-5.6-terra、claude-sonnet）保留給最重視推理品質的查詢與代理。",
         "queryRole": "查詢與對話",
         "queryRoleSubtitle": "搜尋、代理與對話",
         "queryRoleDescription": "負責搜尋、問答與 AI 代理回應。請在此使用您最強大的模型。",
@@ -3232,6 +3241,8 @@
       "connectorId": "連接器 ID",
       "notAvailable": "無",
       "typeEmail": "電子郵件",
+      "typeFile": "檔案",
+      "typeArtifact": "成品",
       "typeTicket": "工單",
       "typeWebpage": "網頁",
       "typeMessage": "訊息",

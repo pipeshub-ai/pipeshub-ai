@@ -5883,15 +5883,15 @@ components:
           description: |
             Identifier for the AI model configuration to use.
             Available models depend on organization settings.
-          example: "gpt-4-turbo"
+          example: "gpt-5.6-luna"
         modelName:
           type: string
           description: Display name of the AI model
-          example: "GPT-4 Turbo"
+          example: "gpt-5.6-luna"
         modelFriendlyName:
           type: string
           description: Friendly display name of the selected model
-          example: "GPT-4 Turbo"
+          example: "gpt-5.6-Luna"
         chatMode:
           type: string
           enum:
@@ -6088,7 +6088,7 @@ components:
       example:
         query: what are some latest tech news?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
-        modelName: gpt-5.4-mini
+        modelName: gpt-5.6-luna
         modelFriendlyName: GPT 5.4 mini
         chatMode: quick
         timezone: Asia/Kolkata
@@ -6156,7 +6156,7 @@ components:
           type: string
           minLength: 1
           description: Provider model name (e.g. the underlying LLM identifier).
-          example: "gpt-5.4-mini"
+          example: "gpt-5.6-luna"
         modelFriendlyName:
           type: string
           minLength: 1
@@ -6450,7 +6450,7 @@ components:
       example:
         query: can you elaborate on the latest headlines?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
-        modelName: gpt-5.4-mini
+        modelName: gpt-5.6-luna
         modelFriendlyName: GPT 5.4 mini
         chatMode: quick
         timezone: Asia/Kolkata
@@ -6762,7 +6762,7 @@ components:
           description: Stable identifier of the configured model record
         modelName:
           type: string
-          description: Provider-facing model name (e.g. `gpt-4o-mini`)
+          description: Provider-facing model name (e.g. `gpt-5.6-luna`)
         modelProvider:
           type: string
           description: Provider key (e.g. `openai`, `anthropic`)
@@ -9005,7 +9005,7 @@ components:
           example:
             - modelType: llm
               provider: azureOpenAI
-              modelName: gpt-5.4-mini
+              modelName: gpt-5.6-luna
               modelKey: f3a4b5b6-5b6c-4e85-9097-3202cfe696fc
               isMultimodal: true
               isReasoning: true
@@ -12849,8 +12849,8 @@ components:
           type: string
           description: |
             Model name/identifier. May be comma-separated for multiple models
-            (e.g. `gpt-4o, gpt-4o-mini`).
-          example: "gpt-4"
+            (e.g. `gpt-5.6-luna, gpt-5.6-terra`).
+          example: "gpt-5.6-luna"
         modelFriendlyName:
           type: string
           description: |
@@ -13266,7 +13266,7 @@ components:
         message: "LLM health check failed: Incorrect API key provided"
         details:
           provider: openai
-          model: gpt-4o-mini
+          model: gpt-5.6-luna
           error_type: AuthenticationError
 
     AIModelProviderHealthCheckErrorEnvelope:
@@ -28749,7 +28749,7 @@ paths:
                         isDeleted: false
                         isServiceAccount: false
                         models:
-                          - "99999999-8888-7777-6666-555555555555_gpt-5.4-mini"
+                          - "99999999-8888-7777-6666-555555555555_gpt-5.6-luna"
                         name: "Customer Support Agent"
                         startMessage: "Hello! How can I help you today?"
                         systemPrompt: "You are a helpful assistant."
@@ -34583,7 +34583,7 @@ paths:
                           description: >-
                             Specific model name/identifier forwarded to the
                             provider API when making inference calls.
-                          example: gpt-5.4-mini
+                          example: gpt-5.6-luna
                         modelKey:
                           type: string
                           format: uuid
@@ -34631,14 +34631,14 @@ paths:
                     models:
                       - modelType: llm
                         provider: azureOpenAI
-                        modelName: gpt-5.4-mini
+                        modelName: gpt-5.6-luna
                         modelKey: f3a4b5b6-5b6c-4e85-9097-3202cfe696fc
                         isMultimodal: true
                         isReasoning: true
                         isDefault: true
                       - modelType: llm
                         provider: azureOpenAI
-                        modelName: gpt-5.4
+                        modelName: gpt-5.6-terra
                         modelKey: 7af8d3a7-ad2e-43a1-8716-ae95e4fbc888
                         isMultimodal: true
                         isReasoning: true
@@ -34985,7 +34985,7 @@ paths:
                   modelKey: f3a4b5b6-5b6c-4e85-9097-3202cfe696fc
                   modelType: llm
                   provider: openAI
-                  model: gpt-4o-mini
+                  model: gpt-5.6-luna
                   wasDefault: false
                   contextLength: 128000
         '400':

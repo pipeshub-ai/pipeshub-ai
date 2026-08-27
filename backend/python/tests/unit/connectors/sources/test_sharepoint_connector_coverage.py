@@ -42,6 +42,7 @@ def _make_connector(*, return_dep: bool = False):
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
+    dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.reindex_existing_records = AsyncMock()
     dsp = MagicMock()
     cs = MagicMock()
@@ -352,19 +353,18 @@ class TestSharePointReindex:
 class TestSharePointCreateConnector:
     @pytest.mark.asyncio
     async def test_create_connector(self):
-        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.DataSourceEntitiesProcessor") as MockDSEP:
-            mock_dep = MagicMock()
-            mock_dep.initialize = AsyncMock()
-            MockDSEP.return_value = mock_dep
-            connector = await SharePointConnector.create_connector(
-                logger=logging.getLogger("test"),
-                data_store_provider=MagicMock(),
-                config_service=AsyncMock(),
-                connector_id="test-sp",
-                scope="personal",
-                created_by="test-user-id",
-            )
-            assert isinstance(connector, SharePointConnector)
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        connector = await SharePointConnector.create_connector(
+            logger=logging.getLogger("test"),
+            data_store_provider=MagicMock(),
+            config_service=AsyncMock(),
+            connector_id="test-sp",
+            scope="personal",
+            created_by="test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, SharePointConnector)
 
 
 # ---------------------------------------------------------------------------
@@ -1612,11 +1612,7 @@ class TestSharePointProcessSitePages:
         c._pass_page_date_filters = MagicMock(return_value=True)
         existing = MagicMock()
         existing.external_revision_id = "etag-old"
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=False)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         page_record = MagicMock()
         c._create_page_record = AsyncMock(return_value=page_record)
         c._get_page_permissions = AsyncMock(return_value=[])

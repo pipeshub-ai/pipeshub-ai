@@ -106,7 +106,7 @@ function proxyMcp(method: HttpMethodValue, pathBuilder: PathBuilder, action: str
           throw new UnauthorizedError('User authentication required');
         }
 
-        logger.info(`MCP servers proxy: ${action}`, { userId, path: pathBuilder(req) });
+        logger.debug(`MCP servers proxy: ${action}`, { userId, path: pathBuilder(req) });
 
         const headers = buildProxyHeaders(req);
 

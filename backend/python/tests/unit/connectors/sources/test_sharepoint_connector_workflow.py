@@ -66,6 +66,7 @@ def _make_mock_deps():
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[
         MagicMock(email="user1@contoso.com"),
     ])
+    data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
     data_store_provider = MagicMock()
     mock_tx_store = AsyncMock()
@@ -640,6 +641,7 @@ class TestDriveProcessing:
         existing.version = 1
         existing.record_status = ProgressStatus.NOT_STARTED.value
         tx.get_record_by_external_id = AsyncMock(return_value=existing)
+        dep.get_record_by_external_id = AsyncMock(return_value=existing)
 
         item = _make_mock_drive_item("item-3", "updated.docx", e_tag="new-etag")
 
@@ -1861,6 +1863,7 @@ class TestProcessSitePages:
         existing.version = 1
         existing.record_status = ProgressStatus.COMPLETED.value
         tx.get_record_by_external_id = AsyncMock(return_value=existing)
+        dep.get_record_by_external_id = AsyncMock(return_value=existing)
 
         results = []
         async for r in connector._process_site_pages("site-1", "Test Site"):

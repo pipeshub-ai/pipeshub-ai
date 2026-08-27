@@ -279,6 +279,56 @@ class TestStartStop:
         await pusher.stop()
 
 
+def mock_session_returning(status: int, body: str = "") -> MagicMock:
+    """An ``aiohttp.ClientSession`` factory whose POST resolves to *status*."""
+    resp = MagicMock(status=status)
+    resp.text = AsyncMock(return_value=body)
+    post_cm = MagicMock()
+    post_cm.__aenter__ = AsyncMock(return_value=resp)
+    post_cm.__aexit__ = AsyncMock(return_value=False)
+    session = MagicMock()
+    session.post = MagicMock(return_value=post_cm)
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(return_value=session)
+    session_cm.__aexit__ = AsyncMock(return_value=False)
+    return MagicMock(return_value=session_cm)
+
+
+class TestPush:
+    PUSH_CFG = {
+        "url": "http://localhost:3031/collect-metrics",
+        "token": "k",
+        "install_id": "install-1",
+        "version": "1.0.0",
+    }
+
+    async def test_resets_registry_when_collector_responds_413(self):
+        pusher = make_pusher()
+
+        with (
+            patch("app.telemetry.pusher.METRICS_BACKEND") as backend_mock,
+            patch("aiohttp.ClientSession", mock_session_returning(413, "too large")),
+        ):
+            backend_mock.serialize.return_value = 'x{a="b"} 1.0\n'
+            await pusher._push(self.PUSH_CFG)
+
+        backend_mock.reset.assert_called_once()
+        pusher._logger.warning.assert_called_once()
+
+    async def test_does_not_reset_registry_on_other_errors(self):
+        pusher = make_pusher()
+
+        with (
+            patch("app.telemetry.pusher.METRICS_BACKEND") as backend_mock,
+            patch("aiohttp.ClientSession", mock_session_returning(500, "boom")),
+        ):
+            backend_mock.serialize.return_value = 'x{a="b"} 1.0\n'
+            await pusher._push(self.PUSH_CFG)
+
+        backend_mock.reset.assert_not_called()
+        pusher._logger.warning.assert_called_once()
+
+
 class TestShipEvents:
     async def test_skips_post_when_buffer_is_empty(self):
         event_buffer.drain()

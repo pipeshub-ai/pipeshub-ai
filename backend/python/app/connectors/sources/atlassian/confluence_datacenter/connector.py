@@ -2994,80 +2994,80 @@ class ConfluenceDataCenterConnector(BaseConnector):
         try:
             if principal_type == "user":
                 entity_type = EntityType.USER
-                # Lookup user by source_user_id (accountId) using transaction store
-                async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_source_id(
-                        source_user_id=principal_id,
-                        connector_id=self.connector_id,
+                # Lookup user by source_user_id (accountId)
+                user = await self.data_entities_processor.get_user_by_source_id(
+                    source_user_id=principal_id,
+                    connector_id=self.connector_id,
+                )
+                if user:
+                    return Permission(
+                        email=user.email,
+                        type=permission_type,
+                        entity_type=entity_type
                     )
-                    if user:
-                        return Permission(
-                            email=user.email,
-                            type=permission_type,
-                            entity_type=entity_type
-                        )
 
-                    # User not found - check if pseudo-group exists or should be created
-                    if create_pseudo_group_if_missing:
-                        # Check for existing pseudo-group
-                        pseudo_group = await tx_store.get_user_group_by_external_id(
-                            connector_id=self.connector_id,
-                            external_id=principal_id,
-                        )
-
-                        if not pseudo_group:
-                            # Create pseudo-group on-the-fly
-                            pseudo_group = await self._create_pseudo_group(principal_id)
-
-                        if pseudo_group:
-                            self.logger.debug(
-                                f"Using pseudo-group for user {principal_id} (no email available)"
-                            )
-                            return Permission(
-                                external_id=pseudo_group.source_user_group_id,
-                                type=permission_type,
-                                entity_type=EntityType.GROUP
-                            )
-
-                    self.logger.debug(f"  ⚠️ User {principal_id} not found in DB, skipping permission")
-                    return None
-
-            elif principal_type == "group":
-                entity_type = EntityType.GROUP
-                # Lookup group by source_user_group_id using transaction store
-                async with self.data_store_provider.transaction() as tx_store:
-                    group = await tx_store.get_user_group_by_external_id(
+                # User not found - check if pseudo-group exists or should be created
+                if create_pseudo_group_if_missing:
+                    # Check for existing pseudo-group
+                    pseudo_group = await self.data_entities_processor.get_user_group_by_external_id(
                         connector_id=self.connector_id,
                         external_id=principal_id,
                     )
-                    if group:
+
+                    if not pseudo_group:
+                        # Create pseudo-group on-the-fly
+                        pseudo_group = await self._create_pseudo_group(principal_id)
+
+                    if pseudo_group:
+                        self.logger.debug(
+                            f"Using pseudo-group for user {principal_id} (no email available)"
+                        )
                         return Permission(
-                            external_id=group.source_user_group_id,
+                            external_id=pseudo_group.source_user_group_id,
                             type=permission_type,
-                            entity_type=entity_type
+                            entity_type=EntityType.GROUP
                         )
 
-                    # Group not found by ID - try fallback by name
-                    # (DC space permissions may return only 'name' without UUID 'id')
-                    self.logger.debug(
-                        f"  ⚠️ Group {principal_id} not found by ID, trying name fallback"
+                self.logger.debug(f"  ⚠️ User {principal_id} not found in DB, skipping permission")
+                return None
+
+            elif principal_type == "group":
+                entity_type = EntityType.GROUP
+                # Lookup group by source_user_group_id
+                group = await self.data_entities_processor.get_user_group_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=principal_id,
+                )
+                if group:
+                    return Permission(
+                        external_id=group.source_user_group_id,
+                        type=permission_type,
+                        entity_type=entity_type
                     )
+
+                # Group not found by ID - try fallback by name
+                # (DC space permissions may return only 'name' without UUID 'id')
+                self.logger.debug(
+                    f"  ⚠️ Group {principal_id} not found by ID, trying name fallback"
+                )
+                # get_user_group_by_name has no processor equivalent; use tx_store directly
+                async with self.data_store_provider.transaction() as tx_store:
                     group = await tx_store.get_user_group_by_name(
                         connector_id=self.connector_id,
                         group_name=principal_id,
                     )
-                    if group:
-                        self.logger.debug(
-                            f"  ✓ Found group by name: {principal_id} -> {group.source_user_group_id}"
-                        )
-                        return Permission(
-                            external_id=group.source_user_group_id,
-                            type=permission_type,
-                            entity_type=entity_type
-                        )
+                if group:
+                    self.logger.debug(
+                        f"  ✓ Found group by name: {principal_id} -> {group.source_user_group_id}"
+                    )
+                    return Permission(
+                        external_id=group.source_user_group_id,
+                        type=permission_type,
+                        entity_type=entity_type
+                    )
 
-                    self.logger.debug(f"  ⚠️ Group {principal_id} not found in DB (by ID or name), skipping permission")
-                    return None
+                self.logger.debug(f"  ⚠️ Group {principal_id} not found in DB (by ID or name), skipping permission")
+                return None
 
             return None
 
@@ -5178,16 +5178,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "ConfluenceDataCenterConnector":
         """Factory method to create a Confluence connector instance."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-
-        await data_entities_processor.initialize()
-
         return cls(
             logger,
             data_entities_processor,

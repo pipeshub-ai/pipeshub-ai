@@ -328,13 +328,20 @@ class GithubConnector(GitHubTeamsConnector):
         connector_id: str,
         scope: str,
         created_by: str,
-    ) -> BaseConnector:
-        """Factory method to create a GitHub Personal connector instance."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
+        data_entities_processor,
+        **kwargs,
+    ) -> "BaseConnector":
+        """
+        Factory method to create a Github connector instance.
 
+        Args:
+            logger: Logger instance
+            data_store_provider: Data store provider for database operations
+            config_service: Configuration service for accessing credentials
+
+        Returns:
+            Initialized GithubConnector instance
+        """
         return GithubConnector(
             logger, data_entities_processor, data_store_provider,
             config_service, connector_id, scope, created_by,

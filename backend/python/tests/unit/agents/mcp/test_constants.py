@@ -26,14 +26,14 @@ class TestNormalizeMcpType:
 
 class TestInstancePaths:
     def test_instances_prefix(self) -> None:
-        assert get_mcp_instances_prefix("org-1") == "/services/mcp/instances/org-1/"
+        assert get_mcp_instances_prefix() == "/services/mcp/instances/"
 
     def test_instance_path(self) -> None:
-        assert get_mcp_instance_path("org-1", "inst-1") == "/services/mcp/instances/org-1/inst-1"
+        assert get_mcp_instance_path("inst-1") == "/services/mcp/instances/inst-1"
 
     def test_instance_path_is_nested_under_prefix(self) -> None:
-        prefix = get_mcp_instances_prefix("org-1")
-        path = get_mcp_instance_path("org-1", "inst-1")
+        prefix = get_mcp_instances_prefix()
+        path = get_mcp_instance_path("inst-1")
         assert path.startswith(prefix)
 
 

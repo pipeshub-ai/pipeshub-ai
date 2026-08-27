@@ -381,8 +381,35 @@ class TestHandleStartSync:
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
              patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
             mock_stm.start_sync = AsyncMock()
+            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
             result = await service._handle_start_sync("gmail", {"orgId": "org1", "connectorId": "c1"})
             assert result is True
+
+    @pytest.mark.asyncio
+    async def test_scheduled_sync_is_ignored_while_one_is_running(self, service):
+        """A tick landing mid-sync must not cancel it.
+
+        start_sync cancels and restarts, so a sync slower than its own interval
+        could be killed and restarted for ever and never finish. The request is
+        declined and acknowledged instead.
+        """
+        mock_conn = AsyncMock()
+        mock_conn.run_sync = AsyncMock()
+        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
+             patch.object(service, "_get_connector", return_value=mock_conn), \
+             patch.object(service, "_update_app_status", new_callable=AsyncMock), \
+             patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
+            mock_stm.start_sync = AsyncMock()
+            mock_stm.start_if_idle = AsyncMock(return_value=None)  # already running
+
+            result = await service._handle_start_sync(
+                "gmail", {"orgId": "org1", "connectorId": "c1"}
+            )
+
+        # Acknowledged: the work is already in flight, so redelivering would
+        # only repeat the decision.
+        assert result is True
+        mock_stm.start_sync.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_full_sync_success(self, service):
@@ -393,6 +420,7 @@ class TestHandleStartSync:
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
              patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
             mock_stm.start_sync = AsyncMock()
+            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": True
             })
@@ -473,6 +501,7 @@ class TestHandleStartSync:
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
              patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
             mock_stm.start_sync = AsyncMock()
+            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
             
             # Call with fullSync=False in payload, but pendingFullSync=True in doc
             result = await service._handle_start_sync("gmail", {
@@ -521,6 +550,7 @@ class TestHandleStartSync:
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
              patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
             mock_stm.start_sync = AsyncMock()
+            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
 
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1",
@@ -592,6 +622,7 @@ class TestHandleStartSync:
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
              patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
             mock_stm.start_sync = AsyncMock()
+            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
             
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": False

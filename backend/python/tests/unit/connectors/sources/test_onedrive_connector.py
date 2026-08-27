@@ -227,12 +227,8 @@ class TestProcessDeltaItem:
         connector.msgraph_client.get_signed_url = AsyncMock(return_value="https://signed.url")
         connector.msgraph_client.get_file_permission = AsyncMock(return_value=[])
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx = AsyncMock()
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx_store)
-        mock_tx.__aexit__ = AsyncMock(return_value=False)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
 
         item = _make_drive_item(name="report.docx", mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
@@ -250,12 +246,8 @@ class TestProcessDeltaItem:
         connector.msgraph_client = MagicMock()
         connector.msgraph_client.get_file_permission = AsyncMock(return_value=[])
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx = AsyncMock()
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx_store)
-        mock_tx.__aexit__ = AsyncMock(return_value=False)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
 
         item = _make_drive_item(name="MyFolder", is_folder=True)
 
@@ -272,12 +264,8 @@ class TestProcessDeltaItem:
         connector.msgraph_client.get_signed_url = AsyncMock(return_value="https://url")
         connector.msgraph_client.get_file_permission = AsyncMock(return_value=[])
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx = AsyncMock()
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx_store)
-        mock_tx.__aexit__ = AsyncMock(return_value=False)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
 
         item = _make_drive_item(name="NOEXTENSION")
 
@@ -474,12 +462,7 @@ class TestHandleRecordUpdates:
 
         mock_record = MagicMock()
         mock_record.id = "record-1"
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=mock_record)
-        mock_tx = AsyncMock()
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx_store)
-        mock_tx.__aexit__ = AsyncMock(return_value=False)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=mock_record)
 
         update = RecordUpdate(
             record=None,
@@ -1629,11 +1612,7 @@ class TestUpdateFolderChildrenPermissions:
         connector.msgraph_client.get_file_permission = AsyncMock(return_value=[])
         connector._convert_to_permissions = AsyncMock(return_value=[])
 
-        mock_tx = AsyncMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=MagicMock())
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=False)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock())
 
         await connector._update_folder_children_permissions("drive-1", "folder-1")
 
@@ -1976,8 +1955,8 @@ class TestProcessDeltaItemCoverage:
         existing_file_record = MagicMock()
         existing_file_record.quick_xor_hash = "hash123"  # same hash
 
-        mock_tx, _ = _make_tx_store(existing, existing_file_record)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=existing_file_record)
 
         item = _make_drive_item(name="new-name.pdf", e_tag="etag-new")
 
@@ -1999,8 +1978,8 @@ class TestProcessDeltaItemCoverage:
         existing_file_record = MagicMock()
         existing_file_record.quick_xor_hash = "old-hash"  # different from item
 
-        mock_tx, _ = _make_tx_store(existing, existing_file_record)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=existing_file_record)
 
         now = datetime.now(timezone.utc)
         existing.updated_at = int(now.timestamp() * 1000)
@@ -2042,8 +2021,8 @@ class TestProcessDeltaItemCoverage:
         existing_file_record = MagicMock()
         existing_file_record.quick_xor_hash = "hash123"
 
-        mock_tx, _ = _make_tx_store(existing, existing_file_record)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=existing_file_record)
 
         item = _make_drive_item(created=now, modified=now)
 
@@ -2065,8 +2044,8 @@ class TestProcessDeltaItemCoverage:
         existing.record_name = "MyFolder"
         existing.is_shared = False  # was not shared
 
-        mock_tx, _ = _make_tx_store(existing, None)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
 
         # Shared folder item
         item = _make_drive_item(name="MyFolder", is_folder=True, is_shared=True, created=now, modified=now)
@@ -2104,8 +2083,8 @@ class TestProcessDeltaItemCoverage:
         connector.msgraph_client.get_signed_url = AsyncMock(return_value="https://url")
         connector.msgraph_client.get_file_permission = AsyncMock(return_value=[])
 
-        mock_tx, _ = _make_tx_store(None)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
 
         item = _make_drive_item(name="shared.pdf", is_shared=True)
 
@@ -2546,8 +2525,7 @@ class TestUpdateFolderChildrenPermissionsCoverage:
         connector.msgraph_client.get_file_permission = AsyncMock(return_value=[])
 
         existing_record = MagicMock()
-        mock_tx, _ = _make_tx_store(existing_record)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing_record)
 
         await connector._update_folder_children_permissions("drive-1", "folder-1")
 
@@ -2564,8 +2542,7 @@ class TestUpdateFolderChildrenPermissionsCoverage:
         connector.msgraph_client.list_folder_children = AsyncMock(return_value=[child])
         connector.msgraph_client.get_file_permission = AsyncMock(return_value=[])
 
-        mock_tx, _ = _make_tx_store(None)  # no record found
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         # Should not raise
         await connector._update_folder_children_permissions("drive-1", "folder-1")
@@ -2597,8 +2574,7 @@ class TestUpdateFolderChildrenPermissionsCoverage:
         connector.msgraph_client.get_file_permission = AsyncMock(side_effect=[Exception("err"), []])
 
         existing_record = MagicMock()
-        mock_tx, _ = _make_tx_store(existing_record)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing_record)
 
         await connector._update_folder_children_permissions("drive-1", "folder-1")
         # Second child should still be processed
@@ -2633,8 +2609,7 @@ class TestHandleRecordUpdatesCoverage:
     async def test_deletion_no_record_in_db(self):
         """Deletion when record not in DB."""
         connector = _make_connector_cov()
-        mock_tx, _ = _make_tx_store(None)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         update = RecordUpdate(
             record=None, external_record_id="missing",
@@ -3412,8 +3387,7 @@ class TestHandleReindexEvent:
     @pytest.mark.asyncio
     async def test_record_not_found(self):
         connector = _make_connector_cov()
-        mock_tx, _ = _make_tx_store(None)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         await connector._handle_reindex_event("missing-id")
 
@@ -3421,8 +3395,7 @@ class TestHandleReindexEvent:
     async def test_record_found_and_updated(self):
         connector = _make_connector_cov()
         record = _make_existing_record()
-        mock_tx, _ = _make_tx_store(record)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=record)
 
         connector.msgraph_client = MagicMock()
         connector.msgraph_client.rate_limiter = MagicMock()
@@ -3452,8 +3425,7 @@ class TestHandleReindexEvent:
     async def test_item_not_found_at_source(self):
         connector = _make_connector_cov()
         record = _make_existing_record()
-        mock_tx, _ = _make_tx_store(record)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=record)
 
         connector.msgraph_client = MagicMock()
         connector.msgraph_client.rate_limiter = MagicMock()
@@ -3472,8 +3444,7 @@ class TestHandleReindexEvent:
     async def test_process_delta_item_returns_none(self):
         connector = _make_connector_cov()
         record = _make_existing_record()
-        mock_tx, _ = _make_tx_store(record)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=record)
 
         connector.msgraph_client = MagicMock()
         connector.msgraph_client.rate_limiter = MagicMock()
@@ -3493,9 +3464,7 @@ class TestHandleReindexEvent:
     @pytest.mark.asyncio
     async def test_error_caught(self):
         connector = _make_connector_cov()
-        mock_tx, _ = _make_tx_store(None)
-        mock_tx.__aenter__ = AsyncMock(side_effect=Exception("db err"))
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=Exception("db err"))
 
         await connector._handle_reindex_event("item-err")
 
@@ -4150,20 +4119,18 @@ class TestCreateConnector:
 
     @pytest.mark.asyncio
     async def test_create_connector(self):
-        with patch("app.connectors.sources.microsoft.onedrive.connector.DataSourceEntitiesProcessor") as mock_proc:
-            mock_instance = MagicMock()
-            mock_instance.initialize = AsyncMock()
-            mock_proc.return_value = mock_instance
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            logger = _make_mock_logger_cov()
-            dsp = MagicMock()
-            cs = MagicMock()
+        logger = _make_mock_logger_cov()
+        dsp = MagicMock()
+        cs = MagicMock()
 
-            result = await OneDriveConnector.create_connector(
-                logger, dsp, cs, "conn-1", "team", "test-user-id"
-            )
-            assert isinstance(result, OneDriveConnector)
-            mock_instance.initialize.assert_awaited_once()
+        result = await OneDriveConnector.create_connector(
+            logger, dsp, cs, "conn-1", "team", "test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(result, OneDriveConnector)
 
 
 # ===========================================================================

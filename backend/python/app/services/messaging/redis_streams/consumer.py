@@ -405,7 +405,7 @@ class RedisStreamsConsumer(IMessagingConsumer):
                     for stream_name, messages in results:
                         for message_id, fields in messages:
                             try:
-                                self.logger.info(
+                                self.logger.debug(
                                     "Received message: stream=%s, id=%s",
                                     stream_name,
                                     message_id,

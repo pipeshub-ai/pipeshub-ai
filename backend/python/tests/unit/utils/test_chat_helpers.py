@@ -9,6 +9,8 @@ from urllib.parse import quote
 
 import pytest
 
+from app.services.vector_db.models import ScrollResult
+
 from app.config.constants.arangodb import Connectors, OriginTypes, RecordRelations
 from app.models.blocks import BlockType, GroupType
 from app.models.entities import (
@@ -954,6 +956,64 @@ class TestGetEnhancedMetadata:
         meta = {}
         result = get_enhanced_metadata(record, block, meta)
         assert result["blockText"] == "row string data"
+
+    def test_code_block_extracts_text_from_data(self):
+        """CODE blocks store source code in data['text']."""
+        record = _make_record_blob()
+        block = {
+            "type": BlockType.CODE.value,
+            "data": {
+                "text": "def hello():\n    print('world')",
+                "kind": "function",
+                "start_line": 1,
+                "end_line": 2,
+            },
+            "citation_metadata": {"line_number": 1},
+            "index": 0,
+        }
+        meta = {}
+        result = get_enhanced_metadata(record, block, meta)
+        assert result["blockText"] == "def hello():\n    print('world')"
+        assert result["blockType"] == BlockType.CODE.value
+
+    def test_code_block_with_string_data(self):
+        """When CODE block data is a plain string, convert to str."""
+        record = _make_record_blob()
+        block = {
+            "type": BlockType.CODE.value,
+            "data": "some code as string",
+            "citation_metadata": None,
+            "index": 0,
+        }
+        meta = {}
+        result = get_enhanced_metadata(record, block, meta)
+        assert result["blockText"] == "some code as string"
+
+    def test_code_block_with_empty_text(self):
+        """CODE block with empty text in data dict."""
+        record = _make_record_blob()
+        block = {
+            "type": BlockType.CODE.value,
+            "data": {"text": "", "kind": "imports"},
+            "citation_metadata": None,
+            "index": 0,
+        }
+        meta = {}
+        result = get_enhanced_metadata(record, block, meta)
+        assert result["blockText"] == ""
+
+    def test_code_block_with_none_text_returns_string(self):
+        """CODE block with text=None in data dict returns a valid string blockText."""
+        record = _make_record_blob()
+        block = {
+            "type": BlockType.CODE.value,
+            "data": {"text": None, "kind": "function"},
+            "citation_metadata": None,
+            "index": 0,
+        }
+        meta = {}
+        result = get_enhanced_metadata(record, block, meta)
+        assert isinstance(result["blockText"], str)
 
     def test_no_data_returns_empty_blocktext(self):
         record = _make_record_blob()
@@ -3041,11 +3101,14 @@ class TestGetFlattenedResults:
         assert len(results) >= 1
 
     @pytest.mark.asyncio
-    async def test_image_multimodal_no_uri_skipped(self):
-        """Image block with multimodal LLM but no URI should be skipped."""
+    async def test_image_multimodal_no_uri_keeps_its_description(self):
+        """An image point carries only a text description when embeddings are
+        text-only (`VectorStore.describe_images`). Dropping the hit because it
+        has no URI loses a block that matched the query — the description is
+        the only representation of that image the index holds."""
         img_block = {
             "type": BlockType.IMAGE.value,
-            "data": {"description": "no uri here"},
+            "data": {"description": "a bar chart of Q3 revenue"},
             "citation_metadata": None,
             "parent_index": None,
             "index": 0,
@@ -3067,7 +3130,36 @@ class TestGetFlattenedResults:
             result_set, blob_store, "org-1", True, vr_map
         )
         image_results = [r for r in results if r.get("block_type") == BlockType.IMAGE.value]
-        assert len(image_results) == 0
+        assert len(image_results) == 1
+        assert image_results[0]["content"] == "a bar chart of Q3 revenue"
+
+    @pytest.mark.asyncio
+    async def test_image_multimodal_no_uri_and_no_text_is_skipped(self):
+        """Nothing to send at all — neither pixels nor text — stays dropped."""
+        img_block = {
+            "type": BlockType.IMAGE.value,
+            "data": {"uri": None},
+            "citation_metadata": None,
+            "parent_index": None,
+            "index": 0,
+        }
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [img_block]
+
+        blob_store = self._make_blob_store(record)
+        vr_map = {"vr-1": record}
+
+        result_set = [
+            {
+                "content": "",
+                "score": 0.8,
+                "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": False},
+            },
+        ]
+        results = await get_flattened_results(
+            result_set, blob_store, "org-1", True, vr_map
+        )
+        assert [r for r in results if r.get("block_type") == BlockType.IMAGE.value] == []
 
     @pytest.mark.asyncio
     async def test_image_non_multimodal_no_data_uri_passthrough(self):
@@ -4697,7 +4789,9 @@ class TestCreateRecordFromVectorMetadata:
         # Mock ContainerUtils and vector_db_service
         mock_vector_service = AsyncMock()
         mock_vector_service.filter_collection = AsyncMock(return_value="mock_filter")
-        mock_vector_service.scroll = AsyncMock(return_value=([mock_point], None))
+        mock_vector_service.scroll = AsyncMock(
+            return_value=ScrollResult(points=[mock_point], next_offset=None)
+        )
 
         real_utils_mod = sys.modules.pop("app.containers.utils.utils", None)
         fake_utils = ModuleType("app.containers.utils.utils")
@@ -4767,7 +4861,9 @@ class TestCreateRecordFromVectorMetadata:
 
         mock_vector_service = AsyncMock()
         mock_vector_service.filter_collection = AsyncMock(return_value="mock_filter")
-        mock_vector_service.scroll = AsyncMock(return_value=([mock_point], None))
+        mock_vector_service.scroll = AsyncMock(
+            return_value=ScrollResult(points=[mock_point], next_offset=None)
+        )
 
         real_utils_mod = sys.modules.pop("app.containers.utils.utils", None)
         fake_utils = ModuleType("app.containers.utils.utils")
@@ -6502,7 +6598,9 @@ class TestCreateRecordFromVectorMetadataConnectorId:
 
         mock_vector_service = AsyncMock()
         mock_vector_service.filter_collection = AsyncMock(return_value="f")
-        mock_vector_service.scroll = AsyncMock(return_value=([mock_point], None))
+        mock_vector_service.scroll = AsyncMock(
+            return_value=ScrollResult(points=[mock_point], next_offset=None)
+        )
 
         mock_container = MagicMock()
         mock_container.get_vector_db_service = AsyncMock(return_value=mock_vector_service)

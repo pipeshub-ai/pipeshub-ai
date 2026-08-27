@@ -74,7 +74,7 @@ class TestProcessEvent:
         gp.batch_create_edges = AsyncMock()
 
         payload = {"orgId": "org-1", "accountType": "enterprise", "registeredName": "Test Corp"}
-        with patch.object(svc, '_EntityEventService__create_kb_connector_app_instance', new_callable=AsyncMock, return_value=None):
+        with patch.object(svc, '_create_kb_connector_app_instance', new_callable=AsyncMock, return_value=None):
             result = await svc.process_event("orgCreated", payload)
         assert result is True
 
@@ -144,7 +144,7 @@ class TestHandleOrgCreated:
         gp.get_org_apps = AsyncMock(return_value=[])
 
         payload = {"orgId": "org-1", "accountType": "enterprise", "userId": "user-1"}
-        with patch.object(svc, '_EntityEventService__create_kb_connector_app_instance', new_callable=AsyncMock, return_value=None):
+        with patch.object(svc, '_create_kb_connector_app_instance', new_callable=AsyncMock, return_value=None):
             result = await svc.process_event("orgCreated", payload)
         assert result is True
         gp.batch_create_edges.assert_awaited()
@@ -159,7 +159,7 @@ class TestHandleOrgCreated:
         gp.get_org_apps = AsyncMock(return_value=[])
 
         payload = {"orgId": "org-2", "accountType": "individual"}
-        with patch.object(svc, '_EntityEventService__create_kb_connector_app_instance', new_callable=AsyncMock, return_value=None):
+        with patch.object(svc, '_create_kb_connector_app_instance', new_callable=AsyncMock, return_value=None):
             result = await svc.process_event("orgCreated", payload)
         assert result is True
 
@@ -173,7 +173,7 @@ class TestHandleOrgCreated:
         gp.get_org_apps = AsyncMock(return_value=[])
 
         payload = {"orgId": "org-3", "accountType": "business"}
-        with patch.object(svc, '_EntityEventService__create_kb_connector_app_instance', new_callable=AsyncMock, return_value=None):
+        with patch.object(svc, '_create_kb_connector_app_instance', new_callable=AsyncMock, return_value=None):
             result = await svc.process_event("orgCreated", payload)
         assert result is True
 
@@ -234,8 +234,8 @@ class TestHandleUserAdded:
             "syncAction": "none",
         }
 
-        with patch.object(svc, '_EntityEventService__get_or_create_knowledge_base', new_callable=AsyncMock, return_value={}):
-            with patch.object(svc, '_EntityEventService__create_user_kb_app_relation', new_callable=AsyncMock, return_value=True):
+        with patch.object(svc, '_get_or_create_knowledge_base', new_callable=AsyncMock, return_value={}):
+            with patch.object(svc, '_create_user_kb_app_relation', new_callable=AsyncMock, return_value=True):
                 result = await svc.process_event("userAdded", payload)
         assert result is True
 
@@ -364,7 +364,7 @@ class TestHandleAppEnabled:
             "fullSync": True,
         }
 
-        with patch.object(svc, '_EntityEventService__handle_sync_event', new_callable=AsyncMock, return_value=True) as mock_sync:
+        with patch.object(svc, '_handle_sync_event', new_callable=AsyncMock, return_value=True) as mock_sync:
             result = await svc.process_event("appEnabled", payload)
         assert result is True
         mock_sync.assert_awaited_once()
@@ -528,7 +528,7 @@ class TestHandleSyncEvent:
         svc, logger, gp, container = _make_service()
         container.messaging_producer.send_message = AsyncMock()
 
-        result = await svc._EntityEventService__handle_sync_event(
+        result = await svc._handle_sync_event(
             "drive.start", {"orgId": "org-1"}
         )
         assert result is True
@@ -539,7 +539,7 @@ class TestHandleSyncEvent:
         svc, logger, gp, container = _make_service()
         container.messaging_producer.send_message = AsyncMock(side_effect=Exception("kafka down"))
 
-        result = await svc._EntityEventService__handle_sync_event(
+        result = await svc._handle_sync_event(
             "drive.start", {"orgId": "org-1"}
         )
         assert result is False
@@ -555,7 +555,7 @@ class TestGetOrCreateKnowledgeBase:
     @pytest.mark.asyncio
     async def test_missing_user_or_org_id(self):
         svc, logger, gp, _ = _make_service()
-        result = await svc._EntityEventService__get_or_create_knowledge_base(
+        result = await svc._get_or_create_knowledge_base(
             "key-1", "", "org-1"
         )
         assert result == {}
@@ -566,7 +566,7 @@ class TestGetOrCreateKnowledgeBase:
         gp.get_nodes_by_filters = AsyncMock(return_value=[
             {"id": "kb-1", "isDeleted": False, "groupName": "Private"},
         ])
-        result = await svc._EntityEventService__get_or_create_knowledge_base(
+        result = await svc._get_or_create_knowledge_base(
             "key-1", "uid-1", "org-1"
         )
         assert result.get("id") == "kb-1"
@@ -580,11 +580,11 @@ class TestGetOrCreateKnowledgeBase:
         ])
         # __get_or_create_kb_app_for_org will be called next - it does a local import
         # so we mock the entire method chain
-        with patch.object(svc, '_EntityEventService__get_or_create_kb_app_for_org',
+        with patch.object(svc, '_get_or_create_kb_app_for_org',
                          new_callable=AsyncMock, return_value={"_key": "app-1"}):
             gp.batch_upsert_nodes = AsyncMock()
             gp.batch_create_edges = AsyncMock()
-            result = await svc._EntityEventService__get_or_create_knowledge_base(
+            result = await svc._get_or_create_knowledge_base(
                 "key-1", "uid-1", "org-1", name="Test Private"
             )
         # Should create a new KB since the existing one was deleted
@@ -594,7 +594,7 @@ class TestGetOrCreateKnowledgeBase:
     async def test_exception_returns_empty_dict(self):
         svc, logger, gp, _ = _make_service()
         gp.get_nodes_by_filters = AsyncMock(side_effect=Exception("db error"))
-        result = await svc._EntityEventService__get_or_create_knowledge_base(
+        result = await svc._get_or_create_knowledge_base(
             "key-1", "uid-1", "org-1"
         )
         assert result == {}
@@ -610,8 +610,8 @@ class TestCreateUserKbAppRelation:
     @pytest.mark.asyncio
     async def test_no_kb_app_returns_false(self):
         svc, logger, gp, _ = _make_service()
-        with patch.object(svc, '_EntityEventService__get_or_create_kb_app_for_org', new_callable=AsyncMock, return_value=None):
-            result = await svc._EntityEventService__create_user_kb_app_relation("key-1", "org-1")
+        with patch.object(svc, '_get_or_create_kb_app_for_org', new_callable=AsyncMock, return_value=None):
+            result = await svc._create_user_kb_app_relation("key-1", "org-1")
         assert result is False
 
     @pytest.mark.asyncio
@@ -620,8 +620,8 @@ class TestCreateUserKbAppRelation:
         gp.get_edges_from_node = AsyncMock(return_value=[
             {"to_id": "app-1"},
         ])
-        with patch.object(svc, '_EntityEventService__get_or_create_kb_app_for_org', new_callable=AsyncMock, return_value={"_key": "app-1"}):
-            result = await svc._EntityEventService__create_user_kb_app_relation("key-1", "org-1")
+        with patch.object(svc, '_get_or_create_kb_app_for_org', new_callable=AsyncMock, return_value={"_key": "app-1"}):
+            result = await svc._create_user_kb_app_relation("key-1", "org-1")
         assert result is True
 
     @pytest.mark.asyncio
@@ -629,16 +629,16 @@ class TestCreateUserKbAppRelation:
         svc, logger, gp, _ = _make_service()
         gp.get_edges_from_node = AsyncMock(return_value=[])
         gp.batch_create_edges = AsyncMock()
-        with patch.object(svc, '_EntityEventService__get_or_create_kb_app_for_org', new_callable=AsyncMock, return_value={"_key": "app-1"}):
-            result = await svc._EntityEventService__create_user_kb_app_relation("key-1", "org-1")
+        with patch.object(svc, '_get_or_create_kb_app_for_org', new_callable=AsyncMock, return_value={"_key": "app-1"}):
+            result = await svc._create_user_kb_app_relation("key-1", "org-1")
         assert result is True
         gp.batch_create_edges.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_exception_returns_false(self):
         svc, logger, gp, _ = _make_service()
-        with patch.object(svc, '_EntityEventService__get_or_create_kb_app_for_org', new_callable=AsyncMock, side_effect=Exception("fail")):
-            result = await svc._EntityEventService__create_user_kb_app_relation("key-1", "org-1")
+        with patch.object(svc, '_get_or_create_kb_app_for_org', new_callable=AsyncMock, side_effect=Exception("fail")):
+            result = await svc._create_user_kb_app_relation("key-1", "org-1")
         assert result is False
 
 
@@ -659,5 +659,94 @@ class TestCreateKbConnectorAppInstance:
         # The __create_kb_connector_app_instance method does a local import
         # of KnowledgeBaseConnector. Any exception (including import errors
         # or database errors) should be caught and return None.
-        result = await svc._EntityEventService__create_kb_connector_app_instance("org-1")
+        result = await svc._create_kb_connector_app_instance("org-1")
         assert result is None
+
+
+class TestAppDisabledDrainsQueuedRecords:
+    """Disabling must not leave a backlog stranded.
+
+    Records already QUEUED have no event guard to catch them and no
+    processingStartedAt, so stale recovery — which scans IN_PROGRESS — can never
+    reach them. Without this sweep they sit in QUEUED for ever.
+    """
+
+    @pytest.mark.asyncio
+    async def test_queued_records_move_to_manual_indexing(self):
+        from app.config.constants.arangodb import ProgressStatus
+
+        svc, _, gp, _ = _make_service()
+        gp.get_document = AsyncMock(return_value={
+            "name": "Drive", "type": "FILE", "appGroup": "Google",
+            "createdAtTimestamp": 1000000,
+        })
+        gp.batch_upsert_nodes = AsyncMock()
+        gp.reset_indexing_status_for_connector = AsyncMock()
+
+        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as stm:
+            stm.cancel_sync = AsyncMock()
+            result = await svc.process_event("appDisabled", {
+                "orgId": "org-1",
+                "apps": ["Drive"],
+                "connectorId": "conn-1",
+            })
+
+        assert result is True
+        gp.reset_indexing_status_for_connector.assert_awaited_once()
+        args, kwargs = gp.reset_indexing_status_for_connector.await_args
+        assert args[0] == "conn-1"
+        assert args[1] == ProgressStatus.AUTO_INDEX_OFF.value
+        # IN_PROGRESS is mid-pipeline and COMPLETED is already done; taking
+        # either out from under a running index is its own race.
+        assert set(kwargs["exclude_statuses"]) == {
+            ProgressStatus.IN_PROGRESS.value,
+            ProgressStatus.COMPLETED.value,
+        }
+
+    @pytest.mark.asyncio
+    async def test_sweep_failure_does_not_abort_the_disable(self):
+        """Disabling must still take effect if the sweep cannot run."""
+        svc, _, gp, _ = _make_service()
+        gp.get_document = AsyncMock(return_value={
+            "name": "Drive", "type": "FILE", "appGroup": "Google",
+            "createdAtTimestamp": 1000000,
+        })
+        gp.batch_upsert_nodes = AsyncMock()
+        gp.reset_indexing_status_for_connector = AsyncMock(
+            side_effect=RuntimeError("graph unavailable")
+        )
+
+        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as stm:
+            stm.cancel_sync = AsyncMock()
+            result = await svc.process_event("appDisabled", {
+                "orgId": "org-1",
+                "apps": ["Drive"],
+                "connectorId": "conn-1",
+            })
+
+        assert result is True
+        gp.batch_upsert_nodes.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sweep_runs_after_sync_cancellation(self):
+        """Order matters: a live sync would re-queue behind the sweep."""
+        order = []
+        svc, _, gp, _ = _make_service()
+        gp.get_document = AsyncMock(return_value={
+            "name": "Drive", "type": "FILE", "appGroup": "Google",
+            "createdAtTimestamp": 1000000,
+        })
+        gp.batch_upsert_nodes = AsyncMock()
+        gp.reset_indexing_status_for_connector = AsyncMock(
+            side_effect=lambda *a, **k: order.append("sweep")
+        )
+
+        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as stm:
+            stm.cancel_sync = AsyncMock(side_effect=lambda *a: order.append("cancel"))
+            await svc.process_event("appDisabled", {
+                "orgId": "org-1",
+                "apps": ["Drive"],
+                "connectorId": "conn-1",
+            })
+
+        assert order == ["cancel", "sweep"], order

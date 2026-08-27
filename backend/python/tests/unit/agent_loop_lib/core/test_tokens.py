@@ -50,11 +50,11 @@ class TestCountMessageTokensToolMessage:
         msg = ToolMessage(content="x" * 40, tool_call_id="tc1")
         assert count_message_tokens(msg) == 4 + (40 // 4)
 
-    def test_image_bytes_do_not_inflate_token_count(self) -> None:
-        """A multipart ToolMessage's image payload (base64, can be
-        megabytes) must not be counted as text tokens — only its
-        TextPart(s) contribute, matching the pre-existing behavior for
-        UserMessage attachment images."""
+    def test_image_costs_visual_tokens_not_its_base64_length(self) -> None:
+        """An image's cost is what the provider charges to look at it, not the
+        length of its payload: 500 KB of base64 is ~125k text tokens but at
+        most a few thousand visual ones. Counting the payload as text would
+        make every shaper compact a context that is mostly one screenshot."""
         huge_base64 = "A" * 500_000
         msg = ToolMessage(
             content=[
@@ -64,7 +64,29 @@ class TestCountMessageTokensToolMessage:
             tool_call_id="tc1",
         )
         text_only_msg = ToolMessage(content="short ref", tool_call_id="tc1")
-        assert count_message_tokens(msg) == count_message_tokens(text_only_msg)
+        cost = count_message_tokens(msg)
+        assert cost > count_message_tokens(text_only_msg), "an image is not free"
+        assert cost < len(huge_base64) // 100, "the payload is not text"
+
+    def test_measured_image_costs_more_than_a_small_one(self) -> None:
+        """Dimensions drive the estimate when the producer measured them."""
+        source = ImageSource(type="base64", media_type="image/png", data="x")
+        big = ToolMessage(
+            content=[ImagePart(source=source, width=1024, height=1024)], tool_call_id="tc1",
+        )
+        small = ToolMessage(
+            content=[ImagePart(source=source, width=112, height=112)], tool_call_id="tc1",
+        )
+        assert count_message_tokens(big) > count_message_tokens(small)
+
+    def test_unmeasured_image_is_not_free(self) -> None:
+        """Most images arrive unmeasured; assuming zero is what let tens of
+        thousands of visual tokens hide from every shaper."""
+        msg = ToolMessage(
+            content=[ImagePart(source=ImageSource(type="url", data="https://x/y.png"))],
+            tool_call_id="tc1",
+        )
+        assert count_message_tokens(msg) > 1_000
 
     def test_system_and_user_messages_unaffected(self) -> None:
         assert extract_text(SystemMessage(content="sys")) == "sys"

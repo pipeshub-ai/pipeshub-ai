@@ -199,6 +199,9 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
         conn.drive_client = MagicMock()
         conn.admin_data_source = AsyncMock()
         conn.drive_data_source = AsyncMock()
+        async def execute(operation):
+            return operation()
+        conn.drive_data_source.execute = AsyncMock(side_effect=execute)
         conn.config = {"credentials": {}}
         return conn
 
@@ -2299,14 +2302,19 @@ class TestHandleRecordUpdates:
 
     @pytest.mark.asyncio
     async def test_deleted_record(self):
-        conn = _make_connector()
+        existing = MagicMock()
+        existing.id = "rec-file-1"
+        existing.record_name = "file-1"
+        conn = _make_connector(existing_record=existing)
         update = RecordUpdate(
             record=None, is_new=False, is_updated=False, is_deleted=True,
             metadata_changed=False, content_changed=False, permissions_changed=False,
             external_record_id="file-1",
         )
         await conn._handle_record_updates(update)
-        conn.data_entities_processor.on_record_deleted.assert_called_once()
+        conn.data_entities_processor.on_record_deleted.assert_called_once_with(
+            record_id="rec-file-1"
+        )
 
     @pytest.mark.asyncio
     async def test_new_record(self):
@@ -2411,6 +2419,7 @@ class TestRunSyncWithYield:
                 "user": {"permissionId": "perm-id", "emailAddress": "u@x.com"},
             })
             mock_ds.files_get = AsyncMock(return_value={"id": "root-drive-id"})
+            mock_ds.drives_list = AsyncMock(return_value={"drives": []})
 
             with patch(
                 "app.connectors.sources.google.drive.team.connector.GoogleDriveDataSource",
@@ -2527,7 +2536,8 @@ class TestSyncPersonalDrive:
                           return_value=([], 0, 1)):
             with patch.object(conn, "_process_remaining_batch_records", new_callable=AsyncMock,
                               return_value=([], 0)):
-                await conn.sync_personal_drive(user, mock_ds, "perm-id", "drive-id")
+                with patch.object(conn, "sync_shared_with_me", new_callable=AsyncMock):
+                    await conn.sync_personal_drive(user, mock_ds, "perm-id", "drive-id")
 
     @pytest.mark.asyncio
     async def test_full_sync_no_start_token(self):
@@ -4246,19 +4256,16 @@ class TestCreateConnector:
     @pytest.mark.asyncio
     async def test_create_connector(self):
         with patch(
-            "app.connectors.sources.google.drive.team.connector.DataSourceEntitiesProcessor"
-        ) as MockDSEP, patch(
             "app.connectors.sources.google.drive.team.connector.GoogleDriveTeamApp"
         ), patch(
             "app.connectors.sources.google.drive.team.connector.SyncPoint"
         ):
-            mock_dep = MagicMock()
-            mock_dep.initialize = AsyncMock()
-            MockDSEP.return_value = mock_dep
-
             from app.connectors.sources.google.drive.team.connector import (
                 GoogleDriveTeamConnector,
             )
+
+            processor = MagicMock()
+            processor.org_id = "org-1"
 
             connector = await GoogleDriveTeamConnector.create_connector(
                 logger=_make_logger(),
@@ -4267,9 +4274,9 @@ class TestCreateConnector:
                 connector_id="test-drive-team",
                 scope="personal",
                 created_by="test-user-id",
+                data_entities_processor=processor,
             )
             assert connector is not None
-            MockDSEP.return_value.initialize.assert_called_once()
 
 
 # ===========================================================================

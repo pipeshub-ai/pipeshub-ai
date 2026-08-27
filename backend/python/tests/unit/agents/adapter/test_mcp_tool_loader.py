@@ -1,8 +1,10 @@
 """`MCPToolProvider` (`app/agents/agent_loop/mcp_tool_loader.py`) — the MCP
 analog of `PipesHubToolLoader.load()`: live discovery per attached instance,
-fallback to the graph node's stored tool list on a discovery failure, one
-`register_toolset` group per instance nested under `MCP_PARENT`, and
-soft-skip failures recorded on `context.mcp_tool_load_failures`."""
+one `register_toolset` group per instance nested under `MCP_PARENT`, and
+soft-skip failures recorded on `context.mcp_tool_load_failures`. There is
+deliberately NO fallback to the graph node's stored tool list on a
+discovery failure — see the module's docstring for why a schema-less
+fallback tool was worse than no tool at all."""
 
 from __future__ import annotations
 
@@ -81,7 +83,17 @@ class TestLoadInto:
         assert calls == []
         assert not any(g.name == MCP_PARENT for g in registry.toolsets())
 
-    async def test_discovery_failure_falls_back_to_attached_tool_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_discovery_failure_registers_nothing_even_with_an_attached_tool_list(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The removed fallback used to synthesize a schema-less tool from
+        `attached_tools` (name/description only, `input_schema={}`) on a
+        discovery failure — deliberately gone now (see the module
+        docstring): that tool looked callable but had no parameters for the
+        LLM to fill in, producing exactly the "incomplete arguments"
+        symptom this whole change exists to avoid. A discovery failure must
+        register nothing and record the failure, regardless of whether an
+        attached tool list happens to be present."""
         monkeypatch.setattr(mcp_tool_loader_module, "discover_tools", _discover_fails)
         registry = ToolRegistry()
         context = _context_with_server(attached_tools=[
@@ -90,8 +102,12 @@ class TestLoadInto:
 
         await MCPToolProvider().load_into(registry, context)
 
-        assert registry.has("mcp_jira_mcp_search")
-        assert context.mcp_tool_load_failures == []
+        assert registry.names() == []
+        assert not registry.has("mcp_jira_mcp_search")
+        assert context.mcp_tool_load_failures == [
+            {"instanceId": "inst-1", "name": "JiraMCP", "reason": "discovery_failed"},
+        ]
+        assert not any(g.name == MCP_PARENT for g in registry.toolsets())
 
     async def test_discovery_failure_with_no_fallback_records_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(mcp_tool_loader_module, "discover_tools", _discover_fails)

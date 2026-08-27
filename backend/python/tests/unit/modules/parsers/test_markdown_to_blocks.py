@@ -836,6 +836,99 @@ class TestImages:
         _assert_all_blocks_have_data(container)
         assert _blocks_by_type(container, BlockType.IMAGE) == []
 
+    # ------------------------------------------------------------------
+    # Regression: data URIs with spaces and optional titles
+    # ------------------------------------------------------------------
+
+    def test_data_uri_with_title_excludes_title_from_uri(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        """data: URI followed by a Markdown title must not include the title in the URI."""
+        md = '![Image_1](data:image/png;base64,abc "My Title")\n'
+        caption_map = {"Image_1": "data:image/png;base64,abc"}
+        container = converter.convert(md, caption_map=caption_map)
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+        assert len(image_blocks) == 1
+        assert image_blocks[0].data == {"uri": "data:image/png;base64,abc"}
+
+    def test_regex_data_uri_with_spaces_and_title_excludes_title(self):
+        """_MD_IMAGE_RE: data URI with spaces + title captures URI without title."""
+        from app.modules.parsers.markdown.markdown_to_blocks import _MD_IMAGE_RE
+
+        text = '![alt](data:image/png;base64,abc def "hover")'
+        m = _MD_IMAGE_RE.search(text)
+        assert m is not None
+        assert m.group(1) == "alt"
+        assert m.group(2) == "data:image/png;base64,abc def"
+
+    def test_regex_data_uri_with_spaces_no_title(self):
+        """_MD_IMAGE_RE: data URI with spaces but no title captures the full URI."""
+        from app.modules.parsers.markdown.markdown_to_blocks import _MD_IMAGE_RE
+
+        text = "![alt](data:image/png;base64,abc def)"
+        m = _MD_IMAGE_RE.search(text)
+        assert m is not None
+        assert m.group(1) == "alt"
+        assert m.group(2) == "data:image/png;base64,abc def"
+
+    def test_regex_data_uri_with_title_no_spaces(self):
+        """_MD_IMAGE_RE: data URI without spaces + title captures URI without title."""
+        from app.modules.parsers.markdown.markdown_to_blocks import _MD_IMAGE_RE
+
+        text = '![alt](data:image/png;base64,abc "My Title")'
+        m = _MD_IMAGE_RE.search(text)
+        assert m is not None
+        assert m.group(1) == "alt"
+        assert m.group(2) == "data:image/png;base64,abc"
+
+    def test_regex_data_uri_unseparated_quote_not_treated_as_title(self):
+        """A quote not preceded by whitespace is URI content, not a title opener."""
+        from app.modules.parsers.markdown.markdown_to_blocks import _MD_IMAGE_RE
+
+        text = '![alt](data:image/png,foo bar"baz")'
+        m = _MD_IMAGE_RE.search(text)
+        assert m is not None
+        assert m.group(1) == "alt"
+        assert m.group(2) == 'data:image/png,foo bar"baz"'
+
+    def test_regex_data_uri_long_spaces_linear_time(self):
+        """_MD_IMAGE_RE must match data URIs with long space runs in linear time."""
+        import statistics
+        import time
+
+        from app.modules.parsers.markdown.markdown_to_blocks import _MD_IMAGE_RE
+
+        n_small = 1_000
+        n_large = 100_000
+        iterations = 7
+
+        text_small = f"![alt](data:image/png;base64,{' ' * n_small})"
+        text_large = f"![alt](data:image/png;base64,{' ' * n_large})"
+
+        times_small = []
+        times_large = []
+        for _ in range(iterations):
+            start = time.perf_counter()
+            m_small = _MD_IMAGE_RE.search(text_small)
+            times_small.append(time.perf_counter() - start)
+
+            start = time.perf_counter()
+            m_large = _MD_IMAGE_RE.search(text_large)
+            times_large.append(time.perf_counter() - start)
+
+        assert m_small is not None
+        assert m_large is not None
+
+        t_small = statistics.median(times_small)
+        t_large = statistics.median(times_large)
+
+        # 100x input growth should yield at most ~200x time if linear (with overhead).
+        # Quadratic would be ~10000x. Use 500x as a generous bound.
+        assert t_large < t_small * 500 or t_large < 0.1, (
+            f"Regex appears super-linear: {n_small} chars took {t_small*1000:.2f}ms, "
+            f"{n_large} chars took {t_large*1000:.2f}ms (ratio {t_large/max(t_small, 1e-9):.0f}x)"
+        )
+
 
 class TestBlockquotes:
     def test_blockquote_produces_text_section_group(self, converter: MarkdownToBlocksConverter):

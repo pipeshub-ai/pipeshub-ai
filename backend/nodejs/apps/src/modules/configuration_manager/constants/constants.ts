@@ -100,4 +100,11 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
       'Allow agents to use toolset actions (connector integrations like Slack, Jira, etc.) and show Actions management in the UI. Disable to hide Actions everywhere and stop agents from loading toolset tools.',
     defaultEnabled: true,
   },
+  {
+    key: 'ENABLE_VECTOR_STORE_REBUILD',
+    label: 'Enable Vector Store Rebuild',
+    description:
+      'Allow admins to clean up (delete all embeddings) and reindex the vector store from the Connectors page. Disable to hide these actions.',
+    defaultEnabled: false,
+  },
 ];

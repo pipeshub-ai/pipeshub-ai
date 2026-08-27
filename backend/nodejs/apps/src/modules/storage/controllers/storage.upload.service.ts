@@ -107,7 +107,7 @@ export class UploadDocumentService {
         throw new InternalServerError('Failed to create placeholder document');
       }
 
-      logger.info('Generating presigned url for direct upload');
+      logger.debug('Generating presigned url for direct upload');
       // Extract required fields to construct path matching regular upload structure
       const orgId = extractOrgId(req);
       const placeholderDoc = placeholderDocument.document;
@@ -141,8 +141,11 @@ export class UploadDocumentService {
         concatenatedPath,
       );
       if (process.env.NODE_ENV == 'development') {
+        // Never the URL itself. A presigned URL carries its own authorization,
+        // so anyone who can read the log can perform the upload until it
+        // expires — and dev logs get retained, exported and shared.
         logger.info('Presigned url generated for direct upload', {
-          storageURL,
+          documentId,
         });
       }
 

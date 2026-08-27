@@ -26,4 +26,6 @@ export enum EmailTemplateType {
   OrgEmailVerification = 'orgEmailVerification',
   AppuserInvite = 'appuserInvite',
   SuspiciousLoginAttempt = 'suspiciousLoginAttempt',
+  DomainLimitReached = 'domainLimitReached',
+
 }

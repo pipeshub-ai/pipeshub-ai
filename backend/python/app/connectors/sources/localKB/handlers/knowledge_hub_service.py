@@ -52,6 +52,18 @@ class KnowledgeHubService:
         self.logger = logger
         self.graph_provider = graph_provider
 
+    async def _resolve_user(self, user_id: str, org_id: str) -> Any | None:
+        """Resolve graph user node from external userId. EE overrides for org-scoped lookup."""
+        return await self.graph_provider.get_user_by_user_id(user_id=user_id)
+
+    async def _get_user_app_ids(
+        self, user_key: str, org_id: str
+    ) -> list[str]:
+        """Return app IDs accessible to this user. EE overrides for org-scoped lookup."""
+        owned_app_ids = await self.graph_provider.get_user_app_ids(user_key)
+        shared_app_ids = await self.graph_provider.get_user_permission_app_ids(user_key, org_id)
+        return list(dict.fromkeys([*owned_app_ids, *shared_app_ids]))
+
     def _has_flattening_filters(self, q: str | None, node_types: list[str] | None,
                                  record_types: list[str] | None, origins: list[str] | None,
                                  connector_ids: list[str] | None,
@@ -112,7 +124,7 @@ class KnowledgeHubService:
             skip = (page - 1) * limit
 
             # Get user key
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+            user = await self._resolve_user(user_id, org_id)
             if not user:
                 return KnowledgeHubNodesResponse(
                     success=False,
@@ -428,13 +440,7 @@ class KnowledgeHubService:
     ) -> tuple[list[NodeItem], int, AvailableFilters | None]:
         """Get root level nodes (Apps, including Collection App)"""
         try:
-            # Get user's accessible apps: owned/created (USER_APP_RELATION) plus
-            # shared-with, direct or via team (PERMISSION) — otherwise a KB
-            # shared with this user would never show up here even though the
-            # sharing itself succeeded.
-            owned_app_ids = await self.graph_provider.get_user_app_ids(user_key)
-            shared_app_ids = await self.graph_provider.get_user_permission_app_ids(user_key, org_id)
-            user_apps_ids = list(dict.fromkeys([*owned_app_ids, *shared_app_ids]))
+            user_apps_ids = await self._get_user_app_ids(user_key, org_id)
 
             # Filter apps by connector_ids if provided
             if connector_ids:

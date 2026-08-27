@@ -3297,6 +3297,26 @@ class TestAppMetadataCoverage:
         assert meta.is_agent_active is True
         assert meta.status == "SYNCING"
         assert meta.is_locked is True
+        assert meta.vector_membership_backfilled is False
+        assert meta.vector_membership_backfill_after_key is None
+
+    def test_from_db_document_reads_backfill_fields(self):
+        from app.models.entities import AppMetadata
+
+        doc = {
+            "_key": "conn-99",
+            "name": "Drive",
+            "type": "connector",
+            "appGroup": "Google",
+            "scope": "team",
+            "createdAtTimestamp": 100,
+            "updatedAtTimestamp": 200,
+            "vectorMembershipBackfilled": True,
+            "vectorMembershipBackfillAfterKey": "rec-9",
+        }
+        meta = AppMetadata.from_db_document(doc)
+        assert meta.vector_membership_backfilled is True
+        assert meta.vector_membership_backfill_after_key == "rec-9"
 
 
 class TestMeetingRecordCoverage:

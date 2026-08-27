@@ -96,6 +96,10 @@ def _make_stream_connector():
 
     conn = object.__new__(GoogleDriveTeamConnector)
     conn.logger = MagicMock()
+    conn.drive_data_source = MagicMock()
+    conn.drive_data_source.execute = AsyncMock(
+        side_effect=lambda operation: operation()
+    )
     return conn
 
 
@@ -899,7 +903,7 @@ class TestGetConnectorStatsGaps:
         registry.can_user_view_connector = AsyncMock(return_value=True)
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
-        result = await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+        result = await get_connector_stats_endpoint(req, connector_id="c1", org_id="org-1", graph_provider=gp)
         assert result["success"] is True
 
     @pytest.mark.asyncio
@@ -912,7 +916,7 @@ class TestGetConnectorStatsGaps:
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="c1", org_id="org-1", graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
@@ -926,7 +930,7 @@ class TestGetConnectorStatsGaps:
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="c1", org_id="org-1", graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
 
@@ -1885,7 +1889,7 @@ class TestHandleRecordDeletionGaps:
         gp.delete_records_and_relations = AsyncMock(return_value=None)
 
         with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", graph_provider=gp)
+            await handle_record_deletion("rec-1", request=MagicMock(), graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
@@ -1894,7 +1898,7 @@ class TestHandleRecordDeletionGaps:
         gp.delete_records_and_relations = AsyncMock(side_effect=RuntimeError("boom"))
 
         with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", graph_provider=gp)
+            await handle_record_deletion("rec-1", request=MagicMock(), graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
     @pytest.mark.asyncio
@@ -1902,7 +1906,7 @@ class TestHandleRecordDeletionGaps:
         gp = AsyncMock()
         gp.delete_records_and_relations = AsyncMock(return_value={"deleted": True})
 
-        result = await handle_record_deletion("rec-1", graph_provider=gp)
+        result = await handle_record_deletion("rec-1", request=MagicMock(), graph_provider=gp)
         assert result["status"] == "success"
 
 
@@ -2535,7 +2539,7 @@ class TestHandleRecordDeletionSuccess:
         gp = AsyncMock()
         gp.delete_records_and_relations = AsyncMock(return_value={"deleted": True})
 
-        result = await handle_record_deletion("rec-1", graph_provider=gp)
+        result = await handle_record_deletion("rec-1", request=MagicMock(), graph_provider=gp)
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
@@ -2545,7 +2549,7 @@ class TestHandleRecordDeletionSuccess:
             side_effect=HTTPException(status_code=403, detail="Forbidden")
         )
         with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", graph_provider=gp)
+            await handle_record_deletion("rec-1", request=MagicMock(), graph_provider=gp)
         assert exc_info.value.status_code == 403
 
 
@@ -3430,6 +3434,10 @@ def _make_stream_connector():
 
     conn = object.__new__(GoogleDriveTeamConnector)
     conn.logger = MagicMock()
+    conn.drive_data_source = MagicMock()
+    conn.drive_data_source.execute = AsyncMock(
+        side_effect=lambda operation: operation()
+    )
     return conn
 
 
@@ -4233,7 +4241,7 @@ class TestGetConnectorStatsGapsCoverage:
         registry.can_user_view_connector = AsyncMock(return_value=True)
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
-        result = await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+        result = await get_connector_stats_endpoint(req, connector_id="c1", org_id="org-1", graph_provider=gp)
         assert result["success"] is True
 
     @pytest.mark.asyncio
@@ -4246,7 +4254,7 @@ class TestGetConnectorStatsGapsCoverage:
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="c1", org_id="org-1", graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
@@ -4260,7 +4268,7 @@ class TestGetConnectorStatsGapsCoverage:
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="c1", org_id="org-1", graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
 
@@ -5219,7 +5227,7 @@ class TestHandleRecordDeletionGapsCoverage:
         gp.delete_records_and_relations = AsyncMock(return_value=None)
 
         with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", graph_provider=gp)
+            await handle_record_deletion("rec-1", request=MagicMock(), graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
@@ -5228,7 +5236,7 @@ class TestHandleRecordDeletionGapsCoverage:
         gp.delete_records_and_relations = AsyncMock(side_effect=RuntimeError("boom"))
 
         with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", graph_provider=gp)
+            await handle_record_deletion("rec-1", request=MagicMock(), graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
     @pytest.mark.asyncio
@@ -5236,7 +5244,7 @@ class TestHandleRecordDeletionGapsCoverage:
         gp = AsyncMock()
         gp.delete_records_and_relations = AsyncMock(return_value={"deleted": True})
 
-        result = await handle_record_deletion("rec-1", graph_provider=gp)
+        result = await handle_record_deletion("rec-1", request=MagicMock(), graph_provider=gp)
         assert result["status"] == "success"
 
 
@@ -5869,7 +5877,7 @@ class TestHandleRecordDeletionSuccessCoverage:
         gp = AsyncMock()
         gp.delete_records_and_relations = AsyncMock(return_value={"deleted": True})
 
-        result = await handle_record_deletion("rec-1", graph_provider=gp)
+        result = await handle_record_deletion("rec-1", request=MagicMock(), graph_provider=gp)
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
@@ -5879,7 +5887,7 @@ class TestHandleRecordDeletionSuccessCoverage:
             side_effect=HTTPException(status_code=403, detail="Forbidden")
         )
         with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", graph_provider=gp)
+            await handle_record_deletion("rec-1", request=MagicMock(), graph_provider=gp)
         assert exc_info.value.status_code == 403
 
 
@@ -6779,7 +6787,7 @@ class TestGetConnectorStatsPermissions:
         req.app.state.connector_registry = connector_registry
         req.state.user = {"userId": "ext-user-1", "orgId": "org1"}
         
-        result = await get_connector_stats_endpoint(req, "org1", "kb1", graph_provider=gp)
+        result = await get_connector_stats_endpoint(req, connector_id="kb1", org_id="org1", graph_provider=gp)
         assert result["success"] is True
         gp.get_connector_stats.assert_called_once_with("org1", "kb1")
 
@@ -6804,7 +6812,7 @@ class TestGetConnectorStatsPermissions:
         req.state.user = {"userId": "ext-user-1", "orgId": "org1"}
         
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, "org1", "kb1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="kb1", org_id="org1", graph_provider=gp)
         assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
@@ -6820,7 +6828,7 @@ class TestGetConnectorStatsPermissions:
         req.state.user = {"userId": "ext-user-1", "orgId": "org1"}
         
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, "org2", "kb1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="kb1", org_id="org2", graph_provider=gp)
         assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
@@ -6845,7 +6853,7 @@ class TestGetConnectorStatsPermissions:
         req.app.state.connector_registry = connector_registry
         req.state.user = {"userId": "ext-user-1", "orgId": "org1"}
 
-        result = await get_connector_stats_endpoint(req, "org1", "conn1", graph_provider=gp)
+        result = await get_connector_stats_endpoint(req, connector_id="conn1", org_id="org1", graph_provider=gp)
         assert result["success"] is True
         connector_registry.can_user_view_connector.assert_awaited_once()
 
@@ -6871,7 +6879,7 @@ class TestGetConnectorStatsPermissions:
         req.state.user = {"userId": "ext-user-1", "orgId": "org1"}
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, "org1", "conn1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="conn1", org_id="org1", graph_provider=gp)
         assert exc_info.value.status_code == 403
         gp.get_connector_stats.assert_not_called()
 
@@ -6889,7 +6897,7 @@ class TestGetConnectorStatsPermissions:
         req.state.user = {"userId": "ext-user-1", "orgId": "org1"}
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, "org1", "conn1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="conn1", org_id="org1", graph_provider=gp)
         assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
@@ -6905,5 +6913,5 @@ class TestGetConnectorStatsPermissions:
         req.state.user = {}
         
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, "org1", "kb1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="kb1", org_id="org1", graph_provider=gp)
         assert exc_info.value.status_code == 401

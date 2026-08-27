@@ -223,7 +223,7 @@ def normalize_auth_role(role: Any) -> str:
 
 
 def is_request_admin(request: Request) -> bool:
-    """Org-admin from JWT role on request.state.user — never from X-Is-Admin."""
+    """Org-admin from JWT role on request.state.user."""
     user = getattr(request.state, "user", None) or {}
     getter = getattr(user, "get", None)
     role = getter("role") if callable(getter) else None

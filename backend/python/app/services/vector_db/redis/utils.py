@@ -19,6 +19,10 @@ Redis treats as special inside ``{}``.
 import struct
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from app.services.vector_db.const.const import (
+    CONNECTOR_IDS_FIELD,
+    RECORD_GROUP_IDS_FIELD,
+)
 from app.services.vector_db.models import (
     FieldCondition,
     FilterExpression,
@@ -153,7 +157,34 @@ def vector_point_to_hash_fields(point: VectorPoint, dtype: str = "FLOAT16") -> D
     for k, v in metadata.items():
         fields[f"metadata_{k}"] = _coerce_hash_value(v)
 
+    for field in (CONNECTOR_IDS_FIELD, RECORD_GROUP_IDS_FIELD):
+        fields[field] = join_tag_values(point.payload.get(field))
+
     return fields
+
+
+def join_tag_values(value: Any) -> str:
+    """Serialize a membership array as a comma-joined Redis TAG string.
+
+    UUIDs contain no commas. Never ``json.dumps`` the list — Redis TAG
+    matching would then look for a JSON blob instead of individual ids.
+    """
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(v) for v in value if v is not None and str(v))
+    return str(value)
+
+
+def split_tag_values(value: Any) -> List[str]:
+    """Reconstruct a membership array from a Redis TAG hash field."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value if v is not None and str(v)]
+    return [p for p in str(value).split(",") if p]
 
 
 def _coerce_hash_value(v: Any) -> Union[str, int, float, bytes]:
@@ -174,6 +205,26 @@ def _coerce_hash_value(v: Any) -> Union[str, int, float, bytes]:
         return json.dumps(v)
     except (TypeError, ValueError):
         return str(v)
+
+
+def hash_doc_to_payload(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Rebuild a VectorPoint payload from a flattened Redis HASH document."""
+    return {
+        "page_content": doc.get("page_content", ""),
+        "metadata": reconstruct_metadata(doc),
+        CONNECTOR_IDS_FIELD: split_tag_values(doc.get(CONNECTOR_IDS_FIELD)),
+        RECORD_GROUP_IDS_FIELD: split_tag_values(doc.get(RECORD_GROUP_IDS_FIELD)),
+    }
+
+
+def coerce_payload_hash_value(value: Any) -> Union[str, int, float, bytes]:
+    """Coerce a set_payload value to a Redis HASH field.
+
+    Lists become comma-joined TAG strings (UUIDs have no commas).
+    """
+    if isinstance(value, (list, tuple)):
+        return join_tag_values(value)
+    return _coerce_hash_value(value)
 
 
 def reconstruct_metadata(doc: Dict[str, Any]) -> Dict[str, Any]:
@@ -369,10 +420,7 @@ def parse_ft_search_reply(reply: Any) -> List[SearchResult]:
             continue
 
         doc = decode_hash_doc(_parse_fields_list(fields_list))
-        payload: Dict[str, Any] = {
-            "page_content": doc.get("page_content", ""),
-            "metadata": reconstruct_metadata(doc),
-        }
+        payload = hash_doc_to_payload(doc)
 
         key_str = _decode(raw_key)
         point_id = key_str.rsplit(":", 1)[-1] if ":" in key_str else key_str

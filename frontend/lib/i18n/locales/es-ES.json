@@ -305,7 +305,8 @@
     "confirmDeleteMultiple": "¿Estás seguro de que quieres eliminar {{count}} elementos?",
     "cannotUndo": "Esta acción no se puede deshacer.",
     "areYouSure": "¿Estás seguro?",
-    "typeDeleteToConfirm": "Escribe DELETE para confirmar",
+    "deleteKeyword": "ELIMINAR",
+    "typeDeleteToConfirm": "Escribe {{keyword}} para confirmar",
     "knowledgeBase": "base de conocimiento",
     "in": "en",
     "willBeDeleted": "será eliminado",
@@ -389,7 +390,8 @@
     "language": "Idioma",
     "english": "Inglés",
     "german": "Alemán",
-    "rotateLandscape": "Gire su dispositivo para una mejor experiencia"
+    "rotateLandscape": "Gire su dispositivo para una mejor experiencia",
+    "errorOccurred": "Se produjo un error. Inténtelo de nuevo."
   },
   "units": {
     "bytes": "Bytes",
@@ -480,6 +482,14 @@
     "record": "registro"
   },
   "chat": {
+    "recordActions": {
+      "preview": "Vista previa",
+      "open": "Abrir {{source}}",
+      "openIn": "Abrir en {{source}}",
+      "openInCollections": "Abrir en Colecciones",
+      "relevance": "Relevancia: {{percent}} %"
+    },
+    "results": "Resultados",
     "greeting": "¿Qué quieres explorar hoy?",
     "heyUser": "Hola, {{name}} 👋",
     "heyUserDefaultName": "amigo",
@@ -1209,6 +1219,8 @@
       "configUpdateModel": "Actualizar modelo",
       "configFillRequiredTooltip": "Rellene todos los campos obligatorios",
       "configSaveErrorFallback": "No se pudo guardar la configuración del modelo",
+      "configSaveOutboundError": "PipesHub no puede alcanzar este proveedor de modelos desde el contenedor. Los proveedores en la nube necesitan acceso a Internet de salida — véase deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
+      "configSaveTimeoutError": "La solicitud superó el tiempo de espera al validar el modelo. Los proveedores en la nube necesitan acceso a Internet de salida desde el contenedor de PipesHub — véase deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
       "configNoConfigRequired": "No se requiere configuración para este proveedor.",
       "configDefaultModelNotice": "\"{{modelName}}\" será utilizado por el sistema de forma predeterminada.",
       "configSectionModelConfiguration": "Configuración del modelo",
@@ -1247,7 +1259,7 @@
         "sectionTitle": "Asignación de roles de modelos",
         "sectionDescription": "Asigne modelos dedicados para tareas específicas. Si no se asigna, se usa el modelo predeterminado.",
         "onboardingTitle": "¿Cómo se usarán sus modelos?",
-        "onboardingTip": "Asigne un modelo pequeño y económico (p. ej. gpt-5.4-mini, gemini-2.5-flash) para tareas de indexación como resumen y clasificación. Reserve su modelo más potente (p. ej. gpt-5.5 claude-sonnet) para consultas y agentes donde más importa la calidad del razonamiento.",
+        "onboardingTip": "Asigne un modelo pequeño y económico (p. ej. gpt-5.6-luna, gemini-2.5-flash) para tareas de indexación como resumen y clasificación. Reserve su modelo más potente (p. ej. gpt-5.6-terra claude-sonnet) para consultas y agentes donde más importa la calidad del razonamiento.",
         "queryRole": "Consulta y Chat",
         "queryRoleSubtitle": "Búsqueda, agentes y conversaciones",
         "queryRoleDescription": "Gestiona búsquedas, preguntas y respuestas de agentes IA. Use aquí su modelo más potente.",
@@ -1916,6 +1928,9 @@
       "noResults": "Ningún servidor MCP coincide con tu búsqueda",
       "addServer": "Añadir servidor",
       "custom": "Personalizado",
+      "inherited": "Heredado",
+      "inheritedDeleteTooltip": "Gestionado por la organización principal",
+      "inheritedReadOnly": "Este servidor MCP se hereda de una organización principal y no se puede editar aquí.",
       "sharedAuth": "Autenticación de administrador compartida",
       "toolsCount_one": "{{count}} herramienta",
       "toolsCount_other": "{{count}} herramientas",
@@ -2635,6 +2650,7 @@
     "agentActionsMenuAria": "Menú del agente",
     "agentMenuCreateAsServiceAgent": "Crear como agente de servicio",
     "agentMenuConvertToServiceAgent": "Convertir a agente de servicio",
+    "share": "Compartir",
     "shareWithOrg": "Compartir con todos",
     "shareWithOrgTooltip": "Compartir este agente con todos en su organización.",
     "serviceAccountShareTooltip": "Los agentes de servicio siempre se comparten con la organización.",
@@ -2740,6 +2756,8 @@
     "svcAcctCreateTitle": "Crear agente de servicio",
     "svcAcctConvertDesc": "Este agente pasará a ser un agente de servicio compartido: disponible en toda la organización, cada conjunto de herramientas se autentica una vez a nivel de agente y el conocimiento se limita a lo que conecte en el flujo.",
     "svcAcctCreateDesc": "Creará un agente de servicio compartido: disponible en toda la organización, cada conjunto de herramientas se autentica una vez a nivel de agente y el conocimiento se limita a lo que conecte en el flujo.",
+    "svcAcctConvertDescNoOrg": "Este agente pasará a ser un agente de servicio: cada conjunto de herramientas se autentica una vez a nivel de agente y el conocimiento se limita a lo que conecte en el flujo. Use el botón Compartir para controlar quién puede acceder.",
+    "svcAcctCreateDescNoOrg": "Creará un agente de servicio: cada conjunto de herramientas se autentica una vez a nivel de agente y el conocimiento se limita a lo que conecte en el flujo. Use el botón Compartir para controlar quién puede acceder.",
     "svcAcctConvertLabel": "Convertir a agente de servicio",
     "svcAcctCreateLabel": "Crear agente de servicio",
     "svcAcctConvertBusy": "Convirtiendo…",
@@ -2770,6 +2788,8 @@
     "mcpCredentialsTitle": "Credenciales del servidor MCP",
     "mcpCredentialsDesc": "Autentique este servidor MCP para que el agente pueda usar sus herramientas.",
     "mcpServerDefaultName": "Servidor MCP",
+    "configureMcpTooltip": "Administrar credenciales",
+    "authenticateMcpTooltip": "Autenticar este servidor MCP",
     "mcpAuthUpdatedNotify": "Autenticación MCP actualizada.",
     "mcpAuthSaveError": "No se pudieron guardar las credenciales MCP.",
     "mcpAuthRemoveError": "No se pudieron eliminar las credenciales MCP.",
@@ -2986,6 +3006,8 @@
       "connectorId": "ID del conector",
       "notAvailable": "N/D",
       "typeEmail": "Correo",
+      "typeFile": "Archivo",
+      "typeArtifact": "Artefacto",
       "typeTicket": "Ticket",
       "typeWebpage": "Página web",
       "typeMessage": "Mensaje",
@@ -3091,9 +3113,7 @@
         "emailNotePre": "Asegúrate de que el correo con el que te registraste —",
         "emailNotePost": "— sea el mismo que usas en las aplicaciones de tu organización para que tus permisos se reconozcan correctamente.",
         "cancelButton": "Cancelar",
-        "signUpButton": "Registrarse",
-        "verificationNoteTitle": "Verificación requerida",
-        "verificationNoteBody": "Se enviará un enlace de verificación al correo indicado. Tu organización solo será accesible tras verificarlo."
+        "signUpButton": "Registrarse"
       }
     },
     "login": {

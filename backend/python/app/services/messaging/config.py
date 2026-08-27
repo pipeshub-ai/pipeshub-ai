@@ -282,6 +282,22 @@ class MessagingEnvConfig:
     def stale_recovery_page_size(self) -> int:
         return int(os.getenv("STALE_INDEXING_RECOVERY_PAGE_SIZE", "100"))
 
+    @property
+    def vector_membership_backfill_interval_seconds(self) -> float:
+        return float(os.getenv("VECTOR_MEMBERSHIP_BACKFILL_INTERVAL_SECONDS", "30"))
+
+    @property
+    def vector_membership_backfill_startup_grace_seconds(self) -> float:
+        return float(os.getenv("VECTOR_MEMBERSHIP_BACKFILL_STARTUP_GRACE_SECONDS", "30"))
+
+    @property
+    def vector_membership_backfill_page_size(self) -> int:
+        return int(os.getenv("VECTOR_MEMBERSHIP_BACKFILL_PAGE_SIZE", "50"))
+
+    @property
+    def vector_membership_backfill_vrid_pause_ms(self) -> int:
+        return int(os.getenv("VECTOR_MEMBERSHIP_BACKFILL_VRID_PAUSE_MS", "20"))
+
 
 messaging_env = MessagingEnvConfig()
 

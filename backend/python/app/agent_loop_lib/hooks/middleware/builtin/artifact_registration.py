@@ -130,6 +130,31 @@ class InMemoryArtifactStore:
         return self._tool_names.get(artifact_id)
 
 
+def _as_storable_text(data: object) -> str:
+    """The text of a tool result, for measuring and for storage.
+
+    A multipart result (`list[Part]` — what any tool returning images gives
+    back) is not JSON-serializable, and the `str()` fallback produced a Python
+    repr carrying the full base64 of every image. That was then measured
+    against the offload threshold, so an image could push a small result over
+    it, and stored as the artifact, so `retrieve_artifact_content` handed the
+    model a repr instead of the content.
+    """
+    if isinstance(data, str):
+        return data
+    if isinstance(data, list):
+        texts = [
+            part.text for part in data
+            if getattr(part, "type", None) == "text" and isinstance(getattr(part, "text", None), str)
+        ]
+        if texts:
+            return "".join(texts)
+    try:
+        return json.dumps(data)
+    except (TypeError, ValueError):
+        return str(data)
+
+
 def shape_artifact_registration(
     store: ArtifactStore | None = None,
     threshold_tokens: int = 2_000,
@@ -171,12 +196,7 @@ def shape_artifact_registration(
         if not response.success:
             return
 
-        content = response.data
-        if not isinstance(content, str):
-            try:
-                content = json.dumps(content)
-            except (TypeError, ValueError):
-                content = str(content)
+        content = _as_storable_text(response.data)
 
         token_count = count_text_tokens(content)
         if token_count <= threshold_tokens:

@@ -13,7 +13,6 @@ from html_to_markdown import convert as html_to_markdown  # type: ignore[import-
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -547,14 +546,6 @@ DISCUSSIONS_SYNC_POINT_KEY = "discussions"
 
 # Permission hierarchy for comparing and upgrading permissions
 # Higher number = higher permission level
-PERMISSION_HIERARCHY = {
-    "READER": 1,
-    "COMMENTER": 2,
-    "WRITER": 3,
-    "OWNER": 4,
-}
-
-
 def _parse_salesforce_timestamp(value: Optional[Any]) -> Optional[int]:
     """Parse a Salesforce date string (normalizes +0000 to +00:00) to epoch ms. Returns None if invalid or missing."""
     if value is None or not isinstance(value, str):
@@ -792,6 +783,18 @@ class SalesforceConnector(BaseConnector):
     """
     salesforce_instance_url: str
 
+    def _get_parent_org_id(self) -> str | None:
+        """EE override: returns this connector's org_id for parentOrgId graph filters."""
+        return None
+
+    def _create_person(self, **kwargs) -> Person:
+        """EE override: injects org_id for tenant isolation on Person nodes."""
+        return Person(**kwargs)
+
+    def _create_org(self, **kwargs) -> Org:
+        """EE override: injects org_id as parentOrgId for tenant isolation on external Org nodes."""
+        return Org(**kwargs)
+
     def __init__(
         self,
         logger: Logger,
@@ -970,12 +973,10 @@ class SalesforceConnector(BaseConnector):
             auth_config = config.get("auth", {})
             oauth_config_id = auth_config.get("oauthConfigId")
 
-            # Fetch OAuth config
-            oauth_config = await fetch_oauth_config_by_id(
+            oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
                 connector_type=Connectors.SALESFORCE.value,
-                config_service=self.config_service,
-                logger=self.logger
+                auth_config=auth_config,
             )
 
             # Extract access token and instance URL
@@ -4271,16 +4272,18 @@ class SalesforceConnector(BaseConnector):
         try:
             newly_synced_account_ids: Set[str] = set()
             org_id = self.data_entities_processor.org_id
+            parent_org_id = self._get_parent_org_id()
 
             # One-time setup: snapshot existing external orgs into a name -> _key map.
             # Updated in place each page so that newly upserted orgs are recognized as
             # existing on subsequent pages (correct delete-then-recreate behaviour).
-            async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+            async with self.data_store_provider.transaction() as tx_store:
                 all_orgs = await tx_store.get_all_orgs()
             external_org_key_by_name: Dict[str, str] = {
                 o["name"]: o["_key"]
                 for o in (all_orgs or [])
                 if o.get("isExternal") is True
+                and (parent_org_id is None or o.get("parentOrgId") == parent_org_id)
             }
 
             total_orgs = 0
@@ -4302,7 +4305,7 @@ class SalesforceConnector(BaseConnector):
                         start_time_ms = _parse_salesforce_timestamp(created_date)
                         end_time_ms, active_customer = self._parse_opportunities(acc)
 
-                        org_node = Org(
+                        org_node = self._create_org(
                             name=account_name,
                             is_external=True,
                             website=acc.Website,
@@ -4360,11 +4363,13 @@ class SalesforceConnector(BaseConnector):
                     )
                     total_record_groups += len(record_groups_with_perms)
 
-                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                async with self.data_store_provider.transaction() as tx_store:
                     all_orgs = await tx_store.get_all_orgs(is_external=True)
+                    parent_org_id = self._get_parent_org_id()
                     external_org_key_by_name = {
                         o["name"]: o.get("id", o.get("_key"))
                         for o in all_orgs
+                        if parent_org_id is None or o.get("parentOrgId") == parent_org_id
                     }
                     delete_tasks = []
                     for org, rg, _, _ in orgs_with_edges:
@@ -4482,7 +4487,7 @@ class SalesforceConnector(BaseConnector):
                             )
                             continue
 
-                        person = Person(
+                        person = self._create_person(
                             email=email,
                             first_name=contact.FirstName,
                             last_name=contact.LastName,
@@ -4522,7 +4527,7 @@ class SalesforceConnector(BaseConnector):
                 if not contact_with_edges:
                     continue
 
-                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                async with self.data_store_provider.transaction() as tx_store:
                     all_emails = [p.email for p, _, _ in contact_with_edges]
                     all_account_names = list({
                         moe.get("accountName")
@@ -4547,8 +4552,20 @@ class SalesforceConnector(BaseConnector):
                     existing_people_result, existing_orgs_result = await asyncio.gather(
                         people_coro, orgs_coro
                     )
-                    email_map = {node.get("email"): node for node in (existing_people_result or [])}
-                    org_name_map = {node.get("name"): node for node in (existing_orgs_result or [])}
+                    parent_org_id = self._get_parent_org_id()
+                    email_map = {
+                        node.get("email"): node
+                        for node in (existing_people_result or [])
+                        if parent_org_id is None or node.get("orgId") == parent_org_id
+                    }
+                    org_name_map = {
+                        node.get("name"): node
+                        for node in (existing_orgs_result or [])
+                        if parent_org_id is None or (
+                            node.get("isExternal") is True
+                            and node.get("parentOrgId") == parent_org_id
+                        )
+                    }
 
                     unchanged_emails: set = set()
                     delete_tasks = []
@@ -4680,7 +4697,7 @@ class SalesforceConnector(BaseConnector):
                                 f"Skipping lead {lead_id}: missing email required for Person node",
                             )
                             continue
-                        person = Person(
+                        person = self._create_person(
                             email=lead_email,
                             first_name=lead.FirstName,
                             last_name=lead.LastName,
@@ -4696,14 +4713,19 @@ class SalesforceConnector(BaseConnector):
                 if not lead_with_edges:
                     continue
 
-                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                async with self.data_store_provider.transaction() as tx_store:
                     all_emails = [p.email for p, _ in lead_with_edges]
                     existing_people = await tx_store.get_nodes_by_field_in(
                         collection=CollectionNames.PEOPLE.value,
                         field="email",
                         values=all_emails,
                     )
-                    email_map = {node.get("email"): node for node in (existing_people or [])}
+                    parent_org_id = self._get_parent_org_id()
+                    email_map = {
+                        node.get("email"): node
+                        for node in (existing_people or [])
+                        if parent_org_id is None or node.get("orgId") == parent_org_id
+                    }
 
                     ids_to_delete = []
                     for person, _ in lead_with_edges:
@@ -4821,7 +4843,7 @@ class SalesforceConnector(BaseConnector):
                 if not records:
                     continue
 
-                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                async with self.data_store_provider.transaction() as tx_store:
                     existing_nodes = await tx_store.get_nodes_by_field_in(
                         collection=CollectionNames.RECORDS.value,
                         field="externalRecordId",
@@ -4913,7 +4935,7 @@ class SalesforceConnector(BaseConnector):
                 if not records:
                     continue
 
-                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                async with self.data_store_provider.transaction() as tx_store:
                     opp_existing_nodes = await tx_store.get_nodes_by_field_in(
                         collection=CollectionNames.RECORDS.value,
                         field="externalRecordId",
@@ -4938,7 +4960,7 @@ class SalesforceConnector(BaseConnector):
                     r.external_record_id for r in new_opp_records if r.external_record_id
                 )
 
-                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                async with self.data_store_provider.transaction() as tx_store:
                     existing_records_list = await asyncio.gather(*[
                         tx_store.get_record_by_external_id(
                             connector_id=record.connector_id,
@@ -5063,7 +5085,7 @@ class SalesforceConnector(BaseConnector):
                         if pair_key in unique_pairs:
                             items_by_pair[pair_key].append(li)
 
-            async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+            async with self.data_store_provider.transaction() as tx_store:
                 product_nodes = await tx_store.get_nodes_by_field_in(
                     collection=CollectionNames.RECORDS.value,
                     field="externalRecordId",
@@ -5167,7 +5189,7 @@ class SalesforceConnector(BaseConnector):
                 final_sold_in_items.append((deal_internal_id, edges_list))
 
             if final_sold_in_items:
-                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                async with self.data_store_provider.transaction() as tx_store:
                     delete_tasks = [
                         tx_store.delete_edge(
                             from_id=edge.from_id,
@@ -5237,7 +5259,7 @@ class SalesforceConnector(BaseConnector):
                 if not records:
                     continue
 
-                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                async with self.data_store_provider.transaction() as tx_store:
                     case_existing_nodes = await tx_store.get_nodes_by_field_in(
                         collection=CollectionNames.RECORDS.value,
                         field="externalRecordId",
@@ -5325,7 +5347,7 @@ class SalesforceConnector(BaseConnector):
                     else:
                         non_account_what_ids.add(_task.WhatId)
 
-                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                async with self.data_store_provider.transaction() as tx_store:
                     _all_candidate_nodes = await _get_nodes_by_field_in_batched(
                         tx_store,
                         collection=CollectionNames.RECORDS.value,
@@ -5439,7 +5461,7 @@ class SalesforceConnector(BaseConnector):
                 if not records:
                     continue
 
-                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                async with self.data_store_provider.transaction() as tx_store:
                     task_existing_nodes = await _get_nodes_by_field_in_batched(
                         tx_store,
                         collection=CollectionNames.RECORDS.value,
@@ -5662,7 +5684,7 @@ class SalesforceConnector(BaseConnector):
                         else:
                             non_account_linked_ids.add(_lid)
 
-                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                async with self.data_store_provider.transaction() as tx_store:
                     _all_candidate_nodes = await _get_nodes_by_field_in_batched(
                         tx_store,
                         collection=CollectionNames.RECORDS.value,
@@ -5865,6 +5887,7 @@ class SalesforceConnector(BaseConnector):
             )
 
         # 3. Build O(1) lookup maps to avoid per-record DB round-trips
+        parent_org_id = self._get_parent_org_id()
         ext_id_to_record_id: Dict[str, str] = {
             r.get("externalRecordId"): (r.get("id") or r.get("_key"))
             for r in salesforce_records
@@ -5879,6 +5902,7 @@ class SalesforceConnector(BaseConnector):
             u.get("email"): (u.get("id") or u.get("_key"))
             for u in (db_users or [])
             if u.get("email") and (u.get("id") or u.get("_key"))
+            and (parent_org_id is None or u.get("orgId") == parent_org_id)
         }
 
         salesforce_external_ids = list(ext_id_to_record_id.keys())
@@ -6044,59 +6068,37 @@ class SalesforceConnector(BaseConnector):
         Ensure a user has at least the given permission level on a Salesforce org record group.
         """
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                record_group = await tx_store.get_record_group_by_external_id(
-                    connector_id=connector_id,
-                    external_id=record_group_external_id,
+            user = await self.data_entities_processor.get_user_by_email(users_email)
+            if not user:
+                self.logger.warning(f"User with email {users_email} not found in database")
+                return
+
+            record_group = await self.data_entities_processor.get_record_group_by_external_id(
+                connector_id=connector_id,
+                external_id=record_group_external_id,
+            )
+            if not record_group:
+                self.logger.warning(
+                    f"Record group with external id {record_group_external_id} not found in database"
                 )
-                if not record_group:
-                    self.logger.warning(
-                        f"Record group with external id {record_group_external_id} not found in database"
-                    )
-                    return
+                return
 
-                if record_group.group_type != RecordGroupType.SALESFORCE_ORG:
-                    return
+            if record_group.group_type != RecordGroupType.SALESFORCE_ORG:
+                return
 
-                user = await tx_store.get_user_by_email(users_email)
-                if not user:
-                    self.logger.warning(f"User with email {users_email} not found in database")
-                    return
-
-                existing_edge = await tx_store.get_edge(
-                    from_id=user.id,
-                    from_collection=CollectionNames.USERS.value,
-                    to_id=record_group.id,
-                    to_collection=CollectionNames.RECORD_GROUPS.value,
-                    collection=CollectionNames.PERMISSION.value,
-                )
-
-                required_level = PERMISSION_HIERARCHY.get(access_level.value, 0)
-                if existing_edge:
-                    existing_role = existing_edge.get("role", "READER")
-                    existing_level = PERMISSION_HIERARCHY.get(existing_role, 0)
-                    if existing_level == required_level:
-                        return
-                    await tx_store.delete_edge(
-                        from_id=user.id,
-                        from_collection=CollectionNames.USERS.value,
-                        to_id=record_group.id,
-                        to_collection=CollectionNames.RECORD_GROUPS.value,
-                        collection=CollectionNames.PERMISSION.value,
-                    )
-
-                permission = Permission(
-                    email=users_email,
-                    type=access_level,
-                    entity_type=EntityType.USER,
-                )
-                edge_data = permission.to_arango_permission(
-                    from_id=user.id,
-                    from_collection=CollectionNames.USERS.value,
-                    to_id=record_group.id,
-                    to_collection=CollectionNames.RECORD_GROUPS.value,
-                )
-                await tx_store.batch_create_edges([edge_data], collection=CollectionNames.PERMISSION.value)
+            permission = Permission(
+                email=users_email,
+                type=access_level,
+                entity_type=EntityType.USER,
+            )
+            await self.data_entities_processor.upsert_permission_edge(
+                from_id=user.id,
+                from_collection=CollectionNames.USERS.value,
+                to_id=record_group.id,
+                to_collection=CollectionNames.RECORD_GROUPS.value,
+                permission=permission,
+                upgrade_only=True,
+            )
         except Exception as e:
             self.logger.error(f"Failed to sync record group permissions: {str(e)}", exc_info=True)
             raise
@@ -6113,61 +6115,35 @@ class SalesforceConnector(BaseConnector):
         If they already have that level or higher, return. Otherwise create or upgrade the permission edge.
         """
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                record = await tx_store.get_record_by_external_id(
-                    connector_id=connector_id,
-                    external_id=record_external_id,
-                )
-                if not record:
-                    self.logger.warning(f"Record with external id {record_external_id} not found in database")
-                    return
+            user = await self.data_entities_processor.get_user_by_email(users_email)
+            if not user:
+                self.logger.warning(f"User with email {users_email} not found in database")
+                return
 
-                user = await tx_store.get_user_by_email(users_email)
-                if not user:
-                    self.logger.warning(f"User with email {users_email} not found in database")
-                    return
+            record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=connector_id,
+                external_record_id=record_external_id,
+            )
+            if not record:
+                self.logger.warning(f"Record with external id {record_external_id} not found in database")
+                return
 
-                existing_edge = await tx_store.get_edge(
-                    from_id=user.id,
-                    from_collection=CollectionNames.USERS.value,
-                    to_id=record.id,
-                    to_collection=CollectionNames.RECORDS.value,
-                    collection=CollectionNames.PERMISSION.value,
-                )
-
-                required_level = PERMISSION_HIERARCHY.get(access_level.value, 0)
-                if existing_edge:
-                    existing_role = existing_edge.get("role", "READER")
-                    existing_level = PERMISSION_HIERARCHY.get(existing_role, 0)
-                    if existing_level == required_level:
-                        self.logger.debug(
-                            f"User {users_email} already has sufficient permission on record {record_external_id} "
-                            f"(existing: {existing_role}, required: {access_level.value})"
-                        )
-                        return
-                    await tx_store.delete_edge(
-                        from_id=user.id,
-                        from_collection=CollectionNames.USERS.value,
-                        to_id=record.id,
-                        to_collection=CollectionNames.RECORDS.value,
-                        collection=CollectionNames.PERMISSION.value,
-                    )
-
-                permission = Permission(
-                    email=users_email,
-                    type=access_level,
-                    entity_type=EntityType.USER,
-                )
-                edge_data = permission.to_arango_permission(
-                    from_id=user.id,
-                    from_collection=CollectionNames.USERS.value,
-                    to_id=record.id,
-                    to_collection=CollectionNames.RECORDS.value,
-                )
-                await tx_store.batch_create_edges([edge_data], collection=CollectionNames.PERMISSION.value)
-                self.logger.info(
-                    f"Created/updated permission for {users_email} on record {record_external_id} to {access_level.value}"
-                )
+            permission = Permission(
+                email=users_email,
+                type=access_level,
+                entity_type=EntityType.USER,
+            )
+            await self.data_entities_processor.upsert_permission_edge(
+                from_id=user.id,
+                from_collection=CollectionNames.USERS.value,
+                to_id=record.id,
+                to_collection=CollectionNames.RECORDS.value,
+                permission=permission,
+                upgrade_only=True,
+            )
+            self.logger.info(
+                f"Created/updated permission for {users_email} on record {record_external_id} to {access_level.value}"
+            )
         except Exception as e:
             self.logger.error(f"Failed to sync permissions: {str(e)}", exc_info=True)
             raise
@@ -6387,6 +6363,7 @@ class SalesforceConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
         **kwargs: Any,
     ) -> "BaseConnector":
         """
@@ -6403,12 +6380,7 @@ class SalesforceConnector(BaseConnector):
         Returns:
             Initialized SalesforceConnector instance
         """
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
-
-        return SalesforceConnector(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,

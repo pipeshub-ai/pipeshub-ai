@@ -760,6 +760,10 @@ def _make_stream_connector():
 
     conn = object.__new__(GoogleDriveTeamConnector)
     conn.logger = MagicMock()
+    conn.drive_data_source = MagicMock()
+    conn.drive_data_source.execute = AsyncMock(
+        side_effect=lambda operation: operation()
+    )
     return conn
 
 
@@ -778,7 +782,7 @@ class TestStreamGoogleApiRequest:
             ])
 
             # Simulate that after next_chunk, buffer contains data
-            def fake_init(buf, req):
+            def fake_init(buf, req, **kwargs):
                 # Write data into the buffer before next_chunk returns
                 original_next = instance.next_chunk
 
@@ -962,7 +966,7 @@ class TestHandleRecordDeletion:
         gp = AsyncMock()
         gp.delete_records_and_relations = AsyncMock(return_value={"deleted": True})
 
-        result = await handle_record_deletion("rec-1", gp)
+        result = await handle_record_deletion("rec-1", request=MagicMock(), graph_provider=gp)
         assert result["status"] == "success"
 
     async def test_not_found_raises_404(self):
@@ -972,7 +976,7 @@ class TestHandleRecordDeletion:
         gp.delete_records_and_relations = AsyncMock(return_value=None)
 
         with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-missing", gp)
+            await handle_record_deletion("rec-missing", request=MagicMock(), graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     async def test_unexpected_error_raises_500(self):
@@ -982,7 +986,7 @@ class TestHandleRecordDeletion:
         gp.delete_records_and_relations = AsyncMock(side_effect=RuntimeError("boom"))
 
         with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", gp)
+            await handle_record_deletion("rec-1", request=MagicMock(), graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
 
@@ -1439,7 +1443,7 @@ class TestGetConnectorStatsEndpoint:
         request.headers = MagicMock()
         request.headers.get = lambda k, default=None: default
 
-        result = await get_connector_stats_endpoint(request, "org-1", "conn-1", gp)
+        result = await get_connector_stats_endpoint(request, connector_id="conn-1", org_id="org-1", graph_provider=gp)
         assert result["success"] is True
         assert result["data"]["totalRecords"] == 100
 
@@ -1468,7 +1472,7 @@ class TestGetConnectorStatsEndpoint:
         request.headers.get = lambda k, default=None: default
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(request, "org-1", "conn-1", gp)
+            await get_connector_stats_endpoint(request, connector_id="conn-1", org_id="org-1", graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
 

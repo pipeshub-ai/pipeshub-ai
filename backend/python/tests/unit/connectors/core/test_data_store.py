@@ -80,7 +80,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def create_record_groups_relation(self, child_id, parent_id):
         pass
 
-    async def create_user_group_membership(self, user_source_id, group_external_id, connector_id, org_id):
+    async def create_user_group_membership(self, user_source_id, group_external_id, connector_id):
         return True
 
     async def get_user_by_email(self, email):
@@ -89,7 +89,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_user_by_source_id(self, source_user_id, connector_id):
         return None
 
-    async def get_app_user_by_email(self, email):
+    async def get_app_user_by_email(self, email, connector_id):
         return None
 
     async def batch_upsert_people(self, people):
@@ -104,7 +104,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def delete_record_by_key(self, key):
         self._records.pop(key, None)
 
-    async def delete_record_by_external_id(self, connector_id, external_id):
+    async def delete_record_by_external_id(self, connector_id, external_id, user_id=None):
         pass
 
     async def get_record_by_conversation_index(self, connector_id, conversation_index, thread_id, org_id, user_id):
@@ -197,6 +197,42 @@ class ConcreteTransactionStore(TransactionStore):
     async def find_slack_burst_record_by_ts(self, connector_id, channel_id, ts):
         return None
 
+    async def get_user_by_user_id(self, user_id):
+        return None
+
+    async def get_user_group_by_external_id(self, connector_id, external_id):
+        return None
+
+    async def get_app_role_by_external_id(self, connector_id, external_id):
+        return None
+
+    async def get_app_by_id(self, connector_id):
+        return None
+
+    async def get_app_users(self, org_id, connector_id):
+        return []
+
+    async def get_file_record_by_id(self, id):
+        return None
+
+    async def get_first_user_with_permission_to_node(self, node_id, node_collection):
+        return None
+
+    async def batch_create_edges(self, edges, collection):
+        pass
+
+    async def delete_edges_between_collections(self, from_id, from_collection, edge_collection, to_collection):
+        pass
+
+    async def get_record_by_weburl(self, weburl, org_id=None):
+        return None
+
+    async def delete_records_and_relations(self, record_key, hard_delete=False):
+        pass
+
+    async def get_app_creator_user(self, connector_id):
+        return None
+
 
 class TestDataStoreProvider:
     """Tests for DataStoreProvider base class."""
@@ -286,7 +322,7 @@ class TestTransactionStore:
     @pytest.mark.asyncio
     async def test_create_user_group_membership(self):
         store = ConcreteTransactionStore()
-        result = await store.create_user_group_membership("user1", "group1", "conn1", "org1")
+        result = await store.create_user_group_membership("user1", "group1", "conn1")
         assert result is True
 
     @pytest.mark.asyncio

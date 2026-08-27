@@ -147,7 +147,7 @@ class TestBuildFromToolsetExtended:
         logger = logging.getLogger("test")
 
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={
                 "auth": {"host": "cluster", "port": 5439},

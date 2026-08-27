@@ -499,6 +499,7 @@ class ConnectorRegistry:
                 'isAgentActive': False,
                 'isConfigured': True,
                 'isAuthenticated': False,
+                'vectorMembershipBackfilled': True,
                 'createdBy': created_by,
                 'updatedBy': created_by,
                 'createdAtTimestamp': current_timestamp,
@@ -1509,7 +1510,7 @@ class ConnectorRegistry:
                 )
                 return None
 
-            self.logger.info(f"Updated connector instance {connector_id}")
+            self.logger.debug(f"Updated connector instance {connector_id}")
             return updated_document
 
         except ValueError:

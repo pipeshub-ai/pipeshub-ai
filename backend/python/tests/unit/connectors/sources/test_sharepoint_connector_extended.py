@@ -89,6 +89,7 @@ def _make_connector():
     dep.on_user_group_deleted = AsyncMock(return_value=True)
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.reindex_existing_records = AsyncMock()
+    dep.get_record_by_external_id = AsyncMock(return_value=None)
 
     dsp = MagicMock()
     # Set up transaction context manager
@@ -1195,11 +1196,7 @@ class TestProcessDriveItem:
         existing.record_status = ProgressStatus.COMPLETED
         existing.version = 1
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         item = _make_drive_item(name="updated.pdf", e_tag="new-etag")
         result = await c._process_drive_item(item, "site-1", "drive-1", [])

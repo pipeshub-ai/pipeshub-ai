@@ -87,6 +87,9 @@ def mock_data_entities_processor():
             title="Title",
         )
     )
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
+    proc.delete_parent_child_edge_to_record = AsyncMock()
     return proc
 
 
@@ -539,7 +542,7 @@ class TestProcessAzureBlob:
         existing.external_record_id = "container/file.txt"
         existing.version = 1
         existing.source_created_at = 1700000000000
-        azure_connector.data_store_provider = _make_mock_data_store_provider(existing)
+        azure_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         azure_connector.scope = ConnectorScope.TEAM.value
         azure_connector.account_name = "testacc"
 
@@ -563,9 +566,9 @@ class TestProcessAzureBlob:
         existing.external_revision_id = "same_md5"
         existing.version = 0
         existing.source_created_at = 1700000000000
-        azure_connector.data_store_provider = _make_mock_data_store_provider(
-            existing_record=None, existing_revision_record=existing
-        )
+        azure_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        azure_connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
+        azure_connector.data_entities_processor.delete_parent_child_edge_to_record = AsyncMock()
         azure_connector.scope = ConnectorScope.TEAM.value
         azure_connector.account_name = "testacc"
 
@@ -579,23 +582,6 @@ class TestProcessAzureBlob:
         record, perms = await azure_connector._process_azure_blob(blob, "container")
         assert record is not None
         assert record.id == "moved-id"
-
-
-# ===========================================================================
-# _remove_old_parent_relationship
-# ===========================================================================
-class TestRemoveOldParentRelationship:
-    @pytest.mark.asyncio
-    async def test_successful(self, azure_connector):
-        tx = AsyncMock()
-        tx.delete_parent_child_edge_to_record = AsyncMock(return_value=1)
-        await azure_connector._remove_old_parent_relationship("rec-1", tx)
-
-    @pytest.mark.asyncio
-    async def test_exception(self, azure_connector):
-        tx = AsyncMock()
-        tx.delete_parent_child_edge_to_record = AsyncMock(side_effect=Exception("err"))
-        await azure_connector._remove_old_parent_relationship("rec-1", tx)
 
 
 # ===========================================================================

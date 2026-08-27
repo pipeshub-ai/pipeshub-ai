@@ -77,6 +77,7 @@ def connector():
         logger = _make_logger()
         dep = AsyncMock()
         dep.org_id = "org-ind-1"
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
         dep.on_new_records = AsyncMock()
         dep.on_new_app_users = AsyncMock()
         dep.on_new_record_groups = AsyncMock()
@@ -142,7 +143,7 @@ class TestIndividualProcessDriveItem:
         existing.indexing_status = "completed"
         existing.extraction_status = "completed"
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         metadata = _make_file_metadata(file_id="f1", name="new.txt", parents=["parent-1"])
         result = await connector._process_drive_item(
             metadata=metadata, user_id="u1", user_email="user@t.com", drive_id="d1",
@@ -161,7 +162,7 @@ class TestIndividualProcessDriveItem:
         existing.indexing_status = "completed"
         existing.extraction_status = "completed"
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         metadata = _make_file_metadata(
             file_id="f1", name="test.txt", head_revision_id="new-rev", parents=["parent-1"],
         )
@@ -181,7 +182,7 @@ class TestIndividualProcessDriveItem:
         existing.indexing_status = "completed"
         existing.extraction_status = "completed"
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         metadata = _make_file_metadata(file_id="f1", name="test.txt", parents=["parent-1"])
         result = await connector._process_drive_item(
             metadata=metadata, user_id="u1", user_email="user@t.com", drive_id="new-drive",
@@ -200,7 +201,7 @@ class TestIndividualProcessDriveItem:
         existing.indexing_status = "completed"
         existing.extraction_status = "completed"
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         metadata = _make_file_metadata(file_id="f1", name="test.txt", parents=["new-parent"])
         result = await connector._process_drive_item(
             metadata=metadata, user_id="u1", user_email="user@t.com", drive_id="d1",
@@ -242,15 +243,9 @@ class TestIndividualProcessDriveItem:
         assert result.record.extension == "docx"
 
     async def test_exception_returns_none(self, connector):
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _fail():
-            raise RuntimeError("fail")
-            yield  # noqa
-
-        provider.transaction = _fail
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=RuntimeError("fail")
+        )
         result = await connector._process_drive_item(
             metadata=_make_file_metadata(file_id="f1", parents=["d1"]),
             user_id="u1", user_email="u@t.com", drive_id="d1",
@@ -268,7 +263,7 @@ class TestIndividualProcessDriveItem:
         existing.indexing_status = "completed"
         existing.extraction_status = "extracted"
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         metadata = _make_file_metadata(
             file_id="f1", name="test.txt", parents=["parent-1"], head_revision_id="rev-1",
         )

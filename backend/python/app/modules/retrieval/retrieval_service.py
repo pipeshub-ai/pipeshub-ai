@@ -132,7 +132,7 @@ class RetrievalService:
 
     async def get_llm_instance(self, use_cache: bool = False) -> BaseChatModel | None:
         try:
-            self.logger.info("Getting LLM")
+            self.logger.debug("Getting LLM")
             ai_models = await self.config_service.get_config(
                 config_node_constants.AI_MODELS.value,
                 use_cache=use_cache
@@ -397,7 +397,7 @@ class RetrievalService:
                 self.logger.debug("No search results found")
                 return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
 
-            self.logger.info(f"Search results count: {len(search_results) if search_results else 0}")
+            self.logger.debug(f"Search results count: {len(search_results) if search_results else 0}")
 
             self.logger.debug("Extracting virtualRecordIds from search results")
             returned_virtual_record_ids = list({
@@ -451,7 +451,7 @@ class RetrievalService:
 
             if not unique_record_ids:
                 return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
-            self.logger.info(f"Unique record IDs count: {len(unique_record_ids)}")
+            self.logger.debug(f"Unique record IDs count: {len(unique_record_ids)}")
 
             file_record_ids_to_fetch = []
             mail_record_ids_to_fetch = []
@@ -611,7 +611,7 @@ class RetrievalService:
                         user_key=user_key or "",
                         record_docs=record_id_to_record_map,
                     )
-                    self.logger.info(
+                    self.logger.debug(
                         "fetch_locations: %d/%d trails resolved",
                         len(result),
                         len(rids),

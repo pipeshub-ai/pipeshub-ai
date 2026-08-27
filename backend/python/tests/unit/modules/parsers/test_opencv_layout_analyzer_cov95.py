@@ -1230,9 +1230,10 @@ def _multiprocessing_available() -> bool:
     try:
         import multiprocessing.synchronize  # noqa: F401
         import os
-        os.sysconf("SC_SEM_NSEMS_MAX")
+        if hasattr(os, "sysconf"):
+            os.sysconf("SC_SEM_NSEMS_MAX")
         return True
-    except (ImportError, PermissionError, OSError):
+    except (ImportError, PermissionError, OSError, ValueError):
         return False
 
 

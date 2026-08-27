@@ -49,6 +49,9 @@ def mock_data_entities_processor():
         full_name="Test User",
     )
     proc.get_user_by_user_id = AsyncMock(return_value=u)
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
+    proc.delete_parent_child_edge_to_record = AsyncMock()
     proc.get_app_by_id = AsyncMock(return_value=AppMetadata(
         connector_id="s3-conn-1",
         name="S3 Connector",
@@ -490,16 +493,3 @@ class TestS3EntitiesProcessor:
         assert proc.parent_url_generator("test") == "custom/test"
 
 
-# ===========================================================================
-# Remove old parent relationship
-# ===========================================================================
-class TestS3RemoveOldParent:
-    async def test_remove_old_parent(self, s3_connector, mock_data_store_provider):
-        mock_tx = mock_data_store_provider.transaction.return_value
-        mock_tx.delete_parent_child_edge_to_record = AsyncMock(return_value=1)
-        await s3_connector._remove_old_parent_relationship("rec-1", mock_tx)
-
-    async def test_remove_old_parent_exception(self, s3_connector, mock_data_store_provider):
-        mock_tx = mock_data_store_provider.transaction.return_value
-        mock_tx.delete_parent_child_edge_to_record = AsyncMock(side_effect=Exception("fail"))
-        await s3_connector._remove_old_parent_relationship("rec-1", mock_tx)

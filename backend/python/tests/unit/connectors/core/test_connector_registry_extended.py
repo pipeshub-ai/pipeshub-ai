@@ -261,6 +261,8 @@ class TestCreateConnectorInstance:
         )
         assert result is not None
         assert result["type"] == "Gmail"
+        created = gp.batch_upsert_nodes.call_args[0][0][0]
+        assert created["vectorMembershipBackfilled"] is True
 
     @pytest.mark.asyncio
     async def test_org_not_found(self):

@@ -306,7 +306,8 @@
     "confirmDeleteMultiple": "क्या आप वाकई {{count}} आइटम हटाना चाहते हैं?",
     "cannotUndo": "यह कार्रवाई पूर्ववत नहीं की जा सकती।",
     "areYouSure": "क्या आप सुनिश्चित हैं?",
-    "typeDeleteToConfirm": "पुष्टि के लिए DELETE टाइप करें",
+    "deleteKeyword": "हटाएं",
+    "typeDeleteToConfirm": "पुष्टि के लिए '{{keyword}}' टाइप करें",
     "knowledgeBase": "ज्ञान आधार",
     "in": "में",
     "willBeDeleted": "हटाया जाएगा",
@@ -390,7 +391,8 @@
     "language": "भाषा",
     "english": "अंग्रेज़ी",
     "german": "जर्मन",
-    "rotateLandscape": "सर्वोत्तम अनुभव के लिए अपना डिवाइस घुमाएँ"
+    "rotateLandscape": "सर्वोत्तम अनुभव के लिए अपना डिवाइस घुमाएँ",
+    "errorOccurred": "एक त्रुटि हुई। कृपया पुनः प्रयास करें।"
   },
   "units": {
     "bytes": "बाइट",
@@ -481,6 +483,14 @@
     "record": "रिकॉर्ड"
   },
   "chat": {
+    "recordActions": {
+      "preview": "पूर्वावलोकन",
+      "open": "{{source}} खोलें",
+      "openIn": "{{source}} में खोलें",
+      "openInCollections": "कलेक्शन में खोलें",
+      "relevance": "प्रासंगिकता: {{percent}}%"
+    },
+    "results": "परिणाम",
     "greeting": "आज आप क्या खोजना चाहेंगे?",
     "heyUser": "नमस्ते, {{name}} 👋",
     "heyUserDefaultName": "दोस्त",
@@ -1210,6 +1220,8 @@
       "configUpdateModel": "मॉडल अपडेट करें",
       "configFillRequiredTooltip": "सभी आवश्यक फ़ील्ड भरें",
       "configSaveErrorFallback": "मॉडल कॉन्फ़िगरेशन सहेजा नहीं जा सका",
+      "configSaveOutboundError": "PipesHub कंटेनर से इस मॉडल प्रदाता तक नहीं पहुँच सकता। क्लाउड प्रदाताओं के लिए आउटबाउंड इंटरनेट आवश्यक है — देखें deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
+      "configSaveTimeoutError": "मॉडल सत्यापित करते समय अनुरोध का समय समाप्त हो गया। क्लाउड प्रदाताओं के लिए PipesHub कंटेनर से आउटबाउंड इंटरनेट आवश्यक है — देखें deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
       "configNoConfigRequired": "इस प्रदाता के लिए कोई कॉन्फ़िगरेशन आवश्यक नहीं।",
       "configDefaultModelNotice": "\"{{modelName}}\" सिस्टम द्वारा डिफ़ॉल्ट रूप से उपयोग किया जाएगा।",
       "configSectionModelConfiguration": "मॉडल कॉन्फ़िगरेशन",
@@ -1917,6 +1929,9 @@
       "noResults": "आपकी खोज से कोई MCP सर्वर मेल नहीं खाता",
       "addServer": "सर्वर जोड़ें",
       "custom": "कस्टम",
+      "inherited": "इनहेरिटेड",
+      "inheritedDeleteTooltip": "पैरेंट संगठन द्वारा प्रबंधित",
+      "inheritedReadOnly": "यह MCP सर्वर एक पैरेंट संगठन से इनहेरिट किया गया है और इसे यहाँ संपादित नहीं किया जा सकता।",
       "sharedAuth": "साझा एडमिन प्रमाणीकरण",
       "toolsCount_one": "{{count}} टूल",
       "toolsCount_other": "{{count}} टूल्स",
@@ -2636,6 +2651,7 @@
     "agentActionsMenuAria": "एजेंट मेनू",
     "agentMenuCreateAsServiceAgent": "सर्विस एजेंट के रूप में बनाएं",
     "agentMenuConvertToServiceAgent": "सर्विस एजेंट में बदलें",
+    "share": "साझा करें",
     "shareWithOrg": "सभी के साथ साझा करें",
     "shareWithOrgTooltip": "इस एजेंट को अपने संगठन में सभी के साथ साझा करें।",
     "serviceAccountShareTooltip": "सर्विस एजेंट हमेशा संगठन के साथ साझा किए जाते हैं।",
@@ -2741,6 +2757,8 @@
     "svcAcctCreateTitle": "सर्विस एजेंट बनाएं",
     "svcAcctConvertDesc": "यह एजेंट एक साझा सर्विस एजेंट बन जाएगा: पूरे संगठन में उपलब्ध, प्रत्येक टूलसेट एजेंट स्तर पर एक बार प्रमाणित होगा, और ज्ञान केवल उसी तक सीमित रहेगा जो आप फ्लो पर जोड़ते हैं।",
     "svcAcctCreateDesc": "आप एक साझा सर्विस एजेंट बना रहे हैं: पूरे संगठन में उपलब्ध, प्रत्येक टूलसेट एजेंट स्तर पर एक बार प्रमाणित होगा, और ज्ञान केवल उसी तक सीमित रहेगा जो आप फ्लो पर जोड़ते हैं।",
+    "svcAcctConvertDescNoOrg": "यह एजेंट एक सर्विस एजेंट बन जाएगा: प्रत्येक टूलसेट एजेंट स्तर पर एक बार प्रमाणित होगा, और ज्ञान केवल उसी तक सीमित रहेगा जो आप फ्लो पर जोड़ते हैं। एक्सेस नियंत्रित करने के लिए शेयर बटन का उपयोग करें।",
+    "svcAcctCreateDescNoOrg": "आप एक सर्विस एजेंट बना रहे हैं: प्रत्येक टूलसेट एजेंट स्तर पर एक बार प्रमाणित होगा, और ज्ञान केवल उसी तक सीमित रहेगा जो आप फ्लो पर जोड़ते हैं। एक्सेस नियंत्रित करने के लिए शेयर बटन का उपयोग करें।",
     "svcAcctConvertLabel": "सर्विस एजेंट में बदलें",
     "svcAcctCreateLabel": "सर्विस एजेंट बनाएं",
     "svcAcctConvertBusy": "बदला जा रहा है…",
@@ -2771,6 +2789,8 @@
     "mcpCredentialsTitle": "MCP सर्वर क्रेडेंशियल",
     "mcpCredentialsDesc": "इस MCP सर्वर को प्रमाणित करें ताकि एजेंट इसके टूल का उपयोग कर सके।",
     "mcpServerDefaultName": "MCP सर्वर",
+    "configureMcpTooltip": "क्रेडेंशियल प्रबंधित करें",
+    "authenticateMcpTooltip": "इस MCP सर्वर को प्रमाणित करें",
     "mcpAuthUpdatedNotify": "MCP प्रमाणीकरण अपडेट हो गया।",
     "mcpAuthSaveError": "MCP क्रेडेंशियल सहेजने में विफल।",
     "mcpAuthRemoveError": "MCP क्रेडेंशियल हटाने में विफल।",
@@ -2987,6 +3007,8 @@
       "connectorId": "कनेक्टर ID",
       "notAvailable": "लागू नहीं",
       "typeEmail": "ईमेल",
+      "typeFile": "फ़ाइल",
+      "typeArtifact": "आर्टिफ़ैक्ट",
       "typeTicket": "टिकट",
       "typeWebpage": "वेब पृष्ठ",
       "typeMessage": "संदेश",
@@ -3092,9 +3114,7 @@
         "emailNotePre": "सुनिश्चित करें कि जिस ईमेल से आपने पंजीकरण किया —",
         "emailNotePost": "— वही आपके संगठन के ऐप्स में उपयोग की जाती है, ताकि आपकी अनुमतियाँ सही तरीके से पहचानी जा सकें।",
         "cancelButton": "रद्द करें",
-        "signUpButton": "साइन अप करें",
-        "verificationNoteTitle": "सत्यापन आवश्यक है",
-        "verificationNoteBody": "ऊपर दिए गए ईमेल पर एक सत्यापन लिंक भेजा जाएगा। सत्यापन के बाद ही आपका संगठन सुलभ होगा।"
+        "signUpButton": "साइन अप करें"
       }
     },
     "login": {

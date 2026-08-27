@@ -377,44 +377,138 @@ class TestFullSync:
         folder, _perms = c.data_entities_processor.on_new_records.call_args_list[0].args[0][0]
         assert folder.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
 
-    async def test_truncated_tree_falls_back_to_subtree_walk(self) -> None:
+    async def test_truncated_root_walks_each_subtree_in_one_recursive_call(self) -> None:
+        """The point of the fallback: a subtree that fits comes back whole in ONE
+        recursive call. Walking it non-recursively would cost a call per
+        directory, which is what made this path unusable on large repos."""
         c = make_mock_connector()
         repo = make_repo(repo_id=1)
-        root_tree_recursive = make_git_tree(
+        root_recursive = make_git_tree(
             [make_tree_element("src", entry_type="tree", sha="sha-src")], truncated=True,
         )
-        # Non-recursive listing at the root: one subdirectory entry.
-        root_tree_nonrecursive = make_git_tree(
-            [make_tree_element("src", entry_type="tree", sha="sha-src")],
-        )
-        # Non-recursive listing inside "src": one file.
-        subtree = make_git_tree(
-            [make_tree_element("main.py", entry_type="blob", sha="sha-main", size=10)],
+        root_flat = make_git_tree([
+            make_tree_element("src", entry_type="tree", sha="sha-src"),
+            make_tree_element("docs", entry_type="tree", sha="sha-docs"),
+        ])
+        # Recursive fetches that fit: each carries its whole subtree, and paths
+        # are relative to the subtree root.
+        src_subtree = make_git_tree([
+            make_tree_element("lib", entry_type="tree", sha="sha-lib"),
+            make_tree_element("lib/util.py", entry_type="blob", sha="sha-util", size=10),
+        ])
+        docs_subtree = make_git_tree(
+            [make_tree_element("guide.md", entry_type="blob", sha="sha-guide", size=10)],
         )
 
-        call_log: list[tuple] = []
+        calls: list[tuple[str, bool]] = []
 
         def dispatch(method: object, *args: object, **kwargs: object) -> object:
-            call_log.append(args)
             _owner, _name, sha, recursive = args
-            if recursive:
-                return ok_response(root_tree_recursive)
+            calls.append((sha, recursive))
             if sha == "head-sha":
-                return ok_response(root_tree_nonrecursive)
-            if sha == "sha-src":
-                return ok_response(subtree)
+                return ok_response(root_recursive if recursive else root_flat)
+            if sha == "sha-src" and recursive:
+                return ok_response(src_subtree)
+            if sha == "sha-docs" and recursive:
+                return ok_response(docs_subtree)
             raise AssertionError(f"unexpected get_git_tree call: sha={sha} recursive={recursive}")
 
         c.runtime.ds_call.side_effect = dispatch
+        assert await ReposSync(c)._full_sync(repo, "head-sha") is True
 
-        sync = ReposSync(c)
-        ok = await sync._full_sync(repo, "head-sha")
+        # 1 truncated probe + 1 flat root listing + 1 recursive call per subtree.
+        assert calls == [
+            ("head-sha", True), ("head-sha", False),
+            ("sha-src", True), ("sha-docs", True),
+        ]
+        persisted = {
+            r.record_name
+            for call in c.data_entities_processor.on_new_records.call_args_list
+            for r, _perms in call.args[0]
+        }
+        assert {"src", "docs", "lib", "util.py", "guide.md"} <= persisted
 
-        assert ok is True
-        # BFS should have descended into "src" (sha-src) after the root listing.
-        assert any(args[2] == "sha-src" for args in call_log[1:])
+    async def test_subtree_that_is_itself_truncated_is_split_further(self) -> None:
+        """Recursion only deepens where the API limit is actually hit."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        truncated = make_git_tree(
+            [make_tree_element("src", entry_type="tree", sha="sha-src")], truncated=True,
+        )
+        root_flat = make_git_tree([make_tree_element("src", entry_type="tree", sha="sha-src")])
+        src_flat = make_git_tree([make_tree_element("main.py", entry_type="blob", sha="sha-main", size=10)])
+
+        calls: list[tuple[str, bool]] = []
+
+        def dispatch(method: object, *args: object, **kwargs: object) -> object:
+            _owner, _name, sha, recursive = args
+            calls.append((sha, recursive))
+            if sha == "head-sha":
+                return ok_response(truncated if recursive else root_flat)
+            # "src" is too big to come back recursively; its flat listing fits.
+            return ok_response(truncated if recursive else src_flat)
+
+        c.runtime.ds_call.side_effect = dispatch
+        assert await ReposSync(c)._full_sync(repo, "head-sha") is True
+
+        assert ("sha-src", True) in calls and ("sha-src", False) in calls
         file_batch = c.data_entities_processor.on_new_records.call_args_list[-1].args[0]
         assert {r.record_name for r, _ in file_batch} == {"main.py"}
+
+    async def test_directory_too_big_to_split_fails_without_pruning(self) -> None:
+        """A directory whose flat listing is ALSO truncated cannot be split, so
+        the walk is knowingly incomplete. Pruning on it would delete records for
+        files that still exist — the old code did exactly that."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        always_truncated = make_git_tree(
+            [make_tree_element("f.py", entry_type="blob", sha="sha-f", size=10)], truncated=True,
+        )
+        c.runtime.ds_call.return_value = ok_response(always_truncated)
+
+        sync = ReposSync(c)
+        sync._prune_deleted_paths = AsyncMock()
+
+        assert await sync._full_sync(repo, "head-sha") is False
+        sync._prune_deleted_paths.assert_not_awaited()
+
+    async def test_entries_are_persisted_per_subtree_not_all_at_the_end(self) -> None:
+        """Streaming persist: records land as the walk proceeds, so a walk that
+        dies partway keeps what it already wrote."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        root_recursive = make_git_tree(
+            [make_tree_element("a", entry_type="tree", sha="sha-a")], truncated=True,
+        )
+        root_flat = make_git_tree([
+            make_tree_element("a", entry_type="tree", sha="sha-a"),
+            make_tree_element("b", entry_type="tree", sha="sha-b"),
+        ])
+        sub = {
+            "sha-a": make_git_tree([make_tree_element("a1.py", entry_type="blob", sha="s1", size=10)]),
+            "sha-b": make_git_tree([make_tree_element("b1.py", entry_type="blob", sha="s2", size=10)]),
+        }
+
+        events: list[str] = []
+
+        def dispatch(method: object, *args: object, **kwargs: object) -> object:
+            _owner, _name, sha, recursive = args
+            events.append(f"fetch:{sha}")
+            if sha == "head-sha":
+                return ok_response(root_recursive if recursive else root_flat)
+            return ok_response(sub[str(sha)])
+
+        async def record_persist(batch: object) -> None:
+            events.append("persist")
+
+        c.runtime.ds_call.side_effect = dispatch
+        c.data_entities_processor.on_new_records.side_effect = record_persist
+
+        assert await ReposSync(c)._full_sync(repo, "head-sha") is True
+
+        # A persist must occur before the final fetch — otherwise everything was
+        # buffered and written at the end.
+        assert "persist" in events[: events.index(f"fetch:sha-b")], events
 
     async def test_every_file_gets_a_record_including_dotfiles_and_oversized(self) -> None:
         """No-skip policy: nothing in the tree is invisible. Oversized files get
@@ -944,7 +1038,7 @@ class TestFullSyncFailures:
         repo = make_repo(repo_id=1)
         c.runtime.ds_call.return_value = failed_response("500")
         sync = ReposSync(c)
-        sync._persist_tree_entries = AsyncMock(return_value=True)
+        sync._persist_tree_entries = AsyncMock(return_value=(True, 0, 0))
         sync._prune_deleted_paths = AsyncMock()
 
         ok = await sync._full_sync_untruncated(repo, "head-sha")

@@ -153,6 +153,8 @@ def connector():
         dep.on_record_metadata_update = AsyncMock()
         dep.on_record_content_update = AsyncMock()
         dep.reindex_existing_records = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
+        dep.get_records_by_parent = AsyncMock(return_value=[])
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -177,6 +179,9 @@ def connector():
         conn.indexing_filters = FilterCollection()
         conn.gmail_client = MagicMock()
         conn.gmail_data_source = AsyncMock()
+        async def execute(operation):
+            return operation()
+        conn.gmail_data_source.execute = AsyncMock(side_effect=execute)
         conn.config = {"credentials": {"access_token": "t", "refresh_token": "r"}}
         yield conn
 
@@ -191,7 +196,7 @@ class TestInit:
         mock_client = MagicMock()
         mock_client.get_client.return_value = MagicMock()
         with patch(
-            "app.connectors.sources.google.gmail.individual.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new_callable=AsyncMock,
             return_value={"config": {"clientId": "cid", "clientSecret": "cs"}},
         ), patch(
@@ -224,7 +229,7 @@ class TestInit:
             "credentials": {},
         })
         with patch(
-            "app.connectors.sources.google.gmail.individual.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -238,7 +243,7 @@ class TestInit:
             "credentials": {},
         })
         with patch(
-            "app.connectors.sources.google.gmail.individual.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new_callable=AsyncMock,
             return_value={"config": {"clientId": None, "clientSecret": None}},
         ):
@@ -252,7 +257,7 @@ class TestInit:
             "credentials": {"access_token": "t", "refresh_token": "r"},
         })
         with patch(
-            "app.connectors.sources.google.gmail.individual.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new_callable=AsyncMock,
             return_value={"config": {"clientId": "cid", "clientSecret": "cs"}},
         ), patch(
@@ -272,7 +277,7 @@ class TestInit:
         mock_client = MagicMock()
         mock_client.get_client.return_value = MagicMock()
         with patch(
-            "app.connectors.sources.google.gmail.individual.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new_callable=AsyncMock,
             return_value={"config": {"clientId": "cid", "clientSecret": "cs"}},
         ), patch(
@@ -449,6 +454,7 @@ class TestProcessGmailAttachmentException:
         existing.id = "existing-att-id"
         existing.version = 2
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         info = {
             "attachmentId": "att-1",
             "driveFileId": None,
@@ -747,6 +753,9 @@ class TestStreamMailRecord:
         streamed_chunks: list[bytes] = []
 
         with patch(
+            "app.connectors.sources.google.gmail.individual.connector.quotations.extract_from_html",
+            side_effect=lambda x: x,
+        ), patch(
             "app.connectors.sources.google.gmail.individual.connector.create_stream_record_response",
             side_effect=lambda gen, **kwargs: gen,
         ):
@@ -773,6 +782,9 @@ class TestStreamMailRecord:
         streamed_chunks: list[bytes] = []
 
         with patch(
+            "app.connectors.sources.google.gmail.individual.connector.quotations.extract_from_html",
+            side_effect=lambda x: x,
+        ), patch(
             "app.connectors.sources.google.gmail.individual.connector.create_stream_record_response",
             side_effect=lambda gen, **kwargs: gen,
         ):
@@ -787,9 +799,10 @@ class TestStreamMailRecord:
     async def test_stream_mail_reply_extraction_strips_quoted_content(self, connector):
         """talon quotations.extract_from_html strips quoted reply blocks."""
         reply_text = "Thanks for your message!"
+        reply_html = f"<p>{reply_text}</p>"
         html = (
-            f"<p>{reply_text}</p>"
-            "<blockquote>"
+            reply_html
+            + "<blockquote>"
             "On Mon, Jan 1, 2024, Sender wrote:<br>Original message here."
             "</blockquote>"
         )
@@ -805,6 +818,9 @@ class TestStreamMailRecord:
         streamed_chunks: list[bytes] = []
 
         with patch(
+            "app.connectors.sources.google.gmail.individual.connector.quotations.extract_from_html",
+            return_value=reply_html,
+        ), patch(
             "app.connectors.sources.google.gmail.individual.connector.create_stream_record_response",
             side_effect=lambda gen, **kwargs: gen,
         ):
@@ -920,6 +936,7 @@ class TestStreamAttachmentRecord:
         parent_record.external_record_id = "msg-1"
         tx = _make_mock_tx_store(existing_record=parent_record)
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=parent_record)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent_record)
 
         gmail_service.users().messages().get().execute.return_value = {
             "payload": {
@@ -973,6 +990,7 @@ class TestStreamAttachmentRecord:
         parent_record = MagicMock()
         parent_record.external_record_id = "msg-1"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=parent_record)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent_record)
 
         record = MagicMock()
         record.id = "rec-1"
@@ -1002,6 +1020,7 @@ class TestStreamAttachmentRecord:
         parent_record = MagicMock()
         parent_record.external_record_id = "msg-1"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=parent_record)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent_record)
 
         record = MagicMock()
         record.id = "rec-1"
@@ -1026,6 +1045,7 @@ class TestStreamAttachmentRecord:
         parent_record = MagicMock()
         parent_record.external_record_id = "msg-1"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=parent_record)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent_record)
 
         record = MagicMock()
         record.id = "rec-1"
@@ -1057,6 +1077,7 @@ class TestStreamAttachmentRecord:
         parent_record = MagicMock()
         parent_record.external_record_id = "msg-1"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=parent_record)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent_record)
 
         record = MagicMock()
         record.id = "rec-1"
@@ -1095,6 +1116,7 @@ class TestStreamAttachmentRecord:
         parent_record = MagicMock()
         parent_record.external_record_id = "actual-msg-id"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=parent_record)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent_record)
 
         record = MagicMock()
         record.id = "rec-1"
@@ -1117,6 +1139,7 @@ class TestStreamAttachmentRecord:
         parent_record = MagicMock()
         parent_record.external_record_id = "msg-1"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=parent_record)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent_record)
 
         record = MagicMock()
         record.id = "rec-1"
@@ -1145,6 +1168,7 @@ class TestStreamAttachmentRecord:
         parent_record = MagicMock()
         parent_record.external_record_id = "msg-1"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=parent_record)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent_record)
 
         record = MagicMock()
         record.id = "rec-1"
@@ -1484,6 +1508,7 @@ class TestFindPreviousMessageInThread:
         existing = MagicMock()
         existing.id = "prev-record-id"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         connector.gmail_data_source.users_threads_get = AsyncMock(return_value={
             "messages": [
@@ -1572,6 +1597,7 @@ class TestDeleteMessageAndAttachments:
         attachment = MagicMock()
         attachment.id = "att-rec-id"
         connector.data_store_provider = _make_mock_data_store_provider(child_records=[attachment])
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[attachment])
         await connector._delete_message_and_attachments("rec-1", "msg-1")
         connector.data_entities_processor.on_record_deleted.assert_any_call("att-rec-id")
         connector.data_entities_processor.on_record_deleted.assert_any_call("rec-1")
@@ -1581,6 +1607,7 @@ class TestDeleteMessageAndAttachments:
         attachment = MagicMock()
         attachment.id = "att-rec-id"
         connector.data_store_provider = _make_mock_data_store_provider(child_records=[attachment])
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[attachment])
         connector.data_entities_processor.on_record_deleted = AsyncMock(
             side_effect=[Exception("fail"), None]
         )
@@ -1626,6 +1653,7 @@ class TestProcessHistoryChanges:
         existing = MagicMock()
         existing.id = "rec-1"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         history = {
             "messagesDeleted": [
@@ -1661,6 +1689,7 @@ class TestProcessHistoryChanges:
         existing = MagicMock()
         existing.id = "rec-1"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         history = {
             "labelsAdded": [
@@ -1677,6 +1706,7 @@ class TestProcessHistoryChanges:
         existing = MagicMock()
         existing.id = "existing-id"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         history = {
             "messagesAdded": [
@@ -1798,6 +1828,7 @@ class TestProcessHistoryChanges:
         existing = MagicMock()
         existing.id = "rec-1"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         history = {
             "messagesDeleted": [
                 {"message": {"id": "del-msg-1"}},
@@ -2310,6 +2341,7 @@ class TestCheckAndFetchUpdatedMailRecord:
         existing.version = 0
         existing.external_record_group_id = "u@e.com:SENT"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         record = MagicMock()
         record.id = "rec-1"
@@ -2394,6 +2426,7 @@ class TestCheckAndFetchUpdatedFileRecord:
         existing.version = 0
         existing.external_record_group_id = "u@e.com:INBOX"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         with patch.object(connector, "_find_previous_message_in_thread",
                           new_callable=AsyncMock, return_value=None):

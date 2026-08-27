@@ -64,7 +64,7 @@ export const getKnowledgeHubNodes =
         throw new UnauthorizedError('User not authenticated');
       }
 
-      logger.info('Getting knowledge hub nodes', {
+      logger.debug('Getting knowledge hub nodes', {
         userId,
         orgId,
         query: req.query,
@@ -1327,7 +1327,7 @@ export const getRecordById =
       );
 
       // Log successful retrieval
-      logger.info('Record retrieved successfully');
+      logger.debug('Record retrieved successfully');
     } catch (error: any) {
       logger.error('Error getting record by id', {
         recordId: req.params.recordId,

@@ -48,19 +48,13 @@ def _make_mock_deps():
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.on_updated_record_permissions = AsyncMock()
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    data_entities_processor.get_record_by_conversation_index = AsyncMock(return_value=None)
+    data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value=None)
+    data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
+    data_entities_processor.delete_record_by_external_id = AsyncMock()
     data_entities_processor.reindex_existing_records = AsyncMock()
 
     data_store_provider = MagicMock()
-    mock_tx = MagicMock()
-    mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-    mock_tx.get_record_by_conversation_index = AsyncMock(return_value=None)
-    mock_tx.batch_create_edges = AsyncMock()
-    mock_tx.get_record_owner_source_user_email = AsyncMock(return_value=None)
-    mock_tx.get_user_group_by_external_id = AsyncMock(return_value=None)
-    mock_tx.delete_record_by_external_id = AsyncMock()
-    mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-    mock_tx.__aexit__ = AsyncMock(return_value=None)
-    data_store_provider.transaction.return_value = mock_tx
 
     config_service = MagicMock()
     config_service.get_config = AsyncMock()
@@ -274,11 +268,7 @@ class TestStreamRecord:
         parent_record.external_record_group_id = "group-1"
         parent_record.thread_id = "thread-1"
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=parent_record)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent_record)
 
         record = _make_file_record(
             external_record_group_id="group-1",
@@ -298,12 +288,7 @@ class TestStreamRecord:
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
 
         connector._get_user_id_from_email = AsyncMock(return_value="su1")
 
@@ -324,12 +309,7 @@ class TestStreamRecord:
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_owner_source_user_email = AsyncMock(return_value=None)
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value=None)
 
         record = _make_mail_record()
 
@@ -342,12 +322,7 @@ class TestStreamRecord:
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
 
         connector._get_user_id_from_email = AsyncMock(return_value="su1")
         connector._download_attachment_external = AsyncMock(return_value=b"pdf bytes")
@@ -394,12 +369,7 @@ class TestStreamRecord:
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
 
         connector._get_user_id_from_email = AsyncMock(return_value="su1")
 
@@ -547,11 +517,7 @@ class TestReindexUserMailboxRecords:
     async def test_groups_by_owner_email(self):
         connector = _make_connector()
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
 
         record = _make_mail_record()
         connector._reindex_single_user_records = AsyncMock(return_value=([], [record]))
@@ -563,11 +529,7 @@ class TestReindexUserMailboxRecords:
     async def test_skips_records_without_owner(self):
         connector = _make_connector()
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_owner_source_user_email = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value=None)
 
         record = _make_mail_record()
         updated, non_updated = await connector._reindex_user_mailbox_records([record])
@@ -2524,21 +2486,18 @@ class TestCreateConnector:
 
     @pytest.mark.asyncio
     async def test_create_connector(self):
-        with patch("app.connectors.sources.microsoft.outlook.connector.DataSourceEntitiesProcessor") as mock_dep:
-            instance = MagicMock()
-            instance.initialize = AsyncMock()
-            instance.org_id = "org-1"
-            mock_dep.return_value = instance
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            logger = logging.getLogger("test")
-            dsp = MagicMock()
-            cs = MagicMock()
+        logger = logging.getLogger("test")
+        dsp = MagicMock()
+        cs = MagicMock()
 
-            connector = await OutlookConnector.create_connector(
-                logger, dsp, cs, "conn-1", "team", "test-user-id"
-            )
-            assert isinstance(connector, OutlookConnector)
-            instance.initialize.assert_awaited_once()
+        connector = await OutlookConnector.create_connector(
+            logger, dsp, cs, "conn-1", "team", "test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, OutlookConnector)
 
 
 # ===========================================================================

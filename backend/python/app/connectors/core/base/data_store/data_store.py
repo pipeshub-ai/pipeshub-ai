@@ -6,8 +6,12 @@ from app.models.entities import (
     Anyone,
     AnyoneSameOrg,
     AnyoneWithLink,
+    AppMetadata,
+    AppRole,
     AppUser,
+    AppUserGroup,
     Domain,
+    FileRecord,
     Org,
     Person,
     Record,
@@ -161,7 +165,7 @@ class BaseDataStore(ABC):
 
 
     @abstractmethod
-    async def create_user_group_membership(self, user_source_id: str, group_external_id: str, connector_id: str, org_id: str) -> bool:
+    async def create_user_group_membership(self, user_source_id: str, group_external_id: str, connector_id: str) -> bool:
         pass
 
     @abstractmethod
@@ -173,11 +177,43 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_app_user_by_email(self, email: str) -> Optional[AppUser]:
+    async def get_user_by_user_id(self, user_id: str) -> Optional[User]:
+        pass
+
+    @abstractmethod
+    async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppUserGroup]:
+        pass
+
+    @abstractmethod
+    async def get_app_role_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppRole]:
+        pass
+
+    @abstractmethod
+    async def get_app_by_id(self, connector_id: str) -> Optional[AppMetadata]:
+        pass
+
+    @abstractmethod
+    async def get_app_users(self, org_id: str, connector_id: str) -> list[AppUser]:
+        pass
+
+    @abstractmethod
+    async def get_app_user_by_email(self, email: str, connector_id: str) -> Optional[AppUser]:
+        pass
+
+    @abstractmethod
+    async def get_file_record_by_id(self, id: str) -> Optional[FileRecord]:
+        pass
+
+    @abstractmethod
+    async def get_first_user_with_permission_to_node(self, node_id: str, node_collection: str) -> Optional[User]:
         pass
 
     @abstractmethod
     async def batch_upsert_people(self, people: list[Person]) -> None:
+        pass
+
+    @abstractmethod
+    async def batch_create_edges(self, edges: list[dict], collection: str) -> None:
         pass
 
     @abstractmethod
@@ -193,7 +229,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def delete_record_by_external_id(self, connector_id: str, external_id: str) -> None:
+    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> None:
         pass
 
     @abstractmethod
@@ -341,11 +377,29 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def delete_edges_between_collections(
+        self, from_id: str, from_collection: str, edge_collection: str, to_collection: str
+    ) -> None:
+        pass
+
+    @abstractmethod
     async def ensure_team_app_edge(self, connector_id: str, org_id: str) -> None:
         """
         Ensure the org's "All" team has an edge to the app in userAppRelation.
         Idempotent. Used by TEAM-scope connectors.
         """
+        pass
+
+    @abstractmethod
+    async def get_record_by_weburl(self, weburl: str, org_id: Optional[str] = None) -> Optional[Record]:
+        pass
+
+    @abstractmethod
+    async def delete_records_and_relations(self, record_key: str, hard_delete: bool = False) -> None:
+        pass
+
+    @abstractmethod
+    async def get_app_creator_user(self, connector_id: str) -> Optional[User]:
         pass
 
 

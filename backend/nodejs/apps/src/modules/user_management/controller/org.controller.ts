@@ -330,7 +330,7 @@ export class OrgController {
     next: NextFunction,
   ): Promise<void> {
     const orgId = req.user?.orgId;
-    this.logger.info(orgId);
+    this.logger.debug(orgId);
     try {
       const org = await Org.findOne({ orgId, isDeleted: false });
 

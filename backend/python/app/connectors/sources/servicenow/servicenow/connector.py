@@ -39,10 +39,7 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.base.data_store.data_store import (
-    DataStoreProvider,
-    TransactionStore,
-)
+from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
@@ -94,7 +91,6 @@ from app.sources.external.servicenow.models import (
     TableAPIResponse,
     UserCriteria,
 )
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import datetime_to_epoch_ms
 from app.connectors.sources.servicenow.servicenow.constants import (
@@ -312,12 +308,10 @@ class ServiceNowConnector(BaseConnector):
                 self.logger.error("ServiceNow oauthConfigId not found in auth configuration.")
                 return False
 
-            # Fetch OAuth config
-            oauth_config = await fetch_oauth_config_by_id(
+            oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
                 connector_type=ServiceNowDefaults.CONNECTOR_TYPE,
-                config_service=self.config_service,
-                logger=self.logger
+                auth_config=auth_config,
             )
 
             if not oauth_config:
@@ -850,21 +844,17 @@ class ServiceNowConnector(BaseConnector):
             self.logger.info(f"Found {len(admin_sys_ids)} unique admin users")
 
             # Match with platform users using source_user_id
-            async with self.data_store_provider.transaction() as tx_store:
-                for sys_id in admin_sys_ids:
-                    try:
-                        # Get AppUser by source_user_id (ServiceNow sys_id)
-                        app_user = await tx_store.get_user_by_source_id(
-                            source_user_id=sys_id,
-                            connector_id=self.connector_id
-                        )
-
-                        if app_user:
-                            admin_users.append(app_user)
-
-                    except Exception as e:
-                        self.logger.warning(f"Error matching admin user {sys_id}: {e}")
-                        continue
+            for sys_id in admin_sys_ids:
+                try:
+                    app_user = await self.data_entities_processor.get_user_by_source_id(
+                        source_user_id=sys_id,
+                        connector_id=self.connector_id
+                    )
+                    if app_user:
+                        admin_users.append(app_user)
+                except Exception as e:
+                    self.logger.warning(f"Error matching admin user {sys_id}: {e}")
+                    continue
 
             self.logger.info(f"✅ Matched {len(admin_users)} admin users with platform accounts")
             return admin_users
@@ -988,13 +978,12 @@ class ServiceNowConnector(BaseConnector):
                 # Create user-to-organizational-entity edges
                 if user_org_links:
                     self.logger.info(f"Creating {len(user_org_links)} user-to-organizational-entity link")
-                    async with self.data_store_provider.transaction() as tx_store:
-                        for link in user_org_links:
-                            await tx_store.create_user_group_membership(
-                                link[ServiceNowDictKeys.USER_SYS_ID],
-                                link[ServiceNowDictKeys.ORG_SYS_ID],
-                                self.connector_id
-                            )
+                    for link in user_org_links:
+                        await self.data_entities_processor.create_user_group_membership(
+                            link[ServiceNowDictKeys.USER_SYS_ID],
+                            link[ServiceNowDictKeys.ORG_SYS_ID],
+                            self.connector_id
+                        )
 
                 # Move to next page
                 offset += batch_size
@@ -1515,14 +1504,12 @@ class ServiceNowConnector(BaseConnector):
             result = []
 
              # Get all existing users from database for lookup
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_app_users = await tx_store.get_app_users(
-                    org_id=self.data_entities_processor.org_id,
-                    connector_id=self.connector_id
-                )
+            existing_app_users = await self.data_entities_processor.get_all_app_users(
+                connector_id=self.connector_id
+            )
 
-                # Create lookup map: source_user_id -> AppUser
-                user_lookup = {user.source_user_id: user for user in existing_app_users}
+            # Create lookup map: source_user_id -> AppUser
+            user_lookup = {user.source_user_id: user for user in existing_app_users}
 
             for group_id, group_data in group_by_id.items():
                 # Create AppUserGroup
@@ -1661,10 +1648,8 @@ class ServiceNowConnector(BaseConnector):
                     if user_group:
                         user_groups.append(user_group)
 
-                # Batch upsert entity nodes
                 if user_groups:
-                    async with self.data_store_provider.transaction() as tx_store:
-                        await tx_store.batch_upsert_user_groups(user_groups)
+                    await self.data_entities_processor.batch_upsert_user_groups(user_groups)
 
                     total_synced += len(user_groups)
 
@@ -1783,55 +1768,51 @@ class ServiceNowConnector(BaseConnector):
                 # BELONGS_TO edges (RecordGroup → Org, RecordGroup → App) are created by the processor.
                 if kb_record_groups:
                     kb_list_with_permissions = []
-                    async with self.data_store_provider.transaction() as tx_store:
-                        for kb_record_group, kb_data in kb_record_groups:
-                            kb_sys_id = kb_data.sys_id
+                    for kb_record_group, kb_data in kb_record_groups:
+                        kb_sys_id = kb_data.sys_id
 
-                            # Fetch criteria IDs for this KB
-                            criteria_map = await self._fetch_kb_permissions_from_criteria(kb_sys_id)
+                        # Fetch criteria IDs for this KB
+                        criteria_map = await self._fetch_kb_permissions_from_criteria(kb_sys_id)
 
-                            # Process READ permissions using shared method
-                            read_permissions = await self._process_criteria_permissions(
-                                criteria_map[ServiceNowDictKeys.READ],
-                                PermissionType.READ,
-                                tx_store,
+                        # Process READ permissions using shared method
+                        read_permissions = await self._process_criteria_permissions(
+                            criteria_map[ServiceNowDictKeys.READ],
+                            PermissionType.READ,
+                        )
+
+                        # Process WRITE permissions using shared method
+                        write_permissions = await self._process_criteria_permissions(
+                            criteria_map[ServiceNowDictKeys.WRITE],
+                            PermissionType.WRITE,
+                        )
+
+                        # Combine all permissions
+                        permission_objects = read_permissions + write_permissions
+
+                        # Add OWNER permission (fallback from owner field)
+                        owner_sys_id = kb_data.owner
+                        if owner_sys_id:
+                            owner_perms = await self._convert_permissions_to_objects(
+                                [
+                                    RawPermission(
+                                        entity_type="USER",
+                                        source_sys_id=owner_sys_id,
+                                        role="OWNER",
+                                    )
+                                ],
                             )
+                            permission_objects.extend(owner_perms)
 
-                            # Process WRITE permissions using shared method
-                            write_permissions = await self._process_criteria_permissions(
-                                criteria_map[ServiceNowDictKeys.WRITE],
-                                PermissionType.WRITE,
-                                tx_store,
+                        # Add admin users as explicit READ permissions
+                        for admin_user in admin_users:
+                            admin_permission = Permission(
+                                email=admin_user.email,
+                                type=PermissionType.READ,
+                                entity_type=EntityType.USER,
                             )
+                            permission_objects.append(admin_permission)
 
-                            # Combine all permissions
-                            permission_objects = read_permissions + write_permissions
-
-                            # Add OWNER permission (fallback from owner field)
-                            owner_sys_id = kb_data.owner
-                            if owner_sys_id:
-                                owner_perms = await self._convert_permissions_to_objects(
-                                    [
-                                        RawPermission(
-                                            entity_type="USER",
-                                            source_sys_id=owner_sys_id,
-                                            role="OWNER",
-                                        )
-                                    ],
-                                    tx_store,
-                                )
-                                permission_objects.extend(owner_perms)
-
-                            # Add admin users as explicit READ permissions
-                            for admin_user in admin_users:
-                                admin_permission = Permission(
-                                    email=admin_user.email,
-                                    type=PermissionType.READ,
-                                    entity_type=EntityType.USER,
-                                )
-                                permission_objects.append(admin_permission)
-
-                            kb_list_with_permissions.append((kb_record_group, permission_objects))
+                        kb_list_with_permissions.append((kb_record_group, permission_objects))
 
                     await self.data_entities_processor.on_new_record_groups(kb_list_with_permissions)
                     total_synced += len(kb_list_with_permissions)
@@ -2108,25 +2089,22 @@ class ServiceNowConnector(BaseConnector):
                 criteria_ids = [c.strip() for c in can_read_criteria.split(",") if c.strip()]
 
             # Process READ permissions using shared method
-            async with self.data_store_provider.transaction() as tx_store:
-                all_permission_objects = await self._process_criteria_permissions(
-                    criteria_ids,
-                    PermissionType.READ,
-                    tx_store
-                )
+            all_permission_objects = await self._process_criteria_permissions(
+                criteria_ids,
+                PermissionType.READ,
+            )
 
-                # Add OWNER permission from author field
-                author_sys_id = article_data.author
-                if author_sys_id:
-                    owner_perms = await self._convert_permissions_to_objects(
-                        [RawPermission(
-                            entity_type="USER",
-                            source_sys_id=author_sys_id,
-                            role="OWNER",
-                        )],
-                        tx_store
-                    )
-                    all_permission_objects.extend(owner_perms)
+            # Add OWNER permission from author field
+            author_sys_id = article_data.author
+            if author_sys_id:
+                owner_perms = await self._convert_permissions_to_objects(
+                    [RawPermission(
+                        entity_type="USER",
+                        source_sys_id=author_sys_id,
+                        role="OWNER",
+                    )],
+                )
+                all_permission_objects.extend(owner_perms)
 
             # Create RecordUpdate for article
             article_update = RecordUpdate(
@@ -2250,24 +2228,12 @@ class ServiceNowConnector(BaseConnector):
             return []
 
     async def _convert_permissions_to_objects(
-        self, permissions_dict: List[RawPermission], tx_store: TransactionStore
+        self, permissions_dict: List[RawPermission],
     ) -> List[Permission]:
         """
         Convert USER and GROUP permissions from RawPermission format to Permission objects.
 
         ServiceNow-specific: Uses sourceUserId field to look up users, then gets their email.
-        This method handles the connector-specific logic for permission mapping.
-
-        Args:
-            permissions_dict: List of RawPermission Pydantic models with entity_type, source_sys_id, role
-                Example: [
-                    RawPermission(entity_type="USER", source_sys_id="abc123", role="OWNER"),
-                    RawPermission(entity_type="GROUP", source_sys_id="group456", role="WRITE")
-                ]
-            tx_store: Transaction store for database access
-
-        Returns:
-            List of Permission objects ready for edge creation
         """
         permission_objects = []
 
@@ -2278,8 +2244,7 @@ class ServiceNowConnector(BaseConnector):
                 role = perm.role
 
                 if entity_type == EntityType.USER.value:
-                    # Use tx_store method to get user by source_sys_id
-                    user = await tx_store.get_user_by_source_id(
+                    user = await self.data_entities_processor.get_user_by_source_id(
                         source_sys_id,
                         self.connector_id
                     )
@@ -2296,7 +2261,6 @@ class ServiceNowConnector(BaseConnector):
                         self.logger.warning(f"User not found for source_sys_id: {source_sys_id}")
 
                 elif entity_type == EntityType.GROUP.value:
-                    # Groups use external_id directly (no lookup needed)
                     permission_objects.append(
                         Permission(
                             external_id=source_sys_id,
@@ -2377,7 +2341,7 @@ class ServiceNowConnector(BaseConnector):
             return {ServiceNowDictKeys.READ: [], ServiceNowDictKeys.WRITE: []}
 
     async def _process_criteria_permissions(
-        self, criteria_ids: List[str], permission_type: PermissionType, tx_store: TransactionStore
+        self, criteria_ids: List[str], permission_type: PermissionType,
     ) -> List[Permission]:
         """
         Shared method to process user_criteria IDs and extract permissions.
@@ -2386,14 +2350,6 @@ class ServiceNowConnector(BaseConnector):
         1. Batch fetches all user_criteria details
         2. Extracts permissions from each criteria
         3. Converts to Permission objects
-
-        Args:
-            criteria_ids: List of user_criteria sys_ids
-            permission_type: Type of permission (READ or WRITE)
-            tx_store: Transaction store for database access
-
-        Returns:
-            List of Permission objects
         """
         try:
             if not criteria_ids:
@@ -2437,7 +2393,6 @@ class ServiceNowConnector(BaseConnector):
             # Convert to Permission objects
             permission_objects = await self._convert_permissions_to_objects(
                 permission_dicts,
-                tx_store
             )
 
             return permission_objects
@@ -2976,6 +2931,7 @@ class ServiceNowConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
         **kwargs,
     ) -> "ServiceNowConnector":
         """
@@ -2989,11 +2945,6 @@ class ServiceNowConnector(BaseConnector):
         Returns:
             ServiceNowConnector: Initialized connector instance
         """
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
-
         return cls(
             logger,
             data_entities_processor,

@@ -319,7 +319,8 @@
     "confirmDeleteMultiple": "{{count}}개 항목을 삭제하시겠습니까?",
     "cannotUndo": "이 작업은 되돌릴 수 없습니다.",
     "areYouSure": "계속하시겠습니까?",
-    "typeDeleteToConfirm": "확인하려면 DELETE를 입력하세요",
+    "deleteKeyword": "삭제",
+    "typeDeleteToConfirm": "확인하려면 '{{keyword}}'를 입력하세요",
     "knowledgeBase": "지식 베이스",
     "in": "위치:",
     "willBeDeleted": "이(가) 삭제됩니다",
@@ -499,6 +500,14 @@
     "record": "레코드"
   },
   "chat": {
+    "recordActions": {
+      "preview": "미리보기",
+      "open": "{{source}} 열기",
+      "openIn": "{{source}}에서 열기",
+      "openInCollections": "컬렉션에서 열기",
+      "relevance": "관련도: {{percent}}%"
+    },
+    "results": "결과",
     "greeting": "오늘은 무엇을 탐색해 볼까요?",
     "heyUser": "안녕하세요, {{name}}님 👋",
     "heyUserDefaultName": "사용자",
@@ -1335,7 +1344,7 @@
         "sectionTitle": "모델 역할 할당",
         "sectionDescription": "특정 작업에 전용 모델을 할당합니다. 할당하지 않으면 기본 모델이 사용됩니다.",
         "onboardingTitle": "모델을 어떻게 사용하시겠습니까?",
-        "onboardingTip": "요약 및 분류 같은 인덱싱 작업에는 작고 비용 효율적인 모델(예: gpt-5.4-mini, gemini-2.5-flash)을 할당하세요. 추론 품질이 가장 중요한 질의와 에이전트에는 가장 성능이 뛰어난 모델(예: gpt-5.5, claude-sonnet)을 사용하세요.",
+        "onboardingTip": "요약 및 분류 같은 인덱싱 작업에는 작고 비용 효율적인 모델(예: gpt-5.6-luna, gemini-2.5-flash)을 할당하세요. 추론 품질이 가장 중요한 질의와 에이전트에는 가장 성능이 뛰어난 모델(예: gpt-5.6-terra, claude-sonnet)을 사용하세요.",
         "queryRole": "질의 및 채팅",
         "queryRoleSubtitle": "검색, 에이전트 및 대화",
         "queryRoleDescription": "검색, 질문 답변, AI 에이전트 응답을 처리합니다. 가장 성능이 뛰어난 모델을 여기에 사용하세요.",
@@ -3232,6 +3241,8 @@
       "connectorId": "커넥터 ID",
       "notAvailable": "해당 없음",
       "typeEmail": "이메일",
+      "typeFile": "파일",
+      "typeArtifact": "아티팩트",
       "typeTicket": "티켓",
       "typeWebpage": "웹 페이지",
       "typeMessage": "메시지",

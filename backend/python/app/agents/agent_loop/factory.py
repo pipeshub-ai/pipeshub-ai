@@ -125,6 +125,7 @@ from app.agents.agent_loop.hooks import (
     shape_retrieved_image_injection,
     stash_tool_call_metadata,
 )
+from app.agents.agent_loop.image_guard import with_image_cap
 from app.agents.agent_loop.langchain_transport import (
     LangChainTransport,
     _supports_multipart_tool_result,
@@ -144,7 +145,10 @@ from app.agents.agent_loop.loops.orchestrator import (
     install_phase_gate,
     register_coordination_tools,
 )
-from app.agents.agent_loop.loops.plan_execute import PLANNING_TOOL_NAMES, register_planning_tools
+from app.agents.agent_loop.loops.plan_execute import (
+    PLANNING_TOOL_NAMES,
+    register_planning_tools,
+)
 from app.agents.agent_loop.mcp_tool_loader import MCPToolProvider
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
@@ -168,6 +172,7 @@ from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
 from app.agents.mcp.service import is_mcp_enabled
+from app.utils.image_policy import resolve_image_policy
 
 
 def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:
@@ -291,6 +296,12 @@ class PipesHubAgentFactory:
         # (`utils/streaming.py`).
         opik_active = resolve_opik_gate(True)
         opik_project_name = os.getenv("OPIK_PROJECT_NAME")
+        # Enforced again at the wire because the count admitted at the source
+        # was decided for whichever model owned that tool state -- a sub-agent
+        # on a smaller model shares it. See `image_guard`.
+        image_cap = resolve_image_policy(
+            provider=context.llm_provider, is_multimodal=context.is_multimodal_llm,
+        ).max_images_per_request
 
         transport_registry = TransportRegistry()
         transport_registry.register(
@@ -298,6 +309,7 @@ class PipesHubAgentFactory:
             traced_transport_factory(
                 lambda: LangChainTransport(
                     llm, model_name=model_name, opik_project_name=opik_project_name, model_key=model_key,
+                    max_images_per_request=image_cap,
                 ),
                 opik_active=opik_active,
                 project_name=opik_project_name,
@@ -325,10 +337,15 @@ class PipesHubAgentFactory:
                 llm, model_name=model_name, model_key=model_key,
             )
             if direct is not None:
-                return direct
+                # The direct SDK transports have no image cap of their own --
+                # they live in `agent_loop_lib` and know nothing about
+                # PipesHub's per-provider policy -- so the same net the
+                # LangChain arm applies inline is wrapped around them here.
+                return with_image_cap(direct, image_cap)
             return LangChainTransport(
                 llm, model_name=model_name,
                 opik_project_name=opik_project_name, model_key=model_key,
+                max_images_per_request=image_cap,
             )
 
         transport_registry.register(
@@ -393,9 +410,13 @@ class PipesHubAgentFactory:
         # Registered unconditionally (not just when lazy disclosure ends up
         # active — see `register_lazy_tool_meta_tools`'s docstring):
         # `search_tools` provides auth-aware global discovery in eager mode
-        # too, and `list_toolsets`/`fetch_tools` are harmless no-ops when
-        # nothing is grouped. Every tool-name list assembled below has
-        # `META_TOOL_NAMES` appended so they're always in the grant.
+        # too. Every tool-name list assembled below has `META_TOOL_NAMES`
+        # appended so all three are candidates for the grant, but
+        # `list_toolsets`/`fetch_tools` are pruned back out below once
+        # `tool_disclosure` is actually decided (see the `tool_disclosure
+        # != "lazy"` prune near `top_level_lazy_tools`) — under eager
+        # disclosure every schema is already bound, so they have nothing to
+        # reveal and are not worth two extra bound schemas every turn.
         register_lazy_tool_meta_tools(tool_registry, context)
 
         # Resolved ONCE per request and threaded into every surface the
@@ -436,7 +457,7 @@ class PipesHubAgentFactory:
             skill_manager = await build_skill_manager(context, transport_registry)
             if skill_manager is not None:
                 register_skill_tools(tool_registry, skill_manager)
-                logger.info(
+                logger.debug(
                     "PipesHubAgentFactory.create: skills enabled — %d skill(s) in catalog "
                     "(org_id=%s)", len(skill_manager.catalog_snapshot()), context.org_id,
                 )
@@ -556,11 +577,12 @@ class PipesHubAgentFactory:
 
         # `tool_registry.names()` already includes them (registered above),
         # but the curated lists (composed/planning tools) do not — append
-        # unconditionally so `search_tools`/`list_toolsets`/`fetch_tools`
-        # are callable regardless of `tool_disclosure` (see
-        # `register_lazy_tool_meta_tools`'s docstring for why eager mode
-        # needs this too: `tool_schemas_for_turn` binds exactly
-        # `spec.tool_names` when disclosure is eager). EXCEPT deep mode's
+        # here so all three are CANDIDATES for the grant regardless of
+        # `tool_disclosure` (`tool_schemas_for_turn` binds exactly
+        # `spec.tool_names`, so a name has to be in this list to ever be
+        # bound at all). `list_toolsets`/`fetch_tools` get pruned back out
+        # below once `tool_disclosure` is actually decided, if it's eager —
+        # see the prune near `top_level_lazy_tools`. EXCEPT deep mode's
         # orchestrator: its own grant must stay exactly the four
         # coordination tools (see `lazy_tools_wiring.py`'s module
         # docstring — deep mode is out of scope for this pass; its spawn
@@ -727,6 +749,18 @@ class PipesHubAgentFactory:
             context=context,
         )
         tool_names, tool_disclosure = top_level_lazy_tools(tool_registry, tool_names)
+        # `list_toolsets`/`fetch_tools` were appended unconditionally above
+        # (before this decision existed) so they'd be available to append
+        # again — a no-op — if disclosure went lazy. If it didn't, they have
+        # nothing to reveal (see `_render_toolset_overview`'s prompt-side
+        # gating in `agent_loop_lib/agent/prompt.py`, which now stays silent
+        # about them in eager mode too) but were still being bound as two
+        # extra schemas on every turn regardless. Prune them from the final
+        # eager-mode grant; `search_tools` stays — it's the one meta-tool
+        # that does real work in eager mode (auth-aware global discovery,
+        # including now the MCP `mcp_unavailable` hits from step 5).
+        if tool_disclosure != "lazy":
+            tool_names = [n for n in tool_names if n not in ("list_toolsets", "fetch_tools")]
         # Every toolset group `group_connector_toolsets` was told to leave
         # alone (skills, plus whichever internal toolsets loaded with
         # `essential=True` metadata this request — see
@@ -858,12 +892,13 @@ class PipesHubAgentFactory:
         # interactions or future shapers that don't use safe_tail_boundary.
         hooks.on(HookEvent.PRE_MODEL).use(shape_image_injection(context))     # L0
         if not supports_multipart_tool_result:
-            # Ollama's transport (see `LangChainTransport`/`converters.py`)
-            # strips images out of every ToolMessage before it reaches the
-            # provider — this is the fallback that gets them to the model
+            # Providers that reject images inside a tool result (Ollama,
+            # OpenAI-family models on Chat Completions — see
+            # `_supports_multipart_tool_result`) have them stripped before the
+            # request leaves; this is the fallback that gets them to the model
             # anyway, via the same UserMessage-injection mechanism as L0.
             # Only registered for providers that actually need it so
-            # OpenAI/Anthropic never see an image delivered twice.
+            # Anthropic/Gemini never see an image delivered twice.
             hooks.on(HookEvent.PRE_MODEL).use(shape_retrieved_image_injection(context))  # L0.1
         hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction())           # L1
         hooks.on(HookEvent.PRE_MODEL).use(shape_artifact_compaction(          # L2
@@ -980,6 +1015,7 @@ class PipesHubAgentFactory:
 
         is_multimodal = context.is_multimodal_llm
         from app.utils.chat_helpers import ImageBudget  # noqa: PLC0415
+        from app.utils.image_admission import admission_from_state  # noqa: PLC0415
         image_budget: ImageBudget = state.setdefault("image_budget", ImageBudget())
 
         ctx = ContextManager()
@@ -997,6 +1033,7 @@ class PipesHubAgentFactory:
                         attachments, blob_store, org_id, ref_mapper, vrmap,
                         is_multimodal_llm=is_multimodal,
                         image_budget=image_budget,
+                        image_admission=admission_from_state(state),
                     )
                     msg = messages[0]
                     if extra_text:

@@ -208,6 +208,46 @@ class TestRequiredFields:
         assert rule.get("additionalProperties") is False
 
 
+def _valid_app_doc(**extra):
+    doc = {
+        "name": "Drive",
+        "type": "GOOGLE_DRIVE",
+        "appGroup": "Google Workspace",
+        "scope": "personal",
+        "isActive": True,
+        "createdAtTimestamp": 1,
+    }
+    doc.update(extra)
+    return doc
+
+
+class TestAppSchemaVectorMembership:
+    def test_accepts_backfill_fields(self):
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        validator.validate(
+            _valid_app_doc(
+                vectorMembershipBackfilled=False,
+                vectorMembershipBackfillAfterKey="rec-1",
+            )
+        )
+        validator.validate(
+            _valid_app_doc(
+                vectorMembershipBackfilled=True,
+                vectorMembershipBackfillAfterKey=None,
+            )
+        )
+
+    def test_backfill_flag_defaults_false(self):
+        flag = documents.app_schema["rule"]["properties"]["vectorMembershipBackfilled"]
+        assert flag["type"] == "boolean"
+        assert flag["default"] is False
+
+    def test_still_rejects_unknown_properties(self):
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        with pytest.raises(Exception):
+            validator.validate(_valid_app_doc(notARealAppField=True))
+
+
 # ---------------------------------------------------------------------------
 # Artifact version bookkeeping
 # ---------------------------------------------------------------------------

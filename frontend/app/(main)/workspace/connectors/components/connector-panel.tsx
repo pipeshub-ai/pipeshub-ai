@@ -28,7 +28,7 @@ import {
   isConnectorInstanceAuthenticatedForUi,
   resolveOAuthFieldVisibility,
 } from '../utils/auth-helpers';
-import { trimAuthPayloadForApi, trimConnectorConfig } from '../utils/trim-config';
+import { trimAuthPayloadForApi, trimConnectorConfig, stripLinkedOAuthAppCredentials } from '../utils/trim-config';
 import { collectSyncCustomFieldErrors } from '../utils/sync-custom-fields-validation';
 import {
   visibleAuthSchemaFields,
@@ -358,11 +358,13 @@ export function ConnectorPanel() {
       setSaveError(t('workspace.connectors.loadingConfig'));
       return false;
     }
+    const disableCredEdit = useConnectorsStore.getState().disableCredentialEditWhenLinked;
     const { linkedOAuthAppId: oauthConfigIdStr, oauthFieldVisibility } = resolveOAuthFieldVisibility(
       formData.auth,
       connectorConfig,
       isCreateMode,
-      isAdmin
+      isAdmin,
+      disableCredEdit
     );
 
     const vFields = visibleAuthSchemaFields(
@@ -496,6 +498,12 @@ export function ConnectorPanel() {
       try {
         setSaveError(null);
 
+        const trimmedAuth = trimAuthPayloadForApi(formData.auth);
+        const disableCredEditFlag = useConnectorsStore.getState().disableCredentialEditWhenLinked;
+        const finalAuth = disableCredEditFlag
+          ? stripLinkedOAuthAppCredentials(trimmedAuth)
+          : trimmedAuth;
+
         const result = (await ConnectorsApi.createConnectorInstance({
           connectorType,
           instanceName: instanceName.trim(),
@@ -503,7 +511,7 @@ export function ConnectorPanel() {
           authType: selectedAuthType,
           config: {
             auth: {
-              ...trimAuthPayloadForApi(formData.auth),
+              ...finalAuth,
               connectorScope: selectedScope,
             },
           },
@@ -569,9 +577,15 @@ export function ConnectorPanel() {
       try {
         setSaveError(null);
 
+        const editTrimmedAuth = trimAuthPayloadForApi(formData.auth);
+        const editDisableCredFlag = useConnectorsStore.getState().disableCredentialEditWhenLinked;
+        const editFinalAuth = editDisableCredFlag
+          ? stripLinkedOAuthAppCredentials(editTrimmedAuth)
+          : editTrimmedAuth;
+
         await ConnectorsApi.saveAuthConfig(panelConnectorId!, {
           auth: {
-            ...trimAuthPayloadForApi(formData.auth),
+            ...editFinalAuth,
             connectorScope: selectedScope,
           },
           baseUrl: window.location.origin,

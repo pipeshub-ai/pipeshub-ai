@@ -387,6 +387,12 @@ class TestEventTypes:
     def test_bulk_delete_event(self):
         assert EventTypes.BULK_DELETE_RECORDS.value == "bulkDeleteRecords"
 
+    def test_sync_vector_membership_event(self):
+        assert EventTypes.SYNC_VECTOR_MEMBERSHIP.value == "syncVectorMembership"
+
+    def test_delete_vector_collection_event(self):
+        assert EventTypes.DELETE_VECTOR_COLLECTION.value == "deleteVectorCollection"
+
 
 # ---------------------------------------------------------------------------
 # AccountType, ConnectorScopes, AppStatus, ProgressStatus, QdrantCollectionNames

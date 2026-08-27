@@ -137,13 +137,13 @@ class TestServiceNowInit:
         assert await connector.init() is False
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_no_oauth_config_found(self, mock_fetch, connector):
         mock_fetch.return_value = None
         assert await connector.init() is False
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_incomplete_config(self, mock_fetch, connector):
         mock_fetch.return_value = {
             "config": {
@@ -154,7 +154,7 @@ class TestServiceNowInit:
         assert await connector.init() is False
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_no_access_token(self, mock_fetch, connector):
         mock_fetch.return_value = {
             "config": {
@@ -171,7 +171,7 @@ class TestServiceNowInit:
         assert await connector.init() is False
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_connection_test_fails(self, mock_fetch, connector):
         mock_fetch.return_value = {
             "config": {
@@ -185,7 +185,7 @@ class TestServiceNowInit:
         assert await connector.init() is False
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_exception(self, mock_fetch, connector):
         mock_fetch.side_effect = Exception("network error")
         assert await connector.init() is False

@@ -234,11 +234,11 @@ class TestRequestParity:
     @pytest.mark.asyncio
     async def test_reasoning_model_config_reaches_the_request(self) -> None:
         transport = AzureOpenAITransport.from_langchain_model(
-            _ConfiguredAzureModel(), model_name="gpt-5.4-mini",
+            _ConfiguredAzureModel(), model_name="gpt-5.6-luna",
         )
         assert transport._wants_responses(), "reasoning model must use /v1/responses"
 
-        kwargs = await _captured_request(_ConfiguredAzureModel(), model_name="gpt-5.4-mini")
+        kwargs = await _captured_request(_ConfiguredAzureModel(), model_name="gpt-5.6-luna")
         assert kwargs["reasoning"] == {"effort": "high"}
         assert kwargs["model"] == "dep", "Azure keys the request by DEPLOYMENT, not model name"
         assert "temperature" not in kwargs, "gpt-5 rejects temperature on the Responses API"

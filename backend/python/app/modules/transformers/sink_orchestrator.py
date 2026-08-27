@@ -13,6 +13,7 @@ from app.models.blocks import (
 )
 from app.models.entities import Record, RecordGroupType
 from app.modules.transformers.blob_storage import BlobStorage
+from app.modules.transformers.image_description import ImageDescriber, harvest_descriptions
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.modules.transformers.vectorstore import VectorStore
@@ -32,6 +33,10 @@ class SinkOrchestrator(Transformer):
         self.vector_store = vector_store
         self.graph_provider = graph_provider
         self.logger = logger
+        # Runs before the blob write below, which is the only reason it lives
+        # here: a description generated later would never reach the stored
+        # record, and the stored record is what `fetch_record` serves.
+        self.image_describer = ImageDescriber(logger, vector_store.config_service)
 
     # This is not a good long-term solution and should be improved in the future.
     LIMIT_SQL_ROW_BLOCKS_TO = 10
@@ -118,25 +123,30 @@ class SinkOrchestrator(Transformer):
         """
         record = ctx.record
         full_block_containers = None
+        skip_blob = bool(ctx.settings.get("skip_blob"))
         skip_vector_store = bool(ctx.settings.get("skip_vector_store")) or bool(
             ctx.settings.get("sink_only")
         )
 
-        is_sql = any(
-            bg.sub_type in (GroupSubType.SQL_TABLE, GroupSubType.SQL_VIEW)
-            for bg in record.block_containers.block_groups
-        ) if record.block_containers.block_groups else False
+        if not skip_blob:
+            is_sql = any(
+                bg.sub_type in (GroupSubType.SQL_TABLE, GroupSubType.SQL_VIEW)
+                for bg in record.block_containers.block_groups
+            ) if record.block_containers and record.block_containers.block_groups else False
 
-        if is_sql and self.LIMIT_SQL_ROW_BLOCKS_TO is not None:
-            full_block_containers = record.block_containers
-            record.block_containers = self._build_limited_sql_block_container(
-                full_block_containers, self.LIMIT_SQL_ROW_BLOCKS_TO
-            )
+            if is_sql and self.LIMIT_SQL_ROW_BLOCKS_TO is not None:
+                full_block_containers = record.block_containers
+                record.block_containers = self._build_limited_sql_block_container(
+                    full_block_containers, self.LIMIT_SQL_ROW_BLOCKS_TO
+                )
 
-        await self.blob_storage.apply(ctx)
+            await self._describe_images(ctx)
 
-        if full_block_containers is not None:
-            record.block_containers = full_block_containers
+            try:
+                await self.blob_storage.apply(ctx)
+            finally:
+                if full_block_containers is not None:
+                    record.block_containers = full_block_containers
 
         record_id = record.id
         record_doc = await self.graph_provider.get_document(
@@ -172,7 +182,7 @@ class SinkOrchestrator(Transformer):
             return
 
         indexing_status = record_doc.get("indexingStatus")
-        if indexing_status != ProgressStatus.COMPLETED.value:
+        if skip_blob or indexing_status != ProgressStatus.COMPLETED.value:
             connector, org, kb = self._activity_labels(record)
             result = await self.vector_store.apply(ctx)
             if result is False:
@@ -185,10 +195,46 @@ class SinkOrchestrator(Transformer):
             self.logger.info(f"✅ Vector store indexing succeeded for record {record_id}")
             # Per-record indexing success counter (powers the Ingestion dashboard).
             record_service_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type or "none")
-            self.logger.info(f"Saving reconciliation metadata for record {record_id}")
+            self.logger.debug(f"Saving reconciliation metadata for record {record_id}")
             await self._update_indexing_status(ctx)
             # await self.graphdb.apply(ctx)
             await self._save_reconciliation_metadata(ctx)
+
+    # A record with a handful of images is cheaper to describe outright than
+    # to fetch its previous version for; past this many, the fetch pays for
+    # itself several times over.
+    _INHERIT_DESCRIPTIONS_THRESHOLD = 5
+
+    async def _describe_images(self, ctx: TransformContext) -> None:
+        """Annotate image blocks with prose before the record is stored.
+
+        Text is the only representation of an image that always reaches the
+        model -- see `ImageDescriber`. Failure-isolated: an undescribed record
+        still indexes.
+        """
+        record = ctx.record
+        containers = record.block_containers
+        if not containers or not containers.blocks:
+            return
+        image_count = sum(1 for b in containers.blocks if b.type == BlockType.IMAGE)
+        if not image_count:
+            return
+
+        inherited: dict[str, str] = {}
+        if image_count >= self._INHERIT_DESCRIPTIONS_THRESHOLD and record.virtual_record_id:
+            try:
+                previous = await self.blob_storage.get_record_from_storage(
+                    virtual_record_id=record.virtual_record_id, org_id=record.org_id,
+                )
+                inherited = harvest_descriptions(previous)
+            except Exception:
+                # A missing or unreadable previous version just means paying
+                # for the descriptions again, not failing the record.
+                self.logger.debug(
+                    "No previous version to inherit image descriptions from", exc_info=True,
+                )
+
+        await self.image_describer.annotate(containers, inherited=inherited)
 
     async def _update_indexing_status(self, ctx: TransformContext) -> None:
         """Mark indexingStatus=COMPLETED without touching extractionStatus."""
@@ -207,7 +253,7 @@ class SinkOrchestrator(Transformer):
             ],
             CollectionNames.RECORDS.value,
         )
-        self.logger.info(
+        self.logger.debug(
             "✅ indexingStatus=COMPLETED recorded for %s", record.id
         )
         # The record is only searchable now, so the accessible-record map that
@@ -233,7 +279,7 @@ class SinkOrchestrator(Transformer):
         this method.
         """
         await self.graphdb.apply(ctx)
-        self.logger.info(
+        self.logger.debug(
             "✅ Graph enrichment completed for record %s", ctx.record.id
         )
 

@@ -56,21 +56,13 @@ async def test_ensure_scope_app_edges_team_creates_team_app_edge() -> None:
     connector.connector_id = "conn-1"
     connector.logger = MagicMock()
 
-    tx_store = AsyncMock()
-
-    @asynccontextmanager
-    async def _transaction():
-        yield tx_store
-
-    connector.data_store_provider = MagicMock()
-    connector.data_store_provider.transaction = _transaction
-
     connector.data_entities_processor = MagicMock()
     connector.data_entities_processor.org_id = "org-1"
+    connector.data_entities_processor.ensure_team_app_edge = AsyncMock()
 
     await connector._ensure_scope_app_edges()
 
-    tx_store.ensure_team_app_edge.assert_awaited_once_with("conn-1", "org-1")
+    connector.data_entities_processor.ensure_team_app_edge.assert_awaited_once_with("conn-1")
 
 
 @pytest.mark.asyncio

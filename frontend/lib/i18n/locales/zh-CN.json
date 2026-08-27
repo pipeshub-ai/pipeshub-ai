@@ -319,7 +319,8 @@
     "confirmDeleteMultiple": "确定要删除 {{count}} 个项目吗？",
     "cannotUndo": "此操作无法撤销。",
     "areYouSure": "您确定吗？",
-    "typeDeleteToConfirm": "输入 DELETE 以确认",
+    "deleteKeyword": "删除",
+    "typeDeleteToConfirm": "输入“{{keyword}}”以确认",
     "knowledgeBase": "知识库",
     "in": "位于",
     "willBeDeleted": "将被删除",
@@ -499,6 +500,14 @@
     "record": "记录"
   },
   "chat": {
+    "recordActions": {
+      "preview": "预览",
+      "open": "打开 {{source}}",
+      "openIn": "在 {{source}} 中打开",
+      "openInCollections": "在集合中打开",
+      "relevance": "相关度：{{percent}}%"
+    },
+    "results": "结果",
     "greeting": "今天想探索什么？",
     "heyUser": "你好，{{name}} 👋",
     "heyUserDefaultName": "朋友",
@@ -1335,7 +1344,7 @@
         "sectionTitle": "模型角色分配",
         "sectionDescription": "为特定任务分配专用模型。未分配时将使用默认模型。",
         "onboardingTitle": "您的模型将如何使用？",
-        "onboardingTip": "为摘要和分类等索引任务分配一个小型、高性价比的模型（例如 gpt-5.4-mini、gemini-2.5-flash）。将您能力最强的模型（例如 gpt-5.5、claude-sonnet）保留给最需要推理质量的查询和智能体场景。",
+        "onboardingTip": "为摘要和分类等索引任务分配一个小型、高性价比的模型（例如 gpt-5.6-luna、gemini-2.5-flash）。将您能力最强的模型（例如 gpt-5.6-terra、claude-sonnet）保留给最需要推理质量的查询和智能体场景。",
         "queryRole": "查询与聊天",
         "queryRoleSubtitle": "搜索、智能体与对话",
         "queryRoleDescription": "负责搜索、问答和 AI 智能体回复。请在此使用您能力最强的模型。",
@@ -3232,6 +3241,8 @@
       "connectorId": "连接器 ID",
       "notAvailable": "不适用",
       "typeEmail": "电子邮件",
+      "typeFile": "文件",
+      "typeArtifact": "工件",
       "typeTicket": "工单",
       "typeWebpage": "网页",
       "typeMessage": "消息",

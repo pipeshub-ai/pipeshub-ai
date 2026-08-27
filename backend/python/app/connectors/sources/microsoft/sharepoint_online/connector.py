@@ -1357,13 +1357,9 @@ class SharePointConnector(BaseConnector):
             if not self._pass_extension_filter(item):
                 return None
 
-            existing_record = None
-            # Get existing record for change detection
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=external_record_id
-                )
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, external_record_id
+            )
 
             is_new = existing_record is None
             is_updated = False
@@ -2029,12 +2025,9 @@ class SharePointConnector(BaseConnector):
                         self.logger.info(f"⏭️ Skipping System Account/Template page: '{page_name}'")
                         continue
 
-                    existing_record = None
-                    async with self.data_store_provider.transaction() as tx_store:
-                        existing_record = await tx_store.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_id=page_id
-                        )
+                    existing_record = await self.data_entities_processor.get_record_by_external_id(
+                        self.connector_id, page_id
+                    )
 
                     is_new = existing_record is None
                     is_updated = False
@@ -4888,11 +4881,9 @@ class SharePointConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
         **kwargs,
     ) -> BaseConnector:
-        data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
-        await data_entities_processor.initialize()
-
         return SharePointConnector(
             logger,
             data_entities_processor,

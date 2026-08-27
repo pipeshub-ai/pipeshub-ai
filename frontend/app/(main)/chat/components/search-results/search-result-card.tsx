@@ -1,7 +1,9 @@
 'use client';
 
 import React from 'react';
-import { Flex, Box, Text, Badge } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
+import { Flex, Box, Text, Badge, Button } from '@radix-ui/themes';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { isLocalFsConnectorType } from '@/app/(main)/workspace/connectors/utils/local-fs-helpers';
 import { openRecordSource } from '@/chat/utils/open-record-source';
@@ -11,22 +13,28 @@ import type { SearchResultItem } from '@/chat/types';
 interface SearchResultCardProps {
   result: SearchResultItem;
   onOpenSource: (result: SearchResultItem) => void;
-  onChat: (result: SearchResultItem) => void;
+  onPreview: (result: SearchResultItem) => void;
 }
 
 export function SearchResultCard({
   result,
   onOpenSource,
-  onChat,
+  onPreview,
 }: SearchResultCardProps) {
+  const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const { metadata, content, score } = result;
   const config = getConnectorConfig(metadata.connector);
 
   const isCollectionSource = metadata.origin === 'UPLOAD';
   const isLocalFsSource = isLocalFsConnectorType(metadata.connector ?? '');
-  let openInLabel = `Open ${config.label}`;
-  if (isLocalFsSource) openInLabel = `Open in ${config.label}`;
-  if (isCollectionSource) openInLabel = 'Open in Collections';
+  let openInLabel = t('chat.recordActions.open', { source: config.label });
+  if (isLocalFsSource) openInLabel = t('chat.recordActions.openIn', { source: config.label });
+  if (isCollectionSource) openInLabel = t('chat.recordActions.openInCollections');
+
+  // 44px minimum touch target on mobile (frontend/CLAUDE.md). Both header
+  // actions share the value so they stay the same height side by side.
+  const actionHeight = isMobile ? '44px' : '24px';
 
   const pageNums = metadata.pageNum?.filter((p): p is number => p !== null) ?? [];
   const blockNums = metadata.blockNum?.filter((b): b is number => b !== null) ?? [];
@@ -34,6 +42,11 @@ export function SearchResultCard({
   const canOpenSource =
     isLocalFsSource ||
     (!metadata.hideWeburl && !!metadata.webUrl);
+  // Same gate as the Chat citation card (citation-card.tsx) — only files (not web
+  // links) can be streamed into the preview panel.
+  const showPreview =
+    metadata.recordType?.toUpperCase() === 'FILE' &&
+    metadata.connector?.toUpperCase() !== 'WEB';
 
   const handleOpenSource = async () => {
     await openRecordSource({
@@ -86,7 +99,7 @@ export function SearchResultCard({
                 asChild
                 onClick={handleOpenSource}
                 style={{
-                  height: '24px',
+                  height: actionHeight,
                   padding: '0 var(--space-2)',
                   display: 'inline-flex',
                   alignItems: 'center',
@@ -118,41 +131,17 @@ export function SearchResultCard({
               </Box>
             )}
 
-            {/* "Chat" solid accent button */}
-            <Box
-              asChild
-              onClick={() => onChat(result)}
-              style={{
-                height: '24px',
-                padding: '0 var(--space-2)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: 'var(--accent-9)',
-                borderRadius: 'var(--radius-1)',
-                cursor: 'pointer',
-                border: 'none',
-                transition: 'background-color 0.15s ease',
-              }}
-              onMouseEnter={(e: React.MouseEvent<HTMLElement>) => {
-                (e.currentTarget as HTMLElement).style.backgroundColor =
-                  'var(--accent-10)';
-              }}
-              onMouseLeave={(e: React.MouseEvent<HTMLElement>) => {
-                (e.currentTarget as HTMLElement).style.backgroundColor =
-                  'var(--accent-9)';
-              }}
-            >
-              <button type="button">
-                <Text
-                  size="1"
-                  weight="medium"
-                  style={{ color: 'var(--accent-contrast)', whiteSpace: 'nowrap' }}
-                >
-                  Chat
-                </Text>
-              </button>
-            </Box>
+            {/* "Preview" button — only for previewable files, same as citation-card.tsx */}
+            {showPreview && (
+              <Button
+                size="1"
+                variant="solid"
+                onClick={() => onPreview(result)}
+                style={{ height: actionHeight, cursor: 'pointer' }}
+              >
+                {t('chat.recordActions.preview')}
+              </Button>
+            )}
           </Flex>
         </Flex>
 
@@ -205,7 +194,7 @@ export function SearchResultCard({
             borderRadius: 'var(--radius-2)',
           }}
         >
-          Relevance: {Math.round(score * 100)}%
+          {t('chat.recordActions.relevance', { percent: Math.round(score * 100) })}
         </Badge>
 
         {/* Page / paragraph location badges */}
@@ -219,7 +208,7 @@ export function SearchResultCard({
                 color="gray"
                 style={{ fontWeight: 500 }}
               >
-                Page {p}
+                {t('filePreview.page', { number: p })}
               </Badge>
             ))}
             {blockNums.map((b) => (
@@ -230,7 +219,7 @@ export function SearchResultCard({
                 color="gray"
                 style={{ fontWeight: 500 }}
               >
-                Paragraph {b}
+                {t('filePreview.paragraph', { number: b })}
               </Badge>
             ))}
           </>

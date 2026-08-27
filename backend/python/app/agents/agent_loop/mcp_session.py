@@ -144,10 +144,8 @@ class MCPSessionManager:
 
         new_tokens = await refresh_credential_record(
             server.instance_id, server.owner_id, self._context.config_service,
+            fallback_config_services=server.fallback_config_services,
         )
-        # Mutated in place (not re-fetched from `mcp_server_configs`) so every
-        # `MCPToolAdapter` sharing this `ResolvedMCPServer` sees the fresh
-        # token for the rest of this request.
         server.auth = {
             "isAuthenticated": True,
             "oauthTokens": new_tokens.model_dump(by_alias=True, mode="json"),

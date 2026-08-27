@@ -157,7 +157,7 @@ class TestCall:
     ) -> None:
         refreshed_tokens = OAuthTokens(access_token="fresh-token")
 
-        async def _fake_refresh(instance_id: str, owner_id: str, config_service: Any) -> OAuthTokens:
+        async def _fake_refresh(instance_id: str, owner_id: str, config_service: Any, **kwargs: Any) -> OAuthTokens:
             assert instance_id == "inst-1"
             assert owner_id == "user-1"
             return refreshed_tokens
@@ -192,7 +192,7 @@ class TestCall:
         refresh_started = asyncio.Event()
         release_refresh = asyncio.Event()
 
-        async def _fake_refresh(instance_id: str, owner_id: str, config_service: Any) -> OAuthTokens:
+        async def _fake_refresh(instance_id: str, owner_id: str, config_service: Any, **kwargs: Any) -> OAuthTokens:
             nonlocal refresh_calls
             refresh_calls += 1
             refresh_started.set()

@@ -681,24 +681,19 @@ class TestFetchProjectsEdgeCases:
 class TestPersonalCreateConnector:
     async def test_create_connector_returns_personal_subclass(self) -> None:
         logger, _dep, dsp, cs = _make_deps()
-        with patch(
-            "app.connectors.sources.atlassian.jira_data_center_personal.connector.DataSourceEntitiesProcessor",
-        ) as MockProc:
-            mock_proc = MagicMock()
-            mock_proc.org_id = "org-x"
-            mock_proc.initialize = AsyncMock()
-            MockProc.return_value = mock_proc
+        processor = MagicMock()
+        processor.org_id = "org-x"
 
-            instance = await JiraDataCenterPersonalConnector.create_connector(
-                logger=logger,
-                data_store_provider=dsp,
-                config_service=cs,
-                connector_id="cid-create",
-                scope="personal",
-                created_by="u1",
-            )
+        instance = await JiraDataCenterPersonalConnector.create_connector(
+            logger=logger,
+            data_store_provider=dsp,
+            config_service=cs,
+            connector_id="cid-create",
+            scope="personal",
+            created_by="u1",
+            data_entities_processor=processor,
+        )
 
         assert isinstance(instance, JiraDataCenterPersonalConnector)
         assert instance.connector_id == "cid-create"
         assert instance.connector_name == Connectors.JIRA_DATA_CENTER_PERSONAL
-        mock_proc.initialize.assert_awaited_once()

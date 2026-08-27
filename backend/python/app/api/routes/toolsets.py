@@ -20,7 +20,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlencode, urlparse
 
-import httpx
 from dependency_injector.wiring import Provide, inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
@@ -29,13 +28,22 @@ from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints, OAuthScopes
+from app.config.constants.service import OAuthScopes
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
 )
 from app.connectors.core.registry.auth_builder import OAuthScopeType
-from app.containers.connector import ConnectorAppContainer
+from app.edition_containers import ConnectorAppContainer
+from app.edition_config import (
+    check_user_is_admin,
+    get_oauth_credentials_for_toolset,
+    get_toolset_by_id,
+    is_redacted_placeholder,
+    load_instances_for_mutation as edition_load_instances_for_mutation,
+    mask_oauth_secrets,
+    resolve_inherited_from_org_id,
+)
 from app.services.featureflag.config.config import CONFIG
 from app.services.featureflag.platform_settings import read_platform_feature_flag
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -46,6 +54,13 @@ from app.services.notification.types import (
 )
 from app.utils.oauth_config import extract_oauth_error_message, get_oauth_config
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Re-export for client builders / token refresh .
+__all__ = [
+    "get_oauth_credentials_for_toolset",
+    "get_toolset_by_id",
+    "router",
+]
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/toolsets", tags=["toolsets"])
@@ -87,205 +102,7 @@ DEFAULT_TOOLSET_INSTANCES_PATH = "/services/toolset-instances"
 #   - instanceId: UUID of the toolset instance
 #   - oauthConfigId: Reference to the central OAuth config
 #
-# This helper is used by client builders (GoogleClient, JiraClient, etc.) to
-# fetch the OAuth credentials when creating authenticated API clients.
 # ============================================================================
-
-async def get_oauth_credentials_for_toolset(
-    toolset_config: dict[str, Any],
-    config_service: ConfigurationService,
-    logger: logging.Logger | None = None
-) -> dict[str, Any]:
-    """
-    Fetch complete OAuth configuration for a toolset (all fields dynamically).
-
-    RETURNS: Complete OAuth config with ALL fields, which may include:
-    - clientId, clientSecret (common)
-    - tenantId (Microsoft/Azure)
-    - domain, workspace (Slack)
-    - companyUrl, baseUrl (various)
-    - redirectUri, scopes, authorizeUrl, tokenUrl (infrastructure)
-    - Any other provider-specific fields
-
-    PERFORMANCE: Makes 1-2 ETCD calls (OAuth config list, optionally instance list).
-
-    EDGE CASE HANDLING:
-    1. Stale oauthConfigId: Falls back to fetching current instance's config
-    2. Missing oauthConfigId: Fetches from instance automatically
-    3. Deleted OAuth config: Clear error message for admin
-    4. Config switch: Always uses current instance's config as source of truth
-
-    This is a utility function for client builders (GoogleClient, MSGraphClient, etc.)
-    to get OAuth credentials when building from toolset configs.
-
-    Flow:
-    1. Check if credentials already in toolset_config.auth (backward compatibility)
-    2. Try using oauthConfigId from toolset_config
-    3. If not found or missing, fetch from current instance (handles admin config switches)
-    4. Return the ENTIRE OAuth config (all fields dynamically)
-
-    Args:
-        toolset_config: User's toolset config from /services/toolsets/{instanceId}/{userId}
-        config_service: ConfigurationService for ETCD access
-        logger: Optional logger for debugging
-
-    Returns:
-        Dict with complete OAuth configuration (clientId, clientSecret, tenantId, etc.)
-
-    Raises:
-        ValueError: If OAuth configuration cannot be found or is invalid
-    """
-    if not toolset_config:
-        raise ValueError("Toolset configuration is required")
-
-    # Check if full OAuth config already in the auth config (backward compatibility or admin override)
-    auth_config = toolset_config.get("auth", {})
-
-    # If auth config has OAuth credentials, return them as-is (all fields)
-    # This supports backward compatibility and admin overrides
-    if auth_config and isinstance(auth_config, dict):
-        # Check for presence of OAuth credentials (clientId or client_id)
-        has_client_id = auth_config.get("clientId") or auth_config.get("client_id")
-        has_client_secret = auth_config.get("clientSecret") or auth_config.get("client_secret")
-
-        if has_client_id and has_client_secret:
-            if logger:
-                logger.debug("Using OAuth credentials from toolset auth config (legacy or override)")
-            # Return entire auth config to preserve all fields (tenantId, domain, etc.)
-            return dict(auth_config)
-
-    # Get required identifiers
-    oauth_config_id = toolset_config.get("oauthConfigId")
-    toolset_type = toolset_config.get("toolsetType")
-    instance_id = toolset_config.get("instanceId")
-
-    if not toolset_type:
-        raise ValueError(
-            f"Toolset type not found in config. "
-            f"Config keys: {list(toolset_config.keys())}. "
-            f"This indicates a corrupted toolset configuration."
-        )
-
-    # If oauthConfigId is missing, fetch it from the current instance
-    # This handles cases where:
-    # - User config was created before we added oauthConfigId tracking
-    # - Admin switched the instance's OAuth config (user has stale reference)
-    if not oauth_config_id and instance_id:
-        if logger:
-            logger.warning(
-                f"No oauthConfigId in user config for instance {instance_id}. "
-                f"Fetching current instance's OAuth config (admin may have updated it)."
-            )
-        try:
-            # Fetch the current instance to get its current oauthConfigId
-            # This is an extra ETCD call but only happens in edge cases
-            instances_path = DEFAULT_TOOLSET_INSTANCES_PATH
-            instances = await config_service.get_config(instances_path, default=[])
-
-            if isinstance(instances, list):
-                current_instance = next(
-                    (inst for inst in instances if inst.get("_id") == instance_id),
-                    None
-                )
-                if current_instance:
-                    oauth_config_id = current_instance.get("oauthConfigId")
-                    if logger:
-                        logger.info(
-                            f"Retrieved current oauthConfigId '{oauth_config_id}' from instance {instance_id}"
-                        )
-        except Exception as e:
-            if logger:
-                logger.warning(f"Could not fetch instance to get oauthConfigId: {e}")
-
-    if not oauth_config_id:
-        raise ValueError(
-            f"No oauthConfigId found in toolset config or instance. "
-            f"Config keys: {list(toolset_config.keys())}. "
-            f"Please reauthenticate or ask an administrator to configure OAuth for this toolset."
-        )
-
-    try:
-        # Fetch OAuth config from ETCD
-        oauth_config_path = _get_toolset_oauth_config_path(toolset_type)
-        oauth_configs = await config_service.get_config(oauth_config_path, default=[], use_cache=False)
-
-        if not isinstance(oauth_configs, list):
-            raise ValueError(f"Invalid OAuth config format for toolset type '{toolset_type}'")
-
-        # Find the specific OAuth config by ID
-        oauth_config = next(
-            (cfg for cfg in oauth_configs if cfg.get("_id") == oauth_config_id),
-            None
-        )
-
-        if not oauth_config:
-            # OAuth config was deleted or ID is wrong
-            if logger:
-                logger.error(
-                    f"OAuth configuration '{oauth_config_id}' not found for toolset '{toolset_type}'. "
-                    f"Available configs: {[c.get('_id') for c in oauth_configs]}"
-                )
-            raise ValueError(
-                f"OAuth configuration '{oauth_config_id}' not found for toolset '{toolset_type}'. "
-                f"This can happen if:\n"
-                f"  1. The admin deleted the OAuth configuration\n"
-                f"  2. The admin switched the instance to use a different OAuth config\n"
-                f"  3. There's a configuration mismatch\n"
-                f"Please reauthenticate this toolset to use the current OAuth configuration."
-            )
-
-        # Extract the complete config (all fields dynamically)
-        config_data = oauth_config.get("config", {})
-
-        if not config_data or not isinstance(config_data, dict):
-            raise ValueError(
-                f"OAuth configuration '{oauth_config_id}' has invalid or empty config data. "
-                f"Please ask an administrator to update the OAuth configuration."
-            )
-
-        # Validate that at minimum, clientId and clientSecret are present
-        # (but return ALL fields, not just these two)
-        client_id = config_data.get("clientId") or config_data.get("client_id")
-        client_secret = config_data.get("clientSecret") or config_data.get("client_secret")
-
-        if not client_id or not client_secret:
-            raise ValueError(
-                f"OAuth configuration '{oauth_config_id}' is missing clientId or clientSecret. "
-                f"Available config keys: {list(config_data.keys())}. "
-                f"Please ask an administrator to update the OAuth configuration."
-            )
-
-        if logger:
-            logger.debug(
-                f"✅ Fetched complete OAuth config '{oauth_config_id}' "
-                f"for toolset type '{toolset_type}' with fields: {list(config_data.keys())}"
-            )
-
-        # Return the ENTIRE config with all fields (clientId, clientSecret, tenantId, domain, etc.)
-        return dict(config_data)
-
-    except ValueError:
-        # Re-raise ValueError with our custom messages
-        raise
-    except Exception as e:
-        if logger:
-            logger.error(f"Failed to fetch OAuth credentials: {e}", exc_info=True)
-        raise ValueError(
-            f"Failed to retrieve OAuth credentials for toolset: {str(e)}"
-        ) from e
-
-async def get_toolset_by_id(instance_id: str, config_service: ConfigurationService) -> dict[str, Any] | None:
-    """Fetch a single toolset instance by ID from ETCD."""
-    try:
-        instances_path = DEFAULT_TOOLSET_INSTANCES_PATH
-        instances = await config_service.get_config(instances_path, default=[])
-        if isinstance(instances, list):
-            return next((inst for inst in instances if inst.get("_id") == instance_id), None)
-        return None
-    except Exception as e:
-        logger.error(f"Failed to fetch toolset instance '{instance_id}': {e}", exc_info=True)
-        return None
-
 
 # ============================================================================
 # Custom Exceptions
@@ -450,53 +267,31 @@ async def _check_user_is_admin(
     request: Request,
     config_service: ConfigurationService,
 ) -> bool:
-    """
-    Check if the current user is an admin by calling the Node.js CM backend.
+    """Compat wrapper (old signature) for tests; delegates to edition resolver."""
+    org_id = None
+    user = getattr(request.state, "user", None) if request is not None else None
+    if isinstance(user, dict):
+        org_id = user.get("orgId")
+    return await check_user_is_admin(user_id, org_id, request, config_service)
 
-    Calls GET /api/v1/users/{userId}/adminCheck with the user's auth token.
-    Returns True if 200 (admin), False if 400/403 (not admin) or on error.
 
-    Args:
-        user_id: The user's MongoDB ObjectId string
-        request: The incoming FastAPI request (to forward auth headers)
-        config_service: ConfigurationService for reading the Node.js endpoint URL
+async def _load_instances_for_mutation(
+    org_id: str,
+    config_service: ConfigurationService,
+) -> list[dict[str, Any]]:
+    """Edition-switched instance list for create/update/delete writes."""
+    return await edition_load_instances_for_mutation(org_id, config_service)
 
-    Returns:
-        bool: True if the user is an admin, False otherwise
-    """
+
+def _get_oauth_config_resolver(request: Request) -> Any | None:
+    """Return container oauth_config_resolver if the edition provides one."""
+    container = getattr(request.app, "container", None)
+    if container is None or not hasattr(container, "oauth_config_resolver"):
+        return None
     try:
-        # Resolve Node.js CM backend URL from etcd config
-        try:
-            endpoints = await config_service.get_config(
-                "/services/endpoints", use_cache=False
-            )
-            nodejs_url = (
-                endpoints.get("nodejs", {}).get("endpoint")
-                if isinstance(endpoints, dict)
-                else None
-            ) or DefaultEndpoints.NODEJS_ENDPOINT.value
-        except Exception:
-            nodejs_url = DefaultEndpoints.NODEJS_ENDPOINT.value
-
-        # Forward the auth headers from the original request
-        auth_headers: dict[str, str] = {}
-        for header_name in ("authorization", "x-organization-id", "cookie"):
-            val = request.headers.get(header_name)
-            if val:
-                auth_headers[header_name] = val
-
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                f"{nodejs_url}/api/v1/users/{user_id}/adminCheck",
-                headers=auth_headers,
-            )
-            return resp.status_code == HttpStatusCode.OK.value
-
-    except Exception as e:
-        logger.warning(
-            f"Admin check via REST API failed for user {user_id}: {e}. Defaulting to non-admin."
-        )
-        return False
+        return container.oauth_config_resolver()
+    except Exception:
+        return None
 
 
 def _get_registry(request: Request) -> ToolsetRegistry:
@@ -924,8 +719,10 @@ async def _create_or_update_toolset_oauth_config(
                     for k, v in enriched.items():
                         if k == "type":
                             continue  # Skip type field
-                        if k == "clientSecret" and (not v or not str(v).strip()):
-                            continue  # Keep existing clientSecret if not provided
+                        if k == "clientSecret" and (
+                            not v or not str(v).strip() or is_redacted_placeholder(v)
+                        ):
+                            continue  # Keep existing clientSecret if not provided / redacted
                         cfg["config"][k] = v
                     cfg["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
                     oauth_configs[idx] = cfg
@@ -973,6 +770,24 @@ async def _get_oauth_config_by_id(
         if cfg.get("_id") == oauth_config_id and cfg.get("orgId") == org_id:
             return cfg
     return None
+
+
+async def _resolve_oauth_config_for_flow(
+    toolset_type: str,
+    oauth_config_id: str,
+    org_id: str,
+    config_service: ConfigurationService,
+    request: Request,
+) -> dict[str, Any] | None:
+    """Resolve an OAuth config by id, walking the inheritance chain in EE."""
+    cfg = await _get_oauth_config_by_id(toolset_type, oauth_config_id, org_id, config_service)
+    if cfg:
+        return cfg
+    resolver = _get_oauth_config_resolver(request)
+    if resolver is None:
+        return None
+    path = _get_toolset_oauth_config_path(toolset_type)
+    return await resolver.resolve(path, org_id, oauth_config_id, "toolsets")
 
 
 def _check_instance_name_conflict(
@@ -1231,7 +1046,9 @@ async def create_toolset_instance(
     - Instance name and OAuth config name must be unique within the org
     """
     user_context = _get_user_context(request)
-    is_admin = await _check_user_is_admin(user_context["user_id"], request, config_service)
+    is_admin = await _check_user_is_admin(
+        user_context["user_id"], request, config_service
+    )
     if not is_admin:
         raise HTTPException(
             status_code=HttpStatusCode.FORBIDDEN.value,
@@ -1266,8 +1083,7 @@ async def create_toolset_instance(
     user_id = user_context["user_id"]
     org_id = user_context["org_id"]
 
-    # Load existing instances for conflict check
-    instances = await _load_toolset_instances(org_id, config_service)
+    instances = await _load_instances_for_mutation(org_id, config_service)
 
     # Check instance name uniqueness within org and toolset type
     if _check_instance_name_conflict(instances, instance_name, org_id, toolset_type):
@@ -1297,13 +1113,22 @@ async def create_toolset_instance(
 
         # Case 1: Use existing OAuth config
         if oauth_config_id_from_body:
-            # Validate the OAuth config exists
-            existing_config = await _get_oauth_config_by_id(toolset_type, oauth_config_id_from_body, org_id, config_service)
+            existing_config = await _get_oauth_config_by_id(
+                toolset_type, oauth_config_id_from_body, org_id, config_service
+            )
             if not existing_config:
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value,
-                    detail=f"OAuth configuration '{oauth_config_id_from_body}' not found."
+                inherited_probe = await resolve_inherited_from_org_id(
+                    toolset_type=toolset_type,
+                    oauth_config_id=oauth_config_id_from_body,
+                    org_id=org_id,
+                    config_service=config_service,
+                    oauth_config_resolver=_get_oauth_config_resolver(request),
                 )
+                if inherited_probe is None:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.NOT_FOUND.value,
+                        detail=f"OAuth configuration '{oauth_config_id_from_body}' not found.",
+                    )
             oauth_config_id = oauth_config_id_from_body
             logger.debug(f"Using existing OAuth config for instance {instance_name}")
 
@@ -1374,6 +1199,15 @@ async def create_toolset_instance(
     }
     if oauth_config_id:
         new_instance["oauthConfigId"] = oauth_config_id
+        inherited = await resolve_inherited_from_org_id(
+            toolset_type=toolset_type,
+            oauth_config_id=oauth_config_id,
+            org_id=org_id,
+            config_service=config_service,
+            oauth_config_resolver=_get_oauth_config_resolver(request),
+        )
+        if inherited:
+            new_instance["inheritedFromOrgId"] = inherited
     else:
         new_instance["auth"] = auth_config
     instances.append(new_instance)
@@ -1467,7 +1301,9 @@ async def get_toolset_instance(
     """
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
-    is_admin = await _check_user_is_admin(user_context["user_id"], request, config_service)
+    is_admin = await _check_user_is_admin(
+        user_context["user_id"], request, config_service
+    )
 
     instances = await _load_toolset_instances(org_id, config_service)
 
@@ -1488,23 +1324,40 @@ async def get_toolset_instance(
         "toolCount": len(meta.get("tools", [])) if meta else 0,
     }
 
-    # For admins: include OAuth config data (mask clientSecret) and user count
+    # For admins: include OAuth config data (secrets masked per edition) and user count
     if is_admin and instance.get("authType") == "OAUTH":
         oauth_config_id = instance.get("oauthConfigId")
         if oauth_config_id:
             try:
-                oauth_cfg = await _get_oauth_config_by_id(toolset_type, oauth_config_id, org_id, config_service)
+                oauth_cfg = await _get_oauth_config_by_id(
+                    toolset_type, oauth_config_id, org_id, config_service
+                )
+                is_inherited_oauth = False
+                if not oauth_cfg:
+                    resolver = _get_oauth_config_resolver(request)
+                    if resolver is not None:
+                        try:
+                            oauth_cfg = await resolver.resolve(
+                                _get_toolset_oauth_config_path(toolset_type),
+                                org_id,
+                                oauth_config_id,
+                                "toolsets",
+                            )
+                            is_inherited_oauth = bool(
+                                oauth_cfg and oauth_cfg.get("orgId") != org_id
+                            )
+                        except Exception:
+                            oauth_cfg = None
+                elif oauth_cfg.get("orgId") and oauth_cfg.get("orgId") != org_id:
+                    is_inherited_oauth = True
                 if oauth_cfg:
-                    cfg_data = oauth_cfg.get("config", {})
-                    # Return all fields dynamically (admins see clientSecret)
+                    cfg_data = oauth_cfg.get("config", {}) or {}
+                    masked = mask_oauth_secrets(cfg_data, is_inherited=is_inherited_oauth)
                     oauth_config_dict = {
                         "_id": oauth_cfg.get("_id"),
                         "oauthInstanceName": oauth_cfg.get("oauthInstanceName"),
+                        **masked,
                     }
-                    # Add all config fields dynamically (include clientSecret for admins)
-                    for key, value in cfg_data.items():
-                        oauth_config_dict[key] = value
-                    # Also add clientSecretSet flag for backward compatibility
                     if "clientSecret" in cfg_data:
                         oauth_config_dict["clientSecretSet"] = bool(cfg_data["clientSecret"])
                     result["oauthConfig"] = oauth_config_dict
@@ -1583,7 +1436,9 @@ async def update_toolset_instance(
     re-authenticate with the new credentials.
     """
     user_context = _get_user_context(request)
-    is_admin = await _check_user_is_admin(user_context["user_id"], request, config_service)
+    is_admin = await _check_user_is_admin(
+        user_context["user_id"], request, config_service
+    )
     if not is_admin:
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Only administrators can update toolset instances.")
 
@@ -1593,7 +1448,7 @@ async def update_toolset_instance(
     body_data = await request.body()
     body = _parse_request_json(request, body_data)
 
-    instances = await _load_toolset_instances(org_id, config_service)
+    instances = await _load_instances_for_mutation(org_id, config_service)
 
     idx = next((i for i, inst in enumerate(instances) if inst.get("_id") == instance_id and inst.get("orgId") == org_id), None)
     if idx is None:
@@ -1638,12 +1493,26 @@ async def update_toolset_instance(
 
         # Case 1: Admin explicitly sets a different oauthConfigId (switch to existing config)
         if new_oauth_config_id_from_body and new_oauth_config_id_from_body != instance.get("oauthConfigId"):
-            existing_cfg = await _get_oauth_config_by_id(toolset_type, new_oauth_config_id_from_body, org_id, config_service)
+            existing_cfg = await _get_oauth_config_by_id(
+                toolset_type, new_oauth_config_id_from_body, org_id, config_service
+            )
             if not existing_cfg:
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value,
-                    detail=f"OAuth configuration '{new_oauth_config_id_from_body}' not found for toolset '{toolset_type}'."
+                resolver = _get_oauth_config_resolver(request)
+                inherited_probe = await resolve_inherited_from_org_id(
+                    toolset_type=toolset_type,
+                    oauth_config_id=new_oauth_config_id_from_body,
+                    org_id=org_id,
+                    config_service=config_service,
+                    oauth_config_resolver=resolver,
                 )
+                if inherited_probe is None:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.NOT_FOUND.value,
+                        detail=(
+                            f"OAuth configuration '{new_oauth_config_id_from_body}' "
+                            f"not found for toolset '{toolset_type}'."
+                        ),
+                    )
             instance["oauthConfigId"] = new_oauth_config_id_from_body
             oauth_credentials_changed = True
 
@@ -1677,6 +1546,20 @@ async def update_toolset_instance(
             value=body.get("authConfig"), field_name="authConfig", allow_empty=True
         )
         instance["auth"] = auth_config
+
+    # Recalculate inheritedFromOrgId server-side when oauth config linkage changed.
+    if oauth_credentials_changed and instance.get("oauthConfigId"):
+        inherited = await resolve_inherited_from_org_id(
+            toolset_type=toolset_type,
+            oauth_config_id=instance["oauthConfigId"],
+            org_id=org_id,
+            config_service=config_service,
+            oauth_config_resolver=_get_oauth_config_resolver(request),
+        )
+        if inherited:
+            instance["inheritedFromOrgId"] = inherited
+        else:
+            instance.pop("inheritedFromOrgId", None)
 
     instance["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
     instances[idx] = instance
@@ -1720,13 +1603,15 @@ async def delete_toolset_instance(
     (i.e. any key exists under /services/toolsets/{instanceId}/).
     """
     user_context = _get_user_context(request)
-    is_admin = await _check_user_is_admin(user_context["user_id"], request, config_service)
+    is_admin = await _check_user_is_admin(
+        user_context["user_id"], request, config_service
+    )
     if not is_admin:
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Only administrators can delete toolset instances.")
 
     org_id = user_context["org_id"]
 
-    instances = await _load_toolset_instances(org_id, config_service)
+    instances = await _load_instances_for_mutation(org_id, config_service)
 
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
@@ -2265,8 +2150,8 @@ async def get_instance_oauth_authorization_url(
             "Please ask an administrator to update the instance with OAuth credentials."
         )
 
-    # Load OAuth config (with better error for deleted/missing configs)
-    oauth_cfg = await _get_oauth_config_by_id(toolset_type, oauth_config_id, org_id, config_service)
+    # Load OAuth config — walks inheritance in EE so child orgs can use parent configs
+    oauth_cfg = await _resolve_oauth_config_for_flow(toolset_type, oauth_config_id, org_id, config_service, request)
     if not oauth_cfg:
         raise OAuthConfigError(
             f"OAuth configuration '{oauth_config_id}' not found for toolset '{toolset_type}'. "
@@ -2471,7 +2356,7 @@ async def handle_toolset_oauth_callback(
         if not oauth_config_id:
             raise OAuthConfigError("Instance has no OAuth configuration.")
 
-        oauth_cfg = await _get_oauth_config_by_id(toolset_type, oauth_config_id, org_id, config_service)
+        oauth_cfg = await _resolve_oauth_config_for_flow(toolset_type, oauth_config_id, org_id, config_service, request)
         if not oauth_cfg:
             raise OAuthConfigError(f"OAuth configuration '{oauth_config_id}' not found.")
 
@@ -2529,9 +2414,15 @@ async def handle_toolset_oauth_callback(
             updated_auth["authType"] = "OAUTH"
             updated_auth["instanceId"] = instance_id
             updated_auth["toolsetType"] = toolset_type
+            updated_auth["orgId"] = org_id
             # Store current instance's oauthConfigId (from callback flow, not stale data)
             # This ensures we always have the CURRENT config, handling admin config switches
             updated_auth["oauthConfigId"] = oauth_config_id
+            instance_inherited = instance.get("inheritedFromOrgId")
+            if instance_inherited:
+                updated_auth["inheritedFromOrgId"] = instance_inherited
+            elif "inheritedFromOrgId" in updated_auth:
+                del updated_auth["inheritedFromOrgId"]
             updated_auth["updatedAt"] = get_epoch_timestamp_in_ms()
             if is_agent_flow:
                 updated_auth["agentKey"] = agent_key_from_state
@@ -2602,20 +2493,37 @@ async def list_toolset_oauth_configs(
     """
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
-    is_admin = await _check_user_is_admin(user_context["user_id"], request, config_service)
+    is_admin = await _check_user_is_admin(
+        user_context["user_id"], request, config_service
+    )
 
-    configs = await _get_oauth_configs_for_type(toolset_type, config_service)
+    resolver = _get_oauth_config_resolver(request)
+    configs_from_resolver = False
+    if resolver is not None:
+        try:
+            configs = await resolver.resolve_all(
+                path=_get_toolset_oauth_config_path(toolset_type),
+                org_id=org_id,
+                inheritance_flag="toolsets",
+            )
+            configs_from_resolver = True
+        except Exception as e:
+            logger.warning(f"OAuth config inheritance resolve_all failed: {e}")
+            configs = await _get_oauth_configs_for_type(toolset_type, config_service)
+    else:
+        configs = await _get_oauth_configs_for_type(toolset_type, config_service)
+
     org_configs = []
     for cfg in configs:
-        if cfg.get("orgId") != org_id:
+        cfg_org = cfg.get("orgId")
+        if not configs_from_resolver and cfg_org != org_id:
             continue
+        is_inherited = bool(cfg_org and cfg_org != org_id)
         entry: dict[str, Any] = {k: v for k, v in cfg.items() if k != "config"}
+        entry["inherited"] = is_inherited
         if is_admin:
-            cfg_data = cfg.get("config", {})
-            # Add all config fields dynamically (include clientSecret for admins)
-            for key, value in cfg_data.items():
-                entry[key] = value
-            # Also add clientSecretSet flag for backward compatibility
+            cfg_data = cfg.get("config", {}) or {}
+            entry.update(mask_oauth_secrets(cfg_data, is_inherited=is_inherited))
             if "clientSecret" in cfg_data:
                 entry["clientSecretSet"] = bool(cfg_data["clientSecret"])
         org_configs.append(entry)
@@ -2637,7 +2545,9 @@ async def update_toolset_oauth_config(
     authenticated users deauthenticated in parallel.
     """
     user_context = _get_user_context(request)
-    is_admin = await _check_user_is_admin(user_context["user_id"], request, config_service)
+    is_admin = await _check_user_is_admin(
+        user_context["user_id"], request, config_service
+    )
     if not is_admin:
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Only administrators can update OAuth configurations.")
 
@@ -2710,7 +2620,9 @@ async def delete_toolset_oauth_config(
     SAFE DELETE: Rejected if any toolset instance references this OAuth config.
     """
     user_context = _get_user_context(request)
-    is_admin = await _check_user_is_admin(user_context["user_id"], request, config_service)
+    is_admin = await _check_user_is_admin(
+        user_context["user_id"], request, config_service
+    )
     if not is_admin:
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Only administrators can delete OAuth configurations.")
 
@@ -3406,7 +3318,7 @@ async def get_agent_toolset_oauth_url(
             "Please ask an administrator to update the instance with OAuth credentials."
         )
 
-    oauth_cfg = await _get_oauth_config_by_id(toolset_type, oauth_config_id, org_id, config_service)
+    oauth_cfg = await _resolve_oauth_config_for_flow(toolset_type, oauth_config_id, org_id, config_service, request)
     if not oauth_cfg:
         raise OAuthConfigError(f"OAuth configuration '{oauth_config_id}' not found for toolset '{toolset_type}'.")
 

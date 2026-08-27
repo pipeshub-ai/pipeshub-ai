@@ -103,6 +103,13 @@ def mock_data_entities_processor():
     proc.on_user_group_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[MagicMock(email="user@test.com")])
     proc.get_all_app_users = AsyncMock(return_value=[])
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_group_by_external_id = AsyncMock(return_value=None)
+    proc.get_app_user_by_email = AsyncMock(return_value=None)
+    proc.get_all_user_groups = AsyncMock(return_value=[])
+    proc.get_records_by_parent = AsyncMock(return_value=[])
+    proc.remove_user_access_to_record = AsyncMock()
+    proc.reindex_existing_records = AsyncMock()
     return proc
 
 
@@ -322,6 +329,7 @@ class TestProcessBoxEntry:
         existing.version = 1
         existing.source_updated_at = 1705312200000  # Different from entry
         box_connector.data_store_provider = _make_mock_data_store_provider(existing)
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         entry = _make_box_entry()
         box_connector.data_source.collaborations_get_file_collaborations = AsyncMock(
@@ -392,9 +400,9 @@ class TestProcessBoxEntry:
 
     async def test_exception_returns_none(self, box_connector):
         entry = _make_box_entry()
-        # Force an exception inside the method
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction.side_effect = Exception("DB error")
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=Exception("DB error")
+        )
 
         result = await box_connector._process_box_entry(
             entry, user_id="u1", user_email="user@test.com", record_group_id="rg1"
@@ -497,7 +505,7 @@ class TestBoxHandleRecordUpdates:
 
         existing = MagicMock()
         existing.id = "internal-1"
-        box_connector.data_store_provider = _make_mock_data_store_provider(existing)
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         await box_connector._handle_record_updates(update)
         box_connector.data_entities_processor.on_record_deleted.assert_called_once()
@@ -696,16 +704,7 @@ class TestBoxReconcileDeletedGroups:
         stale_group.source_user_group_id = "stale-1"
         stale_group.name = "Stale Group"
 
-        tx = _make_mock_tx_store()
-        tx.get_user_groups = AsyncMock(return_value=[stale_group])
-        box_connector.data_store_provider = _make_mock_data_store_provider()
-
-        # Override the transaction to return stale groups
-        @asynccontextmanager
-        async def _tx():
-            yield tx
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _tx
+        box_connector.data_entities_processor.get_all_user_groups = AsyncMock(return_value=[stale_group])
 
         await box_connector._reconcile_deleted_groups({"active-1", "active-2"})
         box_connector.data_entities_processor.on_user_group_deleted.assert_called_once()
@@ -714,14 +713,7 @@ class TestBoxReconcileDeletedGroups:
         group = MagicMock()
         group.source_user_group_id = "active-1"
 
-        tx = _make_mock_tx_store()
-        tx.get_user_groups = AsyncMock(return_value=[group])
-
-        @asynccontextmanager
-        async def _tx():
-            yield tx
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _tx
+        box_connector.data_entities_processor.get_all_user_groups = AsyncMock(return_value=[group])
 
         await box_connector._reconcile_deleted_groups({"active-1"})
         box_connector.data_entities_processor.on_user_group_deleted.assert_not_called()
@@ -1283,6 +1275,12 @@ def mock_data_entities_processor_fullcov():
     proc.on_user_group_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[MagicMock(email="user@test.com")])
     proc.get_all_app_users = AsyncMock(return_value=[])
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_group_by_external_id = AsyncMock(return_value=None)
+    proc.get_app_user_by_email = AsyncMock(return_value=None)
+    proc.get_all_user_groups = AsyncMock(return_value=[])
+    proc.get_records_by_parent = AsyncMock(return_value=[])
+    proc.remove_user_access_to_record = AsyncMock()
     proc.reindex_existing_records = AsyncMock()
     return proc
 
@@ -1493,14 +1491,7 @@ class TestBoxProcessEventBatch:
 
         existing_record = MagicMock()
         existing_record.mime_type = "application/pdf"
-        tx = _make_mock_tx_store(existing_record=existing_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _transaction
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing_record)
 
         await box_connector._process_event_batch(events)
 
@@ -1555,14 +1546,7 @@ class TestBoxProcessEventBatch:
 
         folder_record = MagicMock()
         folder_record.mime_type = MimeTypes.FOLDER.value
-        tx = _make_mock_tx_store(existing_record=folder_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _transaction
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=folder_record)
         box_connector._remove_user_access_from_folder_recursively = AsyncMock()
 
         await box_connector._process_event_batch(events)
@@ -1598,22 +1582,13 @@ class TestBoxProcessEventBatch:
 
         existing_record = MagicMock()
         existing_record.mime_type = "application/pdf"
-        tx = _make_mock_tx_store(existing_record=existing_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _transaction
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing_record)
 
         await box_connector._process_event_batch(events, our_org_box_user_ids={"owner1"})
 
-        # The grant is superseded by the later revoke sharing the same collab_id,
-        # so neither the owner-permission refresh nor the shared-with-me sync should run.
         box_connector._fetch_and_sync_files_for_owner.assert_not_awaited()
         box_connector._fetch_and_sync_items_as_shared_with_me.assert_not_awaited()
-        tx.remove_user_access_to_record.assert_awaited_once()
+        box_connector.data_entities_processor.remove_user_access_to_record.assert_awaited_once()
 
     async def test_revoke_then_grant_same_collab_id_collapses_to_grant(self, box_connector):
         events = [
@@ -1640,20 +1615,11 @@ class TestBoxProcessEventBatch:
         box_connector._get_app_users_by_emails = AsyncMock(return_value=[])
         box_connector._fetch_and_sync_files_for_owner = AsyncMock()
 
-        tx = _make_mock_tx_store()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _transaction
-
         await box_connector._process_event_batch(events, our_org_box_user_ids={"owner1"})
 
         # The earlier revoke is superseded by the re-invite sharing the same collab_id,
         # so the removal call should never run - only the final grant is processed.
-        tx.remove_user_access_to_record.assert_not_awaited()
+        box_connector.data_entities_processor.remove_user_access_to_record.assert_not_awaited()
         box_connector._fetch_and_sync_files_for_owner.assert_awaited_once()
 
     async def test_collaboration_events_without_collab_id_processed_individually(self, box_connector):
@@ -1688,21 +1654,14 @@ class TestBoxProcessEventBatch:
 
         existing_record = MagicMock()
         existing_record.mime_type = "application/pdf"
-        tx = _make_mock_tx_store(existing_record=existing_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _transaction
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing_record)
 
         await box_connector._process_event_batch(events, our_org_box_user_ids={"owner2"})
 
         # Neither event carries additional_details.collab_id, so both fall back to
         # being processed on their own - no collapsing across the unrelated items.
         box_connector._fetch_and_sync_files_for_owner.assert_awaited_once()
-        tx.remove_user_access_to_record.assert_awaited_once()
+        box_connector.data_entities_processor.remove_user_access_to_record.assert_awaited_once()
 
     async def test_multiple_revokes_same_collab_id_collapse_to_single_call(self, box_connector):
         events = [
@@ -1731,20 +1690,11 @@ class TestBoxProcessEventBatch:
 
         existing_record = MagicMock()
         existing_record.mime_type = "application/pdf"
-        tx = _make_mock_tx_store(existing_record=existing_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _transaction
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing_record)
 
         await box_connector._process_event_batch(events)
 
-        # Distinct event_ids mean event-id dedup doesn't apply here - only the
-        # collab_id-based collapsing should reduce this to a single removal call.
-        tx.remove_user_access_to_record.assert_awaited_once()
+        box_connector.data_entities_processor.remove_user_access_to_record.assert_awaited_once()
 
 
 class TestBoxFetchAndSyncFilesForOwner:
@@ -1841,27 +1791,13 @@ class TestBoxSyncFolderContentsRecursively:
 class TestBoxEnsureParentFoldersExist:
     async def test_folder_already_exists(self, box_connector):
         existing = MagicMock()
-        tx = _make_mock_tx_store(existing_record=existing)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _transaction
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         await box_connector._ensure_parent_folders_exist("owner1", ["f1"])
         box_connector.data_entities_processor.on_new_records.assert_not_awaited()
 
     async def test_folder_not_exists_creates(self, box_connector):
-        tx = _make_mock_tx_store(existing_record=None)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _transaction
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         box_connector.data_source.folders_get_folder_by_id = AsyncMock(
             return_value=MagicMock(success=True, data={})

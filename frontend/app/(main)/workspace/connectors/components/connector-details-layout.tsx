@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useTranslation } from 'react-i18next';
 import { Flex, Heading, Text, Button, Box } from '@radix-ui/themes';
 import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
+import { PermissionLockIcon } from '@/config';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { InstanceCard } from './instance-card';
 import type { Connector, ConnectorInstance, ConnectorConfig, ConnectorScope } from '../types';
@@ -36,6 +37,8 @@ interface ConnectorDetailsLayoutProps {
   onBack: () => void;
   /** Add another instance */
   onAddInstance: () => void;
+  /** Show lock on Add Instance (labelled button) instead of a denied dialog. */
+  createPermissionDenied?: boolean;
   /** Open external docs */
   onOpenDocs?: () => void;
   /** Manage a specific instance (open panel) */
@@ -49,6 +52,8 @@ interface ConnectorDetailsLayoutProps {
   isRefreshingAll?: boolean;
   /** Refresh one instance row + config */
   onRefreshInstance?: (instance: ConnectorInstance) => void | Promise<unknown>;
+  /** Extra action buttons rendered on each instance card */
+  renderInstanceActions?: (instance: ConnectorInstance) => React.ReactNode;
 }
 
 // ========================================
@@ -64,6 +69,7 @@ export function ConnectorDetailsLayout({
   isLoading,
   onBack,
   onAddInstance,
+  createPermissionDenied = false,
   onOpenDocs,
   onManageInstance,
   onToggleSyncActive,
@@ -71,6 +77,7 @@ export function ConnectorDetailsLayout({
   onRefreshAll,
   isRefreshingAll = false,
   onRefreshInstance,
+  renderInstanceActions,
 }: ConnectorDetailsLayoutProps) {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
@@ -234,11 +241,15 @@ export function ConnectorDetailsLayout({
           <Button
             variant="solid"
             size="2"
-            onClick={onAddInstance}
-            style={{ cursor: 'pointer' }}
+            onClick={() => {
+              if (createPermissionDenied) return;
+              onAddInstance();
+            }}
+            style={{ cursor: createPermissionDenied ? 'not-allowed' : 'pointer' }}
           >
             <MaterialIcon name="add" size={16} color="white" />
             {t('workspace.connectors.addInstance')}
+            {createPermissionDenied && <PermissionLockIcon />}
           </Button>
         </Flex>
       </Flex>
@@ -335,6 +346,7 @@ export function ConnectorDetailsLayout({
                   ? () => void handleRefreshCardClick(instance)
                   : undefined
               }
+              renderExtraActions={renderInstanceActions}
             />
           ))}
         </Flex>

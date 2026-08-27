@@ -112,6 +112,13 @@ def mock_data_entities_processor():
     proc.get_all_active_users = AsyncMock(return_value=[
         MagicMock(email="user@test.com"),
     ])
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.update_user_group_name = AsyncMock(return_value=True)
+    proc.get_user_by_email = AsyncMock(return_value=None)
+    proc.get_user_group_by_external_id = AsyncMock(return_value=None)
+    proc.upsert_permission_edge = AsyncMock()
+    proc.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
+    proc.get_file_record_by_id = AsyncMock(return_value=None)
     return proc
 
 
@@ -255,7 +262,7 @@ class TestDropboxConnectorInit:
         assert conn.batch_size == 100
 
     @patch("app.connectors.sources.dropbox.connector.DropboxApp")
-    @patch("app.connectors.sources.dropbox.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     @patch("app.connectors.sources.dropbox.connector.DropboxClient.build_with_config", new_callable=AsyncMock)
     @patch("app.connectors.sources.dropbox.connector.DropboxDataSource")
     async def test_init_success(self, mock_ds_cls, mock_build, mock_fetch_oauth,
@@ -290,7 +297,7 @@ class TestDropboxConnectorInit:
         assert await conn.init() is False
 
     @patch("app.connectors.sources.dropbox.connector.DropboxApp")
-    @patch("app.connectors.sources.dropbox.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_fails_no_oauth_config(self, mock_fetch_oauth, mock_app,
                                               mock_logger, mock_data_entities_processor,
                                               mock_data_store_provider, mock_config_service):
@@ -305,7 +312,7 @@ class TestDropboxConnectorInit:
         assert await conn.init() is False
 
     @patch("app.connectors.sources.dropbox.connector.DropboxApp")
-    @patch("app.connectors.sources.dropbox.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     @patch("app.connectors.sources.dropbox.connector.DropboxClient.build_with_config", new_callable=AsyncMock)
     async def test_init_fails_client_exception(self, mock_build, mock_fetch_oauth,
                                                mock_app, mock_logger,
@@ -716,7 +723,7 @@ class TestProcessDropboxEntry:
         existing.version = 1
         existing.record_name = "old_name.pdf"
         existing.external_revision_id = "0123456789abcdef"
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         entry = _make_file_entry(name="new_name.pdf")
         connector.data_source.files_get_temporary_link = AsyncMock(
@@ -741,7 +748,7 @@ class TestProcessDropboxEntry:
         existing.version = 1
         existing.record_name = "doc.pdf"
         existing.external_revision_id = "old_rev"
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         entry = _make_file_entry(name="doc.pdf", rev="abcdef0123456789")
         connector.data_source.files_get_temporary_link = AsyncMock(
@@ -1334,7 +1341,7 @@ class TestDropboxProcessDropboxEntry:
 
     async def test_file_entry_new(self, dropbox_connector):
         entry = _make_file_entry()
-        dropbox_connector.data_store_provider = _make_mock_data_store_provider()
+        dropbox_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         dropbox_connector.data_source.files_get_temporary_link = AsyncMock(
             return_value=MagicMock(success=True, data=MagicMock(link="https://dl.dropbox.com/tmp"))
         )
@@ -1357,7 +1364,7 @@ class TestDropboxProcessDropboxEntry:
 
     async def test_folder_entry_new(self, dropbox_connector):
         entry = _make_folder_entry()
-        dropbox_connector.data_store_provider = _make_mock_data_store_provider()
+        dropbox_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         dropbox_connector.data_source.sharing_create_shared_link_with_settings = AsyncMock(
             return_value=MagicMock(success=True, data=MagicMock(url="https://dropbox.com/s/link"))
         )
@@ -1400,7 +1407,7 @@ class TestDropboxProcessDropboxEntry:
         existing.version = 1
         existing.record_name = "doc.pdf"
         existing.external_revision_id = "old-revision"
-        dropbox_connector.data_store_provider = _make_mock_data_store_provider(existing)
+        dropbox_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         dropbox_connector.data_source.files_get_temporary_link = AsyncMock(
             return_value=MagicMock(success=True, data=MagicMock(link="https://dl.dropbox.com/tmp"))
         )
@@ -1425,8 +1432,9 @@ class TestDropboxProcessDropboxEntry:
         entry = _make_file_entry()
         dropbox_connector._pass_date_filters = MagicMock(return_value=True)
         dropbox_connector._pass_extension_filter = MagicMock(return_value=True)
-        dropbox_connector.data_store_provider = MagicMock()
-        dropbox_connector.data_store_provider.transaction.side_effect = Exception("DB error")
+        dropbox_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=Exception("DB error")
+        )
 
         result = await dropbox_connector._process_dropbox_entry(
             entry, "u1", "user@test.com", "rg1", True
@@ -1690,7 +1698,7 @@ class TestDropboxInitMethod:
             "credentials": {"access_token": "tok", "refresh_token": "ref", "isTeam": True},
             "auth": {"oauthConfigId": "oauth-1"}
         })
-        with patch("app.connectors.sources.dropbox.connector.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={
+        with patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={
             "config": {"clientId": "cid", "clientSecret": "csecret"}
         }):
             with patch("app.connectors.sources.dropbox.connector.DropboxClient") as MockClient:
@@ -1706,7 +1714,7 @@ class TestDropboxInitMethod:
             "credentials": {"access_token": "tok", "refresh_token": "ref", "isTeam": True},
             "auth": {"oauthConfigId": "oauth-1"}
         })
-        with patch("app.connectors.sources.dropbox.connector.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={
+        with patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={
             "config": {"clientId": "cid", "clientSecret": "csecret"}
         }):
             with patch("app.connectors.sources.dropbox.connector.DropboxClient") as MockClient:
@@ -1806,19 +1814,18 @@ class TestDropboxMisc:
 class TestDropboxCreateConnector:
     @pytest.mark.asyncio
     async def test_create_connector(self):
-        with patch("app.connectors.sources.dropbox.connector.DataSourceEntitiesProcessor") as MockDSEP:
-            mock_dep = MagicMock()
-            mock_dep.initialize = AsyncMock()
-            MockDSEP.return_value = mock_dep
-            connector = await DropboxConnector.create_connector(
-                logger=logging.getLogger("test"),
-                data_store_provider=MagicMock(),
-                config_service=AsyncMock(),
-                connector_id="test-dbx",
-                scope="personal",
-                created_by="test-user-id",
-            )
-            assert isinstance(connector, DropboxConnector)
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        connector = await DropboxConnector.create_connector(
+            logger=logging.getLogger("test"),
+            data_store_provider=MagicMock(),
+            config_service=AsyncMock(),
+            connector_id="test-dbx",
+            scope="personal",
+            created_by="test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, DropboxConnector)
 
 # =============================================================================
 # Merged from test_dropbox_connector_full_coverage.py
@@ -1996,6 +2003,13 @@ def mock_data_entities_processor_fullcov():
     proc.get_all_active_users = AsyncMock(return_value=[
         MagicMock(email="user@test.com"),
     ])
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.update_user_group_name = AsyncMock(return_value=True)
+    proc.get_user_by_email = AsyncMock(return_value=None)
+    proc.get_user_group_by_external_id = AsyncMock(return_value=None)
+    proc.upsert_permission_edge = AsyncMock()
+    proc.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
+    proc.get_file_record_by_id = AsyncMock(return_value=None)
     return proc
 
 
@@ -2372,8 +2386,7 @@ class TestProcessDropboxEntryBranches:
         existing.external_revision_id = "0123456789abcdef"
         existing.version = 1
 
-        provider = _make_mock_data_store_provider(existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         entry = _make_file_entry()
         connector.data_source.files_get_temporary_link = AsyncMock(
@@ -3483,50 +3496,16 @@ class TestHandleGroupRenamedEvent:
 # ===========================================================================
 class TestUpdateGroupName:
     async def test_success(self, connector):
-        existing_group = MagicMock()
-        existing_group.id = "ig1"
-        existing_group.name = "OldName"
-
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_user_group_by_external_id = AsyncMock(return_value=existing_group)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
-
+        connector.data_entities_processor.update_user_group_name = AsyncMock(return_value=True)
         await connector._update_group_name("g1", "NewName", "OldName")
-        tx.batch_upsert_user_groups.assert_called_once()
+        connector.data_entities_processor.update_user_group_name.assert_called_once()
 
     async def test_group_not_found(self, connector):
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_user_group_by_external_id = AsyncMock(return_value=None)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
-
+        connector.data_entities_processor.update_user_group_name = AsyncMock(return_value=False)
         await connector._update_group_name("g1", "NewName")
 
     async def test_exception(self, connector):
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_user_group_by_external_id = AsyncMock(side_effect=Exception("DB fail"))
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
-
+        connector.data_entities_processor.update_user_group_name = AsyncMock(side_effect=Exception("DB fail"))
         with pytest.raises(Exception, match="DB fail"):
             await connector._update_group_name("g1", "NewName")
 
@@ -3618,105 +3597,48 @@ class TestHandleGroupChangeMemberRoleEvent:
 # ===========================================================================
 class TestUpdateUserGroupPermission:
     async def test_user_not_found(self, connector):
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_user_by_email = AsyncMock(return_value=None)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
-
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=None)
         result = await connector._update_user_group_permission("g1", "user@test.com", PermissionType.OWNER)
         assert result is False
 
     async def test_group_not_found(self, connector):
         user = MagicMock(id="u1")
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_user_by_email = AsyncMock(return_value=user)
-        tx.get_user_group_by_external_id = AsyncMock(return_value=None)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
-
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=user)
+        connector.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
         result = await connector._update_user_group_permission("g1", "user@test.com", PermissionType.OWNER)
         assert result is False
 
     async def test_no_existing_edge_creates_new(self, connector):
         user = MagicMock(id="u1")
         group = MagicMock(id="ug1", name="G1")
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_user_by_email = AsyncMock(return_value=user)
-        tx.get_user_group_by_external_id = AsyncMock(return_value=group)
-        tx.get_edge = AsyncMock(return_value=None)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
-
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=user)
+        connector.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=group)
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock()
         result = await connector._update_user_group_permission("g1", "user@test.com", PermissionType.OWNER)
         assert result is True
-        tx.batch_create_edges.assert_called_once()
+        connector.data_entities_processor.upsert_permission_edge.assert_called_once()
 
     async def test_same_permission_type(self, connector):
         user = MagicMock(id="u1")
         group = MagicMock(id="ug1", name="G1")
-        existing_edge = {"permissionType": PermissionType.OWNER.value}
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_user_by_email = AsyncMock(return_value=user)
-        tx.get_user_group_by_external_id = AsyncMock(return_value=group)
-        tx.get_edge = AsyncMock(return_value=existing_edge)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
-
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=user)
+        connector.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=group)
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock()
         result = await connector._update_user_group_permission("g1", "user@test.com", PermissionType.OWNER)
         assert result is True
 
     async def test_different_permission_updates(self, connector):
         user = MagicMock(id="u1")
         group = MagicMock(id="ug1", name="G1")
-        existing_edge = {"permissionType": PermissionType.READ.value}
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_user_by_email = AsyncMock(return_value=user)
-        tx.get_user_group_by_external_id = AsyncMock(return_value=group)
-        tx.get_edge = AsyncMock(return_value=existing_edge)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
-
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=user)
+        connector.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=group)
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock()
         result = await connector._update_user_group_permission("g1", "user@test.com", PermissionType.OWNER)
         assert result is True
-        tx.delete_edge.assert_called_once()
-        tx.batch_create_edges.assert_called_once()
+        connector.data_entities_processor.upsert_permission_edge.assert_called_once()
 
     async def test_exception_returns_false(self, connector):
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_user_by_email = AsyncMock(side_effect=Exception("DB error"))
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
-
+        connector.data_entities_processor.get_user_by_email = AsyncMock(side_effect=Exception("DB error"))
         result = await connector._update_user_group_permission("g1", "user@test.com", PermissionType.OWNER)
         assert result is False
 
@@ -4332,16 +4254,7 @@ class TestResyncRecordByExternalId:
 
         existing_record = MagicMock()
         existing_record.external_record_group_id = "rg:1"
-
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing_record)
 
         record_update = MagicMock()
         record_update.is_updated = True
@@ -4360,15 +4273,7 @@ class TestResyncRecordByExternalId:
             return_value=_make_dropbox_response(success=True, data=metadata_data)
         )
 
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_record_by_external_id = AsyncMock(return_value=None)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         await connector._resync_record_by_external_id(
             "id:f1", "tm:1", "user@test.com", False
@@ -4387,16 +4292,7 @@ class TestResyncRecordByExternalId:
 
         existing_record = MagicMock()
         existing_record.external_record_group_id = "rg:1"
-
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing_record)
 
         record_update = MagicMock()
         record_update.is_updated = False
@@ -4443,15 +4339,7 @@ class TestResyncRecordByExternalId:
             ]
         )
 
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_record_by_external_id = AsyncMock(return_value=None)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         await connector._resync_record_by_external_id(
             "ns:1", "tm:1", "user@test.com", True
@@ -4493,17 +4381,8 @@ class TestGetSignedUrl:
 
     async def test_no_user_with_permission(self, connector):
         record = MagicMock(id="r1")
-
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
-        tx.get_file_record_by_id = AsyncMock(return_value=MagicMock(path="/file.pdf"))
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=MagicMock(path="/file.pdf"))
 
         result = await connector.get_signed_url(record)
         assert result is None
@@ -4511,17 +4390,8 @@ class TestGetSignedUrl:
     async def test_no_file_record(self, connector):
         record = MagicMock(id="r1")
         user = MagicMock(email="user@test.com")
-
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
-        tx.get_file_record_by_id = AsyncMock(return_value=None)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
 
         result = await connector.get_signed_url(record)
         assert result is None
@@ -4530,17 +4400,8 @@ class TestGetSignedUrl:
         record = MagicMock(id="r1", external_record_group_id="ns:1")
         user = MagicMock(email="user@test.com")
         file_record = MagicMock(path="/file.pdf")
-
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
-        tx.get_file_record_by_id = AsyncMock(return_value=file_record)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_record)
 
         member_info = MagicMock()
         member_info.get_member_info.return_value = MagicMock(
@@ -4560,17 +4421,8 @@ class TestGetSignedUrl:
         record = MagicMock(id="r1", external_record_group_id="dbmid:AAuser1")
         user = MagicMock(email="user@test.com")
         file_record = MagicMock(path="/file.pdf")
-
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
-        tx.get_file_record_by_id = AsyncMock(return_value=file_record)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_record)
 
         member_info = MagicMock()
         member_info.get_member_info.return_value = MagicMock(
@@ -4588,16 +4440,7 @@ class TestGetSignedUrl:
 
     async def test_exception(self, connector):
         record = MagicMock(id="r1")
-
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_first_user_with_permission_to_node = AsyncMock(side_effect=Exception("DB error"))
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(side_effect=Exception("DB error"))
 
         result = await connector.get_signed_url(record)
         assert result is None
@@ -4727,16 +4570,7 @@ class TestCheckAndFetchUpdatedRecord:
 
     async def test_no_file_record(self, connector):
         record = MagicMock(id="r1", external_record_id="ext:1", external_record_group_id="rg:1")
-
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_file_record_by_id = AsyncMock(return_value=None)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
 
         result = await connector._check_and_fetch_updated_record("org1", record)
         assert result is None
@@ -4744,17 +4578,8 @@ class TestCheckAndFetchUpdatedRecord:
     async def test_no_user_with_permission(self, connector):
         record = MagicMock(id="r1", external_record_id="ext:1", external_record_group_id="rg:1")
         file_record = MagicMock(path="/file.pdf")
-
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_file_record_by_id = AsyncMock(return_value=file_record)
-        tx.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_record)
+        connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
 
         result = await connector._check_and_fetch_updated_record("org1", record)
         assert result is None
@@ -4763,17 +4588,8 @@ class TestCheckAndFetchUpdatedRecord:
         record = MagicMock(id="r1", external_record_id="ext:1", external_record_group_id="rg:1")
         file_record = MagicMock(path="/file.pdf")
         user = MagicMock(email="user@test.com")
-
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_file_record_by_id = AsyncMock(return_value=file_record)
-        tx.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_record)
+        connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
 
         connector.data_source.team_members_get_info_v2 = AsyncMock(
             return_value=MagicMock(success=False, data=MagicMock(members_info=[]))
@@ -4786,17 +4602,8 @@ class TestCheckAndFetchUpdatedRecord:
         record = MagicMock(id="r1", external_record_id="ext:1", external_record_group_id="dbmid:user1")
         file_record = MagicMock(path="/file.pdf")
         user = MagicMock(email="user@test.com")
-
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_file_record_by_id = AsyncMock(return_value=file_record)
-        tx.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_record)
+        connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
 
         member_info = MagicMock()
         member_info.get_member_info.return_value = MagicMock(
@@ -4818,17 +4625,8 @@ class TestCheckAndFetchUpdatedRecord:
         record = MagicMock(id="r1", external_record_id="ext:1", external_record_group_id="ns:1")
         file_record = MagicMock(path="/file.pdf")
         user = MagicMock(email="user@test.com")
-
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_file_record_by_id = AsyncMock(return_value=file_record)
-        tx.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_record)
+        connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
 
         member_info = MagicMock()
         member_info.get_member_info.return_value = MagicMock(
@@ -4857,17 +4655,8 @@ class TestCheckAndFetchUpdatedRecord:
         record = MagicMock(id="r1", external_record_id="ext:1", external_record_group_id="ns:1")
         file_record = MagicMock(path="/file.pdf")
         user = MagicMock(email="user@test.com")
-
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_file_record_by_id = AsyncMock(return_value=file_record)
-        tx.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_record)
+        connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
 
         member_info = MagicMock()
         member_info.get_member_info.return_value = MagicMock(
@@ -4894,17 +4683,8 @@ class TestCheckAndFetchUpdatedRecord:
         record = MagicMock(id="r1", external_record_id="ext:1", external_record_group_id="ns:1")
         file_record = MagicMock(path="/file.pdf")
         user = MagicMock(email="user@test.com")
-
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_file_record_by_id = AsyncMock(return_value=file_record)
-        tx.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_record)
+        connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
 
         member_info = MagicMock()
         member_info.get_member_info.return_value = MagicMock(
@@ -4923,16 +4703,7 @@ class TestCheckAndFetchUpdatedRecord:
 
     async def test_exception(self, connector):
         record = MagicMock(id="r1", external_record_id="ext:1", external_record_group_id="ns:1")
-
-        tx = _make_mock_tx_store_fullcov()
-        tx.get_file_record_by_id = AsyncMock(side_effect=Exception("DB error"))
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(side_effect=Exception("DB error"))
 
         result = await connector._check_and_fetch_updated_record("org1", record)
         assert result is None
@@ -4943,12 +4714,10 @@ class TestCheckAndFetchUpdatedRecord:
 # ===========================================================================
 class TestCreateConnector:
     @patch("app.connectors.sources.dropbox.connector.DropboxApp")
-    @patch("app.connectors.sources.dropbox.connector.DataSourceEntitiesProcessor")
-    async def test_create(self, mock_processor_cls, mock_app, mock_logger_fullcov,
+    async def test_create(self, mock_app, mock_logger_fullcov,
                           mock_data_store_provider, mock_config_service):
-        proc = MagicMock()
-        proc.initialize = AsyncMock()
-        mock_processor_cls.return_value = proc
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
         conn = await DropboxConnector.create_connector(
             mock_logger_fullcov,
@@ -4957,9 +4726,9 @@ class TestCreateConnector:
             "conn-123",
             "team",
             "test-user-id",
+            data_entities_processor=processor,
         )
         assert isinstance(conn, DropboxConnector)
-        proc.initialize.assert_called_once()
 
 
 # ===========================================================================

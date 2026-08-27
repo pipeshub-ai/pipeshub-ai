@@ -303,13 +303,12 @@ class OneDriveConnector(BaseConnector):
                 )
 
             # Get existing record if any
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=item.id
-                )
-                if existing_record:
-                    existing_file_record = await tx_store.get_file_record_by_id(existing_record.id)
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, item.id
+            )
+            existing_file_record = None
+            if existing_record:
+                existing_file_record = await self.data_entities_processor.get_file_record_by_id(existing_record.id)
 
 
             # Detect changes
@@ -678,20 +677,16 @@ class OneDriveConnector(BaseConnector):
                     # Convert to our permission model
                     converted_permissions = await self._convert_to_permissions(child_permissions)
 
-                    # Update the child's permissions in database
-                    async with self.data_store_provider.transaction() as tx_store:
-                        existing_child_record = await tx_store.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_id=child.id
-                        )
+                    existing_child_record = await self.data_entities_processor.get_record_by_external_id(
+                        self.connector_id, child.id
+                    )
 
-                        if existing_child_record:
-                            # Update the record with new permissions
-                            await self.data_entities_processor.on_updated_record_permissions(
-                                record=existing_child_record,
-                                permissions=converted_permissions
-                            )
-                            self.logger.info(f"Updated permissions for child item {child.id}")
+                    if existing_child_record:
+                        await self.data_entities_processor.on_updated_record_permissions(
+                            record=existing_child_record,
+                            permissions=converted_permissions
+                        )
+                        self.logger.info(f"Updated permissions for child item {child.id}")
 
                     # If this child is also a folder, recurse
                     if child.folder is not None:
@@ -715,16 +710,13 @@ class OneDriveConnector(BaseConnector):
         """
         try:
             if record_update.is_deleted:
-                # Handle deletion
-                async with self.data_store_provider.transaction() as tx_store:
-                    dbRecord = await tx_store.get_record_by_external_id(
-                        connector_id=self.connector_id,
-                        external_id=record_update.external_record_id
+                dbRecord = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, record_update.external_record_id
+                )
+                if dbRecord:
+                    await self.data_entities_processor.on_record_deleted(
+                        record_id=dbRecord.id
                     )
-                    if dbRecord:
-                        await self.data_entities_processor.on_record_deleted(
-                            record_id=dbRecord.id
-                        )
 
             elif record_update.is_new:
                 # Handle new record - this will be done through the normal flow
@@ -1412,11 +1404,8 @@ class OneDriveConnector(BaseConnector):
             self.logger.info(f"Handling reindex event for record {record_id}")
 
             # Get the record from database
-            record = None
-            async with self.data_store_provider.transaction() as tx_store:
-                record = await tx_store.get_record_by_external_id(
-                connector_id=self.connector_id,
-                external_id=record_id
+            record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, record_id
             )
 
             if not record:
@@ -1888,10 +1877,7 @@ class OneDriveConnector(BaseConnector):
     @classmethod
     async def create_connector(cls, logger: Logger,
                                data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str,
-                               scope: str, created_by: str, **kwargs) -> BaseConnector:
-        data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
-        await data_entities_processor.initialize()
-
+                               scope: str, created_by: str, data_entities_processor, **kwargs) -> BaseConnector:
         return OneDriveConnector(logger, data_entities_processor, data_store_provider, config_service, connector_id, scope, created_by)
 
 

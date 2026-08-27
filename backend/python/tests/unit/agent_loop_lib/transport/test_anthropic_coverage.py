@@ -392,6 +392,17 @@ class TestFormatTools:
         result = transport._format_tools(tools)
         assert result == [{"name": "search", "description": "d", "input_schema": {"type": "object"}}]
 
+    def test_empty_input_schema_becomes_a_well_formed_object(self) -> None:
+        """The API rejects `{}`, and a zero-argument tool legitimately has one
+        (an MCP server that omits `inputSchema`). Since every tool goes up in
+        one call, forwarding `{}` verbatim failed the whole request — the
+        OpenAI/Gemini/Ollama transports substitute the same schema."""
+        transport = _transport()
+        result = transport._format_tools(
+            [ToolSchema(name="noargs", description="d", input_schema={})],
+        )
+        assert result[0]["input_schema"] == {"type": "object", "properties": {}}
+
 
 class TestBuildSystemKwargs:
     def test_none_when_nothing_supplied(self) -> None:

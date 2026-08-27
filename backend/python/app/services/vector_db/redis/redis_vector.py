@@ -18,6 +18,8 @@ Hash fields::
     dense_embedding    bytes   (binary FLOAT16/FLOAT32 blob for HNSW)
     metadata_orgId     str     (TAG-indexed for tenant filtering)
     metadata_virtualRecordId  str  (TAG-indexed)
+    connectorIds       str     (comma-joined TAG; instance UUIDs)
+    recordGroupIds     str     (comma-joined TAG; record-group UUIDs)
     metadata_*         str     (any additional metadata, stored but not indexed)
 
 The Search index is named::
@@ -39,9 +41,9 @@ import time
 from typing import Any, Dict, List, Optional, Union
 
 import redis.asyncio as aioredis
-
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.services.vector_db.filters import canonical_filter_key
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     CollectionConfig,
@@ -53,6 +55,7 @@ from app.services.vector_db.models import (
     FusionMethod,
     HealthStatus,
     HybridSearchRequest,
+    QuantizationType,
     ScrollResult,
     SearchResult,
     VectorCollectionInfo,
@@ -62,14 +65,15 @@ from app.services.vector_db.models import (
 )
 from app.services.vector_db.redis.config import RedisVectorConfig
 from app.services.vector_db.redis.utils import (
+    coerce_payload_hash_value,
     decode_hash_doc,
     escape_redisearch_text,
     escape_tag_value,
     field_conditions_to_redis_query,
     filter_expression_to_redis_query,
+    hash_doc_to_payload,
     parse_ft_hybrid_reply,
     parse_ft_search_reply,
-    reconstruct_metadata,
     vector_point_to_hash_fields,
     vector_to_bytes,
 )
@@ -83,6 +87,12 @@ _REDIS_CAPABILITIES = VectorDBCapabilities(
     supported_fusion_methods=[FusionMethod.RRF],
 )
 
+# RediSearch caps offset+limit at MAXSEARCHRESULTS; the default is 10000.
+_MAX_SEARCH_RESULTS = 10000
+
+# Fallback for when the service was built without a parsed config.
+_DEFAULT_MAX_CONCURRENT_SEARCHES = 8
+
 # Minimum Redis version required for FT.HYBRID
 _MIN_REDIS_MAJOR = 8
 _MIN_REDIS_MINOR = 4
@@ -93,6 +103,17 @@ _DIST_MAP = {
     DistanceMetric.L2: "L2",
     DistanceMetric.DOT_PRODUCT: "IP",
 }
+
+
+def _is_unknown_index_error(exc: Exception) -> bool:
+    """True only for RediSearch's "index does not exist" reply.
+
+    Everything else — connection refused, timeout, auth, MISCONF — must surface,
+    because callers read ``exists=False`` as "not created yet" and respond by
+    creating the collection.
+    """
+    message = str(exc).lower()
+    return "unknown index name" in message or "no such index" in message
 
 
 class RedisVectorService(IVectorDBService):
@@ -108,6 +129,7 @@ class RedisVectorService(IVectorDBService):
         self._collection_configs: Dict[str, CollectionConfig] = {}
         # Dense vector dtype applied to all indexes; set from config on connect().
         self._dense_dtype: str = "FLOAT16"
+        self._max_concurrent_searches: int = _DEFAULT_MAX_CONCURRENT_SEARCHES
 
     # ------------------------------------------------------------------
     # Factory
@@ -130,6 +152,7 @@ class RedisVectorService(IVectorDBService):
         try:
             cfg = await self._load_config()
             self._dense_dtype = cfg.dense_dtype
+            self._max_concurrent_searches = cfg.max_concurrent_searches
             self.client = aioredis.Redis(
                 host=cfg.host,
                 port=cfg.port,
@@ -283,6 +306,17 @@ class RedisVectorService(IVectorDBService):
         dist = _DIST_MAP.get(config.distance_metric, "COSINE")
         idx = self._index_name(collection_name)
 
+        # Redis holds vectors in memory by definition and RediSearch HNSW accepts
+        # only FLOAT32/FLOAT16, so neither CollectionConfig.quantization (INT8) nor
+        # quantization_always_ram=False can be honoured here. dense_dtype=FLOAT16
+        # is the equivalent lever, giving ~2x reduction against Qdrant's ~4x.
+        if config.quantization not in (QuantizationType.NONE, QuantizationType.SCALAR):
+            logger.warning(
+                "Redis ignores quantization=%s; dense_dtype=%s is the only lever",
+                config.quantization.value,
+                self._dense_dtype,
+            )
+
         # Idempotency: check if the index already exists with the correct dimension.
         existing_info = await self.get_collection_info(collection_name)
         if existing_info.exists:
@@ -325,6 +359,8 @@ class RedisVectorService(IVectorDBService):
             "DISTANCE_METRIC", dist,
             "metadata_orgId", "TAG",
             "metadata_virtualRecordId", "TAG",
+            "connectorIds", "TAG",
+            "recordGroupIds", "TAG",
         ]
         await self.client.execute_command(*cmd)  # type: ignore
         logger.info(
@@ -361,8 +397,10 @@ class RedisVectorService(IVectorDBService):
                 dense_dimension=dim,
                 points_count=num_docs,
             )
-        except Exception:
-            return VectorCollectionInfo(name=collection_name, exists=False)
+        except Exception as exc:
+            if _is_unknown_index_error(exc):
+                return VectorCollectionInfo(name=collection_name, exists=False)
+            raise
 
     async def collection_exists(self, collection_name: str) -> bool:
         info = await self.get_collection_info(collection_name)
@@ -524,8 +562,13 @@ class RedisVectorService(IVectorDBService):
                     "LIMIT", "0", str(page_size),
                 )
             except Exception as e:
-                logger.warning(f"FT.SEARCH during paged delete failed: {e}")
-                break
+                # Do not swallow: callers treat a returned delete as complete and
+                # go on to drop the VRID→doc mapping, which would leave the
+                # surviving points orphaned *and* no longer discoverable.
+                raise RuntimeError(
+                    f"Paged delete on '{collection_name}' aborted after "
+                    f"{total_deleted} point(s): FT.SEARCH failed: {e}"
+                ) from e
 
             if not raw or not isinstance(raw, (list, tuple)):
                 break
@@ -553,22 +596,61 @@ class RedisVectorService(IVectorDBService):
         payload: dict,
         points: FilterExpression,
     ) -> None:
+        if points.is_empty():
+            raise ValueError(
+                "overwrite_payload called with an empty filter — this would rewrite "
+                "every point in the collection. Populate at least one filter "
+                "condition (e.g. virtualRecordId)."
+            )
         self._assert_connected()
-        keys = await self._keys_matching_filter(collection_name, points)
+        await self._hset_matching(collection_name, payload, points)
+
+    async def set_payload(
+        self,
+        collection_name: str,
+        payload: dict,
+        filter: FilterExpression,
+    ) -> None:
+        if filter.is_empty():
+            raise ValueError(
+                "set_payload called with an empty filter — this would update the entire "
+                "collection. Populate at least one filter condition (e.g. virtualRecordId)."
+            )
+        self._assert_connected()
+        await self._hset_matching(collection_name, payload, filter)
+
+    async def _hset_matching(
+        self,
+        collection_name: str,
+        payload: dict,
+        filter_expr: FilterExpression,
+    ) -> None:
+        """Merge ``payload`` into every hash matching ``filter_expr``.
+
+        Redis HSET is inherently a merge, so overwrite and set share one body.
+        Per-command results are checked for the same reason upsert_points checks
+        them: a pipeline reports failures per command rather than raising.
+        """
+        keys = await self._keys_matching_filter(collection_name, filter_expr)
         if not keys:
             return
         pipeline = self.client.pipeline(transaction=False)  # type: ignore
         for key in keys:
             flat: List[Any] = []
             for field, value in payload.items():
-                # Normalise field name to the Redis hash field convention
-                # (``metadata.x`` → ``metadata_x``).
-                redis_field = field.replace(".", "_")
-                flat.append(redis_field)
-                flat.append(str(value) if not isinstance(value, (str, bytes)) else value)
+                # ``metadata.x`` → ``metadata_x`` hash-field convention.
+                flat.append(field.replace(".", "_"))
+                flat.append(coerce_payload_hash_value(value))
             if flat:
                 pipeline.execute_command("HSET", key, *flat)
-        await pipeline.execute()
+        results = await pipeline.execute()
+        failed = [i for i, r in enumerate(results or []) if isinstance(r, Exception)]
+        if failed:
+            raise RuntimeError(
+                f"Redis payload write on '{collection_name}' had {len(failed)} "
+                f"failed HSET command(s) of {len(keys)}. "
+                f"First error: {results[failed[0]]}"
+            )
 
     async def scroll(
         self,
@@ -604,6 +686,7 @@ class RedisVectorService(IVectorDBService):
 
         points: List[VectorPoint] = []
         total_count = 0
+        returned_docs = 0
         if raw and isinstance(raw, (list, tuple)) and len(raw) > 1:
             try:
                 total_count = int(raw[0])
@@ -616,6 +699,7 @@ class RedisVectorService(IVectorDBService):
                 key = items[i]
                 fields_list = items[i + 1]
                 i += 2
+                returned_docs += 1
                 if not isinstance(fields_list, (list, tuple)):
                     continue
                 try:
@@ -627,21 +711,29 @@ class RedisVectorService(IVectorDBService):
                     points.append(
                         VectorPoint(
                             id=point_id,
-                            payload={
-                                "page_content": doc.get("page_content", ""),
-                                "metadata": reconstruct_metadata(doc),
-                            },
+                            payload=hash_doc_to_payload(doc),
                         )
                     )
                 except Exception:
                     pass
 
-        # Return a next_offset cursor when there are more results
-        next_page_start = int_offset + len(points)
-        next_offset: Optional[str] = (
-            str(next_page_start) if next_page_start < total_count else None
-        )
+        # LIMIT offset is the result-set position Redis already walked, not
+        # how many documents we managed to decode.
+        next_page_start = int_offset + returned_docs
+        more_available = next_page_start < total_count
 
+        # RediSearch refuses offsets past MAXSEARCHRESULTS (10k by default).
+        # Returning next_offset=None there would look identical to "that was the
+        # last page", so the caller would stop early believing it had everything.
+        if more_available and next_page_start >= _MAX_SEARCH_RESULTS:
+            raise RuntimeError(
+                f"Scroll of '{collection_name}' reached the RediSearch result "
+                f"ceiling at {next_page_start} of {total_count} matches. Narrow "
+                f"the filter or raise MAXSEARCHRESULTS; continuing would silently "
+                f"drop the remainder."
+            )
+
+        next_offset: Optional[str] = str(next_page_start) if more_available else None
         return ScrollResult(points=points, next_offset=next_offset)
 
     async def query_nearest_points(
@@ -651,11 +743,15 @@ class RedisVectorService(IVectorDBService):
     ) -> List[List[SearchResult]]:
         self._assert_connected()
         idx = self._index_name(collection_name)
-        tasks = [
-            self._run_single_hybrid_query(idx, collection_name, req)
-            for req in requests
-        ]
-        return list(await asyncio.gather(*tasks))
+        # Bound the fan-out: one request per agent source means a wide query
+        # would otherwise issue unbounded concurrent FT.HYBRID commands.
+        semaphore = asyncio.Semaphore(self._max_concurrent_searches)
+
+        async def _bounded(req: HybridSearchRequest) -> List[SearchResult]:
+            async with semaphore:
+                return await self._run_single_hybrid_query(idx, collection_name, req)
+
+        return list(await asyncio.gather(*[_bounded(r) for r in requests]))
 
     # ------------------------------------------------------------------
     # Internal query helpers
@@ -755,10 +851,7 @@ class RedisVectorService(IVectorDBService):
         for (key, score), raw_doc in zip(key_score_pairs, hash_docs or []):
             point_id = key.rsplit(":", 1)[-1] if ":" in key else key
             doc = decode_hash_doc(raw_doc)
-            payload: Dict[str, Any] = {
-                "page_content": doc.get("page_content", ""),
-                "metadata": reconstruct_metadata(doc),
-            }
+            payload = hash_doc_to_payload(doc)
             results.append(SearchResult(id=point_id, score=score, payload=payload))
 
         return results
@@ -804,8 +897,12 @@ class RedisVectorService(IVectorDBService):
                     "LIMIT", str(offset), str(page_size),
                 )
             except Exception as e:
-                logger.warning(f"FT.SEARCH during key lookup failed: {e}")
-                break
+                # A partial key list would silently update only some of a VRID's
+                # chunks while reporting success.
+                raise RuntimeError(
+                    f"Key lookup on '{collection_name}' failed after "
+                    f"{len(all_keys)} key(s): {e}"
+                ) from e
 
             if not raw or not isinstance(raw, (list, tuple)):
                 break
@@ -846,7 +943,7 @@ def _build_generic_conditions(filters: Dict[str, FilterValue]) -> List[FieldCond
     for key, value in filters.items():
         if value is None:
             continue
-        field_key = key if key.startswith("metadata.") else f"metadata.{key}"
+        field_key = canonical_filter_key(key)
         if isinstance(value, (list, tuple)):
             filtered = [v for v in value if v is not None]
             if filtered:

@@ -45,6 +45,10 @@ def mock_data_entities_processor():
     proc.on_updated_record_permissions = AsyncMock()
     proc.on_user_removed = AsyncMock(return_value=True)
     proc.reindex_existing_records = AsyncMock()
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_user_by_user_id = AsyncMock(return_value=MagicMock(email="test@example.com"))
+    proc.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-db-1"))
+    proc.delete_edges_between_collections = AsyncMock()
     return proc
 
 
@@ -357,14 +361,14 @@ class TestHandleUserDeleteEvent:
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, connector, mock_data_store_provider):
-        mock_data_store_provider._mock_tx.get_user_by_user_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=None)
         events = [{"detail": "(99) Unknown"}]
         await connector._handle_user_delete_event(events, [])
 
     @pytest.mark.asyncio
     async def test_user_no_email(self, connector, mock_data_store_provider):
-        mock_data_store_provider._mock_tx.get_user_by_user_id = AsyncMock(
-            return_value={"email": None}
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock(
+            return_value=MagicMock(email=None)
         )
         events = [{"detail": "(5) NoEmail"}]
         await connector._handle_user_delete_event(events, [])
@@ -382,7 +386,7 @@ class TestHandleUserDeleteEvent:
 
     @pytest.mark.asyncio
     async def test_exception_during_delete(self, connector, mock_data_store_provider):
-        mock_data_store_provider._mock_tx.get_user_by_user_id = AsyncMock(
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock(
             side_effect=Exception("db error")
         )
         events = [{"detail": "(5) Error"}]
@@ -2147,7 +2151,7 @@ class TestBookStackCoverageGaps:
         existing.record_name = "Same"
         existing.external_revision_id = "3"
         existing.version = 1
-        mock_data_store_provider._mock_tx.get_record_by_external_id = AsyncMock(
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
             return_value=existing
         )
         page = {
@@ -2335,20 +2339,16 @@ class TestBookStackCoverageGaps:
         self, mock_logger, mock_data_store_provider, mock_config_service
     ):
         with patch("app.connectors.sources.bookstack.connector.BookStackApp"):
-            with patch(
-                "app.connectors.sources.bookstack.connector.DataSourceEntitiesProcessor"
-            ) as mock_proc_cls:
-                mock_proc = MagicMock()
-                mock_proc.initialize = AsyncMock()
-                mock_proc_cls.return_value = mock_proc
-                result = await BookStackConnector.create_connector(
-                    mock_logger,
-                    mock_data_store_provider,
-                    mock_config_service,
-                    "bs-factory-1",
-                    "personal",
-                    "creator-1",
-                )
+            processor = MagicMock()
+            processor.org_id = "org-1"
+            result = await BookStackConnector.create_connector(
+                mock_logger,
+                mock_data_store_provider,
+                mock_config_service,
+                "bs-factory-1",
+                "personal",
+                "creator-1",
+                data_entities_processor=processor,
+            )
         assert isinstance(result, BookStackConnector)
         assert result.connector_id == "bs-factory-1"
-        mock_proc.initialize.assert_awaited_once()

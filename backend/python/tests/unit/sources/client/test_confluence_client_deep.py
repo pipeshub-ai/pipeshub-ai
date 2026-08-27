@@ -245,7 +245,7 @@ class TestBuildFromToolsetApiTokenMissingFields:
             "auth": {"email": "user@example.com", "apiToken": "tok"},
         }
         with patch(
-            "app.sources.client.confluence.confluence.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"baseUrl": ""}},
         ):
@@ -261,7 +261,7 @@ class TestBuildFromToolsetApiTokenMissingFields:
             "auth": {"email": "", "apiToken": "tok"},
         }
         with patch(
-            "app.sources.client.confluence.confluence.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"baseUrl": "https://mysite.atlassian.net"}},
         ):
@@ -277,7 +277,7 @@ class TestBuildFromToolsetApiTokenMissingFields:
             "auth": {"email": "user@example.com", "apiToken": ""},
         }
         with patch(
-            "app.sources.client.confluence.confluence.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"baseUrl": "https://mysite.atlassian.net"}},
         ):
@@ -299,7 +299,7 @@ class TestBuildFromToolsetApiTokenBaseUrlNormalization:
             "auth": {"email": "user@example.com", "apiToken": "tok"},
         }
         with patch(
-            "app.sources.client.confluence.confluence.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"baseUrl": "https://mysite.atlassian.net/"}},
         ):
@@ -318,7 +318,7 @@ class TestBuildFromToolsetApiTokenBaseUrlNormalization:
             "auth": {"email": "user@example.com", "apiToken": "tok"},
         }
         with patch(
-            "app.sources.client.confluence.confluence.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"baseUrl": "https://mysite.atlassian.net/wiki/api/v2"}},
         ):
@@ -334,7 +334,7 @@ class TestBuildFromToolsetApiTokenBaseUrlNormalization:
             # No 'auth' key
         }
         with patch(
-            "app.sources.client.confluence.confluence.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"baseUrl": "https://mysite.atlassian.net"}},
         ):

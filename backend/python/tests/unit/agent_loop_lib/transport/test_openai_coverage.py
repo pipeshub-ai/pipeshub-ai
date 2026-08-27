@@ -31,7 +31,7 @@ from app.agent_loop_lib.core.messages import (
 from app.agent_loop_lib.core.responses import StopReason
 from app.agent_loop_lib.core.streaming import StreamCompleteEvent, TextDeltaEvent
 from app.agent_loop_lib.core.tool_schema import ToolSchema
-from app.agent_loop_lib.transport.openai import OpenAITransport
+from app.agent_loop_lib.transport.openai import OpenAITransport, RequestDefaults
 from app.agents.agent_loop.converters import MALFORMED_TOOL_CALL_ARGS_KEY
 
 
@@ -137,9 +137,9 @@ class TestFormatMessage:
         formatted = transport._format_message(msg)
         assert formatted == {"role": "tool", "tool_call_id": "call_1", "content": "result [footer]"}
 
-    def test_multipart_tool_message_formats_image_url_blocks(self) -> None:
-        transport = _transport()
-        msg = ToolMessage(
+    @staticmethod
+    def _multipart_tool_message() -> ToolMessage:
+        return ToolMessage(
             content=[
                 TextPart(text="[ref1] (image)"),
                 ImagePart(source=ImageSource(type="base64", media_type="image/png", data="abc123")),
@@ -147,12 +147,35 @@ class TestFormatMessage:
             tool_call_id="call_1",
             step_footer=" [footer]",
         )
-        formatted = transport._format_message(msg)
+
+    def test_multipart_tool_message_formats_image_url_blocks_on_responses_api(self) -> None:
+        transport = _transport(defaults=RequestDefaults(use_responses_api=True))
+        formatted = transport._format_message(self._multipart_tool_message())
         assert formatted["content"] == [
             {"type": "text", "text": "[ref1] (image)"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
             {"type": "text", "text": " [footer]"},
         ]
+
+    def test_multipart_tool_message_drops_images_on_chat_completions(self) -> None:
+        """Chat Completions 400s on an image block in a `role: "tool"` message
+        ("Image URLs are only allowed for messages with role 'user'"); the
+        agent factory re-delivers these through a user message instead."""
+        transport = _transport()
+        formatted = transport._format_message(self._multipart_tool_message())
+        assert formatted["content"] == [
+            {"type": "text", "text": "[ref1] (image)"},
+            {"type": "text", "text": " [footer]"},
+        ]
+
+    def test_images_only_tool_message_on_chat_completions_still_answers_the_call(self) -> None:
+        transport = _transport()
+        msg = ToolMessage(
+            content=[ImagePart(source=ImageSource(type="base64", media_type="image/png", data="abc"))],
+            tool_call_id="call_1",
+        )
+        formatted = transport._format_message(msg)
+        assert formatted == {"role": "tool", "tool_call_id": "call_1", "content": ""}
 
     def test_assistant_message_with_text_and_tool_calls(self) -> None:
         transport = _transport()

@@ -70,6 +70,8 @@ def _make_connector():
         data_entities_processor.on_new_record_groups = AsyncMock()
         data_entities_processor.on_new_records = AsyncMock()
         data_entities_processor.on_record_deleted = AsyncMock()
+        data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
 
         data_store_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -486,6 +488,7 @@ class TestProcessGmailMessage:
         existing.version = 3
         existing.external_record_group_id = "user@test.com:INBOX"
         connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         message = _make_gmail_message(msg_id="msg-existing", label_ids=["INBOX"])
         result = await connector._process_gmail_message(
@@ -881,6 +884,7 @@ class TestGetExistingRecord:
         existing.id = "rec-1"
         connector = _make_connector()
         connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         result = await connector._get_existing_record("ext-1")
         assert result is not None
         assert result.id == "rec-1"

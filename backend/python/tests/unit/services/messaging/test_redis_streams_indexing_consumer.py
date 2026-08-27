@@ -2029,6 +2029,105 @@ class TestExceedsMaxRetries:
         assert result is False
 
     @pytest.mark.asyncio
+    async def test_backstop_fires_when_retry_manager_present_but_app_counter_lags(
+        self, consumer
+    ):
+        """Regression test for #2992: a poison message must still dead-letter via
+        the Redis-native times_delivered backstop even when a RetryManager is
+        configured (the production case) and its app-tracked failure count
+        hasn't reached the threshold — e.g. because the process crashed before
+        ever incrementing it. Before the fix, the RetryManager branch always
+        returned early and this backstop was unreachable dead code.
+
+        Uses a current message_id distinct from the stable retry-tracking id
+        (as a re-queued entry would carry) to prove the backstop clears retry
+        state under the stable id, not the current Redis message_id.
+        """
+        consumer.retry_manager = AsyncMock()
+        consumer.retry_manager.get_count.return_value = 1  # app counter lagging
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"times_delivered": 10}]
+        )
+        consumer.redis.xack = AsyncMock()
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 10
+            mock_env.max_pending_indexing_tasks = 100
+            mock_env.max_concurrent_parsing = 5
+            mock_env.max_concurrent_indexing = 10
+            result = await consumer._should_dead_letter(
+                "topic-a", "2-0", stable_message_id="stable-1"
+            )
+
+        assert result is True
+        consumer.redis.xack.assert_awaited_once_with(
+            "topic-a", consumer.config.group_id, "2-0"
+        )
+        consumer.retry_manager.get_count.assert_awaited_once_with("stable-1")
+        consumer.retry_manager.clear.assert_awaited_once_with("stable-1")
+
+    @pytest.mark.asyncio
+    async def test_app_counter_alone_still_dead_letters_with_retry_manager(
+        self, consumer
+    ):
+        """The app-tracked RetryManager count reaching the threshold must keep
+        dead-lettering on its own without needing xpending_range at all."""
+        consumer.retry_manager = AsyncMock()
+        consumer.retry_manager.get_count.return_value = 10
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range = AsyncMock()
+        consumer.redis.xack = AsyncMock()
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 10
+            mock_env.max_pending_indexing_tasks = 100
+            mock_env.max_concurrent_parsing = 5
+            mock_env.max_concurrent_indexing = 10
+            result = await consumer._should_dead_letter("topic-a", "1-0")
+
+        assert result is True
+        consumer.redis.xack.assert_awaited_once_with(
+            "topic-a", consumer.config.group_id, "1-0"
+        )
+        consumer.redis.xpending_range.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_backstop_fires_when_app_counter_lookup_raises(self, consumer):
+        """A RetryManager lookup error must not skip the times_delivered
+        backstop: it used to share a try/except with the backstop, so an
+        exception from the app-tracked count check returned False before
+        ever reaching xpending_range, even though the backstop doesn't
+        depend on that lookup succeeding."""
+        consumer.retry_manager = AsyncMock()
+        consumer.retry_manager.get_count = AsyncMock(
+            side_effect=Exception("redis down")
+        )
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"times_delivered": 10}]
+        )
+        consumer.redis.xack = AsyncMock()
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 10
+            mock_env.max_pending_indexing_tasks = 100
+            mock_env.max_concurrent_parsing = 5
+            mock_env.max_concurrent_indexing = 10
+            result = await consumer._should_dead_letter("topic-a", "1-0")
+
+        assert result is True
+        consumer.redis.xack.assert_awaited_once_with(
+            "topic-a", consumer.config.group_id, "1-0"
+        )
+
+    @pytest.mark.asyncio
     async def test_drain_phase1_skips_poison_message(self, consumer):
         """Phase 1 should skip dispatch when _should_dead_letter returns True."""
         consumer.running = True

@@ -41,7 +41,7 @@ class Calculator:
         Returns:
             None
         """
-        logger.info("🚀 Initializing Calculator tool")
+        logger.debug("🚀 Initializing Calculator tool")
 
     def get_supported_operations(self) -> list[str]:
         """Get the supported operations
