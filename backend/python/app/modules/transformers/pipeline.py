@@ -137,10 +137,20 @@ class IndexingPipeline:
                             f"🗑️ Deleted old embeddings for empty document update (1:1): "
                             f"{record.virtual_record_id}"
                         )
-                        # Save empty reconciliation metadata so future diffs start clean
+                        # Save empty reconciliation metadata so future diffs
+                        # start clean. document_path is derived from
+                        # content's actual current location (not guessed) so
+                        # metadata stays selectable by future move-tree
+                        # operations -- see blob_storage.py's apply()'s
+                        # actual_storage_path tracking and
+                        # get_actual_content_path().
                         empty_metadata = ReconciliationMetadata().to_dict()
+                        actual_content_path = await self.sink_orchestrator.blob_storage.get_actual_content_path(
+                            record.org_id, record.virtual_record_id
+                        )
                         await self.sink_orchestrator.blob_storage.save_reconciliation_metadata(
-                            record.org_id, record_id, record.virtual_record_id, empty_metadata
+                            record.org_id, record_id, record.virtual_record_id, empty_metadata,
+                            document_path=actual_content_path,
                         )
                     except Exception as e:
                         self.logger.warning(

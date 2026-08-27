@@ -612,6 +612,11 @@ interface ChatState {
   scopedAgentCapabilities: Record<string, import('./types').AgentCapabilities>;
   setScopedAgentCapabilities: (agentId: string, caps: Partial<import('./types').AgentCapabilities>) => void;
 
+  debugDisableSemantic: boolean;
+  debugDisablePatternMatch: boolean;
+  setDebugDisableSemantic: (v: boolean) => void;
+  setDebugDisablePatternMatch: (v: boolean) => void;
+
   // ── Search actions ──
   setSearchResults: (results: SearchResultItem[], searchId: string | null, query: string) => void;
   setIsSearching: (loading: boolean) => void;
@@ -725,6 +730,9 @@ const initialState = {
   },
 
   scopedAgentCapabilities: {} as Record<string, AgentCapabilities>,
+
+  debugDisableSemantic: false,
+  debugDisablePatternMatch: false,
 
   previewFile: null as ChatPreviewFile | null,
   previewMode: 'sidebar' as 'sidebar' | 'fullscreen',
@@ -1365,6 +1373,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       scopedAgentCapabilities: { ...state.scopedAgentCapabilities, [agentId]: next },
     };
   }),
+
+  setDebugDisableSemantic: (v) => set({ debugDisableSemantic: v }),
+  setDebugDisablePatternMatch: (v) => set({ debugDisablePatternMatch: v }),
 
   // ── Search actions ──────────────────────────────────────────────
 

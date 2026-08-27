@@ -244,6 +244,7 @@ class TestAbstractMethodInventory:
         # Record group operations
         "get_record_group_by_external_id",
         "get_record_group_by_id",
+        "get_record_path",
         "get_file_record_by_id",
         # User operations
         "get_user_by_email",
@@ -308,6 +309,7 @@ class TestAbstractMethodInventory:
         "create_record_groups_relation",
         "create_inherit_permissions_relation_record_group",
         "get_accessible_virtual_record_ids",
+        "check_vrids_accessible",
         "get_records_by_record_ids",
         "batch_upsert_record_permissions",
         "get_file_permissions",
@@ -528,3 +530,28 @@ class TestConcreteMethodCalls:
         docs, total = result
         assert docs == []
         assert total == 0
+
+    @pytest.mark.asyncio
+    async def test_get_record_path_returns_path(self):
+        ConcreteProvider = _make_concrete_class()
+        instance = ConcreteProvider()
+        instance.get_record_path.return_value = "Folder1/Subfolder/File.txt"
+        result = await instance.get_record_path("record123")
+        assert result == "Folder1/Subfolder/File.txt"
+
+    @pytest.mark.asyncio
+    async def test_get_record_path_returns_none(self):
+        ConcreteProvider = _make_concrete_class()
+        instance = ConcreteProvider()
+        instance.get_record_path.return_value = None
+        result = await instance.get_record_path("nonexistent")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_record_path_with_transaction(self):
+        ConcreteProvider = _make_concrete_class()
+        instance = ConcreteProvider()
+        instance.get_record_path.return_value = "Root/Child/File.pdf"
+        result = await instance.get_record_path("rec1", transaction="tx123")
+        assert result == "Root/Child/File.pdf"
+        instance.get_record_path.assert_called_once_with("rec1", transaction="tx123")

@@ -1068,6 +1068,8 @@ export async function streamRegenerateForSlot(
           filters: originalFilters ?? buildAssistantApiFilters(store.settings.filters),
           agentCapabilities: scopedCaps,
           ...(agentRegenReasoningEffort ? { reasoningEffort: agentRegenReasoningEffort } : {}),
+          ...(useChatStore.getState().debugDisableSemantic ? { disableSemantic: true } : {}),
+          ...(useChatStore.getState().debugDisablePatternMatch ? { disablePatternMatch: true } : {}),
         }
       );
     } else {
@@ -1097,6 +1099,8 @@ export async function streamRegenerateForSlot(
         ...(regenStreamTools !== undefined ? { agentStreamTools: regenStreamTools } : {}),
         ...(isUniversalAgent ? { agentCapabilities: store.settings.agentCapabilities } : {}),
         ...(assistantRegenReasoningEffort ? { reasoningEffort: assistantRegenReasoningEffort } : {}),
+        ...(useChatStore.getState().debugDisableSemantic ? { disableSemantic: true } : {}),
+        ...(useChatStore.getState().debugDisablePatternMatch ? { disablePatternMatch: true } : {}),
       });
     }
   } catch (error) {

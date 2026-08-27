@@ -87,6 +87,8 @@ class ChatQuery(BaseModel):
     # labels are only valid for the request that minted them, so callers
     # that rely on record ids surviving across turns should leave this off.
     enableRecordIdShortening: bool = False
+    disableSemantic: bool = False
+    disablePatternMatch: bool = False
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
 
@@ -951,6 +953,8 @@ async def _generate_chat_stream_via_agent_loop(
         "conversationId": query_info.conversationId,
         "attachments": query_info.attachments,
         "enableRecordIdShortening": query_info.enableRecordIdShortening,
+        "disable_semantic": query_info.disableSemantic,
+        "disable_pattern_match": query_info.disablePatternMatch,
     }
     user_info = {
         "userId": user_id,

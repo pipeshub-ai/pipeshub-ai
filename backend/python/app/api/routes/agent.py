@@ -140,6 +140,8 @@ class ChatQuery(BaseModel):
     # labels are only valid for the request that minted them, so callers
     # that rely on record ids surviving across turns should leave this off.
     enableRecordIdShortening: bool = False
+    disableSemantic: bool = False
+    disablePatternMatch: bool = False
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
 
@@ -3685,6 +3687,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "webSearchConfig": web_search_tool_config,
             "attachments": chat_query.attachments,
             "enableRecordIdShortening": chat_query.enableRecordIdShortening,
+            "disable_semantic": chat_query.disableSemantic,
+            "disable_pattern_match": chat_query.disablePatternMatch,
         }
 
         client_name = request.headers.get("client-name")

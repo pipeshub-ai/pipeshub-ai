@@ -856,6 +856,8 @@ export interface StreamChatRequest {
    * reasoning-capable model. Omitted → backend uses the model's own default.
    */
   reasoningEffort?: ReasoningEffort;
+  disableSemantic?: boolean;
+  disablePatternMatch?: boolean;
 }
 
 /**
