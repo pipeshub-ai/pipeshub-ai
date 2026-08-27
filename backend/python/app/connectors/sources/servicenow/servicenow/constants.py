@@ -28,6 +28,8 @@ class ServiceNowTables:
     SYS_USER_ROLE_CONTAINS = "sys_user_role_contains"
     SYS_ATTACHMENT = "sys_attachment"
     USER_CRITERIA = "user_criteria"
+    SYS_PROPERTIES = "sys_properties"
+    SP_PORTAL = "sp_portal"
     KB_UC_CAN_READ_MTOM = "kb_uc_can_read_mtom"
     KB_UC_CAN_CONTRIBUTE_MTOM = "kb_uc_can_contribute_mtom"
     CORE_COMPANY = "core_company"
@@ -81,6 +83,8 @@ class ServiceNowFields:
     RESULT = "result"
     CONTAINS = "contains"
     PARENT_TABLE = "parent_table"
+    URL_SUFFIX = "url_suffix"
+    DEFAULT = "default"
 
 
 class ServiceNowQueryParams:
@@ -104,10 +108,14 @@ class ServiceNowQueryValues:
 
 
 class ServiceNowURLPatterns:
-    """ServiceNow URL patterns for constructing web URLs"""
-    KB_BASE = "{instance_url}kb?kb={sys_id}"
-    KB_ARTICLE = "{instance_url}/sp?id=kb_article&sys_id={sys_id}"
-    KB_CATEGORY = "{instance_url}sp?id=kb_category&kb_category={sys_id}"
+    """ServiceNow URL patterns for constructing web URLs.
+
+    The knowledge pages live in a Service Portal, and the instance decides
+    which portal that is. See ServiceNowConnector._resolve_kb_portal_suffix.
+    """
+    KB_BASE = "{instance_url}/{portal}?id=kb_home&kb={sys_id}"
+    KB_ARTICLE = "{instance_url}/{portal}?id=kb_article_view&sys_kb_id={sys_id}"
+    KB_CATEGORY = "{instance_url}/{portal}?id=kb_category&kb_category={sys_id}"
     ATTACHMENT = "{instance_url}/sys_attachment.do?sys_id={sys_id}"
 
 
@@ -131,6 +139,12 @@ class ServiceNowDefaults:
     ADMIN_ROLE_NAME = "admin"
     DEFAULT_MIME_TYPE = "application/octet-stream"
     UNKNOWN_VALUE = "Unknown"
+    # The out-of-box Knowledge Portal. Used only when the instance tells us nothing.
+    KB_PORTAL_SUFFIX = "kb"
+    KB_PORTAL_PROPERTY = "sn_km_portal.glide.knowman.serviceportal.portal_url"
+    # When true, an article's own Can Read criteria decide, and the grants of
+    # the parent knowledge base no longer reach that article.
+    ARTICLE_READ_CRITERIA_PROPERTY = "glide.knowman.apply_article_read_criteria"
 
 
 class ServiceNowConfigPaths:

@@ -549,7 +549,9 @@ class TestGetFreshDatasource:
         })
         with patch("app.connectors.sources.servicenow.servicenow.connector.ServiceNowDataSource"):
             ds = await connector._get_fresh_datasource()
-        assert connector.servicenow_client.access_token == "new-token"
+        # The transport authenticates from headers, so a refreshed token that
+        # only reaches the attribute leaves every request on the stale one.
+        connector.servicenow_client.set_access_token.assert_called_once_with("new-token")
 
     @pytest.mark.asyncio
     async def test_no_config_raises(self, connector):

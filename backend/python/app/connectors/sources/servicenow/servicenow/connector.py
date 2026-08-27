@@ -239,6 +239,12 @@ class ServiceNowConnector(BaseConnector):
 
         # Configuration
         self.instance_url: Optional[str] = None
+        # The portal that serves the knowledge pages. Read from the instance
+        # during init(), because it differs from one instance to the next.
+        self.kb_portal_suffix: str = ServiceNowDefaults.KB_PORTAL_SUFFIX
+        # Whether article criteria override the criteria of the knowledge base.
+        # Read from the instance during init(); false is the ServiceNow default.
+        self.apply_article_read_criteria: bool = False
         self.client_id: Optional[str] = None
         self.client_secret: Optional[str] = None
         self.redirect_uri: Optional[str] = None
@@ -316,7 +322,8 @@ class ServiceNowConnector(BaseConnector):
 
             oauth_config_data = oauth_config.get(OAuthConfigKeys.CONFIG, {})
 
-            self.instance_url = oauth_config_data.get(AuthFieldKeys.INSTANCE_URL)
+            # A trailing slash would give "https://<instance>.service-now.com//kb?...".
+            self.instance_url = (oauth_config_data.get(AuthFieldKeys.INSTANCE_URL) or "").rstrip("/") or None
             self.client_id = oauth_config_data.get(AuthFieldKeys.CLIENT_ID)
             self.client_secret = oauth_config_data.get(AuthFieldKeys.CLIENT_SECRET)
             self.redirect_uri = oauth_config.get(AuthFieldKeys.REDIRECT_URI)
@@ -370,6 +377,10 @@ class ServiceNowConnector(BaseConnector):
                 self.logger.error("❌ Connection test failed")
                 return False
 
+            self.kb_portal_suffix = await self._resolve_kb_portal_suffix()
+
+            self.apply_article_read_criteria = await self._resolve_article_read_criteria()
+
             self.logger.info("✅ ServiceNow KB Connector initialized successfully")
             return True
 
@@ -406,9 +417,8 @@ class ServiceNowConnector(BaseConnector):
         if not fresh_token:
             raise Exception("No access token available")
 
-        # Update client's token if it changed (mutation)
         if self.servicenow_client.access_token != fresh_token:
-            self.servicenow_client.access_token = fresh_token
+            self.servicenow_client.set_access_token(fresh_token)
 
         return ServiceNowDataSource(self.servicenow_client)
 
@@ -565,6 +575,101 @@ class ServiceNowConnector(BaseConnector):
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Failed to stream record: {str(e)}"
             )
+
+    async def _read_instance_property(self, name: str) -> Optional[str]:
+        """Read one sys_properties value. None means the property is not set.
+
+        A read that fails raises, because "not set" and "could not tell" are
+        different answers and only the caller knows which way to lean on the
+        second one.
+        """
+        datasource = await self._get_fresh_datasource()
+        response = await datasource.get_now_table_tableName(
+            tableName=ServiceNowTables.SYS_PROPERTIES,
+            sysparm_query=f"{ServiceNowFields.NAME}={name}",
+            sysparm_fields=ServiceNowFields.VALUE,
+            sysparm_limit=ServiceNowDefaults.DEFAULT_LIMIT,
+            sysparm_display_value=ServiceNowQueryValues.DISPLAY_VALUE_FALSE,
+            sysparm_no_count=ServiceNowQueryValues.NO_COUNT_TRUE,
+            sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
+        )
+        if response.result:
+            return (response.result[0].get(ServiceNowFields.VALUE) or "").strip()
+        return None
+
+    async def _resolve_article_read_criteria(self) -> bool:
+        """Whether an article's own Can Read criteria override its knowledge base.
+
+        ServiceNow applies them as an override only when
+        glide.knowman.apply_article_read_criteria is true, and leaves the
+        property unset on a default instance, so unset means false.
+
+        A property that cannot be read is a different case: the answer decides
+        who reaches an article, so it leans to true. That indexes an article
+        under its own criteria when the base would have opened it wider, which
+        shows fewer people less than they are entitled to, rather than showing
+        somebody something the instance restricts.
+        """
+        try:
+            value = await self._read_instance_property(
+                ServiceNowDefaults.ARTICLE_READ_CRITERIA_PROPERTY
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Could not read "
+                f"{ServiceNowDefaults.ARTICLE_READ_CRITERIA_PROPERTY} ({e}); "
+                "applying article read criteria as an override until it can be read"
+            )
+            return True
+
+        applies = (value or "").strip().lower() == "true"
+        self.logger.info(f"Article read criteria override the knowledge base: {applies}")
+        return applies
+
+    async def _resolve_kb_portal_suffix(self) -> str:
+        """Find the Service Portal that serves the knowledge pages.
+
+        The article pages (kb_article_view, kb_category, kb_home) belong to a
+        portal, and each instance chooses its own. The Knowledge Management
+        portal plugin records that choice in a system property. When the
+        property is empty the default portal serves the pages.
+
+        Returns:
+            str: The portal URL suffix, for example "kb" or "esc".
+        """
+        try:
+            suffix = await self._read_instance_property(ServiceNowDefaults.KB_PORTAL_PROPERTY)
+        except Exception as e:
+            # A link that points at the wrong portal is wrong on screen only, so
+            # this one falls back rather than leaning any particular way.
+            self.logger.warning(f"Could not read the knowledge portal property: {e}")
+            suffix = None
+        if suffix:
+            self.logger.info(f"Knowledge portal from the instance property: /{suffix}")
+            return suffix
+
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_now_table_tableName(
+                tableName=ServiceNowTables.SP_PORTAL,
+                sysparm_query=f"{ServiceNowFields.DEFAULT}=true",
+                sysparm_fields=ServiceNowFields.URL_SUFFIX,
+                sysparm_limit=ServiceNowDefaults.DEFAULT_LIMIT,
+                sysparm_display_value=ServiceNowQueryValues.DISPLAY_VALUE_FALSE,
+                sysparm_no_count=ServiceNowQueryValues.NO_COUNT_TRUE,
+                sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
+            )
+            suffix = (response.result[0].get(ServiceNowFields.URL_SUFFIX) or "").strip() if response.result else ""
+            if suffix:
+                self.logger.info(f"Knowledge portal from the default portal: /{suffix}")
+                return suffix
+        except Exception as e:
+            self.logger.warning(f"Could not read the default portal: {e}")
+
+        self.logger.info(
+            f"Knowledge portal falls back to /{ServiceNowDefaults.KB_PORTAL_SUFFIX}"
+        )
+        return ServiceNowDefaults.KB_PORTAL_SUFFIX
 
     async def _fetch_article_content(self, article_sys_id: str) -> str:
         """
@@ -2132,6 +2237,7 @@ class ServiceNowConnector(BaseConnector):
                     att_data,
                     parent_record_group_type=article_record.record_group_type,
                     parent_external_record_group_id=article_record.external_record_group_id,
+                    inherit_permissions=article_record.inherit_permissions,
                 )
 
                 if att_record:
@@ -2698,7 +2804,11 @@ class ServiceNowConnector(BaseConnector):
             # Construct web URL
             web_url = None
             if self.instance_url:
-                web_url = ServiceNowURLPatterns.KB_BASE.format(instance_url=self.instance_url, sys_id=sys_id)
+                web_url = ServiceNowURLPatterns.KB_BASE.format(
+                    instance_url=self.instance_url,
+                    portal=self.kb_portal_suffix,
+                    sys_id=sys_id,
+                )
 
             # Create RecordGroup for Knowledge Base
             kb_record_group = RecordGroup(
@@ -2752,7 +2862,11 @@ class ServiceNowConnector(BaseConnector):
             # Construct web URL
             web_url = None
             if self.instance_url:
-                web_url = ServiceNowURLPatterns.KB_CATEGORY.format(instance_url=self.instance_url, sys_id=sys_id)
+                web_url = ServiceNowURLPatterns.KB_CATEGORY.format(
+                    instance_url=self.instance_url,
+                    portal=self.kb_portal_suffix,
+                    sys_id=sys_id,
+                )
 
             # Create RecordGroup for Category
             category_record_group = RecordGroup(
@@ -2807,7 +2921,11 @@ class ServiceNowConnector(BaseConnector):
             # Construct web URL
             web_url = None
             if self.instance_url:
-                web_url = ServiceNowURLPatterns.KB_ARTICLE.format(instance_url=self.instance_url, sys_id=sys_id)
+                web_url = ServiceNowURLPatterns.KB_ARTICLE.format(
+                    instance_url=self.instance_url,
+                    portal=self.kb_portal_suffix,
+                    sys_id=sys_id,
+                )
 
             # Extract category sys_id for external_record_group_id
             # Fallback to KB if category is empty/missing
@@ -2830,11 +2948,22 @@ class ServiceNowConnector(BaseConnector):
                     self.logger.warning(f"Article {sys_id} has no category and no KB - skipping")
                     return None
 
+            # An article that carries its own Can Read criteria must not also
+            # receive the grants of its knowledge base, but only on an instance
+            # where that override is switched on. See KBKnowledgeSNC.canRead.
+            own_read_criteria = bool((article_data.can_read_user_criteria or "").strip())
+            inherit_permissions = not (self.apply_article_read_criteria and own_read_criteria)
+
             # Create WebpageRecord for Article
             record_id = str(uuid.uuid4())
             article_record = WebpageRecord(
                 id=record_id,
+                inherit_permissions=inherit_permissions,
                 external_record_id=sys_id,
+                # The processor rewrites a stored record, and re-queues it for
+                # indexing, only when this differs from what it holds. Leaving it
+                # unset froze every record at its first index.
+                external_revision_id=article_data.sys_updated_on,
                 version=0,
                 record_name=short_description,
                 record_type=RecordType.WEBPAGE,
@@ -2860,6 +2989,8 @@ class ServiceNowConnector(BaseConnector):
         attachment_data: AttachmentMetadata,
         parent_record_group_type: Optional[RecordGroupType] = None,
         parent_external_record_group_id: Optional[str] = None,
+        *,
+        inherit_permissions: bool = True,
     ) -> Optional[FileRecord]:
         """
         Transform ServiceNow sys_attachment to FileRecord entity.
@@ -2868,6 +2999,8 @@ class ServiceNowConnector(BaseConnector):
             attachment_data: ServiceNow sys_attachment AttachmentMetadata model
             parent_record_group_type: The record group type from parent article (CATEGORY or KB)
             parent_external_record_group_id: The external record group ID from parent article
+            inherit_permissions: Follows the parent article, so an attachment never
+                reaches a reader that the article itself keeps out
 
         Returns:
             FileRecord: Transformed attachment or None if invalid
@@ -2915,6 +3048,8 @@ class ServiceNowConnector(BaseConnector):
             attachment_record_id = str(uuid.uuid4())
             attachment_record = FileRecord(
                 id=attachment_record_id,
+                inherit_permissions=inherit_permissions,
+                external_revision_id=attachment_data.sys_updated_on,
                 org_id=self.data_entities_processor.org_id,
                 record_name=file_name,
                 record_type=RecordType.FILE,

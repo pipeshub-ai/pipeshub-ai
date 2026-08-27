@@ -10,8 +10,9 @@ from fastapi import HTTPException
 from app.config.constants.arangodb import Connectors, MimeTypes
 from app.connectors.sources.servicenow.servicenow.constants import ORGANIZATIONAL_ENTITIES
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
-from app.models.entities import AppUser, AppUserGroup, FileRecord, RecordType, WebpageRecord
+from app.models.entities import AppUser, AppUserGroup, FileRecord, RecordGroupType, RecordType, WebpageRecord
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.servicenow.servicenow import ServiceNowRESTClientViaOAuthAuthorizationCode
 from app.sources.external.servicenow.models import (
     ServiceNowAPIError,
     SysUserGroup,
@@ -327,14 +328,20 @@ class TestGetFreshDatasource:
             await servicenow_connector._get_fresh_datasource()
 
     async def test_returns_datasource_with_fresh_token(self, servicenow_connector):
-        servicenow_connector.servicenow_client = MagicMock()
-        servicenow_connector.servicenow_client.access_token = "old-token"
+        """A real client, because the transport sends headers, not the attribute."""
+        client = ServiceNowRESTClientViaOAuthAuthorizationCode(
+            instance_url="https://dev194883.service-now.com",
+            client_id="cid", client_secret="secret",
+            redirect_uri="http://localhost/cb", access_token="old-token",
+        )
+        servicenow_connector.servicenow_client = client
         servicenow_connector.config_service.get_config = AsyncMock(return_value={
             "credentials": {"access_token": "new-token"},
         })
         ds = await servicenow_connector._get_fresh_datasource()
         assert ds is not None
-        assert servicenow_connector.servicenow_client.access_token == "new-token"
+        assert client.access_token == "new-token"
+        assert client.headers["Authorization"] == "Bearer new-token"
 
     async def test_no_config_raises(self, servicenow_connector):
         servicenow_connector.servicenow_client = MagicMock()
@@ -2771,3 +2778,262 @@ class TestSyncArticles:
         )
         with pytest.raises(RuntimeError, match="article sync fail"):
             await servicenow_connector._sync_articles()
+
+
+# ===========================================================================
+# _resolve_kb_portal_suffix and the article web URL
+# ===========================================================================
+
+class TestResolveKbPortalSuffix:
+    @pytest.mark.asyncio
+    async def test_uses_the_instance_property(self, servicenow_connector):
+        mock_ds = AsyncMock()
+        mock_ds.get_now_table_tableName = AsyncMock(
+            return_value=_table_api_response([{"value": "kb"}])
+        )
+        servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        assert await servicenow_connector._resolve_kb_portal_suffix() == "kb"
+        assert mock_ds.get_now_table_tableName.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_the_default_portal(self, servicenow_connector):
+        """An empty property means the default portal serves the knowledge pages."""
+        mock_ds = AsyncMock()
+        mock_ds.get_now_table_tableName = AsyncMock(side_effect=[
+            _table_api_response([{"value": ""}]),
+            _table_api_response([{"url_suffix": "esc"}]),
+        ])
+        servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        assert await servicenow_connector._resolve_kb_portal_suffix() == "esc"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_the_knowledge_portal_on_error(self, servicenow_connector):
+        """A wrong link is better than a failed sync."""
+        servicenow_connector._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("no access"))
+
+        assert await servicenow_connector._resolve_kb_portal_suffix() == "kb"
+
+
+class TestArticleWebUrl:
+    def test_article_url_uses_the_resolved_portal(self, servicenow_connector):
+        servicenow_connector.instance_url = "https://dev194883.service-now.com"
+        servicenow_connector.kb_portal_suffix = "esc"
+
+        record = servicenow_connector._transform_to_article_webpage_record(
+            KBKnowledge(sys_id="art1", short_description="Title", kb_category="cat1")
+        )
+
+        assert record.weburl == (
+            "https://dev194883.service-now.com/esc?id=kb_article_view&sys_kb_id=art1"
+        )
+
+
+# ===========================================================================
+# glide.knowman.apply_article_read_criteria
+# ===========================================================================
+
+class TestRecordRevision:
+    """A stored record is rewritten, and re-queued for indexing, only when
+    external_revision_id changes. Leaving it unset froze every record at its
+    first index: title, webUrl and content never updated again."""
+
+    def test_article_carries_a_revision_id(self, servicenow_connector):
+        record = servicenow_connector._transform_to_article_webpage_record(
+            KBKnowledge(
+                sys_id="art1",
+                short_description="Title",
+                kb_category="cat1",
+                sys_updated_on="2026-08-26 09:15:00",
+            )
+        )
+        assert record.external_revision_id == "2026-08-26 09:15:00"
+
+    def test_a_changed_article_gets_a_different_revision_id(self, servicenow_connector):
+        def build(updated_on):
+            return servicenow_connector._transform_to_article_webpage_record(
+                KBKnowledge(
+                    sys_id="art1",
+                    short_description="Title",
+                    kb_category="cat1",
+                    sys_updated_on=updated_on,
+                )
+            )
+
+        before = build("2026-08-26 09:15:00")
+        after = build("2026-08-26 11:42:00")
+        assert before.external_revision_id != after.external_revision_id
+
+    def test_attachment_carries_a_revision_id(self, servicenow_connector):
+        record = servicenow_connector._transform_to_attachment_file_record(
+            AttachmentMetadata(
+                sys_id="att1",
+                file_name="doc.pdf",
+                content_type="application/pdf",
+                size_bytes="1024",
+                table_sys_id="art1",
+                sys_created_on="2026-08-01 10:00:00",
+                sys_updated_on="2026-08-26 11:42:00",
+            ),
+            parent_record_group_type=RecordGroupType.SERVICENOW_CATEGORY,
+            parent_external_record_group_id="cat1",
+        )
+        assert record.external_revision_id == "2026-08-26 11:42:00"
+
+
+class TestArticleReadCriteriaResolution:
+    """The property decides who reaches an article, so a read that fails must
+    not be read as "the instance does not apply criteria"."""
+
+    def _connector(self, connector, *, value=None, error=None):
+        if error is not None:
+            connector._read_instance_property = AsyncMock(side_effect=error)
+        else:
+            connector._read_instance_property = AsyncMock(return_value=value)
+        return connector
+
+    @pytest.mark.asyncio
+    async def test_property_true_applies_the_override(self, servicenow_connector):
+        self._connector(servicenow_connector, value="true")
+        assert await servicenow_connector._resolve_article_read_criteria() is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["false", "", None])
+    async def test_unset_or_false_means_the_base_grant_carries(self, servicenow_connector, value):
+        """ServiceNow leaves the property unset on a default instance, so unset
+        is a real answer and it means false."""
+        self._connector(servicenow_connector, value=value)
+        assert await servicenow_connector._resolve_article_read_criteria() is False
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_property_leans_restrictive(self, servicenow_connector):
+        """Not "could not tell, therefore no restriction". A token without rights
+        on sys_properties would otherwise open every article that carries its own
+        criteria, for the whole life of the process."""
+        self._connector(servicenow_connector, error=ServiceNowAPIError(403, "forbidden", None))
+        assert await servicenow_connector._resolve_article_read_criteria() is True
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_property_does_not_stop_the_connector(self, servicenow_connector):
+        self._connector(servicenow_connector, error=RuntimeError("network"))
+        assert await servicenow_connector._resolve_article_read_criteria() is True
+
+    @pytest.mark.asyncio
+    async def test_a_sys_properties_outage_does_not_open_restricted_articles(
+        self, servicenow_connector
+    ):
+        """The behavioural check, driven through the sync path rather than the
+        resolver: when sys_properties cannot be read at all, an article that
+        carries its own criteria must not fall back to the knowledge base grant.
+        """
+        mock_ds = AsyncMock()
+        mock_ds.get_now_table_tableName = AsyncMock(
+            side_effect=ServiceNowAPIError(403, "no rights on sys_properties", None)
+        )
+        servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        servicenow_connector.apply_article_read_criteria = (
+            await servicenow_connector._resolve_article_read_criteria()
+        )
+
+        record = servicenow_connector._transform_to_article_webpage_record(
+            KBKnowledge(
+                sys_id="art1",
+                short_description="Restricted",
+                kb_category="cat1",
+                can_read_user_criteria="crit1",
+            )
+        )
+        assert record.inherit_permissions is False
+
+    @pytest.mark.asyncio
+    async def test_a_failed_portal_read_still_falls_back(self, servicenow_connector):
+        """The portal suffix only affects how a link looks, so it keeps falling
+        back instead of leaning anywhere."""
+        servicenow_connector._read_instance_property = AsyncMock(
+            side_effect=ServiceNowAPIError(403, "forbidden", None)
+        )
+        mock_ds = AsyncMock()
+        mock_ds.get_now_table_tableName = AsyncMock(side_effect=RuntimeError("no portal either"))
+        servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        assert await servicenow_connector._resolve_kb_portal_suffix() == "kb"
+
+
+class TestArticleReadCriteriaOverride:
+    """ServiceNow applies article Can Read criteria as an override only when
+    glide.knowman.apply_article_read_criteria is true. Confirmed on a developer
+    instance: with the property false, a knowledge base grant opens an article
+    whose own criteria name a different group."""
+
+    def _article(self):
+        return KBKnowledge(
+            sys_id="art1",
+            short_description="Restricted",
+            kb_category="cat1",
+            can_read_user_criteria="crit1",
+        )
+
+    def test_article_inherits_the_base_grant_by_default(self, servicenow_connector):
+        servicenow_connector.apply_article_read_criteria = False
+
+        record = servicenow_connector._transform_to_article_webpage_record(self._article())
+
+        assert record.inherit_permissions is True
+
+    def test_own_criteria_stop_the_inheritance_when_the_property_is_on(self, servicenow_connector):
+        servicenow_connector.apply_article_read_criteria = True
+
+        record = servicenow_connector._transform_to_article_webpage_record(self._article())
+
+        assert record.inherit_permissions is False
+
+    def test_an_article_without_criteria_always_inherits(self, servicenow_connector):
+        servicenow_connector.apply_article_read_criteria = True
+        article = self._article()
+        article.can_read_user_criteria = ""
+
+        record = servicenow_connector._transform_to_article_webpage_record(article)
+
+        assert record.inherit_permissions is True
+
+    def test_the_attachment_follows_its_article(self, servicenow_connector):
+        record = servicenow_connector._transform_to_attachment_file_record(
+            AttachmentMetadata(
+                sys_id="att1",
+                file_name="doc.pdf",
+                content_type="application/pdf",
+                size_bytes="1024",
+                table_sys_id="art1",
+                sys_created_on="2026-08-01 10:00:00",
+                sys_updated_on="2026-08-01 10:00:00",
+            ),
+            parent_record_group_type=RecordGroupType.SERVICENOW_CATEGORY,
+            parent_external_record_group_id="cat1",
+            inherit_permissions=False,
+        )
+
+        assert record.inherit_permissions is False
+
+
+# ===========================================================================
+# Token refresh reaches the transport
+# ===========================================================================
+
+class TestAccessTokenRefresh:
+    def test_set_access_token_rewrites_the_authorization_header(self):
+        """The transport sends headers, so a token written anywhere else is inert."""
+        client = ServiceNowRESTClientViaOAuthAuthorizationCode(
+            instance_url="https://dev194883.service-now.com",
+            client_id="cid",
+            client_secret="secret",
+            redirect_uri="http://localhost/cb",
+            access_token="first-token",
+        )
+        assert client.headers["Authorization"] == "Bearer first-token"
+
+        client.set_access_token("second-token")
+
+        assert client.access_token == "second-token"
+        assert client.headers["Authorization"] == "Bearer second-token"
