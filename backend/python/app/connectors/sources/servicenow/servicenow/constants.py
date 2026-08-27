@@ -146,11 +146,8 @@ class ServiceNowRoles:
 class ServiceNowSyncPointKeys:
     """Keys for sync point storage"""
     USERS = "users"
-    GROUPS = "groups"
-    KNOWLEDGE_BASES = "knowledge_bases"
     CATEGORIES = "categories"
     ARTICLES = "articles"
-    ROLE_ASSIGNMENTS = "role_assignments"
     LAST_SYNC_TIME = "last_sync_time"
 
 
