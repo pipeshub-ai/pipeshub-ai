@@ -47,6 +47,12 @@
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong> is the open-source Context Layer for Enterprise AI. Connect enterprise knowledge across your organization, preserve access permissions, generate trustworthy citations, and build AI agents, enterprise search, RAG applications, MCP servers, and agentic workflows on a single governed context layer.
 
+> [!TIP]
+> Deploy with a single command:
+> ```bash
+> curl -fsSL https://get.pipeshub.com/install | bash
+> ```
+
 ## Features
 
 - 📝 **Explainable Answers:** PipesHub delivers grounded answers with precise block citations to the original documents.
