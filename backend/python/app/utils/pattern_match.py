@@ -83,14 +83,17 @@ async def resolve_connector_ids_for_search(
 ) -> list[str]:
     """Resolve connector IDs for pattern match fan-out.
 
-    - filters["apps"] present → use those connector IDs directly.
+    - filters["apps"] and/or filters["kb"] present → combine both lists.
+      KB IDs are App node IDs whose storage directories hold record files,
+      so they are valid connector paths for grep.
     - No filters (chatbot "search all" mode) → get all org app IDs.
-    - Only filters["kb"] present → empty (record-group IDs can't be used for PM).
     """
     if filters:
-        app_ids = filters.get("apps")
-        if app_ids:
-            return list(app_ids)
+        app_ids = list(filters.get("apps") or [])
+        kb_ids = list(filters.get("kb") or [])
+        combined = app_ids + kb_ids
+        if combined:
+            return combined
     try:
         org_apps = await graph_provider.get_org_apps(org_id)
         return [app["_key"] for app in org_apps if app.get("_key")]

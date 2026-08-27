@@ -19351,7 +19351,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
                 LET kbDirectAccess = record.connectorName == @kbConnectorName ? (
                     FOR kb IN 1..1 OUTBOUND record._id {CollectionNames.BELONGS_TO.value}
-                    FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                    FILTER IS_SAME_COLLECTION("apps", kb) AND kb.type == "KB"
                     FOR perm IN {CollectionNames.PERMISSION.value}
                         FILTER perm._from == userDoc._id AND perm._to == kb._id
                         FILTER perm.type == "USER"
@@ -19360,7 +19360,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
                 LET kbTeamAccess = record.connectorName == @kbConnectorName ? (
                     FOR kb IN 1..1 OUTBOUND record._id {CollectionNames.BELONGS_TO.value}
-                    FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                    FILTER IS_SAME_COLLECTION("apps", kb) AND kb.type == "KB"
                     FOR teamPerm IN {CollectionNames.PERMISSION.value}
                         FILTER teamPerm._to == kb._id AND teamPerm.type == "TEAM"
                         FOR userTeamPerm IN {CollectionNames.PERMISSION.value}

@@ -5298,19 +5298,19 @@ class Neo4jProvider(IGraphDBProvider):
                           (r)-[:INHERIT_PERMISSIONS*0..5]->(rg)
                 }
                 OR
-                // Path 8: KB direct access
+                // Path 8: KB direct access (KB is an App node, not RecordGroup)
                 EXISTS {
-                    MATCH (r)-[:BELONGS_TO]->(kb:RecordGroup),
-                          (u)-[:PERMISSION]->(kb)
-                    WHERE r.connectorName = $kbConnectorName
+                    MATCH (r)-[:BELONGS_TO]->(kb:App),
+                          (u)-[:PERMISSION {type: "USER"}]->(kb)
+                    WHERE kb.type = "KB" AND r.connectorName = $kbConnectorName
                 }
                 OR
                 // Path 9: KB team access
                 EXISTS {
-                    MATCH (r)-[:BELONGS_TO]->(kb:RecordGroup),
+                    MATCH (r)-[:BELONGS_TO]->(kb:App),
                           (team:Teams)-[:PERMISSION {type: "TEAM"}]->(kb),
-                          (u)-[:PERMISSION]->(team)
-                    WHERE r.connectorName = $kbConnectorName
+                          (u)-[:PERMISSION {type: "USER"}]->(team)
+                    WHERE kb.type = "KB" AND r.connectorName = $kbConnectorName
                 }
                 OR
                 // Path 10: Anyone access
