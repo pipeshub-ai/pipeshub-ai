@@ -33,4 +33,6 @@ export { isMcpInstanceReadOnly, McpInheritedBadge, McpInheritedCallout } from '@
 export { useUserPermission } from '@/lib/hooks/use-user-permission';
 export { PermissionLockIcon } from '@/app/components/ui/permission-lock-icon';
 export { PermissionDeniedDialog, usePermissionDeniedDialog } from '@/app/components/ui/permission-denied-dialog';
+export { InheritedConfigNotice } from '@/app/(main)/workspace/components/inherited-config-notice';
+
 
