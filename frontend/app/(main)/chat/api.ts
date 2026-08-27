@@ -316,6 +316,8 @@ export const ChatApi = {
         ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
         ...(request.agentCapabilities ? { agentCapabilities: request.agentCapabilities } : {}),
         ...(request.attachments?.length ? { attachments: request.attachments } : {}),
+        ...(request.disableSemantic ? { disableSemantic: true } : {}),
+        ...(request.disablePatternMatch ? { disablePatternMatch: true } : {}),
       };
     } else {
       endpoint = request.conversationId
@@ -362,6 +364,8 @@ export const ChatApi = {
       agentStreamTools?: string[];
       agentCapabilities?: StreamChatRequest['agentCapabilities'];
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
+      disableSemantic?: boolean;
+      disablePatternMatch?: boolean;
     }
   ): Promise<void> {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -383,6 +387,12 @@ export const ChatApi = {
     }
     if (request.reasoningEffort) {
       body.reasoningEffort = request.reasoningEffort;
+    }
+    if (request.disableSemantic) {
+      body.disableSemantic = true;
+    }
+    if (request.disablePatternMatch) {
+      body.disablePatternMatch = true;
     }
 
     await runChatStream(endpoint, body, callbacks);
@@ -407,6 +417,8 @@ export const ChatApi = {
       filters: { apps: string[]; kb: string[] };
       agentCapabilities?: AgentCapabilities;
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
+      disableSemantic?: boolean;
+      disablePatternMatch?: boolean;
     }
   ): Promise<void> {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -428,6 +440,12 @@ export const ChatApi = {
     }
     if (model.reasoningEffort) {
       agentRegenBody.reasoningEffort = model.reasoningEffort;
+    }
+    if (model.disableSemantic) {
+      agentRegenBody.disableSemantic = true;
+    }
+    if (model.disablePatternMatch) {
+      agentRegenBody.disablePatternMatch = true;
     }
 
     await runChatStream(endpoint, agentRegenBody, callbacks);

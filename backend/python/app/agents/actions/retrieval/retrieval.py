@@ -334,6 +334,9 @@ class Retrieval:
                     "message": "Retrieval services not available"
                 })
 
+            disable_semantic = bool(self.state.get("disable_semantic", False))
+            disable_pattern_match = bool(self.state.get("disable_pattern_match", False))
+
             org_id = self.state.get("org_id", "")
             user_id = self.state.get("user_id", "")
 
@@ -405,7 +408,7 @@ class Retrieval:
             # (before the semantic search below) so both run concurrently; awaited
             # further down once semantic results are in hand.
             pattern_match_task: asyncio.Task[list[dict[str, Any]]] | None = None
-            if config_service is not None:
+            if config_service is not None and not disable_pattern_match:
                 pattern_match_task = asyncio.create_task(
                     execute_pattern_match_pipeline(
                         query=search_query,
@@ -427,99 +430,106 @@ class Retrieval:
 
             logger_instance.debug(f"filter_groups: {filter_groups}")
 
-            # Fan-out only when there are multiple sources of the SAME type.
-            # A single app + single KB is combined into one call so the
-            # retrieval service can cross-rank them; fan-out is for when each
-            # source deserves its own adjusted_limit allocation.
-            fan_out_sources = explicit_ids and (len(resolved_apps) > 1 or len(resolved_kbs) > 1)
-            per_source_fan_out = False
-
-            async def _search_with_filter_groups(
-                source_filter_groups: dict[str, list[str]],
-            ) -> dict[str, Any] | None:
-                return await retrieval_service.search_with_filters(
-                    queries=[search_query],
-                    org_id=org_id,
-                    user_id=user_id,
-                    limit=adjusted_limit,
-                    filter_groups=source_filter_groups,
-                )
-
-            if fan_out_sources:
-                per_source_fan_out = True
-                search_tasks: list[Any] = []
-                for app_id in resolved_apps:
-                    search_tasks.append(_search_with_filter_groups(
-                        resolved_scope.to_filter_groups_for_source(
-                            app_id=app_id, placeholder_agent=is_placeholder_agent,
-                        )
-                    ))
-                for kb_id in resolved_kbs:
-                    search_tasks.append(_search_with_filter_groups(
-                        resolved_scope.to_filter_groups_for_source(
-                            kb_id=kb_id, placeholder_agent=is_placeholder_agent,
-                        )
-                    ))
-
-                raw_results = await asyncio.gather(*search_tasks, return_exceptions=True)
+            if disable_semantic:
+                logger_instance.info("Semantic search disabled via flag")
                 search_results: list[dict[str, Any]] = []
                 virtual_to_record_map: dict[str, Any] = {}
-                any_success = False
-                error_status: int | None = None
-                error_message = "Retrieval service unavailable"
-
-                for raw in raw_results:
-                    if isinstance(raw, Exception):
-                        logger_instance.warning(
-                            "Per-source retrieval failed: %s", raw, exc_info=raw,
-                        )
-                        continue
-                    if raw is None:
-                        logger_instance.warning("Per-source retrieval returned None")
-                        continue
-                    status_code = raw.get("status_code", 200)
-                    if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
-                        error_status = error_status or status_code
-                        error_message = raw.get("message", error_message)
-                        continue
-                    any_success = True
-                    search_results.extend(raw.get("searchResults", []))
-                    virtual_to_record_map.update(raw.get("virtual_to_record_map", {}))
-
-                if not any_success:
-                    if error_status is not None:
-                        return json.dumps({
-                            "status": "error",
-                            "status_code": error_status,
-                            "message": error_message,
-                        })
-                    return json.dumps({
-                        "status": "success",
-                        "message": "No results found",
-                        "results": [],
-                        "result_count": 0,
-                    })
+                per_source_fan_out = False
             else:
-                logger_instance.debug(f"Executing retrieval with limit: {adjusted_limit}")
-                results = await _search_with_filter_groups(filter_groups)
 
-                if results is None:
-                    logger_instance.warning("Retrieval service returned None")
-                    return json.dumps({
-                        "status": "error",
-                        "message": "Retrieval service returned no results"
-                    })
+              # Fan-out only when there are multiple sources of the SAME type.
+              # A single app + single KB is combined into one call so the
+              # retrieval service can cross-rank them; fan-out is for when each
+              # source deserves its own adjusted_limit allocation.
+              fan_out_sources = explicit_ids and (len(resolved_apps) > 1 or len(resolved_kbs) > 1)
+              per_source_fan_out = False
 
-                status_code = results.get("status_code", 200)
-                if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
-                    return json.dumps({
-                        "status": "error",
-                        "status_code": status_code,
-                        "message": results.get("message", "Retrieval service unavailable")
-                    })
+              async def _search_with_filter_groups(
+                  source_filter_groups: dict[str, list[str]],
+              ) -> dict[str, Any] | None:
+                  return await retrieval_service.search_with_filters(
+                      queries=[search_query],
+                      org_id=org_id,
+                      user_id=user_id,
+                      limit=adjusted_limit,
+                      filter_groups=source_filter_groups,
+                  )
 
-                search_results = results.get("searchResults", [])
-                virtual_to_record_map = results.get("virtual_to_record_map", {})
+              if fan_out_sources:
+                  per_source_fan_out = True
+                  search_tasks: list[Any] = []
+                  for app_id in resolved_apps:
+                      search_tasks.append(_search_with_filter_groups(
+                          resolved_scope.to_filter_groups_for_source(
+                              app_id=app_id, placeholder_agent=is_placeholder_agent,
+                          )
+                      ))
+                  for kb_id in resolved_kbs:
+                      search_tasks.append(_search_with_filter_groups(
+                          resolved_scope.to_filter_groups_for_source(
+                              kb_id=kb_id, placeholder_agent=is_placeholder_agent,
+                          )
+                      ))
+
+                  raw_results = await asyncio.gather(*search_tasks, return_exceptions=True)
+                  search_results: list[dict[str, Any]] = []
+                  virtual_to_record_map: dict[str, Any] = {}
+                  any_success = False
+                  error_status: int | None = None
+                  error_message = "Retrieval service unavailable"
+
+                  for raw in raw_results:
+                      if isinstance(raw, Exception):
+                          logger_instance.warning(
+                              "Per-source retrieval failed: %s", raw, exc_info=raw,
+                          )
+                          continue
+                      if raw is None:
+                          logger_instance.warning("Per-source retrieval returned None")
+                          continue
+                      status_code = raw.get("status_code", 200)
+                      if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
+                          error_status = error_status or status_code
+                          error_message = raw.get("message", error_message)
+                          continue
+                      any_success = True
+                      search_results.extend(raw.get("searchResults", []))
+                      virtual_to_record_map.update(raw.get("virtual_to_record_map", {}))
+
+                  if not any_success:
+                      if error_status is not None:
+                          return json.dumps({
+                              "status": "error",
+                              "status_code": error_status,
+                              "message": error_message,
+                          })
+                      return json.dumps({
+                          "status": "success",
+                          "message": "No results found",
+                          "results": [],
+                          "result_count": 0,
+                      })
+              else:
+                  logger_instance.debug(f"Executing retrieval with limit: {adjusted_limit}")
+                  results = await _search_with_filter_groups(filter_groups)
+
+                  if results is None:
+                      logger_instance.warning("Retrieval service returned None")
+                      return json.dumps({
+                          "status": "error",
+                          "message": "Retrieval service returned no results"
+                      })
+
+                  status_code = results.get("status_code", 200)
+                  if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
+                      return json.dumps({
+                          "status": "error",
+                          "status_code": status_code,
+                          "message": results.get("message", "Retrieval service unavailable")
+                      })
+
+                  search_results = results.get("searchResults", [])
+                  virtual_to_record_map = results.get("virtual_to_record_map", {})
 
             logger_instance.info(f"✅ Retrieved {len(search_results)} documents")
 

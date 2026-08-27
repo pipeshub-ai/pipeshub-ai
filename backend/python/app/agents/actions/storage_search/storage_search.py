@@ -802,7 +802,16 @@ class StoragePatternMatch:
         if not user_id or not graph_provider or not hasattr(
             graph_provider, "check_vrids_accessible"
         ):
+            logger.info(
+                "[_check_accessible_vrids] BAIL: user_id=%r org_id=%r has_gp=%s has_method=%s",
+                user_id, org_id, graph_provider is not None,
+                hasattr(graph_provider, "check_vrids_accessible") if graph_provider else False,
+            )
             return None
+        logger.info(
+            "[_check_accessible_vrids] checking %d vrids for user=%s org=%s: %s",
+            len(vrids), user_id, org_id, vrids,
+        )
         try:
             accessible = await graph_provider.check_vrids_accessible(
                 user_id=user_id,
@@ -811,9 +820,14 @@ class StoragePatternMatch:
             )
         except Exception as exc:
             logger.warning(
-                "[storage_pattern_match] permission check failed: %s", exc
+                "[storage_pattern_match] permission check failed: %s", exc,
+                exc_info=True,
             )
             return None
+        logger.info(
+            "[_check_accessible_vrids] result: %d/%d accessible, map=%s",
+            len(accessible) if accessible else 0, len(vrids), accessible,
+        )
         return accessible or {}
 
     async def _filter_output_by_permission(
@@ -1084,10 +1098,16 @@ class StoragePatternMatch:
         # Resolve connector directory
         connector_dir, path_err = await self._resolve_connector_path(connector_id)
         if path_err:
+            logger.info("[find_records] path error for %s: %s", connector_id, path_err)
             return False, path_err
+        logger.info("[find_records] connector_dir=%s", connector_dir)
 
         # Execute the command
         success, output = await _run_subprocess(command, cwd=connector_dir)
+        logger.info(
+            "[find_records] subprocess result: success=%s output_len=%d output_preview=%r",
+            success, len(output), output[:500],
+        )
 
         if not success:
             if "No matches found" in output:
@@ -1115,6 +1135,9 @@ class StoragePatternMatch:
             fm = _RECORD_FILENAME_RE.match(os.path.basename(line))
             if fm:
                 line_vrids.append((line, fm.group(1)))
+        logger.info(
+            "[find_records] lines=%d line_vrids=%d", len(lines), len(line_vrids),
+        )
 
         if not line_vrids:
             return True, json_mod.dumps({

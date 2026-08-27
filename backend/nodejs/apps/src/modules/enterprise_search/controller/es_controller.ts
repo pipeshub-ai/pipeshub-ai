@@ -912,6 +912,8 @@ export const streamChat =
         conversationId: newConversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        ...(req.body.disableSemantic ? { disableSemantic: true } : {}),
+        ...(req.body.disablePatternMatch ? { disablePatternMatch: true } : {}),
         // Explicit protocol propagation — Node hand-builds this request body,
         // so a header alone would never reach Python (see agui.ts docstring).
         ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
@@ -2231,6 +2233,8 @@ export const addMessageStream =
         conversationId: conversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        ...(req.body.disableSemantic ? { disableSemantic: true } : {}),
+        ...(req.body.disablePatternMatch ? { disablePatternMatch: true } : {}),
         // Explicit protocol propagation — Node hand-builds this request body,
         // so a header alone would never reach Python (see agui.ts docstring).
         ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
@@ -3774,6 +3778,8 @@ async function regenerateAnswersInternal(
       conversationId: conversationId || null,
       timezone: req.body.timezone || null,
       currentTime: req.body.currentTime || null,
+      ...(req.body.disableSemantic ? { disableSemantic: true } : {}),
+      ...(req.body.disablePatternMatch ? { disablePatternMatch: true } : {}),
       ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
     };
     if (agentKey || regenIsAgentMode) {
@@ -6073,6 +6079,8 @@ export const deleteAgent =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
         conversationId: newAgentConversationId || null,
+        ...(req.body.disableSemantic ? { disableSemantic: true } : {}),
+        ...(req.body.disablePatternMatch ? { disablePatternMatch: true } : {}),
         // Explicit protocol propagation — Node hand-builds this request body,
         // so a header alone would never reach Python (see agui.ts docstring).
         ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
@@ -6606,6 +6614,8 @@ export const createAgentConversation =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
         attachments: req.body.attachments || [],
+        ...(req.body.disableSemantic ? { disableSemantic: true } : {}),
+        ...(req.body.disablePatternMatch ? { disablePatternMatch: true } : {}),
       };
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
 
@@ -6921,6 +6931,8 @@ export const createAgentConversation =
             chatMode: req.body.chatMode || 'auto',
             timezone: req.body.timezone || null,
             currentTime: req.body.currentTime || null,
+            ...(req.body.disableSemantic ? { disableSemantic: true } : {}),
+            ...(req.body.disablePatternMatch ? { disablePatternMatch: true } : {}),
         };
         assignToolsToPayload(aiPayload, req.body.tools);
         assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
@@ -7311,6 +7323,8 @@ export const addMessageStreamToAgentConversation =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
         conversationId: conversationId || null,
+        ...(req.body.disableSemantic ? { disableSemantic: true } : {}),
+        ...(req.body.disablePatternMatch ? { disablePatternMatch: true } : {}),
         // Explicit protocol propagation — Node hand-builds this request body,
         // so a header alone would never reach Python (see agui.ts docstring).
         ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),

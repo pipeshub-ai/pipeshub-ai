@@ -118,14 +118,21 @@ async def execute_pattern_match_pipeline(
     """
     grep_command = build_grep_command_from_query(query)
     if not grep_command:
+        logger_instance.info("pattern_match pipeline: no grep command from query=%r", query[:80])
         return []
     if not await check_pattern_match_eligible(config_service, logger_instance):
+        logger_instance.info("pattern_match pipeline: storage not local, skipping")
         return []
     connector_ids = await resolve_connector_ids_for_search(
         graph_provider, org_id, filters
     )
     if not connector_ids:
+        logger_instance.info("pattern_match pipeline: no connector IDs resolved")
         return []
+    logger_instance.info(
+        "pattern_match pipeline: grep=%r connectors=%s",
+        grep_command, connector_ids,
+    )
     return await run_pattern_match(
         config_service=config_service,
         org_id=org_id,
@@ -171,13 +178,23 @@ async def run_pattern_match(
             command=command,
             max_results=10,
         )
+        logger_instance.info(
+            "pattern_match _search_connector: cid=%s success=%s output_len=%d",
+            connector_id, success, len(output),
+        )
         if not success:
+            logger_instance.info("pattern_match _search_connector: failed output=%r", output[:300])
             return []
         try:
             parsed = json.loads(output)
         except (json.JSONDecodeError, TypeError):
+            logger_instance.info("pattern_match _search_connector: JSON parse failed")
             return []
-        return parsed.get("records", [])
+        records = parsed.get("records", [])
+        logger_instance.info(
+            "pattern_match _search_connector: cid=%s records=%d", connector_id, len(records),
+        )
+        return records
 
     tasks = [_search_connector(cid) for cid in connector_ids]
     try:
@@ -190,11 +207,15 @@ async def run_pattern_match(
         return []
 
     all_records: list[dict] = []
-    for result in results:
+    for i, result in enumerate(results):
         if isinstance(result, Exception):
-            logger_instance.debug("Pattern match connector error: %s", result)
+            logger_instance.info("Pattern match connector %d error: %s", i, result)
             continue
+        logger_instance.info(
+            "Pattern match connector %d returned %d records", i, len(result),
+        )
         all_records.extend(result)
+    logger_instance.info("Pattern match total raw records: %d", len(all_records))
     return all_records
 
 
