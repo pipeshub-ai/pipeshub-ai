@@ -1166,8 +1166,10 @@ MONGO_PASSWORD=${MONGO_PASSWORD}
 # If MongoDB crash-loops with a segfault (exit 139) on a newer host kernel, try
 # the rseq tunable first so the supported MongoDB version can stay pinned.
 $(optional_env_line MONGO_GLIBC_TUNABLES "$MONGO_GLIBC_TUNABLES" "glibc.pthread.rseq=1")
-# Fallback only: pin an older image. MongoDB 8.x data is not readable by 7.x, so
-# wipe the mongo volume before downgrading.
+# Pin the MongoDB image. The value below is the tag compose already defaults to,
+# so uncommenting it changes nothing on its own -- set an older tag here only to
+# recover from a version-specific bug. MongoDB 8.x data is not readable by 7.x,
+# so wipe the mongo volume before downgrading.
 $(optional_env_line MONGO_IMAGE_TAG "$MONGO_IMAGE_TAG" "8.0.17")
 # WiredTiger cache cap and container memory limit. Raise both together on
 # larger or dedicated hosts; avoid dropping the cache below 1 GB.
@@ -1406,6 +1408,13 @@ MONGO_RSEQ_PROBE_SECS=12
 
 mongo_rseq_crashed() {
   local id exit_code restarts elapsed=0
+  # No mongodb container means the start failed for some other reason (a build
+  # error, a missing image, another service). Do not spend the probe window on it.
+  if [[ -z "$(docker ps -aq \
+      --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=mongodb" 2>/dev/null)" ]]; then
+    return 1
+  fi
   while (( elapsed < MONGO_RSEQ_PROBE_SECS )); do
     for id in $(docker ps -aq \
         --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
@@ -1457,6 +1466,41 @@ _USE_BUILD=false
 _is_tty=false; [[ -t 1 ]] && _is_tty=true
 _PROGRESS=(--progress "$(resolve_compose_progress "$_is_tty")")
 
+compose_up()        { docker compose "${_PROGRESS[@]}" -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" up -d "$@"; }
+compose_logs_tail() { docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true; }
+
+# Start the stack, healing a MongoDB rseq segfault once if that is what stopped
+# it. A segfault fails `up` within seconds rather than later: the app's
+# `depends_on: mongodb: condition: service_healthy` is never satisfied, so
+# compose reports "dependency failed to start" and exits non-zero long before the
+# health poll could react.
+#
+# The retry is a full `up -d` so dependents that were created but never started
+# come up too, and it never repeats --build: if the image compiled the first
+# time, it is already built. Callers `die` on a non-zero return; every failure
+# message is emitted here so the prebuilt and build paths cannot drift apart.
+compose_up_with_mongo_heal() {
+  local label="$1"; shift
+  if compose_up "$@"; then return 0; fi
+
+  if apply_mongo_rseq_tunable; then
+    if compose_up; then
+      success "Startup recovered after applying the MongoDB rseq tunable."
+      return 0
+    fi
+    error "docker compose up failed again after applying the MongoDB tunable."
+    compose_logs_tail
+    warn "MongoDB is still not starting, so something else is wrong. Read the logs"
+    warn "above first. Do not recreate the mongo data volume yet — that destroys"
+    warn "your data and will not fix a crash the tunable did not resolve."
+    return 1
+  fi
+
+  error "docker compose ${label} failed. Last 30 lines of container logs:"
+  compose_logs_tail
+  return 1
+}
+
 # Decide whether to refresh the prebuilt image from the registry before starting.
 # Pure decision (no side effects) so it is unit-testable in isolation.
 # `docker compose up -d` only pulls an image that is ABSENT locally, so a cached
@@ -1488,30 +1532,8 @@ if $_USE_BUILD; then
   $FLAG_UPGRADE && info "Rebuilding image from source for tag: ${IMAGE_TAG:-local}..."
   info "Building image from source and starting containers..."
   info "(This may take 10–30+ minutes on first run)"
-  if ! docker compose "${_PROGRESS[@]}" \
-      -f "$COMPOSE_FILE" \
-      -p "$PROJECT_NAME" \
-      --env-file "$ENV_FILE" \
-      up -d --build; then
-    # A MongoDB rseq segfault fails `up` within seconds rather than later: the
-    # app's `depends_on: mongodb: condition: service_healthy` is never satisfied,
-    # so compose reports "dependency failed to start" and exits non-zero long
-    # before the health poll below could react. Heal here and retry the whole
-    # `up` -- recreating only mongodb would leave every dependent still created
-    # but never started.
-    if apply_mongo_rseq_tunable; then
-      if ! docker compose "${_PROGRESS[@]}" -f "$COMPOSE_FILE" -p "$PROJECT_NAME" \
-           --env-file "$ENV_FILE" up -d --build; then
-        error "docker compose up failed again after applying the MongoDB tunable."
-        docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true
-        die "Fix the error above and re-run install.sh."
-      fi
-      success "Startup recovered after applying the MongoDB rseq tunable."
-    else
-      error "docker compose up --build failed. Last 30 lines of container logs:"
-      docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true
-      die "Fix the build error above and re-run install.sh."
-    fi
+  if ! compose_up_with_mongo_heal "up --build" --build; then
+    die "Fix the build error above and re-run install.sh."
   fi
 else
   if [[ "$_DO_PULL" == true ]]; then
@@ -1537,30 +1559,8 @@ else
     info "Skipping image refresh; using locally cached images (--no-pull)."
   fi
   info "Starting containers..."
-  if ! docker compose "${_PROGRESS[@]}" \
-      -f "$COMPOSE_FILE" \
-      -p "$PROJECT_NAME" \
-      --env-file "$ENV_FILE" \
-      up -d; then
-    # A MongoDB rseq segfault fails `up` within seconds rather than later: the
-    # app's `depends_on: mongodb: condition: service_healthy` is never satisfied,
-    # so compose reports "dependency failed to start" and exits non-zero long
-    # before the health poll below could react. Heal here and retry the whole
-    # `up` -- recreating only mongodb would leave every dependent still created
-    # but never started.
-    if apply_mongo_rseq_tunable; then
-      if ! docker compose "${_PROGRESS[@]}" -f "$COMPOSE_FILE" -p "$PROJECT_NAME" \
-           --env-file "$ENV_FILE" up -d; then
-        error "docker compose up failed again after applying the MongoDB tunable."
-        docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true
-        die "Fix the error above and re-run install.sh."
-      fi
-      success "Startup recovered after applying the MongoDB rseq tunable."
-    else
-      error "docker compose up failed. Last 30 lines of container logs:"
-      docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true
-      die "Fix the error above and re-run install.sh."
-    fi
+  if ! compose_up_with_mongo_heal "up"; then
+    die "Fix the error above and re-run install.sh."
   fi
 fi
 
