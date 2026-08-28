@@ -603,7 +603,9 @@ class TestBedrockClientRegion:
             mock_session_cls.return_value = mock_session
             from app.utils.aimodels import _create_bedrock_client
             _create_bedrock_client(config, service_name="bedrock")
-            mock_session.client.assert_called_once_with("bedrock")
+            service_name, kwargs = mock_session.client.call_args
+            assert service_name == ("bedrock",)
+            assert kwargs["config"].connect_timeout <= 15
 
 
 # ============================================================================

@@ -259,10 +259,25 @@ class OpenAITransport(LLMTransport):
             step_footer = getattr(msg, "step_footer", "")
             content = msg.content
             if isinstance(content, list):
-                blocks = [self._format_tool_result_part(p) for p in content]
+                # Chat Completions rejects an image block on any non-`user`
+                # message outright ("Image URLs are only allowed for messages
+                # with role 'user', but this message with role 'tool' contains
+                # an image URL"), so images only survive here on the Responses
+                # API. The agent factory registers
+                # `shape_retrieved_image_injection` for exactly this case (see
+                # `_supports_multipart_tool_result`), which re-delivers the
+                # dropped images in a user message.
+                keep_images = self._wants_responses()
+                blocks = [
+                    self._format_tool_result_part(p)
+                    for p in content
+                    if keep_images or getattr(p, "type", None) != "image"
+                ]
                 if step_footer:
                     blocks.append({"type": "text", "text": step_footer})
-                tool_content: Any = blocks
+                # An images-only result leaves nothing to send; the API still
+                # requires the tool message to answer its call.
+                tool_content: Any = blocks or ""
             else:
                 tool_content = (content or "") + step_footer
             return {

@@ -1,4 +1,4 @@
-import express, { Express } from 'express';
+import express, { Express, Response } from 'express';
 import path from 'path';
 import helmet from 'helmet';
 import cors from 'cors';
@@ -254,7 +254,40 @@ export class Application {
       this.bootstrapNotificationBrokerConsumer();
 
       // Serve static frontend files\
-      this.app.use(express.static(path.join(__dirname, 'public')));
+      const publicDir = path.join(__dirname, 'public');
+      const staticAssetPrefix = `${path.sep}_next${path.sep}static${path.sep}`;
+      this.app.use(
+        express.static(publicDir, {
+          setHeaders: (res, filePath) => {
+            // Everything under /_next/static is content-hashed, so a given URL's
+            // bytes never change. Every other file (index.html, /_redirects) is
+            // replaced in place on deploy and must be revalidated, or a client
+            // keeps a shell that references the previous build's chunk hashes.
+            res.setHeader(
+              'Cache-Control',
+              filePath.includes(staticAssetPrefix)
+                ? 'public, max-age=31536000, immutable'
+                : 'no-cache',
+            );
+          },
+        }),
+      );
+
+      // The SPA shell is HTML; serving it for a build asset that express.static
+      // did not find breaks the page instead of failing the one request. Browsers
+      // reject it ("Refused to execute script ... MIME type ('text/html')"), and
+      // CDNs that cache on URL extension rather than Content-Type store that HTML
+      // body under the .js URL, so one client requesting a stale chunk poisons the
+      // asset for everyone until the entry expires. Fail these closed.
+      const buildAssetPath =
+        /\.(?:js|mjs|css|map|json|wasm|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|otf|eot)$/i;
+
+      const sendShell = (res: Response, ...segments: string[]): void => {
+        res.sendFile(path.join(publicDir, ...segments, 'index.html'), {
+          headers: { 'Cache-Control': 'no-cache' },
+        });
+      };
+
       // SPA fallback route\
       this.app.get('*', (_req, res) => {
         // The Next.js static export emits a single index.html for the
@@ -268,16 +301,7 @@ export class Application {
           /^\/(toolsets|connectors)\/oauth\/callback\/[^/]+\/?$/,
         );
         if (oauthCallbackMatch && oauthCallbackMatch[1]) {
-          res.sendFile(
-            path.join(
-              __dirname,
-              'public',
-              oauthCallbackMatch[1],
-              'oauth',
-              'callback',
-              'index.html',
-            ),
-          );
+          sendShell(res, oauthCallbackMatch[1], 'oauth', 'callback');
           return;
         }
 
@@ -290,11 +314,17 @@ export class Application {
         // pattern used above for OAuth callback slugs.
         const recordMatch = _req.path.match(/^\/record\/[^/]+(?:\/.*)?$/);
         if (recordMatch) {
-          res.sendFile(path.join(__dirname, 'public', 'record', 'index.html'));
+          sendShell(res, 'record');
           return;
         }
-  
-        res.sendFile(path.join(__dirname, 'public', 'index.html'));
+
+        if (_req.path.startsWith('/_next/') || buildAssetPath.test(_req.path)) {
+          res.setHeader('Cache-Control', 'no-store');
+          res.status(404).type('text/plain').send('Not Found');
+          return;
+        }
+
+        sendShell(res);
       });
 
       this.logger.info('Application initialized successfully');

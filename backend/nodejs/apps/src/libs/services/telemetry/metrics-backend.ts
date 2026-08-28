@@ -33,6 +33,8 @@ export interface MetricsBackend {
   createHistogram(def: HistogramDefinition): HistogramHandle;
   /** Serialize all registered metrics in the backend's exposition format. */
   serialize(): Promise<string>;
+  /** Drop all recorded series. */
+  reset(): void;
 }
 
 /** prom-client implementation of {@link MetricsBackend}. */
@@ -91,6 +93,10 @@ export class PrometheusBackend implements MetricsBackend {
 
   serialize(): Promise<string> {
     return this.registry.metrics();
+  }
+
+  reset(): void {
+    this.registry.resetMetrics();
   }
 }
 

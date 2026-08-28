@@ -80,6 +80,35 @@ class TestPrometheusBackendHistogram:
         assert 't_hist_a_sum{route="/x"} 5.05' in text
 
 
+class TestReset:
+    def test_reset_drops_series_from_all_instruments(self):
+        backend = PrometheusBackend()
+        counter = backend.counter("t_reset_c", "help", ["k"])
+        gauge = backend.gauge("t_reset_g", "help", ["k"])
+        histogram = backend.histogram("t_reset_h", "help", ["k"], buckets=(1.0,))
+
+        counter.inc("a")
+        gauge.set("a", value=3)
+        histogram.observe("a", value=0.5)
+
+        backend.reset()
+
+        text = backend.serialize()
+        assert 't_reset_c_total{k="a"}' not in text
+        assert 't_reset_g{k="a"}' not in text
+        assert 't_reset_h_count{k="a"}' not in text
+
+    def test_counting_resumes_after_reset(self):
+        backend = PrometheusBackend()
+        counter = backend.counter("t_reset_resume", "help", ["k"])
+
+        counter.inc("a", value=5)
+        backend.reset()
+        counter.inc("a")
+
+        assert 't_reset_resume_total{k="a"} 1.0' in backend.serialize()
+
+
 class TestRegistryIsolation:
     def test_each_backend_has_its_own_registry(self):
         one = PrometheusBackend()

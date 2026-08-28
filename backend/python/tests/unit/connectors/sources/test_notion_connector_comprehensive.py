@@ -490,9 +490,9 @@ class TestResolveBlockParentRecursive:
 
 
 # ===========================================================================
-# _get_database_parent_page_id
+# _get_database_parent_ref
 # ===========================================================================
-class TestGetDatabaseParentPageId:
+class TestGetDatabaseParentRef:
     async def test_page_parent(self, connector):
         mock_ds = MagicMock()
         mock_response = MagicMock()
@@ -503,8 +503,8 @@ class TestGetDatabaseParentPageId:
         mock_ds.retrieve_database = AsyncMock(return_value=mock_response)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await connector._get_database_parent_page_id("db-1")
-        assert result == "parent-page"
+        result = await connector._get_database_parent_ref("db-1")
+        assert result == ("parent-page", RecordType.WEBPAGE)
 
     async def test_workspace_parent_returns_none(self, connector):
         mock_ds = MagicMock()
@@ -516,8 +516,8 @@ class TestGetDatabaseParentPageId:
         mock_ds.retrieve_database = AsyncMock(return_value=mock_response)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await connector._get_database_parent_page_id("db-2")
-        assert result is None
+        result = await connector._get_database_parent_ref("db-2")
+        assert result == (None, None)
 
     async def test_api_failure_raises(self, connector):
         mock_ds = MagicMock()
@@ -529,12 +529,12 @@ class TestGetDatabaseParentPageId:
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         with pytest.raises(RuntimeError, match="Failed to retrieve database"):
-            await connector._get_database_parent_page_id("db-3")
+            await connector._get_database_parent_ref("db-3")
 
     async def test_exception_propagates(self, connector):
         connector._get_fresh_datasource = AsyncMock(side_effect=Exception("Error"))
         with pytest.raises(Exception, match="Error"):
-            await connector._get_database_parent_page_id("db-4")
+            await connector._get_database_parent_ref("db-4")
 
     async def test_database_parent(self, connector):
         mock_ds = MagicMock()
@@ -546,8 +546,8 @@ class TestGetDatabaseParentPageId:
         mock_ds.retrieve_database = AsyncMock(return_value=mock_response)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await connector._get_database_parent_page_id("db-5")
-        assert result == "parent-db"
+        result = await connector._get_database_parent_ref("db-5")
+        assert result == ("parent-db", RecordType.DATABASE)
 
 
 # ===========================================================================

@@ -11,6 +11,7 @@ import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/sc
 import type { SchemaField } from '@/app/(main)/workspace/connectors/types';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
+import { resolveModelConfigSaveError } from '../resolve-model-config-save-error';
 import type { AIModelProvider, AIModelProviderField, ConfiguredModel } from '../types';
 import { CAPABILITY_TO_MODEL_TYPE } from '../types';
 import { AIModelsApi } from '../api';
@@ -421,13 +422,7 @@ export function ModelConfigDialog({
       });
       onClose();
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { error?: { message?: string }; message?: string } }; message?: string };
-      const msg =
-        e?.response?.data?.error?.message ??
-        e?.response?.data?.message ??
-        e?.message ??
-        t('workspace.aiModels.configSaveErrorFallback');
-      setError(msg);
+      setError(resolveModelConfigSaveError(err, t));
     } finally {
       setSaving(false);
     }

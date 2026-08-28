@@ -159,6 +159,43 @@ class TestLocalDoclingParser:
 
         assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
 
+    @pytest.mark.asyncio
+    async def test_parse_maps_conversion_error_to_unsupported_format(self):
+        from docling.exceptions import ConversionError
+
+        mock_processor = MagicMock()
+        mock_processor.parse_document = AsyncMock(
+            side_effect=ConversionError(
+                "File format not allowed: ._free-software-support-agreement.docx"
+            )
+        )
+
+        parser = LocalDoclingParser(mock_processor)
+        with pytest.raises(ParseError) as exc_info:
+            await parser.parse(b"content", "._free-software-support-agreement.docx")
+
+        assert exc_info.value.code == ParseErrorCode.UNSUPPORTED_FORMAT
+        assert "File format not allowed" in exc_info.value.message
+        assert exc_info.value.details["record_name"] == "._free-software-support-agreement.docx"
+
+    @pytest.mark.asyncio
+    async def test_parse_maps_generic_conversion_error_to_parse_failed(self):
+        from docling.exceptions import ConversionError
+
+        mock_processor = MagicMock()
+        mock_processor.parse_document = AsyncMock(
+            side_effect=ConversionError("Invalid input: corrupted document stream")
+        )
+
+        parser = LocalDoclingParser(mock_processor)
+        with pytest.raises(ParseError) as exc_info:
+            await parser.parse(b"content", "corrupted.pdf")
+
+        assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
+        assert "Invalid input" in exc_info.value.message
+        assert exc_info.value.details["record_name"] == "corrupted.pdf"
+        assert exc_info.value.__cause__ is not None
+
     def test_supported_formats(self):
         mock_processor = MagicMock()
         parser = LocalDoclingParser(mock_processor)

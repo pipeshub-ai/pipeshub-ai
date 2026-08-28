@@ -25,6 +25,8 @@ const logger = Logger.getInstance({
   service: 'AIServiceCommand',
 });
 
+const AI_SERVICE_TIMEOUT_MS = 620_000;
+
 export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
   private method: HttpMethod;
   private body?: any;
@@ -44,6 +46,14 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
       method: this.method,
       headers: sanitizedHeaders,
       body: this.body,
+      // Above the AI service's own ceiling (600s for a first-time
+      // embedding-model download, `health.py`'s HEALTH_CHECK_TIMEOUT).
+      // Without it, undici's ~300s default cuts the call off first and the
+      // caller sees a transport error instead of the "model is still
+      // downloading, retry shortly" message the health check produced.
+      // Not applied to executeStream(), whose SSE progress stream is meant to
+      // outlive any single request.
+      signal: AbortSignal.timeout(AI_SERVICE_TIMEOUT_MS),
     };
 
     try {

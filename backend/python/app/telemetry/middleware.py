@@ -5,7 +5,6 @@ Registered once per FastAPI app (see ``setup_telemetry``), this makes collection
 drift that left the Python services entirely uninstrumented.
 """
 
-import re
 import time
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -13,18 +12,11 @@ from starlette.requests import Request
 from starlette.types import ASGIApp
 
 from app.telemetry.identity import domain_from_email
-from app.telemetry.modules.http_metrics import HTTP_REQUESTS, HTTP_REQUEST_DURATION
-
-# Collapses id-like path segments so a fallback (no matched route template) still
-# stays low-cardinality: mongo ObjectIds, uuids, long hex, and pure numbers.
-_ID_SEGMENT = re.compile(
-    r"^(?:[0-9a-fA-F]{24}|[0-9a-fA-F-]{32,36}|\d+)$"
+from app.telemetry.modules.http_metrics import (
+    HTTP_REQUEST_DURATION,
+    HTTP_REQUESTS,
+    bound_route,
 )
-
-
-def _normalize_path(path: str) -> str:
-    parts = [(":id" if _ID_SEGMENT.match(seg) else seg) for seg in path.split("/")]
-    return "/".join(parts) or "/"
 
 
 class MetricsMiddleware(BaseHTTPMiddleware):
@@ -43,7 +35,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             elapsed = time.perf_counter() - start
-            route = self._route_template(request)
+            route = bound_route(self._route_template(request))
             org = self._org(request)
             domain = self._domain(request)
             # Never reset counters — push cumulative values, let the TSDB
@@ -62,8 +54,8 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         template = getattr(route, "path_format", None) or getattr(route, "path", None)
         if template:
             return template
-        # No route matched (404) or older Starlette — normalize the raw path.
-        return _normalize_path(request.url.path)
+        # Raw paths (404s, bot scans) are unbounded label values.
+        return "unmatched"
 
     @staticmethod
     def _org(request: Request) -> str:

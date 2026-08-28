@@ -52,7 +52,7 @@ class AnthropicTransport(LLMTransport):
     this class — all callers see only the LLMTransport interface.
     """
 
-    DEFAULT_MODEL = "claude-sonnet-4-6"
+    DEFAULT_MODEL = "claude-sonnet-5"
 
     # 20k stays under the SDK's ~21.3k non-streaming ceiling (it refuses
     # non-streaming requests expected to run past its 10-minute timeout)
@@ -381,7 +381,14 @@ class AnthropicTransport(LLMTransport):
         if not tools:
             return None
         return [
-            {"name": t.name, "description": t.description, "input_schema": t.input_schema}
+            {
+                "name": t.name,
+                "description": t.description,
+                # The API rejects an empty schema, and a tool taking no
+                # arguments legitimately has one — same substitution the
+                # OpenAI/Gemini/Ollama transports make.
+                "input_schema": t.input_schema or {"type": "object", "properties": {}},
+            }
             for t in tools
         ]
 

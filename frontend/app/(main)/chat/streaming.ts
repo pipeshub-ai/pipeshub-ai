@@ -356,8 +356,19 @@ export async function streamMessageForSlot(
   // With N background streams at 60 fps each, that starves the main
   // thread and breaks the active chat's scroll tracking.  To avoid this,
   // background slots flush at a much lower cadence (200 ms).
-  const ACTIVE_FLUSH_MS = 16;
   const BACKGROUND_FLUSH_MS = 200;
+  // ACTIVE THROTTLING scales with answer size. 16ms (~60fps) is fine for a
+  // short answer, but a large table/answer costs measurably more to
+  // re-render per flush (block-splitting in `AnswerContent` keeps that cost
+  // roughly proportional to the *tail* block, not the whole answer, but a
+  // single tail block can itself still grow past a 16ms budget). Flushing
+  // faster than the main thread can retire the resulting render only queues
+  // up backlog — it doesn't make the UI feel faster.
+  function activeFlushIntervalMs(contentLength: number): number {
+    if (contentLength < 2000) return 16;
+    if (contentLength < 8000) return 33;
+    return 50;
+  }
   let accumulatedContent = '';
   let pendingCitationMaps: ReturnType<typeof buildCitationMapsFromStreaming> | null = null;
   let lastCitationKey = ''; // JSON.stringify key for dedup
@@ -394,7 +405,9 @@ export async function streamMessageForSlot(
     const now = Date.now();
     // Check activity on every call — adapts immediately when user switches.
     const isActive = useChatStore.getState().activeSlotId === slotId;
-    const interval = isActive ? ACTIVE_FLUSH_MS : BACKGROUND_FLUSH_MS;
+    const interval = isActive
+      ? activeFlushIntervalMs(accumulatedContent.length)
+      : BACKGROUND_FLUSH_MS;
     if (now - lastFlushTime >= interval) {
       // Enough time has passed — flush immediately.
       if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }

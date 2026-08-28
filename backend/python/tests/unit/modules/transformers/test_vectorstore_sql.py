@@ -69,13 +69,9 @@ class TestSqlBlockGroups:
         )
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            return_value=(MagicMock(), {"isMultimodal": False}),
-        ):
-            result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain"
-            )
+        result = await vs.index_documents(
+            container, "org", "rec", "vr", "text/plain"
+        )
 
         assert result is True
         vs._create_embeddings.assert_awaited_once()
@@ -101,13 +97,9 @@ class TestSqlBlockGroups:
         )
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            return_value=(MagicMock(), {"isMultimodal": False}),
-        ):
-            result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain"
-            )
+        result = await vs.index_documents(
+            container, "org", "rec", "vr", "text/plain"
+        )
         assert result is True
         vs._create_embeddings.assert_not_awaited()
 
@@ -136,13 +128,9 @@ class TestSqlBlockGroups:
         )
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            return_value=(MagicMock(), {"isMultimodal": False}),
-        ):
-            result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain"
-            )
+        result = await vs.index_documents(
+            container, "org", "rec", "vr", "text/plain"
+        )
 
         assert result is True
         chunks = vs._create_embeddings.call_args[0][0]
@@ -167,13 +155,9 @@ class TestSqlBlockGroups:
         )
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            return_value=(MagicMock(), {"isMultimodal": False}),
-        ):
-            result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain"
-            )
+        result = await vs.index_documents(
+            container, "org", "rec", "vr", "text/plain"
+        )
         assert result is True
         vs._create_embeddings.assert_not_awaited()
 
@@ -198,13 +182,9 @@ class TestSqlRowBlocks:
         row.data = {"row_natural_language_text": "Row payload"}
         container = BlocksContainer(blocks=[row], block_groups=[])
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            return_value=(MagicMock(), {"isMultimodal": False}),
-        ):
-            result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain"
-            )
+        result = await vs.index_documents(
+            container, "org", "rec", "vr", "text/plain"
+        )
 
         assert result is True
         chunks = vs._create_embeddings.call_args[0][0]
@@ -229,13 +209,9 @@ class TestRegularTableBlockWithSummary:
         )
         container = BlocksContainer(blocks=[table_block], block_groups=[])
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            return_value=(MagicMock(), {"isMultimodal": False}),
-        ):
-            result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain"
-            )
+        result = await vs.index_documents(
+            container, "org", "rec", "vr", "text/plain"
+        )
 
         assert result is True
         chunks = vs._create_embeddings.call_args[0][0]
@@ -265,14 +241,10 @@ class TestReconciliationProcessing:
         img_block = Block(index=1, type=BlockType.IMAGE, format="bin", data={"uri": "abc"})
         container = BlocksContainer(blocks=[text_block, img_block], block_groups=[])
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            return_value=(MagicMock(), {"isMultimodal": False}),
-        ):
-            result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain",
-                is_reconciliation=True,
-            )
+        result = await vs.index_documents(
+            container, "org", "rec", "vr", "text/plain",
+            is_reconciliation=True,
+        )
 
         assert result is True
         vs._process_document_chunks.assert_awaited_once()
@@ -292,15 +264,11 @@ class TestReconciliationProcessing:
         text_block = Block(index=0, type=BlockType.TEXT, format="txt", data="some text")
         container = BlocksContainer(blocks=[text_block], block_groups=[])
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            return_value=(MagicMock(), {"isMultimodal": False}),
-        ):
-            result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain",
-                is_reconciliation=True,
-                block_ids_to_delete={"old-block-1"},
-            )
+        result = await vs.index_documents(
+            container, "org", "rec", "vr", "text/plain",
+            is_reconciliation=True,
+            block_ids_to_delete={"old-block-1"},
+        )
 
         assert result is True
         summary_id = _vs_mod.VectorStore.record_summary_block_id("vr")
@@ -324,14 +292,10 @@ class TestReconciliationProcessing:
         divider = Block(index=0, type=BlockType.DIVIDER, format="txt", data="x")
         container = BlocksContainer(blocks=[divider], block_groups=[])
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            return_value=(MagicMock(), {"isMultimodal": False}),
-        ):
-            result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain",
-                block_ids_to_delete={"stale"},
-            )
+        result = await vs.index_documents(
+            container, "org", "rec", "vr", "text/plain",
+            block_ids_to_delete={"stale"},
+        )
         assert result is True
         summary_id = _vs_mod.VectorStore.record_summary_block_id("vr")
         assert vs.delete_blocks_by_ids.await_count == 2

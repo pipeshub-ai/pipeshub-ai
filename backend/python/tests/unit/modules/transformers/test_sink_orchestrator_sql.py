@@ -37,6 +37,7 @@ def _make_orchestrator(*, graph_doc=None, vector_result=None):
         vector_store=vector_store,
         graph_provider=graph_provider,
         logger=logging.getLogger("test-sink-sql"),
+        config_service=MagicMock(),
     )
     orch.logger = MagicMock()
     return orch

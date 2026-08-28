@@ -27,11 +27,15 @@ import { toast } from '@/lib/store/toast-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import type { NodeType, EnhancedFolderTreeNode, KnowledgeHubNode } from '../../knowledge-base/types';
+import { useUserPermission, usePermissionDeniedDialog } from '@/config';
 
 function KnowledgeBaseSidebarSlotContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const isAllRecordsMode = getIsAllRecordsMode(searchParams);
+  const canCreateCollection = useUserPermission('createCollection');
+  const canDeleteCollection = useUserPermission('deleteCollection');
+  const permissionDenied = usePermissionDeniedDialog();
 
   const isAdmin = useUserStore(selectIsAdmin);
   const isMobile = useIsMobile();
@@ -336,6 +340,7 @@ function KnowledgeBaseSidebarSlotContent() {
   }, [clearNodeCacheEntries]);
 
   const handleSidebarDelete = useCallback((nodeId: string) => {
+    if (!canDeleteCollection) return;
     const state = useKnowledgeBaseStore.getState();
     const { node, rootKbId } = findNodeInCategorized(state.categorizedNodes, nodeId);
     setPendingSidebarAction({
@@ -345,20 +350,21 @@ function KnowledgeBaseSidebarSlotContent() {
       nodeType: node?.nodeType,
       rootKbId: rootKbId ?? undefined,
     });
-  }, [setPendingSidebarAction]);
+  }, [setPendingSidebarAction, canDeleteCollection]);
 
   const handleAddPrivateCollection = useCallback(() => {
     setPendingSidebarAction({ type: 'create-collection' });
   }, [setPendingSidebarAction]);
 
   return (
+    <>
     <KnowledgeBaseSidebar
       pageViewMode={pageViewMode}
       onBack={handleBack}
       sharedTree={categorizedNodes?.shared}
       privateTree={categorizedNodes?.private}
       onSelectKb={handleSelectKb}
-      onAddPrivate={handleAddPrivateCollection}
+      onAddPrivate={permissionDenied.guard(canCreateCollection, handleAddPrivateCollection)}
       onNodeExpand={handleNodeExpand}
       onNodeSelect={handleNodeSelect}
       isLoadingNodes={isSidebarTreeLoading || isAutoExpanding}
@@ -377,6 +383,8 @@ function KnowledgeBaseSidebarSlotContent() {
       onAllRecordsSelectConnectorItem={handleAllRecordsSelectConnectorItem}
       onAllRecordsSelectApp={handleAllRecordsSelectApp}
     />
+    {permissionDenied.dialog}
+    </>
   );
 }
 

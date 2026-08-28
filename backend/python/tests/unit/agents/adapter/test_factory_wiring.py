@@ -181,7 +181,14 @@ class TestCreate:
         agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "quick", query="hello")
 
         assert isinstance(agent.spec.loop, ReActLoop)
-        assert agent.spec.tool_names == runtime.tool_registry.names()
+        # `list_toolsets`/`fetch_tools` are registered onto the shared
+        # registry unconditionally (a no-op grant candidate — see
+        # `register_lazy_tool_meta_tools`'s docstring) but pruned from the
+        # eager-mode grant itself, since eager disclosure already binds
+        # every schema and they have nothing to reveal. `search_tools`
+        # stays in both: it does real work (auth-aware global discovery)
+        # regardless of disclosure mode.
+        assert set(agent.spec.tool_names) == set(runtime.tool_registry.names()) - {"list_toolsets", "fetch_tools"}
 
     async def test_quick_mode_never_composes_domain_agents(self) -> None:
         context = make_context(llm=FakeChatModel())
@@ -286,7 +293,9 @@ class TestCreate:
 
         agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "react", query="hello")
 
-        assert agent.spec.tool_names == runtime.tool_registry.names()
+        # See the `quick`-mode counterpart above for why `list_toolsets`/
+        # `fetch_tools` are excluded from this comparison.
+        assert set(agent.spec.tool_names) == set(runtime.tool_registry.names()) - {"list_toolsets", "fetch_tools"}
 
     async def test_react_mode_composes_domain_agents_by_default(self) -> None:
         """React runs get the composed top level: sandbox tools are claimed
@@ -332,7 +341,9 @@ class TestCreate:
 
         agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "planExecute", query="hello")
 
-        assert agent.spec.tool_names == runtime.tool_registry.names()
+        # See `test_quick_mode_uses_flat_react_loop` for why `list_toolsets`/
+        # `fetch_tools` are excluded from this comparison.
+        assert set(agent.spec.tool_names) == set(runtime.tool_registry.names()) - {"list_toolsets", "fetch_tools"}
 
     async def test_deep_mode_top_level_is_never_composed(self) -> None:
         """`OrchestratorLoop`'s OWN `spec.tool_names` keeps its four

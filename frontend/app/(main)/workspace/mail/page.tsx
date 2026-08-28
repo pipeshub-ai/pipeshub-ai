@@ -48,7 +48,7 @@ export default function MailPage() {
     try {
       const config = await SmtpApi.getSmtpConfig();
       setSmtpConfig(config);
-      setIsConfigured(!!config?.host && !!config?.fromEmail);
+      setIsConfigured(!!config?.inherited || (!!config?.host && !!config?.fromEmail));
     } catch {
       setIsConfigured(false);
     } finally {
@@ -74,7 +74,7 @@ export default function MailPage() {
     // Refresh config status
     const config = await SmtpApi.getSmtpConfig();
     setSmtpConfig(config);
-    setIsConfigured(!!config?.host && !!config?.fromEmail);
+    setIsConfigured(!!config?.inherited || (!!config?.host && !!config?.fromEmail));
     addToast({
       variant: 'success',
       title: t('workspace.mail.toasts.saved'),

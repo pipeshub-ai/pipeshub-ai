@@ -11,6 +11,7 @@ import { FolderIcon } from '@/app/components/ui';
 import { useTranslation } from 'react-i18next';
 import { ShareHeaderGroup } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
+import { PermissionLockIcon } from '@/config';
 
 interface KBHeaderProps {
   pageViewMode: PageViewMode;
@@ -30,6 +31,8 @@ interface KBHeaderProps {
   onCreateFolder?: () => void;
   onUpload?: () => void;
   onShare?: () => void;
+  createPermissionDenied?: boolean;
+  sharePermissionDenied?: boolean;
   sharedMembers?: SharedAvatarMember[];
   onRename?: (nodeId: string, nodeType: string, newName: string) => Promise<void>;
   isSearchActive?: boolean;
@@ -179,6 +182,8 @@ export function Header({
   onCreateFolder,
   onUpload,
   onShare,
+  createPermissionDenied,
+  sharePermissionDenied,
   sharedMembers = [],
   onRename,
   isSearchActive,
@@ -393,39 +398,61 @@ export function Header({
         {isCollectionsMode && (
           <>
             {/* New button with dropdown — icon-only on mobile */}
-            {tableData?.permissions?.canCreateFolders !== false && (
+            {tableData?.permissions?.canCreateFolders !== false &&
+              (onCreateFolder || onUpload) && (
               <DropdownMenu.Root>
                 <DropdownMenu.Trigger>
                   {isMobile ? (
-                    <IconButton variant="solid" size="2" style={{ cursor: 'pointer' }} aria-label={t('action.new')} data-testid="new-dropdown-trigger">
+                    <IconButton
+                      variant="solid"
+                      size="2"
+                      style={{ cursor: createPermissionDenied ? 'not-allowed' : 'pointer' }}
+                      aria-label={t('action.new')}
+                      data-testid="new-dropdown-trigger"
+                      disabled={createPermissionDenied}
+                    >
                       <MaterialIcon name="add" size={18} color="white" />
                     </IconButton>
                   ) : (
-                    <Button variant="solid" size="1" style={{ cursor: 'pointer' }} data-testid="new-dropdown-trigger">
+                    <Button
+                      variant="solid"
+                      size="1"
+                      style={{ cursor: createPermissionDenied ? 'not-allowed' : 'pointer' }}
+                      data-testid="new-dropdown-trigger"
+                      disabled={createPermissionDenied}
+                    >
                       <MaterialIcon name="add" size={16} color="white" />
                       {t('action.new')}
+                      {createPermissionDenied && <PermissionLockIcon />}
                     </Button>
                   )}
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Content align="end">
-                  <DropdownMenu.Item onClick={() => onCreateFolder?.()}>
-                    <MaterialIcon name="create_new_folder" size={16} color="var(--slate-11)" />
-                    {t('kb.newFolder')}
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item onClick={() => onUpload?.()}>
-                    <MaterialIcon name="file_upload" size={16} color="var(--slate-11)" />
-                    {t('dialog.uploadData')}
-                  </DropdownMenu.Item>
+                  {onCreateFolder && (
+                    <DropdownMenu.Item onClick={() => onCreateFolder()}>
+                      <MaterialIcon name="create_new_folder" size={16} color="var(--slate-11)" />
+                      {t('kb.newFolder')}
+                    </DropdownMenu.Item>
+                  )}
+                  {onUpload && (
+                    <DropdownMenu.Item onClick={() => onUpload()}>
+                      <MaterialIcon name="file_upload" size={16} color="var(--slate-11)" />
+                      {t('dialog.uploadData')}
+                    </DropdownMenu.Item>
+                  )}
                 </DropdownMenu.Content>
               </DropdownMenu.Root>
             )}
 
             {/* Share group — hide on mobile to avoid cramming; users can share from item menu */}
             {onShare && !isMobile && (
-              <ShareHeaderGroup
-                members={sharedMembers}
-                onShareClick={onShare}
-              />
+              <Flex align="center" gap="1">
+                <ShareHeaderGroup
+                  members={sharedMembers}
+                  onShareClick={sharePermissionDenied ? () => undefined : onShare}
+                />
+                {sharePermissionDenied && <PermissionLockIcon />}
+              </Flex>
             )}
           </>
         )}

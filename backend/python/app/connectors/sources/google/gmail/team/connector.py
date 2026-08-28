@@ -8,7 +8,7 @@ import tempfile
 import uuid
 from logging import Logger
 from pathlib import Path
-from typing import AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -86,11 +86,23 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.google.google import GoogleClient
+from app.sources.client.google.google import GoogleClient, configure_google_http_timeout
 from app.sources.external.google.admin.admin import GoogleAdminDataSource
+from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
+
+if TYPE_CHECKING:
+    from app.connectors.core.thread_pool import ThreadPoolLease
+
+# Maximum concurrent borrows from the shared connector thread pool.
+_GMAIL_TEAM_MAX_CONCURRENCY = 4
+
+# Bytes fetched per MediaIoBaseDownload.next_chunk() call. The library default is
+# 100 MB, which buffers a whole slice in memory before any of it reaches the
+# client and keeps one executor thread busy for that entire transfer.
+_GMAIL_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
 
 
 @ConnectorBuilder("Gmail Workspace")\
@@ -240,6 +252,9 @@ class GoogleGmailTeamConnector(BaseConnector):
         self.config: Optional[Dict] = None
         logging.getLogger('googleapiclient.http').setLevel(logging.ERROR)
 
+        # Acquired in init(), once the factory has injected the shared pool.
+        self._gmail_executor: ThreadPoolLease | None = None
+
         # Store synced users for use in batch processing
         self.synced_users: List[AppUser] = []
         self.synced_user_emails: set[str] = set()  # confirmed workspace members, used to prioritize impersonation candidates
@@ -247,6 +262,8 @@ class GoogleGmailTeamConnector(BaseConnector):
     async def init(self) -> bool:
         """Initialize the Google Gmail workspace connector with service account credentials and services."""
         try:
+            self._gmail_executor = self._thread_lease(_GMAIL_TEAM_MAX_CONCURRENCY)
+
             # Load connector config
             config = await self.config_service.get_config(
                 f"/services/connectors/{self.connector_id}/config"
@@ -291,7 +308,8 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                 # Create Google Admin Data Source from the client
                 self.admin_data_source = GoogleAdminDataSource(
-                    self.admin_client.get_client()
+                    self.admin_client.get_client(),
+                    executor=self._gmail_executor,
                 )
 
                 self.logger.info(
@@ -317,7 +335,8 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                 # Create Google Gmail Data Source from the client
                 self.gmail_data_source = GoogleGmailDataSource(
-                    self.gmail_client.get_client()
+                    self.gmail_client.get_client(),
+                    executor=self._gmail_executor,
                 )
 
                 self.logger.info(
@@ -736,7 +755,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             # For Drive files, always fetch metadata from Drive API
             if is_drive_file and drive_file_id:
                 try:
-                    # Create Drive client for the user (same pattern as _create_user_gmail_client)
+                    # Create Drive client for the user (same pattern as _create_user_gmail_datasource)
                     user_drive_client = await GoogleClient.build_from_services(
                         service_name="drive",
                         logger=self.logger,
@@ -750,11 +769,19 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                     drive_service = user_drive_client.get_client()
 
-                    # Fetch file metadata
-                    file_metadata = drive_service.files().get(
+                    # Fetch file metadata. get_media()/execute() is a synchronous HTTP
+                    # call, so run it off the event loop to avoid blocking other work.
+                    metadata_request = drive_service.files().get(
                         fileId=drive_file_id,
                         fields="id,name,mimeType,size"
-                    ).execute()
+                    )
+                    drive_data_source = GoogleDriveDataSource(
+                        drive_service,
+                        executor=self._gmail_executor,
+                    )
+                    file_metadata = await drive_data_source.execute(
+                        metadata_request.execute
+                    )
 
                     if file_metadata:
                         filename = file_metadata.get("name", "unnamed_attachment")
@@ -896,7 +923,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             self.logger.info(f"Starting sync for user {user_email}")
 
             # Create user-specific Gmail client with impersonation
-            user_gmail_client = await self._create_user_gmail_client(user_email)
+            user_gmail_datasource = await self._create_user_gmail_client(user_email)
 
             # Get sync point for this user
             sync_point_key = generate_record_sync_point_key(RecordType.MAIL.value, "user", user_email)
@@ -908,7 +935,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             if history_id:
                 self.logger.info(f"History ID found for user {user_email}, performing incremental sync")
                 try:
-                    await self._run_sync_with_history_id(user_email, user_gmail_client, history_id, sync_point_key)
+                    await self._run_sync_with_history_id(user_email, user_gmail_datasource, history_id, sync_point_key)
                 except HttpError as http_error:
                     # Handle 404 error - history_id expired, fallback to full sync
                     if hasattr(http_error, 'resp') and http_error.resp.status == HttpStatusCode.NOT_FOUND.value:
@@ -916,12 +943,12 @@ class GoogleGmailTeamConnector(BaseConnector):
                             f"History ID {history_id} expired for user {user_email}, "
                             f"falling back to full sync"
                         )
-                        await self._run_full_sync(user_email, user_gmail_client, sync_point_key)
+                        await self._run_full_sync(user_email, user_gmail_datasource, sync_point_key)
                     else:
                         raise
             else:
                 self.logger.info(f"No history ID found for user {user_email}, performing full sync")
-                await self._run_full_sync(user_email, user_gmail_client, sync_point_key)
+                await self._run_full_sync(user_email, user_gmail_datasource, sync_point_key)
 
         except Exception as ex:
             self.logger.error(f"❌ Error in sync for user {user_email}: {ex}")
@@ -930,7 +957,7 @@ class GoogleGmailTeamConnector(BaseConnector):
     async def _run_full_sync(
         self,
         user_email: str,
-        user_gmail_client: GoogleGmailDataSource,
+        user_gmail_datasource: GoogleGmailDataSource,
         sync_point_key: str
     ) -> None:
         """
@@ -938,7 +965,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
         Args:
             user_email: The user email address
-            user_gmail_client: User-specific Gmail data source client
+            user_gmail_datasource: User-specific Gmail data source client
             sync_point_key: Sync point key for this user
         """
         try:
@@ -946,7 +973,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
             # Get user profile to extract historyId
             try:
-                profile = await user_gmail_client.users_get_profile(userId=user_email)
+                profile = await user_gmail_datasource.users_get_profile(userId=user_email)
                 history_id = profile.get('historyId')
                 self.logger.info(f"Retrieved historyId {history_id} for user {user_email}")
             except Exception as e:
@@ -969,7 +996,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             while True:
                 try:
                     # Fetch threads list
-                    threads_response = await user_gmail_client.users_threads_list(
+                    threads_response = await user_gmail_datasource.users_threads_list(
                         userId=user_email,
                         maxResults=100,
                         pageToken=page_token,
@@ -991,7 +1018,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                         try:
                             # Get full thread with all messages
-                            thread = await user_gmail_client.users_threads_get(
+                            thread = await user_gmail_datasource.users_threads_get(
                                 userId=user_email,
                                 id=thread_id,
                                 format="full"
@@ -1127,7 +1154,7 @@ class GoogleGmailTeamConnector(BaseConnector):
     async def _run_sync_with_history_id(
         self,
         user_email: str,
-        user_gmail_client: GoogleGmailDataSource,
+        user_gmail_datasource: GoogleGmailDataSource,
         start_history_id: str,
         sync_point_key: str
     ) -> None:
@@ -1141,7 +1168,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
         Args:
             user_email: The user email address
-            user_gmail_client: User-specific Gmail data source client
+            user_gmail_datasource: User-specific Gmail data source client
             start_history_id: History ID to start from
             sync_point_key: Sync point key for this user
         """
@@ -1158,7 +1185,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             # Process INBOX first
             try:
                 inbox_changes = await self._fetch_history_changes(
-                    user_gmail_client,
+                    user_gmail_datasource,
                     user_email,
                     start_history_id,
                     "INBOX"
@@ -1172,7 +1199,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             # Process SENT changes
             try:
                 sent_changes = await self._fetch_history_changes(
-                    user_gmail_client,
+                    user_gmail_datasource,
                     user_email,
                     start_history_id,
                     "SENT"
@@ -1191,7 +1218,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 try:
                     processed = await self._process_history_changes(
                         user_email,
-                        user_gmail_client,
+                        user_gmail_datasource,
                         history_entry,
                         batch_records
                     )
@@ -1227,7 +1254,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
             # Get latest historyId from user profile if available
             try:
-                profile = await user_gmail_client.users_get_profile(userId=user_email)
+                profile = await user_gmail_datasource.users_get_profile(userId=user_email)
                 current_history_id = profile.get('historyId')
                 if current_history_id:
                     latest_history_id = current_history_id
@@ -1273,7 +1300,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
     async def _fetch_history_changes(
         self,
-        user_gmail_client: GoogleGmailDataSource,
+        user_gmail_datasource: GoogleGmailDataSource,
         user_email: str,
         start_history_id: str,
         label_id: str
@@ -1282,7 +1309,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         Fetch history changes for a specific label with pagination.
 
         Args:
-            user_gmail_client: User-specific Gmail data source client
+            user_gmail_datasource: User-specific Gmail data source client
             user_email: The user email address
             start_history_id: History ID to start from
             label_id: Label ID to filter by (e.g., "INBOX", "SENT")
@@ -1295,7 +1322,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
         while True:
             try:
-                history_response = await user_gmail_client.users_history_list(
+                history_response = await user_gmail_datasource.users_history_list(
                     userId=user_email,
                     startHistoryId=start_history_id,
                     labelId=label_id,
@@ -1352,7 +1379,7 @@ class GoogleGmailTeamConnector(BaseConnector):
     async def _process_history_changes(
         self,
         user_email: str,
-        user_gmail_client: GoogleGmailDataSource,
+        user_gmail_datasource: GoogleGmailDataSource,
         history_entry: Dict,
         batch_records: List[Tuple[Record, List[Permission]]]
     ) -> int:
@@ -1361,7 +1388,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
         Args:
             user_email: The user email address
-            user_gmail_client: User-specific Gmail data source client
+            user_gmail_datasource: User-specific Gmail data source client
             history_entry: History change entry from Gmail API
             batch_records: List to append processed records to
 
@@ -1409,7 +1436,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                     # Fetch full message details
                     try:
-                        full_message = await user_gmail_client.users_messages_get(
+                        full_message = await user_gmail_datasource.users_messages_get(
                             userId=user_email,
                             id=message_id,
                             format="full"
@@ -1437,7 +1464,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                     # Get previous message in thread for sibling relation
                     previous_message_record_id = await self._find_previous_message_in_thread(
                         user_email,
-                        user_gmail_client,
+                        user_gmail_datasource,
                         thread_id,
                         message_id,
                         full_message.get("internalDate"),
@@ -1574,7 +1601,7 @@ class GoogleGmailTeamConnector(BaseConnector):
     async def _find_previous_message_in_thread(
         self,
         user_email: str,
-        user_gmail_client: GoogleGmailDataSource,
+        user_gmail_datasource: GoogleGmailDataSource,
         thread_id: str,
         current_message_id: str,
         current_internal_date: Optional[str],
@@ -1585,7 +1612,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
         Args:
             user_email: The user email address
-            user_gmail_client: User-specific Gmail data source client
+            user_gmail_datasource: User-specific Gmail data source client
             thread_id: Thread ID
             current_message_id: Current message ID
             current_internal_date: Current message internal date (epoch milliseconds)
@@ -1596,7 +1623,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         """
         try:
             # Get full thread to see all messages
-            thread = await user_gmail_client.users_threads_get(
+            thread = await user_gmail_datasource.users_threads_get(
                 userId=user_email,
                 id=thread_id,
                 format="full"
@@ -1712,7 +1739,8 @@ class GoogleGmailTeamConnector(BaseConnector):
             )
 
             user_gmail_data_source = GoogleGmailDataSource(
-                user_gmail_client.get_client()
+                user_gmail_client.get_client(),
+                executor=self._gmail_executor,
             )
 
             return user_gmail_data_source
@@ -1736,6 +1764,17 @@ class GoogleGmailTeamConnector(BaseConnector):
                 detail="Gmail client not initialized"
             )
         return self.gmail_data_source
+
+    def _gmail_data_source_for_service(self, gmail_service: object) -> GoogleGmailDataSource:
+        if (
+            self.gmail_data_source
+            and gmail_service is self.gmail_data_source.client
+        ):
+            return self.gmail_data_source
+        return GoogleGmailDataSource(
+            gmail_service,
+            executor=self._gmail_executor,
+        )
 
     async def _get_gmail_service_with_fallback(
         self,
@@ -2394,8 +2433,15 @@ class GoogleGmailTeamConnector(BaseConnector):
                 credentials = service_account.Credentials.from_service_account_info(
                     credentials_json
                 )
-                drive_service = build("drive", "v3", credentials=credentials)
+                drive_service = configure_google_http_timeout(
+                    build("drive", "v3", credentials=credentials)
+                )
                 self.logger.info("Using service account credentials for Drive access")
+
+            drive_data_source = GoogleDriveDataSource(
+                drive_service,
+                executor=self._gmail_executor,
+            )
 
             if convertTo == MimeTypes.PDF.value:
                 with tempfile.TemporaryDirectory() as temp_dir:
@@ -2406,11 +2452,16 @@ class GoogleGmailTeamConnector(BaseConnector):
                         request = drive_service.files().get_media(
                             fileId=drive_file_id
                         )
-                        downloader = MediaIoBaseDownload(f, request)
+                        downloader = MediaIoBaseDownload(f, request, chunksize=_GMAIL_DOWNLOAD_CHUNK_SIZE)
 
                         done = False
                         while not done:
-                            status, done = downloader.next_chunk()
+                            # next_chunk() performs the HTTP range request synchronously, so
+                            # calling it here would freeze the event loop for the whole
+                            # round-trip and stall every other request in the process.
+                            status, done = await drive_data_source.execute(
+                                downloader.next_chunk
+                            )
                             self.logger.info(
                                 f"Download {int(status.progress() * 100)}%."
                             )
@@ -2435,14 +2486,19 @@ class GoogleGmailTeamConnector(BaseConnector):
                     request = drive_service.files().get_media(
                         fileId=drive_file_id
                     )
-                    downloader = MediaIoBaseDownload(buffer, request)
+                    downloader = MediaIoBaseDownload(buffer, request, chunksize=_GMAIL_DOWNLOAD_CHUNK_SIZE)
                     done = False
 
                     self.logger.info(f"Starting Drive file stream for {drive_file_id}")
 
                     while not done:
                         try:
-                            status, done = downloader.next_chunk()
+                            # next_chunk() performs the HTTP range request synchronously, so
+                            # calling it here would freeze the event loop for the whole
+                            # round-trip and stall every other request in the process.
+                            status, done = await drive_data_source.execute(
+                                downloader.next_chunk
+                            )
                             progress = int(status.progress() * 100)
                             self.logger.info(
                                 f"Download {progress}%."
@@ -2589,16 +2645,21 @@ class GoogleGmailTeamConnector(BaseConnector):
         self,
         gmail_service,
         message_id: str,
-        record: Record
+        record: Record,
+        gmail_data_source: Optional[GoogleGmailDataSource] = None,
     ) -> StreamingResponse:
         try:
-            # 1. Fetch message
-            message = (
+            gmail_data_source = gmail_data_source or self.gmail_data_source
+            if not gmail_data_source:
+                raise RuntimeError("Gmail data source is not initialized")
+            # 1. Fetch message. execute() is a synchronous HTTP call, so run it off
+            # the event loop to avoid blocking other work.
+            request = (
                 gmail_service.users()
                 .messages()
                 .get(userId="me", id=message_id, format="full")
-                .execute()
             )
+            message = await gmail_data_source.execute(request.execute)
 
             # 2. Extract payload (HTML)
             mail_content_base64 = self._extract_body_from_payload(message.get("payload", {}))
@@ -2658,7 +2719,8 @@ class GoogleGmailTeamConnector(BaseConnector):
         file_name: str,
         mime_type: str,
         convertTo: Optional[str] = None,
-        user_email: Optional[str] = None
+        user_email: Optional[str] = None,
+        gmail_data_source: Optional[GoogleGmailDataSource] = None,
     ) -> StreamingResponse:
         """
         Stream attachment content from Gmail with Drive fallback.
@@ -2675,6 +2737,9 @@ class GoogleGmailTeamConnector(BaseConnector):
         Returns:
             StreamingResponse with attachment content
         """
+        gmail_data_source = gmail_data_source or self.gmail_data_source
+        if not gmail_data_source:
+            raise RuntimeError("Gmail data source is not initialized")
         # Check if file_id is a Drive file ID (no tilde, typically longer alphanumeric)
         # Drive file IDs don't contain tildes, while our stable IDs use messageId~partId format
         is_drive_file = "~" not in file_id
@@ -2716,12 +2781,12 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                 # Fetch the message to get the actual attachment ID
                 try:
-                    message = (
+                    request = (
                         gmail_service.users()
                         .messages()
                         .get(userId="me", id=message_id, format="full")
-                        .execute()
                     )
+                    message = await gmail_data_source.execute(request.execute)
                 except HttpError as access_error:
                     if hasattr(access_error, 'resp') and access_error.resp.status == HttpStatusCode.NOT_FOUND.value:
                         self.logger.error(f"Message not found with ID {message_id}")
@@ -2755,13 +2820,13 @@ class GoogleGmailTeamConnector(BaseConnector):
 
         # Try to get the attachment from Gmail
         try:
-            attachment = (
+            request = (
                 gmail_service.users()
                 .messages()
                 .attachments()
                 .get(userId="me", messageId=message_id, id=actual_attachment_id)
-                .execute()
             )
+            attachment = await gmail_data_source.execute(request.execute)
 
             # Decode the attachment data
             file_data = base64.urlsafe_b64decode(attachment["data"])
@@ -2856,7 +2921,12 @@ class GoogleGmailTeamConnector(BaseConnector):
             if record_type == RecordTypes.MAIL.value:
                 _, response = await self._get_gmail_service_with_fallback(
                     candidates,
-                    lambda service, _email: self._stream_mail_record(service, file_id, record),
+                    lambda service, _email: self._stream_mail_record(
+                        service,
+                        file_id,
+                        record,
+                        gmail_data_source=self._gmail_data_source_for_service(service),
+                    ),
                 )
             else:
                 # For attachments, get file metadata from record
@@ -2866,7 +2936,14 @@ class GoogleGmailTeamConnector(BaseConnector):
                 _, response = await self._get_gmail_service_with_fallback(
                     candidates,
                     lambda service, email: self._stream_attachment_record(
-                        service, file_id, record, file_name, mime_type, convertTo, email
+                        service,
+                        file_id,
+                        record,
+                        file_name,
+                        mime_type,
+                        convertTo,
+                        email,
+                        gmail_data_source=self._gmail_data_source_for_service(service),
                     ),
                 )
             return response
@@ -2960,7 +3037,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                     # service account has no mailbox of its own to check against.
                     self.logger.warning(f"No delegated user available to check record {record.id} at source")
                     return None
-                user_gmail_client = GoogleGmailDataSource(gmail_service)
+                user_gmail_client = self._gmail_data_source_for_service(gmail_service)
                 if record_type == RecordType.MAIL:
                     return await self._check_and_fetch_updated_mail_record(
                         org_id, record, email, user_gmail_client
@@ -2985,7 +3062,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         org_id: str,
         record: Record,
         user_email: str,
-        user_gmail_client: GoogleGmailDataSource
+        user_gmail_data_source: GoogleGmailDataSource
     ) -> Optional[Tuple[Record, List[Permission]]]:
         """Fetch mail record from Gmail and return data for reindexing if changed."""
         try:
@@ -2997,7 +3074,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
             # Fetch fresh message from Gmail API
             try:
-                message = await user_gmail_client.users_messages_get(
+                message = await user_gmail_data_source.users_messages_get(
                     userId=user_email,
                     id=message_id,
                     format="full"
@@ -3021,7 +3098,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             # Find previous message in thread (optional)
             previous_message_id = await self._find_previous_message_in_thread(
                 user_email,
-                user_gmail_client,
+                user_gmail_data_source,
                 thread_id,
                 message_id,
                 message.get('internalDate')
@@ -3061,7 +3138,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         org_id: str,
         record: Record,
         user_email: str,
-        user_gmail_client: GoogleGmailDataSource
+        user_gmail_data_source: GoogleGmailDataSource
     ) -> Optional[Tuple[Record, List[Permission]]]:
         """Fetch file (attachment) record from Gmail and return data for reindexing if changed."""
         try:
@@ -3084,7 +3161,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                 # Fetch parent message to get permissions
                 try:
-                    parent_message = await user_gmail_client.users_messages_get(
+                    parent_message = await user_gmail_data_source.users_messages_get(
                         userId=user_email,
                         id=parent_message_id,
                         format="full"
@@ -3121,7 +3198,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                 previous_message_id = await self._find_previous_message_in_thread(
                     user_email,
-                    user_gmail_client,
+                    user_gmail_data_source,
                     thread_id,
                     parent_message_id,
                     parent_message.get('internalDate')
@@ -3178,7 +3255,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
             # Fetch parent message from Gmail API
             try:
-                parent_message = await user_gmail_client.users_messages_get(
+                parent_message = await user_gmail_data_source.users_messages_get(
                     userId=user_email,
                     id=parent_message_id,
                     format="full"
@@ -3217,7 +3294,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             # Find previous message in thread (optional)
             previous_message_id = await self._find_previous_message_in_thread(
                 user_email,
-                user_gmail_client,
+                user_gmail_data_source,
                 thread_id,
                 parent_message_id,
                 parent_message.get('internalDate')
@@ -3287,6 +3364,8 @@ class GoogleGmailTeamConnector(BaseConnector):
         """Cleanup resources when shutting down the connector."""
         try:
             self.logger.info("Cleaning up Google Gmail workspace connector resources")
+
+            await self._release_thread_lease()
 
             # Clear data source references
             if hasattr(self, 'gmail_data_source') and self.gmail_data_source:

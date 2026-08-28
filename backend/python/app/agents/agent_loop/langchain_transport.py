@@ -56,14 +56,17 @@ from app.agent_loop_lib.transport.provider_conflicts import (
     REASONING_MANDATORY_CONFLICT_MARKERS,
     is_api_shape_conflict,
     is_reasoning_mandatory_conflict,
+    is_tool_result_image_conflict,
 )
 from app.agents.agent_loop.converters import (
     convert_assistant_message_from_langchain,
     convert_messages_to_langchain,
     convert_tool_schemas_to_langchain,
+    has_tool_result_images,
     output_schema_to_pydantic_model,
     token_usage_from_ai_message,
 )
+from app.agents.agent_loop.image_guard import cap_images
 from app.utils.llm_api_mode_store import (
     REASONING_MANDATORY_FALLBACK_EFFORT,
     LLMApiMode,
@@ -74,6 +77,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from langchain_core.language_models.chat_models import BaseChatModel
+    from langchain_core.messages import BaseMessage
 
     from app.agent_loop_lib.core.messages import Message
     from app.agent_loop_lib.core.tool_schema import ToolSchema
@@ -111,6 +115,7 @@ _API_SHAPE_CONFLICT_MARKERS = API_SHAPE_CONFLICT_MARKERS
 _REASONING_MANDATORY_CONFLICT_MARKERS = REASONING_MANDATORY_CONFLICT_MARKERS
 _is_api_shape_conflict = is_api_shape_conflict
 _is_reasoning_mandatory_conflict = is_reasoning_mandatory_conflict
+_is_tool_result_image_conflict = is_tool_result_image_conflict
 
 
 def _truncate_raw_for_log(raw: Any, max_len: int = 500) -> str:  # noqa: ANN401
@@ -167,22 +172,46 @@ def _is_network_error(exc: Exception) -> bool:
     return any(hint in type_name for hint in _NETWORK_ERROR_NAME_HINTS)
 
 
+# Class names in a chat model's MRO that identify the provider family, matched
+# by name so this module keeps no hard `isinstance`/import dependency on
+# `langchain_ollama`/`langchain_openai` being installed. Matching the whole MRO
+# rather than `type(x).__name__` is what makes a subclass/wrapper (a custom
+# `ChatOllama` subclass, `AzureChatOpenAI`) resolve to its family instead of
+# falling through to the permissive default.
+_OLLAMA_CLASS_NAME = "ChatOllama"
+_OPENAI_CLASS_NAMES = frozenset({"BaseChatOpenAI", "ChatOpenAI", "AzureChatOpenAI"})
+
+
 def _supports_multipart_tool_result(chat_model: "BaseChatModel") -> bool:
     """Whether this LangChain chat model's underlying provider accepts
     image content inside a tool-result message.
 
-    Walks the model's full MRO (not just `type(chat_model).__name__`, which
-    a `ChatOllama` subclass/wrapper would defeat — `type(x).__name__ !=
-    "ChatOllama"` is `True`, i.e. "supports multipart", for any subclass)
-    looking for a class named `ChatOllama`, so this module still has no
-    hard `isinstance`/import dependency on `langchain_ollama` being
-    installed. Ollama's `/api/chat` only accepts `content: str` for
-    `role: "tool"` messages (see the Image Context Engineering plan's API
-    landscape survey) — every other LangChain-wrapped provider PipesHub
-    configures (OpenAI, Anthropic, Gemini, Bedrock, ...) accepts multipart
-    tool results.
+    Two families reject it:
+    - Ollama's `/api/chat` only accepts `content: str` for `role: "tool"`
+      messages (see the Image Context Engineering plan's API landscape
+      survey).
+    - OpenAI-family models on Chat Completions — which is every gateway
+      PipesHub routes through `ChatOpenAI` (OpenAI, Azure, OpenRouter,
+      LiteLLM proxy, LM Studio, ...) — reject an image block on any
+      non-`user` message outright: "Image URLs are only allowed for
+      messages with role 'user', but this message with role 'tool'
+      contains an image URL." Only the Responses API takes them, so
+      `use_responses_api` decides. A model LangChain routes to Responses on
+      its own (`_model_prefers_responses_api`, e.g. `gpt-5-pro`) reads as
+      unsupported here and delivers its images through the user-message
+      fallback instead — a redundant relocation, not a broken call.
+
+    Every other LangChain-wrapped provider PipesHub configures (Anthropic,
+    Gemini, Bedrock, ...) accepts multipart tool results. Whatever this gets
+    wrong for an unknown gateway is recovered at runtime off the provider's
+    own error — see `LangChainTransport._tool_image_fallback`.
     """
-    return not any(cls.__name__ == "ChatOllama" for cls in type(chat_model).__mro__)
+    mro_names = {cls.__name__ for cls in type(chat_model).__mro__}
+    if _OLLAMA_CLASS_NAME in mro_names:
+        return False
+    if mro_names & _OPENAI_CLASS_NAMES:
+        return bool(getattr(chat_model, "use_responses_api", False))
+    return True
 
 
 class LangChainTransport(LLMTransport):
@@ -194,13 +223,21 @@ class LangChainTransport(LLMTransport):
         model_name: str = "",
         opik_project_name: str | None = None,
         model_key: str | None = None,
+        max_images_per_request: int | None = None,
     ) -> None:
         self._llm = chat_model
         self._model = model_name
+        # Final enforcement of this model's image cap (see `image_guard`).
+        # `None` means "not wired by this caller" and leaves the messages
+        # untouched -- selection at the source already bounded them.
+        self._max_images_per_request = max_images_per_request
         # Computed once from the model TYPE (not swapped on the api-mode
         # fallback path below — that only rebinds the same underlying
         # provider with different call kwargs, never changes provider).
         self._supports_multipart_tool_result = _supports_multipart_tool_result(chat_model)
+        # Flipped by `_tool_image_fallback` once the provider itself has
+        # rejected an image inside a tool result, for the rest of this run.
+        self._tool_images_relocated = False
         # etcd `aiModels` config-entry key (see `app/utils/aimodels.py`'s
         # `get_generator_model`) — the identity a learned API-mode fact is
         # recorded/looked-up against (`app/utils/llm_api_mode_store.py`).
@@ -294,6 +331,54 @@ class LangChainTransport(LLMTransport):
         if cacheable:
             self._bound_by_tools[cache_key] = bound
         return bound
+
+    def _to_langchain(
+        self, messages: list[Message], system: str | None, *, relocate: bool | None = None,
+    ) -> list[BaseMessage]:
+        """The single place message conversion picks up this transport's
+        learned image-delivery shape, so `complete`/`complete_structured`/
+        `stream` -- and the relocation retry -- can never drift on it.
+
+        `relocate` overrides the learned shape for the one caller still
+        discovering it (`_tool_image_fallback`); every other caller passes
+        None and gets what this transport has learned so far.
+        """
+        if self._max_images_per_request is not None:
+            messages = cap_images(messages, self._max_images_per_request)
+        return convert_messages_to_langchain(
+            messages,
+            system,
+            strip_tool_images=not self._supports_multipart_tool_result,
+            relocate_tool_images=self._tool_images_relocated if relocate is None else relocate,
+        )
+
+    def _tool_image_fallback(
+        self, exc: Exception, messages: list[Message], system: str | None,
+    ) -> list[BaseMessage] | None:
+        """Messages to retry `exc` with when the provider rejected an image
+        inside a tool result, or `None` when that isn't what `exc` says.
+
+        The images move to a trailing user message rather than being dropped
+        (`convert_messages_to_langchain`'s `relocate_tool_images`): a run that
+        got here has no `shape_retrieved_image_injection` hook registered to
+        re-deliver them, since the factory registers that hook only for
+        providers `_supports_multipart_tool_result` already rejects. Returns
+        `None` once the shape is pinned, so a rejection that merely repeats
+        the same marker can't retry forever.
+        """
+        if self._tool_images_relocated or not _is_tool_result_image_conflict(exc):
+            return None
+        # Judged on the capped set, not the raw one. The retry has to carry the
+        # same images the first attempt did -- relocating every image in
+        # history would hand the provider more than it accepts, which is a
+        # second rejection -- and once the cap has taken the last tool image
+        # there is nothing left to move, so retrying would just resend the
+        # request that already failed.
+        if self._max_images_per_request is not None:
+            messages = cap_images(messages, self._max_images_per_request)
+        if not has_tool_result_images(messages):
+            return None
+        return self._to_langchain(messages, system, relocate=True)
 
     def _wrap_error(self, exc: Exception, context: str) -> TransportError:
         status_code = getattr(exc, "status_code", None)
@@ -462,14 +547,34 @@ class LangChainTransport(LLMTransport):
         # system_blocks: LangChain has no cache-breakpoint API; join if needed.
         if system_blocks and not system:
             system = "\n\n".join(b for b in system_blocks if b)
-        lc_messages = convert_messages_to_langchain(
-            messages, system, strip_tool_images=not self._supports_multipart_tool_result,
-        )
+        lc_messages = self._to_langchain(messages, system)
         lc_llm = self._bind_tools(tools)
 
         try:
             ai_message = await lc_llm.ainvoke(lc_messages, config=self._langchain_config())
         except Exception as exc:
+            relocated = self._tool_image_fallback(exc, messages, system)
+            if relocated is not None:
+                logger.warning(
+                    "LangChainTransport.complete: model=%s rejected images inside tool "
+                    "results, retrying once with them moved to a user message: %s",
+                    self._model, exc,
+                )
+                try:
+                    ai_message = await lc_llm.ainvoke(
+                        relocated, config=self._langchain_config(),
+                    )
+                except Exception as retry_exc:
+                    logger.error(
+                        "LangChainTransport.complete: tool-image relocation retry also "
+                        "failed for model=%s: %s — raising the ORIGINAL error",
+                        self._model, retry_exc,
+                    )
+                    raise self._wrap_error(exc, "complete") from exc
+                # Pinned for the rest of this run so every later call builds
+                # the working shape on the first attempt.
+                self._tool_images_relocated = True
+                return self._response_from(ai_message, tools, model)
             fallback = self._conflict_fallback(exc)
             if fallback is None:
                 raise self._wrap_error(exc, "complete") from exc
@@ -503,8 +608,12 @@ class LangChainTransport(LLMTransport):
                 mode, self._model,
             )
 
+        return self._response_from(ai_message, tools, model)
+
+    def _response_from(
+        self, ai_message: AIMessage, tools: list[ToolSchema] | None, model: str | None,
+    ) -> ModelResponse:
         assistant_message = convert_assistant_message_from_langchain(ai_message)
-        usage = token_usage_from_ai_message(ai_message)
         stop_reason = (
             StopReason.MAX_TOKENS if assistant_message.truncated
             else self._stop_reason_from(ai_message)
@@ -512,7 +621,7 @@ class LangChainTransport(LLMTransport):
         self._log_turn_outcome(tools, ai_message, stop_reason)
         return ModelResponse(
             message=assistant_message,
-            usage=usage,
+            usage=token_usage_from_ai_message(ai_message),
             stop_reason=stop_reason,
             model=self._resolve_model_name(model),
         )
@@ -524,9 +633,7 @@ class LangChainTransport(LLMTransport):
         system: str | None = None,
         model: str | None = None,
     ) -> StructuredResponse:
-        lc_messages = convert_messages_to_langchain(
-            messages, system, strip_tool_images=not self._supports_multipart_tool_result,
-        )
+        lc_messages = self._to_langchain(messages, system)
         resolved_model = self._resolve_model_name(model)
 
         parsed, raw = await self._invoke_structured(lc_messages, output_schema)
@@ -628,9 +735,7 @@ class LangChainTransport(LLMTransport):
     ) -> AsyncIterator[StreamEvent]:
         if system_blocks and not system:
             system = "\n\n".join(b for b in system_blocks if b)
-        lc_messages = convert_messages_to_langchain(
-            messages, system, strip_tool_images=not self._supports_multipart_tool_result,
-        )
+        lc_messages = self._to_langchain(messages, system)
         lc_llm = self._bind_tools(tools)
 
         chunks: list[AIMessage] = []
@@ -638,6 +743,7 @@ class LangChainTransport(LLMTransport):
         fallback_mode: str | None = None
         original_exc: Exception | None = None
         retried = False
+        relocated_images = False
         current_llm = lc_llm
         while True:
             try:
@@ -705,13 +811,26 @@ class LangChainTransport(LLMTransport):
                 # cap this to exactly one attempt) gate the retry.
                 if retried:
                     logger.error(
-                        "LangChainTransport.stream: retry with api_mode=%s also failed for "
-                        "model=%s: %s — raising the ORIGINAL error",
-                        fallback_mode, self._model, exc,
+                        "LangChainTransport.stream: retry (api_mode=%s, "
+                        "relocated_images=%s) also failed for model=%s: %s — "
+                        "raising the ORIGINAL error",
+                        fallback_mode, relocated_images, self._model, exc,
                     )
                     raise self._wrap_error(original_exc, "stream") from original_exc
                 if chunks:
                     raise self._wrap_error(exc, "stream") from exc
+                relocated = self._tool_image_fallback(exc, messages, system)
+                if relocated is not None:
+                    original_exc = exc
+                    lc_messages = relocated
+                    relocated_images = True
+                    retried = True
+                    logger.warning(
+                        "LangChainTransport.stream: model=%s rejected images inside tool "
+                        "results, retrying once with them moved to a user message: %s",
+                        self._model, exc,
+                    )
+                    continue
                 fallback = self._conflict_fallback(exc)
                 if fallback is None:
                     raise self._wrap_error(exc, "stream") from exc
@@ -731,6 +850,16 @@ class LangChainTransport(LLMTransport):
                     "retrying once with api_mode=%s: %s",
                     self._model, fallback_mode, exc,
                 )
+
+        if relocated_images:
+            # Pinned for the rest of this run so every later call builds the
+            # working shape on the first attempt.
+            self._tool_images_relocated = True
+            logger.info(
+                "LangChainTransport.stream: retry succeeded — tool-result images are "
+                "relocated to a user message for model=%s for the rest of this run",
+                self._model,
+            )
 
         if retried and fallback_llm is not None:
             # Pinned for the rest of this agent loop (many more calls will

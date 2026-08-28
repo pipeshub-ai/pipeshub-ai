@@ -177,22 +177,17 @@ function shouldShowIndexingReasonTooltip(status: string | undefined, reason: str
   );
 }
 
+function isMailRecordType(recordType: string): boolean {
+  return recordType === 'EMAIL' || recordType === 'MAIL' || recordType === 'GROUP_MAIL';
+}
+
 function formatDisplayType(
   record: RecordDetailsResponse['record'],
   t: (key: string, options?: { defaultValue?: string }) => string,
 ): string {
-  const { recordType, fileRecord, mimeType } = record;
-  if (recordType === 'FILE' && fileRecord) {
-    const ext = fileRecord.extension?.trim();
-    if (ext) return ext.toUpperCase();
-    const mime = fileRecord.mimeType?.trim() || mimeType?.trim();
-    return mime || t('recordView.labels.notAvailable');
-  }
-  if (recordType === 'EMAIL') return t('recordView.labels.typeEmail');
-  if (recordType === 'TICKET') return t('recordView.labels.typeTicket');
-  if (recordType === 'WEBPAGE') return t('recordView.labels.typeWebpage');
-  if (recordType === 'MESSAGE') return t('recordView.labels.typeMessage');
-  return recordType;
+  const key = `recordView.labels.recordTypes.${record.recordType}`;
+  const translated = t(key, { defaultValue: record.recordType });
+  return translated === key ? record.recordType : translated;
 }
 
 function formatFileSizeDisplay(record: RecordDetailsResponse['record']): string | undefined {
@@ -206,7 +201,7 @@ function primaryDocumentLabel(
   record: RecordDetailsResponse['record'],
   t: (key: string) => string,
 ): string {
-  if (record.recordType === 'EMAIL') return t('recordView.labels.mailSubject');
+  if (isMailRecordType(record.recordType)) return t('recordView.labels.mailSubject');
   if (record.recordType === 'TICKET') return t('recordView.labels.ticketSummary');
   return t('recordView.labels.fileName');
 }
@@ -215,7 +210,7 @@ function primaryDocumentValue(record: RecordDetailsResponse['record']): string |
   if (record.recordType === 'FILE' && record.fileRecord?.name?.trim()) {
     return record.fileRecord.name.trim();
   }
-  if (record.recordType === 'EMAIL') {
+  if (isMailRecordType(record.recordType)) {
     const subj = readString(record.mailRecord, 'subject')?.trim();
     return subj || record.recordName?.trim();
   }
@@ -406,7 +401,7 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
 
   const hasRecordInformation =
     Object.values(metadata ?? {}).some(hasValidNames) ||
-    (record.recordType === 'EMAIL' &&
+    (isMailRecordType(record.recordType) &&
       ((mailLabels?.length ?? 0) > 0 || Boolean(mailDate || mailFrom || mailTo || mailCc))) ||
     (record.recordType === 'TICKET' &&
       Boolean(readString(record.ticketRecord, 'description')?.trim()));
@@ -586,7 +581,7 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
 
         <Tabs.Content value="record-information" style={RECORD_METADATA_TAB_CONTENT_STYLE}>
           <Flex direction="column" gap="4" style={{ minWidth: 0 }}>
-            {record.recordType === 'EMAIL' ? (
+            {isMailRecordType(record.recordType) ? (
               <Flex direction="column" gap="4">
                 {mailFrom ? <DetailRow label={t('recordView.mail.from')} value={mailFrom} /> : null}
                 {mailTo ? <DetailRow label={t('recordView.mail.to')} value={mailTo} /> : null}

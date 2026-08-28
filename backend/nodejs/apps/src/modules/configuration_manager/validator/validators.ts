@@ -458,7 +458,7 @@ export const providerType = z.string().min(1, 'Provider is required');
 // `.passthrough()` must precede `.refine(...)`, because `refine` returns a
 // `ZodEffects` that does not expose `.passthrough()`.
 export const configurationSchema = z.object({
-  model: z.string().optional().describe("Model name(s) - can be comma-separated for multiple models (e.g., 'gpt-4o, gpt-4o-mini')"),
+  model: z.string().optional().describe("Model name(s) - can be comma-separated for multiple models (e.g., 'gpt-5.6-luna, gpt-5.6-terra')"),
   modelFriendlyName: z.string().optional().describe("Friendly name for the model (only allowed when model contains a single model name, not comma-separated)"),
   apiKey: z.string().optional().describe("API key for the model"),
   endpoint: z.string().optional().describe("Endpoint URL for the model"),

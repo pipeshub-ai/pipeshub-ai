@@ -6,18 +6,23 @@ Parallel to `PipesHubToolLoader` (`tool_loader.py`) for connector toolsets: one
 ("mcp") from the moment it's registered (never top-level `parent=None` — see that
 constant's docstring for why).
 
-Discovery-first, with graceful degradation: the primary source of truth is a LIVE
+Discovery-first, no schema-less fallback: the ONLY source of truth is a LIVE
 `discovery.discover_tools()` call against the instance (accurate, current schemas). When
 `attached_tools` is set (graph selection or chat-time filter), the discovered list is
 narrowed to those namespaced names before registration. If discovery times out or the
-connection fails, this falls back to the attached tool list (name/description only) with a
-permissive, schema-less parameter list, so a transient MCP outage degrades a server's tools
-to "callable but unvalidated" instead of disappearing outright. A failure with no fallback
-available (no live discovery AND `attached_tools is None` — unfiltered assistant path) is a
-soft-skip recorded in `context.mcp_tool_load_failures`, mirroring `PipesHubToolLoader`'s
-`toolset_load_failures`. This loader never hard-blocks the request — the route already did
-that for missing/unauthenticated instances before this ever runs (see `api/routes/agent.py`'s
-"LOAD MCP SERVER CONFIGS" block).
+connection fails, NOTHING is registered for that instance — this used to fall back to the
+attached tool list (name/description only) with `input_schema={}`, which is unusable rather
+than "callable but unvalidated": the frontend (`sidebar-mcp-utils.ts`) and `_parse_mcp_servers`
+(`api/routes/agent.py`) both strip `inputSchema` before persisting an agent's attached tools,
+so that fallback tool had NO parameters for the LLM to fill in at all, and every call to it
+either omitted required arguments or hallucinated ones the server actually needed — the exact
+"incomplete arguments, frequent tool-call failures" symptom this whole module exists to avoid.
+An unreachable server disappearing outright, with the failure recorded in
+`context.mcp_tool_load_failures` (mirroring `PipesHubToolLoader`'s `toolset_load_failures`) and
+surfaced to the model via `capability_summary.py`/`PipesHubGlobalCatalogFallback`, is more
+legible than a tool that LOOKS callable and silently fails almost every call. This loader never
+hard-blocks the request — the route already did that for missing/unauthenticated instances
+before this ever runs (see `api/routes/agent.py`'s "LOAD MCP SERVER CONFIGS" block).
 """
 from __future__ import annotations
 
@@ -149,9 +154,6 @@ class MCPToolProvider:
                 "MCPToolProvider: live discovery failed for instance %s (%s): %s",
                 server.instance_id, server.name, exc,
             )
-            fallback = self._tool_infos_from_attached(server)
-            if fallback:
-                return fallback, None
             return None, "discovery_failed"
 
     @staticmethod
@@ -178,21 +180,3 @@ class MCPToolProvider:
         if allowed is None:
             return tool_infos
         return [ti for ti in tool_infos if ti.namespaced_name in allowed]
-
-    @staticmethod
-    def _tool_infos_from_attached(server: "ResolvedMCPServer") -> list[MCPToolInfo]:
-        if not server.attached_tools:
-            return []
-        server_type = server.instance.get("typeId") or server.name
-        infos: list[MCPToolInfo] = []
-        for tool in server.attached_tools:
-            name = tool.get("name")
-            if not name:
-                continue
-            infos.append(MCPToolInfo(
-                name=name,
-                namespaced_name=tool.get("fullName") or build_namespaced_tool_name(server_type, name),
-                description=tool.get("description"),
-                input_schema={},
-            ))
-        return infos

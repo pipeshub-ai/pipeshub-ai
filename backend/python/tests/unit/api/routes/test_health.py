@@ -1,10 +1,9 @@
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
-
 
 MODULE = "app.api.routes.health"
 
@@ -32,26 +31,51 @@ def mock_request():
 class TestLlmHealthCheck:
     @pytest.mark.asyncio
     async def test_success(self, mock_request):
-        mock_llm = AsyncMock()
-        mock_llm.ainvoke = AsyncMock(return_value="ok")
+        """The bulk route now runs the same per-model check as the model
+        dialog, so both screens verify the same things."""
+        mock_model = MagicMock()
 
-        with patch(f"{MODULE}.get_llm", new_callable=AsyncMock, return_value=(mock_llm, {})):
+        with patch(f"{MODULE}.get_generator_model", return_value=mock_model), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value="ok"):
             from app.api.routes.health import llm_health_check
-            resp = await llm_health_check(mock_request, [{"provider": "openai"}])
+            resp = await llm_health_check(
+                mock_request, [{"provider": "openai", "configuration": {"model": "gpt-4"}}],
+            )
 
         assert resp.status_code == 200
-        body = resp.body.decode()
-        assert "healthy" in body
+        assert "healthy" in resp.body.decode()
+
+    @pytest.mark.asyncio
+    async def test_no_configs_is_rejected(self, mock_request):
+        from app.api.routes.health import llm_health_check
+        resp = await llm_health_check(mock_request, [])
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_one_bad_config_fails_the_batch(self, mock_request):
+        """A batch is only healthy if every model in it is."""
+        with patch(f"{MODULE}.get_generator_model", side_effect=RuntimeError("bad key")):
+            from app.api.routes.health import llm_health_check
+            resp = await llm_health_check(
+                mock_request,
+                [
+                    {"provider": "openai", "configuration": {"model": "gpt-4"}},
+                    {"provider": "openai", "configuration": {"model": "gpt-4o"}},
+                ],
+            )
+
+        assert resp.status_code == 500
 
     @pytest.mark.asyncio
     async def test_failure(self, mock_request):
-        with patch(f"{MODULE}.get_llm", new_callable=AsyncMock, side_effect=Exception("LLM failed")):
+        with patch(f"{MODULE}.get_generator_model", side_effect=Exception("LLM failed")):
             from app.api.routes.health import llm_health_check
-            resp = await llm_health_check(mock_request, [{"provider": "openai"}])
+            resp = await llm_health_check(
+                mock_request, [{"provider": "openai", "configuration": {"model": "gpt-4"}}],
+            )
 
         assert resp.status_code == 500
-        body = resp.body.decode()
-        assert "not healthy" in body
+        assert "LLM failed" in resp.body.decode()
 
 
 class TestInitializeEmbeddingModel:
@@ -390,6 +414,11 @@ class TestEmbeddingHealthCheck:
 
 
 class TestPerformLlmHealthCheck:
+    @pytest.fixture(autouse=True)
+    def _mock_outbound_probe(self):
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=True):
+            yield
+
     @pytest.mark.asyncio
     async def test_success_text(self):
         logger = MagicMock()
@@ -406,12 +435,14 @@ class TestPerformLlmHealthCheck:
 
     @pytest.mark.asyncio
     async def test_no_model_names(self):
+        """A configuration the admin has to fix is a 400, so the UI can tell it
+        apart from the service being broken."""
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": ""}}
 
         from app.api.routes.health import perform_llm_health_check
         resp = await perform_llm_health_check(config, logger)
-        assert resp.status_code == 500
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_multimodal_image_success(self):
@@ -428,6 +459,9 @@ class TestPerformLlmHealthCheck:
 
     @pytest.mark.asyncio
     async def test_multimodal_image_fails_text_passes(self):
+        """Text works, the image is rejected with an error that names the
+        limitation: that is the one case where "no vision" is the right
+        verdict."""
         logger = MagicMock()
         config = {"provider": "openai", "isMultimodal": True, "configuration": {"model": "gpt-4"}}
         mock_model = MagicMock()
@@ -436,8 +470,8 @@ class TestPerformLlmHealthCheck:
         async def side_effect(*args, **kwargs):
             nonlocal call_count
             call_count += 1
-            if call_count == 1:
-                raise Exception("image not supported")
+            if call_count == 2:      # text probe first, image second
+                raise Exception("This model does not support image input")
             return "text ok"
 
         with patch(f"{MODULE}.get_generator_model", return_value=mock_model), \
@@ -445,9 +479,36 @@ class TestPerformLlmHealthCheck:
             from app.api.routes.health import perform_llm_health_check
             resp = await perform_llm_health_check(config, logger)
 
-        assert resp.status_code == 500
+        assert resp.status_code == 400
         body = resp.body.decode()
         assert "doesn't support images" in body
+
+    @pytest.mark.asyncio
+    async def test_transient_image_failure_is_not_a_vision_verdict(self):
+        """A 429 says nothing about vision. Reporting "no vision" here tells an
+        admin to disable a capability their model actually has."""
+        logger = MagicMock()
+        config = {"provider": "openai", "isMultimodal": True, "configuration": {"model": "gpt-4o"}}
+        rate_limited = Exception("Rate limit reached")
+        rate_limited.status_code = 429
+
+        call_count = 0
+        async def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise rate_limited
+            return "text ok"
+
+        with patch(f"{MODULE}.get_generator_model", return_value=MagicMock()), \
+             patch("asyncio.wait_for", side_effect=side_effect):
+            from app.api.routes.health import perform_llm_health_check
+            resp = await perform_llm_health_check(config, logger)
+
+        body = resp.body.decode()
+        assert resp.status_code == 500
+        assert "doesn't support images" not in body
+        assert "Rate limit" in body
 
     @pytest.mark.asyncio
     async def test_multimodal_both_fail(self):
@@ -463,6 +524,53 @@ class TestPerformLlmHealthCheck:
         assert resp.status_code == 500
 
     @pytest.mark.asyncio
+    async def test_outbound_connectivity_on_connection_failure(self):
+        logger = MagicMock()
+        config = {"provider": "gemini", "configuration": {"model": "gemini-pro"}}
+
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=False), \
+             patch(f"{MODULE}.get_generator_model", side_effect=ConnectionError("failed to establish a new connection")):
+            from app.api.routes.health import perform_llm_health_check
+            resp = await perform_llm_health_check(config, logger)
+
+        assert resp.status_code == 500
+        body = resp.body.decode()
+        assert "outbound_connectivity" in body
+
+    @pytest.mark.asyncio
+    async def test_probe_failure_does_not_block_reachable_provider(self):
+        logger = MagicMock()
+        config = {"provider": "gemini", "configuration": {"model": "gemini-pro"}}
+        mock_model = MagicMock()
+
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=False) as probe, \
+             patch(f"{MODULE}.get_generator_model", return_value=mock_model), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value="ok"):
+            from app.api.routes.health import perform_llm_health_check
+            resp = await perform_llm_health_check(config, logger)
+
+        probe.assert_not_called()
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_outbound_probe_skipped_for_ollama(self):
+        logger = MagicMock()
+        config = {
+            "provider": "ollama",
+            "configuration": {"model": "llama3", "endpoint": "http://host.docker.internal:11434"},
+        }
+        mock_model = MagicMock()
+
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=False) as probe, \
+             patch(f"{MODULE}.get_generator_model", return_value=mock_model), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value="ok"):
+            from app.api.routes.health import perform_llm_health_check
+            resp = await perform_llm_health_check(config, logger)
+
+        probe.assert_not_called()
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
     async def test_timeout(self):
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "gpt-4"}}
@@ -473,9 +581,10 @@ class TestPerformLlmHealthCheck:
             from app.api.routes.health import perform_llm_health_check
             resp = await perform_llm_health_check(config, logger)
 
-        assert resp.status_code == 500
+        assert resp.status_code == 504
         body = resp.body.decode()
         assert "timed out" in body
+        assert "health_check_timeout" in body
 
     @pytest.mark.asyncio
     async def test_http_exception(self):
@@ -513,7 +622,9 @@ class TestPerformLlmHealthCheck:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_comma_separated_models_uses_first(self):
+    async def test_every_configured_model_is_checked(self):
+        """Node registers each comma-separated name as its own model, so
+        checking only the first ships untested models."""
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "gpt-4, gpt-3.5"}}
         mock_model = MagicMock()
@@ -523,7 +634,9 @@ class TestPerformLlmHealthCheck:
             from app.api.routes.health import perform_llm_health_check
             resp = await perform_llm_health_check(config, logger)
 
-        mock_gen.assert_called_once_with(provider="openai", config=config, model_name="gpt-4")
+        assert resp.status_code == 200
+        checked = [call.kwargs["model_name"] for call in mock_gen.call_args_list]
+        assert checked == ["gpt-4", "gpt-3.5"]
 
     @pytest.mark.asyncio
     async def test_multimodal_timeout_on_image(self):
@@ -536,7 +649,7 @@ class TestPerformLlmHealthCheck:
             from app.api.routes.health import perform_llm_health_check
             resp = await perform_llm_health_check(config, logger)
 
-        assert resp.status_code == 500
+        assert resp.status_code == 504
 
 
 class TestPerformEmbeddingHealthCheck:
@@ -572,7 +685,7 @@ class TestPerformEmbeddingHealthCheck:
 
         from app.api.routes.health import perform_embedding_health_check
         resp = await perform_embedding_health_check(mock_request, config, logger)
-        assert resp.status_code == 500
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_empty_results(self, mock_request):
@@ -585,7 +698,7 @@ class TestPerformEmbeddingHealthCheck:
             from app.api.routes.health import perform_embedding_health_check
             resp = await perform_embedding_health_check(mock_request, config, logger)
 
-        assert resp.status_code == 500
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_timeout(self, mock_request):
@@ -598,7 +711,7 @@ class TestPerformEmbeddingHealthCheck:
             from app.api.routes.health import perform_embedding_health_check
             resp = await perform_embedding_health_check(mock_request, config, logger)
 
-        assert resp.status_code == 500
+        assert resp.status_code == 504
 
     @pytest.mark.asyncio
     async def test_dimension_mismatch_with_data(self, mock_request):
@@ -727,12 +840,25 @@ class TestHealthCheckEndpoint:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_unknown_type_returns_healthy(self, mock_request):
+    async def test_unknown_type_is_rejected(self, mock_request):
+        """A type with no implementation used to return 200 healthy, which
+        registered a model nothing had checked. Node's own validator accepts
+        `ocr`, `slm`, `reasoning` and `multiModal`, all of which land here."""
         config = {"provider": "openai", "configuration": {"model": "gpt-4"}}
 
         from app.api.routes.health import health_check
         resp = await health_check(mock_request, "unknown", config)
-        assert resp.status_code == 200
+        assert resp.status_code == 400
+        assert "No health check exists" in resp.body.decode()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model_type", ["ocr", "slm", "reasoning", "multiModal"])
+    async def test_types_node_accepts_but_python_cannot_check(self, mock_request, model_type):
+        config = {"provider": "openai", "configuration": {"model": "gpt-4"}}
+
+        from app.api.routes.health import health_check
+        resp = await health_check(mock_request, model_type, config)
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_exception_handling(self, mock_request):
@@ -997,26 +1123,51 @@ def mock_request():
 class TestLlmHealthCheckFullCoverage:
     @pytest.mark.asyncio
     async def test_success(self, mock_request):
-        mock_llm = AsyncMock()
-        mock_llm.ainvoke = AsyncMock(return_value="ok")
+        """The bulk route now runs the same per-model check as the model
+        dialog, so both screens verify the same things."""
+        mock_model = MagicMock()
 
-        with patch(f"{MODULE}.get_llm", new_callable=AsyncMock, return_value=(mock_llm, {})):
+        with patch(f"{MODULE}.get_generator_model", return_value=mock_model), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value="ok"):
             from app.api.routes.health import llm_health_check
-            resp = await llm_health_check(mock_request, [{"provider": "openai"}])
+            resp = await llm_health_check(
+                mock_request, [{"provider": "openai", "configuration": {"model": "gpt-4"}}],
+            )
 
         assert resp.status_code == 200
-        body = resp.body.decode()
-        assert "healthy" in body
+        assert "healthy" in resp.body.decode()
+
+    @pytest.mark.asyncio
+    async def test_no_configs_is_rejected(self, mock_request):
+        from app.api.routes.health import llm_health_check
+        resp = await llm_health_check(mock_request, [])
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_one_bad_config_fails_the_batch(self, mock_request):
+        """A batch is only healthy if every model in it is."""
+        with patch(f"{MODULE}.get_generator_model", side_effect=RuntimeError("bad key")):
+            from app.api.routes.health import llm_health_check
+            resp = await llm_health_check(
+                mock_request,
+                [
+                    {"provider": "openai", "configuration": {"model": "gpt-4"}},
+                    {"provider": "openai", "configuration": {"model": "gpt-4o"}},
+                ],
+            )
+
+        assert resp.status_code == 500
 
     @pytest.mark.asyncio
     async def test_failure(self, mock_request):
-        with patch(f"{MODULE}.get_llm", new_callable=AsyncMock, side_effect=Exception("LLM failed")):
+        with patch(f"{MODULE}.get_generator_model", side_effect=Exception("LLM failed")):
             from app.api.routes.health import llm_health_check
-            resp = await llm_health_check(mock_request, [{"provider": "openai"}])
+            resp = await llm_health_check(
+                mock_request, [{"provider": "openai", "configuration": {"model": "gpt-4"}}],
+            )
 
         assert resp.status_code == 500
-        body = resp.body.decode()
-        assert "not healthy" in body
+        assert "LLM failed" in resp.body.decode()
 
 
 class TestInitializeEmbeddingModelFullCoverage:
@@ -1308,6 +1459,11 @@ class TestEmbeddingHealthCheckFullCoverage:
 
 
 class TestPerformLlmHealthCheckFullCoverage:
+    @pytest.fixture(autouse=True)
+    def _mock_outbound_probe(self):
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=True):
+            yield
+
     @pytest.mark.asyncio
     async def test_success_text(self):
         logger = MagicMock()
@@ -1324,12 +1480,14 @@ class TestPerformLlmHealthCheckFullCoverage:
 
     @pytest.mark.asyncio
     async def test_no_model_names(self):
+        """A configuration the admin has to fix is a 400, so the UI can tell it
+        apart from the service being broken."""
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": ""}}
 
         from app.api.routes.health import perform_llm_health_check
         resp = await perform_llm_health_check(config, logger)
-        assert resp.status_code == 500
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_multimodal_image_success(self):
@@ -1346,6 +1504,9 @@ class TestPerformLlmHealthCheckFullCoverage:
 
     @pytest.mark.asyncio
     async def test_multimodal_image_fails_text_passes(self):
+        """Text works, the image is rejected with an error that names the
+        limitation: that is the one case where "no vision" is the right
+        verdict."""
         logger = MagicMock()
         config = {"provider": "openai", "isMultimodal": True, "configuration": {"model": "gpt-4"}}
         mock_model = MagicMock()
@@ -1354,8 +1515,8 @@ class TestPerformLlmHealthCheckFullCoverage:
         async def side_effect(*args, **kwargs):
             nonlocal call_count
             call_count += 1
-            if call_count == 1:
-                raise Exception("image not supported")
+            if call_count == 2:      # text probe first, image second
+                raise Exception("This model does not support image input")
             return "text ok"
 
         with patch(f"{MODULE}.get_generator_model", return_value=mock_model), \
@@ -1363,9 +1524,36 @@ class TestPerformLlmHealthCheckFullCoverage:
             from app.api.routes.health import perform_llm_health_check
             resp = await perform_llm_health_check(config, logger)
 
-        assert resp.status_code == 500
+        assert resp.status_code == 400
         body = resp.body.decode()
         assert "doesn't support images" in body
+
+    @pytest.mark.asyncio
+    async def test_transient_image_failure_is_not_a_vision_verdict(self):
+        """A 429 says nothing about vision. Reporting "no vision" here tells an
+        admin to disable a capability their model actually has."""
+        logger = MagicMock()
+        config = {"provider": "openai", "isMultimodal": True, "configuration": {"model": "gpt-4o"}}
+        rate_limited = Exception("Rate limit reached")
+        rate_limited.status_code = 429
+
+        call_count = 0
+        async def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise rate_limited
+            return "text ok"
+
+        with patch(f"{MODULE}.get_generator_model", return_value=MagicMock()), \
+             patch("asyncio.wait_for", side_effect=side_effect):
+            from app.api.routes.health import perform_llm_health_check
+            resp = await perform_llm_health_check(config, logger)
+
+        body = resp.body.decode()
+        assert resp.status_code == 500
+        assert "doesn't support images" not in body
+        assert "Rate limit" in body
 
     @pytest.mark.asyncio
     async def test_multimodal_both_fail(self):
@@ -1381,6 +1569,53 @@ class TestPerformLlmHealthCheckFullCoverage:
         assert resp.status_code == 500
 
     @pytest.mark.asyncio
+    async def test_outbound_connectivity_on_connection_failure(self):
+        logger = MagicMock()
+        config = {"provider": "gemini", "configuration": {"model": "gemini-pro"}}
+
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=False), \
+             patch(f"{MODULE}.get_generator_model", side_effect=ConnectionError("failed to establish a new connection")):
+            from app.api.routes.health import perform_llm_health_check
+            resp = await perform_llm_health_check(config, logger)
+
+        assert resp.status_code == 500
+        body = resp.body.decode()
+        assert "outbound_connectivity" in body
+
+    @pytest.mark.asyncio
+    async def test_probe_failure_does_not_block_reachable_provider(self):
+        logger = MagicMock()
+        config = {"provider": "gemini", "configuration": {"model": "gemini-pro"}}
+        mock_model = MagicMock()
+
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=False) as probe, \
+             patch(f"{MODULE}.get_generator_model", return_value=mock_model), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value="ok"):
+            from app.api.routes.health import perform_llm_health_check
+            resp = await perform_llm_health_check(config, logger)
+
+        probe.assert_not_called()
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_outbound_probe_skipped_for_ollama(self):
+        logger = MagicMock()
+        config = {
+            "provider": "ollama",
+            "configuration": {"model": "llama3", "endpoint": "http://host.docker.internal:11434"},
+        }
+        mock_model = MagicMock()
+
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=False) as probe, \
+             patch(f"{MODULE}.get_generator_model", return_value=mock_model), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value="ok"):
+            from app.api.routes.health import perform_llm_health_check
+            resp = await perform_llm_health_check(config, logger)
+
+        probe.assert_not_called()
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
     async def test_timeout(self):
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "gpt-4"}}
@@ -1391,9 +1626,10 @@ class TestPerformLlmHealthCheckFullCoverage:
             from app.api.routes.health import perform_llm_health_check
             resp = await perform_llm_health_check(config, logger)
 
-        assert resp.status_code == 500
+        assert resp.status_code == 504
         body = resp.body.decode()
         assert "timed out" in body
+        assert "health_check_timeout" in body
 
     @pytest.mark.asyncio
     async def test_http_exception(self):
@@ -1431,7 +1667,9 @@ class TestPerformLlmHealthCheckFullCoverage:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_comma_separated_models_uses_first(self):
+    async def test_every_configured_model_is_checked(self):
+        """Node registers each comma-separated name as its own model, so
+        checking only the first ships untested models."""
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "gpt-4, gpt-3.5"}}
         mock_model = MagicMock()
@@ -1441,7 +1679,9 @@ class TestPerformLlmHealthCheckFullCoverage:
             from app.api.routes.health import perform_llm_health_check
             resp = await perform_llm_health_check(config, logger)
 
-        mock_gen.assert_called_once_with(provider="openai", config=config, model_name="gpt-4")
+        assert resp.status_code == 200
+        checked = [call.kwargs["model_name"] for call in mock_gen.call_args_list]
+        assert checked == ["gpt-4", "gpt-3.5"]
 
     @pytest.mark.asyncio
     async def test_multimodal_timeout_on_image(self):
@@ -1454,7 +1694,7 @@ class TestPerformLlmHealthCheckFullCoverage:
             from app.api.routes.health import perform_llm_health_check
             resp = await perform_llm_health_check(config, logger)
 
-        assert resp.status_code == 500
+        assert resp.status_code == 504
 
 
 class TestPerformEmbeddingHealthCheckFullCoverage:
@@ -1489,7 +1729,7 @@ class TestPerformEmbeddingHealthCheckFullCoverage:
 
         from app.api.routes.health import perform_embedding_health_check
         resp = await perform_embedding_health_check(mock_request, config, logger)
-        assert resp.status_code == 500
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_empty_results(self, mock_request):
@@ -1502,7 +1742,7 @@ class TestPerformEmbeddingHealthCheckFullCoverage:
             from app.api.routes.health import perform_embedding_health_check
             resp = await perform_embedding_health_check(mock_request, config, logger)
 
-        assert resp.status_code == 500
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_timeout(self, mock_request):
@@ -1515,7 +1755,7 @@ class TestPerformEmbeddingHealthCheckFullCoverage:
             from app.api.routes.health import perform_embedding_health_check
             resp = await perform_embedding_health_check(mock_request, config, logger)
 
-        assert resp.status_code == 500
+        assert resp.status_code == 504
 
     @pytest.mark.asyncio
     async def test_dimension_mismatch_with_data(self, mock_request):
@@ -1637,12 +1877,25 @@ class TestHealthCheckEndpointFullCoverage:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_unknown_type_returns_healthy(self, mock_request):
+    async def test_unknown_type_is_rejected(self, mock_request):
+        """A type with no implementation used to return 200 healthy, which
+        registered a model nothing had checked. Node's own validator accepts
+        `ocr`, `slm`, `reasoning` and `multiModal`, all of which land here."""
         config = {"provider": "openai", "configuration": {"model": "gpt-4"}}
 
         from app.api.routes.health import health_check
         resp = await health_check(mock_request, "unknown", config)
-        assert resp.status_code == 200
+        assert resp.status_code == 400
+        assert "No health check exists" in resp.body.decode()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model_type", ["ocr", "slm", "reasoning", "multiModal"])
+    async def test_types_node_accepts_but_python_cannot_check(self, mock_request, model_type):
+        config = {"provider": "openai", "configuration": {"model": "gpt-4"}}
+
+        from app.api.routes.health import health_check
+        resp = await health_check(mock_request, model_type, config)
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_exception_handling(self, mock_request):
@@ -1852,3 +2105,120 @@ class TestExtractErrorMessage:
         from app.api.routes.health import _extract_error_message
         result = _extract_error_message(exc)
         assert result == "Plain exception message"
+
+
+class TestLlmHealthCheckNeedsOutbound:
+    def test_openai_compatible_localhost_does_not_need_outbound(self):
+        from app.api.routes.health import _llm_health_check_needs_outbound
+        assert _llm_health_check_needs_outbound(
+            "openAICompatible",
+            {"endpoint": "http://localhost:8000"},
+        ) is False
+
+    def test_openai_compatible_lan_and_compose_names_do_not_need_outbound(self):
+        from app.api.routes.health import _llm_health_check_needs_outbound
+        assert _llm_health_check_needs_outbound(
+            "openAICompatible",
+            {"endpoint": "http://vllm:8000"},
+        ) is False
+        assert _llm_health_check_needs_outbound(
+            "openAICompatible",
+            {"endpoint": "http://192.168.1.50:8000"},
+        ) is False
+
+    def test_misspelled_openai_compatible_id_is_not_the_local_escape(self):
+        from app.api.routes.health import _llm_health_check_needs_outbound
+        # Registered id is openAICompatible. The lowercase-i spelling matches nothing.
+        assert _llm_health_check_needs_outbound(
+            "openaiCompatible",
+            {"endpoint": "http://localhost:8000"},
+        ) is True
+
+    def test_openai_compatible_unique_local_ipv6_is_private(self):
+        from app.api.routes.health import _endpoint_is_local
+        # Must not treat ``::1`` as a substring of ``fd00::1234``.
+        assert _endpoint_is_local("http://[fd00::1234]:8000") is True
+        assert _endpoint_is_local("http://[::1]:8000") is True
+
+    def test_cloud_provider_needs_outbound(self):
+        from app.api.routes.health import _llm_health_check_needs_outbound
+        assert _llm_health_check_needs_outbound("gemini", {}) is True
+
+    @pytest.mark.asyncio
+    async def test_local_compatible_connection_error_is_not_outbound_code(self):
+        logger = MagicMock()
+        config = {
+            "provider": "openAICompatible",
+            "configuration": {"model": "local-model", "endpoint": "http://localhost:8000"},
+        }
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=False) as probe, \
+             patch(f"{MODULE}.get_generator_model", side_effect=ConnectionError("connection refused")):
+            from app.api.routes.health import perform_llm_health_check
+            resp = await perform_llm_health_check(config, logger)
+
+        probe.assert_not_called()
+        assert resp.status_code == 500
+        assert "outbound_connectivity" not in resp.body.decode()
+
+    def test_litellm_proxy_localhost_does_not_need_outbound(self):
+        from app.api.routes.health import _llm_health_check_needs_outbound
+        assert _llm_health_check_needs_outbound(
+            "litellmProxy",
+            {"endpoint": "http://localhost:4000"},
+        ) is False
+
+    def test_openai_compatible_public_host_needs_outbound(self):
+        from app.api.routes.health import _llm_health_check_needs_outbound
+        assert _llm_health_check_needs_outbound(
+            "openAICompatible",
+            {"endpoint": "https://api.example.com/v1"},
+        ) is True
+
+    def test_endpoint_host_classification(self):
+        from app.api.routes.health import _endpoint_is_local
+        assert _endpoint_is_local("http://host.docker.internal:11434") is True
+        assert _endpoint_is_local("https://api.openai.com") is False
+        assert _endpoint_is_local("http://8.8.8.8:8000") is False
+
+    def test_looks_like_connectivity_error(self):
+        from app.api.routes.health import _looks_like_connectivity_error
+        assert _looks_like_connectivity_error(ConnectionError("failed to establish")) is True
+        assert _looks_like_connectivity_error(Exception("name or service not known")) is True
+        assert _looks_like_connectivity_error(ValueError("Incorrect API key provided")) is False
+
+    @pytest.mark.asyncio
+    async def test_probe_success_does_not_label_as_outbound(self):
+        logger = MagicMock()
+        config = {"provider": "gemini", "configuration": {"model": "gemini-pro"}}
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=True) as probe, \
+             patch(f"{MODULE}.get_generator_model", side_effect=ConnectionError("failed to establish a new connection")):
+            from app.api.routes.health import perform_llm_health_check
+            resp = await perform_llm_health_check(config, logger)
+
+        probe.assert_awaited()
+        assert resp.status_code == 500
+        assert "outbound_connectivity" not in resp.body.decode()
+
+    @pytest.mark.asyncio
+    async def test_non_connectivity_error_does_not_run_probe(self):
+        logger = MagicMock()
+        config = {"provider": "openai", "configuration": {"model": "gpt-4"}}
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=False) as probe, \
+             patch(f"{MODULE}.get_generator_model", side_effect=ValueError("Incorrect API key provided")):
+            from app.api.routes.health import perform_llm_health_check
+            resp = await perform_llm_health_check(config, logger)
+
+        probe.assert_not_called()
+        assert resp.status_code == 500
+        assert "outbound_connectivity" not in resp.body.decode()
+
+    @pytest.mark.asyncio
+    async def test_null_configuration_does_not_crash(self):
+        logger = MagicMock()
+        config = {"provider": "openai", "configuration": None}
+        from app.api.routes.health import perform_llm_health_check
+        resp = await perform_llm_health_check(config, logger)
+        # 400, not 500: nothing broke, the admin left the model name empty.
+        assert resp.status_code == 400
+        assert "No valid model names" in resp.body.decode()
+

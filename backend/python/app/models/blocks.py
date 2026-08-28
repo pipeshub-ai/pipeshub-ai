@@ -218,6 +218,12 @@ class LinkMetadata(BaseModel):
 
 class ImageMetadata(BaseModel):
     """Metadata specific to image blocks"""
+    # What the image shows, written at indexing time by a vision model when
+    # one is configured (see `ImageDescriber`). This is the only
+    # representation of the image available to a text-only LLM, to a request
+    # where the image lost its slot, and to lexical search -- captions alone
+    # are empty for most PDFs.
+    description: Optional[str] = None
     image_type: Optional[Literal["image", "drawing"]] = None
     image_format: Optional[str] = None
     image_size: Optional[dict[str, int]] = None

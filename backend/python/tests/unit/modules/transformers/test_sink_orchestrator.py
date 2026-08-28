@@ -47,7 +47,8 @@ def _make_orchestrator(
         blob_storage=blob_storage,
         vector_store=vector_store,
         graph_provider=graph_provider,
-        logger=logging.getLogger("test-sink-orc")
+        logger=logging.getLogger("test-sink-orc"),
+        config_service=MagicMock(),
     )
     # The Transformer base class does not set self.logger automatically in
     # all code paths.  Provide one so log calls don't blow up.

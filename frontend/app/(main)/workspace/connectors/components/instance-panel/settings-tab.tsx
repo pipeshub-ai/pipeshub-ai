@@ -4,6 +4,7 @@ import React from 'react';
 import { useTranslation, Trans } from 'react-i18next';
 import { Flex, Text, Avatar, Box, Button, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { PermissionLockIcon } from '@/config';
 import { ConnectorIcon } from '@/app/components/ui';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
 import { DotSeparator } from '../instance-card/primitives';
@@ -22,6 +23,7 @@ interface SettingsTabProps {
   onRequestRemoveConnector?: () => void;
   removeDisabled?: boolean;
   removeDisabledTooltip?: string;
+  removePermissionLocked?: boolean;
 }
 
 // ========================================
@@ -34,6 +36,7 @@ export function SettingsTab({
   onRequestRemoveConnector,
   removeDisabled = false,
   removeDisabledTooltip,
+  removePermissionLocked = false,
 }: SettingsTabProps) {
   const { t } = useTranslation();
   const syncStrategy = getSyncStrategyLabel(config ?? undefined) ?? 'Manual';
@@ -60,17 +63,18 @@ export function SettingsTab({
       type="button"
       color="red"
       variant="soft"
-      disabled={removeDisabled}
+      disabled={removeDisabled || removePermissionLocked}
       style={{
         alignSelf: 'flex-start',
-        cursor: removeDisabled ? 'not-allowed' : 'pointer',
+        cursor: removeDisabled || removePermissionLocked ? 'not-allowed' : 'pointer',
       }}
       onClick={() => {
-        if (removeDisabled) return;
+        if (removeDisabled || removePermissionLocked) return;
         onRequestRemoveConnector();
       }}
     >
       Remove connector instance
+      {removePermissionLocked && <PermissionLockIcon />}
     </Button>
   ) : null;
 

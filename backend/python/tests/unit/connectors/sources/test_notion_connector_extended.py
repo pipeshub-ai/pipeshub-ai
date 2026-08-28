@@ -30,7 +30,7 @@ Covers methods and branches not exercised by existing test suites:
 - get_record_child_by_external_id
 - get_user_child_by_external_id
 - _resolve_block_parent_recursive
-- _get_database_parent_page_id
+- _get_database_parent_ref
 """
 
 import logging
@@ -1349,10 +1349,10 @@ class TestAddUsersToWorkspacePermissions:
 
 
 # ===========================================================================
-# _get_database_parent_page_id
+# _get_database_parent_ref
 # ===========================================================================
 
-class TestGetDatabaseParentPageId:
+class TestGetDatabaseParentRef:
     @pytest.mark.asyncio
     async def test_page_parent(self):
         c = _make_connector()
@@ -1360,8 +1360,8 @@ class TestGetDatabaseParentPageId:
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         db_data = {"parent": {"type": "page_id", "page_id": "parent-page"}}
         ds.retrieve_database = AsyncMock(return_value=_make_api_response(True, db_data))
-        result = await c._get_database_parent_page_id("db-1")
-        assert result == "parent-page"
+        result = await c._get_database_parent_ref("db-1")
+        assert result == ("parent-page", RecordType.WEBPAGE)
 
     @pytest.mark.asyncio
     async def test_api_failure(self):
@@ -1370,4 +1370,4 @@ class TestGetDatabaseParentPageId:
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         ds.retrieve_database = AsyncMock(return_value=_make_api_response(False, error="boom"))
         with pytest.raises(RuntimeError, match="Failed to retrieve database"):
-            await c._get_database_parent_page_id("db-fail")
+            await c._get_database_parent_ref("db-fail")
