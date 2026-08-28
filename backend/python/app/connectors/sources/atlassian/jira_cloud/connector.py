@@ -1189,13 +1189,13 @@ class JiraConnector(BaseConnector):
                 f"✅ Jira sync completed. Total: {sync_stats['total_synced']} issues "
                 f"(New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']})"
             )
-            await self.notify(
-                type=NotificationType.CONNECTOR_SUCCESS,
-                severity=NotificationSeverity.SUCCESS,
-                title=f"Jira sync completed",
-                message=f"Total: {sync_stats['total_synced']} issues (New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']})",
-                recipient_user_ids=[self.created_by],
-            )
+            # await self.notify(
+            #     type=NotificationType.CONNECTOR_SUCCESS,
+            #     severity=NotificationSeverity.SUCCESS,
+            #     title=f"Jira sync completed",
+            #     message=f"Total: {sync_stats['total_synced']} issues (New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']})",
+            #     recipient_user_ids=[self.created_by],
+            # )
 
         except Exception as e:
             self.logger.error(f"❌ Error during Jira sync: {e}", exc_info=True)

@@ -84,19 +84,38 @@ async function mockBaselineApis(page: import('@playwright/test').Page) {
 
 /**
  * Dispatches a synthetic `paste` ClipboardEvent carrying `text` as
- * `text/plain`, targeted at the last textarea on the page. `ClipboardEvent`
- * doesn't expose modifier keys, so the app tracks Shift itself via
- * window-level keydown/keyup — real key events from `page.keyboard` drive
- * that, letting this helper double as the Shift-bypass test too.
+ * `text/plain`, targeted at the last textarea on the page.
+ *
+ * A script-constructed ClipboardEvent is untrusted, so the browser runs no
+ * default paste. That makes this fine for the cases where the app calls
+ * `preventDefault()` and writes the result into React state itself, but it can
+ * never show text landing inline — assert on the returned interception flag
+ * there, or paste for real with `realPaste`.
+ *
+ * Returns whether the app intercepted the paste.
  */
-async function pasteText(page: import('@playwright/test').Page, text: string) {
-  await page.evaluate((pastedText) => {
+async function pasteText(page: import('@playwright/test').Page, text: string): Promise<boolean> {
+  return page.evaluate((pastedText) => {
     const dt = new DataTransfer();
     dt.setData('text/plain', pastedText);
     const textarea = document.querySelectorAll('textarea')[document.querySelectorAll('textarea').length - 1];
     const event = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
-    textarea.dispatchEvent(event);
+    // dispatchEvent returns false once a handler called preventDefault, which is
+    // how the app signals "I took this paste" vs "let the browser insert it".
+    return !textarea.dispatchEvent(event);
   }, text);
+}
+
+/**
+ * Pastes `text` for real: seeds the system clipboard, then presses the paste
+ * chord so the browser emits a trusted `paste` event and performs the default
+ * insertion when the app does not preventDefault. Requires clipboard
+ * permissions on the context (granted in `beforeEach`).
+ */
+async function realPaste(page: import('@playwright/test').Page, text: string) {
+  await page.locator('textarea').last().click();
+  await page.evaluate((pastedText) => navigator.clipboard.writeText(pastedText), text);
+  await page.keyboard.press('ControlOrMeta+V');
 }
 
 // ---------------------------------------------------------------------------
@@ -104,7 +123,8 @@ async function pasteText(page: import('@playwright/test').Page, text: string) {
 // ---------------------------------------------------------------------------
 
 test.describe('Chat — paste-to-attachment', () => {
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
     await mockBaselineApis(page);
     await page.goto('/chat/');
     await page.waitForSelector('textarea', { timeout: 15_000 });
@@ -120,19 +140,24 @@ test.describe('Chat — paste-to-attachment', () => {
   });
 
   test('a short paste is inserted inline, not converted to a chip', async ({ page }) => {
-    await pasteText(page, SMALL_TEXT);
+    await realPaste(page, SMALL_TEXT);
 
     await expect(page.locator('textarea').last()).toHaveValue(SMALL_TEXT);
     await expect(page.getByText('Pasted text')).toHaveCount(0);
   });
 
+  // Chromium fires no paste event at all for the paste chord with Shift physically
+  // held, so this case cannot be driven through the real clipboard. The synthetic
+  // event still exercises the whole decision: the app reads Shift from its own
+  // window-level key tracking, and leaving the event unprevented is exactly how it
+  // hands the paste back to the browser for inline insertion.
   test('Shift held during paste bypasses the attachment conversion', async ({ page }) => {
     await page.keyboard.down('Shift');
-    await pasteText(page, LARGE_TEXT);
+    const intercepted = await pasteText(page, LARGE_TEXT);
     await page.keyboard.up('Shift');
 
+    expect(intercepted).toBe(false);
     await expect(page.getByText('Pasted text')).toHaveCount(0);
-    await expect(page.locator('textarea').last()).toHaveValue(LARGE_TEXT);
   });
 
   test('clicking the chip opens a preview dialog with the pasted content', async ({ page }) => {

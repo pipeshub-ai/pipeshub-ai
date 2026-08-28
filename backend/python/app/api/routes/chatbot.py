@@ -417,6 +417,31 @@ class _AttachmentSinkNoopVectorStore:
         return True
 
 
+async def _rollback_attachment_records(
+    graph_provider: IGraphDBProvider,
+    record_ids: list[str],
+) -> None:
+    """Undo the graph half of an attachment upload that failed partway through.
+
+    Mirrors `delete_chat_attachment`: dropping the RECORDS node takes its
+    IS_OF_TYPE and PERMISSION edges with it, and the FILES node shares the key.
+    Blobs are not reachable from here -- `BlobStorage` exposes no delete, so the
+    normal delete path leaks them too.
+
+    Best-effort: a failure here must not replace the error that triggered it.
+    """
+    if not record_ids:
+        return
+    try:
+        await graph_provider.delete_nodes_and_edges(record_ids, CollectionNames.RECORDS.value)
+        await graph_provider.delete_nodes(record_ids, CollectionNames.FILES.value)
+    except Exception:
+        logger.exception(
+            "Failed to roll back partially uploaded attachments; records may be orphaned: %s",
+            record_ids,
+        )
+
+
 @router.post("/chat/attachments/upload", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
 @inject
 async def upload_chat_attachments(
@@ -627,77 +652,87 @@ async def upload_chat_attachments(
             }
         )
 
-    await graph_provider.batch_upsert_nodes(record_docs, CollectionNames.RECORDS.value)
-    await graph_provider.batch_upsert_nodes(file_docs, CollectionNames.FILES.value)
+    # Records, files, edges and the sink's blob write are five separate round
+    # trips with no shared transaction, so a failure partway leaves a record the
+    # user can neither see nor delete. Undo the graph writes before surfacing it.
+    try:
+        await graph_provider.batch_upsert_nodes(record_docs, CollectionNames.RECORDS.value)
+        await graph_provider.batch_upsert_nodes(file_docs, CollectionNames.FILES.value)
 
-    ts = get_epoch_timestamp_in_ms()
-    is_of_type_edges = [
-        {
-            "_from": f"{CollectionNames.RECORDS.value}/{rd['_key']}",
-            "_to": f"{CollectionNames.FILES.value}/{rd['_key']}",
-            "createdAtTimestamp": ts,
-            "updatedAtTimestamp": ts,
-        }
-        for rd in record_docs
-    ]
-    await graph_provider.batch_create_edges(is_of_type_edges, CollectionNames.IS_OF_TYPE.value)
-    if is_service_account:
-        # Service accounts have no user graph node, so no USER -> RECORD edge
-        # can be created. Grant an org-scoped permission edge instead so the
-        # uploaded file is readable org-wide through the standard ACL path
-        # (orgAccessPermissionEdge in check_record_access_with_details).
-        permission_edges = [
+        ts = get_epoch_timestamp_in_ms()
+        is_of_type_edges = [
             {
-                "from_id": org_id,
-                "from_collection": CollectionNames.ORGS.value,
-                "to_id": rd["_key"],
-                "to_collection": CollectionNames.RECORDS.value,
-                "type": "ORGANIZATION",
-                "role": "READER",
+                "_from": f"{CollectionNames.RECORDS.value}/{rd['_key']}",
+                "_to": f"{CollectionNames.FILES.value}/{rd['_key']}",
                 "createdAtTimestamp": ts,
                 "updatedAtTimestamp": ts,
             }
             for rd in record_docs
         ]
-        await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
-    else:
-        permission_edges = [
-            {
-                "from_id": user_key,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": rd["_key"],
-                "to_collection": CollectionNames.RECORDS.value,
-                "type": "USER",
-                "role": "OWNER",
-                "createdAtTimestamp": ts,
-                "updatedAtTimestamp": ts,
-            }
-            for rd in record_docs
-        ]
-        await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
+        await graph_provider.batch_create_edges(is_of_type_edges, CollectionNames.IS_OF_TYPE.value)
+        if is_service_account:
+            # Service accounts have no user graph node, so no USER -> RECORD edge
+            # can be created. Grant an org-scoped permission edge instead so the
+            # uploaded file is readable org-wide through the standard ACL path
+            # (orgAccessPermissionEdge in check_record_access_with_details).
+            permission_edges = [
+                {
+                    "from_id": org_id,
+                    "from_collection": CollectionNames.ORGS.value,
+                    "to_id": rd["_key"],
+                    "to_collection": CollectionNames.RECORDS.value,
+                    "type": "ORGANIZATION",
+                    "role": "READER",
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                for rd in record_docs
+            ]
+            await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
+        else:
+            permission_edges = [
+                {
+                    "from_id": user_key,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": rd["_key"],
+                    "to_collection": CollectionNames.RECORDS.value,
+                    "type": "USER",
+                    "role": "OWNER",
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                for rd in record_docs
+            ]
+            await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
 
-    sink_orchestrator = SinkOrchestrator(
-        graphdb=graphdb,
-        blob_storage=blob_storage,
-        vector_store=_AttachmentSinkNoopVectorStore(),
-        graph_provider=graph_provider,
-        logger=service_logger,
-    )
-
-    for record_doc in record_docs:
-        record_id = record_doc.get("_key") or record_doc.get("id")
-        block_containers = parsed_blocks_by_record.get(record_id)
-        if block_containers is None:
-            continue
-
-        record = convert_record_dict_to_record(record_doc)
-        record.block_containers = block_containers
-        record.virtual_record_id = record_doc.get("virtualRecordId")
-        ctx = TransformContext(
-            record=record,
-            settings={"sink_only": True, "skip_vector_store": True},
+        sink_orchestrator = SinkOrchestrator(
+            graphdb=graphdb,
+            blob_storage=blob_storage,
+            vector_store=_AttachmentSinkNoopVectorStore(),
+            graph_provider=graph_provider,
+            logger=service_logger,
+            config_service=config_service,
         )
-        await sink_orchestrator.index(ctx)
+
+        for record_doc in record_docs:
+            record_id = record_doc.get("_key") or record_doc.get("id")
+            block_containers = parsed_blocks_by_record.get(record_id)
+            if block_containers is None:
+                continue
+
+            record = convert_record_dict_to_record(record_doc)
+            record.block_containers = block_containers
+            record.virtual_record_id = record_doc.get("virtualRecordId")
+            ctx = TransformContext(
+                record=record,
+                settings={"sink_only": True, "skip_vector_store": True},
+            )
+            await sink_orchestrator.index(ctx)
+    except Exception:
+        await _rollback_attachment_records(
+            graph_provider, [rd["_key"] for rd in record_docs]
+        )
+        raise
 
     return {
         "conversationId": payload.conversationId,
