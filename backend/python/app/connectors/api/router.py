@@ -6998,6 +6998,7 @@ async def _build_and_store_connector(
         scope = connector_doc.get(ConnectorRequestKeys.SCOPE, ConnectorScope.PERSONAL.value)
         created_by = connector_doc.get("createdBy", "")
         org_id = connector_doc.get("orgId") or org_id
+        connector_instance_name = connector_doc.get("name")
         config_service = resolve_config_service(container, org_id)
         data_store_provider = build_graph_data_store(logger, graph_provider, org_id)
 
@@ -7013,6 +7014,7 @@ async def _build_and_store_connector(
             org_id=org_id,
             data_entities_processor_cls=get_data_entities_processor_cls(),
             notification_service=container.connector_notification_service(),
+            connector_instance_name=connector_instance_name,
         )
 
         if not connector:

@@ -182,6 +182,7 @@ class EventService:
                 org_id=org_id,
                 data_entities_processor_cls=get_data_entities_processor_cls(),
                 notification_service=self.app_container.connector_notification_service(),
+                connector_instance_name=connector_doc.get("name"),
             )
 
             if not connector:
@@ -271,6 +272,7 @@ class EventService:
                 return False
             scope = connector_doc.get("scope", "personal")
             created_by = connector_doc.get("createdBy", "")
+            connector_instance_name = connector_doc.get("name")
             
             # Use generic connector factory
             connector = await ConnectorFactory.create_connector(
@@ -284,6 +286,7 @@ class EventService:
                 org_id=org_id,
                 data_entities_processor_cls=get_data_entities_processor_cls(),
                 notification_service=self.app_container.connector_notification_service(),
+                connector_instance_name=connector_instance_name,
             )
 
             if not connector:

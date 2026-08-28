@@ -237,6 +237,53 @@ class TestRecreateRecordsCollection:
     """Tests for VectorStore.recreate_records_collection (moved to CollectionRegistry)."""
 
 
+# ===================================================================
+# index_record_summary
+# ===================================================================
+
+class TestIndexRecordSummary:
+    """Tests for VectorStore.index_record_summary."""
+
+    @pytest.mark.asyncio
+    async def test_initializes_embeddings_when_missing(self):
+        """Reconciliation early-return never calls index_documents; summary path must init."""
+        from app.models.blocks import SemanticMetadata
+
+        vs = _make_vectorstore()
+        assert vs.dense_embeddings is None
+
+        vs.get_embedding_model_instance = AsyncMock(return_value=False)
+        vs.delete_blocks_by_ids = AsyncMock()
+        vs._process_document_chunks = AsyncMock()
+
+        metadata = SemanticMetadata(summary="A short document summary.")
+        await vs.index_record_summary("rec-1", "vrid-1", "org-1", metadata)
+
+        vs.get_embedding_model_instance.assert_awaited_once()
+        vs.delete_blocks_by_ids.assert_awaited_once()
+        vs._process_document_chunks.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_init_when_embeddings_already_set(self):
+        from app.models.blocks import SemanticMetadata
+
+        vs = _make_vectorstore()
+        vs.dense_embeddings = MagicMock()
+        vs.get_embedding_model_instance = AsyncMock(return_value=False)
+        vs.delete_blocks_by_ids = AsyncMock()
+        vs._process_document_chunks = AsyncMock()
+
+        metadata = SemanticMetadata(summary="Already embedded path.")
+        await vs.index_record_summary("rec-1", "vrid-1", "org-1", metadata)
+
+        vs.get_embedding_model_instance.assert_not_awaited()
+        vs._process_document_chunks.assert_awaited_once()
+
+
+# ===================================================================
+# get_embedding_model_instance
+# ===================================================================
+
 class TestGetEmbeddingModelInstance:
     """Tests for VectorStore.get_embedding_model_instance."""
 

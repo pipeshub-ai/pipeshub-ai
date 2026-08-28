@@ -4139,6 +4139,119 @@ class TestTimeRangeThreading:
         assert mock_conn.call_args.kwargs.get("time_range") == time_range
         mock_kb.assert_called_once()
         assert mock_kb.call_args.kwargs.get("time_range") == time_range
+class TestDeleteRecordsRecursiveOrphanParentClear:
+    @pytest.mark.asyncio
+    async def test_clears_orphan_parent_when_cascade_children_false(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        inventory = {
+            "valid_root_keys": ["epic-1"],
+            "records_with_type": [{
+                "record": {
+                    "id": "epic-1",
+                    "recordName": "Epic",
+                    "externalRecordId": "jira-epic-99",
+                    "connectorId": "conn-1",
+                },
+                "type_doc": {},
+            }],
+        }
+        neo4j_provider.begin_transaction = AsyncMock(return_value="txn1")
+        neo4j_provider.commit_transaction = AsyncMock()
+        queries: list[str] = []
+        params_list: list[dict] = []
+
+        async def exec_query(query, parameters=None, txn_id=None):
+            queries.append(query)
+            params_list.append(parameters or {})
+            if "AS inventory" in query:
+                return [{"inventory": inventory}]
+            return []
+
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=exec_query)
+
+        result = await neo4j_provider.delete_records_recursive(
+            ["epic-1"], "conn-1", cascade_children=False
+        )
+
+        assert result["success"] is True
+        clear_indexes = [
+            i for i, q in enumerate(queries)
+            if "SET survivor.externalParentId = null" in q
+        ]
+        assert len(clear_indexes) == 1
+        clear_q = queries[clear_indexes[0]]
+        clear_params = params_list[clear_indexes[0]]
+        assert "BELONGS_TO" in clear_q
+        assert "RecordGroup" in clear_q
+        assert clear_params["parent_external_ids"] == ["jira-epic-99"]
+        assert clear_params["connector_id"] == "conn-1"
+        assert clear_params["deleted_ids"] == ["epic-1"]
+
+    @pytest.mark.asyncio
+    async def test_skips_orphan_clear_when_cascade_children_true(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        inventory = {
+            "valid_root_keys": ["epic-1"],
+            "records_with_type": [{
+                "record": {
+                    "id": "epic-1",
+                    "recordName": "Epic",
+                    "externalRecordId": "jira-epic-99",
+                },
+                "type_doc": {},
+            }],
+        }
+        neo4j_provider.begin_transaction = AsyncMock(return_value="txn1")
+        neo4j_provider.commit_transaction = AsyncMock()
+
+        async def exec_query(query, parameters=None, txn_id=None):
+            if "AS inventory" in query:
+                return [{"inventory": inventory}]
+            return []
+
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=exec_query)
+
+        await neo4j_provider.delete_records_recursive(
+            ["epic-1"], "conn-1", cascade_children=True
+        )
+
+        for call in neo4j_provider.client.execute_query.await_args_list:
+            query = call.args[0] if call.args else call.kwargs.get("query", "")
+            assert "SET survivor.externalParentId = null" not in query
+
+    @pytest.mark.asyncio
+    async def test_skips_orphan_clear_when_root_has_no_external_record_id(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        inventory = {
+            "valid_root_keys": ["epic-1"],
+            "records_with_type": [{
+                "record": {
+                    "id": "epic-1",
+                    "recordName": "Epic",
+                },
+                "type_doc": {},
+            }],
+        }
+        neo4j_provider.begin_transaction = AsyncMock(return_value="txn1")
+        neo4j_provider.commit_transaction = AsyncMock()
+
+        async def exec_query(query, parameters=None, txn_id=None):
+            if "AS inventory" in query:
+                return [{"inventory": inventory}]
+            return []
+
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=exec_query)
+
+        await neo4j_provider.delete_records_recursive(
+            ["epic-1"], "conn-1", cascade_children=False
+        )
+
+        for call in neo4j_provider.client.execute_query.await_args_list:
+            query = call.args[0] if call.args else call.kwargs.get("query", "")
+            assert "SET survivor.externalParentId = null" not in query
 
 
 class TestDeleteSingleRecord:

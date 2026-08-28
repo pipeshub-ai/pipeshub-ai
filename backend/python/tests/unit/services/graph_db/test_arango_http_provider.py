@@ -4679,6 +4679,108 @@ class TestDeleteRecordsRecursive:
         assert result["success"] is True
         assert result["eventData"] is None
 
+    @pytest.mark.asyncio
+    async def test_clears_orphan_parent_when_cascade_children_false(self, connected_provider):
+        inventory = {
+            "valid_root_keys": ["epic-1"],
+            "records_with_type": [{
+                "record": {
+                    "_key": "epic-1",
+                    "recordName": "Epic",
+                    "externalRecordId": "jira-epic-99",
+                    "connectorId": "conn-1",
+                },
+                "type_target": None,
+            }],
+        }
+        queries: list[str] = []
+        bind_vars_list: list[dict] = []
+
+        async def exec_query(query, bind_vars=None, transaction=None):
+            queries.append(query)
+            bind_vars_list.append(bind_vars or {})
+            if "valid_root_keys" in query and "records_with_type" in query:
+                return [inventory]
+            return []
+
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(side_effect=exec_query)), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()):
+            result = await connected_provider.delete_records_recursive(
+                ["epic-1"], "conn-1", cascade_children=False
+            )
+
+        assert result["success"] is True
+        clear_indexes = [
+            i for i, q in enumerate(queries)
+            if "externalParentId: null" in q
+        ]
+        assert len(clear_indexes) == 1
+        clear_q = queries[clear_indexes[0]]
+        clear_vars = bind_vars_list[clear_indexes[0]]
+        assert "belongs_to" in clear_q or "@belongs_to" in clear_q
+        assert "recordGroups" in clear_q
+        assert clear_vars["parent_external_ids"] == ["jira-epic-99"]
+        assert clear_vars["connector_id"] == "conn-1"
+        assert clear_vars["deleted_keys"] == ["epic-1"]
+
+    @pytest.mark.asyncio
+    async def test_skips_orphan_clear_when_cascade_children_true(self, connected_provider):
+        inventory = {
+            "valid_root_keys": ["epic-1"],
+            "records_with_type": [{
+                "record": {
+                    "_key": "epic-1",
+                    "recordName": "Epic",
+                    "externalRecordId": "jira-epic-99",
+                },
+                "type_target": None,
+            }],
+        }
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])) as mock_exec, \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()):
+            await connected_provider.delete_records_recursive(
+                ["epic-1"], "conn-1", cascade_children=True
+            )
+
+        assert mock_exec.await_count == 1
+        query = mock_exec.await_args.args[0] if mock_exec.await_args.args else ""
+        assert "externalParentId: null" not in query
+
+    @pytest.mark.asyncio
+    async def test_skips_orphan_clear_when_root_has_no_external_record_id(self, connected_provider):
+        inventory = {
+            "valid_root_keys": ["epic-1"],
+            "records_with_type": [{
+                "record": {"_key": "epic-1", "recordName": "Epic"},
+                "type_target": None,
+            }],
+        }
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])) as mock_exec, \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()):
+            await connected_provider.delete_records_recursive(
+                ["epic-1"], "conn-1", cascade_children=False
+            )
+
+        assert mock_exec.await_count == 1
+        for call in mock_exec.await_args_list:
+            query = call.args[0] if call.args else ""
+            assert "externalParentId: null" not in query
+
 
 # ---------------------------------------------------------------------------
 # delete_single_record

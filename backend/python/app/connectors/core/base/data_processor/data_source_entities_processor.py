@@ -1005,11 +1005,15 @@ class DataSourceEntitiesProcessor:
             if record.origin != OriginTypes.UPLOAD:
                 if existing_record.indexing_status == ProgressStatus.COMPLETED.value:
                     if record.external_revision_id != existing_record.external_revision_id:
-                        # Real content change on an indexed record: reset so it
-                        # re-queues — unless indexing is manual-only for this
-                        # record, which a content change must not override.
-                        if record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
-                            record.indexing_status = ProgressStatus.NOT_STARTED.value
+                        # Real content change on an already-indexed record: re-queue it,
+                        # even when the connector stamped AUTO_INDEX_OFF for a manual-only
+                        # filter. Honouring that stamp here downgraded a COMPLETED record
+                        # to AUTO_INDEX_OFF on every source change, which both lost the
+                        # fact that it had been indexed and left its stale vectors in
+                        # place with no event to correct them. Manual-only still holds for
+                        # records the user never indexed: this branch is reached only when
+                        # the stored status is already COMPLETED.
+                        record.indexing_status = ProgressStatus.NOT_STARTED.value
                     else:
                         # Unchanged content stays COMPLETED (blocks re-publish
                         # below). Resetting unconditionally made every full
@@ -1537,7 +1541,8 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def on_records_deleted_cascade(
-        self, record_ids: list[str], connector_id: str
+        self, record_ids: list[str], connector_id: str,
+        cascade_children: bool = True,
     ) -> dict:
         """Recursively delete records — the single delete path for files, folders and
         multi-record deletes, generic across KB and connectors.
@@ -1548,6 +1553,9 @@ class DataSourceEntitiesProcessor:
         ``connectorId == connector_id`` (kb_id for a KB). Returns the provider result
         (counts, deleted/failed) for the HTTP response and publishes one deleteRecord event
         per deleted record that has a virtualRecordId (Qdrant cleanup).
+
+        When *cascade_children* is False, only ATTACHMENT edges are traversed —
+        PARENT_CHILD children (e.g. stories under a deleted epic) are left intact.
         """
         if not record_ids:
             return {
@@ -1559,7 +1567,9 @@ class DataSourceEntitiesProcessor:
                 "failed_count": 0,
             }
         async with self.data_store_provider.transaction() as tx_store:
-            result = await tx_store.delete_records_recursive(record_ids, connector_id)
+            result = await tx_store.delete_records_recursive(
+                record_ids, connector_id, cascade_children=cascade_children,
+            )
         if (result or {}).get("successfully_deleted"):
             # Before publishing: the transaction has committed, so the records are
             # already gone, and _publish_delete_events can fail. Invalidating
