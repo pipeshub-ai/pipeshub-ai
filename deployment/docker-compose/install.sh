@@ -1702,8 +1702,7 @@ while (( ELAPSED < HEALTH_WAIT_SECS )); do
     if [[ -n "$_CRASH_REPORT" ]] && apply_mongo_rseq_tunable; then
       # Full `up -d`, not `--force-recreate mongodb`: dependents that never
       # started will not appear just because mongodb was recreated.
-      if docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" \
-           --env-file "$ENV_FILE" up -d >/dev/null 2>&1; then
+      if compose_up >/dev/null 2>&1; then
         _CRASH_REPORT=""
         # Extend the deadline, never shorten it: at t=90 a bare ELAPSED+180
         # would cut the default 420s wait down to 270.
