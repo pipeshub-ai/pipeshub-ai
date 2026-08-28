@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import crypto from 'crypto'
 import {
   randomKeyGenerator,
   ConfigService,
@@ -53,6 +54,21 @@ describe('tokens_manager/services/cm.service', () => {
       for (const char of key) {
         expect(validChars).to.include(char)
       }
+    })
+
+    it('should not use Math.random (signing secrets must come from a CSPRNG)', () => {
+      const mathRandomSpy = sinon.spy(Math, 'random')
+      randomKeyGenerator()
+      expect(mathRandomSpy.called).to.be.false
+    })
+
+    it('should draw every character via crypto.randomInt over the full charset', () => {
+      const randomIntStub = sinon.stub<[number], number>().returns(0)
+      sinon.replace(crypto, 'randomInt', randomIntStub as typeof crypto.randomInt)
+      const key = randomKeyGenerator()
+      expect(key).to.equal('A'.repeat(20))
+      expect(randomIntStub.callCount).to.equal(20)
+      expect(randomIntStub.alwaysCalledWithExactly(62)).to.be.true
     })
   })
 
