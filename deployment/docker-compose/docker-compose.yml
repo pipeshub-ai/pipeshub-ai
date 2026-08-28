@@ -45,12 +45,12 @@ services:
       resources:
         limits:
           # OOM cap only (not reserved). Lower via APP_MEMORY_LIMIT on smaller hosts.
-          memory: ${APP_MEMORY_LIMIT:-12G}
+          memory: ${APP_MEMORY_LIMIT:-10G}
     # Lets the kernel page out memory that a co-located idle service (e.g.
     # Docling's model weights between documents) is holding but not
     # actively using, instead of counting it against the hard OOM cap above
     # forever. memswap_limit is the combined memory+swap ceiling (not a
-    # separate swap allowance), so the 12G/16G defaults give 4G of swap on
+    # separate swap allowance), so the 10G/16G defaults give 6G of swap on
     # top of APP_MEMORY_LIMIT. Keep APP_MEMSWAP_LIMIT >= APP_MEMORY_LIMIT and
     # raise/lower both together to change the swap budget.
     # mem_swappiness (per-container swap aggressiveness) is a cgroup v1-only

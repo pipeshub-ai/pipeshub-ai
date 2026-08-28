@@ -25,7 +25,6 @@ def _make_orchestrator(*, previous_record=None):
     blob_storage.get_record_from_storage = AsyncMock(return_value=previous_record)
     vector_store = AsyncMock()
     vector_store.apply = AsyncMock(return_value=True)
-    vector_store.config_service = MagicMock()
     graph_provider = AsyncMock()
     graph_provider.get_document = AsyncMock(return_value={"indexingStatus": "NOT_STARTED"})
     graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
@@ -35,6 +34,7 @@ def _make_orchestrator(*, previous_record=None):
         vector_store=vector_store,
         graph_provider=graph_provider,
         logger=logging.getLogger("test-sink-images"),
+        config_service=MagicMock(),
     )
     orchestrator._save_reconciliation_metadata = AsyncMock()
     orchestrator._update_indexing_status = AsyncMock()

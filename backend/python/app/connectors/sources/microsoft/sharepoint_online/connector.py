@@ -3856,15 +3856,15 @@ class SharePointConnector(BaseConnector):
             self.logger.info(f"🎉 SharePoint connector sync completed in {duration}")
             self.logger.info(f"📈 Statistics: {self.stats}")
 
-            await self.notify(
-                type=NotificationType.CONNECTOR_SUCCESS,
-                severity=NotificationSeverity.SUCCESS,
-                title="SharePoint connector sync complete",
-                message=(
-                    "SharePoint connector sync completed successfully. "
-                ),
-                recipient_user_ids=[self.created_by],
-            )
+            # await self.notify(
+            #     type=NotificationType.CONNECTOR_SUCCESS,
+            #     severity=NotificationSeverity.SUCCESS,
+            #     title="SharePoint connector sync complete",
+            #     message=(
+            #         "SharePoint connector sync completed successfully. "
+            #     ),
+            #     recipient_user_ids=[self.created_by],
+            # )
 
         except Exception as e:
             duration = datetime.now() - start_time
