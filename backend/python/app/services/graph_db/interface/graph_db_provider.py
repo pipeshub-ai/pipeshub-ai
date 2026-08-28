@@ -2183,6 +2183,84 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_person_by_email(
+        self,
+        email: str,
+        org_id: str | None = None,
+        transaction: str | None = None,
+    ) -> Optional['Person']:
+        """
+        Get a person by email.
+
+        Args:
+            email (str): Email address; matched case-insensitively
+            org_id (Optional[str]): Match qualifier for editions that tenant-isolate
+                Person nodes. None matches on email alone.
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Optional[Person]: The person, or None
+        """
+        pass
+
+    @abstractmethod
+    async def upsert_person_by_email(
+        self,
+        person: Person,
+        org_id: str | None = None,
+        transaction: str | None = None,
+    ) -> str | None:
+        """
+        Upsert a Person keyed on email, returning the id of the surviving node.
+
+        Callers must use the returned id rather than ``person.id``: on a match the
+        existing node wins and its id is what every edge must point at. Never updates
+        an existing node, so a caller that knows only an email cannot blank names or
+        phone numbers written by a richer source.
+
+        Args:
+            person (Person): The person to insert if no match exists
+            org_id (Optional[str]): Match qualifier for editions that tenant-isolate
+                Person nodes. None matches on email alone.
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Optional[str]: Surviving person id, or None on failure
+        """
+        pass
+
+    @abstractmethod
+    async def ensure_app_membership(
+        self,
+        principal_id: str,
+        principal_collection: str,
+        connector_id: str,
+        *,
+        is_external: bool,
+        source_user_id: str | None = None,
+        transaction: str | None = None,
+    ) -> None:
+        """
+        Ensure a principal (user or person) has a membership edge to an app.
+
+        Create-only: an existing edge is left untouched, so this can never downgrade a
+        real member to an external collaborator.
+
+        Args:
+            principal_id (str): User or person key
+            principal_collection (str): CollectionNames.USERS or CollectionNames.PEOPLE
+            connector_id (str): Target app id
+            is_external (bool): True when the principal reached this app only through a
+                share rather than app membership
+            source_user_id (Optional[str]): Source-system user id, when known
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            None
+        """
+        pass
+
+    @abstractmethod
     async def get_app_role_by_external_id(
         self,
         connector_id: str,

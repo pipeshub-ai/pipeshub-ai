@@ -1177,10 +1177,11 @@ people_schema = {
     "rule": {
         "type": "object",
         "properties": {
-            "_key": {"type": "string"},  # deterministic UUID based on email
+            "_key": {"type": "string"},  # uuid4; email is the business key (unique index)
             "email": {"type": "string"},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
+            "fullName": {"type": ["string", "null"]},
             "firstName": {"type": ["string", "null"]},
             "lastName": {"type": ["string", "null"]},
             "phone": {"type": ["string", "null"]},

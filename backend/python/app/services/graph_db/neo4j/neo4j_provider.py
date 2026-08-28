@@ -341,6 +341,24 @@ class Neo4jProvider(IGraphDBProvider):
 
         return constraints
 
+    def _generate_business_key_constraints(self) -> list[str]:
+        """
+        Generate uniqueness constraints for business keys — properties that identify a
+        node independently of its generated id.
+
+        These are load-bearing, not defensive. Neo4j serialises concurrent ``MERGE`` on
+        a property only when a uniqueness constraint backs it (the merge takes a lock on
+        the index entry); without one, two transactions resolving the same external
+        collaborator both create a node.
+
+        Returns:
+            List of Cypher CREATE CONSTRAINT queries for business keys
+        """
+        return [
+            "CREATE CONSTRAINT person_email_unique IF NOT EXISTS "
+            f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE n.email IS UNIQUE"
+        ]
+
     def _generate_performance_indexes(self) -> list[str]:
         """
         Generate strategic performance indexes based on query pattern analysis.
@@ -585,6 +603,20 @@ class Neo4jProvider(IGraphDBProvider):
                     self.logger.debug(f"Unique constraint creation (may already exist): {str(e)}")
 
             self.logger.info(f"✅ Created {len(unique_constraints)} unique id constraints")
+
+            # Business-key uniqueness (e.g. Person.email). Creation fails on a label
+            # that already holds duplicates, hence the same tolerant handling as above.
+            business_key_constraints = self._generate_business_key_constraints()
+
+            for constraint_query in business_key_constraints:
+                try:
+                    await self.client.execute_query(constraint_query)
+                except Exception as e:
+                    self.logger.debug(f"Business key constraint creation (may already exist): {str(e)}")
+
+            self.logger.info(
+                f"✅ Created {len(business_key_constraints)} business key constraints"
+            )
 
             # Create property existence constraints for required fields from schemas
             property_constraints = self._generate_required_field_constraints()
@@ -6033,6 +6065,9 @@ class Neo4jProvider(IGraphDBProvider):
                     "to_id": connector_id,
                     "to_collection": CollectionNames.APPS.value,
                     "sourceUserId": user.source_user_id,
+                    # Explicit False, not omission: this is what un-flags a member who
+                    # was first seen as an external collaborator on a shared record.
+                    "isExternalUser": False,
                     "syncState": "NOT_STARTED",
                     "lastSyncUpdate": get_epoch_timestamp_in_ms(),
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -12728,6 +12763,149 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Batch upsert people failed: {str(e)}")
             return False
+
+    async def get_person_by_email(
+        self,
+        email: str,
+        org_id: str | None = None,
+        transaction: str | None = None,
+    ) -> Person | None:
+        """Get a person by email. ``org_id`` narrows the match on editions that
+        tenant-isolate Person nodes; pass None to match on email alone."""
+        try:
+            label = collection_to_label(CollectionNames.PEOPLE.value)
+            org_filter = "AND p.orgId = $org_id" if org_id is not None else ""
+            query = f"""
+            MATCH (p:{label})
+            WHERE p.email = $email
+            {org_filter}
+            RETURN p
+            LIMIT 1
+            """
+            parameters: dict[str, Any] = {"email": email.lower()}
+            if org_id is not None:
+                parameters["org_id"] = org_id
+
+            results = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            if not results:
+                return None
+
+            person_dict = self._neo4j_to_arango_node(
+                dict(results[0]["p"]), CollectionNames.PEOPLE.value
+            )
+            return Person.from_arango_person(person_dict)
+        except Exception as e:
+            self.logger.error(f"❌ Get person by email failed: {str(e)}")
+            return None
+
+    async def upsert_person_by_email(
+        self,
+        person: Person,
+        org_id: str | None = None,
+        transaction: str | None = None,
+    ) -> str | None:
+        """
+        Upsert a Person keyed on email, returning the id of the surviving node.
+
+        Callers must use the returned id rather than ``person.id``: on a match the
+        existing node wins, and its id is what every edge must point at.
+
+        ``org_id`` is a match qualifier, not a field this method owns — editions that
+        tenant-isolate Person nodes pass it so an external collaborator in one tenant
+        cannot adopt another tenant's node. Pass None to match on email alone.
+
+        Never updates on match. A Person written by Salesforce carries real names and
+        a phone number; a connector that knows only an email would otherwise blank them.
+
+        Atomicity depends on the person_email_unique constraint — see
+        _generate_business_key_constraints.
+        """
+        try:
+            label = collection_to_label(CollectionNames.PEOPLE.value)
+            props = self._arango_to_neo4j_node(
+                person.to_arango_person(), CollectionNames.PEOPLE.value
+            )
+            if org_id is not None:
+                props["orgId"] = org_id
+
+            match_pattern = (
+                "{email: $email}" if org_id is None
+                else "{email: $email, orgId: $org_id}"
+            )
+            query = f"""
+            MERGE (p:{label} {match_pattern})
+            ON CREATE SET p = $props
+            RETURN p.id AS id
+            """
+            parameters: dict[str, Any] = {"email": props["email"], "props": props}
+            if org_id is not None:
+                parameters["org_id"] = org_id
+
+            results = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return results[0]["id"] if results else None
+        except Exception as e:
+            self.logger.error(f"❌ Upsert person by email failed: {str(e)}")
+            return None
+
+    async def ensure_app_membership(
+        self,
+        principal_id: str,
+        principal_collection: str,
+        connector_id: str,
+        *,
+        is_external: bool,
+        source_user_id: str | None = None,
+        transaction: str | None = None,
+    ) -> None:
+        """
+        Ensure a principal (user or person) has a membership edge to an app.
+
+        Create-only. An existing edge is left untouched, so this can never downgrade
+        a real member to an external collaborator, and re-running it over an
+        already-synced app is a no-op.
+
+        Deliberately not routed through batch_create_edges: that helper does
+        ``SET r = edge.props``, which would overwrite an existing edge's flag.
+        """
+        try:
+            now = get_epoch_timestamp_in_ms()
+            props = {
+                "isExternalUser": is_external,
+                "syncState": "NOT_STARTED",
+                "lastSyncUpdate": now,
+                "createdAtTimestamp": now,
+                "updatedAtTimestamp": now,
+            }
+            if source_user_id is not None:
+                props["sourceUserId"] = source_user_id
+
+            principal_label = collection_to_label(principal_collection)
+            app_label = collection_to_label(CollectionNames.APPS.value)
+            relationship = edge_collection_to_relationship(
+                CollectionNames.USER_APP_RELATION.value
+            )
+            query = f"""
+            MATCH (principal:{principal_label} {{id: $principal_id}})
+            MATCH (app:{app_label} {{id: $connector_id}})
+            MERGE (principal)-[r:{relationship}]->(app)
+            ON CREATE SET r = $props
+            """
+            await self.client.execute_query(
+                query,
+                parameters={
+                    "principal_id": principal_id,
+                    "connector_id": connector_id,
+                    "props": props,
+                },
+                txn_id=transaction,
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Ensure app membership failed: {str(e)}")
+            raise
 
     async def check_connector_name_exists(
         self,

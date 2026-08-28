@@ -980,24 +980,30 @@ class TestHandleRecordPermissions:
         tx_store.batch_create_edges.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_user_permission_unknown_user_skipped(self):
-        """External user without record in DB is skipped."""
+    async def test_user_permission_unknown_user_becomes_person(self):
+        """An email with no user in the DB is an external collaborator: a Person is
+        created for it and the grant is recorded, rather than being dropped."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
 
         record = _make_record()
         record.id = "rec-1"
 
-        permission = MagicMock()
-        permission.entity_type = EntityType.USER.value
-        permission.email = "external@example.com"
-        permission.external_id = None
+        permission = Permission(
+            type=PermissionType.READ,
+            entity_type=EntityType.USER.value,
+            email="external@example.com",
+        )
 
         await proc._handle_record_permissions(record, [permission], tx_store)
 
-        # No edges created for unknown user
-        tx_store.batch_create_edges.assert_not_awaited()
+        tx_store.batch_create_edges.assert_awaited()
+        edges = tx_store.batch_create_edges.await_args.args[0]
+        assert edges[0]["from_id"] == "person-1"
+        assert edges[0]["from_collection"] == CollectionNames.PEOPLE.value
 
     @pytest.mark.asyncio
     async def test_group_permission(self):
@@ -1877,23 +1883,25 @@ class TestOnNewAppRoles:
 # ===========================================================================
 
 
-class TestUpsertExternalPerson:
+class TestResolvePrincipal:
     @pytest.mark.asyncio
-    async def test_returns_person_id(self):
+    async def test_returns_surviving_person_id(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
 
-        result = await proc._upsert_external_person("ext@test.com", tx_store)
-        assert result is not None
-        tx_store.batch_upsert_people.assert_awaited()
+        result = await proc._resolve_principal("ext@test.com", tx_store)
+        assert result == ("person-1", CollectionNames.PEOPLE.value)
 
     @pytest.mark.asyncio
     async def test_returns_none_on_error(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
-        tx_store.batch_upsert_people.side_effect = Exception("db fail")
+        tx_store.get_user_by_email.side_effect = Exception("db fail")
 
-        result = await proc._upsert_external_person("ext@test.com", tx_store)
+        result = await proc._resolve_principal("ext@test.com", tx_store)
         assert result is None
 
 

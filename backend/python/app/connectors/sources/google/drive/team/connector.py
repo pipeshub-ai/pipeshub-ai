@@ -298,6 +298,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         # per-user and lives alongside the user being synced.
         self._synced_drive_ids: set = set()
 
+        # Collaborators granted access to a file but outside this Workspace domain.
+        # Accumulated across the run and flushed once at the end, so an email repeated
+        # across thousands of files costs one membership write.
+        self._external_emails: set[str] = set()
+
         # Google clients and data sources (initialized in init())
         self.admin_client: Optional[GoogleClient] = None
         self.drive_client: Optional[GoogleClient] = None
@@ -435,6 +440,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._blocked_folder_ids = set()
             self._tracked_folder_ids = set(self._folder_seed_ids)
             self._synced_drive_ids = set()
+            self._external_emails = set()
             if self._folder_seed_ids:
                 self.logger.info(
                     f"📁 Folder filter active with {len(self._folder_seed_ids)} seed folder(s)"
@@ -467,6 +473,11 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.info("Processing user drives in batches...")
             # Use users synced in Step 1
             await self._process_users_in_batches(self.synced_users)
+
+            # Step 6: Grant external collaborators app membership. Runs last because it
+            # resolves principals rather than creating them, so every permission edge
+            # from step 5 must already be committed.
+            await self._flush_external_app_users()
 
             self.logger.info("Google Drive enterprise connector sync completed successfully")
 
@@ -583,6 +594,44 @@ class GoogleDriveTeamConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error syncing users: {e}", exc_info=True)
             raise
+
+    def _track_external_collaborator(self, entity_type: EntityType, email: Optional[str]) -> None:
+        """Note a user grant whose email is outside this Workspace domain.
+
+        Guarded on a non-empty membership set: an empty one means user sync produced
+        nothing, and treating the whole domain as external would flag every member.
+        """
+        if entity_type != EntityType.USER or not email:
+            return
+        if not self.synced_user_emails:
+            return
+        normalized = email.lower()
+        if normalized not in self.synced_user_emails:
+            self._external_emails.add(normalized)
+
+    async def _flush_external_app_users(self) -> None:
+        """Hand accumulated external collaborators to the processor for app membership.
+
+        Non-fatal: a sync that indexed every record should not be reported as failed
+        because a visibility edge could not be written. The next run re-derives the set
+        from source permissions and retries.
+        """
+        if not self._external_emails:
+            return
+
+        emails = sorted(self._external_emails)
+        try:
+            await self.data_entities_processor.on_external_app_users(
+                emails, self.connector_id
+            )
+            self.logger.info(
+                "✅ Granted app membership to %d external collaborator(s)", len(emails)
+            )
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to grant app membership to external collaborators: {e}",
+                exc_info=True,
+            )
 
     async def _sync_user_groups(self) -> None:
         """Sync user groups and their members from Google Workspace Admin API."""
@@ -897,6 +946,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                             entity_type=entity_type
                         )
                         permissions.append(permission)
+
+                        self._track_external_collaborator(entity_type, email)
 
                         # A "file"-type entry means this user was granted access directly on this
                         # item, as opposed to inheriting it via Shared Drive membership ("member").

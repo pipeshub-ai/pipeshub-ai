@@ -289,6 +289,9 @@ class TestAbstractMethodInventory:
         "get_user_group_by_external_id",
         "get_user_groups",
         "batch_upsert_people",
+        "get_person_by_email",
+        "upsert_person_by_email",
+        "ensure_app_membership",
         "get_app_role_by_external_id",
         "get_app_creator_user",
         # Organization operations

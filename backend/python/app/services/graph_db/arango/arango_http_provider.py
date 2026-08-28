@@ -584,10 +584,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Ensure existing graph edge definitions include all declared vertex collections.
 
         For each edge definition in EDGE_DEFINITIONS, compare the declared
-        ``to_vertex_collections`` with those already registered in the graph.
-        If the declared set has new entries, replace the edge definition via
-        the ArangoDB Gharial API so that new vertex collections (e.g. artifacts)
-        can participate in existing edges.
+        ``from_vertex_collections`` and ``to_vertex_collections`` with those
+        already registered in the graph. If either declared set has new entries,
+        replace the edge definition via the ArangoDB Gharial API so that new
+        vertex collections (e.g. artifacts, people) can participate in existing
+        edges.
+
+        Both directions matter: comparing only ``to`` silently strands every
+        ``from`` addition on already-provisioned databases.
         """
         try:
             graph_info = await self.http_client.get_graph(graph_name)
@@ -605,14 +609,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     continue
                 desired_to = set(desired.get("to_vertex_collections", []))
                 existing_to = set(existing.get("to", []))
-                if desired_to.issubset(existing_to):
+                desired_from = set(desired.get("from_vertex_collections", []))
+                existing_from = set(existing.get("from", []))
+                if desired_to.issubset(existing_to) and desired_from.issubset(existing_from):
                     continue
 
                 merged_to = sorted(existing_to | desired_to)
-                merged_from = sorted(
-                    set(existing.get("from", []))
-                    | set(desired.get("from_vertex_collections", []))
-                )
+                merged_from = sorted(existing_from | desired_from)
                 url = (
                     f"{self.http_client.base_url}/_db/{self.http_client.database}"
                     f"/_api/gharial/{graph_name}/edge/{edge_col}"
@@ -622,7 +625,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 async with session.put(url, json=payload) as resp:
                     if resp.status in (200, 201, 202):
                         self.logger.debug(
-                            "Updated edge definition '%s': to=%s", edge_col, merged_to,
+                            "Updated edge definition '%s': from=%s to=%s",
+                            edge_col, merged_from, merged_to,
                         )
                     else:
                         body = await resp.text()
@@ -785,6 +789,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.AGENT_SKILL_CANDIDATES.value,
             ["orgId"],
+        )
+
+        # ==================== PEOPLE INDEXES ====================
+
+        # UNIQUE: email — the business key for a Person, and load-bearing rather than
+        # merely defensive. upsert_person_by_email is a read-then-write UPSERT, which
+        # ArangoDB does not make atomic on its own; concurrent syncs resolving the same
+        # external collaborator would each insert without this index to serialise them.
+        # Returns False (logged, non-fatal) on a collection that already holds
+        # duplicates — dedupe those before the guarantee applies.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.PEOPLE.value,
+            ["email"],
+            unique=True,
         )
 
     async def _ensure_departments_seed(self) -> None:
@@ -5169,6 +5187,133 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Error upserting people: {e}")
             raise
 
+    async def get_person_by_email(
+        self,
+        email: str,
+        org_id: str | None = None,
+        transaction: str | None = None,
+    ) -> Person | None:
+        """Get a person by email. ``org_id`` narrows the match on editions that
+        tenant-isolate Person nodes; pass None to match on email alone."""
+        try:
+            org_filter = "AND doc.orgId == @org_id" if org_id is not None else ""
+            query = f"""
+            FOR doc IN {CollectionNames.PEOPLE.value}
+                FILTER doc.email == @email
+                {org_filter}
+                LIMIT 1
+                RETURN doc
+            """
+            bind_vars: dict[str, Any] = {"email": email.lower()}
+            if org_id is not None:
+                bind_vars["org_id"] = org_id
+
+            results = await self.http_client.execute_aql(
+                query, bind_vars=bind_vars, txn_id=transaction
+            )
+            return Person.from_arango_person(results[0]) if results else None
+        except Exception as e:
+            self.logger.error(f"❌ Get person by email failed: {str(e)}")
+            return None
+
+    async def upsert_person_by_email(
+        self,
+        person: Person,
+        org_id: str | None = None,
+        transaction: str | None = None,
+    ) -> str | None:
+        """
+        Upsert a Person keyed on email, returning the id of the surviving node.
+
+        Callers must use the returned id rather than ``person.id``: on a match the
+        existing node wins, and its id is what every edge must point at.
+
+        ``org_id`` is a match qualifier, not a field this method owns — editions that
+        tenant-isolate Person nodes pass it so an external collaborator in one tenant
+        cannot adopt another tenant's node. Pass None to match on email alone.
+
+        Never updates on match. A Person written by Salesforce carries real names and
+        a phone number; a connector that knows only an email would otherwise blank them.
+        """
+        try:
+            doc = person.to_arango_person()
+            bind_vars: dict[str, Any] = {
+                "email": doc["email"],
+                "doc": doc,
+                "@collection": CollectionNames.PEOPLE.value,
+            }
+            search = "{ email: @email }"
+            if org_id is not None:
+                doc["orgId"] = org_id
+                bind_vars["org_id"] = org_id
+                search = "{ email: @email, orgId: @org_id }"
+
+            query = f"""
+            UPSERT {search}
+            INSERT @doc
+            UPDATE {{}}
+            IN @@collection
+            RETURN NEW._key
+            """
+            results = await self.http_client.execute_aql(
+                query, bind_vars=bind_vars, txn_id=transaction
+            )
+            return results[0] if results else None
+        except Exception as e:
+            self.logger.error(f"❌ Upsert person by email failed: {str(e)}")
+            return None
+
+    async def ensure_app_membership(
+        self,
+        principal_id: str,
+        principal_collection: str,
+        connector_id: str,
+        *,
+        is_external: bool,
+        source_user_id: str | None = None,
+        transaction: str | None = None,
+    ) -> None:
+        """
+        Ensure a principal (user or person) has a membership edge to an app.
+
+        Create-only. An existing edge is left untouched, so this can never downgrade
+        a real member to an external collaborator, and re-running it over an
+        already-synced app is a no-op.
+        """
+        try:
+            now = get_epoch_timestamp_in_ms()
+            doc = {
+                "_from": f"{principal_collection}/{principal_id}",
+                "_to": f"{CollectionNames.APPS.value}/{connector_id}",
+                "isExternalUser": is_external,
+                "syncState": "NOT_STARTED",
+                "lastSyncUpdate": now,
+                "createdAtTimestamp": now,
+                "updatedAtTimestamp": now,
+            }
+            if source_user_id is not None:
+                doc["sourceUserId"] = source_user_id
+
+            query = """
+            UPSERT { _from: @from_id, _to: @to_id }
+            INSERT @doc
+            UPDATE {}
+            IN @@collection
+            """
+            await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "from_id": doc["_from"],
+                    "to_id": doc["_to"],
+                    "doc": doc,
+                    "@collection": CollectionNames.USER_APP_RELATION.value,
+                },
+                txn_id=transaction,
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Ensure app membership failed: {str(e)}")
+            raise
+
     async def get_app_role_by_external_id(
         self,
         connector_id: str,
@@ -6645,6 +6790,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "_from": f"{CollectionNames.USERS.value}/{user_key}",
                     "_to": app_id,
                     "sourceUserId": user.source_user_id,
+                    # Explicit False, not omission: this is what un-flags a member who
+                    # was first seen as an external collaborator on a shared record.
+                    "isExternalUser": False,
                     "syncState": "NOT_STARTED",
                     "lastSyncUpdate": get_epoch_timestamp_in_ms(),
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -7095,9 +7243,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if results:
                 return results[0]
 
-            query = """
+            query = f"""
             FOR doc IN {CollectionNames.PEOPLE.value}
-                FILTER doc.email == @email
+                FILTER doc.email == LOWER(@email)
                 LIMIT 1
                 RETURN doc._key
             """

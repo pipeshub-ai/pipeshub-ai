@@ -307,6 +307,30 @@ class GraphTransactionStore(TransactionStore):
     async def batch_upsert_people(self, people: list[Person]) -> None:
         return await self.graph_provider.batch_upsert_people(people, transaction=self.txn)
 
+    async def get_person_by_email(self, email: str) -> Optional[Person]:
+        return await self.graph_provider.get_person_by_email(email, transaction=self.txn)
+
+    async def upsert_person_by_email(self, person: Person) -> Optional[str]:
+        return await self.graph_provider.upsert_person_by_email(person, transaction=self.txn)
+
+    async def ensure_app_membership(
+        self,
+        principal_id: str,
+        principal_collection: str,
+        connector_id: str,
+        *,
+        is_external: bool,
+        source_user_id: str | None = None,
+    ) -> None:
+        return await self.graph_provider.ensure_app_membership(
+            principal_id,
+            principal_collection,
+            connector_id,
+            is_external=is_external,
+            source_user_id=source_user_id,
+            transaction=self.txn,
+        )
+
     async def create_user_group_hierarchy(
         self,
         child_external_id: str,
