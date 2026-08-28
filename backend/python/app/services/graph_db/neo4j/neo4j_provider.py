@@ -14911,19 +14911,40 @@ class Neo4jProvider(IGraphDBProvider):
           - Root-level = no incoming PARENT_CHILD edge (from recordRelations)
         For other (external connector) apps:
           - Children are RecordGroups linked via BELONGS_TO
+
+        Plus two branches for external collaborators only (``uar.isExternalUser``).
+        Browse walks *down* from the App, so a record shared directly with someone who
+        has no permission on its container is unreachable — they could only find it via
+        search. Blocks 3 and 4 hoist exactly those orphans to app level.
+
+        The rule both use: hoist N iff the user has permission on N and cannot see any
+        immediate parent of N. Browse is one level at a time, so that is sufficient and
+        needs no recursion — and it is also what prevents duplicates, since a record
+        whose parent *is* visible is already reachable by drilling in.
         """
         record_permission_role_cypher = self._get_permission_role_cypher("record", "record", "u")
         rg_permission_role_cypher = self._get_permission_role_cypher("recordGroup", "rg", "u")
+        # Parent-visibility probes. Distinct node variables so the generated blocks
+        # cannot collide with the candidate variable in the same scope.
+        parent_record_perm_cypher = self._get_permission_role_cypher("record", "parent_record", "u")
+        parent_group_perm_cypher = self._get_permission_role_cypher("recordGroup", "parent_group", "u")
+        orphan_record_perm_cypher = self._get_permission_role_cypher("record", "orphan_record", "u")
+        orphan_group_perm_cypher = self._get_permission_role_cypher("recordGroup", "orphan_group", "u")
 
         return f"""
         MATCH (app:App {{id: $parent_id}})
         MATCH (u:User {{id: $user_key}})
 
-        WITH app, u, $parent_id AS parent_id, (app.type = 'KB') AS is_kb_app
+        // One property read for everyone. Users without the flag fail the gate in
+        // blocks 3 and 4 immediately and execute neither.
+        OPTIONAL MATCH (u)-[uar:USER_APP_RELATION]->(app)
+
+        WITH app, u, $parent_id AS parent_id, (app.type = 'KB') AS is_kb_app,
+             coalesce(uar.isExternalUser, false) AS is_external_user
 
         // ---- KB app: return root-level records/folders ----
         CALL {{
-            WITH app, u, parent_id, is_kb_app
+            WITH app, u, parent_id, is_kb_app, is_external_user
             WITH app, u, parent_id, is_kb_app WHERE is_kb_app
 
             // Root records are those without an incoming PARENT_CHILD edge
@@ -14967,7 +14988,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         // ---- Non-KB app: return RecordGroups ----
         CALL {{
-            WITH app, u, parent_id, is_kb_app
+            WITH app, u, parent_id, is_kb_app, is_external_user
             WITH app, u, parent_id, is_kb_app WHERE NOT is_kb_app
 
             OPTIONAL MATCH (rg:RecordGroup)-[:BELONGS_TO]->(app)
@@ -15008,7 +15029,171 @@ class Neo4jProvider(IGraphDBProvider):
             }}) AS connector_children
         }}
 
-        WITH coalesce(kb_children, []) + coalesce(connector_children, []) AS raw_children
+        // ---- External collaborator: hoist orphaned Records to app level ----
+        CALL {{
+            WITH app, u, parent_id, is_kb_app, is_external_user
+            WITH app, u, parent_id WHERE is_external_user AND NOT is_kb_app
+
+            // Candidates are only what was explicitly shared with this person: direct
+            // grants plus grants via a group/role/team. Org-wide grants are excluded on
+            // purpose - they apply to everyone and would flood the view.
+            OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(direct_rec:Record)
+            WHERE direct_rec.connectorId = app.id
+            OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(principal)-[:PERMISSION]->(shared_rec:Record)
+            WHERE (principal:Group OR principal:Role OR principal:Teams)
+              AND shared_rec.connectorId = app.id
+            WITH app, u, parent_id,
+                 collect(DISTINCT direct_rec) + collect(DISTINCT shared_rec) AS candidates
+            UNWIND candidates AS orphan_record
+            WITH DISTINCT app, u, parent_id, orphan_record
+            WHERE coalesce(orphan_record.isDeleted, false) = false
+
+            // Immediate parents, in both directions: a parent folder is found by
+            // following RECORD_RELATION *backwards*, a record group by following
+            // BELONGS_TO *forwards*. Hence two lookups, collected so a record filed
+            // under several groups is judged on all of them.
+            OPTIONAL MATCH (parent_rec:Record)-[:RECORD_RELATION {{relationshipType: 'PARENT_CHILD'}}]->(orphan_record)
+            OPTIONAL MATCH (orphan_record)-[:BELONGS_TO]->(parent_rg:RecordGroup)
+            WITH app, u, parent_id, orphan_record,
+                 collect(DISTINCT parent_rec) AS parent_recs,
+                 collect(DISTINCT parent_rg) AS parent_rgs
+            // Never hoist a container-less node. This also excludes top-level nodes,
+            // which branch 2 already owns.
+            WHERE size(parent_recs) > 0 OR size(parent_rgs) > 0
+
+            // _get_permission_role_cypher ends in LIMIT 1 and yields ZERO rows when the
+            // user has no permission, and a zero-row CALL deletes the outer row. Used
+            // directly to test for *absence* it would silently drop every candidate whose
+            // parent is invisible - the exact opposite of the intent. Wrapping it so the
+            // block ends in an aggregation with no grouping key is what preserves the
+            // row: that always yields exactly one row, an empty list when there is no
+            // permission.
+            CALL {{
+                WITH u, parent_recs
+                UNWIND parent_recs AS parent_record
+                {parent_record_perm_cypher}
+                RETURN collect(permission_role) AS visible_parent_records
+            }}
+            CALL {{
+                WITH u, parent_rgs
+                UNWIND parent_rgs AS parent_group
+                {parent_group_perm_cypher}
+                RETURN collect(permission_role) AS visible_parent_groups
+            }}
+
+            // Keep only the orphans: if any parent is visible the user reaches this
+            // record by drilling into that parent, and hoisting it would duplicate it.
+            WITH app, u, parent_id, orphan_record, visible_parent_records, visible_parent_groups
+            WHERE size(visible_parent_records) = 0 AND size(visible_parent_groups) = 0
+
+            {orphan_record_perm_cypher}
+
+            WITH app, parent_id, orphan_record, permission_role
+            WHERE permission_role IS NOT NULL AND permission_role <> ''
+
+            OPTIONAL MATCH (orphan_record)-[:IS_OF_TYPE]->(file_info:File)
+            OPTIONAL MATCH (orphan_record)-[:RECORD_RELATION {{relationshipType: 'PARENT_CHILD'}}]->(child:Record)
+            WITH parent_id, orphan_record, permission_role, file_info,
+                 count(DISTINCT child) > 0 AS has_children
+
+            RETURN collect({{
+                id: orphan_record.id,
+                name: orphan_record.recordName,
+                nodeType: CASE WHEN file_info IS NOT NULL AND file_info.isFile = false THEN 'folder' ELSE 'record' END,
+                parentId: 'apps/' + parent_id,
+                origin: 'CONNECTOR',
+                connector: orphan_record.connectorName,
+                connectorId: orphan_record.connectorId,
+                externalGroupId: orphan_record.externalGroupId,
+                recordType: orphan_record.recordType,
+                recordGroupType: null,
+                indexingStatus: orphan_record.indexingStatus,
+                reason: orphan_record.reason,
+                createdAt: coalesce(orphan_record.sourceCreatedAtTimestamp, orphan_record.createdAtTimestamp, 0),
+                updatedAt: coalesce(orphan_record.sourceLastModifiedTimestamp, orphan_record.updatedAtTimestamp, 0),
+                sizeInBytes: coalesce(orphan_record.sizeInBytes, file_info.fileSizeInBytes),
+                mimeType: orphan_record.mimeType,
+                extension: file_info.extension,
+                webUrl: orphan_record.webUrl,
+                hasChildren: has_children,
+                previewRenderable: coalesce(orphan_record.previewRenderable, true),
+                userRole: permission_role,
+                sharingStatus: null,
+                isInternal: coalesce(orphan_record.isInternal, false),
+                isPlaceholder: coalesce(orphan_record.isPlaceholder, false)
+            }}) AS hoisted_records
+        }}
+
+        // ---- External collaborator: hoist orphaned RecordGroups to app level ----
+        // Needed because on_new_record_groups only creates the RG->App edge when the RG
+        // has no parent RG, so a nested RG's BELONGS_TO points at its parent and branch 2
+        // never returns it. Real today in SharePoint (drives nested under sites).
+        CALL {{
+            WITH app, u, parent_id, is_kb_app, is_external_user
+            WITH app, u, parent_id WHERE is_external_user AND NOT is_kb_app
+
+            OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(direct_rg:RecordGroup)
+            WHERE direct_rg.connectorId = app.id
+            OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(rg_principal)-[:PERMISSION]->(shared_rg:RecordGroup)
+            WHERE (rg_principal:Group OR rg_principal:Role OR rg_principal:Teams)
+              AND shared_rg.connectorId = app.id
+            WITH app, u, parent_id,
+                 collect(DISTINCT direct_rg) + collect(DISTINCT shared_rg) AS rg_candidates
+            UNWIND rg_candidates AS orphan_group
+            WITH DISTINCT app, u, parent_id, orphan_group
+            WHERE coalesce(orphan_group.isDeleted, false) = false
+
+            OPTIONAL MATCH (orphan_group)-[:BELONGS_TO]->(parent_rg:RecordGroup)
+            WITH app, u, parent_id, orphan_group, collect(DISTINCT parent_rg) AS parent_rgs
+            // A top-level RG has no parent RG and belongs to branch 2, not here.
+            WHERE size(parent_rgs) > 0
+
+            // Same zero-row wrapper as block 3 - see the note there.
+            CALL {{
+                WITH u, parent_rgs
+                UNWIND parent_rgs AS parent_group
+                {parent_group_perm_cypher}
+                RETURN collect(permission_role) AS visible_parent_groups
+            }}
+
+            WITH app, u, parent_id, orphan_group, visible_parent_groups
+            WHERE size(visible_parent_groups) = 0
+
+            {orphan_group_perm_cypher}
+
+            WITH app, parent_id, orphan_group, permission_role
+            WHERE permission_role IS NOT NULL AND permission_role <> ''
+
+            OPTIONAL MATCH (orphan_group)<-[:BELONGS_TO]-(child_rg:RecordGroup)
+            OPTIONAL MATCH (orphan_group)<-[:BELONGS_TO]-(child_record:Record)
+            WITH parent_id, orphan_group, permission_role,
+                 count(DISTINCT child_rg) > 0 OR count(DISTINCT child_record) > 0 AS has_children
+
+            RETURN collect({{
+                id: orphan_group.id,
+                name: orphan_group.groupName,
+                nodeType: 'recordGroup',
+                parentId: 'apps/' + parent_id,
+                origin: 'CONNECTOR',
+                connector: orphan_group.connectorName,
+                recordType: null,
+                recordGroupType: orphan_group.groupType,
+                indexingStatus: null,
+                createdAt: coalesce(orphan_group.sourceCreatedAtTimestamp, orphan_group.createdAtTimestamp, 0),
+                updatedAt: coalesce(orphan_group.sourceLastModifiedTimestamp, orphan_group.updatedAtTimestamp, 0),
+                sizeInBytes: null,
+                mimeType: null,
+                extension: null,
+                webUrl: orphan_group.webUrl,
+                hasChildren: has_children,
+                userRole: permission_role,
+                sharingStatus: null,
+                isInternal: coalesce(orphan_group.isInternal, false)
+            }}) AS hoisted_groups
+        }}
+
+        WITH coalesce(kb_children, []) + coalesce(connector_children, [])
+             + coalesce(hoisted_records, []) + coalesce(hoisted_groups, []) AS raw_children
         RETURN raw_children
         """
 

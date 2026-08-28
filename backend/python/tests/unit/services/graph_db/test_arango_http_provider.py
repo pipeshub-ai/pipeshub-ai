@@ -15206,6 +15206,61 @@ class TestGetAppChildrenSubquery:
         sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
         assert "reason: record.reason" in sub_query
 
+    def test_external_hoisting_is_gated(self, connected_provider):
+        """Both hoisting arms must be behind the isExternalUser flag: an internal user
+        with 50k direct permission edges must not pay for candidate collection."""
+        sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
+        assert sub_query.count("!is_external_user ? [] :") == 2
+        assert "rel.isExternalUser == true" in sub_query
+
+    def test_hoisting_arms_are_bound_before_union(self, connected_provider):
+        """UNION must receive plain variables. Passing subqueries (let alone ternaries
+        wrapping subqueries) as function arguments is a shape this file does not
+        otherwise rely on."""
+        sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
+        assert "UNION(connector_rgs, hoisted_records, hoisted_groups)" in sub_query
+
+    def test_permission_role_never_redeclared_in_one_scope(self, connected_provider):
+        """AQL rejects two `LET permission_role` in the same scope, and the hoisting
+        arms need several permission lookups each. Every one must sit inside its own
+        subquery -- this walks the parens rather than trusting indentation."""
+        sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
+
+        stack, scopes, i = [], [], 0
+        while i < len(sub_query):
+            ch = sub_query[i]
+            if ch == "(":
+                stack.append(i)
+            elif ch == ")":
+                if stack:
+                    stack.pop()
+            elif sub_query.startswith("LET permission_role =", i):
+                scopes.append(stack[-1] if stack else None)
+                i += 20
+                continue
+            i += 1
+
+        assert len(scopes) > 1, "expected several permission lookups"
+        assert len(set(scopes)) == len(scopes), "permission_role redeclared in one scope"
+
+    def test_orphan_records_check_both_parent_directions(self, connected_provider):
+        """A parent folder is found by walking recordRelations backwards; a record group
+        by walking belongsTo forwards. Checking only one direction hoists records that
+        are already reachable, duplicating them."""
+        sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
+        assert "FILTER rel._to == orphan_record._id" in sub_query
+        assert "FILTER be._from == orphan_record._id" in sub_query
+        assert (
+            "FILTER LENGTH(visible_parent_recs) == 0 AND LENGTH(visible_parent_rgs) == 0"
+            in sub_query
+        )
+
+    def test_orphan_groups_skip_top_level(self, connected_provider):
+        """A top-level RG has no parent RG and is branch 1's job; hoisting it too would
+        return it twice."""
+        sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
+        assert "FILTER LENGTH(rg_parents) > 0" in sub_query
+
 
 # ---------------------------------------------------------------------------
 # _get_record_group_children_split

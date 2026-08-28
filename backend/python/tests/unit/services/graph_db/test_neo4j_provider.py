@@ -4232,3 +4232,69 @@ class TestDeleteSingleRecord:
         mock_begin.assert_not_awaited()
         mock_commit.assert_not_awaited()
 
+
+
+class TestAppChildrenExternalHoisting:
+    """Blocks 3 and 4 of _get_app_children_cypher -- surfacing records shared directly
+    with an external collaborator whose container they cannot see."""
+
+    @pytest.fixture
+    def cypher(self):
+        from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+        return object.__new__(Neo4jProvider)._get_app_children_cypher()
+
+    def test_gated_on_is_external_user(self, cypher):
+        """An unflagged user must fail the gate immediately -- an internal user can hold
+        50k direct permission edges and must not pay to collect them as candidates."""
+        assert "coalesce(uar.isExternalUser, false) AS is_external_user" in cypher
+        assert cypher.count("WHERE is_external_user AND NOT is_kb_app") == 2
+
+    def test_parent_probe_is_wrapped_in_an_aggregation(self, cypher):
+        """_get_permission_role_cypher ends in LIMIT 1 and yields zero rows when there is
+        no permission, and a zero-row CALL deletes the outer row. Testing for absence
+        with it unwrapped drops exactly the candidates that should be hoisted -- the
+        precise inversion of the feature. The collect() wrapper is what preserves the
+        row, so this assertion is load-bearing."""
+        assert cypher.count("RETURN collect(permission_role) AS visible_parent_records") == 1
+        assert cypher.count("RETURN collect(permission_role) AS visible_parent_groups") == 2
+
+    def test_hoists_only_when_no_parent_is_visible(self, cypher):
+        """If any parent is visible the user reaches the node by drilling in, so hoisting
+        it as well would show it twice."""
+        assert (
+            "WHERE size(visible_parent_records) = 0 AND size(visible_parent_groups) = 0"
+            in cypher
+        )
+
+    def test_both_parent_directions_are_followed(self, cypher):
+        """Parent folder: RECORD_RELATION backwards. Record group: BELONGS_TO forwards."""
+        assert (
+            "OPTIONAL MATCH (parent_rec:Record)-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(orphan_record)"
+            in cypher
+        )
+        assert "OPTIONAL MATCH (orphan_record)-[:BELONGS_TO]->(parent_rg:RecordGroup)" in cypher
+
+    def test_container_less_and_top_level_nodes_are_skipped(self, cypher):
+        """Branch 2 already returns top-level record groups."""
+        assert "WHERE size(parent_recs) > 0 OR size(parent_rgs) > 0" in cypher
+        assert "WHERE size(parent_rgs) > 0" in cypher
+
+    def test_candidates_include_group_role_team_grants(self, cypher):
+        """Access via a group must count, or the reaper and this branch disagree about
+        who is reachable."""
+        assert "(principal:Group OR principal:Role OR principal:Teams)" in cypher
+        assert "(rg_principal:Group OR rg_principal:Role OR rg_principal:Teams)" in cypher
+
+    def test_org_wide_grants_are_excluded_from_candidates(self, cypher):
+        """Org-level grants apply org-wide and would flood the view, so they must not
+        *select* candidates. They still count when grading the user's role on a
+        candidate, which is why this looks only at the collection step and not at the
+        permission helper that follows it."""
+        collection_step = cypher.split("hoist orphaned Records")[1].split("AS candidates")[0]
+        assert "Organization" not in collection_step
+        assert collection_step.count("OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->") == 2
+
+    def test_results_are_merged_into_raw_children(self, cypher):
+        assert "coalesce(hoisted_records, [])" in cypher
+        assert "coalesce(hoisted_groups, [])" in cypher
