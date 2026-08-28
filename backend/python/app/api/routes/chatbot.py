@@ -428,18 +428,27 @@ async def _rollback_attachment_records(
     Blobs are not reachable from here -- `BlobStorage` exposes no delete, so the
     normal delete path leaks them too.
 
+    Each collection is attempted independently so a failure on one still cleans
+    the other. Both go through `delete_nodes_and_edges` rather than the cheaper
+    `delete_nodes` the delete route uses for FILES: that route only reaches FILES
+    once RECORDS cleanup has already taken the isOfType edge, whereas here FILES
+    can be deleted while the edge is still live, and on Arango `delete_nodes`
+    leaves edges behind (on Neo4j both are the same DETACH DELETE).
+
     Best-effort: a failure here must not replace the error that triggered it.
     """
     if not record_ids:
         return
-    try:
-        await graph_provider.delete_nodes_and_edges(record_ids, CollectionNames.RECORDS.value)
-        await graph_provider.delete_nodes(record_ids, CollectionNames.FILES.value)
-    except Exception:
-        logger.exception(
-            "Failed to roll back partially uploaded attachments; records may be orphaned: %s",
-            record_ids,
-        )
+    for collection in (CollectionNames.RECORDS.value, CollectionNames.FILES.value):
+        try:
+            await graph_provider.delete_nodes_and_edges(record_ids, collection)
+        except Exception:
+            logger.exception(
+                "Failed to roll back partially uploaded attachments from %s; "
+                "records may be orphaned: %s",
+                collection,
+                record_ids,
+            )
 
 
 @router.post("/chat/attachments/upload", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])

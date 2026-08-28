@@ -356,8 +356,43 @@ async def test_failed_sink_rolls_back_the_records_it_already_wrote():
         with pytest.raises(RuntimeError, match="sink exploded"):
             await upload_chat_attachments(req, gp, AsyncMock())
 
-    gp.delete_nodes_and_edges.assert_awaited_once()
-    gp.delete_nodes.assert_awaited_once()
-    # Same record key removed from both collections.
-    assert gp.delete_nodes_and_edges.await_args.args[0] == gp.delete_nodes.await_args.args[0]
-    assert len(gp.delete_nodes_and_edges.await_args.args[0]) == 1
+    # Both collections cleaned, each with the same single record key. FILES goes
+    # through delete_nodes_and_edges too, so Arango drops the isOfType edge.
+    collections = [c.args[1] for c in gp.delete_nodes_and_edges.await_args_list]
+    assert collections == ["records", "files"]
+    keys = {tuple(c.args[0]) for c in gp.delete_nodes_and_edges.await_args_list}
+    assert len(keys) == 1 and len(next(iter(keys))) == 1
+    gp.delete_nodes.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_files_cleanup_still_runs_when_records_cleanup_fails():
+    """A raise on the RECORDS delete must not skip the FILES delete.
+
+    Each collection gets its own attempt, so half a rollback is still better
+    than none, and the original upload error is what reaches the caller.
+    """
+    from app.api.routes.chatbot import _rollback_attachment_records
+
+    gp = AsyncMock()
+    gp.delete_nodes_and_edges = AsyncMock(
+        side_effect=[RuntimeError("records delete failed"), None]
+    )
+
+    await _rollback_attachment_records(gp, ["rec-1"])
+
+    collections = [c.args[1] for c in gp.delete_nodes_and_edges.await_args_list]
+    assert collections == ["records", "files"]
+
+
+@pytest.mark.asyncio
+async def test_rollback_never_raises_over_the_original_error():
+    """Both cleanups failing must still return, so `raise` re-surfaces the upload error."""
+    from app.api.routes.chatbot import _rollback_attachment_records
+
+    gp = AsyncMock()
+    gp.delete_nodes_and_edges = AsyncMock(side_effect=RuntimeError("graph is down"))
+
+    await _rollback_attachment_records(gp, ["rec-1"])
+
+    assert gp.delete_nodes_and_edges.await_count == 2

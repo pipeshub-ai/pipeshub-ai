@@ -1210,10 +1210,10 @@ _parse_mem_mb() {
   [[ "$1" =~ ^([0-9]+)[mM]$ ]] && { echo "${BASH_REMATCH[1]}"; return; }
   return 1
 }
-_app_mem_mb="$(_parse_mem_mb "${APP_MEMORY_LIMIT:-12G}")" || _app_mem_mb=""
+_app_mem_mb="$(_parse_mem_mb "${APP_MEMORY_LIMIT:-10G}")" || _app_mem_mb=""
 _app_memswap_mb="$(_parse_mem_mb "${APP_MEMSWAP_LIMIT:-16G}")" || _app_memswap_mb=""
 if [[ -n "$_app_mem_mb" && -n "$_app_memswap_mb" ]] && (( _app_memswap_mb < _app_mem_mb )); then
-  die "APP_MEMSWAP_LIMIT (${APP_MEMSWAP_LIMIT:-16G}) must be >= APP_MEMORY_LIMIT (${APP_MEMORY_LIMIT:-12G}). Raise APP_MEMSWAP_LIMIT in .env (or raise both together) before launching."
+  die "APP_MEMSWAP_LIMIT (${APP_MEMSWAP_LIMIT:-16G}) must be >= APP_MEMORY_LIMIT (${APP_MEMORY_LIMIT:-10G}). Raise APP_MEMSWAP_LIMIT in .env (or raise both together) before launching."
 fi
 
 # Resolve APP_PORT from .env when wizard was skipped (upgrade / reuse)
