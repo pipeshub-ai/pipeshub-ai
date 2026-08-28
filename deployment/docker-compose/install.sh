@@ -1396,6 +1396,7 @@ fi
 # kernel versions to stay accurate.
 MONGO_RSEQ_HEAL_TRIED=false
 MONGO_HEAL_GRACE_SECS=180
+MONGO_RSEQ_PROBE_SECS=12
 
 # The project's mongodb container ids, one per line.
 mongo_container_ids() {
@@ -1446,14 +1447,34 @@ mongo_rseq_crashed() {
   return 1
 }
 
-# Total restarts across this project's mongodb containers. Cheap (one inspect per
-# container, no probing) so the healthy path can call it on every install.
-mongo_restart_count() {
-  local id n total=0
+# Docker's RestartCount is a lifetime counter on the container, so a stack that
+# crash-looped weeks ago and was fixed still reports those restarts on every
+# later run. Snapshot before starting and compare afterwards, so the checks below
+# measure only what happened during this install.
+_MONGO_RESTART_BASELINE=""
+
+snapshot_mongo_restarts() {
+  local id n
+  _MONGO_RESTART_BASELINE=""
   for id in $(mongo_container_ids); do
     n="$(docker inspect "$id" --format '{{.RestartCount}}' 2>/dev/null || echo 0)"
-    total=$(( total + ${n:-0} ))
+    _MONGO_RESTART_BASELINE="${_MONGO_RESTART_BASELINE}${id} ${n:-0}
+"
   done
+}
+
+# Restarts accumulated since the snapshot. An id absent from the baseline is a
+# container this run created or recreated, so all of its restarts are ours.
+# Cheap -- one inspect per container, no probing -- so the healthy path can call
+# it on every install.
+mongo_restart_delta() {
+  local id n base total=0
+  for id in $(mongo_container_ids); do
+    n="$(docker inspect "$id" --format '{{.RestartCount}}' 2>/dev/null || echo 0)"
+    base="$(printf '%s' "${_MONGO_RESTART_BASELINE:-}" | awk -v i="$id" '$1==i{print $2; exit}')"
+    total=$(( total + ${n:-0} - ${base:-0} ))
+  done
+  if (( total < 0 )); then total=0; fi
   printf '%s' "$total"
 }
 
@@ -1554,12 +1575,16 @@ if project_has_pinned_container_names; then
   warn_pinned_container_rename
 fi
 
+# Baseline before anything starts, so the post-start checks below can tell a
+# crash loop from restarts this run had nothing to do with.
+snapshot_mongo_restarts
+
 if $_USE_BUILD; then
   $FLAG_UPGRADE && info "Rebuilding image from source for tag: ${IMAGE_TAG:-local}..."
   info "Building image from source and starting containers..."
   info "(This may take 10–30+ minutes on first run)"
   if ! compose_up_with_mongo_heal "up --build" --build; then
-    die "Fix the build error above and re-run install.sh."
+    die "Fix the error above and re-run install.sh."
   fi
 else
   if [[ "$_DO_PULL" == true ]]; then
@@ -1727,17 +1752,31 @@ if $CONTAINER_HEALTHY; then
   # depends_on and to pass the poll above -- so the install reports success and
   # walks away from a database that restarts every ~25s, dropping every
   # connection each time. Restarts are the signal the health check cannot see.
-  _mongo_restarts="$(mongo_restart_count)"
+  _mongo_restarts="$(mongo_restart_delta)"
   if (( _mongo_restarts > 0 )); then
     if apply_mongo_rseq_tunable; then
       if compose_up >/dev/null 2>&1; then
-        success "MongoDB had restarted ${_mongo_restarts}x on exit 139; applied the tunable and restarted it."
+        # The restart drops the stack briefly. Do not let the banner claim ready
+        # while it is still coming back.
+        _heal_wait=0
+        while (( _heal_wait < 120 )) && ! app_is_healthy; do
+          sleep 5
+          _heal_wait=$(( _heal_wait + 5 ))
+        done
+        if app_is_healthy; then
+          success "MongoDB restarted ${_mongo_restarts}x on exit 139; applied the tunable and restarted the stack."
+        else
+          CONTAINER_HEALTHY=false
+          warn "Applied the MongoDB tunable and restarted, but the stack has not come back healthy."
+          warn "  docker compose -f ${COMPOSE_FILE} -p ${PROJECT_NAME} logs -f pipeshub-ai"
+        fi
       else
+        CONTAINER_HEALTHY=false
         warn "Applied the MongoDB tunable, but restarting the stack failed."
         warn "  docker compose -f ${COMPOSE_FILE} -p ${PROJECT_NAME} logs mongodb"
       fi
     else
-      warn "MongoDB has restarted ${_mongo_restarts} time(s) since startup."
+      warn "MongoDB restarted ${_mongo_restarts} time(s) during this install."
       warn "The stack is healthy right now, but a database that keeps restarting"
       warn "drops every connection each time it goes. Check why:"
       warn "  docker compose -f ${COMPOSE_FILE} -p ${PROJECT_NAME} logs --tail 40 mongodb"
