@@ -88,14 +88,14 @@ class TestGetUserContext:
         assert ctx["user_id"] == "u1"
         assert ctx["org_id"] == "o1"
 
-    def test_from_headers_fallback(self):
+    def test_headers_are_ignored(self):
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
         request.headers = {"X-User-Id": "u2", "X-Organization-Id": "o2"}
-        ctx = _get_user_context(request)
-        assert ctx["user_id"] == "u2"
-        assert ctx["org_id"] == "o2"
+        with pytest.raises(HTTPException) as exc:
+            _get_user_context(request)
+        assert exc.value.status_code == 401
 
     def test_missing_user_id_raises(self):
         from app.api.routes.toolsets import _get_user_context
