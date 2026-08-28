@@ -1397,38 +1397,64 @@ fi
 MONGO_RSEQ_HEAL_TRIED=false
 MONGO_HEAL_GRACE_SECS=180
 
-# True when a mongodb container in this project is crash-looping on exit 139.
-#
-# A single inspect is not enough. A restart-looping container flaps between
-# `restarting`, where .State.ExitCode reports the last exit, and `running`, where
-# it reports 0 -- so whether the 139 is visible depends on when you happen to
-# look. Sample for a few seconds and accept the first 139 seen. This only runs
-# after a start has already failed, so the wait costs nothing on a healthy host.
-MONGO_RSEQ_PROBE_SECS=12
+# The project's mongodb container ids, one per line.
+mongo_container_ids() {
+  docker ps -aq \
+    --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
+    --filter "label=com.docker.compose.service=mongodb" 2>/dev/null
+}
 
+# The last exit code Docker recorded for this mongodb container, from the
+# daemon's own event log.
+#
+# `docker inspect .State.ExitCode` cannot answer this on its own: it reports 0
+# whenever the container is in one of its up windows, so the true code is only
+# visible while it happens to be `restarting`. A slow flap -- up for ~25s, crash,
+# restart -- hides it from any single sample and from a short probe. The event
+# log records every `die` with its code, and filtering by the current container
+# id means a recreated container starts with a clean history.
+mongo_last_die_code() {
+  local id
+  id="$(mongo_container_ids | head -1)"
+  [[ -n "$id" ]] || return 0
+  docker events --since 1h --until "$(date +%s)" \
+    --filter "container=$id" --filter "event=die" \
+    --format '{{.Actor.Attributes.exitCode}}' 2>/dev/null | tail -1
+}
+
+# True when this project's mongodb is crash-looping on exit 139.
 mongo_rseq_crashed() {
   local id exit_code restarts elapsed=0
-  # No mongodb container means the start failed for some other reason (a build
-  # error, a missing image, another service). Do not spend the probe window on it.
-  if [[ -z "$(docker ps -aq \
-      --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
-      --filter "label=com.docker.compose.service=mongodb" 2>/dev/null)" ]]; then
-    return 1
-  fi
+  # No mongodb container means the failure was something else entirely -- a build
+  # error, a missing image, another service. Do not spend any time on it.
+  if [[ -z "$(mongo_container_ids)" ]]; then return 1; fi
+
+  # Authoritative and race-free: what the daemon recorded when it last died.
+  if [[ "$(mongo_last_die_code)" == "139" ]]; then return 0; fi
+
+  # Fallback for a daemon whose event history is unavailable or trimmed. Only
+  # catches a fast loop, where the container is restarting most of the time.
   while (( elapsed < MONGO_RSEQ_PROBE_SECS )); do
-    for id in $(docker ps -aq \
-        --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
-        --filter "label=com.docker.compose.service=mongodb" 2>/dev/null); do
+    for id in $(mongo_container_ids); do
       restarts="$(docker inspect "$id" --format '{{.RestartCount}}' 2>/dev/null || echo 0)"
       exit_code="$(docker inspect "$id" --format '{{.State.ExitCode}}' 2>/dev/null || echo '')"
-      # RestartCount rules out a container that exited 139 once and stayed down
-      # for an unrelated reason; the loop is what identifies this failure.
       if [[ "$exit_code" == "139" ]] && (( ${restarts:-0} >= 1 )); then return 0; fi
     done
     sleep 1
     elapsed=$(( elapsed + 1 ))
   done
   return 1
+}
+
+# Total restarts across this project's mongodb containers. Cheap (one inspect per
+# container, no probing) so the healthy path can call it on every install.
+mongo_restart_count() {
+  local id n total=0
+  for id in $(mongo_container_ids); do
+    n="$(docker inspect "$id" --format '{{.RestartCount}}' 2>/dev/null || echo 0)"
+    total=$(( total + ${n:-0} ))
+  done
+  printf '%s' "$total"
 }
 
 # Write the documented tunable, once per run, and never over a value the operator
@@ -1439,7 +1465,7 @@ apply_mongo_rseq_tunable() {
   if ! mongo_rseq_crashed; then return 1; fi
 
   MONGO_RSEQ_HEAL_TRIED=true
-  warn "MongoDB exited 139 (segfault) and is not coming up."
+  warn "MongoDB is crash-looping on exit 139 (segfault)."
   warn "That is the known glibc rseq/TCMalloc crash on newer host kernels."
   info "Setting MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1 in .env and retrying..."
   persist_env_var MONGO_GLIBC_TUNABLES "glibc.pthread.rseq=1"
@@ -1694,6 +1720,30 @@ if $CONTAINER_HEALTHY; then
     warn "Services are healthy inside the container, but http://localhost:${APP_PORT} is not reachable from this host."
     warn "This is usually a port-publish, firewall, or reverse-proxy issue."
     warn "  docker compose -f ${COMPOSE_FILE} -p ${PROJECT_NAME} logs -f pipeshub-ai"
+  fi
+
+  # "Healthy" is not the same as "stable". A segfaulting MongoDB is healthy in
+  # the gaps between crashes, and those gaps are long enough to satisfy the app's
+  # depends_on and to pass the poll above -- so the install reports success and
+  # walks away from a database that restarts every ~25s, dropping every
+  # connection each time. Restarts are the signal the health check cannot see.
+  _mongo_restarts="$(mongo_restart_count)"
+  if (( _mongo_restarts > 0 )); then
+    if apply_mongo_rseq_tunable; then
+      if compose_up >/dev/null 2>&1; then
+        success "MongoDB had restarted ${_mongo_restarts}x on exit 139; applied the tunable and restarted it."
+      else
+        warn "Applied the MongoDB tunable, but restarting the stack failed."
+        warn "  docker compose -f ${COMPOSE_FILE} -p ${PROJECT_NAME} logs mongodb"
+      fi
+    else
+      warn "MongoDB has restarted ${_mongo_restarts} time(s) since startup."
+      warn "The stack is healthy right now, but a database that keeps restarting"
+      warn "drops every connection each time it goes. Check why:"
+      warn "  docker compose -f ${COMPOSE_FILE} -p ${PROJECT_NAME} logs --tail 40 mongodb"
+      warn "  exit 139 → set MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1 in .env"
+      warn "  exit 137 → out of memory; raise MONGO_CACHE_GB and MONGO_MEMORY_LIMIT together"
+    fi
   fi
 elif [[ -n "${_CRASH_REPORT:-}" ]]; then
   error "A container keeps restarting, so the stack cannot become healthy:"
