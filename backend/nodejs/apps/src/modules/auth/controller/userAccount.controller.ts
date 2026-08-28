@@ -351,17 +351,22 @@ export class UserAccountController {
 
             // Always add to allowed list if config exists
             allowedMethods.push(method);
-            authProviders[mapping.key === 'azuread' ? 'azuread' : mapping.key] = configData;
+
+            // This response is served to unauthenticated callers, so the OAuth
+            // config must be stripped of its server-side credentials before it
+            // goes out. That is independent of JIT, which only controls whether
+            // an account is provisioned on first sign-in.
+            if (method === AuthMethodType.OAUTH) {
+              const { clientSecret, tokenEndpoint, userInfoEndpoint, ...publicConfig } = configData;
+              authProviders.oauth = publicConfig;
+            } else {
+              authProviders[mapping.key === 'azuread' ? 'azuread' : mapping.key] = configData;
+            }
 
             // Only add to JIT lists if enableJit is strictly true
             if (configData?.enableJit === true) {
               jitEnabledMethods.push(method);
               jitConfig[mapping.key] = true;
-
-              if (method === AuthMethodType.OAUTH) {
-                const { clientSecret, tokenEndpoint, userInfoEndpoint, ...publicConfig } = configData;
-                authProviders.oauth = publicConfig;
-              }
             }
           } catch (e) {
             this.logger.debug(`${method} config fetch failed, not adding to allowed methods`);

@@ -270,3 +270,129 @@ async def test_upload_docx_dispatches_to_docling():
     assert out["attachments"][0]["extension"] == "docx"
     assert out["attachments"][0]["parseMode"] == "docling"
     assert out["attachments"][0]["ocrMode"] == "docling"
+
+
+def test_sink_orchestrator_accepts_the_attachment_noop_vector_store():
+    """The upload path builds a real SinkOrchestrator around a stub vector store.
+
+    Every other test here patches SinkOrchestrator out, so nothing else exercises
+    its constructor against that stub — which is how a constructor that reached
+    into `vector_store.config_service` shipped and 500'd every upload.
+    """
+    import logging
+
+    from app.api.routes.chatbot import _AttachmentSinkNoopVectorStore
+    from app.modules.transformers.sink_orchestrator import SinkOrchestrator
+
+    orchestrator = SinkOrchestrator(
+        graphdb=AsyncMock(),
+        blob_storage=AsyncMock(),
+        vector_store=_AttachmentSinkNoopVectorStore(),
+        graph_provider=AsyncMock(),
+        logger=logging.getLogger("test-attachment-sink"),
+        config_service=MagicMock(),
+    )
+
+    assert orchestrator.vector_store is not None
+
+
+@pytest.mark.asyncio
+async def test_failed_sink_rolls_back_the_records_it_already_wrote():
+    """Records, files and edges land before the sink runs, with no shared transaction.
+
+    Without the rollback a sink failure strands a record the user can neither see
+    in chat nor delete — the upload response that carries its recordId never
+    arrives.
+    """
+    from app.api.routes.chatbot import upload_chat_attachments
+
+    csv_bytes = b"name,amount\nAlice,10\n"
+    payload = {
+        "attachments": [
+            {
+                "fileName": "sales.csv",
+                "mimeType": "text/csv",
+                "size": len(csv_bytes),
+                "contentBase64": base64.b64encode(csv_bytes).decode("ascii"),
+            }
+        ],
+    }
+    req = MagicMock()
+    req.json = AsyncMock(return_value=payload)
+    req.state.user = {"orgId": "org-1", "userId": "user-1", "isServiceAccount": False}
+    cont = MagicMock()
+    cont.logger.return_value = MagicMock()
+    req.app.container = cont
+
+    gp = AsyncMock()
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
+    gp.batch_upsert_nodes = AsyncMock()
+    gp.batch_create_edges = AsyncMock()
+    gp.delete_nodes_and_edges = AsyncMock()
+    gp.delete_nodes = AsyncMock()
+
+    fake_blocks = BlocksContainer(blocks=[], block_groups=[])
+
+    with patch("app.api.routes.chatbot.BlobStorage") as mock_bs_cls, patch(
+        "app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()
+    ), patch("app.api.routes.chatbot.SinkOrchestrator") as mock_sink_cls, patch(
+        "app.api.routes.chatbot.convert_record_dict_to_record",
+        return_value=MagicMock(block_containers=fake_blocks),
+    ), patch(
+        "app.api.routes.chatbot.TransformContext",
+        MagicMock(side_effect=lambda **_: MagicMock()),
+    ), patch(
+        "app.api.routes.chatbot._build_csv_blocks",
+        new_callable=AsyncMock,
+        return_value=fake_blocks,
+    ):
+        bs = AsyncMock()
+        bs.save_binary_to_storage = AsyncMock(return_value=("ext", None))
+        mock_bs_cls.return_value = bs
+        orch = AsyncMock()
+        orch.index = AsyncMock(side_effect=RuntimeError("sink exploded"))
+        mock_sink_cls.return_value = orch
+
+        with pytest.raises(RuntimeError, match="sink exploded"):
+            await upload_chat_attachments(req, gp, AsyncMock())
+
+    # Both collections cleaned, each with the same single record key. FILES goes
+    # through delete_nodes_and_edges too, so Arango drops the isOfType edge.
+    collections = [c.args[1] for c in gp.delete_nodes_and_edges.await_args_list]
+    assert collections == ["records", "files"]
+    keys = {tuple(c.args[0]) for c in gp.delete_nodes_and_edges.await_args_list}
+    assert len(keys) == 1 and len(next(iter(keys))) == 1
+    gp.delete_nodes.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_files_cleanup_still_runs_when_records_cleanup_fails():
+    """A raise on the RECORDS delete must not skip the FILES delete.
+
+    Each collection gets its own attempt, so half a rollback is still better
+    than none, and the original upload error is what reaches the caller.
+    """
+    from app.api.routes.chatbot import _rollback_attachment_records
+
+    gp = AsyncMock()
+    gp.delete_nodes_and_edges = AsyncMock(
+        side_effect=[RuntimeError("records delete failed"), None]
+    )
+
+    await _rollback_attachment_records(gp, ["rec-1"])
+
+    collections = [c.args[1] for c in gp.delete_nodes_and_edges.await_args_list]
+    assert collections == ["records", "files"]
+
+
+@pytest.mark.asyncio
+async def test_rollback_never_raises_over_the_original_error():
+    """Both cleanups failing must still return, so `raise` re-surfaces the upload error."""
+    from app.api.routes.chatbot import _rollback_attachment_records
+
+    gp = AsyncMock()
+    gp.delete_nodes_and_edges = AsyncMock(side_effect=RuntimeError("graph is down"))
+
+    await _rollback_attachment_records(gp, ["rec-1"])
+
+    assert gp.delete_nodes_and_edges.await_count == 2

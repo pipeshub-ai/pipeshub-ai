@@ -173,6 +173,21 @@ get_existing_val() {
   printf '%s' "${val:-$default}"
 }
 
+# Render an optional knob for .env: the operator's value when one is set,
+# otherwise a commented hint. .env is rewritten from scratch whenever the wizard
+# runs, so a knob documented only in env.template is invisible after a fresh
+# install and is dropped by --reconfigure. Callers must pass a value already
+# resolved by get_existing_val -- .env is being truncated by the time the
+# here-document that calls this is expanded.
+optional_env_line() {
+  local key="$1" val="$2" hint="$3"
+  if [[ -n "$val" ]]; then
+    printf '%s=%s' "$key" "$val"
+  else
+    printf '# %s=%s' "$key" "$hint"
+  fi
+}
+
 # Derive the COMPOSE_PROFILES that the *currently configured* services require,
 # from the canonical selectors persisted in .env. The app talks to whatever
 # DATA_STORE / MESSAGE_BROKER / KV_STORE_TYPE say, so the profiles that start the
@@ -200,7 +215,9 @@ persist_env_var() {
   [[ -f "$ENV_FILE" ]] || return 0
   tmp="$(mktemp)"
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" == "${key}="* ]]; then
+    # Also match the commented placeholder form ("# KEY=hint") so turning a
+    # documented knob on replaces its hint instead of leaving both lines.
+    if [[ "$line" == "${key}="* || "$line" == "# ${key}="* ]]; then
       printf '%s=%s\n' "$key" "$val"; found=true
     else
       printf '%s\n' "$line"
@@ -1028,6 +1045,15 @@ if ! ${SKIP_WIZARD:-false}; then
   REDIS_PASSWORD="$(get_existing_val REDIS_PASSWORD "$(gen_secret 16)")"
   QDRANT_API_KEY="$(get_existing_val QDRANT_API_KEY "$(gen_secret 20)")"
 
+  # Optional MongoDB knobs from env.template. The wizard never asks about these,
+  # but .env is rewritten in full below, so read back anything the operator set
+  # by hand -- otherwise --reconfigure silently reverts their tuning and MongoDB
+  # goes back to the defaults that made them set it in the first place.
+  MONGO_GLIBC_TUNABLES="$(get_existing_val MONGO_GLIBC_TUNABLES "")"
+  MONGO_IMAGE_TAG="$(get_existing_val MONGO_IMAGE_TAG "")"
+  MONGO_CACHE_GB="$(get_existing_val MONGO_CACHE_GB "")"
+  MONGO_MEMORY_LIMIT="$(get_existing_val MONGO_MEMORY_LIMIT "")"
+
   if [[ "$DATA_STORE" == "arangodb" ]]; then
     ARANGO_PASSWORD="$(get_existing_val ARANGO_PASSWORD "$(gen_secret 16)")"; NEO4J_PASSWORD=""
   else
@@ -1137,6 +1163,18 @@ REDIS_PASSWORD=${REDIS_PASSWORD}
 # ── MongoDB ──────────────────────────────────────────────────────────────────
 MONGO_USERNAME=${MONGO_USERNAME}
 MONGO_PASSWORD=${MONGO_PASSWORD}
+# If MongoDB crash-loops with a segfault (exit 139) on a newer host kernel, try
+# the rseq tunable first so the supported MongoDB version can stay pinned.
+$(optional_env_line MONGO_GLIBC_TUNABLES "$MONGO_GLIBC_TUNABLES" "glibc.pthread.rseq=1")
+# Pin the MongoDB image. The value below is the tag compose already defaults to,
+# so uncommenting it changes nothing on its own -- set an older tag here only to
+# recover from a version-specific bug. MongoDB 8.x data is not readable by 7.x,
+# so wipe the mongo volume before downgrading.
+$(optional_env_line MONGO_IMAGE_TAG "$MONGO_IMAGE_TAG" "8.0.17")
+# WiredTiger cache cap and container memory limit. Raise both together on
+# larger or dedicated hosts; avoid dropping the cache below 1 GB.
+$(optional_env_line MONGO_CACHE_GB "$MONGO_CACHE_GB" "1")
+$(optional_env_line MONGO_MEMORY_LIMIT "$MONGO_MEMORY_LIMIT" "2G")
 
 # ── Qdrant ───────────────────────────────────────────────────────────────────
 QDRANT_API_KEY=${QDRANT_API_KEY}
@@ -1210,10 +1248,10 @@ _parse_mem_mb() {
   [[ "$1" =~ ^([0-9]+)[mM]$ ]] && { echo "${BASH_REMATCH[1]}"; return; }
   return 1
 }
-_app_mem_mb="$(_parse_mem_mb "${APP_MEMORY_LIMIT:-12G}")" || _app_mem_mb=""
+_app_mem_mb="$(_parse_mem_mb "${APP_MEMORY_LIMIT:-10G}")" || _app_mem_mb=""
 _app_memswap_mb="$(_parse_mem_mb "${APP_MEMSWAP_LIMIT:-16G}")" || _app_memswap_mb=""
 if [[ -n "$_app_mem_mb" && -n "$_app_memswap_mb" ]] && (( _app_memswap_mb < _app_mem_mb )); then
-  die "APP_MEMSWAP_LIMIT (${APP_MEMSWAP_LIMIT:-16G}) must be >= APP_MEMORY_LIMIT (${APP_MEMORY_LIMIT:-12G}). Raise APP_MEMSWAP_LIMIT in .env (or raise both together) before launching."
+  die "APP_MEMSWAP_LIMIT (${APP_MEMSWAP_LIMIT:-16G}) must be >= APP_MEMORY_LIMIT (${APP_MEMORY_LIMIT:-10G}). Raise APP_MEMSWAP_LIMIT in .env (or raise both together) before launching."
 fi
 
 # Resolve APP_PORT from .env when wizard was skipped (upgrade / reuse)
@@ -1346,6 +1384,115 @@ if ! $FLAG_YES && ! $FLAG_UPGRADE; then
   esac
 fi
 
+# MongoDB 8.x segfaults (exit 139) on some newer host kernels because of a glibc
+# rseq/TCMalloc interaction. env.template documents MONGO_GLIBC_TUNABLES for
+# exactly this case, but an operator only discovers it after the install has
+# already failed -- and the generic exit-139 advice points at recreating the data
+# volume, which destroys data without addressing this cause.
+#
+# Reacting to the observed crash rather than pre-screening the host kernel keeps
+# rseq=0 -- the faster TCMalloc default that #2677 deliberately preserved -- on
+# every machine that does not need the workaround, and needs no list of affected
+# kernel versions to stay accurate.
+MONGO_RSEQ_HEAL_TRIED=false
+MONGO_HEAL_GRACE_SECS=180
+MONGO_RSEQ_PROBE_SECS=12
+
+# The project's mongodb container ids, one per line.
+mongo_container_ids() {
+  docker ps -aq \
+    --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
+    --filter "label=com.docker.compose.service=mongodb" 2>/dev/null
+}
+
+# The last exit code Docker recorded for this mongodb container, from the
+# daemon's own event log.
+#
+# `docker inspect .State.ExitCode` cannot answer this on its own: it reports 0
+# whenever the container is in one of its up windows, so the true code is only
+# visible while it happens to be `restarting`. A slow flap -- up for ~25s, crash,
+# restart -- hides it from any single sample and from a short probe. The event
+# log records every `die` with its code, and filtering by the current container
+# id means a recreated container starts with a clean history.
+mongo_last_die_code() {
+  local id
+  id="$(mongo_container_ids | head -1)"
+  [[ -n "$id" ]] || return 0
+  docker events --since 1h --until "$(date +%s)" \
+    --filter "container=$id" --filter "event=die" \
+    --format '{{.Actor.Attributes.exitCode}}' 2>/dev/null | tail -1
+}
+
+# True when this project's mongodb is crash-looping on exit 139.
+mongo_rseq_crashed() {
+  local id exit_code restarts elapsed=0
+  # No mongodb container means the failure was something else entirely -- a build
+  # error, a missing image, another service. Do not spend any time on it.
+  if [[ -z "$(mongo_container_ids)" ]]; then return 1; fi
+
+  # Authoritative and race-free: what the daemon recorded when it last died.
+  if [[ "$(mongo_last_die_code)" == "139" ]]; then return 0; fi
+
+  # Fallback for a daemon whose event history is unavailable or trimmed. Only
+  # catches a fast loop, where the container is restarting most of the time.
+  while (( elapsed < MONGO_RSEQ_PROBE_SECS )); do
+    for id in $(mongo_container_ids); do
+      restarts="$(docker inspect "$id" --format '{{.RestartCount}}' 2>/dev/null || echo 0)"
+      exit_code="$(docker inspect "$id" --format '{{.State.ExitCode}}' 2>/dev/null || echo '')"
+      if [[ "$exit_code" == "139" ]] && (( ${restarts:-0} >= 1 )); then return 0; fi
+    done
+    sleep 1
+    elapsed=$(( elapsed + 1 ))
+  done
+  return 1
+}
+
+# Docker's RestartCount is a lifetime counter on the container, so a stack that
+# crash-looped weeks ago and was fixed still reports those restarts on every
+# later run. Snapshot before starting and compare afterwards, so the checks below
+# measure only what happened during this install.
+_MONGO_RESTART_BASELINE=""
+
+snapshot_mongo_restarts() {
+  local id n
+  _MONGO_RESTART_BASELINE=""
+  for id in $(mongo_container_ids); do
+    n="$(docker inspect "$id" --format '{{.RestartCount}}' 2>/dev/null || echo 0)"
+    _MONGO_RESTART_BASELINE="${_MONGO_RESTART_BASELINE}${id} ${n:-0}
+"
+  done
+}
+
+# Restarts accumulated since the snapshot. An id absent from the baseline is a
+# container this run created or recreated, so all of its restarts are ours.
+# Cheap -- one inspect per container, no probing -- so the healthy path can call
+# it on every install.
+mongo_restart_delta() {
+  local id n base total=0
+  for id in $(mongo_container_ids); do
+    n="$(docker inspect "$id" --format '{{.RestartCount}}' 2>/dev/null || echo 0)"
+    base="$(printf '%s' "${_MONGO_RESTART_BASELINE:-}" | awk -v i="$id" '$1==i{print $2; exit}')"
+    total=$(( total + ${n:-0} - ${base:-0} ))
+  done
+  if (( total < 0 )); then total=0; fi
+  printf '%s' "$total"
+}
+
+# Write the documented tunable, once per run, and never over a value the operator
+# chose. Returns 0 when it changed something, so the caller can retry the start.
+apply_mongo_rseq_tunable() {
+  if $MONGO_RSEQ_HEAL_TRIED; then return 1; fi
+  if [[ -n "$(get_existing_val MONGO_GLIBC_TUNABLES "")" ]]; then return 1; fi
+  if ! mongo_rseq_crashed; then return 1; fi
+
+  MONGO_RSEQ_HEAL_TRIED=true
+  warn "MongoDB is crash-looping on exit 139 (segfault)."
+  warn "That is the known glibc rseq/TCMalloc crash on newer host kernels."
+  info "Setting MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1 in .env and retrying..."
+  persist_env_var MONGO_GLIBC_TUNABLES "glibc.pthread.rseq=1"
+  return 0
+}
+
 # ==============================================================================
 # 15. LAUNCH
 # ==============================================================================
@@ -1365,6 +1512,41 @@ _USE_BUILD=false
 # tee, redirect) still gets plain so cursor-escape frames do not explode.
 _is_tty=false; [[ -t 1 ]] && _is_tty=true
 _PROGRESS=(--progress "$(resolve_compose_progress "$_is_tty")")
+
+compose_up()        { docker compose "${_PROGRESS[@]}" -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" up -d "$@"; }
+compose_logs_tail() { docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true; }
+
+# Start the stack, healing a MongoDB rseq segfault once if that is what stopped
+# it. A segfault fails `up` within seconds rather than later: the app's
+# `depends_on: mongodb: condition: service_healthy` is never satisfied, so
+# compose reports "dependency failed to start" and exits non-zero long before the
+# health poll could react.
+#
+# The retry is a full `up -d` so dependents that were created but never started
+# come up too, and it never repeats --build: if the image compiled the first
+# time, it is already built. Callers `die` on a non-zero return; every failure
+# message is emitted here so the prebuilt and build paths cannot drift apart.
+compose_up_with_mongo_heal() {
+  local label="$1"; shift
+  if compose_up "$@"; then return 0; fi
+
+  if apply_mongo_rseq_tunable; then
+    if compose_up; then
+      success "Startup recovered after applying the MongoDB rseq tunable."
+      return 0
+    fi
+    error "docker compose up failed again after applying the MongoDB tunable."
+    compose_logs_tail
+    warn "MongoDB is still not starting, so something else is wrong. Read the logs"
+    warn "above first. Do not recreate the mongo data volume yet — that destroys"
+    warn "your data and will not fix a crash the tunable did not resolve."
+    return 1
+  fi
+
+  error "docker compose ${label} failed. Last 30 lines of container logs:"
+  compose_logs_tail
+  return 1
+}
 
 # Decide whether to refresh the prebuilt image from the registry before starting.
 # Pure decision (no side effects) so it is unit-testable in isolation.
@@ -1393,18 +1575,16 @@ if project_has_pinned_container_names; then
   warn_pinned_container_rename
 fi
 
+# Baseline before anything starts, so the post-start checks below can tell a
+# crash loop from restarts this run had nothing to do with.
+snapshot_mongo_restarts
+
 if $_USE_BUILD; then
   $FLAG_UPGRADE && info "Rebuilding image from source for tag: ${IMAGE_TAG:-local}..."
   info "Building image from source and starting containers..."
   info "(This may take 10–30+ minutes on first run)"
-  if ! docker compose "${_PROGRESS[@]}" \
-      -f "$COMPOSE_FILE" \
-      -p "$PROJECT_NAME" \
-      --env-file "$ENV_FILE" \
-      up -d --build; then
-    error "docker compose up --build failed. Last 30 lines of container logs:"
-    docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true
-    die "Fix the build error above and re-run install.sh."
+  if ! compose_up_with_mongo_heal "up --build" --build; then
+    die "Fix the error above and re-run install.sh."
   fi
 else
   if [[ "$_DO_PULL" == true ]]; then
@@ -1430,13 +1610,7 @@ else
     info "Skipping image refresh; using locally cached images (--no-pull)."
   fi
   info "Starting containers..."
-  if ! docker compose "${_PROGRESS[@]}" \
-      -f "$COMPOSE_FILE" \
-      -p "$PROJECT_NAME" \
-      --env-file "$ENV_FILE" \
-      up -d; then
-    error "docker compose up failed. Last 30 lines of container logs:"
-    docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true
+  if ! compose_up_with_mongo_heal "up"; then
     die "Fix the error above and re-run install.sh."
   fi
 fi
@@ -1523,6 +1697,22 @@ while (( ELAPSED < HEALTH_WAIT_SECS )); do
   # not recover on its own, so there is no point waiting out the full timeout.
   if (( ELAPSED >= 90 && ELAPSED % 15 == 0 )); then
     _CRASH_REPORT="$(crash_looping_containers)"
+    # A MongoDB rseq segfault has a known one-line fix. Apply it and keep
+    # waiting instead of failing an install that is one restart from working.
+    if [[ -n "$_CRASH_REPORT" ]] && apply_mongo_rseq_tunable; then
+      # Full `up -d`, not `--force-recreate mongodb`: dependents that never
+      # started will not appear just because mongodb was recreated.
+      if compose_up >/dev/null 2>&1; then
+        _CRASH_REPORT=""
+        # Extend the deadline, never shorten it: at t=90 a bare ELAPSED+180
+        # would cut the default 420s wait down to 270.
+        _healed_deadline=$(( ELAPSED + MONGO_HEAL_GRACE_SECS ))
+        if (( _healed_deadline > HEALTH_WAIT_SECS )); then
+          HEALTH_WAIT_SECS=$_healed_deadline
+        fi
+        success "MongoDB restarted with the rseq tunable; waiting for it to settle."
+      fi
+    fi
     [[ -n "$_CRASH_REPORT" ]] && break
   fi
   if $_is_tty; then
@@ -1555,6 +1745,44 @@ if $CONTAINER_HEALTHY; then
     warn "This is usually a port-publish, firewall, or reverse-proxy issue."
     warn "  docker compose -f ${COMPOSE_FILE} -p ${PROJECT_NAME} logs -f pipeshub-ai"
   fi
+
+  # "Healthy" is not the same as "stable". A segfaulting MongoDB is healthy in
+  # the gaps between crashes, and those gaps are long enough to satisfy the app's
+  # depends_on and to pass the poll above -- so the install reports success and
+  # walks away from a database that restarts every ~25s, dropping every
+  # connection each time. Restarts are the signal the health check cannot see.
+  _mongo_restarts="$(mongo_restart_delta)"
+  if (( _mongo_restarts > 0 )); then
+    if apply_mongo_rseq_tunable; then
+      if compose_up >/dev/null 2>&1; then
+        # The restart drops the stack briefly. Do not let the banner claim ready
+        # while it is still coming back.
+        _heal_wait=0
+        while (( _heal_wait < 120 )) && ! app_is_healthy; do
+          sleep 5
+          _heal_wait=$(( _heal_wait + 5 ))
+        done
+        if app_is_healthy; then
+          success "MongoDB restarted ${_mongo_restarts}x on exit 139; applied the tunable and restarted the stack."
+        else
+          CONTAINER_HEALTHY=false
+          warn "Applied the MongoDB tunable and restarted, but the stack has not come back healthy."
+          warn "  docker compose -f ${COMPOSE_FILE} -p ${PROJECT_NAME} logs -f pipeshub-ai"
+        fi
+      else
+        CONTAINER_HEALTHY=false
+        warn "Applied the MongoDB tunable, but restarting the stack failed."
+        warn "  docker compose -f ${COMPOSE_FILE} -p ${PROJECT_NAME} logs mongodb"
+      fi
+    else
+      warn "MongoDB restarted ${_mongo_restarts} time(s) during this install."
+      warn "The stack is healthy right now, but a database that keeps restarting"
+      warn "drops every connection each time it goes. Check why:"
+      warn "  docker compose -f ${COMPOSE_FILE} -p ${PROJECT_NAME} logs --tail 40 mongodb"
+      warn "  exit 139 → set MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1 in .env"
+      warn "  exit 137 → out of memory; raise MONGO_CACHE_GB and MONGO_MEMORY_LIMIT together"
+    fi
+  fi
 elif [[ -n "${_CRASH_REPORT:-}" ]]; then
   error "A container keeps restarting, so the stack cannot become healthy:"
   printf "%s\n" "$_CRASH_REPORT"
@@ -1576,7 +1804,12 @@ elif [[ -n "${_CRASH_REPORT:-}" ]]; then
   fi
   warn "  • exit 137 / oom=true → out of memory. Free RAM, or switch to the lighter"
   warn "      'slim' profile (Redis broker + KV; drops Kafka/Zookeeper): ./install.sh --reconfigure"
-  warn "  • exit 139            → the service crashed (segfault). Usually a corrupted data"
+  warn "  • exit 139 on mongodb → set MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1 in .env and"
+  warn "      re-run ./install.sh --upgrade. The installer normally applies this for you; if"
+  warn "      you are seeing this, it was already set or the restart did not take. Try this"
+  warn "      before touching the data volume — recreating the volume destroys your data and"
+  warn "      does not fix this cause."
+  warn "  • exit 139 elsewhere  → the service crashed (segfault). Usually a corrupted data"
   warn "      volume from an earlier hard kill — recreate it and re-run ./install.sh. If it"
   warn "      recurs on a fresh volume, it is an incompatible host kernel/CPU (see docker logs)."
   warn "  • anything else       → read 'docker logs' above for the specific error"

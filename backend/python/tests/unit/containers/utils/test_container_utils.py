@@ -87,7 +87,7 @@ class TestCreateSinkOrchestrator:
             mock_instance = MagicMock()
             MockSO.return_value = mock_instance
             result = await cu.create_sink_orchestrator(
-                MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock()
+                MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock()
             )
             assert result is mock_instance
 

@@ -1165,6 +1165,75 @@ describe('UserAccountController', () => {
     });
   });
 
+  describe('initAuth - OAuth credentials are never returned', () => {
+    const oauthConfig = (enableJit: boolean) => ({
+      providerName: 'Okta',
+      clientId: 'public-client-id',
+      clientSecret: 'SUPER-SECRET',
+      authorizationUrl: 'https://idp.example.com/authorize',
+      tokenEndpoint: 'https://idp.example.com/token',
+      userInfoEndpoint: 'https://idp.example.com/userinfo',
+      enableJit,
+    });
+
+    const arrange = (enableJit: boolean) => {
+      sinon.stub(Org, 'findOne').resolves({ _id: 'o1', isDeleted: false } as any);
+      sinon.stub(OrgAuthConfig, 'findOne').resolves({
+        orgId: 'o1',
+        authSteps: [{ order: 1, allowedMethods: [{ type: 'oauth' }] }],
+      } as any);
+      mockConfigService.getConfig.resolves({ data: oauthConfig(enableJit) });
+      mockSessionService.createSession.resolves({
+        token: 'session-oauth-123',
+        userId: 'u1',
+        email: 'user@example.com',
+        authConfig: [{ order: 1, allowedMethods: [{ type: 'oauth' }] }],
+        currentStep: 0,
+      });
+    };
+
+    // initAuth is unauthenticated. The server-side credentials must not appear
+    // in its response whether or not JIT provisioning happens to be enabled.
+    [true, false].forEach((enableJit) => {
+      it(`should not return clientSecret, tokenEndpoint or userInfoEndpoint when enableJit is ${enableJit}`, async () => {
+        const req: any = { body: { email: 'user@example.com' } };
+        arrange(enableJit);
+
+        await controller.initAuth(req, res, next);
+
+        expect(next.called, 'initAuth should not error').to.be.false;
+        const oauth = res.json.firstCall.args[0].authProviders.oauth;
+
+        expect(oauth).to.not.have.property('clientSecret');
+        expect(oauth).to.not.have.property('tokenEndpoint');
+        expect(oauth).to.not.have.property('userInfoEndpoint');
+
+        // the values the sign-in page legitimately needs are still there
+        expect(oauth.clientId).to.equal('public-client-id');
+        expect(oauth.providerName).to.equal('Okta');
+        expect(oauth.authorizationUrl).to.equal('https://idp.example.com/authorize');
+      });
+    });
+
+    it('should still report JIT as enabled when the config enables it', async () => {
+      const req: any = { body: { email: 'user@example.com' } };
+      arrange(true);
+
+      await controller.initAuth(req, res, next);
+
+      expect(res.json.firstCall.args[0].jitEnabled).to.be.true;
+    });
+
+    it('should report JIT as disabled when the config disables it', async () => {
+      const req: any = { body: { email: 'user@example.com' } };
+      arrange(false);
+
+      await controller.initAuth(req, res, next);
+
+      expect(res.json.firstCall.args[0].jitEnabled).to.be.false;
+    });
+  });
+
   describe('exchangeOAuthToken', () => {
     it('should call next(BadRequestError) when required params are missing', async () => {
       const req: any = {

@@ -87,6 +87,7 @@ class IndexingAppContainer(BaseAppContainer):
         blob_storage=blob_storage,
         vector_store=vector_store,
         graph_provider=graph_provider,
+        config_service=config_service,
     )
 
 
