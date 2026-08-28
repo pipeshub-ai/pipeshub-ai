@@ -4524,7 +4524,7 @@ class SalesforceConnector(BaseConnector):
                     continue
 
                 async with self.data_store_provider.transaction() as tx_store:
-                    all_emails = [p.email for p, _, _ in contact_with_edges]
+                    all_emails = [p.email.lower() for p, _, _ in contact_with_edges]
                     all_account_names = list({
                         moe.get("accountName")
                         for _, sce, moe in contact_with_edges
@@ -4550,7 +4550,7 @@ class SalesforceConnector(BaseConnector):
                     )
                     parent_org_id = self._get_parent_org_id()
                     email_map = {
-                        node.get("email"): node
+                        (node.get("email") or "").lower(): node
                         for node in (existing_people_result or [])
                         if parent_org_id is None or node.get("orgId") == parent_org_id
                     }
@@ -4566,7 +4566,7 @@ class SalesforceConnector(BaseConnector):
                     unchanged_emails: set = set()
                     delete_tasks = []
                     for person, contact_edge, _ in contact_with_edges:
-                        node = email_map.get(person.email)
+                        node = email_map.get(person.email.lower())
                         if node:
                             person.id = node.get("id") or node.get("_key")
                             stored_updated = node.get("updatedAtTimestamp")
@@ -4576,7 +4576,7 @@ class SalesforceConnector(BaseConnector):
                                 and incoming_updated is not None
                                 and stored_updated == incoming_updated
                             ):
-                                unchanged_emails.add(person.email)
+                                unchanged_emails.add(person.email.lower())
                                 continue
                             delete_tasks.append(tx_store.delete_edges_to(
                                 to_id=person.id,
@@ -4595,7 +4595,7 @@ class SalesforceConnector(BaseConnector):
                     changed_contacts = [
                         (p, sce, moe)
                         for p, sce, moe in contact_with_edges
-                        if p.email not in unchanged_emails
+                        if p.email.lower() not in unchanged_emails
                     ]
                     if changed_contacts:
                         await tx_store.batch_upsert_people([p for p, _, _ in changed_contacts])
@@ -4710,7 +4710,7 @@ class SalesforceConnector(BaseConnector):
                     continue
 
                 async with self.data_store_provider.transaction() as tx_store:
-                    all_emails = [p.email for p, _ in lead_with_edges]
+                    all_emails = [p.email.lower() for p, _ in lead_with_edges]
                     existing_people = await tx_store.get_nodes_by_field_in(
                         collection=CollectionNames.PEOPLE.value,
                         field="email",
@@ -4718,14 +4718,14 @@ class SalesforceConnector(BaseConnector):
                     )
                     parent_org_id = self._get_parent_org_id()
                     email_map = {
-                        node.get("email"): node
+                        (node.get("email") or "").lower(): node
                         for node in (existing_people or [])
                         if parent_org_id is None or node.get("orgId") == parent_org_id
                     }
 
                     ids_to_delete = []
                     for person, _ in lead_with_edges:
-                        node = email_map.get(person.email)
+                        node = email_map.get(person.email.lower())
                         if node:
                             person.id = node.get("id") or node.get("_key")
                             ids_to_delete.append(person.id)

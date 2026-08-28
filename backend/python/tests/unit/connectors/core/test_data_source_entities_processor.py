@@ -42,6 +42,7 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
+    Person,
     ProjectRecord,
     PullRequestRecord,
     Record,
@@ -1752,6 +1753,51 @@ class TestOnNewAppUsers:
         proc.logger.warning.assert_called()
 
     @pytest.mark.asyncio
+    async def test_stale_person_not_reused_after_user_appears(self):
+        """A collaborator who was external last run, and has since become a user, must
+        resolve to their User node — not the Person cached by the previous run.
+
+        A connector instance is reused across syncs, so without the cache reset in
+        on_new_app_users every permission edge in run 2 would keep pointing at the
+        stale Person while the real User node collected none.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        # Run 1: no user for this email, so a Person is created and cached.
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
+
+        assert await proc._resolve_principal("alice@partner.com", tx_store) == (
+            "person-1", CollectionNames.PEOPLE.value
+        )
+
+        # Between runs Alice joins, so run 2's user sync mints a User for her.
+        await proc.on_new_app_users([])
+        tx_store.get_user_by_email.return_value = MagicMock(id="user-alice")
+
+        assert await proc._resolve_principal("alice@partner.com", tx_store) == (
+            "user-alice", CollectionNames.USERS.value
+        )
+
+    @pytest.mark.asyncio
+    async def test_cache_survives_within_a_run(self):
+        """The reset is per run, not per call: repeated resolution inside one run must
+        still cost a single lookup."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_by_email.return_value = MagicMock(id="user-1")
+
+        await proc.on_new_app_users([])
+        for _ in range(10):
+            await proc._resolve_principal("member@corp.com", tx_store)
+
+        assert tx_store.get_user_by_email.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_upserts_users(self):
         """Upserts users within transaction."""
         proc = _make_processor()
@@ -3372,11 +3418,14 @@ class TestHandleRecordPermissionsEntityTypes:
         tx_store.batch_create_edges.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_user_permission_user_not_found_skips(self):
-        """Skips when user not found (external user)."""
+    async def test_user_permission_unknown_email_creates_person(self):
+        """An email belonging to no user is an external collaborator: a Person is
+        created and the grant is recorded against it rather than dropped."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
 
         record = _make_record()
         record.id = "rec-1"
@@ -3389,7 +3438,10 @@ class TestHandleRecordPermissionsEntityTypes:
 
         await proc._handle_record_permissions(record, [perm], tx_store)
 
-        proc.logger.warning.assert_called()
+        tx_store.upsert_person_by_email.assert_awaited_once()
+        edges = tx_store.batch_create_edges.await_args.args[0]
+        assert edges[0]["from_id"] == "person-1"
+        assert edges[0]["from_collection"] == CollectionNames.PEOPLE.value
 
     @pytest.mark.asyncio
     async def test_exception_logs_error(self):
@@ -3417,29 +3469,72 @@ class TestHandleRecordPermissionsEntityTypes:
 # ===========================================================================
 
 
-class TestUpsertExternalPerson:
+class TestResolvePrincipal:
     @pytest.mark.asyncio
-    async def test_upserts_person_and_returns_id(self):
-        """Upserts person record and returns person id."""
+    async def test_prefers_existing_user(self):
+        """A platform user wins; no Person is created for them."""
         proc = _make_processor()
         tx_store = _make_tx_store()
-        tx_store.batch_upsert_people = AsyncMock()
+        tx_store.get_user_by_email.return_value = MagicMock(id="user-1")
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock()
 
-        result = await proc._upsert_external_person("Test@Example.com", tx_store)
+        assert await proc._resolve_principal("a@corp.com", tx_store) == (
+            "user-1", CollectionNames.USERS.value
+        )
+        tx_store.upsert_person_by_email.assert_not_awaited()
 
-        assert result is not None
-        tx_store.batch_upsert_people.assert_awaited_once()
+    @pytest.mark.asyncio
+    async def test_falls_back_to_existing_person(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(
+            return_value=Person(id="person-9", email="out@x.io")
+        )
+        tx_store.upsert_person_by_email = AsyncMock()
+
+        assert await proc._resolve_principal("out@x.io", tx_store) == (
+            "person-9", CollectionNames.PEOPLE.value
+        )
+        tx_store.upsert_person_by_email.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_returns_surviving_id_not_local_uuid(self):
+        """A concurrent sync may have created the node first, so the id the upsert
+        reports back is the one edges must point at."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="survivor-id")
+
+        assert await proc._resolve_principal("out@x.io", tx_store) == (
+            "survivor-id", CollectionNames.PEOPLE.value
+        )
+
+    @pytest.mark.asyncio
+    async def test_caches_across_records(self):
+        """The same collaborator repeated across records costs one resolution."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
+
+        for _ in range(50):
+            await proc._resolve_principal("Out@X.io", tx_store)
+
+        assert tx_store.upsert_person_by_email.await_count == 1
+        assert tx_store.get_user_by_email.await_count == 1
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self):
-        """Returns None on exception."""
         proc = _make_processor()
         tx_store = _make_tx_store()
-        tx_store.batch_upsert_people = AsyncMock(side_effect=RuntimeError("db fail"))
+        tx_store.get_user_by_email.side_effect = RuntimeError("db fail")
 
-        result = await proc._upsert_external_person("test@example.com", tx_store)
-
-        assert result is None
+        assert await proc._resolve_principal("out@x.io", tx_store) is None
         proc.logger.error.assert_called()
 
 
