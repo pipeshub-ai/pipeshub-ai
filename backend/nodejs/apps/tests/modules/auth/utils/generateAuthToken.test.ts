@@ -2,7 +2,6 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import jwt from 'jsonwebtoken';
-import mongoose from 'mongoose';
 import {
   generateAuthToken,
   generateFetchConfigAuthToken,
@@ -55,7 +54,7 @@ describe('generateAuthToken', () => {
 
     expect(findOneStub.calledOnce).to.be.true;
     expect(findOneStub.firstCall.args[0]).to.deep.include({
-      _id: new mongoose.Types.ObjectId(validOrgId),
+      _id: validOrgId,
       isDeleted: false,
     });
   });
