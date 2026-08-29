@@ -107,8 +107,8 @@ services:
       - EMBEDDING_SERVER_URL=http://localhost:8002
 
       # Graph database selection — set by install.sh
-      # DATA_STORE accepted values: "arangodb" (default) | "neo4j"
-      - DATA_STORE=${DATA_STORE:-arangodb}
+      # DATA_STORE accepted values: "neo4j" (default) | "arangodb"
+      - DATA_STORE=${DATA_STORE:-neo4j}
 
       # ArangoDB (active when DATA_STORE=arangodb)
       - ARANGO_URL=http://arango:8529
