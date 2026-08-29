@@ -127,6 +127,7 @@ export class MailController {
       });
 
       const mailEntry = new MailModel({
+        orgId: bodyData.orgId,
         subject: bodyData.subject,
         from: bodyData.fromEmailDomain,
         to: bodyData.sendEmailTo,

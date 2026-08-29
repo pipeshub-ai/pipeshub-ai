@@ -53,7 +53,7 @@ describe('generateAuthToken', () => {
 
     expect(findOneStub.calledOnce).to.be.true;
     expect(findOneStub.firstCall.args[0]).to.deep.include({
-      orgId: 'org123',
+      _id: 'org123',
       isDeleted: false,
     });
   });

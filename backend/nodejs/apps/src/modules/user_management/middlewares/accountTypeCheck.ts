@@ -5,6 +5,7 @@ import {
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { Org } from '../../../config';
+import mongoose from 'mongoose';
 
 export const accountTypeCheck = async (
   req: AuthenticatedUserRequest,
@@ -16,7 +17,7 @@ export const accountTypeCheck = async (
     if (!orgId) {
       throw new NotFoundError('Account not found');
     }
-    const org = await Org.findOne({ orgId, isDeleted: false });
+    const org = await Org.findOne({ _id: new mongoose.Types.ObjectId(orgId), isDeleted: false });
     if (!org) {
       throw new BadRequestError('Organisation not found');
     }

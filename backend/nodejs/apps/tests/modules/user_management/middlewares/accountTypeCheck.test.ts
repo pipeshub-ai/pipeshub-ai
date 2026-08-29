@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import mongoose from 'mongoose';
 import { accountTypeCheck } from '../../../../src/modules/user_management/middlewares/accountTypeCheck';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 
@@ -95,7 +96,7 @@ describe('accountTypeCheck Middleware', () => {
     expect(orgFindStub.calledOnce).to.be.true;
     const query = orgFindStub.firstCall.args[0];
     expect(query).to.deep.equal({
-      orgId: '507f1f77bcf86cd799439012',
+      _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439012'),
       isDeleted: false,
     });
   });
