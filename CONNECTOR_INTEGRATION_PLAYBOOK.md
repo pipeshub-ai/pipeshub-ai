@@ -270,10 +270,9 @@ backend/
 
 frontend/
 └── public/
-    └── assets/
-        └── icons/
-            └── connectors/
-                └── yourconnector.svg           # 🆕 Add connector icon
+    └── icons/
+        └── connectors/
+            └── yourconnector.svg               # 🆕 Add connector icon
 ```
 
 ### Key Components Overview
@@ -299,37 +298,42 @@ Connector data is stored in Graph DB as a **property graph** - a network of node
 
 | Node Type                                                                                                            | Collection     | Purpose                                                        | Example                                        |
 | -------------------------------------------------------------------------------------------------------------------- | -------------- | -------------------------------------------------------------- | ---------------------------------------------- |
-| **[Record](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L44)**         | `records`      | Base entity for all synced data (files, emails, tickets, etc.) | A document, email, or webpage                  |
-| **[FileRecord](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L134)**    | `files`        | File-specific metadata (size, hash, extension)                 | `invoice.pdf`, `presentation.pptx`             |
-| **[MailRecord](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L237)**    | `mails`        | Email-specific metadata (subject, from, to, thread)            | An email message                               |
-| **[WebpageRecord](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L266)** | `webpages`     | Webpage-specific metadata                                      | A Confluence page, Notion page                 |
-| **[TicketRecord](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L288)**  | `tickets`      | Ticket-specific metadata (status, priority, assignee)          | A Jira issue, Linear ticket                    |
-| **[RecordGroup](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L431)**   | `recordGroups` | Container for records                                          | Slack channel, SharePoint site, mailbox, drive |
-| **[User](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L539)**          | `users`        | System users in your organization                              | Active user accounts                           |
-| **[AppUser](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L612)**       | `users`        | Connector-specific user identities                             | External users, service accounts               |
+| **[Record](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)**         | `records`      | Base entity for all synced data (files, emails, tickets, etc.) | A document, email, or webpage                  |
+| **[FileRecord](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)**    | `files`        | File-specific metadata (size, hash, extension)                 | `invoice.pdf`, `presentation.pptx`             |
+| **[MailRecord](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)**    | `mails`        | Email-specific metadata (subject, from, to, thread)            | An email message                               |
+| **[WebpageRecord](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)** | `webpages`     | Webpage-specific metadata                                      | A Confluence page, Notion page                 |
+| **[TicketRecord](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)**  | `tickets`      | Ticket-specific metadata (status, priority, assignee)          | A Jira issue, Linear ticket                    |
+| **[RecordGroup](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)**   | `recordGroups` | Container for records                                          | Slack channel, SharePoint site, mailbox, drive |
+| **[User](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)**          | `users`        | System users in your organization                              | Active user accounts                           |
+| **[AppUser](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)**       | `users`        | Connector-specific user identities                             | External users, service accounts               |
 
 ### Core Edge Types (Relationships)
 
 | Edge Type                                                                                                                        | Collection        | From → To                           | Purpose                                | Example                                      |
 | -------------------------------------------------------------------------------------------------------------------------------- | ----------------- | ----------------------------------- | -------------------------------------- | -------------------------------------------- |
-| **[Permissions](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/permission.py#L22)**              | `permissions`     | User → Record                       | Access control (READER, WRITER, OWNER) | User has READ access to a file               |
-| **[RecordRelations](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py#L221)** | `recordRelations` | Record → Record                     | Record-to-record relationships         | Folder contains file, email has attachment   |
+| **[Permissions](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/permission.py)**              | `permissions`     | User → Record                       | Access control (READER, WRITER, OWNER) | User has READ access to a file               |
+| **[RecordRelations](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py)** | `recordRelations` | Record → Record                     | Record-to-record relationships         | Folder contains file, email has attachment   |
 | **IsOfType**                                                                                                                     | `isOfType`        | Record → FileRecord/MailRecord/etc. | Links base record to specific type     | Base record is a FileRecord                  |
 | **BelongsTo**                                                                                                                    | `belongsTo`       | Record/User → RecordGroup           | Membership in a container              | File belongs to a drive, user belongs to org |
 
 #### RecordRelations Types
 
-The `recordRelations` edge has a `relationshipType` field that defines the relationship (see [`RecordRelations` enum](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py#L221)):
+The `recordRelations` edge has a `relationshipType` field that defines the relationship (see [`RecordRelations` enum](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py)):
 
 | Relationship Type | Use Case                     | Example                                      |
 | ----------------- | ---------------------------- | -------------------------------------------- |
 | **PARENT_CHILD**  | Hierarchical structure       | Folder contains file, Drive contains folder  |
 | **SIBLING**       | Related items at same level  | Emails in same thread, related documents     |
 | **ATTACHMENT**    | One item attached to another | File attached to email, attachment to ticket |
+| **LINKED_TO**     | Explicit cross-reference     | Page links to another page                   |
+| **BLOCKS**        | One item blocks another      | Ticket blocks another ticket                 |
+| **DEPENDS_ON**    | One item depends on another  | Ticket depends on another ticket             |
+| **DUPLICATES**    | One item duplicates another  | Duplicate ticket or issue                    |
+| **OTHERS**        | Anything not covered above   | Fallback relationship                        |
 
 ### Record Fields Reference
 
-Every [`Record`](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L44) entity has these key fields:
+Every [`Record`](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py) entity has these key fields:
 
 | Field                         | Graph DB Key                  | Type   | Required | Purpose                                                    |
 | ----------------------------- | ----------------------------- | ------ | -------- | ---------------------------------------------------------- |
@@ -527,11 +531,11 @@ Record (Email 1) ←─ recordRelations (SIBLING) ─→ Record (Email 2)
 
 - [ ] **Python Test File**
 
-  - `backend/python/app/connectors/sources/{vendor}/{connector_name}/test.py`
+  - `backend/python/tests/unit/connectors/sources/test_{connector_name}_connector.py`
 
 - [ ] **Frontend Connector Icon**
 
-  - `frontend/public/assets/icons/connectors/{connector_name}.svg`
+  - `frontend/public/icons/connectors/{connector_name}.svg`
 
 - [ ] **External API Client** (optional - if not exists)
   - `backend/python/app/sources/external/{vendor}/{connector_name}/{connector_name}.py`
@@ -854,7 +858,7 @@ async def _get_all_users_external(self) -> List[AppUser]:
         # response = await self.external_client.get_users()
 
         # TODO: Transform to AppUser entities
-        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L612
+        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py
         users = []
         # for user_data in response:
         #     app_user = AppUser(
@@ -879,7 +883,7 @@ async def _process_entities(self, org_id: str, users: List[AppUser]) -> None:
     """Process entities and create records."""
     try:
         # Save users to database
-        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py#L268
+        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py
         await self.data_entities_processor.on_new_app_users(users)
 
         # Process each user's data
@@ -897,7 +901,7 @@ async def _process_user_data(self, org_id: str, user: AppUser) -> None:
         # items = await self.external_client.get_items(user.source_user_id)
 
         # TODO: Read sync point for delta sync
-        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/sync_point/sync_point.py#L16
+        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/sync_point/sync_point.py
         sync_point_key = generate_record_sync_point_key(
             RecordType.FILE.value,  # Or appropriate type
             "users",
@@ -917,7 +921,7 @@ async def _process_user_data(self, org_id: str, user: AppUser) -> None:
         #     records_with_permissions.append((record, permissions))
 
         # Save records in batch
-        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py#L205
+        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py
         if records_with_permissions:
             await self.data_entities_processor.on_new_records(records_with_permissions)
 
@@ -938,7 +942,7 @@ def _transform_to_record(self, org_id: str, item: Dict, user: AppUser) -> Record
     """Transform external API item to Record entity."""
 
     # Example for FileRecord (adjust based on your data type)
-    # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L134
+    # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py
     record = FileRecord(
         id=str(uuid.uuid4()),
         org_id=org_id,
@@ -989,7 +993,7 @@ def _extract_permissions(self, item: Dict, owner: AppUser) -> List[Permission]:
 
     try:
         # Owner permission
-        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/permission.py#L22
+        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/permission.py
         permissions.append(Permission(
             email=owner.email,
             type=PermissionType.OWNER,
@@ -1046,9 +1050,11 @@ class ConnectorFactory:
 
 ### Step 7.1: Add Connector Icon
 
-**File:** `frontend/public/assets/icons/connectors/yourconnector.svg`
+**File:** `frontend/public/icons/connectors/yourconnector.svg`
 
-> 💡 **Tip:** You can use existing brand icons or create custom ones. Ensure the path matches the one specified in your `@ConnectorBuilder` decorator.
+> 💡 **Tip:** You can use existing brand icons or create custom ones.
+>
+> `IconPaths.connector_icon()` builds the path as `/icons/connectors/{name}.svg`, lowercased with spaces removed, so a file placed here is found automatically. If you set `.with_icon()` by hand instead, the path must start `/icons/connectors/` — a file under `public/assets/` is not served at that address.
 
 ### Step 7.2: Frontend UI Integration
 
@@ -1060,7 +1066,9 @@ The connector will automatically appear in the UI once configured.
 
 ### Step 8.1: Create Test File
 
-**File:** `backend/python/app/connectors/sources/{vendor}/{connector_name}/test.py`
+**File:** `backend/python/tests/unit/connectors/sources/test_{connector_name}_connector.py`
+
+Connector tests live under `backend/python/tests/`, which is where pytest collects them. A file placed inside `app/` is never run. Run yours with `pytest tests/unit/connectors/sources/test_{connector_name}_connector.py` from `backend/python`.
 
 ```python
 """
@@ -1292,7 +1300,7 @@ Ensure the following services are running:
 
 #### Test File Debugging (Recommended for Development)
 
-**Location:** `backend/python/app/connectors/sources/{vendor}/{connector_name}/test.py`
+**Location:** `backend/python/tests/unit/connectors/sources/test_{connector_name}_connector.py`
 
 This is the simplest way to debug connector logic without running the full system:
 
@@ -1817,9 +1825,9 @@ Events are published automatically by `DataEntitiesProcessor` when you call:
 ```python
 # This publishes newRecord events to Kafka automatically
 # See usage examples:
-# - OneDrive: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/sources/microsoft/onedrive/connector.py#L523
-# - SharePoint: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/sources/microsoft/sharepoint_online/connector.py#L536
-# - Confluence: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/sources/atlassian/confluence_cloud/connector.py#L389
+# - OneDrive: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/sources/microsoft/onedrive/connector.py
+# - SharePoint: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/sources/microsoft/sharepoint_online/connector.py
+# - Confluence: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/sources/atlassian/confluence_cloud/connector.py
 await self.data_entities_processor.on_new_records(records_with_permissions)
 ```
 
@@ -1839,8 +1847,8 @@ You don't need to manually publish events in most cases.
 - **Data Models:**
   - [Record Models](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py) - Record, FileRecord, MailRecord, WebpageRecord, TicketRecord
   - [Permission Models](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/permission.py) - Permission, PermissionType
-  - [User Models](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L539) - User, AppUser
-  - [RecordGroup](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L431) - Container entities
+  - [User Models](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py) - User, AppUser
+  - [RecordGroup](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py) - Container entities
 - **Constants & Enums:**
   - [ArangoDB Constants](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py) - Connectors, RecordType, RecordRelations, PermissionType, etc.
 
