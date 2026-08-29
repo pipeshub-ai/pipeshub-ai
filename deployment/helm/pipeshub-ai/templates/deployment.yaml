@@ -104,6 +104,8 @@ spec:
               value: {{ .Values.config.samlSpEntityId | default .Values.config.frontendPublicUrl | default "pipeshub" | quote }}
             
             # Security settings
+            - name: HIDE_SECRET_CONFIG
+              value: {{ .Values.config.hideSecretConfig | quote }}
             - name: SECRET_KEY
               valueFrom:
                 secretKeyRef:
