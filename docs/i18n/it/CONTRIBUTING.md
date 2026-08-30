@@ -6,6 +6,12 @@
 
 </div>
 
+> [!NOTE]
+> This translation is behind the English original and may contain outdated setup
+> instructions. For the current guide, see
+> [CONTRIBUTING.md](../../../CONTRIBUTING.md).
+
+
 Benvenuto nel nostro progetto open source! Siamo lieti che tu sia interessato a contribuire. Questo documento fornisce linee guida e istruzioni per aiutarti a iniziare come collaboratore.
 
 ## 💻 Build di contributo per sviluppatori
@@ -63,12 +69,12 @@ brew install mariadb-connector-c # Add to path
 
 **Redis:**
 ```bash
-docker run -d --name redis --restart always -p 6379:6379 redis:bookworm
+docker run -d --name redis --restart always -p 6379:6379 redis:7.4-bookworm
 ```
 
 **Qdrant:** (l'API Key deve corrispondere a .env)
 ```bash
-docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.13.6
+docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.15
 ```
 
 **Server ETCD:**
@@ -126,7 +132,7 @@ Bash:
 docker run -d --name mongodb --restart always -p 27017:27017 \
   -e MONGO_INITDB_ROOT_USERNAME=admin \
   -e MONGO_INITDB_ROOT_PASSWORD=password \
-  mongo:8.0.6
+  mongo:8.0.17
 ```
 
 Powershell:
@@ -134,7 +140,7 @@ Powershell:
 docker run -d --name mongodb --restart always -p 27017:27017 `
   -e MONGO_INITDB_ROOT_USERNAME=admin `
   -e MONGO_INITDB_ROOT_PASSWORD=password `
-  mongo:8.0.6
+  mongo:8.0.17
 ```
 
 **Zookeeper:**
