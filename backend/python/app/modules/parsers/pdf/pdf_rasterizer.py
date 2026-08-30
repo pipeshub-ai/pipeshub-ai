@@ -24,6 +24,8 @@ import numpy as np
 import pdfplumber
 from PIL import Image
 
+from app.utils.worker_scaling import scaled
+
 if TYPE_CHECKING:
     from app.services.resource_governor import ResourceGovernor
 
@@ -63,7 +65,7 @@ PDF_RASTER_WORKERS = _get_pdf_raster_worker_count()
 @lru_cache(maxsize=1)
 def _get_pdf_raster_pool() -> ProcessPoolExecutor:
     return ProcessPoolExecutor(
-        max_workers=PDF_RASTER_WORKERS,
+        max_workers=scaled(PDF_RASTER_WORKERS),
         mp_context=multiprocessing.get_context("spawn"),
     )
 

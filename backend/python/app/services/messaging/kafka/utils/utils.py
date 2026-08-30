@@ -104,7 +104,13 @@ class KafkaUtils:
 
     @staticmethod
     async def create_aiconfig_kafka_consumer_config(app_container: QueryAppContainer) -> KafkaConsumerConfig:
-        """Create Kafka configuration for AI config events"""
+        """Create Kafka configuration for AI config events.
+
+        Not used by the query service, which goes through
+        ``MessagingUtils.create_aiconfig_consumer_config``. Prefer that: this one uses a
+        single shared group, so with more than one query process only ONE of them would
+        receive a model change and the rest would serve a stale LLM until restart.
+        """
         return await KafkaUtils._create_base_consumer_config(
             app_container, KafkaConstants.CLIENT_ID_AICONFIG_CONSUMER.value, KafkaConstants.GROUP_ID_AICONFIG.value, [Topic.AI_CONFIG_EVENTS.value]
         )

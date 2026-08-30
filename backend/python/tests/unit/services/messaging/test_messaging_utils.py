@@ -379,8 +379,36 @@ class TestConvenienceConsumerConfigs:
         config = await MessagingUtils.create_aiconfig_consumer_config(container)
         assert isinstance(config, KafkaConsumerConfig)
         assert config.client_id == "aiconfig_consumer_client"
-        assert config.group_id == "aiconfig_consumer_group"
         assert config.topics == [Topic.AI_CONFIG_EVENTS.value]
+        # Per-process group: a shared group would deliver an AI-config change to only
+        # one worker, leaving the rest serving a stale cached LLM.
+        assert config.group_id.startswith("aiconfig_consumer_group-")
+        assert config.group_id != "aiconfig_consumer_group"
+
+    @pytest.mark.asyncio
+    @patch("app.services.messaging.utils.get_message_broker_type",
+           return_value=MessageBrokerType.REDIS)
+    @patch("app.services.messaging.utils.messaging_env")
+    async def test_aiconfig_redis_config_is_ephemeral(self, mock_env, _mock_broker) -> None:
+        """The Redis twin of the Kafka assertion: a regression that only hit Redis
+        Streams would otherwise go green."""
+        mock_env.redis_streams_maxlen = 10000
+        mock_env.message_batch_size_simple = 10
+        container = _make_app_container()
+        config = await MessagingUtils.create_aiconfig_consumer_config(container)
+        assert isinstance(config, RedisStreamsConfig)
+        assert config.ephemeral_group is True
+        assert config.group_id.startswith("aiconfig_consumer_group-")
+
+    @pytest.mark.asyncio
+    @patch("app.services.messaging.utils.get_message_broker_type",
+           return_value=MessageBrokerType.KAFKA)
+    async def test_aiconfig_consumer_group_is_stable_within_a_process(self, _mock_broker) -> None:
+        """The group must not change between calls, or a reconnect orphans the old one."""
+        container = _make_app_container()
+        first = await MessagingUtils.create_aiconfig_consumer_config(container)
+        second = await MessagingUtils.create_aiconfig_consumer_config(container)
+        assert first.group_id == second.group_id
 
     @pytest.mark.asyncio
     @patch("app.services.messaging.utils.get_message_broker_type",

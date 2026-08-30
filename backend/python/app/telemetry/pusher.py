@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import os
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -67,6 +69,12 @@ def _interval_s(raw_value: object) -> float:
     if ms <= 0:
         ms = float(DEFAULT_PUSH_INTERVAL_MS)
     return ms / 1000
+
+
+# Every uvicorn worker runs its own pusher, but `instanceId` is installation-wide and
+# `service` is a constant, so without this the collector receives N conflicting
+# registries under one identity and cannot tell them apart.
+_PROCESS_ID = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
 
 class MetricsPusher:
@@ -161,6 +169,7 @@ class MetricsPusher:
         payload = {
             "metrics": metrics_text,
             "instanceId": cfg["install_id"],
+            "processId": _PROCESS_ID,
             "version": cfg["version"],
             "metricsVersion": METRICS_VERSION,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -212,6 +221,7 @@ class MetricsPusher:
             return
         payload = {
             "instanceId": cfg["install_id"],
+            "processId": _PROCESS_ID,
             "service": self._service_name,
             "version": cfg["version"],
             "metricsVersion": METRICS_VERSION,

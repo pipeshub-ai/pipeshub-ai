@@ -82,6 +82,16 @@ spec:
               value: {{ .Values.config.maxConcurrentIndexing | quote }}
             - name: MAX_PENDING_INDEXING_TASKS
               value: {{ .Values.config.maxPendingIndexingTasks | quote }}
+            - name: QUERY_UVICORN_WORKERS
+              value: {{ .Values.config.queryUvicornWorkers | quote }}
+            - name: PIPESHUB_AGENT_TRANSPORT
+              value: {{ .Values.config.agentTransport | quote }}
+            - name: PIPESHUB_ACCESSIBLE_RECORDS_CACHE
+              value: {{ .Values.config.accessibleRecordsCache | quote }}
+            - name: PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL
+              value: {{ .Values.config.accessibleRecordsCacheTtl | quote }}
+            - name: PIPESHUB_SIGNED_URL_CACHE_SECONDS
+              value: {{ .Values.config.signedUrlCacheSeconds | quote }}
             - name: DISTRIBUTED_INDEXING_CONCURRENCY
               value: {{ .Values.config.distributedIndexingConcurrency | quote }}
             - name: INDEXING_CONCURRENCY_KEY_PREFIX

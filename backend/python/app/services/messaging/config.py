@@ -355,3 +355,13 @@ class RedisStreamsConfig(RedisConfig):
     client_id: str = "pipeshub"
     group_id: str = "default_group"
     topics: list[str] = Field(default_factory=list)
+    ephemeral_group: bool = Field(
+        default=False,
+        description=(
+            "Group belongs to one process and is disposable: created at the stream tail "
+            "instead of the head (so a fresh group does not replay retained history) and "
+            "destroyed on shutdown (so groups do not accumulate, since Redis never "
+            "expires them). Used for broadcast consumers, where every process needs its "
+            "own group to receive every message."
+        ),
+    )

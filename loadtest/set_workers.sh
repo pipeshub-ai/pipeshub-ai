@@ -46,10 +46,21 @@ if [ "$N" = "restore" ]; then
     echo "== Restoring original launcher (python -m app.query_main)"
     want=1
 else
-    echo "== Setting query service to $N uvicorn worker(s)"
-    sed -i "s|    python -m app.query_main &|    python -m uvicorn app.query_main:app --host 0.0.0.0 --port ${PIPESHUB_QUERY_PORT} --workers $N \&|" "$TMP"
-    grep -q -- "--workers $N" "$TMP" || { echo "sed did not match the launch line" >&2; exit 1; }
-    want=$N
+    cat >&2 <<MSG
+Rewriting the launcher is no longer how you set worker counts, and doing it now would
+give you misleading numbers.
+
+QUERY_UVICORN_WORKERS is a supported variable. run() reads it and execs the uvicorn CLI
+itself -- and, crucially, lifespan reads the SAME variable to divide per-process budgets
+(concurrent LLM calls, storage connections). Patching only the command line leaves N
+processes each claiming the full caps, so the run measures a configuration nobody ships.
+
+    set QUERY_UVICORN_WORKERS=$N in deployment/docker-compose/.env
+    docker compose -p pipeshub-ai up -d pipeshub-ai      # recreate; restart won't do it
+
+'restore' still works here and puts back the original launcher.
+MSG
+    exit 1
 fi
 
 $DOCKER cp "$TMP" "$CONTAINER:/app/process_monitor.sh"
