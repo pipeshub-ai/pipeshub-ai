@@ -1092,38 +1092,60 @@ from app.connectors.sources.{vendor}.{connector_name}.connector import YourConne
 
 
 def _make_connector() -> YourConnector:
-    """Build a connector with every dependency mocked."""
+    """Build a connector with every dependency mocked.
+
+    The four arguments match `YourConnector.__init__` from Step 6.2. The
+    entities processor cannot be omitted: its `org_id` is read while the
+    connector is being constructed, to build the SyncPoint.
+    """
     return YourConnector(
         logger=MagicMock(),
+        data_entities_processor=MagicMock(org_id="org-1"),
         data_store_provider=MagicMock(),
         config_service=MagicMock(),
     )
 
 
 class TestYourConnector:
+    """`init()` has three outcomes. Patch what it calls: `_get_credentials`
+    and `test_connection_and_access`, both defined in Step 6.2."""
+
     @pytest.mark.asyncio
     async def test_init_success(self):
         connector = _make_connector()
-        mock_client = AsyncMock()
 
-        with patch(
-            "app.connectors.sources.{vendor}.{connector_name}.connector.YourAPIClient"
-        ) as MockClient:
-            MockClient.build_from_services = AsyncMock(return_value=mock_client)
+        with patch.object(
+            connector, "_get_credentials", AsyncMock(return_value={"token": "t"})
+        ), patch.object(connector, "test_connection_and_access", return_value=True):
             assert await connector.init() is True
 
     @pytest.mark.asyncio
-    async def test_init_failure_returns_false(self):
+    async def test_init_returns_false_when_connection_test_fails(self):
         connector = _make_connector()
 
-        with patch(
-            "app.connectors.sources.{vendor}.{connector_name}.connector.YourAPIClient"
-        ) as MockClient:
-            MockClient.build_from_services = AsyncMock(side_effect=Exception("boom"))
+        with patch.object(
+            connector, "_get_credentials", AsyncMock(return_value={"token": "t"})
+        ), patch.object(connector, "test_connection_and_access", return_value=False):
+            assert await connector.init() is False
+
+    @pytest.mark.asyncio
+    async def test_init_returns_false_when_credentials_fail(self):
+        connector = _make_connector()
+
+        with patch.object(
+            connector, "_get_credentials", AsyncMock(side_effect=Exception("no credentials"))
+        ):
             assert await connector.init() is False
 ```
 
-`asyncio_mode = auto` is set, so an `async def test_*` runs without any extra decoration; the explicit `@pytest.mark.asyncio` above just matches the style of the existing tests.
+Patch the methods the connector actually calls, not an API client symbol. The
+boilerplate's `init()` reads `data_entities_processor.org_id`, awaits
+`_get_credentials()`, then calls `test_connection_and_access()` — so those are
+what a test controls. Once you replace the TODOs in Step 6.2 with a real client,
+patch that client where `init()` builds it.
+
+`asyncio_mode = auto` is set, so `async def test_*` runs without decoration; the
+explicit `@pytest.mark.asyncio` above matches the style of the existing tests.
 
 > [!WARNING]
 > Do not put a `__main__` script that connects to real services inside `tests/`.
