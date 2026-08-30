@@ -157,7 +157,9 @@ services:
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-}
       - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-}
-      - QUERY_UVICORN_WORKERS=${QUERY_UVICORN_WORKERS:-1}
+      # No :-1 default: an injected value would shadow WEB_CONCURRENCY, which
+      # uvicorn honours when a worker count is not set explicitly.
+      - QUERY_UVICORN_WORKERS=${QUERY_UVICORN_WORKERS:-}
       # Query-service runtime tuning. Defaults reproduce current behaviour:
       # langchain transport, accessible-records cache on, signed-URL cache off.
       - PIPESHUB_AGENT_TRANSPORT=${PIPESHUB_AGENT_TRANSPORT:-langchain}

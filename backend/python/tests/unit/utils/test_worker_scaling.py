@@ -15,7 +15,12 @@ from app.utils.worker_scaling import (
 
 @pytest.fixture(autouse=True)
 def _reset_count():
-    """Module state is global; put it back so test order cannot matter."""
+    """Module state is global; reset on both sides so test order cannot matter.
+
+    Resetting only on teardown would let an earlier module that declared a count
+    leak into the first assertion here.
+    """
+    set_process_worker_count(1)
     yield
     set_process_worker_count(1)
 
