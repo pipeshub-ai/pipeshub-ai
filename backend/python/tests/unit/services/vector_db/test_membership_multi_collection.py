@@ -278,6 +278,45 @@ class TestStaleCollectionPurge:
 
         vdb.delete_points.assert_not_awaited()
 
+    async def test_an_unreadable_record_document_does_not_delete_live_points(self):
+        """The shape the key-count check above misses.
+
+        Both providers' `get_document` catch every exception and return None,
+        so a dropped connection looks exactly like "this record does not
+        exist". The record key is still reported, so the re-read does not come
+        back shorter — the document simply never resolves, its collection
+        drops out of the live set, and its points get deleted while the record
+        is very much alive.
+        """
+        drive = _record("rec-a", "conn-drive", "GOOGLE_DRIVE")
+        slack = _record("rec-b", "conn-slack", "SLACK")
+
+        gp = AsyncMock()
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-a", "rec-b"])
+        # rec-a is live, but the graph cannot be read for it right now.
+        gp.get_document = AsyncMock(
+            side_effect=lambda key, _c: slack if key == "rec-b" else None
+        )
+        gp.get_edges_from_node = AsyncMock(return_value=[])
+        gp.delete_nodes = AsyncMock()
+        vdb = _vdb()
+
+        await rewrite_or_delete_virtual_record(vdb, _locator(), gp, "vr-1", MagicMock())
+
+        assert drive  # the record exists; only the read failed
+        vdb.delete_points.assert_not_awaited()
+
+    async def test_a_complete_read_still_purges(self):
+        """The guard must not disable the sweep it protects: when every record
+        document resolves, the departed collection is still cleared."""
+        gp = _graph([_record("rec-b", "conn-slack", "SLACK")])
+        vdb = _vdb()
+
+        await rewrite_or_delete_virtual_record(vdb, _locator(), gp, "vr-1", MagicMock())
+
+        purged = {c.kwargs["collection_name"] for c in vdb.delete_points.await_args_list}
+        assert purged == {"google_drive_records"}
+
     async def test_a_skipped_membership_write_skips_the_purge(self):
         """When the graph resolved no connectorIds the sync declines to write;
         acting on that same unusable answer to delete would be worse."""

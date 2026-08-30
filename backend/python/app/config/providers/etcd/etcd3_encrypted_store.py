@@ -142,7 +142,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             existing_value = await self.store.get_key(key)
             if existing_value is not None and not overwrite:
                 self.logger.debug("⏭️ Skipping existing key: %s", key)
-                return True
+                return False  # Key was not created (already exists)
 
             # Convert value to JSON string
             value_json = json.dumps(value)

@@ -249,6 +249,13 @@ class VirtualRecordState:
     connector_ids: list[str]
     record_group_ids: list[str]
     records: list[Any]
+    #: False when the graph did not return a document for every record key it
+    #: reported for this VRID. Both providers' ``get_document`` swallow every
+    #: exception and return ``None``, so a dropped connection is otherwise
+    #: indistinguishable from "this record does not exist" — and a shorter
+    #: ``records`` list makes a collection look abandoned when it is not.
+    #: Destructive callers must refuse to act on an incomplete read.
+    complete: bool = True
 
 
 async def resolve_vector_membership(
@@ -336,12 +343,17 @@ async def resolve_virtual_record_state(
             record_group_ids, seen_groups, _record_group_id_from_record(current_record)
         )
 
+    # Only documents the graph actually returned: a None from a failed
+    # get_document must not reach a strategy as if it were a record.
+    resolved = [doc for doc in docs if isinstance(doc, dict)]
     return VirtualRecordState(
         connector_ids=connector_ids,
         record_group_ids=record_group_ids,
-        # Only documents the graph actually returned: a None from a failed
-        # get_document must not reach a strategy as if it were a record.
-        records=[doc for doc in docs if isinstance(doc, dict)],
+        records=resolved,
+        # A key that resolved to nothing is either a read that failed or a
+        # record deleted mid-flight. Neither is safe to read as "no record
+        # here" on a destructive path, so both count as incomplete.
+        complete=len(resolved) == len(record_keys),
     )
 
 
@@ -484,6 +496,20 @@ async def _drop_points_where_no_record_remains(
     confirmed_state = await resolve_virtual_record_state(
         graph_provider, virtual_record_id
     )
+    if not confirmed_state.complete:
+        # Fail closed: an unresolved record document would drop its collection
+        # out of `still_live` and leave it in `stale`, deleting points a live
+        # record still needs. Keeping them is recoverable — the sweep runs
+        # again on the next rewrite, and the orphan sweeper is the backstop.
+        if logger is not None:
+            logger.warning(
+                "Skipping stale-collection cleanup for virtual record %s: the "
+                "graph did not return every record document, so a collection "
+                "that still holds records could look abandoned",
+                virtual_record_id,
+            )
+        return
+
     still_live = set(locator.collections_for_records(confirmed_state.records))
     stale &= managed - still_live
     if not stale:

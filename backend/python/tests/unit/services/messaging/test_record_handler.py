@@ -152,6 +152,82 @@ class TestBulkDeleteEvent:
         assert events[0].data.count == 0
 
     @pytest.mark.asyncio
+    async def test_a_refused_purge_is_not_acked(self):
+        """`bulk_delete_embeddings` reports success=False when no managed
+        collection resolved: nothing was deleted, and the mapping rows were
+        kept on purpose because they are the only handle the orphan sweeper
+        has on those points. Completing the message here would ack that as
+        done and strip the handle.
+        """
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock(
+            return_value={"virtual_record_ids_deleted": 0, "success": False}
+        )
+
+        with pytest.raises(IndexingError, match="did not complete"):
+            await _collect_events(
+                handler,
+                EventTypes.BULK_DELETE_RECORDS.value,
+                {"virtualRecordIds": ["vr1"]},
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_refused_purge_through_the_connector_path_is_not_acked(self):
+        """purge_connector forwards the same flag, so the connector-scoped
+        route must refuse identically."""
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector = AsyncMock(
+            return_value={"action": "filtered_delete", "success": False}
+        )
+
+        with pytest.raises(IndexingError, match="did not complete"):
+            await _collect_events(
+                handler,
+                EventTypes.BULK_DELETE_RECORDS.value,
+                {"virtualRecordIds": ["vr1"], "connectorId": "conn-1"},
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_drop_result_still_completes(self):
+        """purge_connector's drop and noop results carry no success key at all;
+        `.get("success") is False` must not read that absence as failure."""
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector = AsyncMock(
+            return_value={"action": "drop_collection", "collections": ["drive_records"]}
+        )
+
+        events = await _collect_events(
+            handler,
+            EventTypes.BULK_DELETE_RECORDS.value,
+            {"virtualRecordIds": ["vr1"], "connectorId": "conn-1"},
+        )
+
+        assert len(events) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_successful_purge_still_completes(self):
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock(
+            return_value={"virtual_record_ids_processed": 1, "success": True}
+        )
+
+        events = await _collect_events(
+            handler,
+            EventTypes.BULK_DELETE_RECORDS.value,
+            {"virtualRecordIds": ["vr1"]},
+        )
+
+        assert len(events) == 2
+
+    @pytest.mark.asyncio
     async def test_bulk_delete_with_connector_id_routes_through_purge_connector(self):
         """A connector-scoped payload builds a DeleteContext and goes through
         purge_connector (registry-driven), not the bare bulk_delete_embeddings call."""

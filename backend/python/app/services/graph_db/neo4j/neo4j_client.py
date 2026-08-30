@@ -6,6 +6,7 @@ handling connection pooling, transaction management, and query execution.
 """
 
 import asyncio
+import threading
 from logging import Logger
 from typing import TYPE_CHECKING, Any
 
@@ -43,16 +44,60 @@ class Neo4jClient:
         self.username = username
         self.password = password
         self.database = database
-        self.driver: Any | None = None
+        # A Neo4j driver's connection pool binds to the loop that created it,
+        # so one driver cannot be shared across loops — the indexing service
+        # builds this client on the main loop and runs its pipeline on a worker
+        # loop. Keyed by loop, the same way QdrantService keeps its clients.
+        self._drivers: dict[Any, Any] = {}
+        self._driver_override: Any | None = None
+        self._connect_locks: dict[Any, asyncio.Lock] = {}
+        # Loops live in different threads, so the maps above are guarded by a
+        # threading lock, not an asyncio one.
+        self._drivers_lock = threading.Lock()
         self._active_sessions: dict[str, Any] = {}  # Track active transaction sessions
         self._session_locks: dict[str, asyncio.Lock] = {}  # Lock per transaction to prevent concurrent access
-        self._connect_lock = asyncio.Lock()  # Serialize connect/reconnect attempts
 
         # Log connection details
         self.logger.info(f"🔌 Connecting to Neo4j at {uri}")
         self.logger.info(f"🔌 Username: {username}")
         self.logger.info(f"🔌 Database: {database}")
 
+
+    @staticmethod
+    def _current_loop() -> Any:
+        try:
+            return asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+
+    @property
+    def driver(self) -> Any | None:
+        """The driver bound to the running loop, or None if not connected here."""
+        if self._driver_override is not None:
+            return self._driver_override
+        return self._drivers.get(self._current_loop())
+
+    @driver.setter
+    def driver(self, value: Any | None) -> None:
+        """Assigning a driver serves it to every loop (tests, legacy callers);
+        assigning None clears that and drops this loop's own driver."""
+        if value is None:
+            self._driver_override = None
+            with self._drivers_lock:
+                self._drivers.pop(self._current_loop(), None)
+        else:
+            self._driver_override = value
+
+    def _connect_lock_for_current_loop(self) -> asyncio.Lock:
+        """One lock per loop: an asyncio.Lock binds to the loop that first
+        contends for it, so a shared one would raise on the second loop."""
+        loop = self._current_loop()
+        with self._drivers_lock:
+            lock = self._connect_locks.get(loop)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._connect_locks[loop] = lock
+            return lock
 
     async def connect(self) -> bool:
         """
@@ -62,7 +107,7 @@ class Neo4jClient:
         Returns:
             bool: True if connection successful
         """
-        async with self._connect_lock:
+        async with self._connect_lock_for_current_loop():
             # Double-checked: another coroutine may have connected while we waited
             if self.driver is not None:
                 return True
@@ -71,10 +116,11 @@ class Neo4jClient:
     async def _connect_inner(self) -> bool:
         """Create driver and verify connectivity.
 
-        Must be called with _connect_lock already held to avoid deadlocks.
+        Must be called with this loop's connect lock already held to avoid
+        deadlocks.
         """
         try:
-            self.driver = AsyncGraphDatabase.driver(
+            driver = AsyncGraphDatabase.driver(
                 self.uri,
                 auth=(self.username, self.password),
                 keep_alive=True,
@@ -83,10 +129,12 @@ class Neo4jClient:
                 connection_acquisition_timeout=60,  # wait up to 60s for pool slot under pressure
                 liveness_check_timeout=30,  # verify connection health before reuse from pool
             )
+            with self._drivers_lock:
+                self._drivers[self._current_loop()] = driver
 
             # Test connection
-            await self.driver.verify_connectivity()
-            server_info = await self.driver.get_server_info()
+            await driver.verify_connectivity()
+            server_info = await driver.get_server_info()
             self.logger.info(f"✅ Connected to Neo4j {server_info}")
 
             # Check if database exists and create if needed
@@ -96,15 +144,15 @@ class Neo4jClient:
 
         except ServiceUnavailable as e:
             self.logger.error(f"❌ Failed to connect to Neo4j: {str(e)}")
-            await self._close_driver_safely(self.driver)
+            await self._close_driver_safely(driver)
             return False
         except ClientError as e:
             self.logger.error(f"❌ Failed to connect to Neo4j: {str(e)}")
-            await self._close_driver_safely(self.driver)
+            await self._close_driver_safely(driver)
             return False
         except Exception as e:
             self.logger.error(f"❌ Unexpected error connecting to Neo4j: {str(e)}")
-            await self._close_driver_safely(self.driver)
+            await self._close_driver_safely(driver)
             return False
 
     async def _close_driver_safely(self, failed_driver: Any = None) -> None:
@@ -114,50 +162,15 @@ class Neo4jClient:
         exact same instance — prevents a concurrent coroutine from closing a
         freshly created driver after reconnection.
         """
-        target = failed_driver if failed_driver is not None else self.driver
-        if target is not None and self.driver is target:
+        loop = self._current_loop()
+        target = failed_driver if failed_driver is not None else self._drivers.get(loop)
+        if target is not None and self._drivers.get(loop) is target:
             try:
                 await target.close()
             except Exception:
                 pass
-            self.driver = None
-
-    async def close_for_loop_handover(self) -> None:
-        """Release loop-bound state so another event loop can reconnect.
-
-        Both the driver's connection pool and ``_connect_lock`` bind to the
-        loop that created them: the pool through the futures it holds, the lock
-        the first time it is actually contended. The indexing service builds
-        this client on the main loop and then runs its pipeline on a worker
-        loop, so the handover has to happen here, on the owning loop, and leave
-        nothing behind that the other one would refuse.
-
-        Closing the driver from the destination loop instead raises "attached
-        to a different loop" — which reconnects successfully but abandons the
-        pool, leaking its connections, and emits a warning on every startup
-        that would bury a genuine close failure.
-
-        Safe to call when already disconnected, and never raises: the point is
-        that the next loop starts clean, so a driver that refuses to close is
-        precisely the case that must not stop the handover. ``disconnect()``
-        only handles Neo4j's own errors, and the cross-loop failure this method
-        exists to avoid arrives as a bare ``RuntimeError``.
-        """
-        try:
-            await self.disconnect()
-        except Exception as e:
-            self.logger.warning(
-                "Failed to close the Neo4j driver during loop handover; "
-                "abandoning it and reconnecting: %s",
-                e,
-            )
-        finally:
-            # disconnect() only clears the driver on its success path, and a
-            # stale handle here would make connect() return early and hand the
-            # new loop the old pool.
-            self.driver = None
-            # A fresh lock binds to whichever loop first contends for it.
-            self._connect_lock = asyncio.Lock()
+            with self._drivers_lock:
+                self._drivers.pop(loop, None)
 
     async def _ensure_database_exists(self) -> None:
         """
@@ -198,9 +211,23 @@ class Neo4jClient:
             self._active_sessions.clear()
             self._session_locks.clear()
 
-            if self.driver:
-                await self.driver.close()
-                self.driver = None
+            with self._drivers_lock:
+                drivers = list(self._drivers.values())
+                self._drivers.clear()
+                self._connect_locks.clear()
+            if self._driver_override is not None:
+                drivers.append(self._driver_override)
+                self._driver_override = None
+
+            for driver in drivers:
+                try:
+                    # A driver bound to another (possibly already-stopped) loop
+                    # cannot be closed from here; log and move on rather than
+                    # abandon the remaining ones.
+                    await driver.close()
+                except Exception as e:
+                    self.logger.warning(f"Error closing a Neo4j driver: {str(e)}")
+            if drivers:
                 self.logger.info("✅ Disconnected from Neo4j")
         except (ClientError, ServiceUnavailable) as e:
             self.logger.error(f"❌ Error disconnecting from Neo4j: {str(e)}")
@@ -325,8 +352,8 @@ class Neo4jClient:
                     "Neo4j connection lost during query — reconnecting: %s", e
                 )
                 # Serialize reconnection so concurrent failures don't spawn duplicate drivers.
-                # Using _connect_inner() directly to avoid deadlocking on _connect_lock.
-                async with self._connect_lock:
+                # Using _connect_inner() directly to avoid deadlocking on the lock.
+                async with self._connect_lock_for_current_loop():
                     if self.driver is not stale_driver:
                         # Another coroutine already replaced the driver; skip reconnect.
                         pass

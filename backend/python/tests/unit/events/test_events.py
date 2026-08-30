@@ -2034,3 +2034,117 @@ class TestVectorMembershipHooks:
 
         processor.indexing_pipeline.sync_vector_membership.assert_not_awaited()
 
+
+
+from app.exceptions.indexing_exceptions import IndexingError  # noqa: E402
+
+
+def _fail_every_write_except_md5():
+    """`_check_duplicate_by_md5` persists md5Checksum before it reaches any of
+    the writes under test, so a blanket failure would trip that one instead."""
+    async def _update(record_id, collection, fields):
+        return "md5Checksum" in fields
+
+    return AsyncMock(side_effect=_update)
+
+
+
+class TestFailedGraphWritesAreNotReportedAsSuccess:
+    """A failed write must not be turned into "skip indexing".
+
+    `on_event` answers `skip_indexing=True` by emitting PARSING_COMPLETE and
+    INDEXING_COMPLETE and consuming the message, and the reconciliation sweep in
+    `indexing_main` only revisits QUEUED/IN_PROGRESS records. So a write that
+    quietly failed here strands a record that is neither indexed nor ever looked
+    at again. `IndexingError` classifies as transient: the consumer redelivers,
+    and a persistent failure dead-letters visibly.
+    """
+
+    @pytest.mark.asyncio
+    async def test_failed_md5_write_raises(self):
+        ep, _, _, gp = _make_event_processor()
+        gp.update_node = AsyncMock(return_value=False)
+        doc = {"_key": "r1", "recordType": "FILE", "sizeInBytes": 10}
+
+        with pytest.raises(IndexingError, match="md5Checksum"):
+            await ep._check_duplicate_by_md5(b"payload", doc)
+
+    @pytest.mark.asyncio
+    async def test_failed_duplicate_field_write_raises(self):
+        """Without this the record is marked complete with no virtualRecordId,
+        so it has neither vectors of its own nor a share of the duplicate's."""
+        ep, gp = _make_multi_collection_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-1",
+            "connectorName": "GOOGLE_DRIVE",
+            "virtualRecordId": "vr-1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+        }]
+        gp.update_node = _fail_every_write_except_md5()
+        doc = {
+            "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
+            "recordType": "FILE", "sizeInBytes": 10,
+        }
+
+        with pytest.raises(IndexingError, match="duplicate record fields"):
+            await ep._check_duplicate_by_md5(b"payload", doc)
+
+    @pytest.mark.asyncio
+    async def test_failed_relationship_copy_raises(self):
+        """The record would otherwise be marked COMPLETED while missing the
+        departments/categories/topics edges it inherited the content of."""
+        ep, gp = _make_multi_collection_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-1",
+            "connectorName": "GOOGLE_DRIVE",
+            "virtualRecordId": "vr-1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+        }]
+        gp.copy_document_relationships = AsyncMock(return_value=False)
+        doc = {
+            "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
+            "recordType": "FILE", "sizeInBytes": 10,
+        }
+
+        with pytest.raises(IndexingError, match="relationships"):
+            await ep._check_duplicate_by_md5(b"payload", doc)
+
+    @pytest.mark.asyncio
+    async def test_failed_queued_write_raises(self):
+        """The in-flight branch: QUEUED is the only handle the sweeper has, so
+        losing that write is what strands the record for good."""
+        ep, gp = _make_multi_collection_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-1",
+            "connectorName": "GOOGLE_DRIVE",
+            "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+        }]
+        gp.update_node = _fail_every_write_except_md5()
+        doc = {
+            "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
+            "recordType": "FILE", "sizeInBytes": 10,
+        }
+
+        with pytest.raises(IndexingError, match="QUEUED"):
+            await ep._check_duplicate_by_md5(b"payload", doc)
+
+    @pytest.mark.asyncio
+    async def test_a_successful_in_flight_duplicate_still_skips(self):
+        """The happy path is unchanged: raising is reserved for real failures."""
+        ep, gp = _make_multi_collection_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-1",
+            "connectorName": "GOOGLE_DRIVE",
+            "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+        }]
+        doc = {
+            "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
+            "recordType": "FILE", "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"payload", doc)
+
+        assert result.skip_indexing is True
+        assert doc["indexingStatus"] == ProgressStatus.QUEUED.value

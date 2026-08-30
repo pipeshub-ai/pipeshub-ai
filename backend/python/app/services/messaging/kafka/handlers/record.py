@@ -420,6 +420,21 @@ class RecordEventHandler(BaseEventService):
                 self.logger.info(
                     f"✅ Bulk deletion complete: {result}"
                 )
+                # `bulk_delete_embeddings` reports success=False when it refused
+                # to proceed — no managed collection resolved, so nothing was
+                # deleted and the mapping rows were deliberately kept. Yielding
+                # the completion events below would ack that as done and strip
+                # the only handle a later run has on those points. Raise so the
+                # consumer redelivers; IndexingError classifies as transient,
+                # and the refusal leaves nothing half-applied to retry over.
+                # `is False` deliberately: purge_connector's drop and noop
+                # results carry no success key at all.
+                if result.get("success") is False:
+                    raise IndexingError(
+                        "Bulk deletion did not complete; no managed collection "
+                        "resolved, so nothing was purged",
+                        details={"result": result},
+                    )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
                 return

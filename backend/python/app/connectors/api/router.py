@@ -7298,8 +7298,10 @@ async def delete_connector_instance(
                 detail="User not authenticated"
             )
 
-        # 2. Fetch and validate connector instance
-        instance = await connector_registry.get_connector_instance(
+        # 2. Fetch and validate connector instance under the *deletion* gate:
+        # the read gate 404s an admin on another user's personal connector,
+        # which would make the admin allowance below unreachable.
+        instance = await connector_registry.get_connector_instance_for_deletion(
             connector_id=connector_id,
             user_id=user_id,
             org_id=org_id,

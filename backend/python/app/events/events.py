@@ -512,6 +512,19 @@ class EventProcessor:
         
         return True
 
+    def _require_persisted(self, success: bool, what: str, doc: dict[str, Any]) -> None:
+        """Refuse to report success for a graph write that failed.
+
+        `on_event` turns `skip_indexing=True` into PARSING_COMPLETE +
+        INDEXING_COMPLETE and consumes the message, and the reconciliation
+        sweep in `indexing_main` only revisits QUEUED/IN_PROGRESS records — so
+        a write that failed here would leave a record that is neither indexed
+        nor ever looked at again. IndexingError classifies as transient, so the
+        consumer redelivers and a persistent failure dead-letters visibly.
+        """
+        if not success:
+            raise IndexingError(what, details={"record_id": _record_key(doc)})
+
     async def mark_record_status(self, doc: dict[str, Any], status: ProgressStatus) -> None:
         """Persist the legacy pipeline's indexing and extraction status."""
         record_id = _record_key(doc) or "unknown"
@@ -686,8 +699,9 @@ class EventProcessor:
                     doc,
                     {"md5Checksum": md5_checksum},
                 )
-                if not success:
-                    return DedupDecision(virtual_record_id=None, skip_indexing=True)
+                self._require_persisted(
+                    success, "Failed to persist md5Checksum for record", doc
+                )
 
             self.logger.debug("🚀 Calculated md5_checksum: %s for record type: %s", md5_checksum, record_type)
 
@@ -752,14 +766,20 @@ class EventProcessor:
                 duplicate_fields = {}
 
             if duplicate_fields:
-                success = await self.update_record_fields(doc, duplicate_fields)
-                if not success:
-                    return DedupDecision(skip_indexing=True)
+                self._require_persisted(
+                    await self.update_record_fields(doc, duplicate_fields),
+                    "Failed to persist duplicate record fields",
+                    doc,
+                )
 
             # Copy all relationships from the duplicate to this document
-            await self.graph_provider.copy_document_relationships(
-                _record_key(match.record),
-                _record_key(doc),
+            self._require_persisted(
+                await self.graph_provider.copy_document_relationships(
+                    _record_key(match.record),
+                    _record_key(doc),
+                ),
+                "Failed to copy duplicate record relationships",
+                doc,
             )
             if attached_vrid and match.same_collection:
                 await self.sync_vector_membership(attached_vrid)
@@ -782,9 +802,13 @@ class EventProcessor:
             f"🚀 Duplicate record {_record_key(match.record)} is being processed "
             "into the same collection, changing status to QUEUED."
         )
-        await self.update_record_fields(
+        self._require_persisted(
+            await self.update_record_fields(
+                doc,
+                {"indexingStatus": ProgressStatus.QUEUED.value},
+            ),
+            "Failed to persist QUEUED status for duplicate record",
             doc,
-            {"indexingStatus": ProgressStatus.QUEUED.value},
         )
         return DedupDecision(skip_indexing=True)
 

@@ -895,39 +895,25 @@ class TestStartKafkaConsumers:
         assert consumers[0][1] == mock_consumer
         assert consumers[0][2] == mock_producer
 
-    async def test_success_neo4j_with_reconnect(self):
-        """Neo4j data store triggers graph provider reconnection."""
+    async def test_success_neo4j(self):
+        """Startup under Neo4j is now ordinary.
+
+        This used to close the graph driver on the main loop and reconnect it
+        onto the consumer's worker loop, with four guard clauses around it,
+        because one driver cannot serve two loops. `Neo4jClient` keys its
+        driver by loop now, so there is nothing here to special-case.
+        """
         from app.indexing_main import start_kafka_consumers
 
         mock_container = _make_container()
-        mock_driver = MagicMock()
-        mock_driver.close = AsyncMock()
-        mock_client = MagicMock()
-        mock_client.driver = mock_driver
-        mock_client.connect = AsyncMock()
-        # Closing the old driver happens on the main loop before the worker
-        # loop reconnects; see Neo4jClient.close_for_loop_handover.
-        mock_client.close_for_loop_handover = AsyncMock()
-        mock_gp = MagicMock()
-        mock_gp.client = mock_client
-        mock_container._graph_provider = mock_gp
-
-        mock_worker_loop = MagicMock()
-        mock_worker_loop.is_running.return_value = True
+        mock_container._graph_provider = MagicMock()
 
         mock_consumer = MagicMock()
         mock_consumer.start = AsyncMock()
         mock_consumer.initialize = AsyncMock()
-        mock_consumer.worker_loop = mock_worker_loop
-        
+
         mock_producer = MagicMock()
         mock_producer.initialize = AsyncMock()
-
-        def discard_reconnect(coro, _loop):
-            coro.close()
-            future = asyncio.get_event_loop().create_future()
-            future.set_result(None)
-            return future
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
@@ -939,11 +925,6 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-            patch(
-                "app.indexing_main.asyncio.run_coroutine_threadsafe",
-                side_effect=discard_reconnect,
-            ),
-            patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock),
         ):
             consumers = await start_kafka_consumers(mock_container)
 
@@ -951,115 +932,6 @@ class TestStartKafkaConsumers:
         assert consumers[0][0] == "record"
         assert consumers[0][1] == mock_consumer
         assert consumers[0][2] == mock_producer
-        mock_consumer.initialize.assert_awaited_once()
-
-    async def test_neo4j_no_graph_provider_raises(self):
-        """Neo4j without graph provider raises."""
-        from app.indexing_main import start_kafka_consumers
-
-        mock_container = _make_container()
-        mock_container._graph_provider = None
-
-        mock_consumer = MagicMock()
-        mock_producer = MagicMock()
-        mock_producer.initialize = AsyncMock()
-
-        with (
-            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
-            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
-            patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-        ):
-            with pytest.raises(Exception, match="Neo4j Graph provider not initialized"):
-                await start_kafka_consumers(mock_container)
-
-    async def test_neo4j_no_client_raises(self):
-        """Neo4j with graph provider but no client raises."""
-        from app.indexing_main import start_kafka_consumers
-
-        mock_container = _make_container()
-        mock_gp = MagicMock(spec=[])  # no 'client' attribute
-        mock_container._graph_provider = mock_gp
-
-        mock_consumer = MagicMock()
-        mock_producer = MagicMock()
-        mock_producer.initialize = AsyncMock()
-
-        with (
-            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
-            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
-            patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-        ):
-            with pytest.raises(Exception, match="Neo4j Graph provider not initialized"):
-                await start_kafka_consumers(mock_container)
-
-    async def test_neo4j_worker_loop_not_running_raises(self):
-        """Neo4j with non-running worker loop raises."""
-        from app.indexing_main import start_kafka_consumers
-
-        mock_container = _make_container()
-        mock_gp = MagicMock()
-        mock_gp.client = MagicMock()
-        mock_container._graph_provider = mock_gp
-
-        mock_consumer = MagicMock()
-        mock_consumer.initialize = AsyncMock()
-        mock_consumer.worker_loop = MagicMock()
-        mock_consumer.worker_loop.is_running.return_value = False
-        
-        mock_producer = MagicMock()
-        mock_producer.initialize = AsyncMock()
-
-        with (
-            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
-            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
-            patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-        ):
-            with pytest.raises(Exception, match="Worker loop not initialized"):
-                await start_kafka_consumers(mock_container)
-
-    async def test_neo4j_no_worker_loop_raises(self):
-        """Neo4j with no worker loop attribute raises."""
-        from app.indexing_main import start_kafka_consumers
-
-        mock_container = _make_container()
-        mock_gp = MagicMock()
-        mock_gp.client = MagicMock()
-        mock_container._graph_provider = mock_gp
-
-        mock_consumer = MagicMock()
-        mock_consumer.initialize = AsyncMock()
-        mock_consumer.worker_loop = None  # no worker loop
-        
-        mock_producer = MagicMock()
-        mock_producer.initialize = AsyncMock()
-
-        with (
-            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
-            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
-            patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-        ):
-            with pytest.raises(Exception, match="Worker loop not initialized"):
-                await start_kafka_consumers(mock_container)
 
     async def test_error_cleans_up_started_consumers(self):
         """Error starting consumers cleans up any already started."""
@@ -1124,195 +996,6 @@ class TestStartKafkaConsumers:
             with pytest.raises(RuntimeError, match="start fail"):
                 await start_kafka_consumers(mock_container)
 
-    async def test_neo4j_reconnect_with_existing_driver(self):
-        """Neo4j reconnect closes existing driver before reconnecting."""
-        from app.indexing_main import start_kafka_consumers
-
-        mock_container = _make_container()
-        mock_driver = MagicMock()
-        mock_driver.close = AsyncMock()
-        mock_client = MagicMock()
-        mock_client.driver = mock_driver
-        mock_client.connect = AsyncMock()
-        # Closing the old driver happens on the main loop before the worker
-        # loop reconnects; see Neo4jClient.close_for_loop_handover.
-        mock_client.close_for_loop_handover = AsyncMock()
-        mock_gp = MagicMock()
-        mock_gp.client = mock_client
-        mock_container._graph_provider = mock_gp
-
-        mock_worker_loop = MagicMock()
-        mock_worker_loop.is_running.return_value = True
-
-        mock_consumer = MagicMock()
-        mock_consumer.start = AsyncMock()
-        mock_consumer.initialize = AsyncMock()
-        mock_consumer.worker_loop = mock_worker_loop
-        
-        mock_producer = MagicMock()
-        mock_producer.initialize = AsyncMock()
-
-        # To test the _reconnect function body, we need run_coroutine_threadsafe to
-        # actually execute the coroutine. We'll capture the coroutine and run it.
-        captured_coro = None
-
-        def capture_coro(coro, _loop):
-            nonlocal captured_coro
-            captured_coro = coro
-            future = asyncio.get_event_loop().create_future()
-            future.set_result(None)
-            return future
-
-        with (
-            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
-            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
-            patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-            patch(
-                "app.indexing_main.asyncio.run_coroutine_threadsafe",
-                side_effect=capture_coro,
-            ),
-            patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock),
-        ):
-            await start_kafka_consumers(mock_container)
-
-        # The driver is released on the main loop, before the worker loop is
-        # handed anything — closing it from over there is what produced
-        # "attached to a different loop".
-        mock_client.close_for_loop_handover.assert_awaited_once()
-
-        # Now run the captured coroutine to exercise _reconnect
-        assert captured_coro is not None
-        await captured_coro
-        mock_client.connect.assert_awaited_once()
-
-    async def test_neo4j_reconnect_driver_close_fails(self):
-        """Neo4j reconnect handles driver close failure gracefully."""
-        from app.indexing_main import start_kafka_consumers
-
-        mock_container = _make_container()
-        mock_driver = MagicMock()
-        mock_driver.close = AsyncMock(side_effect=RuntimeError("close fail"))
-        mock_client = MagicMock()
-        mock_client.driver = mock_driver
-        mock_client.connect = AsyncMock()
-        # Closing the old driver happens on the main loop before the worker
-        # loop reconnects; see Neo4jClient.close_for_loop_handover.
-        mock_client.close_for_loop_handover = AsyncMock()
-        mock_gp = MagicMock()
-        mock_gp.client = mock_client
-        mock_container._graph_provider = mock_gp
-
-        mock_worker_loop = MagicMock()
-        mock_worker_loop.is_running.return_value = True
-
-        mock_consumer = MagicMock()
-        mock_consumer.start = AsyncMock()
-        mock_consumer.initialize = AsyncMock()
-        mock_consumer.worker_loop = mock_worker_loop
-        
-        mock_producer = MagicMock()
-        mock_producer.initialize = AsyncMock()
-
-        captured_coro = None
-
-        def capture_coro(coro, _loop):
-            nonlocal captured_coro
-            captured_coro = coro
-            future = asyncio.get_event_loop().create_future()
-            future.set_result(None)
-            return future
-
-        with (
-            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
-            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
-            patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-            patch(
-                "app.indexing_main.asyncio.run_coroutine_threadsafe",
-                side_effect=capture_coro,
-            ),
-            patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock),
-        ):
-            await start_kafka_consumers(mock_container)
-
-        # Run the captured coroutine - close fails but connect still called
-        assert captured_coro is not None
-        await captured_coro
-        mock_client.connect.assert_awaited_once()
-
-    async def test_neo4j_reconnect_no_driver(self):
-        """Neo4j reconnect when driver is None (falsy) skips close."""
-        from app.indexing_main import start_kafka_consumers
-
-        mock_container = _make_container()
-        mock_client = MagicMock()
-        mock_client.driver = None  # No existing driver
-        mock_client.connect = AsyncMock()
-        # Closing the old driver happens on the main loop before the worker
-        # loop reconnects; see Neo4jClient.close_for_loop_handover.
-        mock_client.close_for_loop_handover = AsyncMock()
-        mock_gp = MagicMock()
-        mock_gp.client = mock_client
-        mock_container._graph_provider = mock_gp
-
-        mock_worker_loop = MagicMock()
-        mock_worker_loop.is_running.return_value = True
-
-        mock_consumer = MagicMock()
-        mock_consumer.start = AsyncMock()
-        mock_consumer.initialize = AsyncMock()
-        mock_consumer.worker_loop = mock_worker_loop
-        
-        mock_producer = MagicMock()
-        mock_producer.initialize = AsyncMock()
-
-        captured_coro = None
-
-        def capture_coro(coro, _loop):
-            nonlocal captured_coro
-            captured_coro = coro
-            future = asyncio.get_event_loop().create_future()
-            future.set_result(None)
-            return future
-
-        with (
-            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
-            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
-            patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-            patch(
-                "app.indexing_main.asyncio.run_coroutine_threadsafe",
-                side_effect=capture_coro,
-            ),
-            patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock),
-        ):
-            await start_kafka_consumers(mock_container)
-
-        # Run the captured coroutine - no driver to close, just connect
-        assert captured_coro is not None
-        await captured_coro
-        mock_client.connect.assert_awaited_once()
-
-
-# ---------------------------------------------------------------------------
-# stop_kafka_consumers
-# ---------------------------------------------------------------------------
 class TestStopKafkaConsumers:
     """Tests for stop_kafka_consumers()."""
 
@@ -1653,13 +1336,8 @@ class TestStartKafkaConsumersCleanupPath:
         # but message_handler fail, which happens before start/append.
         # So we need to inject directly.
 
-        # Direct approach: create a scenario where consumers has items and error occurs.
-        # We'll achieve this by patching to use neo4j path which has more steps.
         mock_gp = MagicMock()
         mock_gp.client = MagicMock()
-        mock_gp.client.driver = None
-        mock_gp.client.connect = AsyncMock()
-        mock_gp.client.close_for_loop_handover = AsyncMock()
         mock_container._graph_provider = mock_gp
 
         mock_worker_loop = MagicMock()

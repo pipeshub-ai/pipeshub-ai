@@ -21,15 +21,17 @@ from app.services.graph_db.interface.graph_db_provider import (
 
 pytestmark = pytest.mark.asyncio
 
+_UNSET = object()
 
-def _arango_provider(apps, *, user=None, raises=None):
+
+def _arango_provider(apps, *, user=_UNSET, raises=None):
     from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 
     provider = ArangoHTTPProvider.__new__(ArangoHTTPProvider)
     provider.logger = MagicMock()
-    provider.get_user_by_user_id = AsyncMock(
-        return_value=user if user is not None else {"_key": "user-key"}
-    )
+    if user is _UNSET:
+        user = {"_key": "user-key"}
+    provider.get_user_by_user_id = AsyncMock(return_value=user)
     provider.get_user_apps = (
         AsyncMock(side_effect=raises) if raises else AsyncMock(return_value=apps)
     )
@@ -124,6 +126,7 @@ class TestArangoUserResolution:
     async def test_an_unknown_user_yields_nothing(self):
         provider = _arango_provider([], user=None)
         assert await provider.get_accessible_connector_types("nobody", "org") == []
+        provider.get_user_apps.assert_not_awaited()
 
     async def test_a_user_without_a_key_yields_nothing(self):
         provider = _arango_provider([], user={"name": "no key here"})

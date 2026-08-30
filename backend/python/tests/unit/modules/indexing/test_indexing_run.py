@@ -302,6 +302,103 @@ class TestPurgeConnector:
         assert result["action"] == "drop_collection"
 
     @pytest.mark.asyncio
+    async def test_drop_recovers_vrids_before_dropping_when_none_supplied(self):
+        """A legacy `bulkDeleteRecords` carries no `virtualRecordIds`, and the
+        handler turns that into `[]`. Dropping first would destroy the only
+        thing left to enumerate, stranding every mapping row -- and a stranded
+        row makes its VRID look like a live orphan to the sweeper forever.
+        """
+        from app.services.vector_db.strategy import (
+            DeleteAction,
+            DeleteContext,
+            DeleteScope,
+        )
+
+        pipeline = _make_indexing_pipeline()
+        pipeline.collection_registry.resolve_delete_scope = AsyncMock(
+            return_value=DeleteScope(
+                action=DeleteAction.DROP_COLLECTION,
+                collection_names=["google_drive_records"],
+            )
+        )
+        order: list = []
+        pipeline.collection_registry.delete_collection = AsyncMock(
+            side_effect=lambda name: order.append(f"drop:{name}")
+        )
+        pipeline._scan_virtual_record_ids = AsyncMock(
+            side_effect=lambda scope: order.append("scan") or ["vr-a", "vr-b"]
+        )
+        pipeline.graph_provider.delete_nodes = AsyncMock(
+            side_effect=lambda **kw: order.append("forget")
+        )
+
+        ctx = DeleteContext(org_id="org-1", connector_id="conn-1", connector_name="GOOGLE_DRIVE")
+        await pipeline.purge_connector(ctx, [])
+
+        assert order == ["scan", "drop:google_drive_records", "forget"]
+        assert pipeline.graph_provider.delete_nodes.await_args.kwargs["keys"] == [
+            "vr-a",
+            "vr-b",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_drop_scan_uses_the_connector_membership_predicate(self):
+        """A drop scope carries no filter, and `_scan_virtual_record_ids`
+        refuses to scan without one -- so the recovery has to supply the same
+        membership predicate the registry uses when it downgrades a drop."""
+        from app.services.vector_db.const.const import CONNECTOR_IDS_FIELD
+        from app.services.vector_db.strategy import (
+            DeleteAction,
+            DeleteContext,
+            DeleteScope,
+        )
+
+        pipeline = _make_indexing_pipeline()
+        pipeline.collection_registry.resolve_delete_scope = AsyncMock(
+            return_value=DeleteScope(
+                action=DeleteAction.DROP_COLLECTION,
+                collection_names=["google_drive_records"],
+            )
+        )
+        pipeline.collection_registry.delete_collection = AsyncMock()
+        pipeline._scan_virtual_record_ids = AsyncMock(return_value=[])
+
+        ctx = DeleteContext(org_id="org-1", connector_id="conn-1", connector_name="GOOGLE_DRIVE")
+        await pipeline.purge_connector(ctx, None)
+
+        scanned = pipeline._scan_virtual_record_ids.await_args.args[0]
+        assert scanned.filter_field == CONNECTOR_IDS_FIELD
+        assert scanned.filter_values == ["conn-1"]
+        assert scanned.collection_names == ["google_drive_records"]
+
+    @pytest.mark.asyncio
+    async def test_drop_with_supplied_vrids_does_not_scan(self):
+        """The producer's list is authoritative; recovery is only for its
+        absence."""
+        from app.services.vector_db.strategy import (
+            DeleteAction,
+            DeleteContext,
+            DeleteScope,
+        )
+
+        pipeline = _make_indexing_pipeline()
+        pipeline.collection_registry.resolve_delete_scope = AsyncMock(
+            return_value=DeleteScope(
+                action=DeleteAction.DROP_COLLECTION,
+                collection_names=["google_drive_records"],
+            )
+        )
+        pipeline.collection_registry.delete_collection = AsyncMock()
+        pipeline._scan_virtual_record_ids = AsyncMock(return_value=["vr-scanned"])
+        pipeline.graph_provider.delete_nodes = AsyncMock()
+
+        ctx = DeleteContext(org_id="org-1", connector_id="conn-1", connector_name="GOOGLE_DRIVE")
+        await pipeline.purge_connector(ctx, ["vr-1"])
+
+        pipeline._scan_virtual_record_ids.assert_not_awaited()
+        assert pipeline.graph_provider.delete_nodes.await_args.kwargs["keys"] == ["vr-1"]
+
+    @pytest.mark.asyncio
     async def test_filtered_delete_with_vrids_delegates_to_membership_aware_delete(self):
         """A collection shared with a still-live connector must go through the
         VRID rewrite-or-delete path, never a raw filter delete on connectorIds --

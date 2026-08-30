@@ -116,6 +116,18 @@ class CollectionManifestStore:
                 return dict(self._cache)
 
         raw = await self._config_service.get_config(MANIFEST_CONFIG_KEY, default={}) or {}
+        if not isinstance(raw, dict):
+            # The per-entry guard below only covers a malformed *entry*; a
+            # non-mapping here would raise on .items() and fail every read
+            # until someone edits the KV store by hand. Treat it as empty so
+            # enumeration keeps working and the next ensure_collection
+            # rewrites it in the current shape.
+            self._logger.warning(
+                "Collection manifest at %s is a %s, not a mapping; treating it as empty",
+                MANIFEST_CONFIG_KEY,
+                type(raw).__name__,
+            )
+            raw = {}
         entries: dict[str, ManagedCollection] = {}
         for name, payload in raw.items():
             try:

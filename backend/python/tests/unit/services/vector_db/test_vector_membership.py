@@ -1116,7 +1116,7 @@ class TestDeleteDuringIndexLeavesNoOrphans:
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
         vs = self._vectorstore(gp, vdb)
 
-        await vs._resync_membership_after_write("vr-live", "records")
+        await vs._resync_membership_after_write("vr-live", "rec-1")
 
         vdb.delete_points.assert_not_awaited()
         vdb.set_payload.assert_awaited_once()

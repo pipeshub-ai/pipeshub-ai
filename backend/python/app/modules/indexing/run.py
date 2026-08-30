@@ -22,9 +22,11 @@ from app.services.vector_db.membership import (
 from app.services.vector_db.membership import (
     sync_vector_membership as _sync_vector_membership,
 )
+from app.services.vector_db.const.const import CONNECTOR_IDS_FIELD
 from app.services.vector_db.strategy import (
     DeleteAction,
     DeleteContext,
+    DeleteScope,
     RecordContext,
 )
 
@@ -170,11 +172,27 @@ class IndexingPipeline:
         """
         scope = await self.collection_registry.resolve_delete_scope(ctx)
         if scope.action == DeleteAction.DROP_COLLECTION:
-            for name in scope.collection_names:
-                await self.collection_registry.delete_collection(name)
             # The mapping rows outlive the points they describe, so a drop that
             # skipped them would leave every VRID looking like an orphan to the
-            # sweeper for as long as the rows survive.
+            # sweeper for as long as the rows survive. Recover them *before* the
+            # collections go: afterwards there is nothing left to enumerate, and
+            # a legacy `bulkDeleteRecords` without `virtualRecordIds` arrives
+            # here as an empty list. A drop scope carries no filter, so scan
+            # under the membership predicate — the same one the registry
+            # supplies when it downgrades a drop.
+            if not virtual_record_ids:
+                virtual_record_ids = await self._scan_virtual_record_ids(
+                    DeleteScope(
+                        action=scope.action,
+                        collection_names=scope.collection_names,
+                        filter_field=CONNECTOR_IDS_FIELD,
+                        filter_values=(
+                            [ctx.connector_id] if ctx.connector_id else None
+                        ),
+                    )
+                )
+            for name in scope.collection_names:
+                await self.collection_registry.delete_collection(name)
             await self._forget_virtual_record_mappings(virtual_record_ids or [])
             self.logger.info(
                 "Purged connector %s by dropping collection(s): %s",

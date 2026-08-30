@@ -137,3 +137,90 @@ class TestRoleScopingUnchanged:
             ORG,
             is_admin=True,
         )
+
+
+class TestDeletionGate:
+    """`_can_delete_connector` is deliberately more permissive than
+    `_can_access_connector`, and only along the creator/admin axis.
+
+    Routing deletion through the read gate 404s an administrator on another
+    user's personal connector, which made the admin allowance in
+    `_validate_connector_deletion_permissions` unreachable for precisely the
+    orphaned instances it exists to clean up.
+    """
+
+    async def test_admin_may_delete_another_users_personal_connector(self):
+        """The case the read gate refuses; the whole reason this gate exists."""
+        allowed = _registry()._can_delete_connector(
+            _instance(scope=ConnectorScope.PERSONAL.value, created_by="user-a"),
+            "admin-b",
+            ORG,
+            is_admin=True,
+        )
+
+        assert allowed is True
+
+    async def test_read_access_to_that_same_connector_is_still_refused(self):
+        """Pins the asymmetry: deleting a connector is not seeing its data, and
+        widening the read gate instead would have granted both."""
+        allowed = await _registry()._can_access_connector(
+            _instance(scope=ConnectorScope.PERSONAL.value, created_by="user-a"),
+            "admin-b",
+            ORG,
+            is_admin=True,
+        )
+
+        assert allowed is False
+
+    async def test_creator_may_delete_their_own_personal_connector(self):
+        allowed = _registry()._can_delete_connector(
+            _instance(scope=ConnectorScope.PERSONAL.value, created_by="user-a"),
+            "user-a",
+            ORG,
+            is_admin=False,
+        )
+
+        assert allowed is True
+
+    async def test_creator_may_delete_their_own_team_connector(self):
+        allowed = _registry()._can_delete_connector(
+            _instance(scope=ConnectorScope.TEAM.value, created_by="user-a"),
+            "user-a",
+            ORG,
+            is_admin=False,
+        )
+
+        assert allowed is True
+
+    async def test_a_non_admin_stranger_may_not_delete(self):
+        allowed = _registry()._can_delete_connector(
+            _instance(scope=ConnectorScope.TEAM.value, created_by="user-a"),
+            "user-c",
+            ORG,
+            is_admin=False,
+        )
+
+        assert allowed is False
+
+    async def test_admin_of_another_org_may_not_delete(self):
+        """Tenant isolation is checked before the role, so the wider deletion
+        allowance never becomes a cross-tenant one."""
+        allowed = _registry()._can_delete_connector(
+            _instance(scope=ConnectorScope.TEAM.value, created_by="user-a"),
+            "admin-b",
+            OTHER_ORG,
+            is_admin=True,
+        )
+
+        assert allowed is False
+
+    async def test_creator_in_another_org_may_not_delete(self):
+        """A createdBy match must not defeat the tenant check either."""
+        allowed = _registry()._can_delete_connector(
+            _instance(scope=ConnectorScope.PERSONAL.value, created_by="user-a"),
+            "user-a",
+            OTHER_ORG,
+            is_admin=False,
+        )
+
+        assert allowed is False

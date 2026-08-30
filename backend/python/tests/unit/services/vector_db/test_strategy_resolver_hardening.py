@@ -184,11 +184,9 @@ class TestEnvContradiction:
             await resolve_persisted_strategy_name(svc, MagicMock())
 
     @pytest.mark.asyncio
-    async def test_contradiction_is_also_caught_on_the_read_back_path(self):
+    async def test_contradiction_is_also_caught_on_the_read_back_path(self, monkeypatch):
         """The value discovered *after* a failed create must be checked too, or
         the race-loser path becomes a way around the fail-fast."""
-        import os
-
         state: dict = {"value": None}
 
         async def get_config(key, default=None):
@@ -202,11 +200,12 @@ class TestEnvContradiction:
         svc.get_config = AsyncMock(side_effect=get_config)
         svc.create_config_if_absent = AsyncMock(side_effect=create_config_if_absent)
 
-        os.environ["VECTOR_COLLECTION_STRATEGY"] = "single"
-        try:
-            assert await resolve_persisted_strategy_name(svc, MagicMock()) == "single"
-        finally:
-            os.environ.pop("VECTOR_COLLECTION_STRATEGY", None)
+        # Registered name: env is validated before create, so an unknown
+        # strategy would fail earlier and miss this path.
+        monkeypatch.setenv("VECTOR_COLLECTION_STRATEGY", "per_connector_type")
+
+        with pytest.raises(StrategyConfigurationError, match="contradicts"):
+            await resolve_persisted_strategy_name(svc, MagicMock())
 
 
 class TestCrossEventLoopResolution:
