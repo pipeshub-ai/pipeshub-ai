@@ -1,14 +1,23 @@
-"""Collection naming abstraction.
+"""Collection naming primitives.
 
-Provides a stable, future-ready naming convention for vector DB collections.
-Current state: single collection type "records", no tenant separation.
-Future state: per-connector/per-type collections and per-tenant namespacing
-can be enabled by extending CollectionType and enabling the tenant prefix
-without touching any call-site code.
+``CollectionType`` names the logical datasets a deployment can hold, and
+``sanitize_collection_name`` normalises any candidate name to a form every
+provider accepts.
+
+*Which* collection a given record, query, or delete resolves to is decided by
+``CollectionStrategy`` (see ``strategy.py``) and executed by
+``CollectionRegistry`` — this module deliberately holds no resolution policy
+of its own, so there is exactly one place that answers "where does this go?".
 """
 
+import hashlib
+import re
 from enum import Enum
-from typing import Optional
+
+# Intersection of Qdrant / OpenSearch / Redis / pgvector naming rules.
+_MAX_COLLECTION_NAME_LENGTH = 200
+_DISALLOWED_LEADING_CHARS = ("_", "-", "+")
+_INVALID_CHARS_RE = re.compile(r"[^a-z0-9_]")
 
 
 class CollectionType(Enum):
@@ -21,57 +30,35 @@ class CollectionType(Enum):
     ENTITIES = "entities"
 
 
-class CollectionResolver:
-    """Resolves a (tenant, collection_type) pair to a physical collection name.
+def sanitize_collection_name(name: str) -> str:
+    """Normalize a candidate collection name to a form valid across every provider.
 
-    Naming scheme: ``{tenant_prefix}{type}``
+    Rules (intersection of Qdrant, OpenSearch, Redis, pgvector):
+    - Lowercase only
+    - Only ``[a-z0-9_]`` (everything else becomes ``_``)
+    - Cannot start with ``_``, ``-``, or ``+``
+    - Max length 200; over-length names are truncated with a deterministic
+      hash suffix so two different long names never collide after truncation
 
-    - With no tenant (default): ``records`` (backward-compatible with all existing data)
-    - With tenant ``acme``: ``acme_records``
-
-    Examples::
-
-        resolver = CollectionResolver()
-        resolver.resolve()                    # "records"
-        resolver.resolve(collection_type=CollectionType.ENTITIES)   # "entities"
-        resolver.resolve(tenant_id="acme")    # "acme_records"
-        resolver.resolve("acme", CollectionType.ENTITIES)            # "acme_entities"
+    Idempotent: ``sanitize(sanitize(x)) == sanitize(x)``. The dedup path
+    compares a candidate name against an already-resolved one, so a second
+    pass that changed the answer would let a record be skipped as a duplicate
+    of something living in a collection it was never written to.
     """
-
-    def __init__(self, tenant_id: Optional[str] = None) -> None:
-        self._tenant_id = tenant_id
-
-    def resolve(
-        self,
-        tenant_id: Optional[str] = None,
-        collection_type: CollectionType = CollectionType.RECORDS,
-    ) -> str:
-        """Return the physical collection / index name.
-
-        Args:
-            tenant_id: Override the instance-level tenant.  Pass ``None`` to
-                use the instance default (or no tenant if none was set).
-            collection_type: The logical collection type.
-
-        Returns:
-            Physical name string safe for use as a collection / index name.
-        """
-        effective_tenant = tenant_id if tenant_id is not None else self._tenant_id
-        base = collection_type.value  # e.g. "records"
-        if effective_tenant:
-            # Sanitise: lowercase, replace disallowed chars with underscores
-            safe_tenant = "".join(
-                c if c.isalnum() else "_" for c in effective_tenant.lower()
-            )
-            return f"{safe_tenant}_{base}"
-        return base
-
-    def default(self) -> str:
-        """Shortcut: resolve the default (RECORDS, no tenant-override)."""
-        return self.resolve()
+    candidate = _INVALID_CHARS_RE.sub("_", name.lower())
+    while candidate and candidate[0] in _DISALLOWED_LEADING_CHARS:
+        candidate = candidate[1:]
+    if not candidate:
+        # Every character was illegal or stripped. A bare constant would map
+        # every such name onto one physical collection; the digest keeps
+        # distinct inputs distinct.
+        return f"collection_{_digest(name)}"
+    if len(candidate) > _MAX_COLLECTION_NAME_LENGTH:
+        digest = _digest(name)
+        truncate_to = _MAX_COLLECTION_NAME_LENGTH - len(digest) - 1
+        candidate = f"{candidate[:truncate_to]}_{digest}"
+    return candidate
 
 
-# Module-level singleton that resolves to "records" unless VECTOR_DB_TENANT env
-# is set.  Call-sites import this and call `default_resolver.resolve(...)`.
-import os as _os
-default_resolver = CollectionResolver(tenant_id=_os.getenv("VECTOR_DB_TENANT"))
+def _digest(name: str) -> str:
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()[:10]

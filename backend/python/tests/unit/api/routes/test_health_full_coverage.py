@@ -228,28 +228,51 @@ class TestHandleModelChange:
 
 class TestRecreateCollection:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_rebuilds_every_managed_collection(self):
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
-        retrieval_svc.vector_db_service = AsyncMock()
-        caps = MagicMock()
-        caps.supports_sparse_vectors = False
-        retrieval_svc.vector_db_service.get_capabilities = MagicMock(return_value=caps)
+        registry = MagicMock()
+        registry.recreate_all_collections = AsyncMock(return_value=["test_coll", "other"])
+        registry.ensure_collection = AsyncMock()
+        retrieval_svc.collection_registry = registry
         logger = MagicMock()
 
         from app.api.routes.health import recreate_collection
         await recreate_collection(retrieval_svc, 768, logger)
 
-        retrieval_svc.vector_db_service.delete_collection.assert_awaited_once_with("test_coll")
-        retrieval_svc.vector_db_service.create_collection.assert_awaited_once()
-        assert retrieval_svc.vector_db_service.create_index.await_count == 2
+        registry.recreate_all_collections.assert_awaited_once()
+        # Nothing to backfill when the registry already rebuilt something.
+        registry.ensure_collection.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_creates_the_collection_when_nothing_is_managed_yet(self):
+        """Nothing managed means nothing to rebuild.
+
+        Creating one here would have to invent a context, which under a
+        strategy that names collections per org or connector names a
+        collection belonging to nobody. The indexing write path pins the
+        dimension from the record that actually needs it.
+        """
+        retrieval_svc = MagicMock()
+        retrieval_svc.collection_name = "test_coll"
+        registry = MagicMock()
+        registry.recreate_all_collections = AsyncMock(return_value=[])
+        registry.ensure_collection = AsyncMock(return_value="test_coll")
+        retrieval_svc.collection_registry = registry
+        logger = MagicMock()
+
+        from app.api.routes.health import recreate_collection
+        await recreate_collection(retrieval_svc, 768, logger)
+
+        registry.ensure_collection.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_failure_raises(self):
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
-        retrieval_svc.vector_db_service = AsyncMock()
-        retrieval_svc.vector_db_service.delete_collection = AsyncMock(side_effect=Exception("fail"))
+        registry = MagicMock()
+        registry.recreate_all_collections = AsyncMock(side_effect=Exception("fail"))
+        retrieval_svc.collection_registry = registry
         logger = MagicMock()
 
         from app.api.routes.health import recreate_collection

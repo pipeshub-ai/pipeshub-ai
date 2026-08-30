@@ -13,11 +13,11 @@ from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.xls_parser import XLSParser
 from app.modules.parsers.html_parser.html_parser import HTMLParser
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.modules.parsers.json.json_parser import JSONParser
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.pptx.pptx_parser import PPTXParser
-from app.modules.parsers.json.json_parser import JSONParser
 from app.modules.parsers.sql.sql_table_parser import SQLTableParser
 from app.modules.parsers.sql.sql_view_parser import SQLViewParser
 from app.modules.parsers.yaml.yaml_parser import YAMLParser
@@ -31,8 +31,14 @@ from app.services.featureflag.featureflag import FeatureFlagService
 from app.services.featureflag.provider.etcd import EtcdProvider
 from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
+from app.services.vector_db.collection_manifest import CollectionManifestStore
+from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.interface.vector_db import IVectorDBService
+from app.services.vector_db.models import CollectionConfig
+from app.services.vector_db.strategy_resolver import (
+    StrategyConfigurationError,
+    resolve_strategy,
+)
 from app.services.vector_db.vector_db_provider_factory import VectorDBProviderFactory
 from app.utils.logger import create_logger
 
@@ -94,26 +100,71 @@ class ContainerUtils:
 
         return AccessibleRecordsInvalidator(logger, accessible_records_cache, graph_provider)
 
+    async def create_collection_registry(
+        self,
+        logger: Logger,
+        config_service: ConfigurationService,
+        vector_db_service: IVectorDBService,
+    ) -> CollectionRegistry:
+        """Async factory for the shared CollectionRegistry.
+
+        One instance per process: shared by VectorStore (writes), IndexingPipeline
+        (deletes/rebuilds), and RetrievalService (reads) so the existence cache and
+        collection manifest stay coherent across the indexing/query surface.
+        """
+        strategy = await resolve_strategy(config_service, logger)
+        capabilities = vector_db_service.get_capabilities()
+
+        # A strategy that names collections from record context needs more than
+        # one; a provider that cannot hold them would otherwise fail per-record,
+        # deep in indexing, rather than here.
+        if strategy.required_axes and not capabilities.supports_multi_collection:
+            raise StrategyConfigurationError(
+                f"Collection strategy '{strategy.strategy_name()}' needs a "
+                f"collection per {sorted(a.value for a in strategy.required_axes)}, "
+                f"but vector DB provider '{vector_db_service.get_service_name()}' "
+                f"does not support multiple collections."
+            )
+
+        def collection_config_factory(embedding_size: int, sparse_idf: bool) -> CollectionConfig:
+            return CollectionConfig(
+                embedding_size=embedding_size,
+                sparse_idf=sparse_idf,
+                enable_sparse=capabilities.supports_sparse_vectors,
+            )
+
+        return CollectionRegistry(
+            vector_db_service=vector_db_service,
+            strategy=strategy,
+            collection_config_factory=collection_config_factory,
+            manifest_store=CollectionManifestStore(config_service, logger),
+            logger=logger,
+            max_collections_advisory=capabilities.max_recommended_collections,
+        )
+
     async def create_indexing_pipeline(
         self,
         logger: Logger,
         config_service: ConfigurationService,
         graph_provider: IGraphDBProvider,
         vector_db_service: IVectorDBService,
+        collection_registry: CollectionRegistry,
     ) -> IndexingPipeline:
         """Async factory for the legacy IndexingPipeline (collection mgmt, bulk deletes)."""
         pipeline = IndexingPipeline(
             logger=logger,
             config_service=config_service,
             graph_provider=graph_provider,
-            collection_name=VECTOR_DB_COLLECTION_NAME,
+            collection_registry=collection_registry,
             vector_db_service=vector_db_service,
         )
         return pipeline
 
-    async def create_vector_store(self, logger, graph_provider, config_service, vector_db_service, collection_name) -> VectorStore:
+    async def create_vector_store(
+        self, logger, graph_provider, config_service, vector_db_service, collection_registry: CollectionRegistry
+    ) -> VectorStore:
         """Async factory for VectorStore"""
-        vector_store = VectorStore(logger, config_service, graph_provider, collection_name, vector_db_service)
+        vector_store = VectorStore(logger, config_service, graph_provider, collection_registry, vector_db_service)
         return vector_store
 
     async def create_graphdb(self, graph_provider, logger) -> GraphDBTransformer:
@@ -202,6 +253,7 @@ class ContainerUtils:
         processor: Processor,
         graph_provider: IGraphDBProvider,
         config_service: ConfigurationService,
+        collection_registry: CollectionRegistry,
         parsing_client=None,
         extraction_client=None,
         sink_orchestrator=None,
@@ -212,6 +264,12 @@ class ContainerUtils:
         ``USE_PARSING_SERVICE=true`` in the environment) the event processor
         routes through the standalone parsing / extraction services instead of
         using the legacy inline dispatch.
+
+        The strategy comes off the shared registry rather than being resolved
+        again here: dedup decides "same collection?" with it, and the write
+        path resolves the actual target with it, so the two must be the same
+        object or a record can be skipped as a duplicate of something living
+        in a different collection.
         """
         event_processor = EventProcessor(
             logger=logger,
@@ -221,6 +279,7 @@ class ContainerUtils:
             parsing_client=parsing_client,
             extraction_client=extraction_client,
             sink_orchestrator=sink_orchestrator,
+            collection_strategy=collection_registry.strategy,
         )
         return event_processor
 
@@ -241,12 +300,13 @@ class ContainerUtils:
         vector_db_service: IVectorDBService,
         graph_provider: IGraphDBProvider,
         blob_store: BlobStorage,
+        collection_registry: CollectionRegistry,
     ) -> RetrievalService:
         """Async factory for RetrievalService"""
         service = RetrievalService(
             logger=logger,
             config_service=config_service,
-            collection_name=VECTOR_DB_COLLECTION_NAME,
+            collection_registry=collection_registry,
             vector_db_service=vector_db_service,
             graph_provider=graph_provider,
             blob_store=blob_store,

@@ -50,7 +50,7 @@ class TestCreateIndexingPipeline:
             mock_instance = MagicMock()
             MockPipeline.return_value = mock_instance
             result = await cu.create_indexing_pipeline(
-                MagicMock(), MagicMock(), MagicMock(), MagicMock()
+                MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock()
             )
             assert result is mock_instance
 
@@ -159,7 +159,7 @@ class TestCreateEventProcessor:
             mock_instance = MagicMock()
             MockEP.return_value = mock_instance
             result = await cu.create_event_processor(
-                MagicMock(), MagicMock(), MagicMock(), MagicMock()
+                MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock()
             )
             assert result is mock_instance
 
@@ -172,7 +172,7 @@ class TestCreateRetrievalService:
             mock_instance = MagicMock()
             MockRS.return_value = mock_instance
             result = await cu.create_retrieval_service(
-                MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock()
+                MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock()
             )
             assert result is mock_instance
 

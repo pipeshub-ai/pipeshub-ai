@@ -432,6 +432,19 @@ messageBroker:
   type: redis
   redisStreamsMaxLen: "500000"
 
+# Vector DB collection layout.
+#   single             (default) every record in one collection, isolated by
+#                      payload filters — the layout every provider recommends.
+#   per_connector_type one collection per connector type (drive_records,
+#                      slack_records, ...). Smaller collection per search and
+#                      per-source re-indexing, at the cost of a fan-out across
+#                      collections per search.
+# Changing this on an existing deployment is not a config edit: the services
+# fail fast on startup, because points already sit in collections the new
+# strategy would not resolve. Use the embedding-rebuild procedure instead.
+vectorDb:
+  collectionStrategy: single
+
 zookeeper:
   replicaCount: 3  # Minimum odd number for ZK quorum — 2 nodes cannot elect a leader
   image:

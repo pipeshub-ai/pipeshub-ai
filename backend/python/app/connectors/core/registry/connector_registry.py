@@ -271,6 +271,7 @@ class ConnectorRegistry:
         self,
         connector_instance: dict[str, Any],
         user_id: str,
+        org_id: str,
         *,
         is_admin: bool,
     ) -> bool:
@@ -280,12 +281,28 @@ class ConnectorRegistry:
         Args:
             connector_instance: Connector instance document
             user_id: User ID
+            org_id: Organization the caller belongs to
             is_admin: Whether the user is an admin
 
         Returns:
             True if user can access the connector
         """
         try:
+            instance_org_id = connector_instance.get("orgId")
+
+            # Tenant check first, before any role logic. Instances are fetched
+            # by id alone, so without this a TEAM connector's gate reduces to
+            # `is_admin` — and an administrator of one organization who learns
+            # an id belonging to another would pass it.
+            if instance_org_id and instance_org_id != org_id:
+                self.logger.warning(
+                    "Connector %s belongs to org %s; caller is in org %s",
+                    connector_instance.get("_key") or connector_instance.get("id"),
+                    instance_org_id,
+                    org_id,
+                )
+                return False
+
             connector_scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value)
             created_by = connector_instance.get("createdBy")
 
@@ -1238,7 +1255,9 @@ class ConnectorRegistry:
                 return None
 
             # Check access
-            has_access = await self._can_access_connector(document, user_id, is_admin=is_admin)
+            has_access = await self._can_access_connector(
+                document, user_id, org_id, is_admin=is_admin
+            )
 
             if not has_access:
                 self.logger.warning(
@@ -1452,6 +1471,7 @@ class ConnectorRegistry:
             has_access = await self._can_access_connector(
                 existing_document,
                 user_id,
+                org_id,
                 is_admin=is_admin,
             )
 

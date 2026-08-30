@@ -905,6 +905,9 @@ class TestStartKafkaConsumers:
         mock_client = MagicMock()
         mock_client.driver = mock_driver
         mock_client.connect = AsyncMock()
+        # Closing the old driver happens on the main loop before the worker
+        # loop reconnects; see Neo4jClient.close_for_loop_handover.
+        mock_client.close_for_loop_handover = AsyncMock()
         mock_gp = MagicMock()
         mock_gp.client = mock_client
         mock_container._graph_provider = mock_gp
@@ -1131,6 +1134,9 @@ class TestStartKafkaConsumers:
         mock_client = MagicMock()
         mock_client.driver = mock_driver
         mock_client.connect = AsyncMock()
+        # Closing the old driver happens on the main loop before the worker
+        # loop reconnects; see Neo4jClient.close_for_loop_handover.
+        mock_client.close_for_loop_handover = AsyncMock()
         mock_gp = MagicMock()
         mock_gp.client = mock_client
         mock_container._graph_provider = mock_gp
@@ -1175,12 +1181,15 @@ class TestStartKafkaConsumers:
         ):
             await start_kafka_consumers(mock_container)
 
+        # The driver is released on the main loop, before the worker loop is
+        # handed anything — closing it from over there is what produced
+        # "attached to a different loop".
+        mock_client.close_for_loop_handover.assert_awaited_once()
+
         # Now run the captured coroutine to exercise _reconnect
         assert captured_coro is not None
         await captured_coro
-        mock_driver.close.assert_awaited_once()
         mock_client.connect.assert_awaited_once()
-        assert mock_client.driver is None  # driver was set to None
 
     async def test_neo4j_reconnect_driver_close_fails(self):
         """Neo4j reconnect handles driver close failure gracefully."""
@@ -1192,6 +1201,9 @@ class TestStartKafkaConsumers:
         mock_client = MagicMock()
         mock_client.driver = mock_driver
         mock_client.connect = AsyncMock()
+        # Closing the old driver happens on the main loop before the worker
+        # loop reconnects; see Neo4jClient.close_for_loop_handover.
+        mock_client.close_for_loop_handover = AsyncMock()
         mock_gp = MagicMock()
         mock_gp.client = mock_client
         mock_container._graph_provider = mock_gp
@@ -1247,6 +1259,9 @@ class TestStartKafkaConsumers:
         mock_client = MagicMock()
         mock_client.driver = None  # No existing driver
         mock_client.connect = AsyncMock()
+        # Closing the old driver happens on the main loop before the worker
+        # loop reconnects; see Neo4jClient.close_for_loop_handover.
+        mock_client.close_for_loop_handover = AsyncMock()
         mock_gp = MagicMock()
         mock_gp.client = mock_client
         mock_container._graph_provider = mock_gp
@@ -1644,6 +1659,7 @@ class TestStartKafkaConsumersCleanupPath:
         mock_gp.client = MagicMock()
         mock_gp.client.driver = None
         mock_gp.client.connect = AsyncMock()
+        mock_gp.client.close_for_loop_handover = AsyncMock()
         mock_container._graph_provider = mock_gp
 
         mock_worker_loop = MagicMock()

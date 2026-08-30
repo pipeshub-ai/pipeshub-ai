@@ -122,6 +122,43 @@ class Neo4jClient:
                 pass
             self.driver = None
 
+    async def close_for_loop_handover(self) -> None:
+        """Release loop-bound state so another event loop can reconnect.
+
+        Both the driver's connection pool and ``_connect_lock`` bind to the
+        loop that created them: the pool through the futures it holds, the lock
+        the first time it is actually contended. The indexing service builds
+        this client on the main loop and then runs its pipeline on a worker
+        loop, so the handover has to happen here, on the owning loop, and leave
+        nothing behind that the other one would refuse.
+
+        Closing the driver from the destination loop instead raises "attached
+        to a different loop" — which reconnects successfully but abandons the
+        pool, leaking its connections, and emits a warning on every startup
+        that would bury a genuine close failure.
+
+        Safe to call when already disconnected, and never raises: the point is
+        that the next loop starts clean, so a driver that refuses to close is
+        precisely the case that must not stop the handover. ``disconnect()``
+        only handles Neo4j's own errors, and the cross-loop failure this method
+        exists to avoid arrives as a bare ``RuntimeError``.
+        """
+        try:
+            await self.disconnect()
+        except Exception as e:
+            self.logger.warning(
+                "Failed to close the Neo4j driver during loop handover; "
+                "abandoning it and reconnecting: %s",
+                e,
+            )
+        finally:
+            # disconnect() only clears the driver on its success path, and a
+            # stale handle here would make connect() return early and hand the
+            # new loop the old pool.
+            self.driver = None
+            # A fresh lock binds to whichever loop first contends for it.
+            self._connect_lock = asyncio.Lock()
+
     async def _ensure_database_exists(self) -> None:
         """
         Check if the database exists, and create it if it doesn't.

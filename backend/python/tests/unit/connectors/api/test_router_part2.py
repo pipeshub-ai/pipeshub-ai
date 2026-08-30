@@ -2612,11 +2612,13 @@ class TestDeleteConnectorInstance:
         assert "Unable to verify" in exc_info.value.detail
         producer.send_message.assert_not_called()
 
-    async def test_team_connector_non_admin_raises_403(self):
+    async def test_team_connector_non_admin_non_creator_raises_403(self):
+        """`u1` here is neither an admin nor the creator. A caller who *is* the
+        creator is now allowed, so the denial has to come from someone else."""
         from app.connectors.api.router import delete_connector_instance
 
         req = _make_request(is_admin=False)
-        instance = _make_instance(scope="team", created_by="u1")
+        instance = _make_instance(scope="team", created_by="someone-else")
         req.app.state.connector_registry.get_connector_instance = AsyncMock(
             return_value=instance
         )

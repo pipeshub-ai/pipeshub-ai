@@ -28,6 +28,12 @@ This file is the release registry: each entry is a condensed summary linking to 
 
 Changes merged to `main` since the last release: [`v0.6.0...HEAD`](https://github.com/pipeshub-ai/pipeshub-ai/compare/v0.6.0...HEAD).
 
+### Breaking changes & upgrade notes
+- **Connector deletion is now "an administrator, or whoever created it", for both team and personal connectors.** Previously a team connector could only be removed by an admin (not its creator) and a personal one only by its creator (not an admin) — so a connector whose creator had left the org could not be deleted by anyone. Reading and updating are unchanged: an admin still cannot open or alter another user's personal connector.
+- **Connector access is now scoped to the caller's organization.** Instances were looked up by id with no org filter, so for a team connector the check reduced to "is an admin" — an admin of one org who learned an id from another would have passed it.
+- **MD5 deduplication is now scoped to a single organization.** It previously matched across every org in the deployment, so two orgs uploading byte-identical content shared one `virtualRecordId`, one `summaryDocumentId`, and a copied set of graph relationships. On upgrade, content that was deduplicated across orgs re-indexes once per org: expect a one-off rise in indexing volume and vector-store size proportional to how much content your orgs genuinely share. Existing records are not rewritten, and no migration is required.
+- **New `VECTOR_COLLECTION_STRATEGY` setting** (default `single`, which is the existing behaviour; `per_connector_type` groups records into one collection per connector type). It is read only on the first startup that finds nothing persisted; after that the stored value wins, and a value that contradicts it fails startup rather than silently resolving to collections that hold no data. Changing it on a live deployment is the embedding-rebuild procedure, not a config edit.
+
 ---
 
 ## 0.6.0 — 2026-08-10

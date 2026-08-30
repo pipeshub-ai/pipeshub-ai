@@ -885,13 +885,17 @@ async def start_kafka_consumers(
             if not worker_loop or not worker_loop.is_running():
                 raise Exception("Worker loop not initialized")
 
+            # Close on *this* loop, which is the one that built the driver.
+            # Doing it inside _reconnect() below would close it from the worker
+            # loop, which raises "attached to a different loop": the reconnect
+            # still succeeds, but the old pool is abandoned rather than closed
+            # and every startup logs a warning that would hide a real failure.
+            # Total by contract — it reports close failures through the
+            # client's own logger rather than making every caller decide what
+            # an unclosable driver means.
+            await graph_provider.client.close_for_loop_handover()
+
             async def _reconnect() -> None:
-                if graph_provider.client.driver:
-                    try:
-                        await graph_provider.client.driver.close()
-                    except Exception as e:
-                        logger.warning("Failed to close existing Neo4j driver, proceeding with reconnection: %s", e)
-                    graph_provider.client.driver = None
                 await graph_provider.client.connect()
 
             reconnect_coro = _reconnect()

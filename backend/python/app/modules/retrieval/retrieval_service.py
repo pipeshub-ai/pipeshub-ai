@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import time
 import traceback
 from typing import Any
@@ -8,6 +9,7 @@ from typing import Any
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
+
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
@@ -23,12 +25,20 @@ from app.exceptions.fastapi_responses import Status
 from app.models.blocks import GroupType
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     FusionMethod,
     HybridSearchRequest,
 )
+from app.modules.retrieval.result_merging import (
+    CollectionResults,
+    ResultMerger,
+    merge_collection_results,
+    merger_for,
+)
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
+from app.services.vector_db.strategy import ContextAxis, QueryContext
 from app.sources.client.http.exception.exception import VectorDBEmptyError
 from app.utils.aimodels import (
     get_default_embedding_model,
@@ -50,6 +60,20 @@ MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
 # Applied when a caller passes no limit at all. Matches `search_with_filters`'s
 # own default so the None path and the omitted path retrieve the same amount.
 DEFAULT_SEARCH_LIMIT = 20
+
+# Caps concurrent per-collection queries during search fan-out. One under the
+# default SingleCollectionStrategy; a multi-collection strategy must not turn
+# one user search into an unbounded burst against the vector DB.
+def _fanout_concurrency() -> int:
+    """Read at import; a malformed value must not take the service down."""
+    raw = os.getenv("SEARCH_FANOUT_CONCURRENCY", "5")
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 5
+
+
+SEARCH_FANOUT_CONCURRENCY = _fanout_concurrency()
 
 # User-facing guidance when the graph/permissions yield no searchable corpus
 ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE = (
@@ -73,7 +97,7 @@ class RetrievalService:
         self,
         logger,
         config_service: ConfigurationService,
-        collection_name: str,
+        collection_registry: CollectionRegistry,
         vector_db_service: IVectorDBService,
         graph_provider: IGraphDBProvider,
         blob_store: BlobStorage,
@@ -82,7 +106,7 @@ class RetrievalService:
         Initialize the retrieval service with necessary configurations.
 
         Args:
-            collection_name: Name of the collection
+            collection_registry: Resolves which collection(s) a search fans out to
             vector_db_service: Vector DB service
             config_service: Configuration service
             graph_provider: Graph database provider
@@ -94,7 +118,7 @@ class RetrievalService:
         self.graph_provider = graph_provider
         self.blob_store = blob_store
         self.vector_db_service = vector_db_service
-        self.collection_name = collection_name
+        self.collection_registry = collection_registry
 
         # Capability negotiation — determines which embedding legs are needed.
         self._capabilities = vector_db_service.get_capabilities()
@@ -111,11 +135,27 @@ class RetrievalService:
         self._embedding_model_lock = asyncio.Lock()
 
         self.logger.info(
-            f"Retrieval service initialised: collection='{collection_name}', "
+            f"Retrieval service initialised: strategy='{collection_registry.strategy_name}', "
             f"provider='{vector_db_service.get_service_name()}', "
             f"supports_sparse={self._capabilities.supports_sparse_vectors}, "
             f"supports_text_search={self._capabilities.supports_server_side_text_search}"
         )
+
+    @property
+    def _result_merger(self) -> ResultMerger:
+        """How several collections' results may be combined.
+
+        Derived from the provider's declared score semantics rather than stored
+        alongside them: two copies of the same fact drift, and this one decides
+        whether a multi-collection search is ranked correctly. Memoised because
+        the answer cannot change for a live service — capabilities are read
+        once at construction.
+        """
+        merger = getattr(self, "_merger_cache", None)
+        if merger is None:
+            merger = merger_for(self._capabilities.score_semantics)
+            self._merger_cache = merger
+        return merger
 
     async def _ensure_sparse_embedder(self) -> SparseEmbedder | None:
         """Return the SparseEmbedder if this provider uses client-side sparse vectors."""
@@ -391,7 +431,9 @@ class RetrievalService:
                 filter = await self.vector_db_service.filter_collection(
                         must={"orgId": org_id, "virtualRecordId": list(accessible_virtual_id_to_record_id.keys())}
                     )
-            search_results = await self._execute_parallel_searches(queries, filter, limit)
+            search_results = await self._execute_parallel_searches(
+                queries, filter, limit, org_id, user_id
+            )
 
             if not search_results:
                 self.logger.debug("No search results found")
@@ -795,13 +837,64 @@ class RetrievalService:
 
         return user_data
 
-    async def _execute_parallel_searches(self, queries, filter, limit) -> list[dict[str, Any]]:
+    async def _accessible_connector_names(
+        self, user_id: str | None, org_id: str
+    ) -> list[str] | None:
+        """Connector types to narrow the fan-out with, or None to not narrow.
+
+        Only gathered when the active strategy says it would help — under
+        ``single`` there is one collection and the query would be pure
+        overhead. Failures return None rather than an empty list: an empty list
+        means "this user reaches no connector type", which would resolve to no
+        collections and silently return nothing.
+        """
+        if ContextAxis.CONNECTOR_NAME not in self.collection_registry.strategy.read_narrowing_axes:
+            return None
+        if not user_id or not self.graph_provider:
+            return None
+        try:
+            names = await self.graph_provider.get_accessible_connector_types(
+                user_id, org_id
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Could not resolve accessible connector types; searching every "
+                "managed collection instead: %s",
+                e,
+            )
+            return None
+        return names or None
+
+    async def _resolve_search_collections(
+        self, org_id: str, user_id: str | None = None
+    ) -> list[str]:
+        """Which collection(s) this org's search should fan out to.
+
+        An empty list is the honest answer on a deployment where nothing has
+        been indexed yet: ``resolve_for_query`` already filters to collections
+        that exist, so the only names it drops are ones a search would find
+        nothing in. Falling back to a fabricated name would, under a strategy
+        that resolves per org or per connector, name a collection belonging to
+        nobody.
+        """
+        connector_names = await self._accessible_connector_names(user_id, org_id)
+        return await self.collection_registry.resolve_for_query(
+            QueryContext(org_id=org_id, accessible_connector_names=connector_names)
+        )
+
+    async def _execute_parallel_searches(
+        self, queries, filter, limit, org_id: str, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """Execute all searches in parallel using hybrid (dense + sparse) retrieval with RRF fusion.
 
         The search strategy adapts to provider capabilities:
         - Providers with sparse vector support (Qdrant): full dense+sparse hybrid with client-side BM25.
         - Providers without sparse support (OpenSearch, Redis): dense-only search,
           server-side BM25/text handled by the provider internally.
+
+        Fans out to every collection the active strategy resolves for ``org_id``
+        (one today; a per-connector/per-org strategy can resolve more) and
+        merges the raw results before the caller's global rerank/sort.
         """
         all_results: list[tuple] = []
 
@@ -842,10 +935,8 @@ class RetrievalService:
             )
         ]
 
-        search_results = await self.vector_db_service.query_nearest_points(
-            collection_name=self.collection_name,
-            requests=requests,
-        )
+        collections = await self._resolve_search_collections(org_id, user_id)
+        search_results = await self._fan_out_searches(collections, requests, limit)
 
         seen_points: set = set()
         for batch in search_results:
@@ -862,6 +953,70 @@ class RetrievalService:
                 all_results.append((doc, point.score))
 
         return self._format_results(all_results)
+
+    async def _fan_out_searches(
+        self, collections: list[str], requests: list[HybridSearchRequest], limit: int
+    ) -> list[list]:
+        """Query every collection in parallel and reduce each query to one top-K.
+
+        Each collection is asked for the full ``limit`` rather than a share of
+        it: nothing knows in advance which collection holds the best matches,
+        so splitting the budget would cost recall. That leaves N ranked lists
+        per query, which ``result_merging`` reduces according to what the
+        provider's scores actually mean.
+
+        A collection that fails degrades the result set instead of failing the
+        search — a search over three collections should not error because one
+        is briefly unreachable.
+        """
+        if not collections:
+            return [[] for _ in requests]
+
+        semaphore = asyncio.Semaphore(SEARCH_FANOUT_CONCURRENCY)
+
+        async def _search(collection_name: str) -> list[list]:
+            async with semaphore:
+                return await self.vector_db_service.query_nearest_points(
+                    collection_name=collection_name,
+                    requests=requests,
+                )
+
+        outcomes = await asyncio.gather(
+            *[_search(name) for name in collections],
+            return_exceptions=True,
+        )
+
+        # Per query index, one CollectionResults per collection that answered.
+        per_query: list[list[CollectionResults]] = [[] for _ in requests]
+        failures: list[BaseException] = []
+        for collection_name, outcome in zip(collections, outcomes):
+            if isinstance(outcome, BaseException):
+                failures.append(outcome)
+                self.logger.warning(
+                    "Search against collection '%s' failed; continuing with the "
+                    "remaining %d collection(s): %s",
+                    collection_name,
+                    len(collections) - 1,
+                    outcome,
+                )
+                continue
+            for i, batch in enumerate(outcome):
+                if i < len(per_query):
+                    per_query[i].append(
+                        CollectionResults(collection_name=collection_name, results=batch)
+                    )
+
+        # Degrading when one collection is unreachable is the point of
+        # return_exceptions; degrading when *every* one failed is not — that is
+        # an outage, and reporting it as "no documents found" sends the user
+        # off to reword a query that was never run.
+        if failures and len(failures) == len(collections):
+            raise failures[0]
+
+        return [
+            merge_collection_results(batches, limit, self._result_merger)
+            for batches in per_query
+        ]
 
     def _create_empty_response(self, message: str, status: Status) -> dict[str, Any]:
         """Helper to create empty response with appropriate HTTP status codes"""

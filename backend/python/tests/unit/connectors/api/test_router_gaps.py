@@ -2202,21 +2202,38 @@ class TestGetConfigPathForInstance:
 
 
 class TestValidateConnectorDeletionPermissions:
-    def test_team_non_admin_raises(self):
+    def test_team_creator_passes(self):
+        """Deletion is admin-or-creator: whoever set it up may remove it."""
+        from app.connectors.api.router import _validate_connector_deletion_permissions
+        _validate_connector_deletion_permissions(
+            {"scope": ConnectorScope.TEAM.value, "createdBy": "u1"},
+            "u1", is_admin=False, logger=logging.getLogger("test")
+        )
+
+    def test_team_non_admin_non_creator_raises(self):
         from app.connectors.api.router import _validate_connector_deletion_permissions
         with pytest.raises(HTTPException) as exc_info:
             _validate_connector_deletion_permissions(
                 {"scope": ConnectorScope.TEAM.value, "createdBy": "u1"},
-                "u1", is_admin=False, logger=logging.getLogger("test")
+                "someone-else", is_admin=False, logger=logging.getLogger("test")
             )
         assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
-    def test_personal_non_creator_raises(self):
+    def test_personal_admin_passes(self):
+        """An administrator can remove a personal connector whose creator is
+        gone; reading or altering it stays blocked by _can_access_connector."""
+        from app.connectors.api.router import _validate_connector_deletion_permissions
+        _validate_connector_deletion_permissions(
+            {"scope": ConnectorScope.PERSONAL.value, "createdBy": "other"},
+            "u1", is_admin=True, logger=logging.getLogger("test")
+        )
+
+    def test_personal_non_creator_non_admin_raises(self):
         from app.connectors.api.router import _validate_connector_deletion_permissions
         with pytest.raises(HTTPException) as exc_info:
             _validate_connector_deletion_permissions(
                 {"scope": ConnectorScope.PERSONAL.value, "createdBy": "other"},
-                "u1", is_admin=True, logger=logging.getLogger("test")
+                "u1", is_admin=False, logger=logging.getLogger("test")
             )
         assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
@@ -5540,21 +5557,38 @@ class TestGetConfigPathForInstanceCoverage:
 
 
 class TestValidateConnectorDeletionPermissionsCoverage:
-    def test_team_non_admin_raises(self):
+    def test_team_creator_passes(self):
+        """Deletion is admin-or-creator: whoever set it up may remove it."""
+        from app.connectors.api.router import _validate_connector_deletion_permissions
+        _validate_connector_deletion_permissions(
+            {"scope": ConnectorScope.TEAM.value, "createdBy": "u1"},
+            "u1", is_admin=False, logger=logging.getLogger("test")
+        )
+
+    def test_team_non_admin_non_creator_raises(self):
         from app.connectors.api.router import _validate_connector_deletion_permissions
         with pytest.raises(HTTPException) as exc_info:
             _validate_connector_deletion_permissions(
                 {"scope": ConnectorScope.TEAM.value, "createdBy": "u1"},
-                "u1", is_admin=False, logger=logging.getLogger("test")
+                "someone-else", is_admin=False, logger=logging.getLogger("test")
             )
         assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
-    def test_personal_non_creator_raises(self):
+    def test_personal_admin_passes(self):
+        """An administrator can remove a personal connector whose creator is
+        gone; reading or altering it stays blocked by _can_access_connector."""
+        from app.connectors.api.router import _validate_connector_deletion_permissions
+        _validate_connector_deletion_permissions(
+            {"scope": ConnectorScope.PERSONAL.value, "createdBy": "other"},
+            "u1", is_admin=True, logger=logging.getLogger("test")
+        )
+
+    def test_personal_non_creator_non_admin_raises(self):
         from app.connectors.api.router import _validate_connector_deletion_permissions
         with pytest.raises(HTTPException) as exc_info:
             _validate_connector_deletion_permissions(
                 {"scope": ConnectorScope.PERSONAL.value, "createdBy": "other"},
-                "u1", is_admin=True, logger=logging.getLogger("test")
+                "u1", is_admin=False, logger=logging.getLogger("test")
             )
         assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 

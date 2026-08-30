@@ -2259,6 +2259,7 @@ class TestDuplicateAndSyncOperations:
         result = await neo4j_provider.find_duplicate_records(
             "rec-1",
             "md5-1",
+            org_id="org-9",
             record_type="FILE",
             size_in_bytes=42,
             transaction="txn-dup",
@@ -2269,6 +2270,7 @@ class TestDuplicateAndSyncOperations:
         assert kwargs["parameters"] == {
             "md5_checksum": "md5-1",
             "record_key": "rec-1",
+            "org_id": "org-9",
             "record_type": "FILE",
             "size_in_bytes": 42,
         }
@@ -2277,7 +2279,19 @@ class TestDuplicateAndSyncOperations:
     @pytest.mark.asyncio
     async def test_find_duplicate_records_returns_empty_on_exception(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("dup fail"))
-        assert await neo4j_provider.find_duplicate_records("rec-1", "md5-1") == []
+        assert await neo4j_provider.find_duplicate_records("rec-1", "md5-1", org_id="org-9") == []
+
+    @pytest.mark.asyncio
+    async def test_find_duplicate_records_org_id_scoping(self, neo4j_provider: Neo4jProvider):
+        """org_id is always passed as a query parameter, restricting dedup
+        matches to within-org."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={})  # type: ignore[method-assign]
+
+        await neo4j_provider.find_duplicate_records("rec-1", "md5-1", org_id="org-9")
+
+        kwargs = neo4j_provider.client.execute_query.await_args.kwargs
+        assert kwargs["parameters"]["org_id"] == "org-9"
 
     @pytest.mark.asyncio
     async def test_find_next_queued_duplicate_returns_none_when_reference_not_found(
@@ -2312,6 +2326,26 @@ class TestDuplicateAndSyncOperations:
         assert second_call["parameters"]["queued_status"] == "QUEUED"
         assert second_call["parameters"]["size_in_bytes"] == 10
         assert second_call["txn_id"] == "txn-q"
+
+    @pytest.mark.asyncio
+    async def test_find_next_queued_duplicate_scopes_to_reference_records_org(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """The queued-duplicate search must never cross into another org —
+        scoped internally from the reference record's own orgId, so no
+        caller can omit it."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"record": {"id": "rec-1", "md5Checksum": "m1", "orgId": "org-9"}}],
+                [{"record": {"id": "rec-2"}}],
+            ]
+        )
+        neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "rec-2"})  # type: ignore[method-assign]
+
+        await neo4j_provider.find_next_queued_duplicate("rec-1")
+
+        second_call = neo4j_provider.client.execute_query.await_args_list[1].kwargs
+        assert second_call["parameters"]["org_id"] == "org-9"
 
     @pytest.mark.asyncio
     async def test_update_queued_duplicates_status_returns_zero_on_missing_reference(

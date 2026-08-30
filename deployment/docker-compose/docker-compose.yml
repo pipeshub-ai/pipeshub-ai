@@ -262,6 +262,8 @@ services:
       # Set to "true" to defer graph enrichment until after vectordb indexing completes
       - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
+      - VECTOR_COLLECTION_STRATEGY=${VECTOR_COLLECTION_STRATEGY:-single}
+
     depends_on:
       qdrant:
         condition: service_healthy
@@ -369,6 +371,9 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.15
+    ports:
+      - "6333:6333"
+      - "6334:6334"
     stop_grace_period: 120s
     restart: always
     environment:

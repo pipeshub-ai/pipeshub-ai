@@ -4,12 +4,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.exceptions.indexing_exceptions import MetadataProcessingError
-
+from tests.support.vector_db import (
+    make_collection_registry as _make_collection_registry,
+)
 
 # ===================================================================
 # IndexingPipeline
 # ===================================================================
+
 
 
 def _make_indexing_pipeline():
@@ -24,7 +26,7 @@ def _make_indexing_pipeline():
             logger=MagicMock(),
             config_service=AsyncMock(),
             graph_provider=AsyncMock(),
-            collection_name="test_collection",
+            collection_registry=_make_collection_registry(),
             vector_db_service=AsyncMock(),
         )
         return pipeline
@@ -35,7 +37,8 @@ class TestIndexingPipelineInit:
 
     def test_stores_all_deps(self):
         pipeline = _make_indexing_pipeline()
-        assert pipeline.collection_name == "test_collection"
+        assert pipeline.collection_registry is not None
+        assert pipeline.collection_locator is not None
 
     @pytest.mark.skip(reason="FastEmbedSparse not used in IndexingPipeline.__init__")
     def test_sparse_embed_failure_raises(self):
@@ -51,7 +54,7 @@ class TestIndexingPipelineInit:
                     logger=MagicMock(),
                     config_service=AsyncMock(),
                     graph_provider=AsyncMock(),
-                    collection_name="test",
+                    collection_registry=_make_collection_registry(),
                     vector_db_service=AsyncMock(),
                 )
 
@@ -251,7 +254,7 @@ class TestBulkDeleteConfirmation:
             logger=MagicMock(),
             config_service=AsyncMock(),
             graph_provider=gp,
-            collection_name="records",
+            collection_registry=_make_collection_registry("records"),
             vector_db_service=vdb,
         )
 
@@ -266,4 +269,299 @@ class TestBulkDeleteConfirmation:
         assert result["virtual_record_ids_deleted"] == 0
         assert result["virtual_record_ids_rewritten"] == 1
         vdb.delete_points.assert_not_awaited()
-        gp.delete_nodes.assert_not_awaited()
+
+
+class TestPurgeConnector:
+    """Tests for IndexingPipeline.purge_connector."""
+
+    @pytest.mark.asyncio
+    async def test_drop_collection_action_drops_and_skips_bulk_delete(self):
+        from app.services.vector_db.strategy import (
+            DeleteAction,
+            DeleteContext,
+            DeleteScope,
+        )
+
+        pipeline = _make_indexing_pipeline()
+        pipeline.collection_registry.resolve_delete_scope = AsyncMock(
+            return_value=DeleteScope(
+                action=DeleteAction.DROP_COLLECTION,
+                collection_names=["google_drive_records"],
+            )
+        )
+        pipeline.collection_registry.delete_collection = AsyncMock()
+        pipeline.bulk_delete_embeddings = AsyncMock()
+
+        ctx = DeleteContext(org_id="org-1", connector_id="conn-1", connector_name="GOOGLE_DRIVE")
+        result = await pipeline.purge_connector(ctx, ["vr-1", "vr-2"])
+
+        pipeline.collection_registry.delete_collection.assert_awaited_once_with(
+            "google_drive_records"
+        )
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
+        assert result["action"] == "drop_collection"
+
+    @pytest.mark.asyncio
+    async def test_filtered_delete_with_vrids_delegates_to_membership_aware_delete(self):
+        """A collection shared with a still-live connector must go through the
+        VRID rewrite-or-delete path, never a raw filter delete on connectorIds --
+        that would remove points still referenced by another connector."""
+        from app.services.vector_db.strategy import (
+            DeleteAction,
+            DeleteContext,
+            DeleteScope,
+        )
+
+        pipeline = _make_indexing_pipeline()
+        pipeline.collection_registry.resolve_delete_scope = AsyncMock(
+            return_value=DeleteScope(
+                action=DeleteAction.FILTERED_DELETE,
+                collection_names=["records"],
+                filter_field="connectorIds",
+                filter_values=["conn-1"],
+            )
+        )
+        pipeline.bulk_delete_embeddings = AsyncMock(
+            return_value={"virtual_record_ids_processed": 2, "success": True}
+        )
+
+        ctx = DeleteContext(org_id="org-1", connector_id="conn-1")
+        result = await pipeline.purge_connector(ctx, ["vr-1", "vr-2"])
+
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr-1", "vr-2"])
+        pipeline.vector_db_service.delete_points.assert_not_awaited()
+        assert result["action"] == "filtered_delete"
+        assert result["virtual_record_ids_processed"] == 2
+
+    @pytest.mark.asyncio
+    async def test_filtered_delete_with_no_filter_refuses_to_delete(self):
+        """A predicate-less delete would empty the collection for every
+        connector sharing it, so an unfiltered scope must be refused."""
+        from app.services.vector_db.strategy import (
+            DeleteAction,
+            DeleteContext,
+            DeleteScope,
+        )
+
+        pipeline = _make_indexing_pipeline()
+        pipeline.collection_registry.resolve_delete_scope = AsyncMock(
+            return_value=DeleteScope(
+                action=DeleteAction.FILTERED_DELETE,
+                collection_names=["records"],
+                filter_field=None,
+                filter_values=None,
+            )
+        )
+        pipeline.vector_db_service.delete_points = AsyncMock()
+
+        result = await pipeline.purge_connector(
+            DeleteContext(org_id="org-1", connector_id="conn-1"), []
+        )
+
+        pipeline.vector_db_service.delete_points.assert_not_awaited()
+        # Nothing to scan without a predicate, and nothing supplied to delete.
+        assert result["action"] == "noop"
+
+    @pytest.mark.asyncio
+    async def test_filtered_delete_without_vrids_recovers_them_by_scanning(self):
+        """A producer that sent no VRID list must not become a raw connectorIds
+        delete: that would take out points this connector shares with a live
+        one through dedup. The ids are recovered from the collection instead,
+        then routed through the membership-aware path."""
+        from app.services.vector_db.models import ScrollResult, VectorPoint
+        from app.services.vector_db.strategy import (
+            DeleteAction,
+            DeleteContext,
+            DeleteScope,
+        )
+
+        pipeline = _make_indexing_pipeline()
+        pipeline.collection_registry.resolve_delete_scope = AsyncMock(
+            return_value=DeleteScope(
+                action=DeleteAction.FILTERED_DELETE,
+                collection_names=["records"],
+                filter_field="connectorIds",
+                filter_values=["conn-1"],
+            )
+        )
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value=MagicMock())
+        pipeline.vector_db_service.delete_points = AsyncMock()
+        pipeline.vector_db_service.scroll = AsyncMock(
+            return_value=ScrollResult(
+                points=[
+                    VectorPoint(
+                        id="p1",
+                        dense_vector=[0.0],
+                        payload={"metadata": {"virtualRecordId": "vr-1"}},
+                    )
+                ],
+                next_offset=None,
+            )
+        )
+        pipeline.bulk_delete_embeddings = AsyncMock(
+            return_value={"virtual_record_ids_processed": 1, "success": True}
+        )
+
+        ctx = DeleteContext(org_id="org-1", connector_id="conn-1")
+        result = await pipeline.purge_connector(ctx, [])
+
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr-1"])
+        pipeline.vector_db_service.delete_points.assert_not_awaited()
+        assert result["action"] == "filtered_delete"
+
+    @pytest.mark.asyncio
+    async def test_scan_stops_when_the_cursor_stops_advancing(self):
+        """A provider returning the same offset forever must not spin: the
+        point cap cannot stop it on its own, since a repeated page never
+        advances the count."""
+        from app.services.vector_db.models import ScrollResult, VectorPoint
+        from app.services.vector_db.strategy import DeleteAction, DeleteScope
+
+        pipeline = _make_indexing_pipeline()
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value=MagicMock())
+        pipeline.vector_db_service.scroll = AsyncMock(
+            return_value=ScrollResult(
+                points=[
+                    VectorPoint(
+                        id="p1",
+                        dense_vector=[0.0],
+                        payload={"metadata": {"virtualRecordId": "vr-1"}},
+                    )
+                ],
+                next_offset=None,
+            )
+        )
+
+        found = await pipeline._scan_virtual_record_ids(
+            DeleteScope(
+                action=DeleteAction.FILTERED_DELETE,
+                collection_names=["records"],
+                filter_field="connectorIds",
+                filter_values=["conn-1"],
+            )
+        )
+
+        assert found == ["vr-1"]
+        assert pipeline.vector_db_service.scroll.await_count == 1
+
+
+# ===================================================================
+# Connector purge: collection targeting and orphan safety
+# ===================================================================
+
+
+class TestConnectorPurgeDoesNotOrphanPoints:
+    """A VRID's points must never outlive the mapping row that finds them.
+
+    `virtualRecordToDocIdMapping` is the orphan sweeper's only handle on a
+    point set. Forgetting it while the points survive makes them permanently
+    unreachable — not merely stale.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_managed_collections_deletes_nothing_and_forgets_nothing(self):
+        """An empty or stale manifest resolves no collections. Falling through
+        would drop the mapping rows while every point survived."""
+        pipeline = _make_indexing_pipeline()
+        pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=[])
+        pipeline.graph_provider.delete_nodes = AsyncMock()
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value=MagicMock())
+        pipeline.vector_db_service.delete_points = AsyncMock()
+        pipeline.collection_locator.all_collections = AsyncMock(return_value=[])
+
+        result = await pipeline.bulk_delete_embeddings(["vr-1"])
+
+        pipeline.vector_db_service.delete_points.assert_not_awaited()
+        pipeline.graph_provider.delete_nodes.assert_not_awaited()
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_failed_batch_keeps_its_mapping(self):
+        """The points are still there; the row that finds them must be too."""
+        pipeline = _make_indexing_pipeline()
+        pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=[])
+        pipeline.graph_provider.delete_nodes = AsyncMock()
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value=MagicMock())
+        pipeline.vector_db_service.delete_points = AsyncMock(
+            side_effect=ConnectionError("vector db down")
+        )
+        pipeline.collection_locator.all_collections = AsyncMock(return_value=["records"])
+
+        await pipeline.bulk_delete_embeddings(["vr-1"])
+
+        pipeline.graph_provider.delete_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_successful_delete_forgets_its_mapping(self):
+        pipeline = _make_indexing_pipeline()
+        pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=[])
+        pipeline.graph_provider.delete_nodes = AsyncMock()
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value=MagicMock())
+        pipeline.vector_db_service.delete_points = AsyncMock()
+        pipeline.collection_locator.all_collections = AsyncMock(return_value=["records"])
+
+        await pipeline.bulk_delete_embeddings(["vr-1"])
+
+        pipeline.graph_provider.delete_nodes.assert_awaited_once()
+        assert pipeline.graph_provider.delete_nodes.await_args.kwargs["keys"] == ["vr-1"]
+
+    @pytest.mark.asyncio
+    async def test_the_delete_reads_a_fresh_manifest(self):
+        """A 30s-stale enumeration resolves fewer collections than exist, and
+        points left in the missed ones are unreachable afterwards."""
+        pipeline = _make_indexing_pipeline()
+        pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=[])
+        pipeline.graph_provider.delete_nodes = AsyncMock()
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value=MagicMock())
+        pipeline.vector_db_service.delete_points = AsyncMock()
+        pipeline.collection_locator.all_collections = AsyncMock(return_value=["records"])
+
+        await pipeline.bulk_delete_embeddings(["vr-1"])
+
+        pipeline.collection_locator.all_collections.assert_awaited_with(fresh=True)
+
+
+class TestConnectorPurgeSweepsTheCollectionsAVridLeft:
+    """The connector's own collection, when the VRID survives elsewhere.
+
+    Deleting a Drive connector whose file was deduplicated into Slack leaves
+    the VRID alive (Slack still has a record), so the rewrite branch runs. That
+    branch must still purge the Drive collection — otherwise it keeps points
+    for a record that no longer exists.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_surviving_vrid_goes_through_the_delete_aware_rewrite(self):
+        pipeline = _make_indexing_pipeline()
+        pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(
+            return_value=["rec-still-here"]
+        )
+        pipeline.rewrite_or_delete_vector_membership = AsyncMock(return_value="rewritten")
+        pipeline.sync_vector_membership = AsyncMock()
+
+        result = await pipeline.bulk_delete_embeddings(["vr-shared"])
+
+        # sync_vector_membership only re-stamps where records remain; it would
+        # leave the departed connector's collection holding orphans.
+        pipeline.sync_vector_membership.assert_not_awaited()
+        pipeline.rewrite_or_delete_vector_membership.assert_awaited_once_with("vr-shared")
+        assert result["virtual_record_ids_rewritten"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_vrid_that_reappears_on_recheck_also_takes_that_path(self):
+        pipeline = _make_indexing_pipeline()
+        calls = {"n": 0}
+
+        async def _records(virtual_record_id=None, **kw):
+            calls["n"] += 1
+            return [] if calls["n"] == 1 else ["rec-reappeared"]
+
+        pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(side_effect=_records)
+        pipeline.rewrite_or_delete_vector_membership = AsyncMock(return_value="rewritten")
+        pipeline.sync_vector_membership = AsyncMock()
+
+        result = await pipeline.bulk_delete_embeddings(["vr-flaky"])
+
+        pipeline.rewrite_or_delete_vector_membership.assert_awaited_once_with("vr-flaky")
+        pipeline.sync_vector_membership.assert_not_awaited()
+        assert result["virtual_record_ids_rewritten"] == 1
