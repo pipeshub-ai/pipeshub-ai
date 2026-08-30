@@ -567,17 +567,14 @@ Record (Email 1) ←─ recordRelations (SIBLING) ─→ Record (Email 2)
 See example: [Microsoft apps.py](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/sources/microsoft/common/apps.py)
 
 ```python
-from app.config.constants.arangodb import Connectors
-from app.connectors.core.interfaces.connector.apps import App, AppGroup
+from app.config.constants.arangodb import AppGroups, Connectors
+from app.connectors.core.interfaces.connector.apps import App
 
 class YourConnectorApp(App):
     """App definition for YourConnector."""
 
-    def __init__(self) -> None:
-        super().__init__(
-            app_name=Connectors.YOUR_CONNECTOR,  # This will be defined in Step 7.1
-            app_group=AppGroup.YOUR_VENDOR  # e.g., AppGroup.MICROSOFT_365
-        )
+    def __init__(self, connector_id: str) -> None:
+        super().__init__(Connectors.YOUR_CONNECTOR, AppGroups.YOUR_VENDOR, connector_id)
 ```
 
 ### Step 6.2: Create Connector Class (Boilerplate)
@@ -842,21 +839,27 @@ class YourConnector(BaseConnector):
         cls,
         logger: Logger,
         data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_id: str,
+        scope: str,
+        created_by: str,
+        data_entities_processor: DataSourceEntitiesProcessor,
+        **kwargs,
     ) -> 'YourConnector':
-        """Factory method to create and initialize connector."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-        await data_entities_processor.initialize()
+        """Factory method used by ConnectorFactory.create_connector().
 
+        The factory builds and initialises the entities processor itself and
+        passes it in, along with connector_id, scope and created_by. Accept
+        **kwargs so future additions do not break this signature.
+        """
         return YourConnector(
             logger,
             data_entities_processor,
             data_store_provider,
-            config_service
+            config_service,
+            connector_id,
+            scope,
+            created_by,
         )
 ```
 
@@ -1185,8 +1188,7 @@ pytest tests/unit/connectors/sources/
 Testing YourConnector
 ==================================================
 
-tests/unit/connectors/sources/test_yourconnector_connector.py ...      [100%]
-
+...                                                                    [100%]
 3 passed in 0.42s
 ```
 
