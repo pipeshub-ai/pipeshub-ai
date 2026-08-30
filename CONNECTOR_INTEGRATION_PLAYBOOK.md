@@ -679,15 +679,22 @@ class YourConnector(BaseConnector):
         logger: Logger,
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
-            YourConnectorApp(),
+            YourConnectorApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,
             config_service,
+            connector_id,
+            scope,
+            created_by,
         )
+        self.connector_id = connector_id
 
         # TODO: Initialize your external API client reference
         self.external_client: Optional[Any] = None
@@ -695,7 +702,7 @@ class YourConnector(BaseConnector):
         # Initialize sync point for delta sync
         # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/sync_point/sync_point.py
         self.sync_point = SyncPoint(
-            connector_name=Connectors.YOUR_CONNECTOR,
+            connector_id=connector_id,
             org_id=self.data_entities_processor.org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
             data_store_provider=self.data_store_provider
@@ -1094,15 +1101,19 @@ from app.connectors.sources.{vendor}.{connector_name}.connector import YourConne
 def _make_connector() -> YourConnector:
     """Build a connector with every dependency mocked.
 
-    The four arguments match `YourConnector.__init__` from Step 6.2. The
-    entities processor cannot be omitted: its `org_id` is read while the
-    connector is being constructed, to build the SyncPoint.
+    The arguments match `YourConnector.__init__` from Step 6.2, which in
+    turn matches `BaseConnector`. The entities processor cannot be omitted:
+    its `org_id` is read while the connector is being constructed, to build
+    the SyncPoint.
     """
     return YourConnector(
         logger=MagicMock(),
         data_entities_processor=MagicMock(org_id="org-1"),
         data_store_provider=MagicMock(),
         config_service=MagicMock(),
+        connector_id="yourconnector-1",
+        scope="team",
+        created_by="test-user",
     )
 
 
@@ -1174,18 +1185,9 @@ pytest tests/unit/connectors/sources/
 Testing YourConnector
 ==================================================
 
-1. Creating connector instance...
-✅ Connector instance created
+tests/unit/connectors/sources/test_yourconnector_connector.py ...      [100%]
 
-2. Initializing connector...
-✅ Connector initialized successfully
-
-3. Testing connection...
-✅ Connection test passed
-
-==================================================
-All tests passed! ✅
-==================================================
+3 passed in 0.42s
 ```
 
 ### Step 8.3: Test with Full System
