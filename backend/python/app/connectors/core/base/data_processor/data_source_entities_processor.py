@@ -1810,15 +1810,14 @@ class DataSourceEntitiesProcessor:
                         from_collection = None
 
                         if permission.entity_type == EntityType.USER:
-                            user = None
+                            resolved = None
                             if permission.email:
-                                user = await tx_store.get_user_by_email(permission.email)
+                                resolved = await self._resolve_principal(permission.email, tx_store)
 
-                            if user:
-                                from_id = user.id
-                                from_collection = CollectionNames.USERS.value
+                            if resolved:
+                                from_id, from_collection = resolved
                             else:
-                                self.logger.warning(f"Could not find user with email {permission.email} for RecordGroup permission.")
+                                self.logger.warning(f"Could not resolve principal for email {permission.email} for RecordGroup permission.")
 
                         elif permission.entity_type == EntityType.GROUP:
                             user_group = None
@@ -2043,13 +2042,12 @@ class DataSourceEntitiesProcessor:
                     to_collection = CollectionNames.GROUPS.value
 
                     for member in members:
-                        user = None
+                        resolved = None
                         if member.email:
-                            # Find the user's internal DB ID
-                            user = await tx_store.get_user_by_email(member.email)
+                            resolved = await self._resolve_principal(member.email, tx_store)
 
-                        if not user:
-                            self.logger.warning(f"Could not find user with email {member.email} for UserGroup permission.")
+                        if not resolved:
+                            self.logger.warning(f"Could not resolve principal for email {member.email} for UserGroup permission.")
                             continue
 
                         permission = Permission(
@@ -2058,8 +2056,7 @@ class DataSourceEntitiesProcessor:
                             type=PermissionType.READ,
                             entity_type=EntityType.USER
                         )
-                        from_id = user.id
-                        from_collection = CollectionNames.USERS.value
+                        from_id, from_collection = resolved
 
                         user_group_permissions.append(
                             permission.to_arango_permission(from_id, from_collection, to_id, to_collection)

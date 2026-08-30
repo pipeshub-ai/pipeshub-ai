@@ -784,6 +784,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                     )
                     app_users.append(app_user)
 
+                    # Directory API reports an out-of-domain member as type USER (its
+                    # EXTERNAL type is documented "not currently used"), so external
+                    # members arrive through the same filter as everyone else and are
+                    # only distinguishable against the synced workspace set.
+                    self._track_external_collaborator(EntityType.USER, member_email)
+
                 except Exception as e:
                     self.logger.error(f"Error processing group member {member.get('id', 'unknown')}: {e}", exc_info=True)
                     continue
