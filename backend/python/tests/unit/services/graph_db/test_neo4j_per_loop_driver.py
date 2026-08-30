@@ -231,5 +231,7 @@ class TestAssignmentAndDisconnect:
         await client.disconnect()
 
         good.close.assert_awaited_once()
-        assert client._drivers == {}
+        # The one that closed is forgotten; the one still holding an open pool
+        # is kept, because dropping it would discard the only reference to it.
+        assert client._drivers == {"loop-a": bad}
         client.logger.warning.assert_called()

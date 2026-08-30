@@ -1719,6 +1719,36 @@ class TestSweepOrphanedVirtualRecordMappings:
         m._orphan_sweep_cursor = 0
 
     @pytest.mark.asyncio
+    async def test_rows_left_by_an_incomplete_drop_are_reclaimed(self):
+        """The backstop `purge_connector` relies on when its scan is bounded.
+
+        A drop whose VRID scan hit the point cap forgets only the ids it read,
+        leaving the rest of the mapping rows behind. Those are not stranded:
+        this sweep enumerates the mapping collection itself, so it never needs
+        the dropped collection to find them — which is why the drop proceeds
+        rather than refusing and leaving the whole collection in place.
+        """
+        from app.indexing_main import _sweep_orphaned_virtual_record_mappings
+
+        # The connector's records went with it, so nothing references these.
+        unscanned = [{"_key": "vr-beyond-the-cap-1"}, {"_key": "vr-beyond-the-cap-2"}]
+        graph = _orphan_graph(unscanned, records_by_vrid={})
+        pipeline = AsyncMock()
+        pipeline.rewrite_or_delete_vector_membership = AsyncMock(return_value="deleted")
+
+        swept = await _sweep_orphaned_virtual_record_mappings(
+            graph_provider=graph,
+            pipeline=pipeline,
+            logger=MagicMock(),
+            page_size=100,
+        )
+
+        assert swept == 2
+        assert [
+            c.args[0] for c in pipeline.rewrite_or_delete_vector_membership.await_args_list
+        ] == ["vr-beyond-the-cap-1", "vr-beyond-the-cap-2"]
+
+    @pytest.mark.asyncio
     async def test_vrid_with_no_records_is_cleaned_up(self):
         """The abandoned side of an N:1 split.
 

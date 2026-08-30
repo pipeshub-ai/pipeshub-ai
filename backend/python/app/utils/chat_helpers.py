@@ -2935,7 +2935,6 @@ async def create_record_from_vector_metadata(
             "semantic_metadata": semantic_metadata,
             "extension": extension,
         }
-        blocks = []
         container_utils = ContainerUtils()
 
         vector_db_service = await container_utils.get_vector_db_service(blob_store.config_service)
@@ -3022,14 +3021,22 @@ async def create_record_from_vector_metadata(
         point_id_to_blockIndex = {}
         new_payloads = []
 
-        for i,point in enumerate(points):
+        # Each point is carried with the block it produced, so the mapping can
+        # be built from final positions. Recording `enumerate(points)` instead
+        # was wrong twice over: the index skipped no payload-less point, and it
+        # described the pre-sort order while the caller indexes the sorted list
+        # (`blocks[index]`), so a citation could resolve to another block
+        # entirely. Points arrive from several collections under a
+        # multi-collection strategy, so they are not in block order.
+        points_and_blocks = []
+
+        for point in points:
             payload = point.payload
             if payload:
                 meta = payload.get("metadata")
                 page_content = payload.get("page_content")
                 block = create_block_from_metadata(meta,page_content)
-                point_id_to_blockIndex[point.id] = i
-                blocks.append(block)
+                points_and_blocks.append((point.id, block))
                 new_payloads.append({"metadata":{
                     "virtualRecordId": virtual_record_id,
                     "blockIndex": block.get("index"),
@@ -3040,9 +3047,11 @@ async def create_record_from_vector_metadata(
                 "page_content": payload.get("page_content")
                 })
 
-        sorted_blocks = sorted(blocks, key=lambda x: x.get("index", 0))
-        for i,block in enumerate(sorted_blocks):
+        points_and_blocks.sort(key=lambda pair: pair[1].get("index", 0))
+        sorted_blocks = [block for _, block in points_and_blocks]
+        for i,(point_id,block) in enumerate(points_and_blocks):
             block["index"] = i
+            point_id_to_blockIndex[point_id] = i
 
         record["block_containers"] = {
             "blocks": sorted_blocks,

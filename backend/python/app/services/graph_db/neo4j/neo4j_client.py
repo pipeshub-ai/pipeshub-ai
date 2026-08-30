@@ -204,7 +204,7 @@ class Neo4jClient:
             self.logger.warning(f"⚠️ Could not verify/create database '{self.database}': {str(e)}")
             self.logger.warning("This may be expected if using Neo4j Community Edition (single database only)")
 
-    async def _close_on_owning_loop(self, resource: Any, owner: Any, what: str) -> None:
+    async def _close_on_owning_loop(self, resource: Any, owner: Any, what: str) -> bool:
         """Close a loop-bound resource on the loop that created it.
 
         Closing a driver or session from a foreign loop raises "attached to a
@@ -232,32 +232,45 @@ class Neo4jClient:
                 )
             else:
                 await resource.close()
+            return True
         except Exception as e:
             self.logger.warning("Error closing %s: %s", what, e)
+            return False
 
     async def disconnect(self) -> None:
         """Close Neo4j driver and all sessions"""
         try:
+            # Forget a resource only once it is actually released. Clearing
+            # first would drop the only reference to a pool that is still open,
+            # leaving nothing to retry with and no way to see it again.
             # Sessions are loop-bound too, so each closes on the loop that
             # opened it (recorded at begin_transaction).
             for txn_id, session in list(self._active_sessions.items()):
-                await self._close_on_owning_loop(
+                if await self._close_on_owning_loop(
                     session, self._session_loops.get(txn_id), f"session {txn_id}"
-                )
-            self._active_sessions.clear()
-            self._session_locks.clear()
-            self._session_loops.clear()
+                ):
+                    self._active_sessions.pop(txn_id, None)
+                    self._session_locks.pop(txn_id, None)
+                    self._session_loops.pop(txn_id, None)
 
             with self._drivers_lock:
                 owned = list(self._drivers.items())
-                self._drivers.clear()
-                self._connect_locks.clear()
-            if self._driver_override is not None:
-                owned.append((None, self._driver_override))
-                self._driver_override = None
+            override = self._driver_override
+            if override is not None:
+                owned.append((None, override))
 
             for owner, driver in owned:
-                await self._close_on_owning_loop(driver, owner, "a Neo4j driver")
+                if not await self._close_on_owning_loop(driver, owner, "a Neo4j driver"):
+                    continue
+                if driver is override:
+                    self._driver_override = None
+                    continue
+                with self._drivers_lock:
+                    self._drivers.pop(owner, None)
+                    # The lock goes with the driver it serialised; a retained
+                    # driver keeps its lock so a later connect() on that loop
+                    # still serialises against it.
+                    self._connect_locks.pop(owner, None)
             if owned:
                 self.logger.info("✅ Disconnected from Neo4j")
         except (ClientError, ServiceUnavailable) as e:
