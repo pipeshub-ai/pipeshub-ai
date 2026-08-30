@@ -237,6 +237,22 @@ class Neo4jClient:
             self.logger.warning("Error closing %s: %s", what, e)
             return False
 
+    def _close_could_be_retried(self, owner: Any) -> bool:
+        """Whether a failed close on this resource is worth keeping around.
+
+        Only if something could still run the close later. A loop that has
+        stopped will never run another coroutine, so its driver's pool is gone
+        with it and the entry is pure leak — worse, it would sit in `_drivers`
+        for `connect()` to hand back on a loop that can no longer serve it.
+
+        An owner that is not a loop at all (the explicit-assignment override,
+        or a test double) closes on the caller's loop, which is running by
+        definition, so a retry stays possible.
+        """
+        if not isinstance(owner, asyncio.AbstractEventLoop):
+            return True
+        return not owner.is_closed() and owner.is_running()
+
     async def disconnect(self) -> None:
         """Close Neo4j driver and all sessions"""
         try:
@@ -246,12 +262,15 @@ class Neo4jClient:
             # Sessions are loop-bound too, so each closes on the loop that
             # opened it (recorded at begin_transaction).
             for txn_id, session in list(self._active_sessions.items()):
-                if await self._close_on_owning_loop(
-                    session, self._session_loops.get(txn_id), f"session {txn_id}"
-                ):
-                    self._active_sessions.pop(txn_id, None)
-                    self._session_locks.pop(txn_id, None)
-                    self._session_loops.pop(txn_id, None)
+                owner = self._session_loops.get(txn_id)
+                closed = await self._close_on_owning_loop(
+                    session, owner, f"session {txn_id}"
+                )
+                if not closed and self._close_could_be_retried(owner):
+                    continue
+                self._active_sessions.pop(txn_id, None)
+                self._session_locks.pop(txn_id, None)
+                self._session_loops.pop(txn_id, None)
 
             with self._drivers_lock:
                 owned = list(self._drivers.items())
@@ -260,16 +279,22 @@ class Neo4jClient:
                 owned.append((None, override))
 
             for owner, driver in owned:
-                if not await self._close_on_owning_loop(driver, owner, "a Neo4j driver"):
-                    continue
+                closed = await self._close_on_owning_loop(driver, owner, "a Neo4j driver")
+                if not closed:
+                    if self._close_could_be_retried(owner):
+                        # Still closable later: keeping it is the only way that
+                        # retry can ever happen, and the lock goes with it so a
+                        # later connect() on that loop still serialises.
+                        continue
+                    self.logger.warning(
+                        "Discarding a Neo4j driver whose event loop has stopped; "
+                        "its pool cannot be closed from anywhere now"
+                    )
                 if driver is override:
                     self._driver_override = None
                     continue
                 with self._drivers_lock:
                     self._drivers.pop(owner, None)
-                    # The lock goes with the driver it serialised; a retained
-                    # driver keeps its lock so a later connect() on that loop
-                    # still serialises against it.
                     self._connect_locks.pop(owner, None)
             if owned:
                 self.logger.info("✅ Disconnected from Neo4j")

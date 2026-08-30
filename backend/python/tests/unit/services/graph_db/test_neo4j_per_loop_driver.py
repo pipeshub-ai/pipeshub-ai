@@ -220,6 +220,41 @@ class TestAssignmentAndDisconnect:
             "the driver was closed from the caller's loop, not its owner's"
         )
 
+    async def test_a_driver_whose_loop_has_stopped_is_discarded(self):
+        """Retention is only worth it while a retry is possible.
+
+        Once the owning loop has stopped, nothing can ever run that close: the
+        pool went with the loop. Keeping the entry would leak it and, worse,
+        leave it in `_drivers` for `connect()` to hand back on a loop that can
+        no longer serve it.
+        """
+        client = _client()
+
+        dead_loop = asyncio.new_event_loop()
+        dead_loop.close()
+
+        driver = AsyncMock()
+        driver.close = AsyncMock(side_effect=RuntimeError("loop is closed"))
+        client._drivers = {dead_loop: driver}
+        client._connect_locks = {dead_loop: asyncio.Lock()}
+
+        await client.disconnect()
+
+        assert client._drivers == {}, "a driver on a stopped loop must not be kept"
+        assert client._connect_locks == {}
+
+    async def test_a_driver_on_a_live_loop_is_kept_for_retry(self):
+        """The paired case: this one can still be closed, so it stays."""
+        client = _client()
+        driver = AsyncMock()
+        driver.close = AsyncMock(side_effect=RuntimeError("busy"))
+        # The running loop is this test's own, so a retry remains possible.
+        client._drivers = {asyncio.get_running_loop(): driver}
+
+        await client.disconnect()
+
+        assert list(client._drivers.values()) == [driver]
+
     async def test_disconnect_survives_a_driver_that_cannot_be_closed(self):
         """Closing a driver bound to an already-stopped loop raises; the
         remaining ones must still be closed."""
