@@ -1744,6 +1744,70 @@ class TestGetAppCreatorUser:
 # ===========================================================================
 
 
+class TestOnExternalAppUsers:
+    """Phase 3 -- flagged app membership for collaborators the connector identified as
+    outside its workspace."""
+
+    @pytest.mark.asyncio
+    async def test_grants_flagged_membership_per_principal(self):
+        """The flag is what gates the browse-hoisting branches; without it the
+        collaborator sees the app but none of the records shared with them."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(
+            return_value=Person(id="p1", email="out@x.io")
+        )
+        tx_store.ensure_app_membership = AsyncMock()
+
+        await proc.on_external_app_users(["out@x.io"], "conn-1")
+
+        tx_store.ensure_app_membership.assert_awaited_once_with(
+            "p1", CollectionNames.PEOPLE.value, "conn-1", is_external=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolves_a_platform_user_to_users_collection(self):
+        """An external collaborator can already be a platform user -- someone outside the
+        Google Workspace domain but inside PipesHub. They get the flag against their User
+        node, not a duplicate Person."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_by_email.return_value = MagicMock(id="u1")
+        tx_store.ensure_app_membership = AsyncMock()
+
+        await proc.on_external_app_users(["member@other.com"], "conn-1")
+
+        tx_store.ensure_app_membership.assert_awaited_once_with(
+            "u1", CollectionNames.USERS.value, "conn-1", is_external=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_does_not_create_principals(self):
+        """This resolves, it never creates: an email with no principal has no grant, so
+        _handle_record_permissions did not create a Person for it and there is nothing to
+        give membership to."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value=None)
+        tx_store.ensure_app_membership = AsyncMock()
+
+        await proc.on_external_app_users(["ghost@x.io"], "conn-1")
+
+        tx_store.ensure_app_membership.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_list_is_a_no_op(self):
+        proc = _make_processor()
+        await proc.on_external_app_users([], "conn-1")
+        proc.data_store_provider.transaction.assert_not_called()
+
+
 class TestOnNewAppUsers:
     @pytest.mark.asyncio
     async def test_empty_list_skips(self):
@@ -1753,19 +1817,20 @@ class TestOnNewAppUsers:
         proc.logger.warning.assert_called()
 
     @pytest.mark.asyncio
-    async def test_stale_person_not_reused_after_user_appears(self):
-        """A collaborator who was external last run, and has since become a user, must
-        resolve to their User node — not the Person cached by the previous run.
+    async def test_resolution_is_not_memoized(self):
+        """Principal resolution must stay uncached.
 
-        A connector instance is reused across syncs, so without the cache reset in
-        on_new_app_users every permission edge in run 2 would keep pointing at the
-        stale Person while the real User node collected none.
+        A Person becomes a User the instant its owner signs up or joins the workspace,
+        and a connector instance is reused across syncs for the life of the process. Any
+        cache keyed on email is therefore wrong from that instant until cleared, and the
+        permission edges written in between land on the stale Person while the real User
+        node gets none. This is the regression guard: if someone reintroduces
+        memoization for the N+1, the second assertion fails.
         """
         proc = _make_processor()
         tx_store = _make_tx_store()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
-        # Run 1: no user for this email, so a Person is created and cached.
         tx_store.get_user_by_email.return_value = None
         tx_store.get_person_by_email = AsyncMock(return_value=None)
         tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
@@ -1774,28 +1839,13 @@ class TestOnNewAppUsers:
             "person-1", CollectionNames.PEOPLE.value
         )
 
-        # Between runs Alice joins, so run 2's user sync mints a User for her.
-        await proc.on_new_app_users([])
+        # Alice joins; the very next resolution must see the User, with no reset call
+        # in between.
         tx_store.get_user_by_email.return_value = MagicMock(id="user-alice")
 
         assert await proc._resolve_principal("alice@partner.com", tx_store) == (
             "user-alice", CollectionNames.USERS.value
         )
-
-    @pytest.mark.asyncio
-    async def test_cache_survives_within_a_run(self):
-        """The reset is per run, not per call: repeated resolution inside one run must
-        still cost a single lookup."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
-        tx_store.get_user_by_email.return_value = MagicMock(id="user-1")
-
-        await proc.on_new_app_users([])
-        for _ in range(10):
-            await proc._resolve_principal("member@corp.com", tx_store)
-
-        assert tx_store.get_user_by_email.await_count == 1
 
     @pytest.mark.asyncio
     async def test_upserts_users(self):
@@ -3514,19 +3564,21 @@ class TestResolvePrincipal:
         )
 
     @pytest.mark.asyncio
-    async def test_caches_across_records(self):
-        """The same collaborator repeated across records costs one resolution."""
+    async def test_member_costs_a_single_lookup(self):
+        """The common case is a workspace member, and it must not have got more
+        expensive: one query, exactly as before external users were represented. Only an
+        email that misses the user lookup pays for the person branch."""
         proc = _make_processor()
         tx_store = _make_tx_store()
-        tx_store.get_user_by_email.return_value = None
-        tx_store.get_person_by_email = AsyncMock(return_value=None)
-        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
+        tx_store.get_user_by_email.return_value = MagicMock(id="user-1")
+        tx_store.get_person_by_email = AsyncMock()
+        tx_store.upsert_person_by_email = AsyncMock()
 
-        for _ in range(50):
-            await proc._resolve_principal("Out@X.io", tx_store)
+        await proc._resolve_principal("member@corp.com", tx_store)
 
-        assert tx_store.upsert_person_by_email.await_count == 1
         assert tx_store.get_user_by_email.await_count == 1
+        tx_store.get_person_by_email.assert_not_awaited()
+        tx_store.upsert_person_by_email.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self):
