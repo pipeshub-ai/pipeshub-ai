@@ -33,6 +33,7 @@ import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
 import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
 import { loadConfigurationManagerConfig } from '../config/config';
 import { Org } from '../../user_management/schema/org.schema';
+import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
 
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -4151,7 +4152,7 @@ export const getAIModelProviderSchema =
 // Web Search Provider Management Functions
 export const getWebSearchProviders =
   (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
       const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
@@ -4178,7 +4179,12 @@ export const getWebSearchProviders =
       const storedProviders = Array.isArray(webSearchConfig.providers)
         ? webSearchConfig.providers
         : [];
-      const hideSecrets = shouldHideSecrets();
+      // Non-admins may list providers (agent builder) and see settings, but never see credentials.
+      const isAdmin =
+        !!req.user?.userId &&
+        !!req.user?.orgId &&
+        (await isUserOrgAdmin(req.user.userId, req.user.orgId));
+      const hideSecrets = !isAdmin || shouldHideSecrets();
       const providers = [
         {
           ...DUCKDUCKGO_WEB_SEARCH_PROVIDER,

@@ -286,6 +286,7 @@ config:
   staleIndexingRecoveryIntervalSeconds: 60
   backendPort: 3001  # Backend HTTP port; should match service.port and probe ports
   kvStoreType: "redis"  # Key-value store backend (e.g. "redis")
+  hideSecretConfig: true  # SECURITY: mask stored credentials (API keys, SMTP passwords) in config API responses
   allowedOrigins: ""  # SECURITY: Set to specific origins (comma-separated) instead of "*"
   # Example: "https://app.example.com,https://admin.example.com"
   # For development: --set config.allowedOrigins="http://localhost:3001"
