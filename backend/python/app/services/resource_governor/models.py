@@ -14,9 +14,19 @@ if TYPE_CHECKING:
 
 
 class Pool(StrEnum):
-    """Admission pools governed independently by the ResourceGovernor."""
+    """Admission pools governed independently by the ResourceGovernor.
 
-    INDEX = "index"
+    The index pools are split by tier for the same reason the parse pools
+    are, one stage further up. An index permit is held for a record's whole
+    lifetime — including the time it spends *queued* for a parse slot — so a
+    single shared pool lets the slow tier set the throughput of the fast one:
+    a bulk PDF upload fills every index permit with records waiting on the
+    handful of heavy-parse slots, and Jira/Confluence records that would
+    finish in seconds never get admitted at all.
+    """
+
+    INDEX_HEAVY = "index_heavy"
+    INDEX_LIGHT = "index_light"
     HEAVY_PARSE = "heavy_parse"
     LIGHT_PARSE = "light_parse"
 
@@ -132,15 +142,28 @@ class Ceilings:
     milliseconds of CPU on a few KB and must not be limited to what a
     Docling conversion costs.
 
-    ``index`` bounds the active pipeline — heavy and light records together,
-    not one each — and, unlike the parse ceilings, is also the pool's
-    effective limit for the life of the process, since the control law does
-    not adapt it (policy ``_is_index_pool``).
+    ``index_heavy`` / ``index_light`` bound the active pipeline per tier —
+    how many records of that tier may be in flight at once, from download
+    through vector upsert. They are split for the same reason the parse
+    ceilings are: an index permit is held across the whole pipeline, so one
+    shared budget would let a queue of Docling PDFs consume every permit and
+    starve records that finish in seconds (see ``Pool``).
     """
 
     heavy: int
     light: int
-    index: int
+    index_heavy: int
+    index_light: int
+
+    @property
+    def index(self) -> int:
+        """Total in-flight record budget across both tiers.
+
+        The figure operators reason about (and what ``MAX_CONCURRENT_INDEXING``
+        caps), since it is what bounds memory and downstream fan-out; the
+        per-tier split only decides who may claim it.
+        """
+        return self.index_heavy + self.index_light
 
 
 @dataclass(frozen=True)

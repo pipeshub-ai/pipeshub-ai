@@ -90,6 +90,31 @@ All variables are optional. When set, they suppress the corresponding interactiv
 | `PIPESHUB_PORT` | host port | `3000` (`3200` for a second copy) |
 | `PIPESHUB_PROJECT` | Compose project name | `pipeshub-ai` |
 | `PIPESHUB_PUBLIC_URL` | public HTTPS URL | _(none)_ |
+| `APP_MEMORY_LIMIT` | memory ceiling for the app container | derived from the machine (see below) |
+| `APP_MEMSWAP_LIMIT` | combined memory+swap ceiling | `APP_MEMORY_LIMIT` + 6G |
+
+### App container memory
+
+On a fresh install the installer sizes `APP_MEMORY_LIMIT` from what the machine
+actually has — the Docker Desktop VM's allocation on macOS/Windows, host RAM on
+Linux — less 4G reserved for the datastores and OS, floored at 6G and capped at
+32G. Setting it in the environment pins it:
+
+```bash
+APP_MEMORY_LIMIT=24G APP_MEMSWAP_LIMIT=30G ./install.sh --yes
+```
+
+An existing `.env` value always wins, so `--reconfigure` never resizes a tuned
+deployment.
+
+This is the most effective throughput knob in the stack. The resource governor
+sizes indexing and parsing concurrency from the container's cgroup limit, so a
+container sitting near its ceiling has every pool braked to its floor — a
+couple of documents in flight while the CPU reads as idle. If indexing is slow
+and CPU looks free, read `resource_governor.mem_pressure` from the indexing
+service's `/health` before tuning anything else: above `GOVERNOR_MEM_SOFT`
+(0.70) nothing grows, and above `GOVERNOR_MEM_HARD` (0.80) every pool halves
+each sample.
 
 ### Example — fully non-interactive slim install
 
@@ -417,16 +442,45 @@ Override the base images with `PYTHON_DEPS_IMAGE` / `RUNTIME_BASE_IMAGE` environ
 
 The indexing/parsing pipeline sizes its own concurrency from the
 `pipeshub-ai` container's CPU quota — one heavy-parse slot per CPU, ten
-light-parse slots per CPU, and 100× the wider parse tier for indexing —
+light-parse slots per CPU (capped at `GOVERNOR_LIGHT_PARSE_MAX`, default
+256), and, for each tier's in-flight record budget, twice *that tier's own*
+parse ceiling (capped at `GOVERNOR_INDEX_MAX`, default 512 per tier) — all
 capped by `MAX_CONCURRENT_PARSING` / `MAX_CONCURRENT_INDEXING` when those
 are set (see [`env.template`](env.template)). Leave them unset so new
 images size from CPU. Hub slim still `int()`s empty strings; compose
 unsets blanks at start so slim uses its built-in defaults instead of
-crashing. Set an integer only if you want a hard cap. The indexing
-figure is the budget for heavy and light records *combined*, and it is
-fixed for the life of the process. Only parsing and downloads adapt at
-runtime. These two runs are a manual regression check before a release;
-they are not part of CI.
+crashing. Set an integer only if you want a hard cap;
+`MAX_CONCURRENT_INDEXING` caps the two index tiers *together* as a hard
+aggregate, scaled across them proportionally. Set it to 1 and there is no
+room to split at all, so the light tier collapses and every record shares one
+pool — light records then queue behind heavy ones, and the governor logs a
+warning saying so at startup. 2 is the smallest value that keeps the split.
+
+Heavy and light records get **separate** in-flight budgets
+(`index_heavy` / `index_light`). An index permit is held for a record's
+whole lifetime — including the time it spends queued for a parse slot — so
+a single shared budget let a bulk PDF upload hold every permit while
+Jira/Confluence records that finish in seconds never got admitted at all.
+The tier is read from the record event's own `extension`/`mimeType`;
+anything unrecognised classifies as heavy.
+
+Those budgets are node-local and apply from this release. The *cluster-wide*
+lease pool stays shared for one more release: `INDEXING_SPLIT_LEASE_POOLS`
+defaults to off, so light records take the same `indexing` lease a
+previous-build replica takes, at the same total budget. Without that, a
+rolling upgrade runs both builds at once — the old one admitting every record
+into `indexing` at the full budget while the new one also fills
+`indexing:light` — and the fleet can exceed `MAX_CONCURRENT_INDEXING` by
+`index_light` until the rollout finishes. Nothing is lost meanwhile: the
+head-of-line blocking above is prevented by the node-local per-tier gates,
+which are unaffected. Set `INDEXING_SPLIT_LEASE_POOLS=true` once every replica
+runs this build or later.
+
+Every pool now adapts at runtime, index included: each index tier is held
+against live free memory (`GOVERNOR_INDEX_*_WORKING_SET_GB`) the same way
+heavy parsing is, so one image sizes itself correctly on a 4-core/8 GiB
+host and on a 48-core/96 GiB one. These two runs are a manual regression
+check before a release; they are not part of CI.
 
 Both commands below assume the compose project is up (`docker compose -p
 pipeshub-ai up -d`) and run against the always-on `pipeshub-ai` container —
@@ -472,10 +526,16 @@ operator-pinned `MAX_CONCURRENT_INDEXING`.
    record eventually reaches a terminal status (`COMPLETED`, `EMPTY`, or
    `FAILED` — none stuck `IN_PROGRESS`/`QUEUED`).
 6. Repeat with `MAX_CONCURRENT_INDEXING=200` pinned and re-run step 2-5.
-   **Expect:** the same outcome — the governor's derived ceiling (visible in
-   `ceilings.index` from the `/health` snapshot) still caps effective
-   concurrency well under 200, so a deliberately reckless operator setting
-   does not change the result.
+   **Expect:** the same outcome — the governor's derived ceilings (visible as
+   `ceilings.index_heavy` / `ceilings.index_light` in the `/health` snapshot,
+   summed as `ceilings.index`) still cap effective concurrency well under 200,
+   so a deliberately reckless operator setting does not change the result.
+7. While the PDFs are still parsing, upload a handful of small Markdown/CSV
+   files. **Expect:** they reach a terminal status without waiting for the
+   PDF batch to drain — `limits.index_light` and `in_use.index_light` move
+   independently of `index_heavy`. This is the head-of-line blocking the
+   per-tier split exists to prevent; before it, a queue of heavy records held
+   every in-flight permit and light records were never admitted.
 
 ### 2. Small-record connector sync (Confluence/Jira shape)
 
@@ -493,8 +553,9 @@ idle-CPU host, rather than aliasing to "no demand" or capping on
    duration of the sync.
 3. **Expect:** `limits.light_parse` ramps up from its floor (half the
    ceiling) over the first several samples rather than sitting there for the
-   whole sync; `limits.index` sits at `ceilings.index` from the first
-   sample and never moves;
+   whole sync; `limits.index_light` ramps toward `ceilings.index_light`
+   rather than being held down by heavy records, and `in_use.index_heavy`
+   stays near zero because this sync has no heavy records at all;
    `resource_governor.cpu_utilisation` in the same snapshot reads as a real
    interval mean (comparable to what `top`/`docker stats` shows for the
    container), not ~0%, even though each record is milliseconds of work.

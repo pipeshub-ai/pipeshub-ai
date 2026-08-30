@@ -291,8 +291,35 @@ config:
   accessibleRecordsCacheTtl: 300
   # 0 disables the signed-URL cache. Keep well under the 3600s signing lifetime.
   signedUrlCacheSeconds: 0
+  # Light records take their own cluster-wide indexing lease pool. Leave false
+  # for one release: a previous-build replica admits every record into the
+  # shared "indexing" pool at the full budget, so during a rolling upgrade a
+  # separate light pool is additive and the fleet can exceed
+  # MAX_CONCURRENT_INDEXING. The per-tier node-local gates are unaffected.
+  # Turn on once every replica runs this build or later.
+  indexingSplitLeasePools: false
+  # Resource-governor tuning, all empty by default: the governor derives each
+  # from the pod's CPU/memory limits, which is what lets one image size itself
+  # on a 4-core node and a 48-core one. Set a value only to pin it. Defaults
+  # in parentheses are the derived-from-code fallbacks, not applied values.
+  governorHeavyParseSlotsPerCpu: ""   # (1.0) heavy parse slots per CPU
+  governorLightParseSlotsPerCpu: ""   # (10.0) light parse slots per CPU
+  governorLightParseMax: ""           # (256) absolute cap on the light ceiling
+  governorIndexHeadroom: ""           # (2.0) in-flight records per parse slot
+  governorIndexMax: ""                # (512) absolute cap per index tier
+  governorIndexHeavyWorkingSetGb: ""  # (0.15) RAM assumed per in-flight heavy record
+  governorIndexLightWorkingSetGb: ""  # (0.02) RAM assumed per in-flight light record
+  governorHeavyParseWorkingSetGb: ""  # (1.5) RAM assumed per in-flight heavy parse
+  governorBaselineMemoryMb: ""        # process baseline excluded from pressure
   indexingConcurrencyLeaseSeconds: 120
-  indexingConcurrencyRedisTimeoutSeconds: 5
+  # Must stay below any caller's own deadline so redis-py raises its own clean
+  # timeout rather than having a command cancelled underneath it — a cancelled
+  # command forces its connection closed, and replacing connections at that
+  # rate is what exhausted Redis's client limit.
+  indexingConcurrencyRedisTimeoutSeconds: 2
+  # Per-event-loop connection-pool bound. redis-py otherwise defaults to
+  # effectively unbounded, so a closed connection is replaced by a new connect.
+  indexingConcurrencyRedisMaxConnections: 32
   shutdownTaskTimeout: 240
   staleIndexingRecoveryStartupGraceSeconds: 330
   staleIndexingRecoveryIntervalSeconds: 60

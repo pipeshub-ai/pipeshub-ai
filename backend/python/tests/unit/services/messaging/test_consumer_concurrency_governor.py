@@ -1,7 +1,7 @@
 """Unit tests for the ResourceGovernor-backed helpers added to
 consumer_concurrency.py in Phase 1 of the adaptive-concurrency plan:
 index_ceiling/parse_ceiling (resolved-ceiling lease sizing) and
-acquire_parsing_slot/release_parsing_slot (tier-routed admission with a
+acquire_parsing_slot/release_admission (tier-routed admission with a
 legacy-semaphore fallback when no governor is configured).
 """
 from __future__ import annotations
@@ -39,10 +39,15 @@ class TestIndexAndParseCeiling:
         assert concurrency.index_ceiling(host) == messaging_env.max_concurrent_indexing
         assert concurrency.parse_ceiling(host) == messaging_env.max_concurrent_parsing
 
-    def test_uses_resolved_ceiling_with_governor(self) -> None:
+    def test_uses_resolved_ceiling_with_governor(self, monkeypatch) -> None:
+        monkeypatch.setenv("INDEXING_SPLIT_LEASE_POOLS", "true")
         governor = _make_governor(env_parse=4, env_index=8)
         host = _host(governor=governor)
-        assert concurrency.index_ceiling(host) == 8
+        # env_index caps the two tiers together, so each gets a share.
+        assert (
+            concurrency.index_ceiling(host, ParseTier.HEAVY)
+            + concurrency.index_ceiling(host, ParseTier.LIGHT)
+        ) <= 8
         assert concurrency.parse_ceiling(host) == 4
         assert concurrency.parse_ceiling(host, ParseTier.HEAVY) == 4
         assert concurrency.parse_ceiling(host, ParseTier.LIGHT) == governor.ceilings.light
@@ -71,16 +76,22 @@ class TestIndexAndParseCeiling:
         assert concurrency.parse_ceiling(host, ParseTier.HEAVY) == 2
         assert concurrency.parse_ceiling(host, ParseTier.LIGHT) == 2
 
-    def test_ceiling_unaffected_by_adaptive_shrink(self) -> None:
+    def test_ceiling_unaffected_by_adaptive_shrink(self, monkeypatch) -> None:
         """The resolved ceiling is fixed at startup; index_ceiling/
         parse_ceiling must keep returning it even after the node-local
         limit has adapted downward — only the AdmissionGate is affected by
         that, never the cluster-wide lease size."""
+        monkeypatch.setenv("INDEXING_SPLIT_LEASE_POOLS", "true")
         governor = _make_governor(env_parse=4, env_index=8)
-        governor._registry.set(Pool.INDEX, 1)
+        governor._registry.set(Pool.INDEX_HEAVY, 1)
+        governor._registry.set(Pool.INDEX_LIGHT, 1)
         governor._registry.set(Pool.HEAVY_PARSE, 1)
         host = _host(governor=governor)
-        assert concurrency.index_ceiling(host) == 8
+        # env_index caps the two tiers together, so each gets a share.
+        assert (
+            concurrency.index_ceiling(host, ParseTier.HEAVY)
+            + concurrency.index_ceiling(host, ParseTier.LIGHT)
+        ) <= 8
         assert concurrency.parse_ceiling(host) == 4
 
 
@@ -98,7 +109,9 @@ class TestPendingTaskCeiling:
         monkeypatch.delenv("MAX_PENDING_INDEXING_TASKS", raising=False)
         governor = _make_governor(env_parse=4, env_index=8)
         host = _host(governor=governor)
-        assert concurrency.pending_task_ceiling(host) == max(8, 4) * 4
+        # Derived from the resolved total index budget, then clamped: the
+        # read-ahead floor keeps a small host from starving its own loop.
+        assert concurrency.pending_task_ceiling(host) == 64
 
     def test_explicit_env_override_wins_over_governor(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("MAX_PENDING_INDEXING_TASKS", "17")
@@ -109,10 +122,13 @@ class TestPendingTaskCeiling:
     def test_unaffected_by_adaptive_shrink(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("MAX_PENDING_INDEXING_TASKS", raising=False)
         governor = _make_governor(env_parse=4, env_index=8)
-        governor._registry.set(Pool.INDEX, 1)
+        governor._registry.set(Pool.INDEX_HEAVY, 1)
+        governor._registry.set(Pool.INDEX_LIGHT, 1)
         governor._registry.set(Pool.HEAVY_PARSE, 1)
         host = _host(governor=governor)
-        assert concurrency.pending_task_ceiling(host) == max(8, 4) * 4
+        # Derived from the resolved total index budget, then clamped: the
+        # read-ahead floor keeps a small host from starving its own loop.
+        assert concurrency.pending_task_ceiling(host) == 64
 
 
 def _waiter_host() -> SimpleNamespace:
@@ -182,7 +198,7 @@ class TestAcquireReleaseParsingSlot:
         assert admission.cost == 1
         assert semaphore._value == 0
 
-        concurrency.release_parsing_slot(admission)
+        concurrency.release_admission(admission)
         assert semaphore._value == 1
 
     @pytest.mark.asyncio
@@ -201,7 +217,7 @@ class TestAcquireReleaseParsingSlot:
         assert governor.gate(Pool.HEAVY_PARSE).in_use == 1
         assert governor.gate(Pool.LIGHT_PARSE).in_use == 0
 
-        concurrency.release_parsing_slot(admission)
+        concurrency.release_admission(admission)
         assert governor.gate(Pool.HEAVY_PARSE).in_use == 0
 
     @pytest.mark.asyncio
@@ -214,7 +230,7 @@ class TestAcquireReleaseParsingSlot:
         assert governor.gate(Pool.LIGHT_PARSE).in_use == 1
         assert governor.gate(Pool.HEAVY_PARSE).in_use == 0
 
-        concurrency.release_parsing_slot(admission)
+        concurrency.release_admission(admission)
         assert governor.gate(Pool.LIGHT_PARSE).in_use == 0
 
     @pytest.mark.asyncio
@@ -224,7 +240,7 @@ class TestAcquireReleaseParsingSlot:
 
         admission = await concurrency.acquire_parsing_slot(host, None, None)
         assert governor.gate(Pool.HEAVY_PARSE).in_use == 1
-        concurrency.release_parsing_slot(admission)
+        concurrency.release_admission(admission)
 
     @pytest.mark.asyncio
     async def test_governor_xl_heavy_document_costs_two_permits(self) -> None:
@@ -237,12 +253,12 @@ class TestAcquireReleaseParsingSlot:
         assert admission.cost == 2
         assert governor.gate(Pool.HEAVY_PARSE).in_use == 2
 
-        concurrency.release_parsing_slot(admission)
+        concurrency.release_admission(admission)
         assert governor.gate(Pool.HEAVY_PARSE).in_use == 0
 
     def test_release_is_noop_for_none_admission(self) -> None:
         # Must not raise: called unconditionally from finally blocks.
-        concurrency.release_parsing_slot(None)
+        concurrency.release_admission(None)
 
 
 class TestReportMemoryIncidentIfApplicable:

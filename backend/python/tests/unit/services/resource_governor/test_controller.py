@@ -61,6 +61,43 @@ async def _hold_gate(gate) -> None:
         await asyncio.sleep(3600)  # always cancelled well before this fires
 
 
+class TestExplicitIndexCapReporting:
+    """An operator-set MAX_CONCURRENT_INDEXING that the per-tier split cannot
+    express exactly must say so, not deviate in silence."""
+
+    def _governor(self, caplog: pytest.LogCaptureFixture, env_index: int) -> ResourceGovernor:
+        with caplog.at_level(logging.WARNING, logger="test.index_cap"):
+            return ResourceGovernor(
+                logger=logging.getLogger("test.index_cap"),
+                probe=ScriptedProbe([_snap(mem_pressure_working_set_gb=0.5)]),
+                sample_interval=1.0,
+                clock=ManualClock(),
+                env_index=env_index,
+            )
+
+    def test_a_total_of_one_is_honoured_exactly_by_collapsing_the_split(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The cap is a hard aggregate: one record in flight means one, not
+        one per tier. Two tiers each floored at 1 cannot express that, so the
+        light tier collapses to zero and everything routes to heavy."""
+        governor = self._governor(caplog, 1)
+
+        assert governor.ceilings.index == 1
+        assert governor.ceilings.index_heavy == 1
+        assert governor.ceilings.index_light == 0
+        assert "leaves no room to split the in-flight budget by tier" in caplog.text
+
+    def test_a_total_the_split_can_express_keeps_both_tiers_and_is_silent(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        governor = self._governor(caplog, 2)
+
+        assert governor.ceilings.index == 2
+        assert governor.ceilings.index_light > 0
+        assert "MAX_CONCURRENT_INDEXING" not in caplog.text
+
+
 @pytest.mark.asyncio
 class TestResourceGovernorController:
     async def test_shrink_then_ramp_with_hysteresis(self) -> None:
@@ -213,11 +250,18 @@ class TestResourceGovernorController:
             "cpu_throttled_ratio", "mem_pressure", "mem_limit_bytes",
             "mem_usable_bytes", "mem_working_set_raw_bytes", "mem_baseline_bytes",
             "worker_count", "ceilings", "limits", "in_use", "demand",
+            "mem_pressure_raw",
         }
         assert set(stats["limits"].keys()) == {pool.value for pool in Pool}
         assert set(stats["ceilings"].keys()) == {
-            "heavy_parse", "light_parse", "index",
+            "heavy_parse", "light_parse", "index", "index_heavy", "index_light",
         }
+        # "index" stays in the payload as the total operators reason about
+        # (and what MAX_CONCURRENT_INDEXING caps); the per-tier figures say
+        # which budget a record can actually draw on.
+        assert stats["ceilings"]["index"] == (
+            stats["ceilings"]["index_heavy"] + stats["ceilings"]["index_light"]
+        )
         assert set(stats["demand"][Pool.HEAVY_PARSE.value].keys()) == {
             "utilisation", "blocked_acquires", "completions", "rate_limited_acquires",
         }

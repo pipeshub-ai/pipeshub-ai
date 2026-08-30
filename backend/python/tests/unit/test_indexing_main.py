@@ -866,7 +866,7 @@ class TestRecoverInProgressRecords:
 class TestStartKafkaConsumers:
     """Tests for start_kafka_consumers()."""
 
-    async def test_success_non_neo4j(self):
+    async def test_success_non_neo4j(self) -> None:
         """Record consumer is started successfully for non-neo4j data store."""
         from app.indexing_main import start_kafka_consumers
 
@@ -895,7 +895,7 @@ class TestStartKafkaConsumers:
         assert consumers[0][1] == mock_consumer
         assert consumers[0][2] == mock_producer
 
-    async def test_success_neo4j(self):
+    async def test_success_neo4j(self) -> None:
         """Startup under Neo4j is now ordinary.
 
         This used to close the graph driver on the main loop and reconnect it
@@ -933,7 +933,31 @@ class TestStartKafkaConsumers:
         assert consumers[0][1] == mock_consumer
         assert consumers[0][2] == mock_producer
 
-    async def test_error_cleans_up_started_consumers(self):
+    async def test_distributed_concurrency_failure_aborts_startup(self) -> None:
+        """Redis is a startup requirement: an unreachable one fails the boot.
+
+        The RetryManager ping just above needs the same Redis, so degrading to
+        node-local limits here could never actually keep the service running.
+        """
+        from app.indexing_main import start_kafka_consumers
+
+        mock_container = _make_container()
+        mock_manager = MagicMock()
+        mock_manager.initialize = AsyncMock(side_effect=RuntimeError("redis down"))
+        mock_manager.cleanup = AsyncMock()
+
+        with (
+            patch.dict("os.environ", {"DISTRIBUTED_INDEXING_CONCURRENCY": "true", "DATA_STORE": "arangodb"}),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock(), cleanup=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.DistributedConcurrencyManager", return_value=mock_manager),
+        ):
+            with pytest.raises(RuntimeError, match="redis down"):
+                await start_kafka_consumers(mock_container)
+
+    async def test_error_cleans_up_started_consumers(self) -> None:
         """Error starting consumers cleans up any already started."""
         from app.indexing_main import start_kafka_consumers
 
@@ -960,7 +984,7 @@ class TestStartKafkaConsumers:
             with pytest.raises(RuntimeError, match="handler fail"):
                 await start_kafka_consumers(mock_container)
 
-    async def test_cleanup_error_during_consumer_cleanup(self):
+    async def test_cleanup_error_during_consumer_cleanup(self) -> None:
         """Cleanup error is logged but original error still propagated."""
         from app.indexing_main import start_kafka_consumers
 

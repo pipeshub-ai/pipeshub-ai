@@ -728,7 +728,7 @@ class Processor:
             blocks_data (bytes|str|dict): BlocksContainer data (JSON string, bytes, or dict)
             virtual_record_id (str): Virtual record ID
         """
-        self.logger.info(
+        self.logger.debug(
             f"🚀 Starting Blocks Container processing for record: {recordName}"
         )
 
@@ -1223,7 +1223,7 @@ class Processor:
             self.logger.debug("No BlockGroups require processing")
             return block_containers
 
-        self.logger.info(
+        self.logger.debug(
             f"🔄 Processing {len(block_groups_to_process)} BlockGroups"
         )
 
@@ -1277,7 +1277,7 @@ class Processor:
             initial_block_count
         )
 
-        self.logger.info(
+        self.logger.debug(
             f"✅ Processed {len(processing_results)} BlockGroups. "
             f"Total blocks: {len(result.blocks)}, "
             f"Total block_groups: {len(result.block_groups)}"
@@ -1520,7 +1520,7 @@ class Processor:
         self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process HTML document, yielding phase completion events."""
-        self.logger.info(
+        self.logger.debug(
             f"🚀 Starting HTML document processing for record: {recordName}"
         )
 

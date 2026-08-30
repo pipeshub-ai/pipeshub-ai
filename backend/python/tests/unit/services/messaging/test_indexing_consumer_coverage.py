@@ -202,10 +202,10 @@ class TestApplyBackpressure:
 
 class TestParseMessageAdditional:
 
-    def test_bytes_value_isinstance_check(self, consumer):
+    async def test_bytes_value_isinstance_check(self, consumer):
         """Ensure isinstance check works for bytes -> str conversion."""
         msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"x": 1}}).encode("utf-8"))
-        result = consumer._IndexingKafkaConsumer__parse_message(msg)
+        result = await consumer._IndexingKafkaConsumer__parse_message(msg)
         assert isinstance(result, StreamMessage)
         assert result.eventType == "test"
         assert result.payload == {"x": 1}

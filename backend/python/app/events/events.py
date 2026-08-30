@@ -50,6 +50,7 @@ from app.services.vector_db.strategy import (
     RecordContext,
     resolve_write_collection_name,
 )
+from app.utils.cpu_offload import offload_if_large
 from app.utils.libreoffice_convert import convert_with_libreoffice
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -543,6 +544,19 @@ class EventProcessor:
 
 
 
+    def _hash_for_dedup(
+        self,
+        content: bytes,
+        record_type: str | None = None,
+        mime_type: str | None = None,
+    ) -> str:
+        """Normalise then hash, as one synchronous unit for ``offload_if_large``."""
+        return hashlib.md5(
+            self._normalize_content_for_dedup(
+                content=content, record_type=record_type, mime_type=mime_type
+            )
+        ).hexdigest()
+
     def _normalize_content_for_dedup(
         self,
         content: bytes,
@@ -692,8 +706,13 @@ class EventProcessor:
                 content = json.dumps(content, sort_keys=True, ensure_ascii=False).encode('utf-8')
             elif isinstance(content, str):
                 content = content.encode('utf-8')
-            content_for_hash = self._normalize_content_for_dedup(content=content, record_type=record_type, mime_type=mime_type)
-            md5_checksum = hashlib.md5(content_for_hash).hexdigest()
+            # Normalising (BeautifulSoup, for HTML-ish records) and hashing are
+            # both synchronous and both scale with document size, on the one
+            # worker loop every in-flight record shares. Offloaded together as
+            # a unit so a large document costs one thread hop, not two.
+            md5_checksum = await offload_if_large(
+                self._hash_for_dedup, content, record_type, mime_type
+            )
             if existing_md5_checksum != md5_checksum:
                 success = await self.update_record_fields(
                     doc,
@@ -1170,7 +1189,7 @@ class EventProcessor:
                 return
 
             if mime_type == MimeTypes.BLOCKS.value:
-                self.logger.info("🚀 Processing Blocks Container")
+                self.logger.debug("🚀 Processing Blocks Container")
                 async for event in self.processor.process_blocks(
                     recordName=record_name,
                     recordId=record_id,

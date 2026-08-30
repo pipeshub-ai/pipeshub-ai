@@ -13,6 +13,7 @@ from app.services.messaging.config import (
     RedisStreamsConfig,
     Topic,
     get_message_broker_type,
+    messaging_env,
 )
 
 
@@ -246,3 +247,73 @@ class TestConcurrencyCeilingEnvVars:
 
         monkeypatch.setenv("MAX_PENDING_INDEXING_TASKS", "17")
         assert messaging_env.max_pending_indexing_tasks == 17
+
+class TestEmptyEnvVarsFallBackToDefaults:
+    """The shipped Compose files pass every optional knob as ``${VAR:-}``, so
+    an unset one arrives as the empty string rather than absent. A bare
+    ``int(os.getenv(name, default))`` raises on that at import and takes the
+    whole service down — the "Hub slim still int()s empty strings" hazard
+    documented in docker-compose.yml."""
+
+    @pytest.mark.parametrize(
+        ("env_var", "attribute", "expected"),
+        [
+            ("INDEXING_CONCURRENCY_REDIS_MAX_CONNECTIONS", "concurrency_redis_max_connections", 32),
+            ("INDEXING_CONCURRENCY_REDIS_TIMEOUT_SECONDS", "concurrency_redis_timeout_seconds", 2.0),
+            ("INDEXING_CONCURRENCY_FAILURE_BUDGET", "concurrency_failure_budget", 5),
+            ("INDEXING_CONCURRENCY_ACQUIRE_MAX_BACKOFF_SECONDS", "concurrency_acquire_max_backoff_seconds", 5.0),
+            ("INDEXING_CONCURRENCY_LEASE_SECONDS", "concurrency_lease_seconds", 120.0),
+            ("INDEXING_CONCURRENCY_RENEW_INTERVAL_SECONDS", "concurrency_renew_interval_seconds", 30.0),
+            ("INDEXING_CONCURRENCY_ACQUIRE_POLL_SECONDS", "concurrency_acquire_poll_seconds", 0.5),
+            ("INDEXING_RECORD_LEASE_WAIT_SECONDS", "record_lease_wait_seconds", 10.0),
+            ("MAX_DELIVERY_ATTEMPTS", "max_delivery_attempts", 3),
+            ("RECORD_PROCESSING_TIMEOUT", "record_processing_timeout", 1800.0),
+            ("SHUTDOWN_TASK_TIMEOUT", "shutdown_task_timeout", 240.0),
+        ],
+    )
+    def test_empty_string_is_treated_as_unset(
+        self, monkeypatch: pytest.MonkeyPatch, env_var: str, attribute: str, expected: float
+    ) -> None:
+        monkeypatch.setenv(env_var, "")
+        assert getattr(messaging_env, attribute) == expected
+
+    @pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "-5", "-0.1"])
+    @pytest.mark.parametrize(
+        ("env_var", "attribute", "expected"),
+        [
+            ("INDEXING_CONCURRENCY_LEASE_SECONDS", "concurrency_lease_seconds", 120.0),
+            ("INDEXING_CONCURRENCY_ACQUIRE_POLL_SECONDS", "concurrency_acquire_poll_seconds", 0.5),
+            ("INDEXING_RECORD_LEASE_WAIT_SECONDS", "record_lease_wait_seconds", 10.0),
+        ],
+    )
+    def test_non_finite_and_negative_durations_fall_back(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        raw: str,
+        env_var: str,
+        attribute: str,
+        expected: float,
+    ) -> None:
+        """``float()`` accepts nan/inf, and both reach ``int(seconds * 1000)``
+        in the lease calls, where they raise — indistinguishable from a Redis
+        failure to ``acquire_distributed_slot``, so a typo degrades as an
+        outage. A negative one is quieter and worse: the backoff returns a
+        negative delay and ``asyncio.sleep`` of that returns immediately,
+        spinning against the Redis it is backing off from."""
+        monkeypatch.setenv(env_var, raw)
+        assert getattr(messaging_env, attribute) == expected
+
+    @pytest.mark.parametrize(
+        ("env_var", "attribute", "expected"),
+        [
+            ("INDEXING_CONCURRENCY_REDIS_MAX_CONNECTIONS", "concurrency_redis_max_connections", 32),
+            ("MAX_DELIVERY_ATTEMPTS", "max_delivery_attempts", 3),
+            ("RECORD_PROCESSING_TIMEOUT", "record_processing_timeout", 1800.0),
+        ],
+    )
+    def test_malformed_value_falls_back_rather_than_raising(
+        self, monkeypatch: pytest.MonkeyPatch, env_var: str, attribute: str, expected: float
+    ) -> None:
+        """A typo must degrade to the default, not crash the service at import."""
+        monkeypatch.setenv(env_var, "not-a-number")
+        assert getattr(messaging_env, attribute) == expected

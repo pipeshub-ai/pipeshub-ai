@@ -94,12 +94,37 @@ spec:
               value: {{ .Values.config.signedUrlCacheSeconds | quote }}
             - name: DISTRIBUTED_INDEXING_CONCURRENCY
               value: {{ .Values.config.distributedIndexingConcurrency | quote }}
+            # Resource-governor tuning. Every one defaults to "" so the
+            # governor derives it from the pod's CPU/memory limits; set one
+            # only to pin it. Mirrors the same list in docker-compose.yml.
+            - name: GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU
+              value: {{ .Values.config.governorHeavyParseSlotsPerCpu | quote }}
+            - name: GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU
+              value: {{ .Values.config.governorLightParseSlotsPerCpu | quote }}
+            - name: GOVERNOR_LIGHT_PARSE_MAX
+              value: {{ .Values.config.governorLightParseMax | quote }}
+            - name: GOVERNOR_INDEX_HEADROOM
+              value: {{ .Values.config.governorIndexHeadroom | quote }}
+            - name: GOVERNOR_INDEX_MAX
+              value: {{ .Values.config.governorIndexMax | quote }}
+            - name: GOVERNOR_INDEX_HEAVY_WORKING_SET_GB
+              value: {{ .Values.config.governorIndexHeavyWorkingSetGb | quote }}
+            - name: GOVERNOR_INDEX_LIGHT_WORKING_SET_GB
+              value: {{ .Values.config.governorIndexLightWorkingSetGb | quote }}
+            - name: GOVERNOR_HEAVY_PARSE_WORKING_SET_GB
+              value: {{ .Values.config.governorHeavyParseWorkingSetGb | quote }}
+            - name: GOVERNOR_BASELINE_MEMORY_MB
+              value: {{ .Values.config.governorBaselineMemoryMb | quote }}
+            - name: INDEXING_SPLIT_LEASE_POOLS
+              value: {{ .Values.config.indexingSplitLeasePools | quote }}
             - name: INDEXING_CONCURRENCY_KEY_PREFIX
               value: {{ printf "%s:indexing:concurrency" (include "pipeshub-ai.fullname" .) | quote }}
             - name: INDEXING_CONCURRENCY_LEASE_SECONDS
               value: {{ .Values.config.indexingConcurrencyLeaseSeconds | quote }}
             - name: INDEXING_CONCURRENCY_REDIS_TIMEOUT_SECONDS
               value: {{ .Values.config.indexingConcurrencyRedisTimeoutSeconds | quote }}
+            - name: INDEXING_CONCURRENCY_REDIS_MAX_CONNECTIONS
+              value: {{ .Values.config.indexingConcurrencyRedisMaxConnections | quote }}
             - name: SHUTDOWN_TASK_TIMEOUT
               value: {{ .Values.config.shutdownTaskTimeout | quote }}
             - name: STALE_INDEXING_RECOVERY_STARTUP_GRACE_SECONDS

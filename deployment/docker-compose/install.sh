@@ -179,6 +179,44 @@ get_existing_val() {
 # install and is dropped by --reconfigure. Callers must pass a value already
 # resolved by get_existing_val -- .env is being truncated by the time the
 # here-document that calls this is expanded.
+# Memory the sibling containers (graph DB, vector DB, Mongo, broker) plus the
+# host OS need alongside the app. Sized from what those services actually use
+# at rest -- Neo4j dominates at 1.5-2 GB -- not from their compose limits,
+# which are ceilings none of them reach simultaneously.
+_SIBLING_MEMORY_RESERVE_MB=4096
+# Never derive below this: it is the historical default, and the governor's
+# ceilings need somewhere to grow into.
+_APP_MEMORY_FLOOR_MB=6144
+# Past this the app stops converting RAM into throughput -- the ceilings are
+# CPU-derived and the extra only widens buffers nothing fills.
+_APP_MEMORY_CAP_MB=32768
+# Swap headroom kept above the memory limit, matching the shipped 10G/16G
+# pair. Lets the kernel page out an idle co-located service instead of
+# OOM-killing the container.
+_APP_SWAP_HEADROOM_MB=6144
+
+# Largest APP_MEMORY_LIMIT this machine can give the app container, in MB.
+# Echoes nothing when the available memory cannot be determined, so the caller
+# falls back to the compose default rather than guessing.
+recommended_app_memory_mb() {
+  local available_mb=0 derived
+  # On Docker Desktop the VM is the real ceiling, not host RAM: the host may
+  # have 64 GB while the VM is capped at 8.
+  if $IS_MACOS || $IS_WINDOWS; then
+    available_mb="$(docker_vm_mem_mb)"
+  fi
+  if (( available_mb <= 0 )); then
+    available_mb="${TOTAL_RAM_MB:-0}"
+  fi
+  (( available_mb > 0 )) || return 0
+
+  derived=$(( available_mb - _SIBLING_MEMORY_RESERVE_MB ))
+  (( derived < _APP_MEMORY_FLOOR_MB )) && derived=$_APP_MEMORY_FLOOR_MB
+  (( derived > _APP_MEMORY_CAP_MB )) && derived=$_APP_MEMORY_CAP_MB
+  # Whole gigabytes: the value goes into .env for humans to read and edit.
+  echo $(( derived / 1024 * 1024 ))
+}
+
 optional_env_line() {
   local key="$1" val="$2" hint="$3"
   if [[ -n "$val" ]]; then
@@ -1054,6 +1092,25 @@ if ! ${SKIP_WIZARD:-false}; then
   MONGO_CACHE_GB="$(get_existing_val MONGO_CACHE_GB "")"
   MONGO_MEMORY_LIMIT="$(get_existing_val MONGO_MEMORY_LIMIT "")"
 
+  # App container memory. An explicit APP_MEMORY_LIMIT always wins -- from the
+  # environment for scripted installs, or from an existing .env so
+  # --reconfigure never silently resizes a tuned deployment. Only a fresh
+  # install with neither derives from what this machine actually has, so a
+  # 32 GB host stops being held to the 10 GB default while a small one is not
+  # over-committed into the OOM/thrash the governor then has to brake around.
+  APP_MEMORY_LIMIT="$(get_existing_val APP_MEMORY_LIMIT "${APP_MEMORY_LIMIT:-}")"
+  APP_MEMSWAP_LIMIT="$(get_existing_val APP_MEMSWAP_LIMIT "${APP_MEMSWAP_LIMIT:-}")"
+  if [[ -z "$APP_MEMORY_LIMIT" ]]; then
+    _derived_app_mem_mb="$(recommended_app_memory_mb)"
+    if [[ -n "$_derived_app_mem_mb" ]] && (( _derived_app_mem_mb > 0 )); then
+      APP_MEMORY_LIMIT="$(( _derived_app_mem_mb / 1024 ))G"
+      info "Sizing app container memory: APP_MEMORY_LIMIT=${APP_MEMORY_LIMIT} (reserving $(( _SIBLING_MEMORY_RESERVE_MB / 1024 ))G for the datastores and OS). Override by setting APP_MEMORY_LIMIT before running, or edit .env."
+      if [[ -z "$APP_MEMSWAP_LIMIT" ]]; then
+        APP_MEMSWAP_LIMIT="$(( (_derived_app_mem_mb + _APP_SWAP_HEADROOM_MB) / 1024 ))G"
+      fi
+    fi
+  fi
+
   if [[ "$DATA_STORE" == "arangodb" ]]; then
     ARANGO_PASSWORD="$(get_existing_val ARANGO_PASSWORD "$(gen_secret 16)")"; NEO4J_PASSWORD=""
   else
@@ -1176,6 +1233,14 @@ $(optional_env_line MONGO_IMAGE_TAG "$MONGO_IMAGE_TAG" "8.0.17")
 $(optional_env_line MONGO_CACHE_GB "$MONGO_CACHE_GB" "1")
 $(optional_env_line MONGO_MEMORY_LIMIT "$MONGO_MEMORY_LIMIT" "2G")
 
+# App container memory ceiling and its combined memory+swap ceiling. Derived
+# from this machine on a fresh install; set them yourself to pin. The governor
+# sizes indexing/parsing concurrency from whatever APP_MEMORY_LIMIT allows, so
+# raising it raises throughput until CPU becomes the bound. APP_MEMSWAP_LIMIT
+# must stay >= APP_MEMORY_LIMIT.
+$(optional_env_line APP_MEMORY_LIMIT "$APP_MEMORY_LIMIT" "10G")
+$(optional_env_line APP_MEMSWAP_LIMIT "$APP_MEMSWAP_LIMIT" "16G")
+
 # ── Qdrant ───────────────────────────────────────────────────────────────────
 QDRANT_API_KEY=${QDRANT_API_KEY}
 
@@ -1183,10 +1248,16 @@ QDRANT_API_KEY=${QDRANT_API_KEY}
 # Do not write MAX_CONCURRENT_* / EMBEDDING_*_CONCURRENCY here. Empty values
 # crash Hub slim (int("")); omitting them lets slim use built-in defaults and
 # lets new images size from CPU. Set an integer in .env only to cap.
-# Governor slot ratios (1 / 10 / 100) stay empty.
+# Governor tuning knobs stay empty: each is derived from the container's
+# own CPU/memory limits unless pinned.
+INDEXING_SPLIT_LEASE_POOLS=
 GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU=
 GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU=
-GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT=
+GOVERNOR_LIGHT_PARSE_MAX=
+GOVERNOR_INDEX_HEADROOM=
+GOVERNOR_INDEX_MAX=
+GOVERNOR_INDEX_HEAVY_WORKING_SET_GB=
+GOVERNOR_INDEX_LIGHT_WORKING_SET_GB=
 GOVERNOR_HEAVY_PARSE_WORKING_SET_GB=
 # Uncomment to pin the query worker count. Left unset so WEB_CONCURRENCY,
 # which uvicorn honours by default, still applies if you use it.

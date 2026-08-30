@@ -5,12 +5,16 @@ Ensures retry counts survive restarts and are consistent across consumer instanc
 """
 from __future__ import annotations
 
-from logging import Logger
 from typing import TYPE_CHECKING, Optional
 
-from redis.asyncio import Redis
+from app.services.messaging.config import messaging_env
+from app.services.messaging.redis_client import RedisClientRegistry
 
 if TYPE_CHECKING:
+    from logging import Logger
+
+    from redis.asyncio import Redis
+
     from app.services.messaging.config import RedisConfig
 
 
@@ -49,6 +53,7 @@ class RetryManager:
         """
         self.logger = logger
         self._redis: Optional[Redis] = redis_client
+        self._registry: Optional[RedisClientRegistry] = None
         self._redis_config = redis_config
         self._owns_client = redis_client is None
         self.ttl_seconds = ttl_seconds
@@ -58,28 +63,48 @@ class RetryManager:
 
     async def initialize(self) -> None:
         """Initialize Redis connection if not already provided."""
-        if self._redis is not None:
+        if self._redis is not None or self._registry is not None:
             return
 
         if self._redis_config is None:
             raise ValueError("Redis config not available for initialization")
 
-        self._redis = Redis(
-            host=self._redis_config.host,
-            port=self._redis_config.port,
-            password=self._redis_config.password,
-            db=self._redis_config.db,
-            decode_responses=True,
+        # A registry rather than one client: retry counts are read and written
+        # from the consumers' worker loop as well as the main loop, and a
+        # redis.asyncio client binds to whichever loop first uses it. Handing
+        # each loop its own removes the cross-thread hop those calls used to
+        # need — the hop whose 5s deadline, when a busy loop overran it,
+        # cancelled in-flight commands and forced their connections closed.
+        self._registry = RedisClientRegistry(
+            self.logger,
+            self._redis_config,
+            max_connections=messaging_env.concurrency_redis_max_connections,
+            socket_timeout_seconds=messaging_env.concurrency_redis_timeout_seconds,
         )
-        await self._redis.ping()
+        await self._registry.client().ping()
         self.logger.info("RetryManager: Redis connection initialized")
 
     async def cleanup(self) -> None:
-        """Close Redis connection if we own it."""
-        if self._owns_client and self._redis is not None:
+        """Close Redis connections if we own them."""
+        if not self._owns_client:
+            return
+        if self._registry is not None:
+            registry = self._registry
+            self._registry = None
+            await registry.aclose()
+            self.logger.info("RetryManager: Redis connection closed")
+        elif self._redis is not None:
             await self._redis.aclose()
             self._redis = None
             self.logger.info("RetryManager: Redis connection closed")
+
+    def _client(self) -> Redis:
+        """The client for the calling loop, or the explicitly injected one."""
+        if self._redis is not None:
+            return self._redis
+        if self._registry is not None:
+            return self._registry.client()
+        raise RuntimeError("RetryManager is not initialized")
 
     def _build_key(self, message_id: str) -> str:
         """Build Redis key for a message.
@@ -112,16 +137,16 @@ class RetryManager:
         Raises:
             RuntimeError: If Redis client is not initialized
         """
-        if self._redis is None:
+        if self._redis is None and self._registry is None:
             raise RuntimeError("RetryManager not initialized. Call initialize() first.")
 
         key = self._build_key(message_id)
 
         # INCR is atomic; creates key with value 1 if it doesn't exist
-        count = await self._redis.incr(key)
+        count = await self._client().incr(key)
 
         # Set/refresh TTL on every increment
-        await self._redis.expire(key, self.ttl_seconds)
+        await self._client().expire(key, self.ttl_seconds)
 
         should_dead_letter = count >= max_attempts
 
@@ -154,11 +179,11 @@ class RetryManager:
         Raises:
             RuntimeError: If Redis client is not initialized
         """
-        if self._redis is None:
+        if self._redis is None and self._registry is None:
             raise RuntimeError("RetryManager not initialized. Call initialize() first.")
 
         key = self._build_key(message_id)
-        value = await self._redis.get(key)
+        value = await self._client().get(key)
         return int(value) if value else 0
 
     async def clear(self, message_id: str) -> None:
@@ -174,11 +199,11 @@ class RetryManager:
         Raises:
             RuntimeError: If Redis client is not initialized
         """
-        if self._redis is None:
+        if self._redis is None and self._registry is None:
             raise RuntimeError("RetryManager not initialized. Call initialize() first.")
 
         key = self._build_key(message_id)
-        deleted = await self._redis.delete(key)
+        deleted = await self._client().delete(key)
 
         if deleted:
             self.logger.debug("RetryManager: Cleared retry tracking for %s", message_id)
@@ -195,14 +220,14 @@ class RetryManager:
         Raises:
             RuntimeError: If Redis client is not initialized
         """
-        if self._redis is None:
+        if self._redis is None and self._registry is None:
             raise RuntimeError("RetryManager not initialized. Call initialize() first.")
 
         if not message_ids:
             return 0
 
         keys = [self._build_key(msg_id) for msg_id in message_ids]
-        deleted = await self._redis.delete(*keys)
+        deleted = await self._client().delete(*keys)
 
         self.logger.debug(
             "RetryManager: Cleared retry tracking for %d/%d messages",
@@ -223,13 +248,13 @@ class RetryManager:
         Raises:
             RuntimeError: If Redis client is not initialized
         """
-        if self._redis is None:
+        if self._redis is None and self._registry is None:
             raise RuntimeError("RetryManager not initialized. Call initialize() first.")
 
         if not message_ids:
             return False
 
         keys = [self._build_key(msg_id) for msg_id in message_ids]
-        values = await self._redis.mget(keys)
+        values = await self._client().mget(keys)
 
         return any(v is not None and int(v) > 0 for v in values)

@@ -149,13 +149,11 @@ async def recover_in_progress_records(
             return
 
         if concurrency_manager is not None:
-            recovery_lock_held = await run_coordination(
-                concurrency_manager.try_acquire(
-                    "recovery",
-                    recovery_owner,
-                    1,
-                    recovery_lease_seconds,
-                )
+            recovery_lock_held = await concurrency_manager.try_acquire(
+                "recovery",
+                recovery_owner,
+                1,
+                recovery_lease_seconds,
             )
             if not recovery_lock_held:
                 logger.debug(
@@ -166,12 +164,10 @@ async def recover_in_progress_records(
             async def renew_recovery_lock() -> None:
                 while True:
                     await asyncio.sleep(min(30.0, recovery_lease_seconds / 3))
-                    renewed = await run_coordination(
-                        concurrency_manager.renew(
-                            "recovery",
-                            recovery_owner,
-                            recovery_lease_seconds,
-                        )
+                    renewed = await concurrency_manager.renew(
+                        "recovery",
+                        recovery_owner,
+                        recovery_lease_seconds,
                     )
                     if not renewed:
                         raise RuntimeError("Lost stale-record recovery lease")
@@ -208,13 +204,11 @@ async def recover_in_progress_records(
 
                     if concurrency_manager is not None:
                         record_pool = f"record:{record_id}"
-                        record_lock_held = await run_coordination(
-                            concurrency_manager.try_acquire(
-                                record_pool,
-                                record_owner,
-                                1,
-                                recovery_lease_seconds,
-                            )
+                        record_lock_held = await concurrency_manager.try_acquire(
+                            record_pool,
+                            record_owner,
+                            1,
+                            recovery_lease_seconds,
                         )
                         if not record_lock_held:
                             return None
@@ -396,11 +390,9 @@ async def recover_in_progress_records(
                         and concurrency_manager is not None
                     ):
                         try:
-                            await run_coordination(
-                                concurrency_manager.release(
-                                    record_pool,
-                                    record_owner,
-                                )
+                            await concurrency_manager.release(
+                                record_pool,
+                                record_owner,
                             )
                         except Exception as release_exc:
                             logger.warning(
@@ -550,9 +542,7 @@ async def recover_in_progress_records(
             )
         if recovery_lock_held and concurrency_manager is not None:
             try:
-                await run_coordination(
-                    concurrency_manager.release("recovery", recovery_owner)
-                )
+                await concurrency_manager.release("recovery", recovery_owner)
             except Exception as release_exc:
                 logger.warning(
                     "Failed to release stale-record recovery lease: %s",
@@ -830,7 +820,14 @@ async def start_kafka_consumers(
                 operation_timeout_seconds=(
                     messaging_env.concurrency_redis_timeout_seconds
                 ),
+                max_connections=messaging_env.concurrency_redis_max_connections,
             )
+            # Fails the startup, like the RetryManager ping above: Redis is a
+            # hard requirement for this service on either broker, so degrading
+            # here would only mask a Redis that the line above already proved
+            # reachable. The in-flight fail-open (see LeaseKind) is unaffected —
+            # a Redis that dies *after* startup still leaves capacity leases
+            # running under node-local limits.
             await concurrency_manager.initialize()
             logger.info(
                 "✅ Distributed indexing concurrency initialized "

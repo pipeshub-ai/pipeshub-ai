@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Optional, override
 from pydantic import ValidationError
 from redis.asyncio import Redis
 
+from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
     IndexingEvent,
     IndexingMessageHandler,
@@ -19,7 +20,6 @@ from app.services.messaging.config import (
     compute_retry_backoff_seconds,
     messaging_env,
 )
-from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.distributed_concurrency import DistributedLeaseSet
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
@@ -28,8 +28,10 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
+from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.retry_manager import RetryManager
-from app.services.resource_governor import ParseTier, Pool
+from app.services.resource_governor import ParseTier, Pool, classify
+from app.utils.cpu_offload import offload_if_large
 from app.utils.request_context import (
     context_from_envelope,
     reset_context,
@@ -50,6 +52,14 @@ _MAIN_LOOP_OP_TIMEOUT = 5.0
 # request can interrupt a long (up to 300s) wait instead of holding an
 # active-future slot for the full delay (see __delay_if_retry_not_ready).
 _DELAY_POLL_INTERVAL_SECONDS = 1.0
+
+
+def _loads_possibly_double_encoded(value: str) -> object:
+    """Decode an envelope that producers sometimes JSON-encode twice."""
+    raw = json.loads(value)
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    return raw
 
 
 class RedisAcknowledgementError(RuntimeError):
@@ -108,6 +118,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # Legacy fallback only: unused (stay None) once a governor is set.
         self.parsing_semaphore: Optional[asyncio.Semaphore] = None
         self.indexing_semaphore: Any = None
+        # One renewer for every lease this process holds, started on the
+        # worker loop beside the records it guards (see lease.LeaseRenewer).
+        self.lease_renewer: LeaseRenewer | None = None
         self.message_handler: Optional[IndexingMessageHandler] = None
         self._active_futures: set[Future[bool]] = set()
         self._futures_lock = threading.Lock()
@@ -175,12 +188,20 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.worker_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.worker_loop)
             if self.governor is not None:
-                self.indexing_semaphore = self.governor.gate(Pool.INDEX)
+                # One gate per pool, process-wide (ResourceGovernor.gate
+                # memoises by pool, and raises if a second loop uses one), and
+                # resolved per-message from the record's tier — index gates
+                # from the event payload before admission, parse gates from
+                # PipelineEventData.tier on START_PARSING. Binding them here
+                # is what claims them for this loop.
+                for pool in Pool:
+                    self.governor.gate(pool)
                 self.logger.info(
                     "Worker thread event loop started; using ResourceGovernor "
-                    "gates (index_ceiling=%d — heavy and light records share it, "
+                    "gates (index_heavy_ceiling=%d index_light_ceiling=%d "
                     "heavy_parse_ceiling=%d light_parse_ceiling=%d)",
-                    self.governor.ceilings.index,
+                    self.governor.ceilings.index_heavy,
+                    self.governor.ceilings.index_light,
                     self.governor.ceilings.heavy,
                     self.governor.ceilings.light,
                 )
@@ -190,6 +211,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 self.logger.info(
                     "Worker thread event loop started with semaphores initialized"
                 )
+            if self.concurrency_manager is not None:
+                self.lease_renewer = LeaseRenewer(
+                    self.logger,
+                    self.concurrency_manager,
+                    lease_seconds=messaging_env.concurrency_lease_seconds,
+                    interval_seconds=messaging_env.concurrency_renew_interval_seconds,
+                )
+                self.worker_loop.call_soon(self.lease_renewer.start)
             self.worker_loop_ready.set()
             try:
                 self.worker_loop.run_forever()
@@ -201,6 +230,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     self.worker_loop.run_until_complete(
                         asyncio.gather(*pending, return_exceptions=True)
                     )
+                # Dropped with the loop it was bound to: a restart builds a
+                # new renewer on the new loop, and leaving this pointing at
+                # one whose task is cancelled and whose loop is closed would
+                # let a lease set attach to it and silently never renew.
+                self.lease_renewer = None
                 self.worker_loop.close()
                 self.logger.info("Worker thread event loop closed")
 
@@ -546,7 +580,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         ):
                             break
                         try:
-                            parsed_message = self._parse_message(message_id, fields)
+                            parsed_message = await self._parse_message(message_id, fields)
                             stable_message_id = self._get_stable_message_id(
                                 message_id, parsed_message
                             )
@@ -616,7 +650,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                             drained_any = True
                             last_pending_id = message_id
                             try:
-                                parsed_message = self._parse_message(message_id, fields)
+                                parsed_message = await self._parse_message(message_id, fields)
                                 stable_message_id = self._get_stable_message_id(
                                     message_id, parsed_message
                                 )
@@ -671,12 +705,19 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     await self._wait_out_backpressure()
                     waiter_count = self._get_gate_waiter_count()
                     pending_ceiling = concurrency.pending_task_ceiling(self)
-                    if waiter_count >= pending_ceiling:
+                    # Saturation matters as much as queue depth: with both
+                    # index pools full and nothing queued behind them, the
+                    # waiter count reads zero while the node cannot start a
+                    # single further record. Claiming more entries then only
+                    # grows this consumer's PEL.
+                    saturated = concurrency.index_gates_saturated(self)
+                    if waiter_count >= pending_ceiling or saturated:
                         if not self._backpressure_active:
                             self.logger.warning(
                                 "Backpressure engaged: %d tasks waiting for "
-                                "indexing admission",
+                                "indexing admission (index gates saturated: %s)",
                                 waiter_count,
+                                saturated,
                             )
                             self._backpressure_active = True
                         await asyncio.sleep(0.5)
@@ -759,7 +800,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 "Consume loop exited. Active tasks remaining: %d", active_count
             )
 
-    def _parse_message(
+    async def _parse_message(
         self, message_id: str, fields: dict[str, str]
     ) -> StreamMessage | None:
         """Parse a Redis stream entry into a ``StreamMessage``.
@@ -778,9 +819,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         try:
             value_str = fields[_MESSAGE_VALUE_FIELD]
-            raw = json.loads(value_str)
-            if isinstance(raw, str):
-                raw = json.loads(raw)
+            # Offloaded above a size threshold: a connector can emit a record
+            # whose whole body rides in the envelope, and parsing it inline
+            # blocks every other in-flight record on this one worker loop.
+            raw = await offload_if_large(_loads_possibly_double_encoded, value_str)
             return StreamMessage(**raw)
         except (json.JSONDecodeError, ValidationError, TypeError) as e:
             self.logger.error(
@@ -843,26 +885,21 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         owner: str,
         limit: int,
         deadline_seconds: float | None = None,
+        *,
+        leases: DistributedLeaseSet | None = None,
     ) -> bool:
-        """Try to acquire a distributed lease; see consumer_concurrency for semantics."""
+        """Try to acquire a distributed lease; see consumer_concurrency for semantics.
+
+        Passing ``leases`` is how a lease gets recorded: the helper adds it
+        only when Redis granted it, so a fail-open admission is never
+        registered as one this owner holds.
+        """
         return await concurrency.acquire_distributed_slot(
-            self, pool, owner, limit, deadline_seconds
+            self, pool, owner, limit, deadline_seconds, leases=leases
         )
 
     async def _release_distributed_slot(self, pool: str, owner: str) -> None:
         await concurrency.release_distributed_slot(self, pool, owner)
-
-    async def _renew_distributed_slots(
-        self,
-        leases: DistributedLeaseSet,
-    ) -> None:
-        await concurrency.renew_distributed_slots(self, leases)
-
-    def _start_distributed_renewal(
-        self,
-        leases: DistributedLeaseSet,
-    ) -> asyncio.Future[None]:
-        return concurrency.start_distributed_renewal(self, leases)
 
     async def _clear_retry_tracking(self, message_id: str) -> None:
         await concurrency.clear_retry_tracking(self, message_id)
@@ -1076,13 +1113,16 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         shutting_down = False
         acked = False
         parse_lease_pool = "parsing"
-        parsing_admission: concurrency.ParsingAdmission | None = None
-        distributed_leases = DistributedLeaseSet()
-        renewal_task: asyncio.Future[None] | None = None
+        index_lease_pool = "indexing"
+        parsing_admission: concurrency.Admission | None = None
+        index_admission: concurrency.Admission | None = None
+        distributed_leases = concurrency.new_lease_set(self)
+        lease_handle: Any | None = None
+        renewal_task: asyncio.Future[bool] | None = None
         lease_owner = f"{self.consumer_name}:{message_id}:{uuid.uuid4().hex}"
 
-        if self.indexing_semaphore is None or (
-            self.governor is None and self.parsing_semaphore is None
+        if self.governor is None and (
+            self.indexing_semaphore is None or self.parsing_semaphore is None
         ):
             self.logger.error("Concurrency gates not initialized for %s", message_id)
             return False
@@ -1091,7 +1131,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # acquiring the parsing semaphore, so a retry waiting for a downed
         # service to recover only occupies a pending-task slot (counted
         # against backpressure), never a parsing/indexing concurrency slot.
-        parsed_message = self._parse_message(message_id, fields)
+        parsed_message = await self._parse_message(message_id, fields)
         if parsed_message is None:
             self.logger.warning(
                 "Unparseable message %s from stream %s; "
@@ -1128,11 +1168,29 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             )
             return False
 
+        # Route the active-pipeline permit by tier, from the record event's own
+        # extension/mimeType. The permit is held for the record's whole
+        # lifetime — including the wait for a parse slot — so a single shared
+        # budget would let a queue of Docling PDFs hold every permit while
+        # light records that finish in seconds never get admitted at all.
+        # Resolved once here, then passed down: with a MAX_CONCURRENT_INDEXING
+        # too small to split, the light tier is collapsed away and every
+        # record routes to heavy (see effective_index_tier). The gate, the
+        # lease limit and the lease pool name all have to agree on that.
+        index_tier = concurrency.effective_index_tier(
+            self,
+            classify(
+                str(parsed_message.payload.get("extension") or ""),
+                str(parsed_message.payload.get("mimeType") or ""),
+            ),
+        )
+        index_lease_pool = concurrency.index_lease_pool(index_tier)
+
         try:
-            # MAX_CONCURRENT_INDEXING is also the active-pipeline bound. Without
-            # this outer permit, parsed records can accumulate while waiting for
-            # an indexing permit and every one can remain IN_PROGRESS in the DB.
-            await self.indexing_semaphore.acquire()
+            # The active-pipeline bound. Without this outer permit, parsed
+            # records can accumulate while waiting for an indexing permit and
+            # every one can remain IN_PROGRESS in the DB.
+            index_admission = await concurrency.acquire_index_slot(self, index_tier)
             indexing_held = True
             if waiter_token is not None:
                 waiter_token.admit()
@@ -1142,14 +1200,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 # recovery reads this lease as proof of active processing, so
                 # a task still queued on the gate must not own one.
                 if not await self._acquire_distributed_slot(
-                    "indexing",
+                    index_lease_pool,
                     lease_owner,
-                    concurrency.index_ceiling(self),
+                    concurrency.index_ceiling(self, index_tier),
+                    leases=distributed_leases,
                 ):
                     return False
-                distributed_leases.add("indexing", lease_owner)
-                renewal_task = self._start_distributed_renewal(
-                    distributed_leases
+                lease_handle, renewal_task = concurrency.start_lease_guard(
+                    self, lease_owner
                 )
 
                 if not await self._acquire_distributed_slot(
@@ -1157,6 +1215,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     lease_owner,
                     1,
                     deadline_seconds=messaging_env.record_lease_wait_seconds,
+                    leases=distributed_leases,
                 ):
                     if self.running:
                         self.logger.debug(
@@ -1168,7 +1227,6 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                             message_id,
                         )
                     return False
-                distributed_leases.add(record_pool, lease_owner)
 
                 parsed_message.payload["_processing_started_at"] = int(time.time() * 1000)
 
@@ -1199,26 +1257,41 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                     parse_tier = event.data.tier if event.data else None
                                     if self.governor is not None:
                                         parse_lease_pool = concurrency.parse_lease_pool(parse_tier)
-                                    if self.concurrency_manager is not None:
-                                        if not await self._acquire_distributed_slot(
-                                            parse_lease_pool,
-                                            lease_owner,
-                                            concurrency.parse_ceiling(self, parse_tier),
-                                        ):
-                                            # Only reason try_acquire gives up
-                                            # (no deadline here) is self.running
-                                            # flipping — abort without raising
-                                            # so the caller doesn't burn a
-                                            # retry attempt on a clean shutdown.
-                                            shutting_down = True
-                                            return
-                                        distributed_leases.add(parse_lease_pool, lease_owner)
+                                    # Node-local gate first, cluster lease
+                                    # second. The gate is an asyncio Event and
+                                    # costs nothing to queue on, so it absorbs
+                                    # the wait; only records it has already
+                                    # admitted go on to contend for the Redis
+                                    # lease. Taking the lease first put the
+                                    # whole queue on Redis instead, each waiter
+                                    # re-polling on a timer — which is how a
+                                    # backlog turned into a Redis outage.
                                     parsing_admission = await concurrency.acquire_parsing_slot(
                                         self,
                                         parse_tier,
                                         event.data.size_bytes if event.data else None,
                                     )
+                                    # Set before the lease attempt so the
+                                    # wrapper's finally hands this permit back
+                                    # on every exit path below.
                                     parsing_held = True
+                                    if (
+                                        self.concurrency_manager is not None
+                                        and not await self._acquire_distributed_slot(
+                                            parse_lease_pool,
+                                            lease_owner,
+                                            concurrency.parse_ceiling(self, parse_tier),
+                                            leases=distributed_leases,
+                                        )
+                                    ):
+                                            # A capacity lease only gives up
+                                            # when self.running flips (it fails
+                                            # open on error), so this is a
+                                            # clean shutdown — abort without
+                                            # raising rather than burning a
+                                            # retry attempt.
+                                            shutting_down = True
+                                            return
                                 elif (
                                     event.event == IndexingEvent.PARSING_COMPLETE
                                     and parsing_held
@@ -1227,18 +1300,18 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                     await self._release_distributed_slot(
                                         parse_lease_pool, lease_owner
                                     )
-                                    concurrency.release_parsing_slot(parsing_admission)
+                                    concurrency.release_admission(parsing_admission)
                                     parsing_admission = None
                                     parsing_held = False
                                 elif (
                                     event.event == IndexingEvent.INDEXING_COMPLETE
                                     and indexing_held
                                 ):
-                                    distributed_leases.discard("indexing")
+                                    distributed_leases.discard(index_lease_pool)
                                     await self._release_distributed_slot(
-                                        "indexing", lease_owner
+                                        index_lease_pool, lease_owner
                                     )
-                                    self.indexing_semaphore.release()
+                                    concurrency.release_admission(index_admission)
                                     indexing_held = False
                                     indexing_complete = True
                         finally:
@@ -1260,17 +1333,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                             return_when=asyncio.FIRST_COMPLETED,
                         )
                         if handler_task not in done:
-                            try:
-                                renewal_error = renewal_task.exception()
-                            except asyncio.CancelledError:
-                                renewal_error = RuntimeError(
-                                    "Distributed concurrency lease guard was cancelled"
-                                )
+                            # The shared renewer marked this owner's leases
+                            # lost; the rest of the fleet may already have
+                            # reassigned the record, so stop rather than keep
+                            # working under a lease we no longer hold.
                             handler_task.cancel()
                             await asyncio.gather(handler_task, return_exceptions=True)
-                            raise renewal_error or RuntimeError(
-                                "Distributed concurrency lease guard stopped"
-                            )
+                            raise concurrency.lease_guard_error(lease_handle)
                     await handler_task
                 except TimeoutError:
                     self.logger.error(
@@ -1402,15 +1471,23 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if renewal_task is not None:
                 renewal_task.cancel()
                 await asyncio.gather(renewal_task, return_exceptions=True)
+            # Before the releases below, not after: every one of them awaits,
+            # so a cancellation landing in this block would skip the
+            # unregister and leave the renewer refreshing this owner's leases
+            # forever. Unregistering first means the worst case is a lease
+            # that outlives the record until its TTL expires, which is what
+            # the TTL is for.
+            if self.lease_renewer is not None:
+                self.lease_renewer.unregister(lease_owner)
             if parsing_held:
                 if distributed_leases.discard(parse_lease_pool) is not None:
                     await self._release_distributed_slot(parse_lease_pool, lease_owner)
-                concurrency.release_parsing_slot(parsing_admission)
+                concurrency.release_admission(parsing_admission)
                 parsing_admission = None
             if indexing_held:
-                if distributed_leases.discard("indexing") is not None:
-                    await self._release_distributed_slot("indexing", lease_owner)
-                self.indexing_semaphore.release()
+                if distributed_leases.discard(index_lease_pool) is not None:
+                    await self._release_distributed_slot(index_lease_pool, lease_owner)
+                concurrency.release_admission(index_admission)
 
             for pool, owner in distributed_leases.snapshot():
                 distributed_leases.discard(pool)
