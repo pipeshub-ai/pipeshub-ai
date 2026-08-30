@@ -1,17 +1,26 @@
 # PipesHub AI — unified, profile-driven Docker Compose
 #
 # Usage: run install.sh (in this directory) to generate .env and launch.
-# Manual quick-start:
-#   cp env.template .env && $EDITOR .env
-#   COMPOSE_PROFILES=graph-neo4j          docker compose -p pipeshub-ai up -d   # slim/neo4j/redis-streams
-#   COMPOSE_PROFILES=graph-arango,kv-etcd,broker-kafka \
-#     docker compose -p pipeshub-ai up -d                                        # full/arango/etcd/kafka
 #
-# Profile catalogue
-#   graph-neo4j   — start Neo4j (set DATA_STORE=neo4j in .env)
-#   graph-arango  — start ArangoDB (set DATA_STORE=arangodb in .env)
-#   kv-etcd       — start etcd (set KV_STORE_TYPE=etcd in .env; default is redis)
-#   broker-kafka  — start Zookeeper + Kafka (set MESSAGE_BROKER=kafka in .env; default is redis)
+# Manual quick-start — env.template ships a working slim stack (Neo4j, Redis
+# Streams, Redis KV). Set the passwords in it, then start:
+#
+#   cp env.template .env && $EDITOR .env      # set NEO4J_PASSWORD and MONGO_PASSWORD
+#   docker compose -p pipeshub-ai up -d
+#
+# Do not pass COMPOSE_PROFILES on the command line: it replaces the value in
+# .env rather than adding to it, so a profile set there would be dropped.
+# Change the stack by editing .env instead.
+#
+# Profile catalogue — each profile starts a container, and the variable beside it
+# tells the app to use it. Set both or neither.
+#   graph-neo4j   — Neo4j             (with DATA_STORE=neo4j)
+#   graph-arango  — ArangoDB          (with DATA_STORE=arangodb)
+#   kv-etcd       — etcd              (with KV_STORE_TYPE=etcd)
+#   broker-kafka  — Zookeeper + Kafka (with MESSAGE_BROKER=kafka)
+#
+# Full stack: DATA_STORE=neo4j, KV_STORE_TYPE=etcd, MESSAGE_BROKER=kafka and
+# COMPOSE_PROFILES=graph-neo4j,kv-etcd,broker-kafka
 #
 # Always-on: pipeshub-ai, redis, mongodb, qdrant, sandbox-image
 #
@@ -107,8 +116,8 @@ services:
       - EMBEDDING_SERVER_URL=http://localhost:8002
 
       # Graph database selection — set by install.sh
-      # DATA_STORE accepted values: "arangodb" (default) | "neo4j"
-      - DATA_STORE=${DATA_STORE:-arangodb}
+      # DATA_STORE accepted values: "neo4j" (default) | "arangodb"
+      - DATA_STORE=${DATA_STORE:-neo4j}
 
       # ArangoDB (active when DATA_STORE=arangodb)
       - ARANGO_URL=http://arango:8529

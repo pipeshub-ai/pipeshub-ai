@@ -101,10 +101,10 @@ class OAuthDiscoveryRequest(BaseModel):
 def _get_user_context(request: Request) -> dict[str, Any]:
     """Extract and validate user context from request (same convention as toolsets)."""
     user = getattr(request.state, "user", {}) or {}
-    user_id = user.get("userId") or request.headers.get("X-User-Id")
-    org_id = user.get("orgId") or request.headers.get("X-Organization-Id")
+    user_id = user.get("userId")
+    org_id = user.get("orgId")
 
-    if not user_id:
+    if not user_id or not org_id:
         raise HTTPException(
             status_code=HttpStatusCode.UNAUTHORIZED.value,
             detail="Authentication required. Please provide valid user credentials.",
@@ -1064,7 +1064,7 @@ async def handle_oauth_callback(
     # responds with a 200 + `{"success": false, ...}` body on any failure (including "no
     # caller identity"), matching every other error branch below.
     caller_user = getattr(request.state, "user", {}) or {}
-    caller_id = caller_user.get("userId") or request.headers.get("X-User-Id")
+    caller_id = caller_user.get("userId")
 
     if error:
         return {"success": False, "error": error, "errorMessage": f"OAuth provider returned an error: {error}"}

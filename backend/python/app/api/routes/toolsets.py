@@ -289,10 +289,10 @@ def _is_known_non_oauth_auth_type(auth_type: str | None) -> bool:
 def _get_user_context(request: Request) -> dict[str, Any]:
     """Extract and validate user context from request"""
     user = getattr(request.state, "user", {})
-    user_id = user.get("userId") or request.headers.get("X-User-Id")
-    org_id = user.get("orgId") or request.headers.get("X-Organization-Id")
+    user_id = user.get("userId")
+    org_id = user.get("orgId")
 
-    if not user_id:
+    if not user_id or not org_id:
         raise HTTPException(
             status_code=HttpStatusCode.UNAUTHORIZED.value,
             detail="Authentication required. Please provide valid user credentials."
