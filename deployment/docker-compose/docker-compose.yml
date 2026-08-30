@@ -371,9 +371,6 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.15
-    ports:
-      - "6333:6333"
-      - "6334:6334"
     stop_grace_period: 120s
     restart: always
     environment:
