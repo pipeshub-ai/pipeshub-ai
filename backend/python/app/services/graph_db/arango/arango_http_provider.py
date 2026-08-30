@@ -23,6 +23,11 @@ from typing import TYPE_CHECKING, Any, Optional, Dict
 from fastapi import Request
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PERSON_CRM_EDGES,
+    PERSON_CRM_EDGES_INBOUND,
+    PERSON_CRM_EDGES_OUTBOUND,
+    PERSON_TRANSFERABLE_EDGES,
+    PersonMigrationMode,
     RECORD_TYPE_COLLECTION_MAPPING,
     AppGroups,
     CollectionNames,
@@ -5314,6 +5319,269 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Ensure app membership failed: {str(e)}")
             raise
 
+    def _external_grant_exists_aql(self, principal_id_expr: str, app_key_expr: str) -> str:
+        """Predicate: does this principal still hold a grant that would make it an
+        external collaborator on this app?
+
+        **Must stay in step with the candidate collection in
+        `_get_app_children_subquery`** (the two hoisting arms). The reaper deletes the
+        `isExternalUser` edge when this is false; omitting the group/role/team hop that
+        browse honours would reap someone whose access is real, and their shared records
+        would disappear from the tree.
+
+        Org-wide grants are excluded here for the same reason browse excludes them.
+        """
+        perm = CollectionNames.PERMISSION.value
+        rec = CollectionNames.RECORDS.value
+        rg = CollectionNames.RECORD_GROUPS.value
+        grp = CollectionNames.GROUPS.value
+        role = CollectionNames.ROLES.value
+        team = CollectionNames.TEAMS.value
+        return f"""(
+            LENGTH(
+                FOR perm IN {perm}
+                    FILTER perm._from == {principal_id_expr} AND perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{rec}/") OR STARTS_WITH(perm._to, "{rg}/")
+                    LET n = DOCUMENT(perm._to)
+                    FILTER n != null AND n.connectorId == {app_key_expr}
+                    LIMIT 1
+                    RETURN 1
+            ) > 0
+            OR LENGTH(
+                FOR perm IN {perm}
+                    FILTER perm._from == {principal_id_expr} AND perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{grp}/")
+                        OR STARTS_WITH(perm._to, "{role}/")
+                        OR STARTS_WITH(perm._to, "{team}/")
+                    FOR perm2 IN {perm}
+                        FILTER perm2._from == perm._to
+                        FILTER STARTS_WITH(perm2._to, "{rec}/") OR STARTS_WITH(perm2._to, "{rg}/")
+                        LET n2 = DOCUMENT(perm2._to)
+                        FILTER n2 != null AND n2.connectorId == {app_key_expr}
+                        LIMIT 1
+                        RETURN 1
+            ) > 0
+        )"""
+
+    async def migrate_person_to_user(
+        self,
+        email: str,
+        user_key: str,
+        transaction: str | None = None,
+    ) -> str | None:
+        """
+        Promote a Person to a User by moving its collaborator edges onto that User.
+
+        Returns PersonMigrationMode.MIGRATED, .SPLIT, or None when no Person exists for
+        the email (the ordinary case, not an error).
+
+        A Person carrying any CRM edge splits instead of merging: the collaborator edges
+        move, but the node survives holding its lead/contact/memberOf edges.
+
+        Runs as several statements rather than one, because AQL forbids reading a
+        collection after writing to it in the same query and the dedup check has to read
+        the very collections the transfer writes. Every statement is idempotent, so a
+        partial run is repaired by the next one.
+        """
+        owns_transaction = transaction is None
+        txn = transaction
+        try:
+            person = await self.get_person_by_email(email, transaction=transaction)
+            if not person:
+                return None
+
+            person_id = f"{CollectionNames.PEOPLE.value}/{person.id}"
+            user_id = f"{CollectionNames.USERS.value}/{user_key}"
+
+            if owns_transaction:
+                txn = await self.begin_transaction(
+                    read=[],
+                    write=[
+                        CollectionNames.PEOPLE.value,
+                        *PERSON_TRANSFERABLE_EDGES,
+                        *PERSON_CRM_EDGES,
+                    ],
+                )
+
+            crm_clauses = [
+                f'LENGTH(FOR e IN {c} FILTER e._from == @person_id LIMIT 1 RETURN 1)'
+                for c in PERSON_CRM_EDGES_OUTBOUND
+            ] + [
+                f'LENGTH(FOR e IN {c} FILTER e._to == @person_id LIMIT 1 RETURN 1)'
+                for c in PERSON_CRM_EDGES_INBOUND
+            ]
+            crm_rows = await self.http_client.execute_aql(
+                "RETURN (" + " + ".join(crm_clauses) + ") > 0",
+                bind_vars={"person_id": person_id},
+                txn_id=txn,
+            )
+            is_crm = bool(crm_rows[0]) if crm_rows else False
+
+            moved = 0
+            for collection in PERSON_TRANSFERABLE_EDGES:
+                # Read both sides first: the dedup check cannot run in the same query as
+                # the write. Re-pointing _from in place is avoided in favour of
+                # insert-then-remove, which behaves the same on every ArangoDB version.
+                rows = await self.http_client.execute_aql(
+                    """
+                    LET mine = (FOR e IN @@collection FILTER e._from == @person_id RETURN e)
+                    LET theirs = (FOR e IN @@collection FILTER e._from == @user_id RETURN e._to)
+                    RETURN {mine: mine, theirs: theirs}
+                    """,
+                    bind_vars={
+                        "@collection": collection,
+                        "person_id": person_id,
+                        "user_id": user_id,
+                    },
+                    txn_id=txn,
+                )
+                if not rows:
+                    continue
+                mine = rows[0].get("mine") or []
+                theirs = set(rows[0].get("theirs") or [])
+                if not mine:
+                    continue
+
+                to_insert = []
+                for edge in mine:
+                    if edge["_to"] in theirs:
+                        continue  # the user already holds this edge
+                    new_edge = {
+                        k: v for k, v in edge.items()
+                        if k not in ("_id", "_key", "_rev", "_from")
+                    }
+                    new_edge["_from"] = user_id
+                    to_insert.append(new_edge)
+
+                if to_insert:
+                    await self.http_client.execute_aql(
+                        """
+                        FOR e IN @edges
+                            UPSERT {_from: e._from, _to: e._to}
+                            INSERT e UPDATE {} IN @@collection
+                        """,
+                        bind_vars={"edges": to_insert, "@collection": collection},
+                        txn_id=txn,
+                    )
+
+                await self.http_client.execute_aql(
+                    "FOR e IN @@collection FILTER e._from == @person_id REMOVE e IN @@collection",
+                    bind_vars={"@collection": collection, "person_id": person_id},
+                    txn_id=txn,
+                )
+                moved += len(mine)
+
+            if not is_crm:
+                await self.http_client.execute_aql(
+                    "REMOVE @person_key IN @@collection",
+                    bind_vars={
+                        "person_key": person.id,
+                        "@collection": CollectionNames.PEOPLE.value,
+                    },
+                    txn_id=txn,
+                )
+
+            if owns_transaction:
+                await self.commit_transaction(txn)
+                txn = None
+
+            mode = PersonMigrationMode.SPLIT if is_crm else PersonMigrationMode.MIGRATED
+            self.logger.info(
+                "Person %s -> user %s: %s (%d edge(s) moved)",
+                email, user_key, mode, moved,
+            )
+            return mode
+
+        except Exception as e:
+            if owns_transaction and txn is not None:
+                try:
+                    await self.rollback_transaction(txn)
+                except Exception as rb_err:
+                    self.logger.warning(f"⚠️ Rollback of person migration failed: {rb_err}")
+            self.logger.error(f"❌ Migrate person to user failed for {email}: {str(e)}")
+            raise
+
+    async def reap_stale_external_app_relations(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """
+        Drop `isExternalUser` membership edges whose underlying grant is gone, and any
+        Person left with no edges at all.
+
+        Only flagged edges are considered, so a real app member is never at risk.
+        """
+        try:
+            app_id = f"{CollectionNames.APPS.value}/{connector_id}"
+            grant_exists = self._external_grant_exists_aql("uar._from", "@connector_id")
+
+            # Collect first, then delete: the predicate reads `permission`, which the
+            # delete does not touch, but the principal list is needed afterwards to find
+            # the people this pass stranded.
+            stale_rows = await self.http_client.execute_aql(
+                f"""
+                FOR uar IN {CollectionNames.USER_APP_RELATION.value}
+                    FILTER uar._to == @app_id AND uar.isExternalUser == true
+                    FILTER NOT {grant_exists}
+                    RETURN {{ edge: uar._key, principal: uar._from }}
+                """,
+                bind_vars={"app_id": app_id, "connector_id": connector_id},
+                txn_id=transaction,
+            )
+            if not stale_rows:
+                return 0
+
+            await self.http_client.execute_aql(
+                "FOR k IN @keys REMOVE k IN @@collection",
+                bind_vars={
+                    "keys": [r["edge"] for r in stale_rows],
+                    "@collection": CollectionNames.USER_APP_RELATION.value,
+                },
+                txn_id=transaction,
+            )
+
+            # Only people this pass stranded, never a global sweep: a Person created
+            # moments ago may not have its first edge committed yet.
+            person_prefix = f"{CollectionNames.PEOPLE.value}/"
+            person_keys = [
+                r["principal"].split("/", 1)[1]
+                for r in stale_rows
+                if r["principal"].startswith(person_prefix)
+            ]
+            if not person_keys:
+                return 0
+
+            edge_collections = list(PERSON_TRANSFERABLE_EDGES) + list(PERSON_CRM_EDGES)
+            still_referenced = " + ".join(
+                f'LENGTH(FOR e IN {c} FILTER e._from == pid OR e._to == pid LIMIT 1 RETURN 1)'
+                for c in edge_collections
+            )
+            reaped = await self.http_client.execute_aql(
+                f"""
+                FOR key IN @person_keys
+                    LET pid = CONCAT("{person_prefix}", key)
+                    FILTER ({still_referenced}) == 0
+                    REMOVE key IN {CollectionNames.PEOPLE.value}
+                    RETURN 1
+                """,
+                bind_vars={"person_keys": person_keys},
+                txn_id=transaction,
+            )
+            count = len(reaped or [])
+            if count:
+                self.logger.info(
+                    "Reaped %d orphaned person node(s) for connector %s",
+                    count, connector_id,
+                )
+            return count
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Reap stale external app relations failed for {connector_id}: {str(e)}"
+            )
+            return 0
+
     async def get_app_role_by_external_id(
         self,
         connector_id: str,
@@ -6769,6 +7037,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     )
 
                     user_record = await self.get_user_by_email(user.email, transaction)
+
+                    # This address may already exist as a Person from an external share.
+                    # Non-fatal: one CRM contact must not fail a whole sync.
+                    try:
+                        await self.migrate_person_to_user(
+                            user.email, user.id, transaction=transaction
+                        )
+                    except Exception as migrate_err:
+                        self.logger.error(
+                            f"❌ Person adoption failed for {user.email}: {migrate_err}"
+                        )
 
                     # Create org relation
                     user_org_relation = {

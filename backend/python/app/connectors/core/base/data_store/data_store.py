@@ -233,6 +233,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def reap_stale_external_app_relations(self, connector_id: str) -> int:
+        pass
+
+    @abstractmethod
     async def batch_create_edges(self, edges: list[dict], collection: str) -> None:
         pass
 

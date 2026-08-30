@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from fastapi import Request
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PERSON_CRM_EDGES,
     RECORD_TYPE_COLLECTION_MAPPING,
     AppGroups,
     CollectionNames,
@@ -30,6 +31,7 @@ from app.config.constants.arangodb import (
     Connectors,
     DepartmentNames,
     OriginTypes,
+    PersonMigrationMode,
     PermissionModel,
     ProgressStatus,
     RecordTypes,
@@ -6040,6 +6042,17 @@ class Neo4jProvider(IGraphDBProvider):
                     )
 
                     user_record = await self.get_user_by_email(user.email, transaction)
+
+                    # This address may already exist as a Person from an external share.
+                    # Non-fatal: one CRM contact must not fail a whole sync.
+                    try:
+                        await self.migrate_person_to_user(
+                            user.email, user.id, transaction=transaction
+                        )
+                    except Exception as migrate_err:
+                        self.logger.error(
+                            f"❌ Person adoption failed for {user.email}: {migrate_err}"
+                        )
 
                     # Create org relation
                     user_org_edge = {
@@ -12906,6 +12919,197 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Ensure app membership failed: {str(e)}")
             raise
+
+    def _external_grant_exists_cypher(self, principal_var: str, app_var: str) -> str:
+        """Predicate: does this principal still hold a grant that would make it an
+        external collaborator on this app?
+
+        **This must stay in step with the candidate collection in
+        `_get_app_children_cypher` (blocks 3 and 4).** The reaper deletes the
+        `isExternalUser` edge when this returns false; if it omitted the group/role/team
+        hop that browse honours, it would reap someone whose access is real and their
+        shared records would vanish from the tree. `test_reaper_matches_browse_candidates`
+        cross-checks the two.
+
+        Org-wide grants are excluded here for the same reason browse excludes them: they
+        are not what makes someone an external collaborator on this app.
+        """
+        return f"""(
+            EXISTS {{
+                MATCH ({principal_var})-[:PERMISSION {{type: 'USER'}}]->(granted)
+                WHERE (granted:Record OR granted:RecordGroup)
+                  AND granted.connectorId = {app_var}.id
+            }}
+            OR EXISTS {{
+                MATCH ({principal_var})-[:PERMISSION {{type: 'USER'}}]->(via)-[:PERMISSION]->(granted)
+                WHERE (via:Group OR via:Role OR via:Teams)
+                  AND (granted:Record OR granted:RecordGroup)
+                  AND granted.connectorId = {app_var}.id
+            }}
+        )"""
+
+    async def migrate_person_to_user(
+        self,
+        email: str,
+        user_key: str,
+        transaction: str | None = None,
+    ) -> str | None:
+        """
+        Promote a Person to a User by moving its collaborator edges onto that User.
+
+        Returns PersonMigrationMode.MIGRATED, .SPLIT, or None when no Person exists for
+        the email (the ordinary case, not an error).
+
+        A Person carrying any CRM edge splits instead of merging: the collaborator edges
+        move, but the node survives holding its `lead`/`contact`/`memberOf` edges, because
+        a Salesforce contact is a separate thing from a platform identity that happens to
+        share an address.
+
+        Idempotent - a second run finds nothing left to move.
+        """
+        try:
+            person_label = collection_to_label(CollectionNames.PEOPLE.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            crm_types = "|".join(
+                edge_collection_to_relationship(e) for e in PERSON_CRM_EDGES
+            )
+            permission_rel = edge_collection_to_relationship(
+                CollectionNames.PERMISSION.value
+            )
+            app_rel = edge_collection_to_relationship(
+                CollectionNames.USER_APP_RELATION.value
+            )
+
+            # The transfers are written out per relationship type rather than looped:
+            # Cypher has no dynamic relationship type without APOC.
+            query = f"""
+            MATCH (p:{person_label} {{email: $email}})
+            MATCH (u:{user_label} {{id: $user_key}})
+
+            // Undirected on purpose: memberOf points away from the Person while lead and
+            // contact point at it.
+            WITH p, u, EXISTS {{ (p)-[:{crm_types}]-() }} AS is_crm
+
+            CALL {{
+                WITH p, u
+                MATCH (p)-[r:{permission_rel}]->(target)
+                MERGE (u)-[moved:{permission_rel}]->(target)
+                SET moved += properties(r)
+                DELETE r
+                RETURN count(*) AS moved_permissions
+            }}
+
+            CALL {{
+                WITH p, u
+                MATCH (p)-[r:{app_rel}]->(target)
+                MERGE (u)-[moved:{app_rel}]->(target)
+                SET moved += properties(r)
+                DELETE r
+                RETURN count(*) AS moved_app_relations
+            }}
+
+            // Aggregating rather than returning the deleted node keeps this block from
+            // yielding zero rows and dropping the outer row when the Person is kept.
+            CALL {{
+                WITH p, is_crm
+                WITH p WHERE NOT is_crm
+                DETACH DELETE p
+                RETURN count(*) AS deleted
+            }}
+
+            RETURN CASE WHEN is_crm THEN $split ELSE $migrated END AS mode,
+                   moved_permissions, moved_app_relations
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "email": email.lower(),
+                    "user_key": user_key,
+                    "split": PersonMigrationMode.SPLIT,
+                    "migrated": PersonMigrationMode.MIGRATED,
+                },
+                txn_id=transaction,
+            )
+            if not results:
+                return None
+
+            row = results[0]
+            self.logger.info(
+                "Person %s -> user %s: %s (%s permission, %s app-relation edges moved)",
+                email,
+                user_key,
+                row.get("mode"),
+                row.get("moved_permissions"),
+                row.get("moved_app_relations"),
+            )
+            return row.get("mode")
+
+        except Exception as e:
+            self.logger.error(f"❌ Migrate person to user failed for {email}: {str(e)}")
+            raise
+
+    async def reap_stale_external_app_relations(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """
+        Drop `isExternalUser` membership edges whose underlying grant is gone, and any
+        Person left with no edges at all.
+
+        Access is revoked at the source constantly, and on_updated_record_permissions
+        deletes every permission edge to a record before recreating it. Without this the
+        membership edge outlives the share that justified it and the collaborator keeps
+        seeing an app with nothing in it.
+
+        Only flagged edges are considered, so a real app member is never at risk.
+        """
+        try:
+            app_label = collection_to_label(CollectionNames.APPS.value)
+            person_label = collection_to_label(CollectionNames.PEOPLE.value)
+            app_rel = edge_collection_to_relationship(
+                CollectionNames.USER_APP_RELATION.value
+            )
+            grant_exists = self._external_grant_exists_cypher("principal", "app")
+
+            query = f"""
+            MATCH (app:{app_label} {{id: $connector_id}})
+            MATCH (principal)-[uar:{app_rel}]->(app)
+            WHERE uar.isExternalUser = true
+              AND NOT {grant_exists}
+            WITH collect(DISTINCT principal) AS stale_principals, collect(uar) AS stale_edges
+
+            FOREACH (e IN stale_edges | DELETE e)
+
+            // Delete only Persons this pass actually stranded. A global sweep would risk
+            // a Person created moments ago whose first edge is not committed yet.
+            WITH stale_principals
+            UNWIND stale_principals AS principal
+            WITH principal WHERE principal:{person_label} AND NOT (principal)--()
+            DETACH DELETE principal
+            RETURN count(*) AS reaped_people
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"connector_id": connector_id},
+                txn_id=transaction,
+            )
+            reaped = results[0].get("reaped_people", 0) if results else 0
+            if reaped:
+                self.logger.info(
+                    "Reaped %d orphaned person node(s) for connector %s",
+                    reaped,
+                    connector_id,
+                )
+            return reaped
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Reap stale external app relations failed for {connector_id}: {str(e)}"
+            )
+            return 0
 
     async def check_connector_name_exists(
         self,

@@ -269,6 +269,12 @@ class EntityEventService(BaseEventService):
                 CollectionNames.BELONGS_TO.value,
             )
 
+            # Adopt anything this email already accumulated as an external
+            # collaborator. Never fatal: the account itself is what this event is for, and
+            # letting a failed adoption bubble up would make Kafka redeliver forever while
+            # the person still has no user.
+            await self._adopt_existing_person(payload["email"], user_key)
+
             # Get or create knowledge base for the user (creates app + all edges)
             kb_name = self._kb_name_from_user_added_payload(payload)
             await self._get_or_create_knowledge_base(user_key, payload["userId"], payload["orgId"], name=kb_name)
@@ -502,6 +508,26 @@ class EntityEventService(BaseEventService):
         except Exception as e:
             self.logger.error(f"❌ Error disabling apps: {str(e)}")
             return False
+
+    async def _adopt_existing_person(self, email: str, user_key: str) -> None:
+        """Move a pre-existing Person's collaborator edges onto the new user.
+
+        Someone shared files with this address before its owner had an account; those
+        grants live on a Person node and must follow them in, or they sign up and see
+        nothing. A Person that is also a Salesforce contact splits instead of merging -
+        see docs/external-user-support-plan.md, D4.
+        """
+        try:
+            mode = await self.graph_provider.migrate_person_to_user(email, user_key)
+            if mode:
+                self.logger.info(
+                    f"✅ Adopted existing person for {email} ({mode})"
+                )
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to adopt existing person for {email}: {str(e)}",
+                exc_info=True,
+            )
 
     def _kb_name_from_user_added_payload(self, payload: dict) -> str:
         """Compute KB display name from userAdded event: fullName's Private or email's Private."""

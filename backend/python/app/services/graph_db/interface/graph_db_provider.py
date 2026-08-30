@@ -2261,6 +2261,59 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def migrate_person_to_user(
+        self,
+        email: str,
+        user_key: str,
+        transaction: str | None = None,
+    ) -> str | None:
+        """
+        Promote a Person to a User by moving its collaborator edges onto that User.
+
+        A Person carrying any CRM edge (lead/contact/memberOf) splits rather than merges:
+        the collaborator edges move but the Person node survives holding its CRM edges,
+        because a Salesforce contact is a separate thing from a platform identity that
+        happens to share an address. A Person with no CRM edge is deleted once emptied.
+
+        Must be idempotent: a second run finds nothing left to move.
+
+        Args:
+            email (str): Email identifying the Person; matched against the normalised form
+            user_key (str): Key of the already-existing User to move the edges onto
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Optional[str]: PersonMigrationMode.MIGRATED or .SPLIT, or None when no Person
+                exists for the email - the ordinary case, not an error.
+        """
+        pass
+
+    @abstractmethod
+    async def reap_stale_external_app_relations(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """
+        Drop `isExternalUser` membership edges whose underlying grant is gone, plus any
+        Person the removal left with no edges at all.
+
+        The "still has a grant" test must mirror the candidate collection used by browse
+        hoisting, including the group/role/team hop - otherwise this reaps collaborators
+        whose access is real and their records vanish from the tree.
+
+        Only flagged edges are considered, so a real app member is never at risk.
+
+        Args:
+            connector_id (str): App whose membership edges to sweep
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            int: Number of orphaned Person nodes removed
+        """
+        pass
+
+    @abstractmethod
     async def get_app_role_by_external_id(
         self,
         connector_id: str,

@@ -331,6 +331,11 @@ class GraphTransactionStore(TransactionStore):
             transaction=self.txn,
         )
 
+    async def reap_stale_external_app_relations(self, connector_id: str) -> int:
+        return await self.graph_provider.reap_stale_external_app_relations(
+            connector_id, transaction=self.txn
+        )
+
     async def create_user_group_hierarchy(
         self,
         child_external_id: str,

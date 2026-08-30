@@ -479,6 +479,11 @@ class GoogleDriveTeamConnector(BaseConnector):
             # from step 5 must already be committed.
             await self._flush_external_app_users()
 
+            # Step 7: drop membership for collaborators whose shares were revoked at the
+            # source. Runs after step 6 so an edge created moments ago is judged against
+            # the permissions this same run just wrote.
+            await self._reap_external_app_users()
+
             self.logger.info("Google Drive enterprise connector sync completed successfully")
 
         except Exception as e:
@@ -631,6 +636,20 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.error(
                 f"❌ Failed to grant app membership to external collaborators: {e}",
                 exc_info=True,
+            )
+
+    async def _reap_external_app_users(self) -> None:
+        """Drop external membership edges whose underlying share no longer exists.
+
+        Non-fatal for the same reason as the flush: a sync that indexed every record
+        should not be reported as failed because a cleanup pass did not finish. The next
+        run re-derives the same set.
+        """
+        try:
+            await self.data_entities_processor.reap_external_app_users(self.connector_id)
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to reap stale external app relations: {e}", exc_info=True
             )
 
     async def _sync_user_groups(self) -> None:

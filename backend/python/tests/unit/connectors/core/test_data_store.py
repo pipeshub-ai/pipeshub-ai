@@ -107,6 +107,9 @@ class ConcreteTransactionStore(TransactionStore):
     ):
         pass
 
+    async def reap_stale_external_app_relations(self, connector_id):
+        return 0
+
     async def get_users(self, org_id, active=True):
         return []
 

@@ -292,6 +292,8 @@ class TestAbstractMethodInventory:
         "get_person_by_email",
         "upsert_person_by_email",
         "ensure_app_membership",
+        "migrate_person_to_user",
+        "reap_stale_external_app_relations",
         "get_app_role_by_external_id",
         "get_app_creator_user",
         # Organization operations

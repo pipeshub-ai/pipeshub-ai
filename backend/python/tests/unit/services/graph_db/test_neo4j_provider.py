@@ -4298,3 +4298,353 @@ class TestAppChildrenExternalHoisting:
     def test_results_are_merged_into_raw_children(self, cypher):
         assert "coalesce(hoisted_records, [])" in cypher
         assert "coalesce(hoisted_groups, [])" in cypher
+
+
+class TestPersonMigrationAndReaper:
+    """Phase 5 (Person -> User) and Phase 6 (reaping stale external membership)."""
+
+    @pytest.fixture
+    def provider(self):
+        from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+        return object.__new__(Neo4jProvider)
+
+    def test_reaper_matches_browse_candidates(self, provider):
+        """The reaper's "still has a grant" test must recognise every access path browse
+        hoists on.
+
+        This is the invariant most likely to rot, and it fails silently in the worst
+        direction: drop the group/role/team hop here and the reaper deletes membership
+        for collaborators whose access is entirely real, so their shared records vanish
+        from the tree with nothing in the logs.
+        """
+        reaper = provider._external_grant_exists_cypher("principal", "app")
+        browse = provider._get_app_children_cypher()
+
+        # Both hops present in the reaper.
+        assert "-[:PERMISSION {type: 'USER'}]->(granted)" in reaper
+        assert "-[:PERMISSION {type: 'USER'}]->(via)-[:PERMISSION]->(granted)" in reaper
+
+        # Same principal kinds browse accepts for the indirect hop.
+        for label in ("Group", "Role", "Teams"):
+            assert f"via:{label}" in reaper, f"reaper ignores {label} grants"
+            assert f":{label}" in browse
+
+        # Both scope to the app, so a grant on another connector cannot keep membership
+        # alive here.
+        assert "granted.connectorId = app.id" in reaper
+
+    # -- rendered-query assertions -------------------------------------------------
+    #
+    # These render the query the way the driver would see it and then execute the method
+    # against a mocked client. Asserting on inspect.getsource() instead would pass on
+    # `{crm_types}` -- the literal template text -- and so would keep passing if the
+    # substitution broke.
+
+    @pytest.fixture
+    def mocked(self):
+        from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+        p = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+        p.client = AsyncMock()
+        return p
+
+    @staticmethod
+    def _query_of(mock_client):
+        return mock_client.execute_query.await_args.args[0]
+
+    @staticmethod
+    def _params_of(mock_client):
+        return mock_client.execute_query.await_args.kwargs["parameters"]
+
+    @pytest.mark.asyncio
+    async def test_migration_reports_migrated_mode(self, mocked):
+        from app.config.constants.arangodb import PersonMigrationMode
+
+        mocked.client.execute_query.return_value = [
+            {"mode": "migrated", "moved_permissions": 3, "moved_app_relations": 1}
+        ]
+        assert (
+            await mocked.migrate_person_to_user("A@Corp.com", "user-1")
+            == PersonMigrationMode.MIGRATED
+        )
+
+    @pytest.mark.asyncio
+    async def test_migration_reports_split_mode(self, mocked):
+        from app.config.constants.arangodb import PersonMigrationMode
+
+        mocked.client.execute_query.return_value = [
+            {"mode": "split", "moved_permissions": 2, "moved_app_relations": 1}
+        ]
+        assert (
+            await mocked.migrate_person_to_user("a@corp.com", "user-1")
+            == PersonMigrationMode.SPLIT
+        )
+
+    @pytest.mark.asyncio
+    async def test_migration_returns_none_when_no_person_exists(self, mocked):
+        """The ordinary case for anyone who was never an external collaborator. It must
+        not look like a failure -- both call sites run on every new user."""
+        mocked.client.execute_query.return_value = []
+        assert await mocked.migrate_person_to_user("a@corp.com", "user-1") is None
+
+    @pytest.mark.asyncio
+    async def test_migration_matches_person_on_lowercased_email(self, mocked):
+        """Person.email is normalised at rest (Phase 1), so an exact match against a
+        mixed-case address would silently find nothing and skip the migration."""
+        mocked.client.execute_query.return_value = [{"mode": "migrated"}]
+        await mocked.migrate_person_to_user("Mixed@Case.COM", "user-1")
+        assert self._params_of(mocked.client)["email"] == "mixed@case.com"
+
+    @pytest.mark.asyncio
+    async def test_migration_mode_literals_come_from_the_constants(self, mocked):
+        """The CASE arms are bound as parameters rather than written into the Cypher, so
+        the strings the query returns cannot drift from what callers compare against."""
+        from app.config.constants.arangodb import PersonMigrationMode
+
+        mocked.client.execute_query.return_value = [{"mode": "migrated"}]
+        await mocked.migrate_person_to_user("a@corp.com", "user-1")
+        params = self._params_of(mocked.client)
+        assert params["split"] == PersonMigrationMode.SPLIT
+        assert params["migrated"] == PersonMigrationMode.MIGRATED
+
+    @pytest.mark.asyncio
+    async def test_migration_checks_crm_edges_in_both_directions(self, mocked):
+        """memberOf points away from the Person; lead and contact point at it. A directed
+        check would miss two of the three and delete a Salesforce contact outright."""
+        mocked.client.execute_query.return_value = [{"mode": "migrated"}]
+        await mocked.migrate_person_to_user("a@corp.com", "user-1")
+        q = self._query_of(mocked.client)
+        assert "EXISTS { (p)-[:MEMBER_OF|LEAD|CONTACT]-() }" in q
+        assert "(p)-[:MEMBER_OF|LEAD|CONTACT]->()" not in q
+
+    @pytest.mark.asyncio
+    async def test_migration_moves_exactly_the_transferable_edges(self, mocked):
+        """CRM edges are what identify the Person as a contact. Moving one would make a
+        split indistinguishable from a migration and strand the CRM history."""
+        from app.config.constants.arangodb import (
+            PERSON_CRM_EDGES,
+            PERSON_TRANSFERABLE_EDGES,
+        )
+        from app.config.constants.neo4j import edge_collection_to_relationship
+
+        mocked.client.execute_query.return_value = [{"mode": "migrated"}]
+        await mocked.migrate_person_to_user("a@corp.com", "user-1")
+        q = self._query_of(mocked.client)
+
+        for edge in PERSON_TRANSFERABLE_EDGES:
+            rel = edge_collection_to_relationship(edge)
+            assert f"MATCH (p)-[r:{rel}]->(target)" in q
+            assert f"MERGE (u)-[moved:{rel}]->(target)" in q
+        for edge in PERSON_CRM_EDGES:
+            rel = edge_collection_to_relationship(edge)
+            assert f"MERGE (u)-[moved:{rel}]->" not in q
+
+    @pytest.mark.asyncio
+    async def test_migration_deletes_person_only_when_not_crm(self, mocked):
+        mocked.client.execute_query.return_value = [{"mode": "migrated"}]
+        await mocked.migrate_person_to_user("a@corp.com", "user-1")
+        q = self._query_of(mocked.client)
+        assert "WITH p WHERE NOT is_crm" in q
+        assert "DETACH DELETE p" in q
+        # Aggregation, not a bare RETURN: a zero-row CALL deletes the outer row, so the
+        # method would report None for a migration that actually happened.
+        assert "RETURN count(*) AS deleted" in q
+
+    @pytest.mark.asyncio
+    async def test_migration_propagates_failure(self, mocked):
+        """Unlike the reaper this raises, so the caller can decide -- both call sites
+        catch it and continue, but silently returning None would report a migration that
+        never happened."""
+        mocked.client.execute_query.side_effect = RuntimeError("db down")
+        with pytest.raises(RuntimeError):
+            await mocked.migrate_person_to_user("a@corp.com", "user-1")
+
+    @pytest.mark.asyncio
+    async def test_reaper_returns_reaped_count(self, mocked):
+        mocked.client.execute_query.return_value = [{"reaped_people": 4}]
+        assert await mocked.reap_stale_external_app_relations("conn-1") == 4
+
+    @pytest.mark.asyncio
+    async def test_reaper_swallows_failure(self, mocked):
+        """Housekeeping must not fail a sync that indexed every record."""
+        mocked.client.execute_query.side_effect = RuntimeError("db down")
+        assert await mocked.reap_stale_external_app_relations("conn-1") == 0
+
+    @pytest.mark.asyncio
+    async def test_reaper_only_touches_flagged_edges(self, mocked):
+        """A real app member's membership edge must never be a candidate."""
+        mocked.client.execute_query.return_value = [{"reaped_people": 0}]
+        await mocked.reap_stale_external_app_relations("conn-1")
+        assert "uar.isExternalUser = true" in self._query_of(mocked.client)
+
+    @pytest.mark.asyncio
+    async def test_reaper_scopes_person_sweep_to_this_pass(self, mocked):
+        """A global orphan sweep would race a Person created moments ago whose first edge
+        is not committed yet."""
+        mocked.client.execute_query.return_value = [{"reaped_people": 0}]
+        await mocked.reap_stale_external_app_relations("conn-1")
+        q = self._query_of(mocked.client)
+        assert "UNWIND stale_principals AS principal" in q
+        assert "MATCH (p:Person)" not in q
+
+
+class TestEnsureAppMembership:
+    """Phase 1 -- create-only membership edges, the primitive both the external-user flow
+    and the browse gate depend on."""
+
+    @pytest.fixture
+    def mocked(self):
+        from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+        p = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+        p.client = AsyncMock()
+        return p
+
+    @pytest.mark.asyncio
+    async def test_is_create_only(self, mocked):
+        """Never downgrades an existing edge. batch_create_edges cannot be reused here:
+        it does `SET r = edge.props`, which would clear a real member's flag on Neo4j
+        while Arango's merge kept it -- the two backends would disagree."""
+        from app.config.constants.arangodb import CollectionNames
+
+        await mocked.ensure_app_membership(
+            "user-1", CollectionNames.USERS.value, "conn-1", is_external=True
+        )
+        q = mocked.client.execute_query.await_args.args[0]
+        assert "ON CREATE SET r = $props" in q
+        assert "SET r +=" not in q
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("is_external", [True, False])
+    async def test_flag_is_written_explicitly(self, mocked, is_external):
+        from app.config.constants.arangodb import CollectionNames
+
+        await mocked.ensure_app_membership(
+            "user-1", CollectionNames.USERS.value, "conn-1", is_external=is_external
+        )
+        props = mocked.client.execute_query.await_args.kwargs["parameters"]["props"]
+        assert props["isExternalUser"] is is_external
+
+    @pytest.mark.asyncio
+    async def test_person_principal_uses_person_label(self, mocked):
+        """An external collaborator who is not yet a platform user holds membership as a
+        Person, so the label has to follow the collection."""
+        from app.config.constants.arangodb import CollectionNames
+
+        await mocked.ensure_app_membership(
+            "person-1", CollectionNames.PEOPLE.value, "conn-1", is_external=True
+        )
+        q = mocked.client.execute_query.await_args.args[0]
+        assert "MATCH (principal:Person {id: $principal_id})" in q
+
+    @pytest.mark.asyncio
+    async def test_source_user_id_omitted_when_unknown(self, mocked):
+        from app.config.constants.arangodb import CollectionNames
+
+        await mocked.ensure_app_membership(
+            "person-1", CollectionNames.PEOPLE.value, "conn-1", is_external=True
+        )
+        props = mocked.client.execute_query.await_args.kwargs["parameters"]["props"]
+        assert "sourceUserId" not in props
+
+
+class TestPersonUpsertByEmail:
+    """Phase 1 -- email is the Person's business key under D1's uuid4 ids."""
+
+    @pytest.fixture
+    def mocked(self):
+        from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+        p = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+        p.client = AsyncMock()
+        return p
+
+    @pytest.mark.asyncio
+    async def test_returns_surviving_id_not_the_local_uuid(self, mocked):
+        """A concurrent sync may have created the node first. Callers must point edges at
+        whatever won, or two Person nodes each end up holding half the permissions."""
+        from app.models.entities import Person
+
+        mocked.client.execute_query.return_value = [{"id": "winner-id"}]
+        person = Person(email="out@x.io")
+        assert await mocked.upsert_person_by_email(person) == "winner-id"
+        assert person.id != "winner-id"
+
+    @pytest.mark.asyncio
+    async def test_merges_on_lowercased_email(self, mocked):
+        from app.models.entities import Person
+
+        mocked.client.execute_query.return_value = [{"id": "p1"}]
+        await mocked.upsert_person_by_email(Person(email="Mixed@Case.COM"))
+        params = mocked.client.execute_query.await_args.kwargs["parameters"]
+        assert params["email"] == "mixed@case.com"
+        assert params["props"]["email"] == "mixed@case.com"
+
+    @pytest.mark.asyncio
+    async def test_never_overwrites_an_existing_person(self, mocked):
+        """A Person written by Salesforce carries real names and a phone number; a
+        connector that knows only an email must not blank them."""
+        from app.models.entities import Person
+
+        mocked.client.execute_query.return_value = [{"id": "p1"}]
+        await mocked.upsert_person_by_email(Person(email="out@x.io"))
+        q = mocked.client.execute_query.await_args.args[0]
+        assert "ON CREATE SET p = $props" in q
+        assert "ON MATCH SET" not in q
+
+    @pytest.mark.asyncio
+    async def test_get_person_by_email_normalises(self, mocked):
+        mocked.client.execute_query.return_value = []
+        await mocked.get_person_by_email("Mixed@Case.COM")
+        params = mocked.client.execute_query.await_args.kwargs["parameters"]
+        assert params["email"] == "mixed@case.com"
+
+
+class TestAppUserMembershipClearsExternalFlag:
+    """Phase 1 -- the self-healing half of the external-user flag."""
+
+    @pytest.fixture
+    def mocked(self):
+        from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+        p = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+        p.client = AsyncMock()
+        return p
+
+    @pytest.mark.asyncio
+    async def test_membership_edge_sets_flag_false_explicitly(self, mocked):
+        """A collaborator first seen as external and later added to the workspace must be
+        un-flagged, or browse keeps hoisting their records to app level forever.
+
+        The value is written rather than omitted because the two backends disagree about
+        omission: Neo4j's batch_create_edges does `SET r = props` (a replace) while
+        Arango's does `UPDATE edge` (a merge), so only an explicit False clears the flag
+        on both.
+        """
+        from app.config.constants.arangodb import CollectionNames, Connectors
+        from app.models.entities import AppUser
+
+        mocked.get_all_orgs = AsyncMock(return_value=[{"id": "org-1"}])
+        mocked.get_document = AsyncMock(return_value={"id": "conn-1"})
+        mocked.get_user_by_email = AsyncMock(return_value=MagicMock(id="u1"))
+        mocked.batch_upsert_nodes = AsyncMock()
+        mocked.migrate_person_to_user = AsyncMock(return_value=None)
+        mocked.batch_create_edges = AsyncMock()
+
+        await mocked.batch_upsert_app_users([
+            AppUser(
+                app_name=Connectors.GOOGLE_DRIVE,
+                connector_id="conn-1",
+                source_user_id="src-1",
+                email="member@corp.com",
+                full_name="Member",
+            )
+        ])
+
+        app_edges = [
+            c for c in mocked.batch_create_edges.await_args_list
+            if c.kwargs.get("collection") == CollectionNames.USER_APP_RELATION.value
+        ]
+        assert app_edges, "no membership edge written"
+        assert app_edges[0].args[0][0]["isExternalUser"] is False
