@@ -329,7 +329,16 @@ The `recordRelations` edge has a `relationshipType` field that defines the relat
 | **BLOCKS**        | One item blocks another      | Ticket blocks another ticket                 |
 | **DEPENDS_ON**    | One item depends on another  | Ticket depends on another ticket             |
 | **DUPLICATES**    | One item duplicates another  | Duplicate ticket or issue                    |
+| **CLONES**        | One item is a copy of another | Cloned ticket                               |
+| **IMPLEMENTS**    | One item implements another  | Pull request implements an issue             |
+| **REVIEWS**       | One item reviews another     | Review attached to a change                  |
+| **CAUSES**        | One item caused another      | Incident caused by a change                  |
+| **RELATED**       | Loosely related items        | Two tickets on the same topic                |
+| **FOREIGN_KEY**   | Database-style reference     | Row references a row in another table        |
+| **DERIVED_FROM**  | Output produced from a source | Chart generated from a code artifact        |
 | **OTHERS**        | Anything not covered above   | Fallback relationship                        |
+
+All fifteen values are defined in [`RecordRelations`](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py). Most connectors need only `PARENT_CHILD`, `SIBLING` and `ATTACHMENT`.
 
 ### Record Fields Reference
 
@@ -629,7 +638,7 @@ from app.models.permission import EntityType, Permission, PermissionType
     .with_description("Sync data from YourConnector")
     .with_categories(["Category1", "Category2"])  # e.g., ["Email"], ["Storage"]
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/yourconnector.svg")
+        .with_icon("/icons/connectors/yourconnector.svg")
         .add_documentation_link(DocumentationLink(
             "Setup Guide",
             "https://docs.yourservice.com/setup"
@@ -1068,110 +1077,72 @@ The connector will automatically appear in the UI once configured.
 
 **File:** `backend/python/tests/unit/connectors/sources/test_{connector_name}_connector.py`
 
-Connector tests live under `backend/python/tests/`, which is where pytest collects them. A file placed inside `app/` is never run. Run yours with `pytest tests/unit/connectors/sources/test_{connector_name}_connector.py` from `backend/python`.
+Connector tests live under `backend/python/tests/`. That is what `testpaths = tests` in `pytest.ini` makes pytest search by default, and the filename must match `python_files = test_*.py` to be picked up.
+
+Unit tests here mock the external service — they do not need etcd, a graph database, or network access, so they run in CI and on a laptop with nothing else started. Follow an existing one such as [`test_linear_connector.py`](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/tests/unit/connectors/sources/test_linear_connector.py).
 
 ```python
-"""
-Test file for YourConnector.
-Run this to test your connector implementation before integrating with the full system.
-"""
+"""Tests for the YourConnector connector."""
 
-import asyncio
-import sys
-from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent.parent))
+import pytest
 
-from app.config.configuration_service import ConfigurationService
-from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.sources.{vendor}.{connector_name}.connector import YourConnector
-from app.utils.logger import create_logger
 
 
-async def test_connector():
-    """Test connector initialization and basic operations."""
-
-    # Setup
-    logger = create_logger("test_yourconnector")
-    key_value_store = Etcd3EncryptedKeyValueStore(logger)
-    config_service = ConfigurationService(logger, key_value_store)
-
-    # TODO: Initialize data store provider
-    # data_store_provider = DataStoreProvider(...)
-
-    try:
-        logger.info("=" * 50)
-        logger.info("Testing YourConnector")
-        logger.info("=" * 50)
-
-        # Test 1: Create connector instance
-        logger.info("\n1. Creating connector instance...")
-        connector = await YourConnector.create_connector(
-            logger,
-            None,  # data_store_provider - set to None for basic testing
-            config_service
-        )
-        logger.info("✅ Connector instance created")
-
-        # Test 2: Initialize connector
-        logger.info("\n2. Initializing connector...")
-        init_result = await connector.init()
-        if init_result:
-            logger.info("✅ Connector initialized successfully")
-        else:
-            logger.error("❌ Connector initialization failed")
-            return
-
-        # Test 3: Test connection
-        logger.info("\n3. Testing connection...")
-        connection_ok = connector.test_connection_and_access()
-        if connection_ok:
-            logger.info("✅ Connection test passed")
-        else:
-            logger.error("❌ Connection test failed")
-            return
-
-        # Test 4: Fetch sample data (without saving to database)
-        logger.info("\n4. Fetching sample data from API...")
-        # TODO: Implement test data fetching
-        # users = await connector._get_all_users_external()
-        # logger.info(f"✅ Fetched {len(users)} users")
-
-        # Test 5: Test sync (dry run - comment out database operations)
-        # logger.info("\n5. Running test sync (dry run)...")
-        # await connector.run_sync()
-        # logger.info("✅ Sync test completed")
-
-        logger.info("\n" + "=" * 50)
-        logger.info("All tests passed! ✅")
-        logger.info("=" * 50)
-
-    except Exception as e:
-        logger.error(f"\n❌ Test failed: {e}", exc_info=True)
-    finally:
-        # Cleanup
-        connector.cleanup()
+def _make_connector() -> YourConnector:
+    """Build a connector with every dependency mocked."""
+    return YourConnector(
+        logger=MagicMock(),
+        data_store_provider=MagicMock(),
+        config_service=MagicMock(),
+    )
 
 
-if __name__ == "__main__":
-    asyncio.run(test_connector())
+class TestYourConnector:
+    @pytest.mark.asyncio
+    async def test_init_success(self):
+        connector = _make_connector()
+        mock_client = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.{vendor}.{connector_name}.connector.YourAPIClient"
+        ) as MockClient:
+            MockClient.build_from_services = AsyncMock(return_value=mock_client)
+            assert await connector.init() is True
+
+    @pytest.mark.asyncio
+    async def test_init_failure_returns_false(self):
+        connector = _make_connector()
+
+        with patch(
+            "app.connectors.sources.{vendor}.{connector_name}.connector.YourAPIClient"
+        ) as MockClient:
+            MockClient.build_from_services = AsyncMock(side_effect=Exception("boom"))
+            assert await connector.init() is False
 ```
+
+`asyncio_mode = auto` is set, so an `async def test_*` runs without any extra decoration; the explicit `@pytest.mark.asyncio` above just matches the style of the existing tests.
+
+> [!WARNING]
+> Do not put a `__main__` script that connects to real services inside `tests/`.
+> pytest collects any `async def test_*` it finds there and runs it, so a script
+> expecting etcd or a live API will fail the suite. Keep exploratory scripts
+> outside `tests/` and run them directly.
 
 ### Step 8.2: Run Backend Tests
 
 ```bash
-# Navigate to Python backend
 cd backend/python
+source venv/bin/activate  # Linux/Mac; Windows: venv\Scripts\activate
 
-# Activate virtual environment
-source venv/bin/activate  # Linux/Mac
-# or
-venv\Scripts\activate  # Windows
+# Just your connector
+pytest tests/unit/connectors/sources/test_{connector_name}_connector.py
 
-# Run your test
-python -m app.connectors.sources.{vendor}.{connector_name}.test
+# With detail, or the whole connector suite
+pytest -v tests/unit/connectors/sources/test_{connector_name}_connector.py
+pytest tests/unit/connectors/sources/
 ```
 
 **Expected Output:**
@@ -1545,7 +1516,7 @@ Full implementation: [`ConnectorBuilder` class](https://github.com/pipeshub-ai/p
 #### Basic Configuration
 
 ```python
-.with_icon("/assets/icons/connectors/icon.svg")
+.with_icon("/icons/connectors/icon.svg")
 .add_documentation_link(DocumentationLink(
     "Link Title",
     "https://docs.example.com/path",
