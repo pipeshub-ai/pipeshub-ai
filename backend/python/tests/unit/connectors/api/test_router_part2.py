@@ -2502,6 +2502,83 @@ class TestDeleteConnectorInstance:
 
         assert result.status_code == 202
 
+    async def _delete_through_the_real_gate(self, *, caller, is_admin, org_id, created_by):
+        """Drive the route with the registry's *real* authorization, not a mock.
+
+        Every other test here stubs `get_connector_instance_for_deletion` and
+        patches `_validate_connector_deletion_permissions`, so none of them can
+        see the two gates disagree. That is exactly where the bug lived: the
+        helper allowed an administrator to delete a personal connector while
+        the lookup in front of it returned None, so the route 404'd before the
+        allowance was ever reached.
+        """
+        from unittest.mock import patch as _patch
+
+        from app.connectors.api.router import delete_connector_instance
+        from app.connectors.core.registry.connector_builder import ConnectorScope
+        from app.connectors.core.registry.connector_registry import ConnectorRegistry
+
+        registry = ConnectorRegistry.__new__(ConnectorRegistry)
+        registry.logger = MagicMock()
+        registry._connectors = {"GMAIL": {"name": "Gmail"}}
+        registry._drivers_lock = None  # unused here
+        document = _make_instance(
+            scope=ConnectorScope.PERSONAL.value, created_by=created_by
+        )
+        document["orgId"] = "o1"
+        registry._get_connector_instance_from_db = AsyncMock(return_value=document)
+        registry._build_connector_info = MagicMock(return_value=document)
+
+        req = _make_request(user_id=caller, org_id=org_id, is_admin=is_admin)
+        req.app.state.connector_registry = registry
+
+        graph_provider = AsyncMock()
+        graph_provider.batch_upsert_nodes = AsyncMock()
+        graph_provider.check_connector_in_use = AsyncMock(return_value=[])
+        req.app.container.messaging_producer.send_message = AsyncMock()
+
+        with _patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+             _patch("app.connectors.api.router.get_epoch_timestamp_in_ms", return_value=1000):
+            return await delete_connector_instance(
+                "c1", req, graph_provider=graph_provider
+            )
+
+    async def test_admin_can_delete_another_users_personal_connector(self):
+        """The regression: this returned 404 before the deletion-specific
+        lookup existed, making the admin allowance unreachable for exactly the
+        orphaned connectors it was added to clean up."""
+        result = await self._delete_through_the_real_gate(
+            caller="admin-b", is_admin=True, org_id="o1", created_by="user-a"
+        )
+
+        assert result.status_code == 202
+
+    async def test_creator_can_delete_their_own_personal_connector(self):
+        result = await self._delete_through_the_real_gate(
+            caller="user-a", is_admin=False, org_id="o1", created_by="user-a"
+        )
+
+        assert result.status_code == 202
+
+    async def test_a_non_admin_stranger_still_gets_404(self):
+        """The widening must stop at administrators."""
+        with pytest.raises(HTTPException) as exc_info:
+            await self._delete_through_the_real_gate(
+                caller="user-c", is_admin=False, org_id="o1", created_by="user-a"
+            )
+
+        assert exc_info.value.status_code == 404
+
+    async def test_an_admin_of_another_org_still_gets_404(self):
+        """Tenant isolation runs before the role, so the wider deletion
+        allowance never becomes a cross-tenant one."""
+        with pytest.raises(HTTPException) as exc_info:
+            await self._delete_through_the_real_gate(
+                caller="admin-b", is_admin=True, org_id="other-org", created_by="user-a"
+            )
+
+        assert exc_info.value.status_code == 404
+
     async def test_in_use_by_one_agent_raises_409(self):
         """Connector referenced by one agent: 409, no Kafka events emitted."""
         from app.connectors.api.router import delete_connector_instance

@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, Dict, List
+from typing import Any, Dict, List, NamedTuple
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
@@ -43,6 +43,18 @@ QDRANT_BULK_DELETE_BATCH_SIZE = 100
 # Recovery scan bounds for a purge whose producer sent no VRID list.
 PURGE_SCAN_PAGE_SIZE = 500
 PURGE_SCAN_MAX_POINTS = 100_000
+
+
+class ScanResult(NamedTuple):
+    """VRIDs recovered by scanning, and whether the scan saw everything.
+
+    ``complete`` is False when the point cap stopped the walk or a scroll
+    failed, so callers can tell "this connector had these VRIDs" from "these
+    are the ones we managed to read".
+    """
+
+    ids: List[str]
+    complete: bool
 
 
 class IndexingPipeline:
@@ -181,7 +193,7 @@ class IndexingPipeline:
             # under the membership predicate — the same one the registry
             # supplies when it downgrades a drop.
             if not virtual_record_ids:
-                virtual_record_ids = await self._scan_virtual_record_ids(
+                scan = await self._scan_virtual_record_ids(
                     DeleteScope(
                         action=scope.action,
                         collection_names=scope.collection_names,
@@ -191,6 +203,24 @@ class IndexingPipeline:
                         ),
                     )
                 )
+                virtual_record_ids = scan.ids
+                if not scan.complete:
+                    # The drop still goes ahead: refusing it would leave the
+                    # whole collection behind, and the cap is reached exactly
+                    # on the large collections a drop exists to handle. The
+                    # rows this misses are not stranded — the orphan sweeper
+                    # walks virtualRecordToDocIdMapping itself, so it reaches
+                    # them without needing the dropped collection. Say so,
+                    # because the reclaim is then deferred rather than done.
+                    self.logger.warning(
+                        "Scan of %s hit its bound before enumerating every "
+                        "virtual record id for connector %s; dropping anyway and "
+                        "leaving %d mapping row(s) beyond that point for the "
+                        "orphan sweeper to reclaim",
+                        scope.collection_names,
+                        ctx.connector_id,
+                        len(virtual_record_ids),
+                    )
             for name in scope.collection_names:
                 await self.collection_registry.delete_collection(name)
             await self._forget_virtual_record_mappings(virtual_record_ids or [])
@@ -202,7 +232,7 @@ class IndexingPipeline:
             return {"action": "drop_collection", "collections": scope.collection_names}
 
         if not virtual_record_ids:
-            virtual_record_ids = await self._scan_virtual_record_ids(scope)
+            virtual_record_ids = (await self._scan_virtual_record_ids(scope)).ids
             if virtual_record_ids:
                 self.logger.info(
                     "Recovered %d virtual record id(s) for connector %s by scanning "
@@ -240,7 +270,7 @@ class IndexingPipeline:
             **result,
         }
 
-    async def _scan_virtual_record_ids(self, scope) -> List[str]:
+    async def _scan_virtual_record_ids(self, scope) -> ScanResult:
         """Recover the VRIDs a delete scope covers by scrolling its collections.
 
         Bounded by ``PURGE_SCAN_MAX_POINTS``: a purge that would need more than
@@ -251,10 +281,11 @@ class IndexingPipeline:
             # Scanning with no predicate would enumerate every point in the
             # collection, i.e. every connector's data. Refuse rather than guess.
             self.logger.error("Delete scope resolved no filter; refusing to scan")
-            return []
+            return ScanResult([], False)
 
         found: List[str] = []
         seen: set = set()
+        complete = True
         for name in scope.collection_names:
             try:
                 filter_dict = await self.vector_db_service.filter_collection(
@@ -286,11 +317,15 @@ class IndexingPipeline:
                     if next_offset is None or next_offset == offset:
                         break
                     offset = next_offset
+                else:
+                    # Loop ended on the cap rather than exhausting the cursor.
+                    complete = False
             except Exception as e:
+                complete = False
                 self.logger.error(
                     "Could not scan %s for connector virtual record ids: %s", name, e
                 )
-        return found
+        return ScanResult(found, complete)
 
     async def _forget_virtual_record_mappings(self, virtual_record_ids: List[str]) -> None:
         if not virtual_record_ids:

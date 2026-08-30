@@ -37,20 +37,31 @@ def _client() -> Neo4jClient:
     client._drivers_lock = threading.Lock()
     client._active_sessions = {}
     client._session_locks = {}
+    client._session_loops = {}
     return client
 
 
 def _run_on_another_loop(coro_factory):
     """Run `coro_factory()` on a loop in another thread, as the consumer does."""
     result: list = []
+    errors: list = []
 
     def run() -> None:
-        result.append(asyncio.run(coro_factory()))
+        try:
+            result.append(asyncio.run(coro_factory()))
+        except BaseException as error:  # noqa: BLE001 - re-raised on the caller
+            errors.append(error)
 
     thread = threading.Thread(target=run)
     thread.start()
     thread.join(timeout=10)
-    return result[0] if result else None
+    # Swallowing either of these would let a test pass on a worker loop that
+    # actually blew up or hung — the None it returned would read as "no driver
+    # here", which is exactly what some of these tests assert.
+    assert not thread.is_alive(), "the worker loop did not finish"
+    if errors:
+        raise errors[0]
+    return result[0]
 
 
 class TestDriverIsPerLoop:
@@ -166,6 +177,48 @@ class TestAssignmentAndDisconnect:
         for driver in built:
             driver.close.assert_awaited_once()
         assert client._drivers == {}
+
+    async def test_a_foreign_loops_driver_is_closed_on_that_loop(self):
+        """Not merely "close was awaited" — closing a driver from the wrong
+        loop is what raises "attached to a different loop" and abandons the
+        pool. The close must run on the loop that built it."""
+        client = _client()
+        closed_on: list = []
+
+        worker_loop: list = []
+        ready = threading.Event()
+        stop = threading.Event()
+
+        def run_worker() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            worker_loop.append(loop)
+            ready.set()
+            loop.call_soon(lambda: None)
+            while not stop.is_set():
+                loop.run_until_complete(asyncio.sleep(0.01))
+            loop.close()
+
+        thread = threading.Thread(target=run_worker, daemon=True)
+        thread.start()
+        assert ready.wait(timeout=5)
+
+        async def _close() -> None:
+            closed_on.append(asyncio.get_running_loop())
+
+        driver = MagicMock()
+        driver.close = _close
+        client._drivers = {worker_loop[0]: driver}
+
+        try:
+            await client.disconnect()
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+
+        assert closed_on == [worker_loop[0]], (
+            "the driver was closed from the caller's loop, not its owner's"
+        )
 
     async def test_disconnect_survives_a_driver_that_cannot_be_closed(self):
         """Closing a driver bound to an already-stopped loop raises; the

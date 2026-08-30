@@ -56,6 +56,7 @@ class Neo4jClient:
         self._drivers_lock = threading.Lock()
         self._active_sessions: dict[str, Any] = {}  # Track active transaction sessions
         self._session_locks: dict[str, asyncio.Lock] = {}  # Lock per transaction to prevent concurrent access
+        self._session_loops: dict[str, Any] = {}  # Loop each session was opened on
 
         # Log connection details
         self.logger.info(f"🔌 Connecting to Neo4j at {uri}")
@@ -119,6 +120,10 @@ class Neo4jClient:
         Must be called with this loop's connect lock already held to avoid
         deadlocks.
         """
+        # Bound before the try: if the constructor itself raises, the handlers
+        # below still have something to hand _close_driver_safely, which would
+        # otherwise raise UnboundLocalError instead of returning False.
+        driver = None
         try:
             driver = AsyncGraphDatabase.driver(
                 self.uri,
@@ -199,35 +204,61 @@ class Neo4jClient:
             self.logger.warning(f"⚠️ Could not verify/create database '{self.database}': {str(e)}")
             self.logger.warning("This may be expected if using Neo4j Community Edition (single database only)")
 
+    async def _close_on_owning_loop(self, resource: Any, owner: Any, what: str) -> None:
+        """Close a loop-bound resource on the loop that created it.
+
+        Closing a driver or session from a foreign loop raises "attached to a
+        different loop" and abandons the pool rather than releasing it. The
+        owning loop is known here — it is the key this resource was stored
+        under — so hand the close back to it while it is still running.
+
+        Once that loop has stopped there is no thread left to run the close on
+        and the pool dies with it, so the reference is dropped either way:
+        keeping it would leave a dead driver in the map for `connect()` to hand
+        back to the next caller.
+        """
+        # Resolved before the try: deciding *where* to close must not be able
+        # to fail in a way that skips the close itself.
+        owner_loop = owner if isinstance(owner, asyncio.AbstractEventLoop) else None
+        delegate = (
+            owner_loop is not None
+            and owner_loop is not self._current_loop()
+            and owner_loop.is_running()
+        )
+        try:
+            if delegate:
+                await asyncio.wrap_future(
+                    asyncio.run_coroutine_threadsafe(resource.close(), owner_loop)
+                )
+            else:
+                await resource.close()
+        except Exception as e:
+            self.logger.warning("Error closing %s: %s", what, e)
+
     async def disconnect(self) -> None:
         """Close Neo4j driver and all sessions"""
         try:
-            # Close all active sessions
-            for txn_id, session in self._active_sessions.items():
-                try:
-                    await session.close()
-                except (ClientError, ServiceUnavailable) as e:
-                    self.logger.warning(f"Error closing session {txn_id}: {str(e)}")
+            # Sessions are loop-bound too, so each closes on the loop that
+            # opened it (recorded at begin_transaction).
+            for txn_id, session in list(self._active_sessions.items()):
+                await self._close_on_owning_loop(
+                    session, self._session_loops.get(txn_id), f"session {txn_id}"
+                )
             self._active_sessions.clear()
             self._session_locks.clear()
+            self._session_loops.clear()
 
             with self._drivers_lock:
-                drivers = list(self._drivers.values())
+                owned = list(self._drivers.items())
                 self._drivers.clear()
                 self._connect_locks.clear()
             if self._driver_override is not None:
-                drivers.append(self._driver_override)
+                owned.append((None, self._driver_override))
                 self._driver_override = None
 
-            for driver in drivers:
-                try:
-                    # A driver bound to another (possibly already-stopped) loop
-                    # cannot be closed from here; log and move on rather than
-                    # abandon the remaining ones.
-                    await driver.close()
-                except Exception as e:
-                    self.logger.warning(f"Error closing a Neo4j driver: {str(e)}")
-            if drivers:
+            for owner, driver in owned:
+                await self._close_on_owning_loop(driver, owner, "a Neo4j driver")
+            if owned:
                 self.logger.info("✅ Disconnected from Neo4j")
         except (ClientError, ServiceUnavailable) as e:
             self.logger.error(f"❌ Error disconnecting from Neo4j: {str(e)}")
@@ -255,6 +286,7 @@ class Neo4jClient:
         txn_id = str(uuid.uuid4())
         self._active_sessions[txn_id] = session
         self._session_locks[txn_id] = asyncio.Lock()  # Create lock for this transaction
+        self._session_loops[txn_id] = self._current_loop()
 
         self.logger.debug(f"🔵 Started Neo4j transaction: {txn_id}")
         return txn_id
@@ -277,6 +309,7 @@ class Neo4jClient:
             del self._active_sessions[txn_id]
             if txn_id in self._session_locks:
                 del self._session_locks[txn_id]
+            self._session_loops.pop(txn_id, None)
 
     async def abort_transaction(self, txn_id: str) -> None:
         """
@@ -296,6 +329,7 @@ class Neo4jClient:
             del self._active_sessions[txn_id]
             if txn_id in self._session_locks:
                 del self._session_locks[txn_id]
+            self._session_loops.pop(txn_id, None)
 
     async def execute_query(
         self,

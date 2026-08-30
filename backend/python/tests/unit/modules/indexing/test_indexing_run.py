@@ -3,6 +3,20 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import app.modules.indexing.run as run_mod
+from app.modules.indexing.run import ScanResult
+
+
+def _scan_scope():
+    from app.services.vector_db.strategy import DeleteAction, DeleteScope
+
+    return DeleteScope(
+        action=DeleteAction.FILTERED_DELETE,
+        collection_names=["records"],
+        filter_field="connectorIds",
+        filter_values=["conn-1"],
+    )
+
 
 from tests.support.vector_db import (
     make_collection_registry as _make_collection_registry,
@@ -326,7 +340,8 @@ class TestPurgeConnector:
             side_effect=lambda name: order.append(f"drop:{name}")
         )
         pipeline._scan_virtual_record_ids = AsyncMock(
-            side_effect=lambda scope: order.append("scan") or ["vr-a", "vr-b"]
+            side_effect=lambda scope: order.append("scan")
+            or ScanResult(["vr-a", "vr-b"], True)
         )
         pipeline.graph_provider.delete_nodes = AsyncMock(
             side_effect=lambda **kw: order.append("forget")
@@ -361,7 +376,7 @@ class TestPurgeConnector:
             )
         )
         pipeline.collection_registry.delete_collection = AsyncMock()
-        pipeline._scan_virtual_record_ids = AsyncMock(return_value=[])
+        pipeline._scan_virtual_record_ids = AsyncMock(return_value=ScanResult([], True))
 
         ctx = DeleteContext(org_id="org-1", connector_id="conn-1", connector_name="GOOGLE_DRIVE")
         await pipeline.purge_connector(ctx, None)
@@ -389,7 +404,9 @@ class TestPurgeConnector:
             )
         )
         pipeline.collection_registry.delete_collection = AsyncMock()
-        pipeline._scan_virtual_record_ids = AsyncMock(return_value=["vr-scanned"])
+        pipeline._scan_virtual_record_ids = AsyncMock(
+            return_value=ScanResult(["vr-scanned"], True)
+        )
         pipeline.graph_provider.delete_nodes = AsyncMock()
 
         ctx = DeleteContext(org_id="org-1", connector_id="conn-1", connector_name="GOOGLE_DRIVE")
@@ -507,6 +524,120 @@ class TestPurgeConnector:
         assert result["action"] == "filtered_delete"
 
     @pytest.mark.asyncio
+    async def test_an_exhausted_scan_reports_complete(self):
+        from app.services.vector_db.models import ScrollResult, VectorPoint
+        from app.services.vector_db.strategy import DeleteAction, DeleteScope
+
+        pipeline = _make_indexing_pipeline()
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value=MagicMock())
+        pipeline.vector_db_service.scroll = AsyncMock(
+            return_value=ScrollResult(
+                points=[
+                    VectorPoint(
+                        id="p1",
+                        dense_vector=[0.0],
+                        payload={"metadata": {"virtualRecordId": "vr-1"}},
+                    )
+                ],
+                next_offset=None,
+            )
+        )
+
+        found = await pipeline._scan_virtual_record_ids(_scan_scope())
+
+        assert found.complete is True
+
+    @pytest.mark.asyncio
+    async def test_a_scan_stopped_by_the_point_cap_reports_incomplete(self):
+        """The caller has to be able to tell "this connector had these VRIDs"
+        from "these are the ones we managed to read" — the drop path deletes
+        the collection those ids came from."""
+        from app.services.vector_db.models import ScrollResult, VectorPoint
+
+        pipeline = _make_indexing_pipeline()
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value=MagicMock())
+
+        cursor = {"n": 0}
+
+        async def _endless(**kwargs):
+            cursor["n"] += 1
+            return ScrollResult(
+                points=[
+                    VectorPoint(
+                        id=f"p{cursor['n']}-{i}",
+                        dense_vector=[0.0],
+                        payload={"metadata": {"virtualRecordId": f"vr-{cursor['n']}-{i}"}},
+                    )
+                    for i in range(run_mod.PURGE_SCAN_PAGE_SIZE)
+                ],
+                next_offset=f"off-{cursor['n']}",
+            )
+
+        pipeline.vector_db_service.scroll = AsyncMock(side_effect=_endless)
+
+        found = await pipeline._scan_virtual_record_ids(_scan_scope())
+
+        assert found.complete is False
+        assert len(found.ids) >= run_mod.PURGE_SCAN_MAX_POINTS
+
+    @pytest.mark.asyncio
+    async def test_a_failed_scroll_reports_incomplete(self):
+        pipeline = _make_indexing_pipeline()
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value=MagicMock())
+        pipeline.vector_db_service.scroll = AsyncMock(side_effect=RuntimeError("boom"))
+
+        found = await pipeline._scan_virtual_record_ids(_scan_scope())
+
+        assert found.complete is False
+        assert found.ids == []
+
+    @pytest.mark.asyncio
+    async def test_a_filterless_scope_reports_incomplete(self):
+        """Refusing to scan is not the same as having scanned everything."""
+        from app.services.vector_db.strategy import DeleteAction, DeleteScope
+
+        pipeline = _make_indexing_pipeline()
+
+        found = await pipeline._scan_virtual_record_ids(
+            DeleteScope(action=DeleteAction.DROP_COLLECTION, collection_names=["records"])
+        )
+
+        assert found == ([], False)
+
+    @pytest.mark.asyncio
+    async def test_an_incomplete_scan_still_drops_but_warns(self):
+        """Refusing the drop would leave the whole collection behind, and the
+        cap is reached precisely on the large collections a drop exists for.
+        The rows beyond it are reclaimed by the orphan sweeper, which walks
+        the mapping collection itself — so proceed, and say so."""
+        from app.services.vector_db.strategy import (
+            DeleteAction,
+            DeleteContext,
+            DeleteScope,
+        )
+
+        pipeline = _make_indexing_pipeline()
+        pipeline.logger = MagicMock()
+        pipeline.collection_registry.resolve_delete_scope = AsyncMock(
+            return_value=DeleteScope(
+                action=DeleteAction.DROP_COLLECTION,
+                collection_names=["drive_records"],
+            )
+        )
+        pipeline.collection_registry.delete_collection = AsyncMock()
+        pipeline._scan_virtual_record_ids = AsyncMock(
+            return_value=ScanResult(["vr-a"], False)
+        )
+        pipeline.graph_provider.delete_nodes = AsyncMock()
+
+        ctx = DeleteContext(org_id="org-1", connector_id="conn-1", connector_name="GOOGLE_DRIVE")
+        await pipeline.purge_connector(ctx, [])
+
+        pipeline.collection_registry.delete_collection.assert_awaited_once()
+        assert pipeline.graph_provider.delete_nodes.await_args.kwargs["keys"] == ["vr-a"]
+        assert pipeline.logger.warning.called, "an incomplete drop must be visible"
+
+    @pytest.mark.asyncio
     async def test_scan_stops_when_the_cursor_stops_advancing(self):
         """A provider returning the same offset forever must not spin: the
         point cap cannot stop it on its own, since a repeated page never
@@ -538,7 +669,7 @@ class TestPurgeConnector:
             )
         )
 
-        assert found == ["vr-1"]
+        assert found.ids == ["vr-1"]
         assert pipeline.vector_db_service.scroll.await_count == 1
 
 
