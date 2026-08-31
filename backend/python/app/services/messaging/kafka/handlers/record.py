@@ -22,6 +22,7 @@ from app.events.events import EventProcessor
 from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.modules.code_graph.auto_edge_build import maybe_trigger_edge_build
 from app.modules.transformers.transformer import TransformContext
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.messaging.config import (
@@ -1245,6 +1246,12 @@ class RecordEventHandler(BaseEventService):
                                 connector_id=record.get("connectorId"),
                                 external_record_group_id=record.get("externalGroupId"),
                                 org_id=record.get("orgId"),
+                            )
+                            await maybe_trigger_edge_build(
+                                graph_provider=self.event_processor.graph_provider,
+                                config_service=self.config_service,
+                                record=record,
+                                logger=self.logger,
                             )
                     elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
                         # Find and trigger indexing for the next queued duplicate

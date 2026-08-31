@@ -15,7 +15,6 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, Connectors
-from app.connectors.core.registry.connector_builder import ConnectorScope
 
 if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -41,7 +40,7 @@ CODE_CONNECTOR_TYPES = frozenset({
 })
 
 
-def _normalized(value: Any) -> str:
+def _normalized(value: object) -> str:
     """Connector types reach us in three spellings for the same thing.
 
     The stored App node says `GitLab`, a record says `GITLAB`, and attached
@@ -69,6 +68,8 @@ async def has_code_connector_configured(
     as absence, not raised — a tool that quietly does not appear beats a request
     that dies on a connector probe.
     """
+    from app.connectors.core.registry.connector_builder import ConnectorScope
+
     try:
         instances = await graph_provider.get_user_connector_instances(
             collection=CollectionNames.APPS.value,
