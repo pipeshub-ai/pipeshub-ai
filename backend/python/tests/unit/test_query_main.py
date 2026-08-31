@@ -855,6 +855,30 @@ class TestRunWorkersWarning:
 
         assert mock_uvicorn.call_args.kwargs["workers"] == 1
 
+    def test_frozen_build_refuses_multiple_workers(self) -> None:
+        """A PyInstaller build can do neither half of the multi-worker path.
+
+        sys.executable is the app binary (its bootloader ignores "-m uvicorn") and
+        uvicorn.run(workers=N) would need multiprocessing.freeze_support(). Refusing
+        beats crash-looping. backend/python/Dockerfile produces such a build.
+        """
+        import os as _os
+
+        from app.query_main import run
+
+        with (
+            patch("app.query_main.uvicorn.run") as mock_uvicorn,
+            patch("app.query_main.os.execvp") as mock_execvp,
+            patch("app.query_main.sys") as mock_sys,
+            patch.dict("os.environ", {"QUERY_UVICORN_WORKERS": "4"}),
+        ):
+            mock_sys.frozen = True
+            run(reload=False)
+
+            mock_execvp.assert_not_called()
+            assert mock_uvicorn.call_args.kwargs["workers"] == 1
+            assert _os.environ["QUERY_UVICORN_WORKERS"] == "1"
+
     def test_exec_sentinel_prevents_a_second_exec(self) -> None:
         """Re-entering with the sentinel set must serve in-process, not exec again.
 

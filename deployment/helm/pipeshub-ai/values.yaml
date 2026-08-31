@@ -281,7 +281,8 @@ config:
   distributedIndexingConcurrency: true
   # Query-service uvicorn workers. Above 1 runs N separate query processes in the
   # pod; per-process budgets divide by the count (app/utils/worker_scaling.py).
-  queryUvicornWorkers: 1
+  # Blank by default, matching compose: unset means "let the service decide".
+  queryUvicornWorkers: ""
   # Query-service runtime tuning. Defaults reproduce current behaviour.
   # agentTransport: "langchain" (default) or "direct"
   agentTransport: "langchain"

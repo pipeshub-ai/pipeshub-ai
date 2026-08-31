@@ -14,6 +14,15 @@ the shared modules divide through :func:`scaled`.
 Only the query service declares one today. Everything else leaves the default of 1, where
 :func:`scaled` is the identity, so their budgets are unchanged.
 
+This is the second mechanism in the tree for this concern: parsing, indexing and
+docling already pass an explicit ``worker_count`` into ``ResourceGovernor``, which
+divides *its* ceilings the same way. This one exists for budgets that live in
+lazily-built module singletons, where there is no constructor to thread a count
+through.
+
+Note the division is per process, not per event loop: a process running several
+loops gets one share each (see ``concurrency.py``'s per-loop semaphore).
+
 Call :func:`scaled` lazily — at first use, not at import — because the count is set
 during startup, after module imports have run.
 """

@@ -313,7 +313,7 @@ not documented here.
 
 | Variable | Values | Default |
 |----------|--------|---------|
-| `PIPESHUB_AGENT_TRANSPORT` | `langchain` \| `direct` | `langchain` |
+| `PIPESHUB_AGENT_TRANSPORT` | `langchain` \| `direct` (`azure_direct` is a deprecated alias for `direct`) | `langchain` |
 | `PIPESHUB_ACCESSIBLE_RECORDS_CACHE` | blank (on) \| a disabled value | on |
 | `PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL` | seconds | `300` |
 | `PIPESHUB_SIGNED_URL_CACHE_SECONDS` | seconds, `0` disables, capped at `3000` | `0` |

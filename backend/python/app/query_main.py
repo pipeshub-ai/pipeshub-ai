@@ -470,7 +470,7 @@ def configured_worker_count() -> int:
     return 1
 
 
-def run(host: str = "0.0.0.0", port: int = 8000, workers: int | None = None, *, reload: bool = True) -> None:
+def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, reload: bool = True) -> None:
     """Run the application"""
     import warnings
     workers = workers or configured_worker_count()
@@ -485,6 +485,18 @@ def run(host: str = "0.0.0.0", port: int = 8000, workers: int | None = None, *, 
     # the env var, so publish the count actually used — otherwise run(workers=N), or the
     # reload downgrade above, leaves the children scaling for a different number.
     os.environ["QUERY_UVICORN_WORKERS"] = str(workers)
+    if workers > 1 and getattr(sys, "frozen", False):
+        # A PyInstaller build cannot do either half of this: sys.executable is the app
+        # binary and its bootloader ignores "-m uvicorn", and falling through to
+        # uvicorn.run(workers=N) needs multiprocessing.freeze_support(). Refuse rather
+        # than crash-loop. backend/python/Dockerfile produces such a build; no compose
+        # file uses it today.
+        logging.getLogger(__name__).warning(
+            "QUERY_UVICORN_WORKERS=%s ignored: multiple workers are unsupported in a "
+            "frozen build; serving with one worker", workers,
+        )
+        workers = 1
+        os.environ["QUERY_UVICORN_WORKERS"] = "1"
     if workers > 1 and not os.getenv(_EXEC_SENTINEL):
         # uvicorn spawns workers, and a spawned child re-imports the parent's __main__.
         # Reached via `python -m app.query_main`, __main__ IS this module, so every child

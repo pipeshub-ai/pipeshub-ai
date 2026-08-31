@@ -32,7 +32,21 @@ if TYPE_CHECKING:
     AppContainer = ConnectorAppContainer | IndexingAppContainer | QueryAppContainer
 
 
-_PROCESS_ID = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+_process_id: str | None = None
+
+
+def _process_identity() -> str:
+    """Identity of THIS process, computed on first use.
+
+    Deliberately not an import-time constant: uvicorn spawns workers today, so each
+    re-imports and gets its own, but under a fork-based supervisor every child would
+    inherit one shared value and the per-process consumer groups would collapse back
+    into one -- reintroducing the stale-LLM bug they exist to prevent.
+    """
+    global _process_id
+    if _process_id is None:
+        _process_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    return _process_id
 
 
 class MessagingUtils:
@@ -259,7 +273,7 @@ class MessagingUtils:
         return await MessagingUtils.create_consumer_config(
             app_container,
             "aiconfig_consumer_client",
-            f"aiconfig_consumer_group-{_PROCESS_ID}",
+            f"aiconfig_consumer_group-{_process_identity()}",
             [Topic.AI_CONFIG_EVENTS.value],
             ephemeral_group=True,
         )

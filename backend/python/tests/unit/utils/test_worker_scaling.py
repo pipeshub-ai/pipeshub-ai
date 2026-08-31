@@ -62,7 +62,7 @@ class TestCountParsing:
             set_process_worker_count(bad)
             assert get_process_worker_count() == 1
 
-    def test_accepts_a_numeric_string(self) -> None:
-        set_process_worker_count("4")
+    def test_accepts_a_numeric_value(self) -> None:
+        set_process_worker_count(4)
         assert get_process_worker_count() == 4
         assert scaled(24) == 6

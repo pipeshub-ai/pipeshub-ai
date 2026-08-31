@@ -498,6 +498,9 @@ class TestStop:
         last-delivered-id has already advanced past them, so anything read-but-unacked
         when we shut down would be lost for good. stop() cancels the consume loop
         mid-batch, so that window is real for every record/entity/sync consumer.
+
+        Nothing calls xgroup_delconsumer today, so this passes vacuously -- it is a
+        guard rail against reintroducing it, not coverage of existing behaviour.
         """
         mock_redis = AsyncMock()
         consumer.redis = mock_redis
