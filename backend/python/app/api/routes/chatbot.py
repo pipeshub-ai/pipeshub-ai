@@ -1083,6 +1083,60 @@ async def askAIStream(
         config_service=config_service,
     )
 
+    chat_mode = query_info.chatMode or "internal_search"
+    use_cache = chat_mode in ("internal_search", "quick")
+    
+    if use_cache:
+        async def cached_or_live_stream():
+            from app.services.cache.semantic_cache import SemanticCacheService, hash_filters
+            from app.agents.agent_loop.protocol import frame, AGUIEventType
+            import asyncio
+            
+            semantic_cache = SemanticCacheService(retrieval_service.vector_db_service)
+            await semantic_cache.initialize()
+            filters_hash_val = hash_filters(query_info.filters)
+            
+            embedding_model = await retrieval_service.get_embedding_model_instance()
+            query_vector = None
+            if embedding_model:
+                query_vector = await embedding_model.aembed_query(query_info.query)
+                if query_vector:
+                    cached_resp = await semantic_cache.get_cached_response(
+                        query_info.query, query_vector, filters_hash_val
+                    )
+                    if cached_resp:
+                        start = frame(AGUIEventType.RUN_START, run_id="cached")
+                        yield f"event: {start['event']}\ndata: {json.dumps(start['data'])}\n\n"
+                        chunk = frame(AGUIEventType.TEXT_DELTA, text=cached_resp)
+                        yield f"event: {chunk['event']}\ndata: {json.dumps(chunk['data'])}\n\n"
+                        end = frame(AGUIEventType.RUN_END)
+                        yield f"event: {end['event']}\ndata: {json.dumps(end['data'])}\n\n"
+                        return
+
+            # If no cache hit, run the live stream and accumulate text
+            full_response_parts = []
+            async for chunk in stream:
+                yield chunk
+                if chunk.startswith("event: text_delta"):
+                    try:
+                        data_line = chunk.split("\ndata: ")[1].strip()
+                        data_obj = json.loads(data_line)
+                        if "text" in data_obj:
+                            full_response_parts.append(data_obj["text"])
+                    except Exception as e:
+                        logger.debug(f"Failed to parse text_delta for caching: {e}")
+
+            # After stream completes, save to cache asynchronously
+            if query_vector and full_response_parts:
+                full_text = "".join(full_response_parts)
+                asyncio.create_task(
+                    semantic_cache.set_cached_response(
+                        query_info.query, full_text, query_vector, filters_hash_val
+                    )
+                )
+
+        stream = cached_or_live_stream()
+
     return StreamingResponse(
         stream,
         media_type="text/event-stream",
