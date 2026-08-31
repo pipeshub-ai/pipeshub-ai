@@ -279,6 +279,18 @@ config:
   maxConcurrentIndexing: ""
   maxPendingIndexingTasks: ""
   distributedIndexingConcurrency: true
+  # Query-service uvicorn workers. Above 1 runs N separate query processes in the
+  # pod; per-process budgets divide by the count (app/utils/worker_scaling.py).
+  # Blank by default, matching compose: unset means "let the service decide".
+  queryUvicornWorkers: ""
+  # Query-service runtime tuning. Defaults reproduce current behaviour.
+  # agentTransport: "langchain" (default) or "direct"
+  agentTransport: "langchain"
+  # Accessible-records cache is on unless set to a disabled value; "" keeps it on.
+  accessibleRecordsCache: ""
+  accessibleRecordsCacheTtl: 300
+  # 0 disables the signed-URL cache. Keep well under the 3600s signing lifetime.
+  signedUrlCacheSeconds: 0
   indexingConcurrencyLeaseSeconds: 120
   indexingConcurrencyRedisTimeoutSeconds: 5
   shutdownTaskTimeout: 240

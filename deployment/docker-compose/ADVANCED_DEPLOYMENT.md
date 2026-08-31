@@ -14,6 +14,7 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 - [A second instance on the same host](#a-second-instance-on-the-same-host)
 - [Manual deployment with Compose profiles](#manual-deployment-with-compose-profiles)
 - [Secrets and configuration](#secrets-and-configuration)
+- [Runtime tuning (workers and query-service flags)](#runtime-tuning-workers-and-query-service-flags)
 - [Container outbound connectivity](#container-outbound-connectivity)
 - [Developer / local build](#developer--local-build)
 - [Soak-testing adaptive concurrency](#soak-testing-adaptive-concurrency)
@@ -265,6 +266,76 @@ manager instead of `.env` — for example Docker/Swarm secrets, HashiCorp Vault,
 or your cloud provider's KMS / Secrets Manager — and inject the values into the
 containers at runtime. The Compose services read standard environment variables,
 so any tool that can populate the container environment will work.
+
+---
+
+## Runtime tuning (workers and query-service flags)
+
+These live in `.env` alongside the rest of your configuration. Every default below
+reproduces current behaviour, so an upgrade changes nothing until you opt in.
+
+Compose forwards **only** the variables it enumerates, so a name that is not listed in
+the compose file never reaches the container. All of these are wired; setting them in
+`.env` is enough.
+
+### Query-service workers
+
+The query service runs in one process by default. Raising this starts that many separate
+query processes.
+
+| Variable | Values | Default |
+|----------|--------|---------|
+| `QUERY_UVICORN_WORKERS` | integer | `1` |
+
+Two per-process budgets the query service can reach are divided by the worker count
+(`backend/python/app/utils/worker_scaling.py`), so N workers do not each claim the whole
+amount: concurrent LLM calls for chat-attachment enrichment (24, so 6 each at 4 workers)
+and the storage connection limit (100, so 25 each).
+
+Everything else still multiplies, so size the host accordingly:
+
+- The PDF rasteriser and docling process pools have a floor of one worker each, so at 4
+  query workers you get 4 rasteriser subprocesses rather than the 2 a single process uses.
+- Database and broker connection pools are not divided at all — N query workers means N
+  Neo4j, Qdrant, Mongo and Redis pools.
+
+Two things to know before raising it:
+
+- Each worker re-imports the connector SDKs at startup (~25 modules), so start-up time and
+  resident memory scale with the count. Budget against `APP_MEMORY_LIMIT`.
+- Telemetry is reported per process. Each worker's metrics carry a `processId`, so a
+  collector that ignores that field will see the workers' counters as one noisy series.
+
+The other services' `*_UVICORN_WORKERS` variables are already forwarded by Compose but are
+not documented here.
+
+### Query-service flags
+
+| Variable | Values | Default |
+|----------|--------|---------|
+| `PIPESHUB_AGENT_TRANSPORT` | `langchain` \| `direct` (`azure_direct` is a deprecated alias for `direct`) | `langchain` |
+| `PIPESHUB_ACCESSIBLE_RECORDS_CACHE` | blank (on) \| a disabled value | on |
+| `PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL` | seconds | `300` |
+| `PIPESHUB_SIGNED_URL_CACHE_SECONDS` | seconds, `0` disables, capped at `3000` | `0` |
+
+`direct` calls model providers without the LangChain layer. A provider with no direct
+transport, or with credentials it cannot use, falls back to LangChain for that turn
+rather than failing it; an unrecognised value logs a warning and falls back too.
+
+`PIPESHUB_SIGNED_URL_CACHE_SECONDS` is clamped to 3000 in code, keeping it under the
+3600-second signing lifetime so a URL handed out at the end of its cached life still has
+time left to use. A value that is not a number falls back to the default rather than
+failing to start.
+
+These are read from the container environment, so on an existing install add them to
+`.env` yourself — `install.sh --upgrade` reuses your current `.env` and does not append
+new keys. Every compose reference carries a default, so an absent key behaves exactly as
+the table says.
+
+> **Naming note.** The `PIPESHUB_*` variables in
+> [Environment overrides for CI / scripted installs](#environment-overrides-for-ci--scripted-installs)
+> are read by `install.sh` *before* `.env` is written and control the installer itself.
+> The four above are read by the running service. They share a prefix but not a purpose.
 
 ---
 

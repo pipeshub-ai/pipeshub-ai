@@ -1188,11 +1188,24 @@ GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU=
 GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU=
 GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT=
 GOVERNOR_HEAVY_PARSE_WORKING_SET_GB=
+# Uncomment to pin the query worker count. Left unset so WEB_CONCURRENCY,
+# which uvicorn honours by default, still applies if you use it.
+# QUERY_UVICORN_WORKERS=1
+
 INDEXING_UVICORN_WORKERS=1
 PARSING_UVICORN_WORKERS=1
 DOCLING_UVICORN_WORKERS=1
 LOCAL_DOCLING_PARSE_WORKERS=1
 PDF_OCR_DETECTION_WORKERS=1
+
+# Query-service runtime tuning. These defaults reproduce current behaviour.
+# PIPESHUB_AGENT_TRANSPORT: langchain (default) | direct
+PIPESHUB_AGENT_TRANSPORT=langchain
+# Accessible-records cache is ON unless set to a disabled value; leave blank to keep it on.
+PIPESHUB_ACCESSIBLE_RECORDS_CACHE=
+PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL=300
+# 0 disables the signed-URL cache. Keep well under the 3600s signing lifetime.
+PIPESHUB_SIGNED_URL_CACHE_SECONDS=0
 
 # ── ML performance ───────────────────────────────────────────────────────────
 # Caps PyTorch / OpenBLAS / MKL thread fan-out per operation.

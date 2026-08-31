@@ -67,7 +67,10 @@ class RedisStreamsConsumer(IMessagingConsumer):
                     await self.redis.xgroup_create(  # type: ignore
                         topic,
                         self.config.group_id,
-                        id="0",
+                        # "0" replays everything retained. A disposable group is new on
+                        # every process start, so that would re-deliver the whole stream
+                        # each time; it only cares about what happens from now on.
+                        id="$" if self.config.ephemeral_group else "0",
                         mkstream=True,
                     )
                     self.logger.info(
@@ -93,7 +96,11 @@ class RedisStreamsConsumer(IMessagingConsumer):
     async def cleanup(self) -> None:
         try:
             if self.redis:
+                await self._destroy_ephemeral_group()
                 await self.redis.aclose()
+                # Null it so a second call (stop() after the loop's own finally) is a
+                # no-op rather than issuing commands on a closed client.
+                self.redis = None
                 self.logger.info("Redis Streams consumer stopped")
         except Exception as e:
             self.logger.error("Error during cleanup: %s", e)
@@ -128,9 +135,28 @@ class RedisStreamsConsumer(IMessagingConsumer):
             except asyncio.CancelledError:
                 pass
 
-        if self.redis:
-            await self.redis.aclose()
-            self.logger.info("Redis Streams consumer stopped")
+        await self.cleanup()
+
+    async def _destroy_ephemeral_group(self) -> None:
+        """Drop this process's disposable group; Redis never expires groups itself.
+
+        Stable groups are left alone. Their consumer name is also left alone -- both
+        because XGROUP DELCONSUMER would discard that consumer's pending entries (the
+        group's last-delivered-id has already moved past them, so nothing would ever
+        redeliver them) and because a stable name is what lets a restarted process
+        recover its own unacked messages immediately, via `_drain_pending`'s phase 2,
+        instead of waiting out claim_min_idle_ms for XAUTOCLAIM.
+        """
+        if not (self.config.ephemeral_group and self.redis):
+            return
+        for topic in self.config.topics:
+            try:
+                await self.redis.xgroup_destroy(topic, self.config.group_id)  # type: ignore
+            except Exception as exc:
+                self.logger.warning(
+                    "Could not destroy consumer group %s on %s: %s",
+                    self.config.group_id, topic, exc,
+                )
 
     def is_running(self) -> bool:
         return self.running

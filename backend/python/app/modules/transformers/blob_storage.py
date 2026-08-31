@@ -22,6 +22,7 @@ from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.request_context import inject_request_headers
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.worker_scaling import scaled
 
 COMPRESSION_THRESHOLD_BYTES_DEFAULT = 20 * 1024 * 1024
 DOWNLOAD_CONNECTION_LIMIT_DEFAULT = 100
@@ -100,8 +101,9 @@ def download_connection_limit() -> int:
             pass
         else:
             if value >= 0:
-                return value
-    return DOWNLOAD_CONNECTION_LIMIT_DEFAULT
+                # 0 means unbounded; scaling it would turn that into a limit of 1.
+                return value if value == 0 else scaled(value)
+    return scaled(DOWNLOAD_CONNECTION_LIMIT_DEFAULT)
 
 
 def get_shared_session() -> aiohttp.ClientSession:

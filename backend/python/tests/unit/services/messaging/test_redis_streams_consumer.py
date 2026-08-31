@@ -118,6 +118,39 @@ class TestInitialize:
                 await c.initialize()
 
 
+class TestEphemeralGroupCreation:
+    """Where a group starts reading matters: a disposable group is recreated on every
+    process start, so anchoring it at the head would replay all retained history."""
+
+    @pytest.mark.asyncio
+    async def test_disposable_group_starts_at_the_tail(self, logger, config) -> None:
+        config.ephemeral_group = True
+        c = RedisStreamsConsumer(logger, config)
+        mock_redis = AsyncMock()
+
+        with patch(
+            "app.services.messaging.redis_streams.consumer.Redis",
+            return_value=mock_redis,
+        ):
+            await c.initialize()
+
+        assert mock_redis.xgroup_create.call_args.kwargs["id"] == "$"
+
+    @pytest.mark.asyncio
+    async def test_stable_group_still_starts_at_the_head(self, logger, config) -> None:
+        """Unchanged for entity/sync/records: they must still see retained history."""
+        c = RedisStreamsConsumer(logger, config)
+        mock_redis = AsyncMock()
+
+        with patch(
+            "app.services.messaging.redis_streams.consumer.Redis",
+            return_value=mock_redis,
+        ):
+            await c.initialize()
+
+        assert mock_redis.xgroup_create.call_args.kwargs["id"] == "0"
+
+
 class TestCleanup:
     @pytest.mark.asyncio
     async def test_closes_redis_client(self, consumer):
@@ -458,6 +491,63 @@ class TestStop:
         mock_redis.aclose.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_stop_never_deletes_the_consumer(self, consumer) -> None:
+        """A stable group's consumer must survive stop().
+
+        XGROUP DELCONSUMER discards that consumer's pending entries, and the group's
+        last-delivered-id has already advanced past them, so anything read-but-unacked
+        when we shut down would be lost for good. stop() cancels the consume loop
+        mid-batch, so that window is real for every record/entity/sync consumer.
+
+        Nothing calls xgroup_delconsumer today, so this passes vacuously -- it is a
+        guard rail against reintroducing it, not coverage of existing behaviour.
+        """
+        mock_redis = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.config.ephemeral_group = False
+        consumer.running = True
+        consumer.consume_task = None
+
+        await consumer.stop()
+
+        mock_redis.xgroup_delconsumer.assert_not_awaited()
+        mock_redis.xgroup_destroy.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stop_destroys_only_a_disposable_group(self, consumer) -> None:
+        """A per-process group is destroyed; Redis never expires groups by itself."""
+        mock_redis = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.config.ephemeral_group = True
+        consumer.running = True
+        consumer.consume_task = None
+
+        await consumer.stop()
+
+        mock_redis.xgroup_destroy.assert_awaited_once_with(
+            consumer.config.topics[0], consumer.config.group_id,
+        )
+
+    @pytest.mark.asyncio
+    async def test_group_is_destroyed_before_the_client_closes(self, consumer) -> None:
+        """Order matters: the consume loop's own cleanup() closes the client, so a
+        destroy issued afterwards would silently no-op against a closed connection."""
+        calls = []
+        mock_redis = AsyncMock()
+        mock_redis.xgroup_destroy = AsyncMock(side_effect=lambda *a, **k: calls.append("destroy"))
+        mock_redis.aclose = AsyncMock(side_effect=lambda *a, **k: calls.append("aclose"))
+        consumer.redis = mock_redis
+        consumer.config.ephemeral_group = True
+        consumer.running = True
+        consumer.consume_task = None
+
+        await consumer.stop()
+
+        assert calls == ["destroy", "aclose"], calls
+        # Nulled, so a second cleanup (loop finally + stop) cannot double-issue.
+        assert consumer.redis is None
+
+    @pytest.mark.asyncio
     async def test_stop_without_redis(self, consumer):
         """stop() works when redis is None (line 121->exit path)."""
         consumer.running = True
@@ -661,6 +751,9 @@ class TestDrainPending:
         # Phase 2 must use id "0" to read from own PEL (not ">")
         first_phase2_call = mock_redis.xreadgroup.call_args_list[0]
         assert first_phase2_call.kwargs["streams"] == {"test-topic": "0"}
+        # The stable client_id, deliberately: it is what lets a restarted process
+        # recover its own unacked messages here instead of waiting out
+        # claim_min_idle_ms (30s) for phase 1 XAUTOCLAIM.
         assert first_phase2_call.kwargs["consumername"] == consumer.config.client_id
 
     @pytest.mark.asyncio
