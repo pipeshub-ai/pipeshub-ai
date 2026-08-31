@@ -169,8 +169,11 @@ class SeededGraphProvider:
         return linked
 
     async def get_knowledge_hub_breadcrumbs(
-        self, node_id: str, transaction: str | None = None
+        self, node_id: str, user_key: str, org_id: str,
+        transaction: str | None = None
     ) -> list[dict] | None:
+        # Seeded trails are all visible to the seeded user; the ACL filter itself is
+        # covered by the provider unit tests, not by this navigation walk.
         return self._breadcrumbs.get(node_id, [])
 
     async def get_record_by_weburl(

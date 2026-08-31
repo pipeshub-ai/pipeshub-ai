@@ -4648,3 +4648,124 @@ class TestAppUserMembershipClearsExternalFlag:
         ]
         assert app_edges, "no membership edge written"
         assert app_edges[0].args[0][0]["isExternalUser"] is False
+
+
+class TestBreadcrumbVisibilityFilter:
+    """Phase 8 -- breadcrumbs must not name ancestors the caller cannot open.
+
+    Exercises the pure filter directly with a fixed leaf-first trail, so the cases are
+    the graph shapes rather than Cypher/AQL text.
+    """
+
+    APP = {"id": "app1", "name": "Drive", "nodeType": "app", "subType": None}
+    DRIVE = {"id": "rg1", "name": "Engineering", "nodeType": "recordGroup", "subType": None}
+    FOLDER = {"id": "f1", "name": "Specs", "nodeType": "folder", "subType": None}
+    LEAF = {"id": "r1", "name": "api.pdf", "nodeType": "record", "subType": "FILE"}
+
+    @pytest.fixture
+    def provider(self):
+        from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+        p = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+        p.client = AsyncMock()
+        return p
+
+    @staticmethod
+    def _with_visibility(provider, visible_non_app, visible_apps):
+        provider.filter_nodes_with_permission_role = AsyncMock(
+            return_value=set(visible_non_app)
+        )
+
+        async def node_access(node_id, user_key, org_id, folder_mime_types, transaction=None):
+            return {"id": node_id} if node_id in visible_apps else None
+
+        provider.get_knowledge_hub_node_access = AsyncMock(side_effect=node_access)
+
+    # trail is leaf-first; the walk reverses afterwards
+    def _trail(self):
+        return [dict(self.LEAF), dict(self.FOLDER), dict(self.DRIVE), dict(self.APP)]
+
+    @pytest.mark.asyncio
+    async def test_folder_granted_drive_not(self, provider):
+        """Browse hoists Specs to app level and shows api.pdf inside it, so the trail is
+        App > Specs > api.pdf."""
+        self._with_visibility(provider, {"r1", "f1"}, {"app1"})
+        out = await provider._filter_visible_breadcrumbs(self._trail(), "u1", "org1")
+        assert [s["id"] for s in out] == ["r1", "f1", "app1"]
+
+    @pytest.mark.asyncio
+    async def test_only_the_file_granted(self, provider):
+        """Browse hoists api.pdf itself, so the trail collapses to App > api.pdf."""
+        self._with_visibility(provider, {"r1"}, {"app1"})
+        out = await provider._filter_visible_breadcrumbs(self._trail(), "u1", "org1")
+        assert [s["id"] for s in out] == ["r1", "app1"]
+
+    @pytest.mark.asyncio
+    async def test_drive_member_sees_everything(self, provider):
+        self._with_visibility(provider, {"r1", "f1", "rg1"}, {"app1"})
+        out = await provider._filter_visible_breadcrumbs(self._trail(), "u1", "org1")
+        assert [s["id"] for s in out] == ["r1", "f1", "rg1", "app1"]
+
+    @pytest.mark.asyncio
+    async def test_drive_visible_folder_not(self, provider):
+        """api.pdf is not hoisted here (its record group is visible), and browse shows it
+        under Engineering -- the trail has to agree."""
+        self._with_visibility(provider, {"r1", "rg1"}, {"app1"})
+        out = await provider._filter_visible_breadcrumbs(self._trail(), "u1", "org1")
+        assert [s["id"] for s in out] == ["r1", "rg1", "app1"]
+
+    @pytest.mark.asyncio
+    async def test_denied_middle_ancestor_keeps_the_leaf(self, provider):
+        """The regression guard against 'simplifying' this into filter_accessible_prefix,
+        which breaks at the first denied node and would drop the very node being viewed."""
+        self._with_visibility(provider, {"r1", "rg1"}, {"app1"})
+        out = await provider._filter_visible_breadcrumbs(self._trail(), "u1", "org1")
+        assert out[0]["id"] == "r1", "leaf must survive a denied ancestor"
+
+    @pytest.mark.asyncio
+    async def test_invisible_leaf_returns_empty(self, provider):
+        """Decision 1: no partial trail for a node the user cannot see at all."""
+        self._with_visibility(provider, {"f1", "rg1"}, {"app1"})
+        assert await provider._filter_visible_breadcrumbs(self._trail(), "u1", "org1") == []
+
+    @pytest.mark.asyncio
+    async def test_denied_app_is_dropped_rest_survives(self, provider):
+        """Decision 2: the root App is checked like any other level."""
+        self._with_visibility(provider, {"r1", "f1", "rg1"}, set())
+        out = await provider._filter_visible_breadcrumbs(self._trail(), "u1", "org1")
+        assert [s["id"] for s in out] == ["r1", "f1", "rg1"]
+
+    @pytest.mark.asyncio
+    async def test_apps_never_reach_the_batched_filter(self, provider):
+        """filter_nodes_with_permission_role does not check Apps, and App access is
+        USER_APP_RELATION-based -- grading one with the record model would be wrong."""
+        self._with_visibility(provider, {"r1", "f1", "rg1"}, {"app1"})
+        await provider._filter_visible_breadcrumbs(self._trail(), "u1", "org1")
+
+        batched = provider.filter_nodes_with_permission_role.await_args.args[0]
+        assert all(n["type"] != "app" for n in batched)
+        # 'folder' is a record; the helper only understands record / recordGroup.
+        assert {n["type"] for n in batched} == {"record", "recordGroup"}
+        assert sorted(n["id"] for n in batched) == ["f1", "r1", "rg1"]
+
+    @pytest.mark.asyncio
+    async def test_empty_trail_short_circuits(self, provider):
+        provider.filter_nodes_with_permission_role = AsyncMock()
+        provider.get_knowledge_hub_node_access = AsyncMock()
+        assert await provider._filter_visible_breadcrumbs([], "u1", "org1") == []
+        provider.filter_nodes_with_permission_role.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_walk_result_is_filtered_and_reversed(self, provider):
+        """End-to-end through the public method: the walk is untouched, the filter runs
+        on its output, and the caller still gets root-first order."""
+        pages = [
+            [{"result": {"id": "r1", "name": "api.pdf", "nodeType": "record", "parentId": "f1"}}],
+            [{"result": {"id": "f1", "name": "Specs", "nodeType": "folder", "parentId": "app1"}}],
+            [{"result": {"id": "app1", "name": "Drive", "nodeType": "app", "parentId": None}}],
+        ]
+        provider.client.execute_query = AsyncMock(side_effect=pages)
+        self._with_visibility(provider, {"r1"}, {"app1"})
+
+        out = await provider.get_knowledge_hub_breadcrumbs("r1", "u1", "org1")
+        assert [s["id"] for s in out] == ["app1", "r1"]

@@ -547,6 +547,9 @@ class TestOnNewRecordGroupsAdvanced:
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         tx_store.get_user_by_email.return_value = None
+        # Model an email that belongs to nobody: no user, no existing person.
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
 
         rg = RecordGroup(
             external_group_id="ext-g1",
@@ -564,7 +567,12 @@ class TestOnNewRecordGroupsAdvanced:
 
         await proc.on_new_record_groups([(rg, [perm])])
 
-        proc.logger.warning.assert_called()
+        # bc2517dfb routed this through _resolve_principal: an email belonging to no
+        # user is now represented as a Person and keeps its permission edge, instead
+        # of being dropped with a warning.
+        tx_store.upsert_person_by_email.assert_awaited()
+        edges = tx_store.batch_create_edges.await_args.args[0]
+        assert edges[0]["from_collection"] == CollectionNames.PEOPLE.value
 
     @pytest.mark.asyncio
     async def test_group_permission_in_record_group(self):
@@ -812,6 +820,9 @@ class TestOnNewUserGroups:
 
         tx_store.get_user_by_email.return_value = None
         tx_store.get_user_group_by_external_id.return_value = None
+        # Model an email that belongs to nobody: no user, no existing person.
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
 
         ug = AppUserGroup(
             app_name=ConnectorsEnum.GOOGLE_MAIL,
@@ -830,9 +841,12 @@ class TestOnNewUserGroups:
 
         await proc.on_new_user_groups([(ug, [member])])
 
-        proc.logger.warning.assert_called()
-        # No permission edges created
-        tx_store.batch_create_edges.assert_not_awaited()
+        # bc2517dfb routed this through _resolve_principal: an email belonging to no
+        # user is now represented as a Person and keeps its permission edge, instead
+        # of being dropped with a warning.
+        tx_store.upsert_person_by_email.assert_awaited()
+        edges = tx_store.batch_create_edges.await_args.args[0]
+        assert edges[0]["from_collection"] == CollectionNames.PEOPLE.value
 
     @pytest.mark.asyncio
     async def test_updates_existing_user_group(self):

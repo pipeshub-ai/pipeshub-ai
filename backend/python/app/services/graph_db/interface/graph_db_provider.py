@@ -4114,17 +4114,25 @@ class IGraphDBProvider(ABC):
     async def get_knowledge_hub_breadcrumbs(
         self,
         node_id: str,
+        user_key: str,
+        org_id: str,
         transaction: str | None = None
     ) -> list[dict[str, Any]]:
         """
-        Get breadcrumb trail for a node.
+        Get breadcrumb trail for a node, filtered to what the caller can see.
+
+        Ancestors without a permission role are omitted and the walk continues past
+        them, so a node renders under its nearest visible ancestor -- matching where
+        browse shows it. Returns [] when the node itself is not visible.
 
         Args:
             node_id: Node ID to get breadcrumbs for
+            user_key: Graph user key; required, not optional
+            org_id: Organization ID for org scoping
             transaction: Optional transaction context
 
         Returns:
-            List of breadcrumb items from root to current node
+            List of visible breadcrumb items from root to current node
         """
         pass
 

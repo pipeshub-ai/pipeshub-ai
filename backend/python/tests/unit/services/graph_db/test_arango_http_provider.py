@@ -14714,7 +14714,13 @@ class TestGetKnowledgeHubBreadcrumbs:
                 [{"id": "app1", "name": "App", "nodeType": "app", "subType": "GOOGLE_DRIVE", "parentId": None}],
             ]
         )
-        result = await connected_provider.get_knowledge_hub_breadcrumbs("app1")
+        connected_provider.filter_nodes_with_permission_role = AsyncMock(
+            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
+        )
+        connected_provider.get_knowledge_hub_node_access = AsyncMock(
+            side_effect=lambda node_id, **k: {"id": node_id}
+        )
+        result = await connected_provider.get_knowledge_hub_breadcrumbs("app1", "u1", "org1")
         assert len(result) == 1
         assert result[0]["id"] == "app1"
 
@@ -14727,7 +14733,13 @@ class TestGetKnowledgeHubBreadcrumbs:
                 [{"id": "app1", "name": "App", "nodeType": "app", "subType": "GOOGLE_DRIVE", "parentId": None}],
             ]
         )
-        result = await connected_provider.get_knowledge_hub_breadcrumbs("r1")
+        connected_provider.filter_nodes_with_permission_role = AsyncMock(
+            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
+        )
+        connected_provider.get_knowledge_hub_node_access = AsyncMock(
+            side_effect=lambda node_id, **k: {"id": node_id}
+        )
+        result = await connected_provider.get_knowledge_hub_breadcrumbs("r1", "u1", "org1")
         assert len(result) == 3
         assert result[0]["nodeType"] == "app"
         assert result[2]["nodeType"] == "record"
@@ -14735,13 +14747,25 @@ class TestGetKnowledgeHubBreadcrumbs:
     @pytest.mark.asyncio
     async def test_node_not_found(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[None])
-        result = await connected_provider.get_knowledge_hub_breadcrumbs("missing")
+        connected_provider.filter_nodes_with_permission_role = AsyncMock(
+            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
+        )
+        connected_provider.get_knowledge_hub_node_access = AsyncMock(
+            side_effect=lambda node_id, **k: {"id": node_id}
+        )
+        result = await connected_provider.get_knowledge_hub_breadcrumbs("missing", "u1", "org1")
         assert result == []
 
     @pytest.mark.asyncio
     async def test_empty_result(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        result = await connected_provider.get_knowledge_hub_breadcrumbs("missing")
+        connected_provider.filter_nodes_with_permission_role = AsyncMock(
+            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
+        )
+        connected_provider.get_knowledge_hub_node_access = AsyncMock(
+            side_effect=lambda node_id, **k: {"id": node_id}
+        )
+        result = await connected_provider.get_knowledge_hub_breadcrumbs("missing", "u1", "org1")
         assert result == []
 
 
@@ -22356,3 +22380,61 @@ class TestArangoPersonMigrationAndReaper:
         calls = self._script(connected_provider, [0])
         await connected_provider.reap_stale_external_app_relations("c1")
         assert any("uar.isExternalUser == true" in q for q, _ in calls)
+
+
+class TestArangoBreadcrumbVisibilityFilter:
+    """Phase 8 -- Arango twin of TestBreadcrumbVisibilityFilter.
+
+    The helper is duplicated per provider (as the whole breadcrumbs walk already is), so
+    these assert the two behave identically rather than re-deriving the cases.
+    """
+
+    TRAIL = [
+        {"id": "r1", "name": "api.pdf", "nodeType": "record", "subType": "FILE"},
+        {"id": "f1", "name": "Specs", "nodeType": "folder", "subType": None},
+        {"id": "rg1", "name": "Engineering", "nodeType": "recordGroup", "subType": None},
+        {"id": "app1", "name": "Drive", "nodeType": "app", "subType": None},
+    ]
+
+    @staticmethod
+    def _with_visibility(provider, visible_non_app, visible_apps):
+        provider.filter_nodes_with_permission_role = AsyncMock(
+            return_value=set(visible_non_app)
+        )
+
+        async def node_access(node_id, user_key, org_id, folder_mime_types, transaction=None):
+            return {"id": node_id} if node_id in visible_apps else None
+
+        provider.get_knowledge_hub_node_access = AsyncMock(side_effect=node_access)
+
+    @pytest.mark.asyncio
+    async def test_skips_denied_ancestor_keeps_leaf(self, connected_provider):
+        self._with_visibility(connected_provider, {"r1"}, {"app1"})
+        out = await connected_provider._filter_visible_breadcrumbs(
+            [dict(s) for s in self.TRAIL], "u1", "org1"
+        )
+        assert [s["id"] for s in out] == ["r1", "app1"]
+
+    @pytest.mark.asyncio
+    async def test_invisible_leaf_returns_empty(self, connected_provider):
+        self._with_visibility(connected_provider, {"f1", "rg1"}, {"app1"})
+        assert await connected_provider._filter_visible_breadcrumbs(
+            [dict(s) for s in self.TRAIL], "u1", "org1"
+        ) == []
+
+    @pytest.mark.asyncio
+    async def test_denied_app_dropped(self, connected_provider):
+        self._with_visibility(connected_provider, {"r1", "f1", "rg1"}, set())
+        out = await connected_provider._filter_visible_breadcrumbs(
+            [dict(s) for s in self.TRAIL], "u1", "org1"
+        )
+        assert [s["id"] for s in out] == ["r1", "f1", "rg1"]
+
+    @pytest.mark.asyncio
+    async def test_apps_never_reach_the_batched_filter(self, connected_provider):
+        self._with_visibility(connected_provider, {"r1", "f1", "rg1"}, {"app1"})
+        await connected_provider._filter_visible_breadcrumbs(
+            [dict(s) for s in self.TRAIL], "u1", "org1"
+        )
+        batched = connected_provider.filter_nodes_with_permission_role.await_args.args[0]
+        assert {n["type"] for n in batched} == {"record", "recordGroup"}
