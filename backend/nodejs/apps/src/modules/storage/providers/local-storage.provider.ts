@@ -451,9 +451,9 @@ class LocalStorageAdapter implements StorageServiceInterface {
       unified = unified.slice(0, -1);
     }
     if (
+      !unified ||
       unified === '.' ||
       unified === './' ||
-      path.isAbsolute(filePath) ||
       path.isAbsolute(unified) ||
       /^[a-zA-Z]:/.test(unified)
     ) {
@@ -464,7 +464,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       throw new StorageValidationError('Invalid document path');
     }
 
-    const normalized = path.normalize(filePath);
+    const normalized = path.normalize(unified);
     const resolved = this.assertInsideMount(
       path.join(this.mountPath, normalized),
     );

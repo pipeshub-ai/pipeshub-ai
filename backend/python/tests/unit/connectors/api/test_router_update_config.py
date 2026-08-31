@@ -1381,6 +1381,7 @@ class TestDownloadFileErrorPaths:
         req.app.container = container
         req.app.state = MagicMock()
         req.app.state.connector_registry = MagicMock()
+        req.state.user = {"userId": "user-1", "orgId": "org-1"}
 
         return req, handler, graph_provider, connector_obj
 
@@ -1483,6 +1484,7 @@ class TestDownloadFileErrorPaths:
 
         req = MagicMock()
         req.app = MagicMock()
+        req.state.user = {"userId": "user-1", "orgId": "org-1"}
 
         with pytest.raises(HTTPException) as exc:
             await download_file(req, "org-1", "rec-1", "googledrive", "tok", handler, graph_provider)

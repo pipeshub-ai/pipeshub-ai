@@ -1148,7 +1148,8 @@ async def download_file(
         # re-checked here — the signed URL remains valid until it expires.
         caller = getattr(getattr(request, "state", None), "user", None)
         if caller is not None:
-            jwt_org = str(caller.get("orgId") or "").strip()
+            raw_org = caller.get("orgId") if hasattr(caller, "get") else None
+            jwt_org = raw_org.strip() if isinstance(raw_org, str) else ""
             if jwt_org and jwt_org != str(org_id or "").strip():
                 raise HTTPException(
                     status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"

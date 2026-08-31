@@ -1291,6 +1291,7 @@ class TestDownloadFileDeepPaths:
         req.app.container = container
         req.app.state = MagicMock()
         req.app.state.connector_registry = MagicMock()
+        req.state.user = {"userId": "u1", "orgId": "org-1"}
 
         return req, signed_url_handler, graph_provider, record
 
