@@ -1075,7 +1075,7 @@ async def askAIStream(
         "search_type": _search_type,
     })
 
-    stream = _generate_chat_stream_via_agent_loop(
+    original_stream = _generate_chat_stream_via_agent_loop(
         request=request,
         query_info=query_info,
         retrieval_service=retrieval_service,
@@ -1087,7 +1087,7 @@ async def askAIStream(
     use_cache = chat_mode in ("internal_search", "quick")
     
     if use_cache:
-        async def cached_or_live_stream():
+        async def cached_or_live_stream(base_stream):
             from app.services.cache.semantic_cache import SemanticCacheService, hash_filters
             from app.agents.agent_loop.protocol import frame, AGUIEventType
             import asyncio
@@ -1120,7 +1120,7 @@ async def askAIStream(
 
             # If no cache hit, run the live stream and accumulate text
             full_response_parts = []
-            async for chunk in stream:
+            async for chunk in base_stream:
                 yield chunk
                 if chunk.startswith("event: text_delta"):
                     try:
@@ -1140,10 +1140,12 @@ async def askAIStream(
                     )
                 )
 
-        stream = cached_or_live_stream()
+        final_stream = cached_or_live_stream(original_stream)
+    else:
+        final_stream = original_stream
 
     return StreamingResponse(
-        stream,
+        final_stream,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
