@@ -1094,12 +1094,17 @@ async def askAIStream(
             
             semantic_cache = SemanticCacheService(retrieval_service.vector_db_service)
             await semantic_cache.initialize()
-            filters_hash_val = hash_filters(query_info.filters)
+            cache_scope = {
+                "orgId": _chat_user.get("orgId"),
+                "userId": _chat_user.get("userId"),
+                "filters": query_info.filters,
+            }
+            filters_hash_val = hash_filters(cache_scope)
             
-            embedding_model = await retrieval_service.get_embedding_model_instance()
+            is_model_initialized = await retrieval_service.get_embedding_model_instance()
             query_vector = None
-            if embedding_model:
-                query_vector = await embedding_model.aembed_query(query_info.query)
+            if is_model_initialized and retrieval_service.dense_embeddings:
+                query_vector = await retrieval_service.dense_embeddings.aembed_query(query_info.query)
                 if query_vector:
                     cached_resp = await semantic_cache.get_cached_response(
                         query_info.query, query_vector, filters_hash_val
