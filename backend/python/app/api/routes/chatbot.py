@@ -232,7 +232,7 @@ async def get_config_service(request: Request) -> ConfigurationService:
 
 async def get_semantic_cache_service(request: Request):
     container: QueryAppContainer = request.app.container
-    return container.semantic_cache_service()
+    return await container.semantic_cache_service()
 
 
 async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1089,7 +1089,7 @@ async def askAIStream(
     )
 
     chat_mode = query_info.chatMode or "internal_search"
-    bypass_cache = bool(query_info.previousConversations) or bool(query_info.attachments) or (query_info.retrievalMode and query_info.retrievalMode != "default")
+    bypass_cache = bool(query_info.previousConversations) or bool(query_info.attachments) or (query_info.retrievalMode and query_info.retrievalMode.upper() != "HYBRID")
     use_cache = chat_mode in ("internal_search", "quick") and not bypass_cache
     
     if use_cache:
