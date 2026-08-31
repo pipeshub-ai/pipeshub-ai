@@ -7631,7 +7631,7 @@ export const getAllAgentConversations = async (
 
     // sharedWith Me Conversation
     const sharedWithMeFilter = {
-      ...buildAgentSharedWithMeFilter(req, userId, agentKey as string),
+      ...buildAgentSharedWithMeFilter(req, orgId, userId, agentKey as string),
       isArchived: { $ne: true },
     };
 

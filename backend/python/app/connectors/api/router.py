@@ -867,28 +867,78 @@ def _trim_connector_config(config: dict[str, Any]) -> dict[str, Any]:
 
     return trimmed_config
 
+def _caller_org_and_user(request: Request) -> tuple[str, str]:
+    user = getattr(getattr(request, "state", None), "user", None)
+    if user is None:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="Authentication required",
+        )
+    org_id = str(user.get("orgId") or "").strip()
+    user_id = str(user.get("userId") or "").strip()
+    if not org_id or not user_id:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="Authentication required",
+        )
+    return org_id, user_id
+
+
 @router.get("/api/v1/{org_id}/{user_id}/{connector}/record/{record_id}/signedUrl", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_signed_url(
+    request: Request,
     org_id: str,
     user_id: str,
     connector: str,
     record_id: str,
     signed_url_handler: SignedUrlHandler = Depends(Provide[ConnectorAppContainer.signed_url_handler]),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> dict:
-    """Get signed URL for a record"""
+    """Get signed URL for a record. Path org/user must match the JWT; the
+    caller must have ACL on a record that belongs to that org."""
     try:
-        additional_claims = {"connector": connector, "purpose": "file_processing"}
+        caller_org, caller_user = _caller_org_and_user(request)
+        if caller_org != str(org_id or "").strip() or caller_user != str(user_id or "").strip():
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
+
+        record = await graph_provider.get_record_by_id(record_id)
+        if not record:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
+        record_org = str(getattr(record, "org_id", "") or "").strip()
+        if record_org != caller_org:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
+
+        access = await graph_provider.check_record_access_with_details(
+            caller_user, caller_org, record_id
+        )
+        if not access:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
+
+        additional_claims = {
+            "connector": connector,
+            "purpose": "file_processing",
+            "org_id": caller_org,
+        }
 
         signed_url = await signed_url_handler.get_signed_url(
             record_id,
-            org_id,
-            user_id,
+            caller_org,
+            caller_user,
             additional_claims=additional_claims,
             connector=connector,
         )
-        # Return as JSON instead of plain text
         return {"signedUrl": signed_url}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting signed URL: {repr(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)) from e
@@ -1089,6 +1139,19 @@ async def download_file(
         )
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+
+        record_org = str(getattr(record, "org_id", "") or "").strip()
+        if not record_org or record_org != str(org_id or "").strip():
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
+        claims = getattr(payload, "additional_claims", None) or {}
+        if isinstance(claims, dict):
+            token_org = str(claims.get("org_id") or "").strip()
+            if token_org and token_org != record_org:
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+                )
 
         connector_id = record.connector_id
         # Get connector instance to check scope and existence

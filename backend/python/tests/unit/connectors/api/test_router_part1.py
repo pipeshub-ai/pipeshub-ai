@@ -1034,18 +1034,68 @@ class TestGetSignedUrl:
 
         handler = AsyncMock()
         handler.get_signed_url = AsyncMock(return_value="https://signed.url/file")
+        gp = AsyncMock()
+        gp.get_record_by_id = AsyncMock(return_value=_mock_record(org_id="org-1"))
+        gp.check_record_access_with_details = AsyncMock(return_value={"role": "READER"})
 
-        result = await get_signed_url("org-1", "user-1", "googledrive", "rec-1", handler)
+        result = await get_signed_url(
+            _mock_request(), "org-1", "user-1", "googledrive", "rec-1", handler, gp
+        )
         assert result["signedUrl"] == "https://signed.url/file"
+        handler.get_signed_url.assert_awaited_once()
+
+    async def test_path_org_mismatch_is_404(self):
+        from app.connectors.api.router import get_signed_url
+
+        handler = AsyncMock()
+        gp = AsyncMock()
+        with pytest.raises(HTTPException) as exc_info:
+            await get_signed_url(
+                _mock_request(), "org-a", "user-1", "drive", "rec-1", handler, gp
+            )
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        handler.get_signed_url.assert_not_called()
+
+    async def test_other_org_record_is_404(self):
+        from app.connectors.api.router import get_signed_url
+
+        handler = AsyncMock()
+        gp = AsyncMock()
+        gp.get_record_by_id = AsyncMock(return_value=_mock_record(org_id="org-a"))
+        with pytest.raises(HTTPException) as exc_info:
+            await get_signed_url(
+                _mock_request(), "org-1", "user-1", "drive", "rec-1", handler, gp
+            )
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        handler.get_signed_url.assert_not_called()
+
+    async def test_no_record_access_is_404(self):
+        from app.connectors.api.router import get_signed_url
+
+        handler = AsyncMock()
+        gp = AsyncMock()
+        gp.get_record_by_id = AsyncMock(return_value=_mock_record(org_id="org-1"))
+        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        with pytest.raises(HTTPException) as exc_info:
+            await get_signed_url(
+                _mock_request(), "org-1", "user-1", "drive", "rec-1", handler, gp
+            )
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        handler.get_signed_url.assert_not_called()
 
     async def test_error_raises_500(self):
         from app.connectors.api.router import get_signed_url
 
         handler = AsyncMock()
         handler.get_signed_url = AsyncMock(side_effect=Exception("fail"))
+        gp = AsyncMock()
+        gp.get_record_by_id = AsyncMock(return_value=_mock_record(org_id="org-1"))
+        gp.check_record_access_with_details = AsyncMock(return_value={"role": "READER"})
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_signed_url("org-1", "user-1", "drive", "rec-1", handler)
+            await get_signed_url(
+                _mock_request(), "org-1", "user-1", "drive", "rec-1", handler, gp
+            )
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
 
@@ -2951,6 +3001,46 @@ class TestDownloadFile:
         with pytest.raises(HTTPException) as exc_info:
             await download_file(request, "org-1", "rec-1", "drive", "tok", handler, gp)
         assert exc_info.value.status_code == HttpStatusCode.UNAUTHORIZED.value
+
+    async def test_record_org_mismatch_is_404(self):
+        from app.connectors.api.router import download_file
+
+        handler = MagicMock()
+        payload = MagicMock()
+        payload.record_id = "rec-1"
+        payload.user_id = "u1"
+        payload.additional_claims = {"org_id": "org-1"}
+        handler.validate_token = MagicMock(return_value=payload)
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"_key": "org-1"})
+        gp.get_record_by_id = AsyncMock(return_value=_mock_record(org_id="org-a"))
+
+        with pytest.raises(HTTPException) as exc_info:
+            await download_file(
+                _mock_request(), "org-1", "rec-1", "drive", "tok", handler, gp
+            )
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+
+    async def test_token_org_mismatch_is_404(self):
+        from app.connectors.api.router import download_file
+
+        handler = MagicMock()
+        payload = MagicMock()
+        payload.record_id = "rec-1"
+        payload.user_id = "u1"
+        payload.additional_claims = {"org_id": "org-b"}
+        handler.validate_token = MagicMock(return_value=payload)
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"_key": "org-1"})
+        gp.get_record_by_id = AsyncMock(return_value=_mock_record(org_id="org-1"))
+
+        with pytest.raises(HTTPException) as exc_info:
+            await download_file(
+                _mock_request(), "org-1", "rec-1", "drive", "tok", handler, gp
+            )
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     async def test_org_not_found_raises_404(self):
         from app.connectors.api.router import download_file

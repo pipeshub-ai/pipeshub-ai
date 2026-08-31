@@ -4004,9 +4004,15 @@ class TestServiceAccountAgentRoutes:
         from app.api.routes.agent import get_agent_internal
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock(), "config_service": AsyncMock()}
-        services["graph_provider"].get_agent = AsyncMock(return_value={"_key": "a1", "isServiceAccount": False})
+        services["graph_provider"].get_agent = AsyncMock(
+            return_value={"_key": "a1", "isServiceAccount": False, "createdBy": "ck1"}
+        )
+        services["graph_provider"].get_document = AsyncMock(
+            return_value={"userId": "u1", "orgId": "o1"}
+        )
 
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services):
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
             with pytest.raises(HTTPException) as exc:
                 await get_agent_internal(MagicMock(), "a1")
         assert exc.value.status_code == 403
@@ -4055,6 +4061,7 @@ class TestServiceAccountAgentRoutes:
         services["graph_provider"].get_document = AsyncMock(return_value={
             "_key": "creator-key-1",
             "userId": "creator-user-1",
+            "orgId": "o1",
             "email": "creator@example.com",
         })
 
@@ -4089,6 +4096,58 @@ class TestServiceAccountAgentRoutes:
         mock_cfg_path.assert_called_with("inst-1", "a1")
 
     @pytest.mark.asyncio
+    async def test_chat_stream_service_account_rejects_other_org_caller(self) -> None:
+        from app.api.routes.agent import AgentNotFoundError, chat_stream
+
+        services = {
+            "graph_provider": AsyncMock(),
+            "retrieval_service": MagicMock(),
+            "reranker_service": MagicMock(),
+            "config_service": AsyncMock(),
+            "logger": MagicMock(),
+            "llm": MagicMock(),
+        }
+        services["graph_provider"].get_agent = AsyncMock(return_value={
+            "_key": "sa-org-a",
+            "name": "A1",
+            "isServiceAccount": True,
+            "createdBy": "creator-key-1",
+            "knowledge": [],
+            "toolsets": [],
+            "models": ["mk1_mn1"],
+        })
+        services["graph_provider"].get_document = AsyncMock(return_value={
+            "_key": "creator-key-1",
+            "userId": "creator-user-1",
+            "orgId": "org-a",
+            "email": "creator@example.com",
+        })
+        services["config_service"].get_config = AsyncMock(return_value={"llm": []})
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=b'{"query":"hello"}')
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch(
+                 "app.api.routes.agent._get_user_context",
+                 return_value={"userId": "org-b-user", "orgId": "org-b", "email": "b@example.com"},
+             ), \
+             patch(
+                 "app.api.routes.agent._get_org_info",
+                 new_callable=AsyncMock,
+                 return_value={"orgId": "org-b", "accountType": "enterprise"},
+             ), \
+             patch(
+                 "app.api.routes.agent.get_llm_for_chat",
+                 new_callable=AsyncMock,
+                 return_value=(MagicMock(), {"isReasoning": True}, {}),
+             ):
+            with pytest.raises(AgentNotFoundError):
+                await chat_stream(request, "sa-org-a")
+
+        services["graph_provider"].check_agent_permission.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_get_agent_internal_success(self) -> None:
         """get_agent_internal returns 200 with isServiceAccount=True for a SA agent."""
         from app.api.routes.agent import get_agent_internal
@@ -4101,10 +4160,14 @@ class TestServiceAccountAgentRoutes:
             "config_service": config_service,
         }
         services["graph_provider"].get_agent = AsyncMock(
-            return_value={"_key": "a1", "isServiceAccount": True, "models": []}
+            return_value={"_key": "a1", "isServiceAccount": True, "models": [], "createdBy": "ck1"}
+        )
+        services["graph_provider"].get_document = AsyncMock(
+            return_value={"userId": "u1", "orgId": "o1"}
         )
 
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services):
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
             result = await get_agent_internal(MagicMock(), "a1")
 
         assert result.status_code == 200
@@ -4124,6 +4187,46 @@ class TestServiceAccountAgentRoutes:
             with pytest.raises(HTTPException) as exc:
                 await get_agent_internal(MagicMock(), "missing-agent")
         assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_get_agent_internal_other_org_service_account_is_404(self) -> None:
+        from app.api.routes.agent import AgentNotFoundError, get_agent_internal
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock(), "config_service": AsyncMock()}
+        services["graph_provider"].get_agent = AsyncMock(
+            return_value={"_key": "sa-org-a", "isServiceAccount": True, "createdBy": "ck1"}
+        )
+        services["graph_provider"].get_document = AsyncMock(
+            return_value={"userId": "creator", "orgId": "org-a"}
+        )
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch(
+                 "app.api.routes.agent._get_user_context",
+                 return_value={"userId": "org-b-user", "orgId": "org-b"},
+             ):
+            with pytest.raises(AgentNotFoundError):
+                await get_agent_internal(MagicMock(), "sa-org-a")
+
+    @pytest.mark.asyncio
+    async def test_get_agent_internal_other_org_user_agent_is_404_not_403(self) -> None:
+        from app.api.routes.agent import AgentNotFoundError, get_agent_internal
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock(), "config_service": AsyncMock()}
+        services["graph_provider"].get_agent = AsyncMock(
+            return_value={"_key": "user-org-a", "isServiceAccount": False, "createdBy": "ck1"}
+        )
+        services["graph_provider"].get_document = AsyncMock(
+            return_value={"userId": "creator", "orgId": "org-a"}
+        )
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch(
+                 "app.api.routes.agent._get_user_context",
+                 return_value={"userId": "org-b-user", "orgId": "org-b"},
+             ):
+            with pytest.raises(AgentNotFoundError):
+                await get_agent_internal(MagicMock(), "user-org-a")
 
     @pytest.mark.asyncio
     async def test_get_agent_no_permission_raises_404(self) -> None:

@@ -387,6 +387,7 @@ async def _enrich_user_info_for_service_account_agent_chat(
     agent: dict[str, Any],
     graph_provider: IGraphDBProvider,
     logger: Logger,
+    caller_org_id: str,
 ) -> dict[str, Any]:
     """
     Service-account agents are invoked with a synthetic JWT (e.g. Slack bot). Retrieval and
@@ -417,12 +418,38 @@ async def _enrich_user_info_for_service_account_agent_chat(
             status_code=500,
             detail="Agent creator is missing userId; cannot resolve knowledge permissions.",
         )
+    creator_org = str(creator_doc.get("orgId") or "").strip()
+    caller_org = str(caller_org_id or "").strip()
+    # This branch skips check_agent_permission; empty/mismatched org must not
+    # let a caller run retrieval as another tenant's creator.
+    if not creator_org or not caller_org or creator_org != caller_org:
+        raise AgentNotFoundError(str(agent.get("_key") or creator_key))
     synthetic = {
         "userId": str(creator_user_id),
-        "orgId": str(creator_doc.get("orgId") or "").strip(),
+        "orgId": creator_org,
         "email": (creator_doc.get("email") or "").strip(),
     }
     return await _enrich_user_info(synthetic, creator_doc)
+
+
+async def _assert_agent_belongs_to_caller_org(
+    agent: dict[str, Any],
+    graph_provider: IGraphDBProvider,
+    caller_org_id: str,
+    agent_id: str,
+) -> None:
+    """404 unless the agent's creator org matches the caller. Used before any
+    exists-vs-type distinction so other orgs cannot probe agent keys."""
+    creator_key = agent.get("createdBy")
+    caller_org = str(caller_org_id or "").strip()
+    if not creator_key or not caller_org:
+        raise AgentNotFoundError(agent_id)
+    creator_doc = await graph_provider.get_document(
+        str(creator_key), CollectionNames.USERS.value
+    )
+    creator_org = str((creator_doc or {}).get("orgId") or "").strip()
+    if not creator_org or creator_org != caller_org:
+        raise AgentNotFoundError(agent_id)
 
 
 async def _load_service_account_agent_for_chat(
@@ -436,7 +463,7 @@ async def _load_service_account_agent_for_chat(
     if not agent or not agent.get("isServiceAccount"):
         raise AgentNotFoundError(agent_id)
     enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
-        agent, graph_provider, logger
+        agent, graph_provider, logger, org_key
     )
     perm = {"can_edit": False, "can_share": False, "role": "viewer"}
     return agent, enriched_user_info, perm
@@ -2046,6 +2073,11 @@ async def get_agent_internal(request: Request, agent_id: str) -> JSONResponse:
         if not agent:
             raise AgentNotFoundError(agent_id)
 
+        org_key = _get_user_context(request)["orgId"]
+        await _assert_agent_belongs_to_caller_org(
+            agent, services["graph_provider"], org_key, agent_id
+        )
+
         # Guard: this internal route is exclusively for service account agents.
         if not agent.get("isServiceAccount"):
             raise HTTPException(
@@ -3175,7 +3207,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
             if is_service_account:
                 enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
-                    agent, graph_provider, logger
+                    agent, graph_provider, logger, org_key
                 )
                 enriched_user_info = await _resolve_service_account_caller_identity(
                     enriched_user_info, chat_query, user_context, graph_provider, logger,

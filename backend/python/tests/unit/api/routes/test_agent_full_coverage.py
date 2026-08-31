@@ -620,7 +620,7 @@ class TestEnrichUserInfoForServiceAccountChat:
         from app.api.routes.agent import _enrich_user_info_for_service_account_agent_chat
         with pytest.raises(HTTPException) as exc_info:
             await _enrich_user_info_for_service_account_agent_chat(
-                {}, AsyncMock(), MagicMock()
+                {}, AsyncMock(), MagicMock(), "o1"
             )
         assert exc_info.value.status_code == 500
         assert "createdBy" in exc_info.value.detail
@@ -632,7 +632,7 @@ class TestEnrichUserInfoForServiceAccountChat:
         gp.get_document = AsyncMock(return_value=None)
         with pytest.raises(HTTPException) as exc_info:
             await _enrich_user_info_for_service_account_agent_chat(
-                {"createdBy": "ck1"}, gp, MagicMock()
+                {"createdBy": "ck1"}, gp, MagicMock(), "o1"
             )
         assert exc_info.value.status_code == 500
         assert "creator" in exc_info.value.detail.lower()
@@ -644,7 +644,7 @@ class TestEnrichUserInfoForServiceAccountChat:
         gp.get_document = AsyncMock(return_value={"email": "a@b.com"})
         with pytest.raises(HTTPException) as exc_info:
             await _enrich_user_info_for_service_account_agent_chat(
-                {"createdBy": "ck1"}, gp, MagicMock()
+                {"createdBy": "ck1"}, gp, MagicMock(), "o1"
             )
         assert exc_info.value.status_code == 500
         assert "userId" in exc_info.value.detail
@@ -659,9 +659,39 @@ class TestEnrichUserInfoForServiceAccountChat:
         with patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock,
                    return_value={"userId": "u1", "email": "creator@co.com"}):
             result = await _enrich_user_info_for_service_account_agent_chat(
-                {"createdBy": "ck1"}, gp, MagicMock()
+                {"createdBy": "ck1"}, gp, MagicMock(), "o1"
             )
         assert result["userId"] == "u1"
+
+    @pytest.mark.asyncio
+    async def test_rejects_caller_from_another_org(self):
+        from app.api.routes.agent import (
+            AgentNotFoundError,
+            _enrich_user_info_for_service_account_agent_chat,
+        )
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={
+            "userId": "u1", "orgId": "org-a", "email": "creator@co.com"
+        })
+        with pytest.raises(AgentNotFoundError):
+            await _enrich_user_info_for_service_account_agent_chat(
+                {"createdBy": "ck1", "_key": "sa-1"}, gp, MagicMock(), "org-b"
+            )
+
+    @pytest.mark.asyncio
+    async def test_rejects_creator_missing_org(self):
+        from app.api.routes.agent import (
+            AgentNotFoundError,
+            _enrich_user_info_for_service_account_agent_chat,
+        )
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={
+            "userId": "u1", "email": "creator@co.com"
+        })
+        with pytest.raises(AgentNotFoundError):
+            await _enrich_user_info_for_service_account_agent_chat(
+                {"createdBy": "ck1"}, gp, MagicMock(), "o1"
+            )
 
 
 # ============================================================================
@@ -701,6 +731,17 @@ class TestLoadServiceAccountAgentForChat:
             )
         assert agent["isServiceAccount"] is True
         assert perm["role"] == "viewer"
+
+    @pytest.mark.asyncio
+    async def test_rejects_other_org(self):
+        from app.api.routes.agent import _load_service_account_agent_for_chat, AgentNotFoundError
+        gp = AsyncMock()
+        gp.get_agent = AsyncMock(return_value={"isServiceAccount": True, "createdBy": "ck1", "_key": "a1"})
+        gp.get_document = AsyncMock(return_value={
+            "userId": "u1", "orgId": "org-a", "email": "c@co.com"
+        })
+        with pytest.raises(AgentNotFoundError):
+            await _load_service_account_agent_for_chat("a1", "org-b", gp, MagicMock())
 
 
 # ============================================================================

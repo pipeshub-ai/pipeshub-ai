@@ -1339,11 +1339,13 @@ export const buildAgentConversationFilter = (
  */
 export const buildAgentSharedWithMeFilter = (
   req: any,
+  orgId: string,
   userId: string,
   agentKey: string,
 ) => {
   const filter: any = {
     agentKey,
+    orgId: new mongoose.Types.ObjectId(orgId),
     isDeleted: false,
     isShared: true,
     'sharedWith.userId': userId,

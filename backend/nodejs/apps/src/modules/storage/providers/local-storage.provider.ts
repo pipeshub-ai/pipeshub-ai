@@ -415,11 +415,34 @@ class LocalStorageAdapter implements StorageServiceInterface {
   }
 
   private sanitizePath(filePath: string): string {
-    // Remove any parent directory references for security
-    const normalizedPath = path
-      .normalize(filePath)
-      .replace(/^(\.\.[\/\\])+/, '');
-    return normalizedPath;
+    if (!filePath || filePath.includes('\0')) {
+      throw new StorageValidationError('Invalid document path');
+    }
+
+    const unified = filePath.replace(/\\/g, '/');
+    if (
+      path.isAbsolute(filePath) ||
+      path.isAbsolute(unified) ||
+      /^[a-zA-Z]:/.test(unified)
+    ) {
+      throw new StorageValidationError('Invalid document path');
+    }
+
+    if (unified.split('/').some((segment) => segment === '..')) {
+      throw new StorageValidationError('Invalid document path');
+    }
+
+    const normalized = path.normalize(filePath);
+    const mountRoot = path.resolve(this.mountPath);
+    const resolved = path.resolve(this.mountPath, normalized);
+    const prefix = mountRoot.endsWith(path.sep)
+      ? mountRoot
+      : `${mountRoot}${path.sep}`;
+    if (resolved !== mountRoot && !resolved.startsWith(prefix)) {
+      throw new StorageValidationError('Invalid document path');
+    }
+
+    return path.relative(mountRoot, resolved);
   }
 }
 

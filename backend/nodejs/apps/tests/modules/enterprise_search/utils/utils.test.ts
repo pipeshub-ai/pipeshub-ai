@@ -1106,28 +1106,29 @@ describe('Enterprise Search Utils', () => {
   describe('buildAgentSharedWithMeFilter', () => {
     it('should build shared agent filter', () => {
       const req = createMockRequest()
-      const result = buildAgentSharedWithMeFilter(req, VALID_OID, 'agent-key-1')
+      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-key-1')
 
       expect(result).to.have.property('agentKey', 'agent-key-1')
       expect(result).to.have.property('isDeleted', false)
       expect(result).to.have.property('isShared', true)
+      expect(result.orgId.toString()).to.equal(VALID_OID2)
     })
 
     it('should include status filter when provided', () => {
       const req = createMockRequest({ query: { status: 'Complete' } })
-      const result = buildAgentSharedWithMeFilter(req, VALID_OID, 'agent-key-1')
+      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-key-1')
       expect(result).to.have.property('status', 'Complete')
     })
 
     it('should include isArchived filter when provided', () => {
       const req = createMockRequest({ query: { isArchived: 'true' } })
-      const result = buildAgentSharedWithMeFilter(req, VALID_OID, 'agent-key-1')
+      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-key-1')
       expect(result).to.have.property('isArchived', true)
     })
 
     it('should set isArchived to false when value is not true', () => {
       const req = createMockRequest({ query: { isArchived: 'false' } })
-      const result = buildAgentSharedWithMeFilter(req, VALID_OID, 'agent-key-1')
+      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-key-1')
       expect(result).to.have.property('isArchived', false)
     })
   })
@@ -3072,41 +3073,49 @@ describe('Enterprise Search Utils - coverage', () => {
   describe('buildAgentSharedWithMeFilter', () => {
     it('should build basic shared with me filter', () => {
       const req = createMockRequest({ query: {} })
-      const result = buildAgentSharedWithMeFilter(req, VALID_OID, 'agent-1')
+      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-1')
       expect(result.agentKey).to.equal('agent-1')
       expect(result.isDeleted).to.be.false
       expect(result.isShared).to.be.true
       expect(result['sharedWith.userId']).to.equal(VALID_OID)
+      expect(result.orgId.toString()).to.equal(VALID_OID2)
     })
 
     it('should add status filter when provided', () => {
       const req = createMockRequest({ query: { status: 'complete' } })
-      const result = buildAgentSharedWithMeFilter(req, VALID_OID, 'agent-1')
+      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-1')
       expect(result.status).to.equal('complete')
     })
 
     it('should not add status filter when not provided', () => {
       const req = createMockRequest({ query: {} })
-      const result = buildAgentSharedWithMeFilter(req, VALID_OID, 'agent-1')
+      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-1')
       expect(result.status).to.be.undefined
     })
 
     it('should add isArchived filter when true', () => {
       const req = createMockRequest({ query: { isArchived: 'true' } })
-      const result = buildAgentSharedWithMeFilter(req, VALID_OID, 'agent-1')
+      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-1')
       expect(result.isArchived).to.be.true
     })
 
     it('should add isArchived filter when false', () => {
       const req = createMockRequest({ query: { isArchived: 'false' } })
-      const result = buildAgentSharedWithMeFilter(req, VALID_OID, 'agent-1')
+      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-1')
       expect(result.isArchived).to.be.false
     })
 
     it('should not add isArchived filter when not provided', () => {
       const req = createMockRequest({ query: {} })
-      const result = buildAgentSharedWithMeFilter(req, VALID_OID, 'agent-1')
+      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-1')
       expect(result.isArchived).to.be.undefined
+    })
+
+    it('should scope shared-with-me to the caller org', () => {
+      const req = createMockRequest({ query: {} })
+      const result = buildAgentSharedWithMeFilter(req, VALID_OID2, VALID_OID, 'agent-1')
+      expect(result.orgId.toString()).to.equal(VALID_OID2)
+      expect(result.orgId.toString()).to.not.equal(VALID_OID)
     })
   })
 
