@@ -12,10 +12,8 @@ from app.config.constants.arangodb import EventTypes, MimeTypes, ProgressStatus
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.sync.task_manager import (
-    reindex_task_manager,
-    sync_task_manager,
-)
+from app.connectors.core.sync.sync_coordinator import get_coordinator
+from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.connectors.services.kafka_service import KafkaService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import Topic
@@ -206,7 +204,8 @@ async def assert_no_indexing_in_flight(
     same VRID can interleave their delete-then-upsert and leave duplicates. There
     is no ordering between the two paths, so the only safe answer is to decline.
     """
-    running_syncs = sync_task_manager.active_keys()
+    coordinator = get_coordinator()
+    running_syncs = coordinator.active_keys() if coordinator is not None else []
     if running_syncs:
         raise VectorStoreRebuildConflictError(
             "Connector sync is running "

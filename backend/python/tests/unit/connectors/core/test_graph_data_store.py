@@ -123,6 +123,47 @@ class TestGraphTransactionStore:
         return GraphTransactionStore(mock_graph_provider, "txn-123")
 
     @pytest.mark.asyncio
+    async def test_repeated_group_lookup_hits_the_database_once(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        """One batch is 100 records from one connector sharing one group."""
+        mock_graph_provider.get_record_group_by_external_id = AsyncMock(
+            return_value=MagicMock()
+        )
+
+        for _ in range(5):
+            await tx_store.get_record_group_by_external_id("conn-1", "bucket-1")
+
+        assert mock_graph_provider.get_record_group_by_external_id.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_miss_is_not_cached(self, tx_store, mock_graph_provider) -> None:
+        """The group is created moments later; caching the miss would hide it."""
+        mock_graph_provider.get_record_group_by_external_id = AsyncMock(return_value=None)
+
+        await tx_store.get_record_group_by_external_id("conn-1", "bucket-1")
+        await tx_store.get_record_group_by_external_id("conn-1", "bucket-1")
+
+        assert mock_graph_provider.get_record_group_by_external_id.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_deleting_a_record_drops_it_from_the_cache(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        """A stale positive would report something that is gone."""
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=MagicMock())
+        mock_graph_provider.delete_record_by_external_id = AsyncMock()
+
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+        assert mock_graph_provider.get_record_by_external_id.await_count == 1
+
+        await tx_store.delete_record_by_external_id("conn-1", "ext-1", "user-1")
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        assert mock_graph_provider.get_record_by_external_id.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_commit(self, tx_store, mock_graph_provider) -> None:
         await tx_store.commit()
         mock_graph_provider.commit_transaction.assert_awaited_once_with("txn-123")

@@ -325,6 +325,7 @@ export function InstanceManagementPanel() {
               statsLoading={statsLoading}
               connectorConfig={instanceConfig}
               localSyncStatus={localSyncStatus}
+              nestedModalHost={nestedModalHost}
             />
           </Tabs.Content>
           <Tabs.Content value="settings">

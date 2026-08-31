@@ -2,7 +2,12 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { Kafka } from 'kafkajs';
-import { KafkaAdminService, REQUIRED_KAFKA_TOPICS, ensureKafkaTopicsExist } from '../../../src/libs/services/kafka-admin.service';
+import {
+  KafkaAdminService,
+  REQUIRED_KAFKA_TOPICS,
+  REQUIRED_TOPICS,
+  ensureKafkaTopicsExist,
+} from '../../../src/libs/services/kafka-admin.service';
 import { createMockLogger } from '../../helpers/mock-logger';
 
 describe('KafkaAdminService', () => {
@@ -29,7 +34,7 @@ describe('KafkaAdminService', () => {
   describe('REQUIRED_KAFKA_TOPICS', () => {
     it('should have expected topics', () => {
       expect(REQUIRED_KAFKA_TOPICS).to.be.an('array');
-      const topicNames = REQUIRED_KAFKA_TOPICS.map(t => t.topic);
+      const topicNames = REQUIRED_KAFKA_TOPICS.map((t) => t.topic);
       expect(topicNames).to.include('record-events');
       expect(topicNames).to.include('entity-events');
       expect(topicNames).to.include('ai-config-events');
@@ -39,7 +44,14 @@ describe('KafkaAdminService', () => {
 
     it('should have partition and replication config', () => {
       for (const topic of REQUIRED_KAFKA_TOPICS) {
-        expect(topic.numPartitions).to.equal(1);
+        // sync-events is deliberately wider: Kafka gives a partition to
+        // exactly one consumer in a group, so a single one would pin every
+        // sync to a single executor.
+        if (topic.topic === 'sync-events') {
+          expect(topic.numPartitions).to.be.greaterThan(1);
+        } else {
+          expect(topic.numPartitions).to.equal(1);
+        }
         expect(topic.replicationFactor).to.equal(1);
       }
     });
@@ -71,7 +83,7 @@ describe('KafkaAdminService', () => {
     });
 
     it('should skip creation when all topics exist', async () => {
-      mockAdmin.listTopics.resolves(REQUIRED_KAFKA_TOPICS.map(t => t.topic));
+      mockAdmin.listTopics.resolves(REQUIRED_KAFKA_TOPICS.map((t) => t.topic));
       const config = { brokers: ['localhost:9092'] };
       const service = new KafkaAdminService(config, mockLogger);
       await service.ensureTopicsExist(REQUIRED_KAFKA_TOPICS);
@@ -115,12 +127,14 @@ describe('KafkaAdminService', () => {
       const service = new KafkaAdminService(config, mockLogger);
       try {
         await service.ensureTopicsExist();
-      } catch (_e) { /* expected */ }
+      } catch (_e) {
+        /* expected */
+      }
       expect(mockAdmin.disconnect.calledOnce).to.be.true;
     });
 
     it('should handle disconnect error gracefully', async () => {
-      mockAdmin.listTopics.resolves(REQUIRED_KAFKA_TOPICS.map(t => t.topic));
+      mockAdmin.listTopics.resolves(REQUIRED_KAFKA_TOPICS.map((t) => t.topic));
       mockAdmin.disconnect.rejects(new Error('disconnect failed'));
       const config = { brokers: ['localhost:9092'] };
       const service = new KafkaAdminService(config, mockLogger);
@@ -167,7 +181,6 @@ describe('KafkaAdminService', () => {
       expect(createCall.topics[0].numPartitions).to.equal(3);
       expect(createCall.topics[0].replicationFactor).to.equal(2);
     });
-
   });
 
   describe('listTopics', () => {
@@ -204,21 +217,111 @@ describe('KafkaAdminService', () => {
     it('should pass custom topics', async () => {
       mockAdmin.listTopics.resolves([]);
       const kafkaConfig = { brokers: ['localhost:9092'] };
-      const customTopics = [{ topic: 'custom-topic', numPartitions: 3, replicationFactor: 2 }];
+      const customTopics = [
+        { topic: 'custom-topic', numPartitions: 3, replicationFactor: 2 },
+      ];
       await ensureKafkaTopicsExist(kafkaConfig, mockLogger, customTopics);
       const createCall = mockAdmin.createTopics.firstCall.args[0];
       expect(createCall.topics[0]!.topic).to.equal('custom-topic');
     });
 
     it('should pass ssl and sasl config', async () => {
-      mockAdmin.listTopics.resolves(REQUIRED_KAFKA_TOPICS.map(t => t.topic));
+      mockAdmin.listTopics.resolves(REQUIRED_KAFKA_TOPICS.map((t) => t.topic));
       const kafkaConfig = {
         brokers: ['localhost:9092'],
         ssl: true,
-        sasl: { mechanism: 'plain' as const, username: 'user', password: 'pass' },
+        sasl: {
+          mechanism: 'plain' as const,
+          username: 'user',
+          password: 'pass',
+        },
       };
       await ensureKafkaTopicsExist(kafkaConfig, mockLogger);
       // Should complete without error
+    });
+  });
+
+  describe('sync-events partitioning', () => {
+    /**
+     * Kafka gives each partition to exactly one consumer in a group, so with a
+     * single partition one executor gets every sync event and the rest idle.
+     * This is invisible on Redis Streams, which is a shared queue, so the
+     * partition count is the whole of multi-worker sync on Kafka.
+     */
+    const syncEvents = () =>
+      REQUIRED_TOPICS.find((t: any) => t.topic === 'sync-events') as any;
+
+    it('asks for more than one partition for sync-events', () => {
+      expect(syncEvents().numPartitions).to.be.greaterThan(1);
+    });
+
+    it('leaves every other topic on a single partition', () => {
+      const others = REQUIRED_TOPICS.filter(
+        (t: any) => t.topic !== 'sync-events',
+      );
+      expect(others.length).to.be.greaterThan(0);
+      others.forEach((t: any) => expect(t.numPartitions).to.equal(1));
+    });
+
+    it('widens a topic that already exists with too few partitions', async () => {
+      mockAdmin.listTopics.resolves(REQUIRED_TOPICS.map((t: any) => t.topic));
+      mockAdmin.fetchTopicMetadata.resolves({
+        topics: [{ name: 'sync-events', partitions: [{ partitionId: 0 }] }],
+      });
+      mockAdmin.createPartitions = sinon.stub().resolves();
+
+      const svc = new KafkaAdminService(
+        { brokers: ['localhost:9092'] } as any,
+        mockLogger,
+      );
+      await svc.ensureTopicsExist(REQUIRED_TOPICS as any);
+
+      expect(mockAdmin.createPartitions.calledOnce).to.be.true;
+      const arg = mockAdmin.createPartitions.firstCall.args[0];
+      expect(arg.topicPartitions[0].topic).to.equal('sync-events');
+      expect(arg.topicPartitions[0].count).to.equal(syncEvents().numPartitions);
+    });
+
+    it('leaves a topic that is already wide enough alone', async () => {
+      const wanted = syncEvents().numPartitions;
+      mockAdmin.listTopics.resolves(REQUIRED_TOPICS.map((t: any) => t.topic));
+      mockAdmin.fetchTopicMetadata.resolves({
+        topics: [
+          {
+            name: 'sync-events',
+            partitions: Array.from({ length: wanted }, (_, i) => ({
+              partitionId: i,
+            })),
+          },
+        ],
+      });
+      mockAdmin.createPartitions = sinon.stub().resolves();
+
+      const svc = new KafkaAdminService(
+        { brokers: ['localhost:9092'] } as any,
+        mockLogger,
+      );
+      await svc.ensureTopicsExist(REQUIRED_TOPICS as any);
+
+      expect(mockAdmin.createPartitions.called).to.be.false;
+    });
+
+    it('starting up matters more than the extra parallelism', async () => {
+      // A cluster that refuses the widening should still let the app boot.
+      mockAdmin.listTopics.resolves(REQUIRED_TOPICS.map((t: any) => t.topic));
+      mockAdmin.fetchTopicMetadata.rejects(new Error('broker unavailable'));
+
+      const svc = new KafkaAdminService(
+        { brokers: ['localhost:9092'] } as any,
+        mockLogger,
+      );
+      let threw = false;
+      try {
+        await svc.ensureTopicsExist(REQUIRED_TOPICS as any);
+      } catch {
+        threw = true;
+      }
+      expect(threw, 'a failed widening must not stop startup').to.be.false;
     });
   });
 });

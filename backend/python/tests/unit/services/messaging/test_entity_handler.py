@@ -646,9 +646,10 @@ class TestAppDisabled:
         svc = _make_entity_service(graph_provider=graph_provider)
 
         with patch(
-            "app.services.messaging.kafka.handlers.entity.sync_task_manager"
-        ) as mock_stm:
-            mock_stm.cancel_sync = AsyncMock()
+            "app.services.messaging.kafka.handlers.entity.get_coordinator"
+        ) as _gc_mock_stm:
+            mock_stm = _gc_mock_stm.return_value
+            mock_stm.request_stop = AsyncMock()
             payload = {
                 "orgId": "org-1",
                 "apps": ["GoogleDrive"],
@@ -662,8 +663,9 @@ class TestAppDisabled:
             app_data = call_args[0][0][0]
             assert app_data["isActive"] is False
 
-            # Sync should be cancelled
-            mock_stm.cancel_sync.assert_awaited_once_with("conn-1")
+            # Stop is requested without awaiting the unwind: this runs on the
+            # serial entity consumer, so waiting would stall every later event.
+            mock_stm.request_stop.assert_awaited_once_with("conn-1")
 
     @pytest.mark.asyncio
     async def test_missing_org_id_returns_false(self):
@@ -704,7 +706,7 @@ class TestAppDisabled:
 
     @pytest.mark.asyncio
     async def test_cancel_sync_failure_does_not_fail_overall(self):
-        """Even if cancel_sync fails, the overall operation should succeed."""
+        """Even if requesting the stop fails, the overall operation succeeds."""
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(
             return_value={
@@ -720,9 +722,10 @@ class TestAppDisabled:
         svc = _make_entity_service(graph_provider=graph_provider)
 
         with patch(
-            "app.services.messaging.kafka.handlers.entity.sync_task_manager"
-        ) as mock_stm:
-            mock_stm.cancel_sync = AsyncMock(
+            "app.services.messaging.kafka.handlers.entity.get_coordinator"
+        ) as _gc_mock_stm:
+            mock_stm = _gc_mock_stm.return_value
+            mock_stm.request_stop = AsyncMock(
                 side_effect=Exception("cancel failed")
             )
             payload = {
@@ -1001,14 +1004,16 @@ class TestHandleAppDisabledExtended:
         )
         svc.graph_provider.batch_upsert_nodes = AsyncMock()
 
-        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as mock_stm:
-            mock_stm.cancel_sync = AsyncMock()
+        with patch("app.services.messaging.kafka.handlers.entity.get_coordinator") as _gc_mock_stm:
+
+            mock_stm = _gc_mock_stm.return_value
+            mock_stm.request_stop = AsyncMock()
             result = await svc.process_event(
                 "appDisabled",
                 {"orgId": "org-1", "apps": ["Gmail"], "connectorId": "c1"},
             )
             assert result is True
-            mock_stm.cancel_sync.assert_awaited_once_with("c1")
+            mock_stm.request_stop.assert_awaited_once_with("c1")
 
     @pytest.mark.asyncio
     async def test_app_disabled_cancel_sync_exception(self):
@@ -1023,8 +1028,10 @@ class TestHandleAppDisabledExtended:
         )
         svc.graph_provider.batch_upsert_nodes = AsyncMock()
 
-        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as mock_stm:
-            mock_stm.cancel_sync = AsyncMock(
+        with patch("app.services.messaging.kafka.handlers.entity.get_coordinator") as _gc_mock_stm:
+
+            mock_stm = _gc_mock_stm.return_value
+            mock_stm.request_stop = AsyncMock(
                 side_effect=Exception("cancel failed")
             )
             result = await svc.process_event(

@@ -13,6 +13,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    deterministic_record_id,
     PERMISSION_HIERARCHY,
     DataSourceEntitiesProcessor,
     RecordGroupWithPermissions,
@@ -448,10 +449,15 @@ class TestOnNewRecords:
 
         await proc.on_new_records([(record, [])])
 
+        # A new record's id is derived from (connector_id, external_record_id),
+        # not taken from the caller, so two processes converge on one key.
+        expected = deterministic_record_id(
+            record.connector_id, record.external_record_id
+        )
         proc.messaging_producer.send_messages.assert_awaited_once()
         topic, messages = proc.messaging_producer.send_messages.await_args.args
         assert topic == "record-events"
-        assert [key for key, _ in messages] == ["rec-1"]
+        assert [key for key, _ in messages] == [expected]
 
     @pytest.mark.asyncio
     async def test_auto_index_off_skips_publish(self):
@@ -666,7 +672,7 @@ class TestOnRecordContentUpdate:
         # conditional swap - never written ahead of the publish.
         proc.messaging_producer.send_message.assert_awaited()
         proc.data_store_provider.compare_and_set_indexing_status.assert_awaited_once_with(
-            ["rec-1"],
+            [deterministic_record_id(record.connector_id, record.external_record_id)],
             ProgressStatus.NOT_STARTED.value,
             ProgressStatus.QUEUED.value,
         )
@@ -1577,17 +1583,37 @@ class TestLinkRecordToGroup:
         tx_store.create_inherit_permissions_relation_record_group.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_deletes_inherit_when_no_inherit(self):
-        """Deletes inherit permissions edge when inherit is False."""
+    async def test_deletes_inherit_when_no_inherit_on_an_existing_record(self):
+        """Deletes the inherit-permissions edge when inherit is turned off."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         record = _make_record()
         record.id = "rec-1"
         record.inherit_permissions = False
 
-        await proc._link_record_to_group(record, "group-1", tx_store)
+        existing = _make_record()
+        existing.id = "rec-1"
+
+        await proc._link_record_to_group(record, "group-1", tx_store, existing)
 
         tx_store.delete_inherit_permissions_relation_record_group.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_inherit_delete_for_a_brand_new_record(self):
+        """A record created moments ago has no edge to remove.
+
+        Issuing the delete anyway cost one round trip per record on the hot path
+        of every full sync — measured at one seventh of all graph traffic.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        record = _make_record()
+        record.id = "rec-1"
+        record.inherit_permissions = False
+
+        await proc._link_record_to_group(record, "group-1", tx_store, None)
+
+        tx_store.delete_inherit_permissions_relation_record_group.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_deletes_old_group_edge_when_group_changed(self):

@@ -23,6 +23,49 @@ from app.connectors.services.event_service import EventService
 # ---------------------------------------------------------------------------
 
 
+def _spawned(key, coro):
+    """Stand-in for start_if_idle: owns the coroutine, returns a live task."""
+    coro.close()
+    return MagicMock()
+
+
+class _StubLeaseManager:
+    """A coordinator that always admits, so tests written before admission
+    existed keep asserting their original behaviour without wiring Redis."""
+
+    def __init__(self) -> None:
+        self.spawn = AsyncMock(return_value=MagicMock(name="task"))
+        self.is_running_here = MagicMock(return_value=False)
+        self.is_running = AsyncMock(return_value=False)
+        self.cancel_and_wait = AsyncMock()
+        self.request_stop = AsyncMock(return_value=False)
+        self.reports_liveness = False
+
+    async def try_claim_org(self, org_id) -> bool:
+        return True
+
+    async def begin(self, connector_id, *, org_id=None, message_ts_ms=None):
+        from app.connectors.core.sync.sync_coordinator import Admission, SyncLease
+
+        return Admission.GRANTED, SyncLease(connector_id, "stub-token", 1)
+
+    async def end(self, lease) -> bool:
+        return True
+
+    def running_count(self) -> int:
+        return 0
+
+
+@pytest.fixture(autouse=True)
+def stub_lease_manager():
+    manager = _StubLeaseManager()
+    with patch(
+        "app.connectors.services.event_service.get_coordinator",
+        return_value=manager,
+    ):
+        yield manager
+
+
 @pytest.fixture
 def mock_logger():
     return MagicMock(spec=logging.Logger)
@@ -102,7 +145,7 @@ class TestProcessEventDeleteAction:
 
 class TestSyncPointDeletionException:
     @pytest.mark.asyncio
-    async def test_sync_point_deletion_exception_continues(self, service):
+    async def test_sync_point_deletion_exception_continues(self, service, stub_lease_manager):
         """Exception during sync point deletion logs error and continues sync."""
         mock_conn = AsyncMock()
         mock_conn.run_sync = AsyncMock()
@@ -116,8 +159,7 @@ class TestSyncPointDeletionException:
 
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
-             patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
-            mock_stm.start_sync = AsyncMock()
+             patch.object(stub_lease_manager, "spawn", AsyncMock(side_effect=_spawned)):
 
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1",
@@ -351,9 +393,7 @@ class TestHandleDelete:
             "deleted_records_count": 2,
         })
 
-        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm, \
-             patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
-            mock_stm.cancel_sync = AsyncMock()
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
             mock_rtm.cancel_by_prefix = AsyncMock()
 
             result = await service._handle_delete("gmail", {
@@ -373,9 +413,7 @@ class TestHandleDelete:
             "error": "test failure",
         })
 
-        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm, \
-             patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
-            mock_stm.cancel_sync = AsyncMock()
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
             mock_rtm.cancel_by_prefix = AsyncMock()
 
             result = await service._handle_delete("gmail", {

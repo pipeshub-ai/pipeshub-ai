@@ -242,13 +242,33 @@ class MessagingUtils:
     @staticmethod
     async def create_sync_consumer_config(
         app_container: ConnectorAppContainer,
+        client_id: str | None = None,
     ) -> KafkaConsumerConfig | RedisStreamsConfig:
-        return await MessagingUtils.create_consumer_config(
+        """Sync-events consumer config.
+
+        ``client_id`` must be distinct per consumer and stable across restarts.
+        Redis Streams keys the pending-entries list by consumer name, so N
+        consumers sharing one name means each reads *every* other's in-flight
+        message on boot, and XAUTOCLAIM can never reclaim from a crashed one
+        because it skips same-name entries. The group id stays shared — that is
+        what gives each message exactly one consumer.
+        """
+        config = await MessagingUtils.create_consumer_config(
             app_container,
-            "sync_consumer_client",
+            client_id or "sync_consumer_client",
             "sync_consumer_group",
             [Topic.SYNC_EVENTS.value],
         )
+        if isinstance(config, RedisStreamsConfig):
+            # One at a time, or a single consumer grabs a batch and the capacity
+            # gate has nothing left to hand the idle ones.
+            config.batch_size = 1
+        else:
+            # A sync outlives its message by minutes. Auto-commit would let an
+            # offset be committed for a message whose sync then dies, losing it
+            # with no redelivery.
+            config.enable_auto_commit = False
+        return config
 
     @staticmethod
     async def create_record_consumer_config(
