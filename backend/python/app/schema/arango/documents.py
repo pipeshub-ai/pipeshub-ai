@@ -160,6 +160,8 @@ app_schema = {
             "vectorMembershipBackfillAfterKey": {"type": ["string", "null"]},
             "vectorMembershipBackfillFailures": {"type": ["integer", "null"]},
             "vectorMembershipBackfillAttempts": {"type": ["integer", "null"]},
+            "vectorMembershipBackfillVrids": {"type": ["integer", "null"]},
+            "vectorMembershipBackfillExhausted": {"type": ["boolean", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},

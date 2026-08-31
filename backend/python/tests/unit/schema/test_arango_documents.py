@@ -237,6 +237,26 @@ class TestAppSchemaVectorMembership:
             )
         )
 
+    def test_accepts_the_payload_the_backfill_writer_emits(self):
+        """The schema has to accept exactly what the backfill scanner PATCHes."""
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        validator.validate(
+            _valid_app_doc(
+                vectorMembershipBackfilled=True,
+                vectorMembershipBackfillAfterKey=None,
+                vectorMembershipBackfillFailures=0,
+                vectorMembershipBackfillAttempts=0,
+                vectorMembershipBackfillVrids=12,
+                vectorMembershipBackfillExhausted=False,
+            )
+        )
+        validator.validate(
+            _valid_app_doc(
+                vectorMembershipBackfillAfterKey="rec-9",
+                vectorMembershipBackfillVrids=50,
+            )
+        )
+
     def test_backfill_flag_defaults_false(self):
         flag = documents.app_schema["rule"]["properties"]["vectorMembershipBackfilled"]
         assert flag["type"] == "boolean"
