@@ -4370,7 +4370,7 @@ class TestPersonMigrationAndReaper:
             {"mode": "migrated", "moved_permissions": 3, "moved_app_relations": 1}
         ]
         assert (
-            await mocked.migrate_person_to_user("A@Corp.com", "user-1")
+            await mocked.migrate_person_to_user("A@Corp.com", "user-1", "org-1")
             == PersonMigrationMode.MIGRATED
         )
 
@@ -4382,7 +4382,7 @@ class TestPersonMigrationAndReaper:
             {"mode": "split", "moved_permissions": 2, "moved_app_relations": 1}
         ]
         assert (
-            await mocked.migrate_person_to_user("a@corp.com", "user-1")
+            await mocked.migrate_person_to_user("a@corp.com", "user-1", "org-1")
             == PersonMigrationMode.SPLIT
         )
 
@@ -4391,15 +4391,25 @@ class TestPersonMigrationAndReaper:
         """The ordinary case for anyone who was never an external collaborator. It must
         not look like a failure -- both call sites run on every new user."""
         mocked.client.execute_query.return_value = []
-        assert await mocked.migrate_person_to_user("a@corp.com", "user-1") is None
+        assert await mocked.migrate_person_to_user("a@corp.com", "user-1", "org-1") is None
 
     @pytest.mark.asyncio
     async def test_migration_matches_person_on_lowercased_email(self, mocked):
         """Person.email is normalised at rest (Phase 1), so an exact match against a
         mixed-case address would silently find nothing and skip the migration."""
         mocked.client.execute_query.return_value = [{"mode": "migrated"}]
-        await mocked.migrate_person_to_user("Mixed@Case.COM", "user-1")
+        await mocked.migrate_person_to_user("Mixed@Case.COM", "user-1", "org-1")
         assert self._params_of(mocked.client)["email"] == "mixed@case.com"
+
+    @pytest.mark.asyncio
+    async def test_migration_matches_person_on_org_id(self, mocked):
+        """Person is org-scoped like User: matching on email alone would let this user
+        adopt another org's Person node."""
+        mocked.client.execute_query.return_value = [{"mode": "migrated"}]
+        await mocked.migrate_person_to_user("a@corp.com", "user-1", "org-1")
+        assert self._params_of(mocked.client)["org_id"] == "org-1"
+        q = self._query_of(mocked.client)
+        assert "{email: $email, orgId: $org_id}" in q
 
     @pytest.mark.asyncio
     async def test_migration_mode_literals_come_from_the_constants(self, mocked):
@@ -4408,7 +4418,7 @@ class TestPersonMigrationAndReaper:
         from app.config.constants.arangodb import PersonMigrationMode
 
         mocked.client.execute_query.return_value = [{"mode": "migrated"}]
-        await mocked.migrate_person_to_user("a@corp.com", "user-1")
+        await mocked.migrate_person_to_user("a@corp.com", "user-1", "org-1")
         params = self._params_of(mocked.client)
         assert params["split"] == PersonMigrationMode.SPLIT
         assert params["migrated"] == PersonMigrationMode.MIGRATED
@@ -4418,7 +4428,7 @@ class TestPersonMigrationAndReaper:
         """memberOf points away from the Person; lead and contact point at it. A directed
         check would miss two of the three and delete a Salesforce contact outright."""
         mocked.client.execute_query.return_value = [{"mode": "migrated"}]
-        await mocked.migrate_person_to_user("a@corp.com", "user-1")
+        await mocked.migrate_person_to_user("a@corp.com", "user-1", "org-1")
         q = self._query_of(mocked.client)
         assert "EXISTS { (p)-[:MEMBER_OF|LEAD|CONTACT]-() }" in q
         assert "(p)-[:MEMBER_OF|LEAD|CONTACT]->()" not in q
@@ -4434,7 +4444,7 @@ class TestPersonMigrationAndReaper:
         from app.config.constants.neo4j import edge_collection_to_relationship
 
         mocked.client.execute_query.return_value = [{"mode": "migrated"}]
-        await mocked.migrate_person_to_user("a@corp.com", "user-1")
+        await mocked.migrate_person_to_user("a@corp.com", "user-1", "org-1")
         q = self._query_of(mocked.client)
 
         for edge in PERSON_TRANSFERABLE_EDGES:
@@ -4455,7 +4465,7 @@ class TestPersonMigrationAndReaper:
         from app.config.constants.neo4j import edge_collection_to_relationship
 
         mocked.client.execute_query.return_value = [{"mode": "migrated"}]
-        await mocked.migrate_person_to_user("a@corp.com", "user-1")
+        await mocked.migrate_person_to_user("a@corp.com", "user-1", "org-1")
         q = self._query_of(mocked.client)
 
         assert "SET moved += properties(r)" not in q
@@ -4470,7 +4480,7 @@ class TestPersonMigrationAndReaper:
     @pytest.mark.asyncio
     async def test_migration_deletes_person_only_when_not_crm(self, mocked):
         mocked.client.execute_query.return_value = [{"mode": "migrated"}]
-        await mocked.migrate_person_to_user("a@corp.com", "user-1")
+        await mocked.migrate_person_to_user("a@corp.com", "user-1", "org-1")
         q = self._query_of(mocked.client)
         assert "WITH p WHERE NOT is_crm" in q
         assert "DETACH DELETE p" in q
@@ -4485,7 +4495,7 @@ class TestPersonMigrationAndReaper:
         never happened."""
         mocked.client.execute_query.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
-            await mocked.migrate_person_to_user("a@corp.com", "user-1")
+            await mocked.migrate_person_to_user("a@corp.com", "user-1", "org-1")
 
     @pytest.mark.asyncio
     async def test_reaper_returns_reaped_count(self, mocked):
@@ -4623,9 +4633,22 @@ class TestPersonUpsertByEmail:
     @pytest.mark.asyncio
     async def test_get_person_by_email_normalises(self, mocked):
         mocked.client.execute_query.return_value = []
-        await mocked.get_person_by_email("Mixed@Case.COM")
+        await mocked.get_person_by_email("Mixed@Case.COM", "org-1")
         params = mocked.client.execute_query.await_args.kwargs["parameters"]
         assert params["email"] == "mixed@case.com"
+        assert params["org_id"] == "org-1"
+
+    @pytest.mark.asyncio
+    async def test_upsert_merges_on_composite_org_and_email(self, mocked):
+        """(orgId, email) is the business key, not email alone — the same email may
+        legitimately exist once per org."""
+        from app.models.entities import Person
+
+        mocked.client.execute_query.return_value = [{"id": "p1"}]
+        await mocked.upsert_person_by_email(Person(email="out@x.io", org_id="org-1"))
+        params = mocked.client.execute_query.await_args.kwargs["parameters"]
+        assert params["org_id"] == "org-1"
+        assert params["props"]["orgId"] == "org-1"
 
 
 class TestAppUserMembershipClearsExternalFlag:

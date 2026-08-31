@@ -95,7 +95,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def batch_upsert_people(self, people):
         pass
 
-    async def get_person_by_email(self, email):
+    async def get_person_by_email(self, email, org_id):
         return None
 
     async def upsert_person_by_email(self, person):

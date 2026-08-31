@@ -798,15 +798,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         # ==================== PEOPLE INDEXES ====================
 
-        # UNIQUE: email — the business key for a Person, and load-bearing rather than
-        # merely defensive. upsert_person_by_email is a read-then-write UPSERT, which
-        # ArangoDB does not make atomic on its own; concurrent syncs resolving the same
-        # external collaborator would each insert without this index to serialise them.
+        # UNIQUE: (orgId, email) — the business key for a Person, and load-bearing
+        # rather than merely defensive. upsert_person_by_email is a read-then-write
+        # UPSERT, which ArangoDB does not make atomic on its own; concurrent syncs
+        # resolving the same external collaborator in the same org would each insert
+        # without this index to serialise them.
+        # Composite, not email-only: the same email can legitimately exist once per
+        # org (D1 revisited — Person is now org-scoped like User).
         # Returns False (logged, non-fatal) on a collection that already holds
         # duplicates — dedupe those before the guarantee applies.
         await self.http_client.ensure_persistent_index(
             CollectionNames.PEOPLE.value,
-            ["email"],
+            ["orgId", "email"],
             unique=True,
         )
 
@@ -5195,23 +5198,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_person_by_email(
         self,
         email: str,
-        org_id: str | None = None,
+        org_id: str,
         transaction: str | None = None,
     ) -> Person | None:
-        """Get a person by email. ``org_id`` narrows the match on editions that
-        tenant-isolate Person nodes; pass None to match on email alone."""
+        """Get a person by (org_id, email) — Person's business key, same as User's."""
         try:
-            org_filter = "AND doc.orgId == @org_id" if org_id is not None else ""
             query = f"""
             FOR doc IN {CollectionNames.PEOPLE.value}
-                FILTER doc.email == @email
-                {org_filter}
+                FILTER doc.email == @email AND doc.orgId == @org_id
                 LIMIT 1
                 RETURN doc
             """
-            bind_vars: dict[str, Any] = {"email": email.lower()}
-            if org_id is not None:
-                bind_vars["org_id"] = org_id
+            bind_vars: dict[str, Any] = {"email": email.lower(), "org_id": org_id}
 
             results = await self.http_client.execute_aql(
                 query, bind_vars=bind_vars, txn_id=transaction
@@ -5224,18 +5222,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def upsert_person_by_email(
         self,
         person: Person,
-        org_id: str | None = None,
         transaction: str | None = None,
     ) -> str | None:
         """
-        Upsert a Person keyed on email, returning the id of the surviving node.
+        Upsert a Person keyed on (org_id, email), returning the id of the surviving node.
 
         Callers must use the returned id rather than ``person.id``: on a match the
         existing node wins, and its id is what every edge must point at.
-
-        ``org_id`` is a match qualifier, not a field this method owns — editions that
-        tenant-isolate Person nodes pass it so an external collaborator in one tenant
-        cannot adopt another tenant's node. Pass None to match on email alone.
 
         Never updates on match. A Person written by Salesforce carries real names and
         a phone number; a connector that knows only an email would otherwise blank them.
@@ -5244,19 +5237,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
             doc = person.to_arango_person()
             bind_vars: dict[str, Any] = {
                 "email": doc["email"],
+                "org_id": doc["orgId"],
                 "doc": doc,
                 "@collection": CollectionNames.PEOPLE.value,
             }
-            search = "{ email: @email }"
-            if org_id is not None:
-                doc["orgId"] = org_id
-                bind_vars["org_id"] = org_id
-                search = "{ email: @email, orgId: @org_id }"
 
-            query = f"""
-            UPSERT {search}
+            query = """
+            UPSERT { email: @email, orgId: @org_id }
             INSERT @doc
-            UPDATE {{}}
+            UPDATE {}
             IN @@collection
             RETURN NEW._key
             """
@@ -5369,6 +5358,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         email: str,
         user_key: str,
+        org_id: str,
         transaction: str | None = None,
     ) -> str | None:
         """
@@ -5388,7 +5378,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         owns_transaction = transaction is None
         txn = transaction
         try:
-            person = await self.get_person_by_email(email, transaction=transaction)
+            person = await self.get_person_by_email(email, org_id, transaction=transaction)
             if not person:
                 return None
 
@@ -7044,7 +7034,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     # Non-fatal: one CRM contact must not fail a whole sync.
                     try:
                         await self.migrate_person_to_user(
-                            user.email, user.id, transaction=transaction
+                            user.email, user.id, org_id, transaction=transaction
                         )
                     except Exception as migrate_err:
                         self.logger.error(

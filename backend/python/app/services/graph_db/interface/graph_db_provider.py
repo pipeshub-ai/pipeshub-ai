@@ -2186,16 +2186,15 @@ class IGraphDBProvider(ABC):
     async def get_person_by_email(
         self,
         email: str,
-        org_id: str | None = None,
+        org_id: str,
         transaction: str | None = None,
     ) -> Optional['Person']:
         """
-        Get a person by email.
+        Get a person by (org_id, email) — Person's business key, same as User's.
 
         Args:
             email (str): Email address; matched case-insensitively
-            org_id (Optional[str]): Match qualifier for editions that tenant-isolate
-                Person nodes. None matches on email alone.
+            org_id (str): Owning org; required, same as any other org-scoped lookup
             transaction (Optional[str]): Optional transaction context
 
         Returns:
@@ -2207,11 +2206,10 @@ class IGraphDBProvider(ABC):
     async def upsert_person_by_email(
         self,
         person: Person,
-        org_id: str | None = None,
         transaction: str | None = None,
     ) -> str | None:
         """
-        Upsert a Person keyed on email, returning the id of the surviving node.
+        Upsert a Person keyed on (org_id, email), returning the id of the surviving node.
 
         Callers must use the returned id rather than ``person.id``: on a match the
         existing node wins and its id is what every edge must point at. Never updates
@@ -2219,9 +2217,8 @@ class IGraphDBProvider(ABC):
         phone numbers written by a richer source.
 
         Args:
-            person (Person): The person to insert if no match exists
-            org_id (Optional[str]): Match qualifier for editions that tenant-isolate
-                Person nodes. None matches on email alone.
+            person (Person): The person to insert if no match exists; carries its own
+                org_id
             transaction (Optional[str]): Optional transaction context
 
         Returns:
@@ -2265,6 +2262,7 @@ class IGraphDBProvider(ABC):
         self,
         email: str,
         user_key: str,
+        org_id: str,
         transaction: str | None = None,
     ) -> str | None:
         """
@@ -2280,6 +2278,8 @@ class IGraphDBProvider(ABC):
         Args:
             email (str): Email identifying the Person; matched against the normalised form
             user_key (str): Key of the already-existing User to move the edges onto
+            org_id (str): Owning org of the Person being migrated; required, same as
+                get_person_by_email
             transaction (Optional[str]): Optional transaction context
 
         Returns:

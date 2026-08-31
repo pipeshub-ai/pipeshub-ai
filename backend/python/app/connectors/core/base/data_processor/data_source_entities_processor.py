@@ -871,14 +871,16 @@ class DataSourceEntitiesProcessor:
             if user:
                 return (user.id, CollectionNames.USERS.value)
 
-            person = await tx_store.get_person_by_email(email)
+            person = await tx_store.get_person_by_email(email, self.org_id)
             if person:
                 return (person.id, CollectionNames.PEOPLE.value)
 
             if not create_if_missing:
                 return None
 
-            person_id = await tx_store.upsert_person_by_email(Person(email=email.lower()))
+            person_id = await tx_store.upsert_person_by_email(
+                Person(email=email.lower(), org_id=self.org_id)
+            )
             if person_id:
                 self.logger.debug("Created person for external email: %s", email)
                 return (person_id, CollectionNames.PEOPLE.value)

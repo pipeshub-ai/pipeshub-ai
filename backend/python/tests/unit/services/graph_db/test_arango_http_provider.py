@@ -5258,11 +5258,11 @@ class TestReindexSingleRecord:
 
 class TestPeopleEmailUniqueIndex:
     @pytest.mark.asyncio
-    async def test_email_index_is_unique(self, connected_provider):
+    async def test_org_email_index_is_unique(self, connected_provider):
         """Load-bearing, not defensive: upsert_person_by_email is a read-then-write
         UPSERT, which ArangoDB does not make atomic on its own. Without the unique index
-        two concurrent syncs resolving the same collaborator each insert a Person and the
-        permission edges split across them."""
+        two concurrent syncs resolving the same collaborator in the same org each insert
+        a Person and the permission edges split across them."""
         connected_provider.http_client.ensure_persistent_index = AsyncMock(return_value=True)
         await connected_provider._ensure_indexes()
 
@@ -5271,8 +5271,8 @@ class TestPeopleEmailUniqueIndex:
             if c.args and c.args[0] == "people"
         ]
         assert people_calls, "no index registered on the people collection"
-        email_call = next(c for c in people_calls if c.args[1] == ["email"])
-        assert email_call.kwargs.get("unique") is True
+        org_email_call = next(c for c in people_calls if c.args[1] == ["orgId", "email"])
+        assert org_email_call.kwargs.get("unique") is True
 
 
 class TestEnsureIndexes:
@@ -22163,7 +22163,7 @@ class TestArangoPersonMigrationAndReaper:
     async def test_migration_returns_none_when_no_person(self, connected_provider):
         """The ordinary case for anyone who was never an external collaborator."""
         connected_provider.get_person_by_email = AsyncMock(return_value=None)
-        assert await connected_provider.migrate_person_to_user("a@x.io", "u1") is None
+        assert await connected_provider.migrate_person_to_user("a@x.io", "u1", "org-1") is None
 
     @pytest.mark.asyncio
     async def test_migration_reports_migrated_and_removes_person(self, connected_provider):
@@ -22180,7 +22180,7 @@ class TestArangoPersonMigrationAndReaper:
             [{"mine": [], "theirs": []}],               # userAppRelation: nothing to move
         )
         mode = await connected_provider.migrate_person_to_user(
-            "a@x.io", "u1", transaction="txn-1"
+            "a@x.io", "u1", "org-1", transaction="txn-1"
         )
         assert mode == PersonMigrationMode.MIGRATED
         assert any("REMOVE @person_key" in q for q, _ in calls)
@@ -22202,7 +22202,7 @@ class TestArangoPersonMigrationAndReaper:
             [{"mine": [], "theirs": []}],
         )
         mode = await connected_provider.migrate_person_to_user(
-            "a@x.io", "u1", transaction="txn-1"
+            "a@x.io", "u1", "org-1", transaction="txn-1"
         )
         assert mode == PersonMigrationMode.SPLIT
         assert not any("REMOVE @person_key" in q for q, _ in calls)
@@ -22222,7 +22222,7 @@ class TestArangoPersonMigrationAndReaper:
         )
         calls = self._script(connected_provider, [False], [{"mine": [], "theirs": []}],
                              [{"mine": [], "theirs": []}])
-        await connected_provider.migrate_person_to_user("a@x.io", "u1", transaction="t")
+        await connected_provider.migrate_person_to_user("a@x.io", "u1", "org-1", transaction="t")
 
         probe = calls[0][0]
         for coll in PERSON_CRM_EDGES_OUTBOUND:
@@ -22249,7 +22249,7 @@ class TestArangoPersonMigrationAndReaper:
             [],                                          # remove old
             [{"mine": [], "theirs": []}],               # userAppRelation
         )
-        await connected_provider.migrate_person_to_user("a@x.io", "u1", transaction="t")
+        await connected_provider.migrate_person_to_user("a@x.io", "u1", "org-1", transaction="t")
 
         insert = next(b for q, b in calls if "UPSERT {_from: e._from, _to: e._to}" in q)
         moved = insert["edges"][0]
@@ -22278,7 +22278,7 @@ class TestArangoPersonMigrationAndReaper:
             [],                                               # remove old
             [{"mine": [], "theirs": []}],
         )
-        await connected_provider.migrate_person_to_user("a@x.io", "u1", transaction="t")
+        await connected_provider.migrate_person_to_user("a@x.io", "u1", "org-1", transaction="t")
         assert not any("UPSERT {_from: e._from, _to: e._to}" in q for q, _ in calls)
         # ...but the person's copy is still cleared away.
         assert any("REMOVE e IN @@collection" in q for q, _ in calls)
@@ -22298,7 +22298,7 @@ class TestArangoPersonMigrationAndReaper:
         )
         calls = self._script(connected_provider, [False], [{"mine": [], "theirs": []}],
                              [{"mine": [], "theirs": []}])
-        await connected_provider.migrate_person_to_user("a@x.io", "u1", transaction="t")
+        await connected_provider.migrate_person_to_user("a@x.io", "u1", "org-1", transaction="t")
 
         touched = {b["@collection"] for _, b in calls if "@collection" in b}
         assert set(PERSON_TRANSFERABLE_EDGES) <= touched
@@ -22320,7 +22320,7 @@ class TestArangoPersonMigrationAndReaper:
         )
 
         with pytest.raises(RuntimeError):
-            await connected_provider.migrate_person_to_user("a@x.io", "u1")
+            await connected_provider.migrate_person_to_user("a@x.io", "u1", "org-1")
         connected_provider.rollback_transaction.assert_awaited_once_with("txn-9")
 
     @pytest.mark.asyncio
@@ -22337,7 +22337,7 @@ class TestArangoPersonMigrationAndReaper:
         self._script(connected_provider, [False], [{"mine": [], "theirs": []}],
                      [{"mine": [], "theirs": []}])
 
-        await connected_provider.migrate_person_to_user("a@x.io", "u1", transaction="outer")
+        await connected_provider.migrate_person_to_user("a@x.io", "u1", "org-1", transaction="outer")
         connected_provider.begin_transaction.assert_not_awaited()
         connected_provider.commit_transaction.assert_not_awaited()
 

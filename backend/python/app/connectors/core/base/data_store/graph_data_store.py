@@ -307,8 +307,8 @@ class GraphTransactionStore(TransactionStore):
     async def batch_upsert_people(self, people: list[Person]) -> None:
         return await self.graph_provider.batch_upsert_people(people, transaction=self.txn)
 
-    async def get_person_by_email(self, email: str) -> Optional[Person]:
-        return await self.graph_provider.get_person_by_email(email, transaction=self.txn)
+    async def get_person_by_email(self, email: str, org_id: str) -> Optional[Person]:
+        return await self.graph_provider.get_person_by_email(email, org_id, transaction=self.txn)
 
     async def upsert_person_by_email(self, person: Person) -> Optional[str]:
         return await self.graph_provider.upsert_person_by_email(person, transaction=self.txn)

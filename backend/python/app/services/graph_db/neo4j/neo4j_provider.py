@@ -353,12 +353,16 @@ class Neo4jProvider(IGraphDBProvider):
         the index entry); without one, two transactions resolving the same external
         collaborator both create a node.
 
+        Composite uniqueness constraints (multiple properties) are supported on both
+        Neo4j Community and Enterprise — unlike the property existence constraints
+        below, this one needs no edition fallback.
+
         Returns:
             List of Cypher CREATE CONSTRAINT queries for business keys
         """
         return [
-            "CREATE CONSTRAINT person_email_unique IF NOT EXISTS "
-            f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE n.email IS UNIQUE"
+            "CREATE CONSTRAINT person_org_email_unique IF NOT EXISTS "
+            f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.email) IS UNIQUE"
         ]
 
     def _generate_performance_indexes(self) -> list[str]:
@@ -606,8 +610,8 @@ class Neo4jProvider(IGraphDBProvider):
 
             self.logger.info(f"✅ Created {len(unique_constraints)} unique id constraints")
 
-            # Business-key uniqueness (e.g. Person.email). Creation fails on a label
-            # that already holds duplicates, hence the same tolerant handling as above.
+            # Business-key uniqueness (e.g. Person.(orgId, email)). Creation fails on a
+            # label that already holds duplicates, hence the same tolerant handling as above.
             business_key_constraints = self._generate_business_key_constraints()
 
             for constraint_query in business_key_constraints:
@@ -6047,7 +6051,7 @@ class Neo4jProvider(IGraphDBProvider):
                     # Non-fatal: one CRM contact must not fail a whole sync.
                     try:
                         await self.migrate_person_to_user(
-                            user.email, user.id, transaction=transaction
+                            user.email, user.id, org_id, transaction=transaction
                         )
                     except Exception as migrate_err:
                         self.logger.error(
@@ -12780,24 +12784,19 @@ class Neo4jProvider(IGraphDBProvider):
     async def get_person_by_email(
         self,
         email: str,
-        org_id: str | None = None,
+        org_id: str,
         transaction: str | None = None,
     ) -> Person | None:
-        """Get a person by email. ``org_id`` narrows the match on editions that
-        tenant-isolate Person nodes; pass None to match on email alone."""
+        """Get a person by (org_id, email) — Person's business key, same as User's."""
         try:
             label = collection_to_label(CollectionNames.PEOPLE.value)
-            org_filter = "AND p.orgId = $org_id" if org_id is not None else ""
             query = f"""
             MATCH (p:{label})
-            WHERE p.email = $email
-            {org_filter}
+            WHERE p.email = $email AND p.orgId = $org_id
             RETURN p
             LIMIT 1
             """
-            parameters: dict[str, Any] = {"email": email.lower()}
-            if org_id is not None:
-                parameters["org_id"] = org_id
+            parameters: dict[str, Any] = {"email": email.lower(), "org_id": org_id}
 
             results = await self.client.execute_query(
                 query, parameters=parameters, txn_id=transaction
@@ -12816,23 +12815,18 @@ class Neo4jProvider(IGraphDBProvider):
     async def upsert_person_by_email(
         self,
         person: Person,
-        org_id: str | None = None,
         transaction: str | None = None,
     ) -> str | None:
         """
-        Upsert a Person keyed on email, returning the id of the surviving node.
+        Upsert a Person keyed on (org_id, email), returning the id of the surviving node.
 
         Callers must use the returned id rather than ``person.id``: on a match the
         existing node wins, and its id is what every edge must point at.
 
-        ``org_id`` is a match qualifier, not a field this method owns — editions that
-        tenant-isolate Person nodes pass it so an external collaborator in one tenant
-        cannot adopt another tenant's node. Pass None to match on email alone.
-
         Never updates on match. A Person written by Salesforce carries real names and
         a phone number; a connector that knows only an email would otherwise blank them.
 
-        Atomicity depends on the person_email_unique constraint — see
+        Atomicity depends on the person_org_email_unique constraint — see
         _generate_business_key_constraints.
         """
         try:
@@ -12840,21 +12834,17 @@ class Neo4jProvider(IGraphDBProvider):
             props = self._arango_to_neo4j_node(
                 person.to_arango_person(), CollectionNames.PEOPLE.value
             )
-            if org_id is not None:
-                props["orgId"] = org_id
 
-            match_pattern = (
-                "{email: $email}" if org_id is None
-                else "{email: $email, orgId: $org_id}"
-            )
             query = f"""
-            MERGE (p:{label} {match_pattern})
+            MERGE (p:{label} {{email: $email, orgId: $org_id}})
             ON CREATE SET p = $props
             RETURN p.id AS id
             """
-            parameters: dict[str, Any] = {"email": props["email"], "props": props}
-            if org_id is not None:
-                parameters["org_id"] = org_id
+            parameters: dict[str, Any] = {
+                "email": props["email"],
+                "org_id": props["orgId"],
+                "props": props,
+            }
 
             results = await self.client.execute_query(
                 query, parameters=parameters, txn_id=transaction
@@ -12954,6 +12944,7 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         email: str,
         user_key: str,
+        org_id: str,
         transaction: str | None = None,
     ) -> str | None:
         """
@@ -12987,7 +12978,7 @@ class Neo4jProvider(IGraphDBProvider):
             # The transfers are written out per relationship type rather than looped:
             # Cypher has no dynamic relationship type without APOC.
             query = f"""
-            MATCH (p:{person_label} {{email: $email}})
+            MATCH (p:{person_label} {{email: $email, orgId: $org_id}})
             MATCH (u:{user_label} {{id: $user_key}})
 
             // Undirected on purpose: memberOf points away from the Person while lead and
@@ -13030,6 +13021,7 @@ class Neo4jProvider(IGraphDBProvider):
                 parameters={
                     "email": email.lower(),
                     "user_key": user_key,
+                    "org_id": org_id,
                     "split": PersonMigrationMode.SPLIT,
                     "migrated": PersonMigrationMode.MIGRATED,
                 },

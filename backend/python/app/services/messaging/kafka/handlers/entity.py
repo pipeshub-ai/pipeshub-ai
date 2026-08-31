@@ -273,7 +273,7 @@ class EntityEventService(BaseEventService):
             # collaborator. Never fatal: the account itself is what this event is for, and
             # letting a failed adoption bubble up would make Kafka redeliver forever while
             # the person still has no user.
-            await self._adopt_existing_person(payload["email"], user_key)
+            await self._adopt_existing_person(payload["email"], user_key, payload["orgId"])
 
             # Get or create knowledge base for the user (creates app + all edges)
             kb_name = self._kb_name_from_user_added_payload(payload)
@@ -509,7 +509,7 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"❌ Error disabling apps: {str(e)}")
             return False
 
-    async def _adopt_existing_person(self, email: str, user_key: str) -> None:
+    async def _adopt_existing_person(self, email: str, user_key: str, org_id: str) -> None:
         """Move a pre-existing Person's collaborator edges onto the new user.
 
         Someone shared files with this address before its owner had an account; those
@@ -518,7 +518,7 @@ class EntityEventService(BaseEventService):
         see docs/external-user-support-plan.md, D4.
         """
         try:
-            mode = await self.graph_provider.migrate_person_to_user(email, user_key)
+            mode = await self.graph_provider.migrate_person_to_user(email, user_key, org_id)
             if mode:
                 self.logger.info(
                     f"✅ Adopted existing person for {email} ({mode})"
