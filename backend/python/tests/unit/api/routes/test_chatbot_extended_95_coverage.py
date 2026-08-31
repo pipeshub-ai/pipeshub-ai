@@ -1249,8 +1249,12 @@ async def test_grant_and_revoke_permissions_json_noise():
 
     gp_miss.get_user_by_user_id = AsyncMock(return_value={"n": True})
 
+    gp_miss.get_document = AsyncMock(return_value={"orgId": "org-1"})
+
 
     rk2 = MagicMock()
+
+    rk2.state.user = {"orgId": "org-1"}
 
 
     rk2.json = AsyncMock(return_value={"userIds": ["u"], "recordIds": ["rid"]})
@@ -1277,6 +1281,9 @@ async def test_grant_and_revoke_permissions_json_noise():
 
 
     assert grant_out["granted"] == 0
+
+    assert grant_out["skippedRecords"] == 0
+    assert grant_out["skippedUsers"] == 1
 
 
 
