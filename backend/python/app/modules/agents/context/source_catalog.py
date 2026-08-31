@@ -207,6 +207,7 @@ class SourceCatalog:
         # decide which tool to use for what kind of question.
         lookup = granted("knowledgegraph.lookup_record", _tool_names)
         fetch = granted("knowledgegraph.fetch_record", _tool_names)
+        code_graph = granted("codegraph.query_code_graph", _tool_names)
         if not lookup:
             lookup = "knowledgegraph__lookup_record"
         lines.extend([
@@ -226,6 +227,12 @@ class SourceCatalog:
                 [f"- `{fetch}(record_ids=[...])` — one whole record, all of it."]
                 if fetch else []
             ),
+            *(
+                [f"- `{code_graph}(select=...)` — relationships: what calls, "
+                 "imports, or inherits from what, and how directories depend on "
+                 "each other. The only tool that returns an edge rather than text."]
+                if code_graph else []
+            ),
             "",
             "**Combining them.** Search finds a starting point by wording; navigate on a "
             "record's Location or Record ID reveals what search structurally cannot — siblings, "
@@ -234,6 +241,16 @@ class SourceCatalog:
             "the record group or scope list_files to one source, then read what matters.",
             "",
         ])
+        if code_graph:
+            lines.extend([
+                "**Code is different.** Questions about how code connects — "
+                "architecture, dependencies, call chains, usages, module structure "
+                "— are answered by the code graph, not by navigating record groups. "
+                "Navigate shows a file tree; the code graph shows relationships "
+                "(calls, imports, inheritance) with edge counts. Pick the right "
+                f"tool by task shape — see the code graph guidance above.",
+                "",
+            ])
         # ID-specific header — only when connector IDs are actionable (agent route).
         # On the chat route the model has no IDs to pass so we skip this instruction.
         if self.ids_actionable:
