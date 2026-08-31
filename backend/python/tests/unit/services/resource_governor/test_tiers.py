@@ -26,6 +26,33 @@ class TestClassify:
         assert classify("xyz-unknown", "application/pdf") is ParseTier.HEAVY
         assert classify("xyz-unknown", "text/markdown") is ParseTier.LIGHT
 
+    @pytest.mark.parametrize(
+        ("mime", "handler"),
+        [
+            ("text/gmail_content", "Processor.process_gmail_message"),
+            ("text/mdx", "Processor.process_mdx_document"),
+            ("application/blocks", "Processor.process_blocks"),
+        ],
+    )
+    def test_connector_mime_types_that_reach_a_text_parser_are_light(
+        self, mime, handler
+    ) -> None:
+        """These carry no file extension, so the mime lookup is the only
+        thing standing between a high-volume connector sync and the heavy
+        tier. The tier picks the index pool a record holds for its whole
+        lifetime, so misclassifying one means a Gmail sync draws entirely on
+        the small heavy budget — the head-of-line blocking the split exists
+        to prevent."""
+        assert classify(None, mime) is ParseTier.LIGHT, handler
+
+    @pytest.mark.parametrize("mime", ["application/xml", "notion/text", "image/heic"])
+    def test_unproven_mime_types_stay_heavy(self, mime) -> None:
+        """Heavy is the safe default and stays the default: none of these has
+        a demonstrated light parse path, so promoting them would be a guess
+        that costs a scarce heavy permit to get wrong in the other
+        direction."""
+        assert classify(None, mime) is ParseTier.HEAVY
+
     def test_extension_takes_priority_over_mime(self) -> None:
         # Contrived: extension says light, mime says heavy -> extension wins.
         assert classify("txt", "application/pdf") is ParseTier.LIGHT

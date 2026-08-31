@@ -6,6 +6,8 @@ from typing import Optional
 from pydantic import BaseModel, Field, JsonValue
 
 from app.services.resource_governor.models import ParseTier
+from app.utils.env_config import env_int as _env_int
+from app.utils.env_config import env_seconds as _env_seconds
 
 
 class MessageBrokerType(str, Enum):
@@ -177,15 +179,15 @@ class MessagingEnvConfig:
 
     @property
     def concurrency_lease_seconds(self) -> float:
-        return float(os.getenv("INDEXING_CONCURRENCY_LEASE_SECONDS", "120"))
+        return _env_seconds("INDEXING_CONCURRENCY_LEASE_SECONDS", 120.0)
 
     @property
     def concurrency_renew_interval_seconds(self) -> float:
-        return float(os.getenv("INDEXING_CONCURRENCY_RENEW_INTERVAL_SECONDS", "30"))
+        return _env_seconds("INDEXING_CONCURRENCY_RENEW_INTERVAL_SECONDS", 30.0)
 
     @property
     def concurrency_acquire_poll_seconds(self) -> float:
-        return float(os.getenv("INDEXING_CONCURRENCY_ACQUIRE_POLL_SECONDS", "0.5"))
+        return _env_seconds("INDEXING_CONCURRENCY_ACQUIRE_POLL_SECONDS", 0.5)
 
     @property
     def record_lease_wait_seconds(self) -> float:
@@ -199,20 +201,73 @@ class MessagingEnvConfig:
         wait is enough since whoever already holds the lease is actively
         processing that same record.
         """
-        return float(os.getenv("INDEXING_RECORD_LEASE_WAIT_SECONDS", "10"))
+        return _env_seconds("INDEXING_RECORD_LEASE_WAIT_SECONDS", 10.0)
 
     @property
     def concurrency_redis_timeout_seconds(self) -> float:
-        return float(os.getenv("INDEXING_CONCURRENCY_REDIS_TIMEOUT_SECONDS", "5"))
+        """Socket timeout for lease/retry Redis commands.
+
+        Two seconds, not five: this has to fire strictly before any caller's
+        own deadline, so redis-py raises its own clean timeout instead of
+        having the command cancelled underneath it — a cancelled command
+        forces the connection closed (redis-py disconnects on ``BaseException``
+        while reading a response), and replacing connections at that rate is
+        what exhausted Redis's client limit in production.
+        """
+        return _env_seconds("INDEXING_CONCURRENCY_REDIS_TIMEOUT_SECONDS", 2.0)
+
+    @property
+    def concurrency_redis_max_connections(self) -> int:
+        """Connection-pool size for the lease/retry clients, per event loop.
+
+        redis-py defaults to effectively unbounded (``2**31``), so every
+        connection a cancelled command destroyed was replaced by a new TCP
+        connect. A bounded pool turns that into queueing instead.
+        """
+        return max(1, _env_int("INDEXING_CONCURRENCY_REDIS_MAX_CONNECTIONS", 32))
+
+    @property
+    def concurrency_acquire_max_backoff_seconds(self) -> float:
+        """Ceiling on the exponential backoff between lease-acquire attempts.
+
+        The wait used to be a flat 0.5s poll with no backoff and no give-up,
+        so load on Redis scaled with the size of the queue waiting on it and
+        an error storm sustained itself indefinitely.
+        """
+        return _env_seconds("INDEXING_CONCURRENCY_ACQUIRE_MAX_BACKOFF_SECONDS", 5.0)
+
+    @property
+    def split_index_lease_pools(self) -> bool:
+        """Whether light records take their own cluster-wide indexing lease.
+
+        Off until no previous-build replica remains: those admit every record
+        into the shared ``indexing`` pool at the full budget, so a separate
+        ``indexing:light`` pool is additive during a rolling upgrade and the
+        fleet can exceed MAX_CONCURRENT_INDEXING by ``index_light``. The
+        node-local per-tier gates are unaffected either way — see
+        ``consumer_concurrency.index_lease_pool``.
+        """
+        return os.getenv("INDEXING_SPLIT_LEASE_POOLS", "false").lower() == "true"
+
+    @property
+    def concurrency_failure_budget(self) -> int:
+        """Consecutive lease-op failures before a capacity pool fails open.
+
+        Capacity leases (indexing/parsing) are a cluster-wide cap layered on
+        top of node-local gates, so continuing under the local gate alone is
+        a bounded degradation. The per-record lease is mutual exclusion and
+        never fails open — see ``LeaseKind``.
+        """
+        return max(1, _env_int("INDEXING_CONCURRENCY_FAILURE_BUDGET", 5))
 
     @property
     def shutdown_task_timeout(self) -> float:
-        return float(os.getenv("SHUTDOWN_TASK_TIMEOUT", "240.0"))
+        return _env_seconds("SHUTDOWN_TASK_TIMEOUT", 240.0)
 
     @property
     def max_delivery_attempts(self) -> int:
         """Max times a message can be delivered before being dead-lettered (ACK-ed and discarded)."""
-        return int(os.getenv("MAX_DELIVERY_ATTEMPTS", "3"))
+        return _env_int("MAX_DELIVERY_ATTEMPTS", 3)
 
     @property
     def message_batch_size_simple(self) -> int:
@@ -241,7 +296,7 @@ class MessagingEnvConfig:
     @property
     def record_processing_timeout(self) -> float:
         """Max seconds a single record is allowed to process before being timed out."""
-        return float(os.getenv("RECORD_PROCESSING_TIMEOUT", "1800"))
+        return _env_seconds("RECORD_PROCESSING_TIMEOUT", 1800.0)
 
     @property
     def max_pending_indexing_tasks(self) -> int:

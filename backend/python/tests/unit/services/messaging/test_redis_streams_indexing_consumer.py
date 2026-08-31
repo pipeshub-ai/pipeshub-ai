@@ -29,6 +29,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
+from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -37,16 +38,15 @@ from app.services.messaging.config import (
     StreamMessage,
     messaging_env,
 )
-from app.services.messaging.distributed_concurrency import DistributedLeaseSet
+from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.redis_streams.indexing_consumer import (
-    IndexingRedisStreamsConsumer,
     _BUSYGROUP_ERROR,
     _MESSAGE_VALUE_FIELD,
+    IndexingRedisStreamsConsumer,
 )
 from app.services.resource_governor import Pool
 from app.services.resource_governor.models import ParseTier
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -623,54 +623,54 @@ class TestStop:
 
 
 class TestParseMessage:
-    def test_valid_json(self, consumer):
+    async def test_valid_json(self, consumer):
         fields = _valid_fields("CREATE", {"id": 42})
-        result = consumer._parse_message("1-0", fields)
+        result = await consumer._parse_message("1-0", fields)
         assert isinstance(result, StreamMessage)
         assert result.eventType == "CREATE"
         assert result.payload == {"id": 42}
 
-    def test_double_encoded_json(self, consumer):
+    async def test_double_encoded_json(self, consumer):
         inner = json.dumps({"eventType": "test", "payload": {"key": "val"}})
         fields = {"value": json.dumps(inner)}
-        result = consumer._parse_message("1-0", fields)
+        result = await consumer._parse_message("1-0", fields)
         assert isinstance(result, StreamMessage)
         assert result.payload == {"key": "val"}
 
-    def test_missing_value_field_returns_none(self, consumer):
-        result = consumer._parse_message("1-0", {"_init": "1"})
+    async def test_missing_value_field_returns_none(self, consumer):
+        result = await consumer._parse_message("1-0", {"_init": "1"})
         assert result is None
 
-    def test_empty_fields_returns_none(self, consumer):
-        result = consumer._parse_message("1-0", {})
+    async def test_empty_fields_returns_none(self, consumer):
+        result = await consumer._parse_message("1-0", {})
         assert result is None
 
-    def test_invalid_json_returns_none(self, consumer):
-        result = consumer._parse_message("1-0", {"value": "not-json{{{"})
+    async def test_invalid_json_returns_none(self, consumer):
+        result = await consumer._parse_message("1-0", {"value": "not-json{{{"})
         assert result is None
 
-    def test_valid_json_invalid_schema_returns_none(self, consumer):
+    async def test_valid_json_invalid_schema_returns_none(self, consumer):
         """Valid JSON not matching the StreamMessage schema is poison.
 
         Missing required fields raises pydantic ValidationError internally; the
         parser must treat it as unparseable (return None) so the message is
         dropped, not crash the worker into a no-ACK loop.
         """
-        result = consumer._parse_message("1-0", {"value": json.dumps({"foo": "bar"})})
+        result = await consumer._parse_message("1-0", {"value": json.dumps({"foo": "bar"})})
         assert result is None
 
-    def test_non_mapping_json_returns_none(self, consumer):
+    async def test_non_mapping_json_returns_none(self, consumer):
         """JSON decoding to a non-object (list) is poison -> None, not a TypeError."""
-        result = consumer._parse_message("1-0", {"value": json.dumps([1, 2, 3])})
+        result = await consumer._parse_message("1-0", {"value": json.dumps([1, 2, 3])})
         assert result is None
 
-    def test_valid_with_timestamp(self, consumer):
+    async def test_valid_with_timestamp(self, consumer):
         fields = {
             "value": json.dumps(
                 {"eventType": "test", "payload": {"k": "v"}, "timestamp": 12345}
             )
         }
-        result = consumer._parse_message("1-0", fields)
+        result = await consumer._parse_message("1-0", fields)
         assert isinstance(result, StreamMessage)
         assert result.timestamp == 12345
 
@@ -1222,65 +1222,34 @@ class TestProcessMessageWrapper:
             if False:
                 yield
 
-        async def renew_forever() -> None:
-            await never_complete.wait()
-
         consumer.message_handler = handler
-        renewal_task = asyncio.create_task(renew_forever())
+        # A real renewer, never started: start_lease_guard still registers the
+        # owner and spawns the waiter, which is what cancellation must clean up.
+        consumer.lease_renewer = LeaseRenewer(
+            consumer.logger,
+            consumer.concurrency_manager,
+            lease_seconds=120,
+            interval_seconds=30,
+        )
 
-        with patch.object(
-            consumer,
-            "_start_distributed_renewal",
-            return_value=renewal_task,
-        ):
-            processing = asyncio.create_task(
-                consumer._process_message_wrapper(
-                    "stream-a",
-                    "1-0",
-                    _valid_fields(payload={"recordId": "cancelled-record"}),
-                )
+        processing = asyncio.create_task(
+            consumer._process_message_wrapper(
+                "stream-a",
+                "1-0",
+                _valid_fields(payload={"recordId": "cancelled-record"}),
             )
-            await asyncio.wait_for(entered.wait(), timeout=1)
-            processing.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await processing
+        )
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        processing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await processing
 
         await asyncio.wait_for(handler_cancelled.wait(), timeout=1)
-        assert renewal_task.done()
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
-
-    @pytest.mark.asyncio
-    async def test_definitive_lease_loss_aborts_immediately(
-        self,
-        consumer,
-    ) -> None:
-        consumer.concurrency_manager = AsyncMock()
-        consumer.concurrency_manager.renew.return_value = False
-        leases = DistributedLeaseSet()
-        leases.add("indexing", "worker-1")
-
-        with (
-            patch.object(
-                type(messaging_env),
-                "concurrency_lease_seconds",
-                new_callable=PropertyMock,
-                return_value=1,
-            ),
-            patch.object(
-                type(messaging_env),
-                "concurrency_renew_interval_seconds",
-                new_callable=PropertyMock,
-                return_value=0.01,
-            ),
-        ):
-            with pytest.raises(RuntimeError, match="Lost distributed indexing"):
-                await asyncio.wait_for(
-                    consumer._renew_distributed_slots(leases),
-                    timeout=0.2,
-                )
-
-        consumer.concurrency_manager.renew.assert_awaited_once()
+        # The owner must be gone from the renewer, or a cancelled record keeps
+        # being renewed forever and leaks a handle per cancellation.
+        assert consumer.lease_renewer._handles == {}
 
     @pytest.mark.asyncio
     async def test_handler_exception_after_parsing_released(self, consumer):
@@ -1440,6 +1409,184 @@ class TestProcessMessageWrapperWithGovernor:
         return c
 
     @pytest.mark.asyncio
+    async def test_local_gate_is_taken_before_the_cluster_lease(
+        self, governor_consumer
+    ) -> None:
+        """Ordering, not just presence. The node-local gate is an asyncio
+        Event and costs nothing to queue on, so it must absorb the wait;
+        only records it has already admitted should contend for the Redis
+        lease. Taking the lease first put the entire queue on Redis, each
+        waiter re-polling on a timer — the shape that drove Redis to its
+        client limit in production."""
+        order: list[str] = []
+        governor = governor_consumer.governor
+
+        manager = AsyncMock()
+
+        async def try_acquire(pool, _owner, _limit, _lease):
+            if pool.startswith("parsing"):
+                order.append(f"lease:{pool}")
+            return True
+
+        manager.try_acquire.side_effect = try_acquire
+        governor_consumer.concurrency_manager = manager
+
+        real_acquire = concurrency.acquire_parsing_slot
+
+        async def spy(host, tier, size_bytes):
+            order.append("gate")
+            return await real_acquire(host, tier, size_bytes)
+
+        async def handler(_msg):
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1", tier=ParseTier.LIGHT, size_bytes=8),
+            )
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        governor_consumer.running = True
+        governor_consumer.redis = AsyncMock()
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.message_handler = handler
+
+        with patch.object(concurrency, "acquire_parsing_slot", spy):
+            result = await governor_consumer._process_message_wrapper(
+                "stream-a", "1-0",
+                _valid_fields(payload={"recordId": "r1", "extension": "md",
+                                       "mimeType": "text/markdown"}),
+            )
+
+        assert result is True
+        assert order == ["gate", "lease:parsing:light"], order
+        # And the permit came back.
+        assert governor.gate(Pool.LIGHT_PARSE).in_use == 0
+
+    @pytest.mark.asyncio
+    async def test_parse_permit_is_released_when_the_lease_step_aborts(
+        self, governor_consumer
+    ) -> None:
+        """The gate permit is taken first now, so every exit path after it —
+        including the clean-shutdown abort — has to hand it back or the pool
+        leaks a permit per shutdown."""
+        governor = governor_consumer.governor
+        manager = AsyncMock()
+
+        async def try_acquire(pool, _owner, _limit, _lease):
+            if pool.startswith("parsing"):
+                governor_consumer.running = False  # clean shutdown mid-acquire
+                return False
+            return True
+
+        manager.try_acquire.side_effect = try_acquire
+        governor_consumer.concurrency_manager = manager
+
+        async def handler(_msg):
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1", tier=ParseTier.LIGHT, size_bytes=8),
+            )
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        governor_consumer.running = True
+        governor_consumer.redis = AsyncMock()
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.message_handler = handler
+
+        result = await governor_consumer._process_message_wrapper(
+                "stream-a", "1-0",
+                _valid_fields(payload={"recordId": "r1", "extension": "md",
+                                       "mimeType": "text/markdown"}),
+            )
+
+        assert result is False
+        assert governor.gate(Pool.LIGHT_PARSE).in_use == 0
+        assert governor.gate(Pool.INDEX_LIGHT).in_use == 0
+
+    @pytest.mark.asyncio
+    async def test_light_records_draw_on_their_own_index_budget(
+        self, governor_consumer
+    ) -> None:
+        """The head-of-line bug: an index permit is held for a record's whole
+        lifetime, including the wait for a parse slot, so one shared budget let
+        a queue of Docling PDFs hold every permit while Jira/Confluence records
+        that finish in seconds were never admitted at all."""
+        governor = governor_consumer.governor
+
+        async def handler(_msg):
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1", tier=ParseTier.LIGHT, size_bytes=1),
+            )
+            assert governor.gate(Pool.INDEX_LIGHT).in_use == 1
+            assert governor.gate(Pool.INDEX_HEAVY).in_use == 0
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        governor_consumer.running = True
+        governor_consumer.redis = AsyncMock()
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.message_handler = handler
+        result = await governor_consumer._process_message_wrapper(
+            "stream-a", "1-0",
+            _valid_fields(payload={"recordId": "r1", "extension": "md", "mimeType": "text/markdown"}),
+        )
+
+        assert result is True
+        assert governor.gate(Pool.INDEX_LIGHT).in_use == 0
+
+    @pytest.mark.asyncio
+    async def test_heavy_records_draw_on_the_heavy_index_budget(
+        self, governor_consumer
+    ) -> None:
+        """Routed from the record event's own extension/mimeType, because the
+        permit is taken before the handler runs and can't wait for its tier."""
+        governor = governor_consumer.governor
+
+        async def handler(_msg):
+            assert governor.gate(Pool.INDEX_HEAVY).in_use == 1
+            assert governor.gate(Pool.INDEX_LIGHT).in_use == 0
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        governor_consumer.running = True
+        governor_consumer.redis = AsyncMock()
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.message_handler = handler
+        result = await governor_consumer._process_message_wrapper(
+            "stream-a", "1-0",
+            _valid_fields(payload={"recordId": "r1", "extension": "pdf", "mimeType": "application/pdf"}),
+        )
+
+        assert result is True
+        assert governor.gate(Pool.INDEX_HEAVY).in_use == 0
+
+    @pytest.mark.asyncio
+    async def test_unknown_format_draws_on_the_heavy_budget(
+        self, governor_consumer
+    ) -> None:
+        """classify() resolves anything unrecognised to HEAVY, so an
+        unclassifiable record can never consume the budget sized for records
+        that turn over in seconds."""
+        governor = governor_consumer.governor
+
+        async def handler(_msg):
+            assert governor.gate(Pool.INDEX_HEAVY).in_use == 1
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        governor_consumer.running = True
+        governor_consumer.redis = AsyncMock()
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.message_handler = handler
+        result = await governor_consumer._process_message_wrapper(
+            "stream-a", "1-0",
+            _valid_fields(payload={"recordId": "r1"}),
+        )
+
+        assert result is True
+
+    @pytest.mark.asyncio
     async def test_worker_loop_uses_governor_gate_for_index_pool(
         self, governor_consumer
     ) -> None:
@@ -1447,7 +1594,12 @@ class TestProcessMessageWrapperWithGovernor:
         assert governor_consumer.worker_loop_ready.wait(timeout=5.0)
         try:
             assert governor_consumer.parsing_semaphore is None
-            assert governor_consumer.indexing_semaphore is governor_consumer.governor.gate(Pool.INDEX)
+            # Under a governor there is no single index gate to park on the
+            # consumer: acquire_index_slot resolves the tier's gate per
+            # message. The worker loop only warms all four so they bind here.
+            assert governor_consumer.indexing_semaphore is None
+            for pool in Pool:
+                assert governor_consumer.governor.gate(pool) is not None
         finally:
             governor_consumer._stop_worker_thread()
 
@@ -1455,10 +1607,9 @@ class TestProcessMessageWrapperWithGovernor:
     async def test_heavy_tier_routes_to_heavy_parse_gate(
         self, governor_consumer
     ) -> None:
-        governor_consumer.indexing_semaphore = governor_consumer.governor.gate(Pool.INDEX)
         governor_consumer.redis = AsyncMock()
         # Same loop as the test itself, so cross-loop bridging in
-        # bridge_to_main_loop/schedule_on_main_loop becomes a plain await
+        # bridge_to_main_loop becomes a plain await
         # instead of needing asyncio.run_coroutine_threadsafe mocked out.
         governor_consumer.main_loop = asyncio.get_running_loop()
 
@@ -1479,13 +1630,13 @@ class TestProcessMessageWrapperWithGovernor:
 
         assert result is True
         assert governor_consumer.governor.gate(Pool.HEAVY_PARSE).in_use == 0
-        assert governor_consumer.governor.gate(Pool.INDEX).in_use == 0
+        assert governor_consumer.governor.gate(Pool.INDEX_HEAVY).in_use == 0
+        assert governor_consumer.governor.gate(Pool.INDEX_LIGHT).in_use == 0
 
     @pytest.mark.asyncio
     async def test_light_tier_routes_to_light_parse_gate(
         self, governor_consumer
     ) -> None:
-        governor_consumer.indexing_semaphore = governor_consumer.governor.gate(Pool.INDEX)
         governor_consumer.redis = AsyncMock()
         governor_consumer.main_loop = asyncio.get_running_loop()
 
@@ -1509,13 +1660,14 @@ class TestProcessMessageWrapperWithGovernor:
 
     @pytest.mark.asyncio
     async def test_distributed_lease_uses_resolved_ceiling_not_adaptive_limit(
-        self, governor_consumer
+        self, governor_consumer, monkeypatch
     ) -> None:
         """Distributed leases must be sized to the resolved ceiling (the
         cluster-wide cap), not the current adaptive node-local gate limit."""
+        monkeypatch.setenv("INDEXING_SPLIT_LEASE_POOLS", "true")
         governor_consumer.running = True
-        governor_consumer.indexing_semaphore = governor_consumer.governor.gate(Pool.INDEX)
-        governor_consumer.governor._registry.set(Pool.INDEX, 1)
+        governor_consumer.governor._registry.set(Pool.INDEX_HEAVY, 1)
+        governor_consumer.governor._registry.set(Pool.INDEX_LIGHT, 1)
         governor_consumer.governor._registry.set(Pool.HEAVY_PARSE, 1)
         governor_consumer.redis = AsyncMock()
         governor_consumer.main_loop = asyncio.get_running_loop()
@@ -1540,7 +1692,11 @@ class TestProcessMessageWrapperWithGovernor:
         lease_limits = {
             call.args[0]: call.args[2] for call in manager.try_acquire.await_args_list
         }
-        assert lease_limits["indexing"] == 8
+        # The invariant is that the lease is sized to the *resolved ceiling*,
+        # never the adaptive node-local limit shrunk to 1 above — the lease is
+        # the cluster-wide cap and must not move when one node backs off.
+        assert lease_limits["indexing"] == governor_consumer.governor.ceilings.index_heavy
+        assert lease_limits["indexing"] > 0
         assert lease_limits["parsing"] == 4
 
     @pytest.mark.asyncio
@@ -1548,7 +1704,6 @@ class TestProcessMessageWrapperWithGovernor:
         self, governor_consumer
     ) -> None:
         governor_consumer.running = True
-        governor_consumer.indexing_semaphore = governor_consumer.governor.gate(Pool.INDEX)
         governor_consumer.redis = AsyncMock()
         governor_consumer.main_loop = asyncio.get_running_loop()
         manager = AsyncMock()

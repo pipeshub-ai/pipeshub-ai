@@ -1176,7 +1176,7 @@ class VectorStore(Transformer):
         # Delete existing embeddings first (full replace, non-reconciliation path)
         await self.delete_embeddings(virtual_record_id, collection_name)
 
-        self.logger.info(
+        self.logger.debug(
             f"📊 Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
         )
 

@@ -137,39 +137,39 @@ class TestGetActiveTaskCount:
 
 
 class TestParseMessage:
-    def test_json_string(self, consumer):
+    async def test_json_string(self, consumer):
         msg = _make_message(value='{"eventType": "test", "payload": {"key": "value"}}')
-        result = consumer._IndexingKafkaConsumer__parse_message(msg)
+        result = await consumer._IndexingKafkaConsumer__parse_message(msg)
         assert isinstance(result, StreamMessage)
         assert result.eventType == "test"
         assert result.payload == {"key": "value"}
 
-    def test_bytes_message(self, consumer):
+    async def test_bytes_message(self, consumer):
         msg = _make_message(value=b'{"eventType": "test", "payload": {"key": "value"}}')
-        result = consumer._IndexingKafkaConsumer__parse_message(msg)
+        result = await consumer._IndexingKafkaConsumer__parse_message(msg)
         assert isinstance(result, StreamMessage)
         assert result.payload == {"key": "value"}
 
-    def test_double_encoded_json(self, consumer):
+    async def test_double_encoded_json(self, consumer):
         inner = json.dumps({"eventType": "test", "payload": {"key": "value"}})
         msg = _make_message(value=json.dumps(inner))
-        result = consumer._IndexingKafkaConsumer__parse_message(msg)
+        result = await consumer._IndexingKafkaConsumer__parse_message(msg)
         assert isinstance(result, StreamMessage)
         assert result.payload == {"key": "value"}
 
-    def test_invalid_json(self, consumer):
+    async def test_invalid_json(self, consumer):
         msg = _make_message(value="not json")
-        result = consumer._IndexingKafkaConsumer__parse_message(msg)
+        result = await consumer._IndexingKafkaConsumer__parse_message(msg)
         assert result is None
 
-    def test_unexpected_type(self, consumer):
+    async def test_unexpected_type(self, consumer):
         msg = _make_message(value=12345)
-        result = consumer._IndexingKafkaConsumer__parse_message(msg)
+        result = await consumer._IndexingKafkaConsumer__parse_message(msg)
         assert result is None
 
-    def test_unicode_decode_error(self, consumer):
+    async def test_unicode_decode_error(self, consumer):
         msg = _make_message(value=b'\xff\xfe')
-        result = consumer._IndexingKafkaConsumer__parse_message(msg)
+        result = await consumer._IndexingKafkaConsumer__parse_message(msg)
         assert result is None
 
 

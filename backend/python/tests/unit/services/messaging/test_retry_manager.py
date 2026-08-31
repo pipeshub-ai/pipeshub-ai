@@ -2,6 +2,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.services.messaging.redis_client import RedisClientRegistry
 from app.services.messaging.retry_manager import RetryManager
 
 
@@ -248,19 +249,18 @@ class TestRetryManagerInitializeCleanup:
 
     @pytest.mark.asyncio
     async def test_initialize_creates_connection(self, mock_logger, mock_redis_config):
-        """Test that initialize creates Redis connection."""
+        """Test that initialize builds a per-loop client registry and pings it."""
         manager = RetryManager(mock_logger, redis_config=mock_redis_config)
+        mock_client = AsyncMock()
+        mock_client.ping = AsyncMock()
 
-        with patch("app.services.messaging.retry_manager.Redis") as MockRedis:
-            mock_client = AsyncMock()
-            mock_client.ping = AsyncMock()
-            MockRedis.return_value = mock_client
-
+        with patch.object(
+            RedisClientRegistry, "_build_client", lambda self: mock_client
+        ):
             await manager.initialize()
 
-            MockRedis.assert_called_once()
             mock_client.ping.assert_called_once()
-            assert manager._redis is mock_client
+            assert manager._client() is mock_client
 
     @pytest.mark.asyncio
     async def test_initialize_with_existing_client_noop(self, mock_logger, mock_redis):
@@ -274,20 +274,20 @@ class TestRetryManagerInitializeCleanup:
 
     @pytest.mark.asyncio
     async def test_cleanup_closes_owned_connection(self, mock_logger, mock_redis_config):
-        """Test that cleanup closes connection when we own it."""
+        """Test that cleanup closes every per-loop client we own."""
         manager = RetryManager(mock_logger, redis_config=mock_redis_config)
+        mock_client = AsyncMock()
+        mock_client.ping = AsyncMock()
+        mock_client.aclose = AsyncMock()
 
-        with patch("app.services.messaging.retry_manager.Redis") as MockRedis:
-            mock_client = AsyncMock()
-            mock_client.ping = AsyncMock()
-            mock_client.aclose = AsyncMock()
-            MockRedis.return_value = mock_client
-
+        with patch.object(
+            RedisClientRegistry, "_build_client", lambda self: mock_client
+        ):
             await manager.initialize()
             await manager.cleanup()
 
             mock_client.aclose.assert_called_once()
-            assert manager._redis is None
+            assert manager._registry is None
 
     @pytest.mark.asyncio
     async def test_cleanup_does_not_close_provided_connection(self, mock_logger, mock_redis):

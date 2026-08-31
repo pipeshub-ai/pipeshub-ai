@@ -266,7 +266,7 @@ class TestConsumeLoopNotRunningInner:
 
         process_call_count = 0
 
-        async def mock_process(msg):
+        async def mock_process(msg, parsed=None):
             nonlocal process_call_count
             process_call_count += 1
             # Stop running after first message
@@ -312,7 +312,7 @@ class TestConsumeLoopMessageException:
 
         process_call_count = 0
 
-        async def mock_process(msg):
+        async def mock_process(msg, parsed=None):
             nonlocal process_call_count
             process_call_count += 1
             if process_call_count == 1:

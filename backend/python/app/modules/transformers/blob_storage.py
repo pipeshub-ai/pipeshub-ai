@@ -1033,7 +1033,7 @@ class BlobStorage(Transformer):
                                 self.logger.error("❌ No document ID in upload response")
                                 raise Exception("No document ID in upload response")
 
-                            self.logger.info("✅ Successfully uploaded record for document: %s", document_id)
+                            self.logger.debug("✅ Successfully uploaded record for document: %s", document_id)
                             return document_id, file_size_bytes
                 except Exception as e:
                     raise

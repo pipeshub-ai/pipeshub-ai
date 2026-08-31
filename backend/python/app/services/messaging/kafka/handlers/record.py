@@ -1140,7 +1140,7 @@ class RecordEventHandler(BaseEventService):
                     record_id,
                 )
                 return None
-            self.logger.info(f"✅ Updated document status for record {record_id}")
+            self.logger.debug(f"✅ Updated document status for record {record_id}")
             return record
         except Exception as e:
             self.logger.error(f"❌ Failed to update document status: {str(e)}")

@@ -226,7 +226,7 @@ async def parse_file(
             record_name, provider_enum.value, parse_ms,
         )
     blocks_count = len(result.block_container.blocks) if result.block_container is not None else 0
-    logger.info(
+    logger.debug(
         "Parse completed: record='%s' outcome=success provider_used=%s parse_ms=%.0f blocks=%d raw_document=%s",
         record_name,
         result.provider_used.value if result.provider_used is not None else "default",

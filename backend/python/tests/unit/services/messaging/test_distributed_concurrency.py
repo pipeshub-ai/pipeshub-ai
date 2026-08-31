@@ -2,14 +2,36 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redis.asyncio import BlockingConnectionPool
 
 from app.services.messaging.config import RedisConfig
 from app.services.messaging.distributed_concurrency import (
     DistributedConcurrencyManager,
     DistributedLeaseSet,
 )
+from app.services.messaging.redis_client import RedisClientRegistry
 
 fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
+
+
+class _StubRegistry:
+    """Stands in for RedisClientRegistry, handing out one AsyncMock client.
+
+    The real registry keys clients by event loop; these tests never leave one
+    loop, so a single client is an accurate stand-in and keeps assertions on
+    ``manager.redis`` straightforward.
+    """
+
+    def __init__(self) -> None:
+        self.redis = AsyncMock()
+        self.closed = 0
+
+    def client(self) -> AsyncMock:
+        return self.redis
+
+    async def aclose(self) -> None:
+        self.closed += 1
+        await self.redis.aclose()
 
 
 @pytest.fixture
@@ -18,11 +40,18 @@ def manager() -> DistributedConcurrencyManager:
         MagicMock(),
         RedisConfig(host="redis", port=6379),
     )
-    instance._redis = AsyncMock()
-    # initialize() normally does this via register_script(); tests set
-    # _redis directly to skip the real connection, so wire these up too.
+    # initialize() normally builds the registry and pings; stub it so these
+    # tests skip the real connection.
+    registry = _StubRegistry()
+    instance._registry = registry
     instance._acquire_script = AsyncMock()
     instance._renew_script = AsyncMock()
+    # Keyed by the client object itself (a WeakKeyDictionary), so a discarded
+    # client cannot have its address reused by a fresh one.
+    instance._scripts_by_client[registry.redis] = (
+        instance._acquire_script,
+        instance._renew_script,
+    )
     return instance
 
 
@@ -58,27 +87,26 @@ async def test_renew_reports_lost_lease(manager) -> None:
 async def test_release_removes_only_owner_lease(manager) -> None:
     await manager.release("indexing", "worker-1")
 
-    manager._redis.zrem.assert_awaited_once_with(
+    manager._registry.redis.zrem.assert_awaited_once_with(
         "pipeshub:indexing:concurrency:indexing", "worker-1"
     )
 
 
 @pytest.mark.asyncio
 async def test_cleanup_closes_owned_client(manager) -> None:
-    redis = manager._redis
+    registry = manager._registry
 
     await manager.cleanup()
     await manager.cleanup()
 
-    redis.aclose.assert_awaited_once()
-    assert manager._redis is None
+    assert registry.closed == 1
+    assert manager._registry is None
 
 
 def test_lease_set_tracks_thread_safe_snapshot() -> None:
     leases = DistributedLeaseSet()
 
     leases.add("indexing", "worker-1")
-    assert leases.owns("indexing", "worker-1") is True
     assert leases.snapshot() == [("indexing", "worker-1")]
     assert leases.discard("indexing") == "worker-1"
     assert leases.snapshot() == []
@@ -89,9 +117,10 @@ async def test_lua_scripts_against_fakeredis_acquire_expiry_limit() -> None:
     """Exercise the real acquire/renew/release Lua scripts (not mocks)
     against a fake-but-real Redis to catch script bugs the mocked tests
     above can't (e.g. bad KEYS/ARGV indexing, TIME() math)."""
-    with patch(
-        "app.services.messaging.distributed_concurrency.Redis",
-        new=fakeredis_aioredis.FakeRedis,
+    with patch.object(
+        RedisClientRegistry,
+        "_build_client",
+        lambda self: fakeredis_aioredis.FakeRedis(decode_responses=True),
     ):
         manager = DistributedConcurrencyManager(
             MagicMock(), RedisConfig(host="redis", port=6379)
@@ -127,25 +156,69 @@ async def test_lua_scripts_against_fakeredis_acquire_expiry_limit() -> None:
 
 @pytest.mark.asyncio
 async def test_initialize_bounds_redis_socket_operations() -> None:
-    with patch(
-        "app.services.messaging.distributed_concurrency.Redis"
-    ) as redis_cls:
-        redis = redis_cls.return_value
-        redis.ping = AsyncMock()
+    """The socket timeout and the pool size are the two bounds that stop a
+    stalled caller from turning into a Redis outage: the timeout has to fire
+    before any caller's own deadline (so redis-py raises instead of being
+    cancelled mid-command, which forces the connection closed), and the pool
+    has to be finite (redis-py defaults to 2**31, so every closed connection
+    was replaced by a fresh TCP connect)."""
+    built: list[BlockingConnectionPool] = []
+
+    def _capture(self: RedisClientRegistry) -> AsyncMock:
+        built.append(
+            BlockingConnectionPool(
+                host=self._config.host,
+                port=self._config.port,
+                max_connections=self._max_connections,
+                socket_timeout=self._socket_timeout,
+                socket_connect_timeout=self._socket_timeout,
+            )
+        )
+        client = AsyncMock()
+        client.ping = AsyncMock()
+        return client
+
+    with patch.object(RedisClientRegistry, "_build_client", _capture):
         manager = DistributedConcurrencyManager(
             MagicMock(),
             RedisConfig(host="redis", port=6379),
             operation_timeout_seconds=2.5,
+            max_connections=17,
         )
-
         await manager.initialize()
 
-        redis_cls.assert_called_once_with(
-            host="redis",
-            port=6379,
-            password=None,
-            db=0,
-            decode_responses=True,
-            socket_timeout=2.5,
-            socket_connect_timeout=2.5,
+    assert len(built) == 1
+    pool = built[0]
+    assert pool.max_connections == 17
+    assert pool.connection_kwargs["socket_timeout"] == 2.5
+    assert pool.connection_kwargs["socket_connect_timeout"] == 2.5
+
+
+@pytest.mark.asyncio
+async def test_renew_many_uses_one_round_trip_for_every_lease() -> None:
+    """The renewal loop used to run per-message, so N in-flight records meant
+    N background tasks each issuing their own renew every interval. One
+    pipelined round trip keeps Redis load flat as the pipeline fills."""
+    with patch.object(
+        RedisClientRegistry,
+        "_build_client",
+        lambda self: fakeredis_aioredis.FakeRedis(decode_responses=True),
+    ):
+        manager = DistributedConcurrencyManager(
+            MagicMock(), RedisConfig(host="redis", port=6379)
         )
+        await manager.initialize()
+        try:
+            leases = [("indexing", "w1"), ("parsing:light", "w2")]
+            for pool, owner in leases:
+                assert await manager.try_acquire(pool, owner, 4, 60) is True
+
+            results = await manager.renew_many([*leases, ("indexing", "never")], 60)
+
+            assert results[("indexing", "w1")] is True
+            assert results[("parsing:light", "w2")] is True
+            # An owner that never held the lease reports lost, not renewed.
+            assert results[("indexing", "never")] is False
+            assert await manager.renew_many([], 60) == {}
+        finally:
+            await manager.cleanup()

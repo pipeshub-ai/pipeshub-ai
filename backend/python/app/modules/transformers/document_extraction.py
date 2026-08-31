@@ -143,7 +143,7 @@ class DocumentExtraction(Transformer):
             sub_category_level_2=document_classification.subcategories.level2,
             sub_category_level_3=document_classification.subcategories.level3,
         )
-        self.logger.info("🎯 Document extraction completed successfully")
+        self.logger.debug("🎯 Document extraction completed successfully")
 
 
     def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool, context_length: int) -> List[dict]:
@@ -311,7 +311,7 @@ class DocumentExtraction(Transformer):
                 self.llm, messages, DocumentClassification
             )
             if parsed_response is not None:
-                self.logger.info("✅ Document classification parsed successfully")
+                self.logger.debug("✅ Document classification parsed successfully")
                 return parsed_response
             self.logger.warning(
                 "⚠️ Structured extraction failed after all attempts. Falling back to summary."
@@ -380,7 +380,7 @@ class DocumentExtraction(Transformer):
             )
 
             if parsed_response is not None:
-                self.logger.info("✅ Document classification parsed successfully")
+                self.logger.debug("✅ Document classification parsed successfully")
                 return parsed_response
 
             self.logger.warning(
