@@ -55,6 +55,18 @@ class ToolSurfaces:
     graph: bool
     """True iff a knowledgegraph tool is in `tool_names`."""
 
+    code_graph: bool
+    """True iff a codegraph tool is in `tool_names`.
+
+    Distinct from `code`, which is code *execution* (sandbox). This is the
+    indexed call/import graph of the org's own repositories, and the only
+    surface that returns relationships between symbols rather than matching
+    text — which is why it needs naming separately from `retrieval`.
+
+    Resolved from granted names, so it goes False on its own whenever the
+    dynamic tools are not built for this request.
+    """
+
     live_api_apps: tuple[str, ...]
     """App type keys with live-API service tools (e.g. `("jira", "confluence")`).
     Derived from `agent_toolsets` AND the `_has_*_tools(state)` connector flags —
@@ -135,6 +147,12 @@ class ToolSurfaces:
             names_set,
         ))
 
+        # ── Code-graph surface ───────────────────────────────────────────────
+        code_graph = bool(granted_any(
+            ["codegraph.query_code_graph", "codegraph.find_call_neighbors"],
+            names_set,
+        ))
+
         # ── Live-API connector apps ──────────────────────────────────────────
         live_api_apps = _resolve_live_api_apps(state, names_set)
 
@@ -159,6 +177,7 @@ class ToolSurfaces:
             code=code,
             code_networked=code_networked,
             graph=graph,
+            code_graph=code_graph,
             live_api_apps=live_api_apps,
             can_ask_user=can_ask_user,
             can_fetch_full_record=can_fetch_full_record,

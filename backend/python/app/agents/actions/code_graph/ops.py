@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "CALL_RELATIONS",
     "DEFAULT_MAX_DEPTH",
+    "DEFAULT_MAX_LINES",
     "DEFAULT_NEIGHBOR_LIMIT",
     "SymbolRef",
     "attach_file_paths",
@@ -41,6 +42,10 @@ CALL_RELATIONS = [
 
 DEFAULT_NEIGHBOR_LIMIT = 25
 DEFAULT_MAX_DEPTH = 6
+# Default ceiling on a whole-file read. Enough for ~95% of files outright, and
+# it is the hub files an architecture question lands on that overrun it -- which
+# is exactly where an uncapped read costs thousands of tokens of context.
+DEFAULT_MAX_LINES = 600
 # Ceiling on nodes expanded per side, so one hub symbol cannot walk the repo.
 _MAX_VISITED = 4000
 _FRONTIER_LIMIT = 2000
@@ -337,6 +342,7 @@ async def read_code_impl(
     file_path: str,
     qualified_name: str | None = None,
     lines: str | None = None,
+    max_lines: int | None = None,
 ) -> dict[str, Any]:
     """Source for one symbol, one line range, or a whole file.
 
@@ -344,9 +350,10 @@ async def read_code_impl(
     returns every block of the file regardless -- so reading five symbols from
     one file should be one call, not five downloads of the same blob.
 
-    A range matters only for the tail: 95% of files in a real repo are under
-    500 lines, but the hub files that architecture questions land on are the
-    ones over a thousand.
+    ``max_lines`` bounds a whole-file read and applies by default, so asking for
+    a file is safe without knowing its size. It is a budget, not a window: the
+    caller says how much it can afford, and the file says where that lands. A
+    line range is for when the caller already knows *which* part it wants.
     """
     if qualified_name:
         block = await resolve_symbol(
@@ -401,7 +408,8 @@ async def read_code_impl(
     span = _parse_line_range(lines)
     if lines and span is None:
         return {"error": f"lines must look like '40-80', got {lines!r}"}
-    return _file_code(record, file_path, connector_id, span)
+    budget = DEFAULT_MAX_LINES if max_lines is None else max(1, int(max_lines))
+    return _file_code(record, file_path, connector_id, span, budget)
 
 
 async def _record_in_connector(
@@ -441,12 +449,13 @@ def _file_code(
     file_path: str,
     connector_id: str,
     span: tuple[int, int] | None,
+    budget: int,
 ) -> dict[str, Any]:
-    """Every block of a file, in source order, optionally clipped to a range.
+    """Every block of a file, in source order, clipped to a range and a budget.
 
-    Blocks tile the file exactly, so concatenating them reconstructs it; a
-    range keeps the blocks that overlap it rather than slicing text, which
-    keeps every returned fragment a whole symbol.
+    Blocks tile the file exactly, so concatenating them reconstructs it; both
+    the range and the budget keep whole blocks rather than slicing text, so
+    every returned fragment is still a complete symbol.
     """
     containers = record.get("block_containers") or {}
     items: list[tuple[int, dict[str, Any]]] = []
@@ -469,12 +478,32 @@ def _file_code(
                 "code": text,
             }))
     items.sort(key=lambda pair: pair[0])
-    return {
+    kept: list[dict[str, Any]] = []
+    spent = 0
+    for _, entry in items:
+        length = max(1, (entry["end_line"] or 0) - (entry["start_line"] or 0) + 1)
+        # Always keep the first block: a budget smaller than the opening symbol
+        # should still return that symbol rather than nothing.
+        if kept and spent + length > budget:
+            break
+        kept.append(entry)
+        spent += length
+    truncated = len(kept) < len(items)
+    out = {
         "file_path": file_path,
         "connector_id": connector_id,
         "lines": f"{span[0]}-{span[1]}" if span else None,
-        "blocks": [entry for _, entry in items],
+        "truncated": truncated,
+        "blocks": kept,
     }
+    if truncated:
+        resume = kept[-1]["end_line"] if kept else 0
+        out["next"] = (
+            f"Stopped at line {resume} of {items[-1][1]['end_line']}. Continue "
+            f"with lines='{(resume or 0) + 1}-{items[-1][1]['end_line']}', or "
+            "raise max_lines."
+        )
+    return out
 
 
 def _find_blob_block(record: dict[str, Any], qualified_name: str) -> str | None:

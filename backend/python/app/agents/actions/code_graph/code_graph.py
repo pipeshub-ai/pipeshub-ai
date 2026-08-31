@@ -5,10 +5,12 @@ Four tools over the blocks + recordRelations graph the indexing pipeline builds:
   query_code_graph    — find symbols, relationships, module structure
   find_call_neighbors — who calls a symbol, or what it calls
   read_code           — source for a symbol, a line range, or a whole file
-  find_symbol_path    — how two symbols are connected, by any relation
+  find_symbol_path    — how two same-language symbols are connected
 
-A symbol is addressed as ``(file_path, qualified_name)``. Both appear in the code
-blocks rendered into the model's context, so it can name one it has just read.
+A symbol is addressed as ``(file_path, qualified_name)`` — written
+``path/to/file.py#function:main`` where one argument has to carry both. Both
+halves appear in the code blocks rendered into the model's context, so it can
+name a symbol it has just read.
 
 These are **dynamic** tools rather than a registered toolset, built by
 ``_build_dynamic_tools`` only when a repo connector is present — the same shape
@@ -35,6 +37,7 @@ from pydantic import BaseModel, Field
 
 from .ops import (
     DEFAULT_MAX_DEPTH,
+    DEFAULT_MAX_LINES,
     DEFAULT_NEIGHBOR_LIMIT,
     find_call_neighbors_impl,
     find_symbol_path_impl,
@@ -60,6 +63,30 @@ __all__ = ["CODE_GRAPH_APP_NAME", "create_code_graph_tools"]
 CODE_GRAPH_APP_NAME = "codegraph"
 
 
+def _brief(params: dict[str, Any]) -> str:
+    """Arguments as one short line, long values clipped."""
+    return " ".join(
+        f"{key}={str(value)[:80]}"
+        for key, value in params.items()
+        if value is not None
+    )
+
+
+def _outcome(result: Any) -> str:
+    """What came back, by shape -- never the payload itself."""
+    if not isinstance(result, dict):
+        return type(result).__name__
+    if "error" in result:
+        return f"error: {str(result['error'])[:120]}"
+    parts = [f"{k}={len(v)}" for k, v in result.items() if isinstance(v, list)]
+    parts += [
+        f"{k}={result[k]}"
+        for k in ("matches", "modules", "dependencies", "truncated", "found")
+        if k in result
+    ]
+    return ", ".join(parts) or "ok"
+
+
 _CONNECTOR_FIELD = Field(
     ...,
     description=(
@@ -78,9 +105,11 @@ class QueryCodeGraphArgs(BaseModel):
             "What to start from, resolved by shape: a directory "
             "('backend/python/app/agents/') lists its files and subdirectories; "
             "a file ('.../router.py') lists the symbols it defines; a glob "
-            "('backend/python/app/**') spans a subtree; a qualified name "
-            "('function:analyze_game') is that exact symbol; anything else is "
-            "free text matched against symbol names."
+            "('backend/python/app/**') spans a subtree; 'path/to/file.py#"
+            "function:main' is that one symbol — the form every result prints, "
+            "and the only unambiguous way to name a symbol, since a qualified "
+            "name alone is unique only within its file; anything else is free "
+            "text matched against symbol names."
         ),
     )
     relations: list[str] | None = Field(
@@ -98,7 +127,8 @@ class QueryCodeGraphArgs(BaseModel):
         default=0,
         description=(
             f"Hops to expand: 0 = just the matches, up to {MAX_QUERY_DEPTH}. "
-            "Ignored when group_by is set, which always rolls up direct dependencies."
+            "Dropped when group_by is set, which always rolls up direct "
+            "dependencies."
         ),
     )
     group_by: str = Field(
@@ -150,8 +180,17 @@ class ReadCodeArgs(BaseModel):
     lines: str | None = Field(
         default=None,
         description=(
-            "Read a line range instead, e.g. '380-420'. Useful on large files — "
-            "pair it with the `line` an edge reports to land on a call site."
+            "Read a line range instead, e.g. '380-420'. Use when you already "
+            "know WHICH part you want — pair it with the `line` an edge reports "
+            "to land on a call site. To bound size, use max_lines instead."
+        ),
+    )
+    max_lines: int | None = Field(
+        default=None,
+        description=(
+            f"Budget for a whole-file read (default {DEFAULT_MAX_LINES}). Whole "
+            "blocks are kept and the result says where it stopped, so you can "
+            "read a large file without knowing its size first."
         ),
     )
 
@@ -167,12 +206,14 @@ class FindSymbolPathArgs(BaseModel):
     )
 
 
+
 def create_code_graph_tools(
     org_id: str,
     user_id: str,
     graph_provider: "IGraphDBProvider | None" = None,
     blob_store: "BlobStorage | None" = None,
     allowed_connector_ids: tuple[str, ...] = (),
+    request_logger: "logging.Logger | None" = None,
 ) -> list[Callable]:
     """Build the code-graph tools with runtime deps injected.
 
@@ -182,13 +223,39 @@ def create_code_graph_tools(
     never scoped to. Empty means the agent has no app scope, and the org-wide
     behaviour (still gated per record) applies.
 
+    ``request_logger`` is the per-request service logger. The module logger this
+    file would otherwise use does not propagate to the service log handler, so
+    tool calls left no trace there at all — a run with 34 code-tool calls and a
+    run with none produced identical logs.
+
     Returns an empty list when there is no graph provider — the tools cannot do
     anything without one, and offering a tool that always fails is worse than
     not offering it.
     """
+    log = request_logger or logger
     if graph_provider is None:
         logger.debug("Code graph tools not built: no graph provider")
         return []
+
+    async def _run(name: str, params: dict[str, Any], call, failure: str) -> dict[str, Any]:
+        """Scope-check, invoke, and log -- whatever the outcome.
+
+        Only failures used to be logged, which made the tools unfalsifiable
+        from a log alone: a run that never called them and a run whose calls
+        all succeeded left the same trace. Every branch here logs at info.
+        """
+        detail = _brief(params)
+        denied = _in_scope(params.get("connector_id") or "")
+        if denied:
+            log.info("codegraph %s: %s -> connector out of scope", name, detail)
+            return denied
+        try:
+            result = await call()
+        except Exception as exc:
+            log.exception("codegraph %s: %s -> raised", name, detail)
+            return {"error": f"{failure}: {exc}"}
+        log.info("codegraph %s: %s -> %s", name, detail, _outcome(result))
+        return result
 
     def _in_scope(connector_id: str) -> dict[str, Any] | None:
         """Reject an out-of-scope connector rather than silently widening.
@@ -225,12 +292,13 @@ def create_code_graph_tools(
         Then call this repeatedly, narrowing or widening as you go — one call
         rarely answers a broad question.
 
-        `select` accepts three things and picks by shape:
+        `select` picks by shape:
           - free text ('payment webhook') — ranked symbol names. Use this first
             when you do not yet know any file or symbol.
+          - a directory ('backend/python/app/agents/') — what is in it.
           - a path or glob ('backend/python/app/**') — everything under it.
-          - a qualified name ('function:analyze_game', 'method:Client.fetch')
-            — that exact symbol.
+          - 'path/to/file.py#function:main' — that one symbol. This is the form
+            results print, and the one to copy back in.
 
         `depth` walks relationships outward; `relations` and `direction` narrow
         which. `group_by='directory'` instead rolls every dependency under the
@@ -238,26 +306,37 @@ def create_code_graph_tools(
         how you get an architecture-level view, since a raw expansion returns
         thousands of symbols.
 
+        Every result is ranked by `degree` — how many edges touch a symbol or a
+        module. That is what separates an entry point from a helper, so read the
+        top of the list rather than sampling it, and quote the number when you
+        say something is central.
+
         Grouping is measured from the path you give, so it drills down:
         select='**' returns top-level directories, 'backend/**' the layers inside
         backend, 'backend/python/app/**' the modules inside app. For a high-level
         design, start broad with group_by='directory' and re-ask with a longer
         path for each module worth opening. Use read_code to read anything
         it names.
+
+        When the question asks HOW or WHY something works, a rollup alone
+        is not enough — after identifying relevant modules, use read_code
+        on the highest-degree symbols to understand the design. For tracing
+        a specific call chain, use find_call_neighbors rather than expanding
+        with depth, since it returns exact call-site lines.
         """
-        denied = _in_scope(connector_id)
-        if denied:
-            return denied
-        try:
-            return await query_code_graph_impl(
+        return await _run(
+            "query_code_graph",
+            {"connector_id": connector_id, "select": select, "relations": relations,
+             "direction": direction, "depth": depth, "group_by": group_by,
+             "kinds": kinds, "limit": limit},
+            lambda: query_code_graph_impl(
                 graph_provider=graph_provider, org_id=org_id, user_id=user_id,
                 connector_id=connector_id, select=select, relations=relations,
                 direction=direction, depth=depth, group_by=group_by,
                 kinds=kinds, limit=limit,
-            )
-        except Exception as exc:
-            logger.exception("query_code_graph failed")
-            return {"error": f"Failed to query the code graph: {exc}"}
+            ),
+            "Failed to query the code graph",
+        )
 
     @tool("find_call_neighbors", args_schema=FindCallNeighborsArgs)
     async def find_call_neighbors(
@@ -275,18 +354,17 @@ def create_code_graph_tools(
         which you can then read with read_code — each carries the `line` of the
         call site, so pair it with read_code(lines=...) to see the call itself.
         """
-        denied = _in_scope(connector_id)
-        if denied:
-            return denied
-        try:
-            return await find_call_neighbors_impl(
+        return await _run(
+            "find_call_neighbors",
+            {"connector_id": connector_id, "file_path": file_path,
+             "qualified_name": qualified_name, "direction": direction, "limit": limit},
+            lambda: find_call_neighbors_impl(
                 graph_provider=graph_provider, org_id=org_id, user_id=user_id,
                 connector_id=connector_id, file_path=file_path, qualified_name=qualified_name,
                 direction=direction, limit=limit,
-            )
-        except Exception as exc:
-            logger.exception("find_call_neighbors failed")
-            return {"error": f"Failed to walk the call graph: {exc}"}
+            ),
+            "Failed to walk the call graph",
+        )
 
     @tool("read_code", args_schema=ReadCodeArgs)
     async def read_code(
@@ -294,26 +372,37 @@ def create_code_graph_tools(
         file_path: str,
         qualified_name: str | None = None,
         lines: str | None = None,
+        max_lines: int | None = None,
     ) -> dict[str, Any]:
         """Read source: one symbol, one line range, or a whole file.
 
-        Give `qualified_name` for a single symbol, `lines` for a window
-        ('380-420'), or neither to read the whole file as its symbols in source
-        order. All three cost the same single fetch, so reading a file once
-        beats reading five of its symbols separately.
+        Give `qualified_name` for a single symbol, `lines` for a window you have
+        a reason to want ('380-420'), or neither to read the whole file as its
+        symbols in source order.
+
+        Cost trade-offs: reading a file once beats reading five of its symbols
+        separately, but a whole file also fills context fast. Prefer
+        `qualified_name` when you need one definition, a whole-file read when
+        you need to understand a file's structure, and `lines` only when you
+        already know the exact range (e.g. a call-site line from
+        find_call_neighbors).
+
+        A whole-file read is bounded by `max_lines` and tells you where it
+        stopped, so you never need to guess a line window just to keep a file
+        from being too large.
         """
-        denied = _in_scope(connector_id)
-        if denied:
-            return denied
-        try:
-            return await read_code_impl(
+        return await _run(
+            "read_code",
+            {"connector_id": connector_id, "file_path": file_path,
+             "qualified_name": qualified_name, "lines": lines, "max_lines": max_lines},
+            lambda: read_code_impl(
                 graph_provider=graph_provider, org_id=org_id, user_id=user_id,
                 connector_id=connector_id, blob_store=blob_store,
                 file_path=file_path, qualified_name=qualified_name, lines=lines,
-            )
-        except Exception as exc:
-            logger.exception("read_code failed")
-            return {"error": f"Failed to read the code: {exc}"}
+                max_lines=max_lines,
+            ),
+            "Failed to read the code",
+        )
 
     @tool("find_symbol_path", args_schema=FindSymbolPathArgs)
     async def find_symbol_path(
@@ -324,25 +413,30 @@ def create_code_graph_tools(
         qualified_name_b: str,
         max_depth: int = DEFAULT_MAX_DEPTH,
     ) -> dict[str, Any]:
-        """Trace how two symbols are connected, by any relation.
+        """Trace how two symbols in the same language are connected.
 
         Searches undirected across every relationship the code graph holds — not
         just calls — and returns each hop with its relation type and direction,
         so you can see whether two parts of the codebase are related through
         calls, imports, inheritance, or containment.
+
+        Only edges the parser could prove exist, which means only edges within
+        one language and one repository. Two layers that talk over HTTP — a
+        frontend calling a backend endpoint — have no path here, and a query
+        for one returns nothing. Read the route handler instead.
         """
-        denied = _in_scope(connector_id)
-        if denied:
-            return denied
-        try:
-            return await find_symbol_path_impl(
+        return await _run(
+            "find_symbol_path",
+            {"connector_id": connector_id, "file_path_a": file_path_a,
+             "qualified_name_a": qualified_name_a, "file_path_b": file_path_b,
+             "qualified_name_b": qualified_name_b, "max_depth": max_depth},
+            lambda: find_symbol_path_impl(
                 graph_provider=graph_provider, org_id=org_id, user_id=user_id,
                 connector_id=connector_id,
                 file_path_a=file_path_a, qualified_name_a=qualified_name_a,
                 file_path_b=file_path_b, qualified_name_b=qualified_name_b, max_depth=max_depth,
-            )
-        except Exception as exc:
-            logger.exception("find_symbol_path failed")
-            return {"error": f"Failed to search for a path: {exc}"}
+            ),
+            "Failed to search for a path",
+        )
 
     return [query_code_graph, find_call_neighbors, read_code, find_symbol_path]

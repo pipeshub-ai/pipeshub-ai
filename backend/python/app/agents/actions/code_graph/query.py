@@ -2,10 +2,12 @@
 
 One call shape, varied by arguments, that an agent invokes repeatedly:
 
-    select="analyze_game", relations=["CALLS"], direction="inbound"   -> callers
+    select="src/game.py#function:analyze", relations=["CALLS"],
+        direction="inbound"                                           -> callers
     select="frontend/**", relations=["IMPORTS_FROM"],
-        group_by="directory", depth=1                                 -> module graph
+        group_by="directory"                                          -> module graph
     select="src/api/client.py", depth=0                               -> what a file holds
+    select="src/api/"                                                 -> what a directory holds
     select="chess analysis"                                           -> cold start
 
 Kept separate from ``ops.py`` so the narrow tools stay readable; both share
@@ -23,7 +25,13 @@ from typing import Any
 from app.config.constants.arangodb import CollectionNames, RecordRelations
 from app.modules.parsers.code_parser.models import FILLER_KINDS
 
-from .ops import SymbolRef, _readable_blocks, _user_can_read, attach_file_paths
+from .ops import (
+    SymbolRef,
+    _readable_blocks,
+    _user_can_read,
+    attach_file_paths,
+    resolve_symbol,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +80,22 @@ _PATH_FANOUT_FILES = 60
 # Files a directory listing may scan before it reports itself truncated.
 _LIST_SCAN_LIMIT = 2000
 _EXPAND_FANOUT = 400
+# Degree is counted for at most this many candidates, over at most this many
+# edge rows. Both caps are reported rather than applied silently: a truncated
+# count ranks the wrong symbol first, which is worse than no ranking at all.
+_DEGREE_CANDIDATES = 400
+_DEGREE_ROW_LIMIT = 50000
+# Pre-formatted dependency lines returned alongside the structured edges.
+_SUMMARY_LINES = 20
+_SUMMARY_MODULES = 8
+_DRILLDOWN_FILE_THRESHOLD = 50
+
+# Roles a rollup drops unless asked for them. A test file imports the one module
+# it tests and little else, which is the most concentrated edge weight in the
+# repo -- so by weight the top of every architecture rollup was
+# `test_factory_wiring.py -> factory.py`. Excluded from AGGREGATES only; a
+# selector that names a test path still returns it.
+_ROLLUP_EXCLUDED_ROLES = frozenset({"test"})
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
 # Rollup depth when the selector gives nothing to measure from (free text, a
@@ -100,6 +124,17 @@ def _looks_like_directory(select: str) -> bool:
     if "*" in select or "?" in select:
         return False
     return "/" in select and not select.endswith(_CODE_EXTENSIONS)
+
+
+def _looks_like_locator(select: str) -> bool:
+    """``path/to/file.py#function:main`` -- a file and a symbol in one string.
+
+    A qualified name is unique only within a file, so a bare
+    ``function:main`` is ambiguous across a repository. This is how a caller
+    says *which* one, and it is the form every result already prints.
+    """
+    path, sep, qualified = select.partition("#")
+    return bool(sep and path.strip() and qualified.strip())
 
 
 def _module_of(file_path: str | None, depth: int = _MODULE_DEPTH) -> str:
@@ -229,6 +264,17 @@ async def _list_children(
     }
 
 
+async def _select_by_locator(
+    graph_provider: Any, org_id: str, select: str, connector_id: str
+) -> list[dict]:
+    """Resolve ``file_path#qualified_name`` to the one block it names."""
+    file_path, _, qualified_name = select.partition("#")
+    block = await resolve_symbol(
+        graph_provider, org_id, file_path.strip(), qualified_name.strip(), connector_id
+    )
+    return [block] if block else []
+
+
 async def _select_by_qualified_name(
     graph_provider: Any, org_id: str, qualified_name: str, connector_id: str
 ) -> list[dict]:
@@ -296,8 +342,17 @@ def _unwrap(row: dict) -> dict:
     return row
 
 
-def _rank(blocks: list[dict], terms: list[str]) -> list[dict]:
-    """Exact name match beats prefix beats substring; filler spans sink."""
+def _rank(
+    blocks: list[dict], terms: list[str], degrees: dict[str, int] | None = None
+) -> list[dict]:
+    """Exact name match beats prefix beats substring; degree breaks the tie.
+
+    Name match stays primary: a caller who typed a name wants that symbol, not
+    the most-connected thing near it. Degree decides among equals, which is
+    where a flat scan-ordered list was leaving the model to guess.
+    """
+    degrees = degrees or {}
+
     def score(block: dict) -> tuple:
         name = (block.get("name") or "").lower()
         kind = (block.get("kind") or "").lower()
@@ -309,9 +364,76 @@ def _rank(blocks: list[dict], terms: list[str]) -> list[dict]:
                 best = max(best, 2)
             elif term in name:
                 best = max(best, 1)
-        return (-best, kind in _NOISE_KINDS, len(name), block.get("filePath") or "")
+        return (
+            -best,
+            kind in _NOISE_KINDS,
+            -degrees.get(_key_of(block), 0),
+            len(name),
+            block.get("filePath") or "",
+        )
 
     return sorted(blocks, key=score)
+
+
+def _rank_by_degree(blocks: list[dict], degrees: dict[str, int]) -> list[dict]:
+    """Most-connected first.
+
+    A path selector carries no name to match on, so degree is the only thing
+    separating a file's entry points from its one-line helpers. Without it the
+    result arrives in scan order and a 60-file selection reads as a flat list.
+    """
+    def score(block: dict) -> tuple:
+        return (
+            (block.get("kind") or "").lower() in _NOISE_KINDS,
+            -degrees.get(_key_of(block), 0),
+            block.get("filePath") or "",
+            block.get("startLine") or 0,
+        )
+
+    return sorted(blocks, key=score)
+
+
+def _key_of(block: dict) -> str:
+    return block.get("_key") or block.get("id") or ""
+
+
+async def _degrees(
+    graph_provider: Any, blocks: list[dict], relations: list[str]
+) -> tuple[dict[str, int], bool]:
+    """How many edges touch each block, in one batched call.
+
+    Counted undirected, and only over ``relations`` -- degree answers "how
+    central is this, for the relationship I asked about", so a CALLS-only query
+    should not rank by import count.
+
+    A symbol forty places call and one that calls forty are both hubs, and
+    either is worth surfacing first.
+
+    Returns ``(counts, capped)``. When the row cap bites the counts are
+    truncated in scan order, which ranks the wrong symbol first -- so the
+    caller reports it rather than presenting a skewed order as a ranking.
+    """
+    keys = [k for k in (_key_of(b) for b in blocks[:_DEGREE_CANDIDATES]) if k]
+    if len(keys) < 2:
+        return {}, False
+    try:
+        rows = await graph_provider.get_neighbors_for_nodes_by_relationship_types(
+            node_keys=keys,
+            node_collection=_BLOCKS,
+            relationship_types=relations,
+            direction="any",
+            limit=_DEGREE_ROW_LIMIT,
+        )
+    except Exception as exc:
+        logger.warning("Degree lookup failed: %s", exc)
+        return {}, False
+    counts: Counter = Counter()
+    for row in rows or []:
+        anchor = row.get("anchorKey")
+        if anchor:
+            counts[anchor] += 1
+    capped = len(rows or []) >= _DEGREE_ROW_LIMIT or len(blocks) > _DEGREE_CANDIDATES
+    return dict(counts), capped
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +558,7 @@ def _group_rows(
     record_paths: dict[str, str],
     group_by: str,
     depth: int,
+    excluded: set[str] | None = None,
 ) -> dict[str, Any]:
     """Roll aggregated record-level rows up to files or modules.
 
@@ -451,10 +574,14 @@ def _group_rows(
     members: dict[str, set[str]] = defaultdict(set)
     weights: Counter = Counter()
     relations: dict[tuple[str, str], Counter] = defaultdict(Counter)
+    # Edges touching each group, either way. File count says how big a module
+    # is; this says how central it is, which is the question being asked.
+    degree: Counter = Counter()
 
+    excluded = excluded or set()
     for row in rows:
         src_record, dst_record = row.get("srcRecord"), row.get("dstRecord")
-        if src_record not in readable:
+        if src_record not in readable or src_record in excluded:
             continue
         src_path = record_paths.get(src_record)
         src = bucket(src_path)
@@ -463,7 +590,7 @@ def _group_rows(
         # An unreadable target drops the dependency but not the module the
         # caller can see: hiding `web/ui` because of where it imports from
         # would be a different answer, not a redacted one.
-        if dst_record not in readable:
+        if dst_record not in readable or dst_record in excluded:
             continue
         dst_path = record_paths.get(dst_record)
         dst = bucket(dst_path)
@@ -476,7 +603,18 @@ def _group_rows(
         count = int(row.get("n") or 1)
         weights[(src, dst)] += count
         relations[(src, dst)][row.get("rel")] += count
+        degree[src] += count
+        degree[dst] += count
 
+    edges = [
+        {
+            "from": src,
+            "to": dst,
+            "weight": weight,
+            "relations": [r for r, _ in relations[(src, dst)].most_common(3)],
+        }
+        for (src, dst), weight in weights.most_common()
+    ]
     return {
         "groups": [
             # `select` is the call that opens this group. Without it a rollup is
@@ -485,20 +623,64 @@ def _group_rows(
             {
                 "group": name,
                 "files": len(paths),
+                "degree": degree.get(name, 0),
                 "select": f"{name}/**" if group_by == "directory" else name,
             }
-            for name, paths in sorted(members.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+            # Most-connected first. Sorted by file count, a 400-file directory
+            # of generated types outranks the module everything imports.
+            for name, paths in sorted(
+                members.items(), key=lambda kv: (-degree.get(kv[0], 0), -len(kv[1]), kv[0])
+            )
         ],
-        "edges": [
-            {
-                "from": src,
-                "to": dst,
-                "weight": weight,
-                "relations": [r for r, _ in relations[(src, dst)].most_common(3)],
-            }
-            for (src, dst), weight in weights.most_common()
-        ],
+        "edges": edges,
     }
+
+
+async def _prefix_exists(
+    graph_provider: Any, org_id: str, prefix: str
+) -> bool:
+    """Is there any indexed file under this prefix? One row is enough."""
+    if not prefix:
+        return True
+    try:
+        rows = await graph_provider.get_nodes_by_field_prefix(
+            collection=_CODE_FILES, field_name="filePath", prefix=prefix,
+            filters={"orgId": org_id}, limit=1,
+        )
+    except Exception as exc:
+        logger.warning("Prefix probe failed for %s: %s", prefix, exc)
+        return True
+    return bool(rows)
+
+
+async def _record_roles(
+    graph_provider: Any, org_id: str, record_ids: set[str]
+) -> dict[str, str]:
+    """``fileRole`` per record, read from ``codeFiles``.
+
+    A record with no ``codeFiles`` row (a .py uploaded to a KB) has no role and
+    is kept: an unknown role is not evidence of a test.
+    """
+    if not record_ids:
+        return {}
+    try:
+        rows = await graph_provider.get_nodes_by_field_in(
+            collection=_CODE_FILES,
+            field_name="_key",
+            field_values=sorted(record_ids),
+            return_fields=["_key", "fileRole"],
+        )
+    except Exception as exc:
+        logger.warning("File role lookup failed: %s", exc)
+        return {}
+    out: dict[str, str] = {}
+    for raw in rows or []:
+        row = _unwrap(raw)
+        key = row.get("_key") or row.get("id")
+        role = row.get("fileRole")
+        if key and role:
+            out[key] = role
+    return out
 
 
 async def _record_paths(graph_provider: Any, org_id: str, record_ids: set[str]) -> dict[str, str]:
@@ -547,42 +729,64 @@ async def query_code_graph_impl(
 
     # A directory is an inventory question, not a dependency one: answer it
     # before the grouped/ungrouped split so `relations`/`depth` never apply.
-    if group_by == "none" and _looks_like_directory(select):
+    # A locator has a `/` and no extension after the `#`, so it reads as a
+    # directory unless it is excluded here.
+    if group_by == "none" and not _looks_like_locator(select) and _looks_like_directory(select):
         listing = await _list_children(
             graph_provider, org_id, select, connector_id, limit
         )
-        return {
-            "select": select,
-            "resolved_as": "directory",
-            "connector_id": connector_id,
-            **listing,
-        }
+        # An empty listing means this was never a directory. `conversations/
+        # stream` is a URL fragment; answering it with "no such directory" is a
+        # dead end for something free text finds.
+        if listing["directories"] or listing["files"]:
+            return {
+                "select": select,
+                "resolved_as": "directory",
+                "connector_id": connector_id,
+                **listing,
+            }
 
     if group_by != "none":
-        if depth:
-            return {"error": (
-                "depth does not apply when group_by is set — a rollup always "
-                "aggregates direct dependencies. Drop depth, or drop group_by."
-            )}
+        # `depth` and `group_by` do not compose, but a call that sets both is
+        # asking a perfectly good question. Rejecting it costs a turn to learn
+        # something the answer could have carried.
         return await _grouped_result(
             graph_provider=graph_provider, org_id=org_id, user_id=user_id,
             connector_id=connector_id, select=select, relations=relations,
             direction=direction, group_by=group_by, limit=limit,
+            dropped_depth=bool(depth),
         )
 
     scan_capped = False
-    if _looks_like_path(select):
+    fell_back_from: str | None = None
+    # Locator first: `src/a.py#function:main` satisfies `_looks_like_path` and
+    # `_looks_like_directory` too, so either would swallow it.
+    if _looks_like_locator(select):
+        matched = await _select_by_locator(graph_provider, org_id, select, connector_id)
+        how = "locator"
+    elif _looks_like_path(select):
         matched, scan_capped = await _select_by_path(
             graph_provider, org_id, select, connector_id
         )
         how = "path"
+        # A `/` is not proof of a path. `conversations/stream` is a URL
+        # fragment, and treating it as a prefix returned a clean empty result
+        # for something free text would have found.
+        if not matched and "*" not in select and "?" not in select:
+            matched = await _select_by_text(graph_provider, org_id, select, connector_id)
+            if matched:
+                fell_back_from, how, scan_capped = "path", "text", False
     else:
         matched = await _select_by_qualified_name(graph_provider, org_id, select, connector_id)
         how = "qualified_name"
         if not matched:
             matched = await _select_by_text(graph_provider, org_id, select, connector_id)
+            # The fall-through is silent otherwise: asking for
+            # `function:stream_response` and getting 399 free-text hits back as
+            # a clean `resolved_as: "text"` reads as an answer, not a miss.
+            if ":" in select:
+                fell_back_from = "qualified_name"
             how = "text"
-            matched = _rank(matched, _tokens(select))
             matched = [m for m in matched if (m.get("kind") or "").lower() not in _NOISE_KINDS] or matched
 
     # Gate before counting. `matches: 3` for a path the caller cannot read still
@@ -604,13 +808,23 @@ async def query_code_graph_impl(
             "matches": 0, "nodes": [], "edges": [], "truncated": False,
             # A dead end is where the model most needs a next step. Without one
             # it guesses another name -- three wasted calls in the trace this
-            # was written from.
-            "hint": _miss_hint(select, how),
+            # was written from. Reported against what was ASKED for: a
+            # qualified name that fell through to free text and still missed is
+            # a missing symbol, not a bad choice of wording.
+            "hint": _miss_hint(select, fell_back_from or how),
         }
+
+    # Rank after gating, not before: ranking a set that is then filtered spends
+    # the top slots on rows the caller never sees.
+    degrees, degree_capped = await _degrees(graph_provider, matched, relations)
+    if how in ("path", "locator"):
+        matched = _rank_by_degree(matched, degrees)
+    else:
+        matched = _rank(matched, _tokens(select), degrees)
 
     total_matched = len(matched)
     seeds = matched[:limit]
-    seed_keys = [m.get("_key") or m.get("id") for m in seeds if (m.get("_key") or m.get("id"))]
+    seed_keys = [k for m in seeds if (k := _key_of(m))]
 
     visited, edges = ({k for k in seed_keys}, [])
     if depth:
@@ -635,10 +849,64 @@ async def query_code_graph_impl(
     }
     if scan_capped:
         result["scan_capped"] = True
+    if degree_capped:
+        # Counts truncate in scan order, so the ordering is not a ranking.
+        result["degree_capped"] = True
+    if fell_back_from == "qualified_name":
+        result["note"] = (
+            f"No symbol is named {select!r}; these are free-text matches on "
+            "symbol names instead. Address a symbol exactly as "
+            "`<file_path>#<qualified_name>`."
+        )
+    elif fell_back_from == "path":
+        result["note"] = (
+            f"No file path matched {select!r}; these are free-text matches on "
+            "symbol names instead."
+        )
 
-    result["nodes"] = [SymbolRef.from_block(b) for b in blocks.values()][:limit]
+    # Seeds in ranked order first; anything reached by expansion after. The
+    # batch load returns blocks keyed arbitrarily, which discarded the ranking.
+    ordered = [k for k in seed_keys if k in blocks]
+    seen = set(ordered)
+    ordered += [k for k in blocks if k not in seen]
+
+    nodes = []
+    for key in ordered[:limit]:
+        ref = SymbolRef.from_block(blocks[key])
+        if key in degrees:
+            # How many edges touch this symbol. The one number that separates a
+            # hub from a leaf, and the thing to quote when ranking a claim.
+            ref["degree"] = degrees[key]
+        nodes.append(ref)
+    result["nodes"] = nodes
     result["edges"] = [_edge_ref(blocks, e) for e in edges[:limit]]
+
+    summary = _edge_summary(result["edges"])
+    if summary:
+        result["summary"] = summary
+    if not depth and nodes:
+        result["next"] = (
+            "These are matches, not relationships. For what uses one, re-select "
+            "it as `<file_path>#<qualified_name>` with relations=[\"CALLS\"], "
+            "direction=\"inbound\", depth=1 — swap to \"outbound\" for what it "
+            "uses. Rank by `degree` to pick which."
+        )
     return result
+
+
+def _edge_summary(edges: list[dict]) -> list[str]:
+    """The edges again, as lines an answer can quote verbatim.
+
+    Structured edges get paraphrased into "X depends on Y" and the direction
+    and count are dropped on the way. A pre-formatted line survives the trip.
+    """
+    lines = []
+    for edge in edges[:_SUMMARY_LINES]:
+        line = f"{edge['from']} -> {edge['to']} ({edge['relation']}"
+        if edge.get("line") is not None:
+            line += f", line {edge['line']}"
+        lines.append(line + ")")
+    return lines
 
 
 def _miss_hint(select: str, how: str) -> str:
@@ -649,6 +917,13 @@ def _miss_hint(select: str, how: str) -> str:
     exist under that name; a qualified name that misses usually means the right
     file with the wrong symbol.
     """
+    if how == "locator":
+        file_path, _, qualified_name = select.partition("#")
+        return (
+            f"No symbol {qualified_name!r} in {file_path!r}. The file may still "
+            f"exist — select {file_path!r} on its own to list what it defines, "
+            "then copy an exact name from that."
+        )
     if how == "path":
         parent = select.rstrip("/").rpartition("/")[0]
         where = f"{parent}/" if parent else "**"
@@ -704,15 +979,20 @@ async def _grouped_result(
     direction: str,
     group_by: str,
     limit: int,
+    dropped_depth: bool = False,
 ) -> dict[str, Any]:
     """The module view: every edge under a path prefix, rolled up.
 
     A non-path selector has no prefix to aggregate over, so it is resolved to
     the directories of its matches first and each of those is rolled up.
     """
+    resolved_by_text = False
     if _looks_like_path(select):
         prefix, how = select.split("*", 1)[0], "path"
-    else:
+        if not await _prefix_exists(graph_provider, org_id, prefix):
+            # Same reason as the directory branch: a `/` is not proof of a path.
+            resolved_by_text = True
+    if resolved_by_text or not _looks_like_path(select):
         matched = await _select_by_qualified_name(graph_provider, org_id, select, connector_id)
         how = "qualified_name"
         if not matched:
@@ -738,13 +1018,23 @@ async def _grouped_result(
     rows = await _rollup_rows(
         graph_provider, org_id, prefix, relations, direction, connector_id
     )
+    if resolved_by_text:
+        result_note = (
+            f"No file path matched {select!r}; rolled up the directories of "
+            "its free-text matches instead."
+        )
+    else:
+        result_note = None
     # Both endpoints are record ids; resolve every readable one to a path in a
     # single batch rather than carrying ~30 copies of each path on the blocks.
     wanted = {r.get(end) for r in rows for end in ("srcRecord", "dstRecord")} & readable
-    paths = await _record_paths(graph_provider, org_id, {r for r in wanted if r})
+    wanted = {r for r in wanted if r}
+    paths = await _record_paths(graph_provider, org_id, wanted)
+    roles = await _record_roles(graph_provider, org_id, wanted)
+    excluded = {r for r, role in roles.items() if role in _ROLLUP_EXCLUDED_ROLES}
 
     module_depth = _module_depth_for(prefix) if group_by == "directory" else 0
-    result = _group_rows(rows, readable, paths, group_by, module_depth)
+    result = _group_rows(rows, readable, paths, group_by, module_depth, excluded)
 
     # `limit` bounds BOTH lists. Capping only edges let one call return a
     # 3,761-entry group list -- 328KB of a 357KB payload -- while reporting
@@ -752,6 +1042,51 @@ async def _grouped_result(
     total_edges, total_groups = len(result["edges"]), len(result["groups"])
     result["edges"] = result["edges"][:limit]
     result["groups"] = result["groups"][:limit]
+    # Lead with the degree ranking. Emitting only edge lines put the weight on
+    # the wrong thing: `groups` is the ranked signal and had no quotable form,
+    # so the answer quoted neither.
+    summary = []
+    if result["groups"]:
+        ranked = ", ".join(
+            f"{g['group'].rsplit('/', 1)[-1]} "
+            f"({g['files']} file{'s' if g['files'] != 1 else ''}, degree {g['degree']})"
+            for g in result["groups"][:_SUMMARY_MODULES]
+        )
+        summary.append(f"Most connected: {ranked}")
+    summary += [
+        f"{e['from']} -> {e['to']} ({e['weight']} edges: {', '.join(e['relations'])})"
+        for e in result["edges"][:_SUMMARY_LINES]
+    ]
+    if summary:
+        result["summary"] = summary
+    if excluded:
+        # Never a silent cap: a rollup that quietly dropped rows reads as
+        # complete coverage of something narrower than it claims.
+        result["excluded_roles"] = sorted(_ROLLUP_EXCLUDED_ROLES)
+    if dropped_depth:
+        result["note"] = (
+            "depth was ignored: a rollup always aggregates direct dependencies. "
+            "Drop group_by to walk hops instead."
+        )
+    elif result_note:
+        result["note"] = result_note
+
+    if group_by == "directory" and result.get("groups"):
+        large = [
+            g for g in result["groups"]
+            if g.get("files", 0) >= _DRILLDOWN_FILE_THRESHOLD
+        ]
+        if large:
+            names = ", ".join(
+                f"`{g['group']}` ({g['files']} files)" for g in large[:5]
+            )
+            result["next"] = (
+                f"Groups with many files likely contain multiple service layers "
+                f"or modules: {names}. Drill into each with "
+                f"`group_by='directory'` and their `select` value before "
+                f"narrowing to a specific subdirectory."
+            )
+
     return {
         "select": select,
         "resolved_as": how,

@@ -193,6 +193,7 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 graph_provider=state.get("graph_provider"),
                 blob_store=state.get("blob_store"),
                 allowed_connector_ids=tuple(derive_scope(state).app_ids),
+                request_logger=state_logger,
             ):
                 setattr(code_tool, "_original_name", f"{CODE_GRAPH_APP_NAME}.{code_tool.name}")
                 a, t = split_original_tool_name(code_tool)
