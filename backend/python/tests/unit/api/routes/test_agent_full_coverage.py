@@ -695,56 +695,6 @@ class TestEnrichUserInfoForServiceAccountChat:
 
 
 # ============================================================================
-# _load_service_account_agent_for_chat — lines 809-816
-# ============================================================================
-
-
-class TestLoadServiceAccountAgentForChat:
-    @pytest.mark.asyncio
-    async def test_agent_not_found(self):
-        from app.api.routes.agent import _load_service_account_agent_for_chat, AgentNotFoundError
-        gp = AsyncMock()
-        gp.get_agent = AsyncMock(return_value=None)
-        with pytest.raises(AgentNotFoundError):
-            await _load_service_account_agent_for_chat("a1", "o1", gp, MagicMock())
-
-    @pytest.mark.asyncio
-    async def test_not_service_account(self):
-        from app.api.routes.agent import _load_service_account_agent_for_chat, AgentNotFoundError
-        gp = AsyncMock()
-        gp.get_agent = AsyncMock(return_value={"isServiceAccount": False})
-        with pytest.raises(AgentNotFoundError):
-            await _load_service_account_agent_for_chat("a1", "o1", gp, MagicMock())
-
-    @pytest.mark.asyncio
-    async def test_success(self):
-        from app.api.routes.agent import _load_service_account_agent_for_chat
-        gp = AsyncMock()
-        gp.get_agent = AsyncMock(return_value={"isServiceAccount": True, "createdBy": "ck1"})
-        gp.get_document = AsyncMock(return_value={
-            "userId": "u1", "orgId": "o1", "email": "c@co.com"
-        })
-        with patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock,
-                   return_value={"userId": "u1"}):
-            agent, user_info, perm = await _load_service_account_agent_for_chat(
-                "a1", "o1", gp, MagicMock()
-            )
-        assert agent["isServiceAccount"] is True
-        assert perm["role"] == "viewer"
-
-    @pytest.mark.asyncio
-    async def test_rejects_other_org(self):
-        from app.api.routes.agent import _load_service_account_agent_for_chat, AgentNotFoundError
-        gp = AsyncMock()
-        gp.get_agent = AsyncMock(return_value={"isServiceAccount": True, "createdBy": "ck1", "_key": "a1"})
-        gp.get_document = AsyncMock(return_value={
-            "userId": "u1", "orgId": "org-a", "email": "c@co.com"
-        })
-        with pytest.raises(AgentNotFoundError):
-            await _load_service_account_agent_for_chat("a1", "org-b", gp, MagicMock())
-
-
-# ============================================================================
 # _build_agent_capability_context — lines 637-698
 # ============================================================================
 

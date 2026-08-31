@@ -867,7 +867,16 @@ def _trim_connector_config(config: dict[str, Any]) -> dict[str, Any]:
 
     return trimmed_config
 
-def _caller_org_and_user(request: Request) -> tuple[str, str]:
+def _is_scoped_service_token(user: Any) -> bool:
+    """Internal workers mint scoped JWTs (orgId + scopes, often no userId)."""
+    token_type = str(user.get("token_type") or "").strip()
+    scopes = user.get("scopes") or user.get("oauthScopes") or []
+    if isinstance(scopes, str):
+        scopes = [part for part in scopes.replace(",", " ").split() if part]
+    return token_type == "scoped" or "connector:signedUrl" in scopes
+
+
+def _caller_org_and_user(request: Request) -> tuple[str, str, bool]:
     user = getattr(getattr(request, "state", None), "user", None)
     if user is None:
         raise HTTPException(
@@ -875,13 +884,19 @@ def _caller_org_and_user(request: Request) -> tuple[str, str]:
             detail="Authentication required",
         )
     org_id = str(user.get("orgId") or "").strip()
-    user_id = str(user.get("userId") or "").strip()
-    if not org_id or not user_id:
+    if not org_id:
         raise HTTPException(
             status_code=HttpStatusCode.UNAUTHORIZED.value,
             detail="Authentication required",
         )
-    return org_id, user_id
+    user_id = str(user.get("userId") or "").strip()
+    is_scoped = _is_scoped_service_token(user)
+    if not user_id and not is_scoped:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="Authentication required",
+        )
+    return org_id, user_id, is_scoped
 
 
 @router.get("/api/v1/{org_id}/{user_id}/{connector}/record/{record_id}/signedUrl", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
@@ -895,11 +910,18 @@ async def get_signed_url(
     signed_url_handler: SignedUrlHandler = Depends(Provide[ConnectorAppContainer.signed_url_handler]),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> dict:
-    """Get signed URL for a record. Path org/user must match the JWT; the
-    caller must have ACL on a record that belongs to that org."""
+    """Get signed URL for a record. Session JWTs must match path org/user and
+    have ACL. Scoped service tokens only need a matching org — they mint for
+    the path user_id (indexing / Kafka signedUrlRoute)."""
     try:
-        caller_org, caller_user = _caller_org_and_user(request)
-        if caller_org != str(org_id or "").strip() or caller_user != str(user_id or "").strip():
+        caller_org, caller_user, is_scoped = _caller_org_and_user(request)
+        path_org = str(org_id or "").strip()
+        path_user = str(user_id or "").strip()
+        if caller_org != path_org:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
+        if not is_scoped and (not caller_user or caller_user != path_user):
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
             )
@@ -915,13 +937,15 @@ async def get_signed_url(
                 status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
             )
 
-        access = await graph_provider.check_record_access_with_details(
-            caller_user, caller_org, record_id
-        )
-        if not access:
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+        mint_user = caller_user or path_user
+        if not is_scoped:
+            access = await graph_provider.check_record_access_with_details(
+                mint_user, caller_org, record_id
             )
+            if not access:
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+                )
 
         additional_claims = {
             "connector": connector,
@@ -932,7 +956,7 @@ async def get_signed_url(
         signed_url = await signed_url_handler.get_signed_url(
             record_id,
             caller_org,
-            caller_user,
+            mint_user,
             additional_claims=additional_claims,
             connector=connector,
         )
@@ -1117,6 +1141,18 @@ async def download_file(
 
         payload = signed_url_handler.validate_token(token)
         user_id = payload.user_id
+
+        # Auth middleware already populated request.state.user. Compare JWT
+        # org to the path when present. Tokens minted before org_id was added
+        # to additional_claims still work until expiry (~60m); ACL is not
+        # re-checked here — the signed URL remains valid until it expires.
+        caller = getattr(getattr(request, "state", None), "user", None)
+        if caller is not None:
+            jwt_org = str(caller.get("orgId") or "").strip()
+            if jwt_org and jwt_org != str(org_id or "").strip():
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+                )
 
         # Verify file_id matches the token
         if payload.record_id != record_id:

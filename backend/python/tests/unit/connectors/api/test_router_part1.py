@@ -1043,6 +1043,46 @@ class TestGetSignedUrl:
         )
         assert result["signedUrl"] == "https://signed.url/file"
         handler.get_signed_url.assert_awaited_once()
+        _args, kwargs = handler.get_signed_url.await_args
+        assert kwargs["additional_claims"]["org_id"] == "org-1"
+
+    async def test_scoped_service_token_mints_without_user_match(self):
+        from app.connectors.api.router import get_signed_url
+
+        handler = AsyncMock()
+        handler.get_signed_url = AsyncMock(return_value="https://signed.url/file")
+        gp = AsyncMock()
+        gp.get_record_by_id = AsyncMock(return_value=_mock_record(org_id="org-1"))
+        request = _mock_request(
+            user={"orgId": "org-1", "token_type": "scoped", "scopes": ["connector:signedUrl"]}
+        )
+
+        result = await get_signed_url(
+            request, "org-1", "record-owner", "googledrive", "rec-1", handler, gp
+        )
+        assert result["signedUrl"] == "https://signed.url/file"
+        gp.check_record_access_with_details.assert_not_called()
+        args, kwargs = handler.get_signed_url.await_args
+        assert args[2] == "record-owner"
+        assert kwargs["additional_claims"]["org_id"] == "org-1"
+
+    async def test_session_user_mismatch_is_404(self):
+        from app.connectors.api.router import get_signed_url
+
+        handler = AsyncMock()
+        gp = AsyncMock()
+        with pytest.raises(HTTPException) as exc_info:
+            await get_signed_url(
+                _mock_request(user={"userId": "other-user", "orgId": "org-1"}),
+                "org-1",
+                "user-1",
+                "drive",
+                "rec-1",
+                handler,
+                gp,
+            )
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        handler.get_signed_url.assert_not_called()
 
     async def test_path_org_mismatch_is_404(self):
         from app.connectors.api.router import get_signed_url
@@ -3145,6 +3185,63 @@ class TestDownloadFile:
             {"_key": "org-1"},    # org lookup in download_file
             connector_instance,   # connector instance in download_file
             connector_instance,   # connector instance in _resolve_record_content_response
+        ])
+        gp.get_record_by_id = AsyncMock(return_value=record)
+
+        mock_connector = MagicMock()
+        mock_connector.get_app_name = MagicMock(return_value=Connectors.SLACK)
+        mock_connector.stream_record = AsyncMock(return_value=Response(content=b"data"))
+
+        container = MagicMock()
+        container.connectors_map = {"conn-1": mock_connector}
+        request = _mock_request(container=container)
+
+        result = await download_file(request, "org-1", "rec-1", "drive", "tok", handler, gp)
+        assert isinstance(result, Response)
+
+    async def test_jwt_org_mismatch_is_404(self):
+        from app.connectors.api.router import download_file
+
+        handler = MagicMock()
+        payload = MagicMock()
+        payload.record_id = "rec-1"
+        payload.user_id = "u1"
+        payload.additional_claims = {"org_id": "org-1"}
+        handler.validate_token = MagicMock(return_value=payload)
+
+        gp = AsyncMock()
+        with pytest.raises(HTTPException) as exc_info:
+            await download_file(
+                _mock_request(user={"userId": "user-1", "orgId": "org-b"}),
+                "org-1",
+                "rec-1",
+                "drive",
+                "tok",
+                handler,
+                gp,
+            )
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        gp.get_document.assert_not_called()
+
+    async def test_legacy_token_without_org_id_claim_still_downloads(self):
+        """Tokens minted before org_id was added to additional_claims still
+        download until expiry; ACL is not re-checked on this path."""
+        from app.connectors.api.router import download_file
+
+        handler = MagicMock()
+        payload = MagicMock()
+        payload.record_id = "rec-1"
+        payload.user_id = "u1"
+        payload.additional_claims = {}
+        handler.validate_token = MagicMock(return_value=payload)
+
+        record = _mock_record(connector_name=Connectors.SLACK)
+        connector_instance = {"_key": "conn-1", "type": "slack", "name": "My Slack", "isActive": True}
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(side_effect=[
+            {"_key": "org-1"},
+            connector_instance,
+            connector_instance,
         ])
         gp.get_record_by_id = AsyncMock(return_value=record)
 
