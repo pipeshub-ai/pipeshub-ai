@@ -13677,7 +13677,8 @@ class Neo4jProvider(IGraphDBProvider):
                     params["parent_doc_id"] = parent_id
                 elif parent_type == "app":
                     params["parent_id"] = parent_id
-                    params["parent_doc_id"] = parent_id
+                    if depth is not None and depth >= 2:
+                        params["parent_doc_id"] = parent_id
                     if parent_connector_id:
                         params["parent_connector_id"] = parent_connector_id
 

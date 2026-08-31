@@ -14853,7 +14853,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars["parent_doc_id"] = parent_doc_id
             elif parent_type == "app":
                 bind_vars["parent_id"] = parent_id
-                bind_vars["parent_doc_id"] = parent_id
+                # @parent_doc_id is only referenced when depth >= 2
+                # (_build_children_intersection_aql). Binding it otherwise is
+                # Arango 1552 (undeclared bind parameter).
+                if depth is not None and depth >= 2:
+                    bind_vars["parent_doc_id"] = parent_id
 
         # Merge filter params
         bind_vars.update(filter_params)
