@@ -446,7 +446,10 @@ class LocalStorageAdapter implements StorageServiceInterface {
       throw new StorageValidationError('Invalid document path');
     }
 
-    const unified = filePath.replace(/\\/g, '/').replace(/\/+$/, '');
+    let unified = filePath.split('\\').join('/');
+    while (unified.endsWith('/')) {
+      unified = unified.slice(0, -1);
+    }
     if (
       unified === '.' ||
       unified === './' ||
