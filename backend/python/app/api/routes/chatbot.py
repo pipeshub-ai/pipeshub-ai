@@ -808,7 +808,7 @@ async def grant_attachment_permissions(
         raise HTTPException(status_code=400, detail=f"Invalid request payload: {str(e)}")
 
     if not payload.userIds or not payload.recordIds:
-        return {"granted": 0}
+        return {"granted": 0, "skippedRecords": 0, "skippedUsers": 0}
 
     org_id = (request.state.user or {}).get("orgId")
     if not org_id:
@@ -828,6 +828,16 @@ async def grant_attachment_permissions(
         user_doc = await graph_provider.get_user_by_user_id(user_id)
         if not user_doc:
             logger.warning("User not found for permission grant, skipping: %s", user_id)
+            skipped_users += 1
+            continue
+        # get_user_by_user_id looks up a user by userId alone, with no org
+        # filter -- without this check a caller could name one of their own
+        # (correctly org-scoped) records but a userId from a DIFFERENT org,
+        # granting an outsider read access to their org's record.
+        if user_doc.get("orgId") != org_id:
+            logger.warning(
+                "User %s does not belong to caller's org, skipping", user_id
+            )
             skipped_users += 1
             continue
         user_key = user_doc.get("_key") or user_doc.get("id")
@@ -877,7 +887,7 @@ async def revoke_attachment_permissions(
         raise HTTPException(status_code=400, detail=f"Invalid request payload: {str(e)}")
 
     if not payload.userIds or not payload.recordIds:
-        return {"revoked": 0}
+        return {"revoked": 0, "skippedRecords": 0, "skippedUsers": 0}
 
     org_id = (request.state.user or {}).get("orgId")
     if not org_id:
@@ -896,6 +906,15 @@ async def revoke_attachment_permissions(
         user_doc = await graph_provider.get_user_by_user_id(user_id)
         if not user_doc:
             logger.warning("User not found for permission revoke, skipping: %s", user_id)
+            skipped_users += 1
+            continue
+        # Same org check as grant_attachment_permissions -- get_user_by_user_id
+        # isn't org-scoped, so without this a revoke targeting a userId from
+        # another org would still build/execute a delete edge for it.
+        if user_doc.get("orgId") != org_id:
+            logger.warning(
+                "User %s does not belong to caller's org, skipping", user_id
+            )
             skipped_users += 1
             continue
         user_key = user_doc.get("_key") or user_doc.get("id")

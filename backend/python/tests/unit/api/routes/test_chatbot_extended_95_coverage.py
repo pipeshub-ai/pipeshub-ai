@@ -299,7 +299,7 @@ async def test_grant_revoke_attachment_permissions():
 
     gp = AsyncMock()
 
-    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "k1"})
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "k1", "orgId": "org-1"})
 
     gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
 
@@ -343,7 +343,7 @@ async def test_grant_revoke_attachment_permissions():
 
     req_r.json = AsyncMock(return_value={"userIds": ["x"], "recordIds": ["y"]})
 
-    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "kk"})
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "kk", "orgId": "org-1"})
 
     out_r = await revoke_attachment_permissions(req_r, gp)
     gp.batch_delete_edges.assert_awaited()
