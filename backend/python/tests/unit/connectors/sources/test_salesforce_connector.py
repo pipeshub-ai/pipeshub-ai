@@ -2246,6 +2246,8 @@ class TestSyncContacts:
         await connector._sync_contacts(_async_iter_pages([contact]))
         mock_tx.batch_upsert_people.assert_awaited_once()
         mock_tx.batch_create_edges.assert_awaited()
+        people = mock_tx.batch_upsert_people.await_args.args[0]
+        assert people[0].org_id == "org-sf-1"
 
 
 # ===========================================================================
@@ -2303,6 +2305,8 @@ class TestSyncLeads:
         await connector._sync_leads(_async_iter_pages([lead]))
         mock_tx.batch_upsert_people.assert_awaited_once()
         mock_tx.batch_create_edges.assert_awaited_once()
+        people = mock_tx.batch_upsert_people.await_args.args[0]
+        assert people[0].org_id == "org-sf-1"
 
     @pytest.mark.asyncio
     async def test_skips_lead_without_id(self):

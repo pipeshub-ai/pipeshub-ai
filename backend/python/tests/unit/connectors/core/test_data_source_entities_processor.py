@@ -3562,6 +3562,7 @@ class TestResolvePrincipal:
             "person-9", CollectionNames.PEOPLE.value
         )
         tx_store.upsert_person_by_email.assert_not_awaited()
+        tx_store.get_person_by_email.assert_awaited_once_with("out@x.io", proc.org_id)
 
     @pytest.mark.asyncio
     async def test_returns_surviving_id_not_local_uuid(self):
@@ -3576,6 +3577,8 @@ class TestResolvePrincipal:
         assert await proc._resolve_principal("out@x.io", tx_store) == (
             "survivor-id", CollectionNames.PEOPLE.value
         )
+        upserted = tx_store.upsert_person_by_email.await_args.args[0]
+        assert upserted.org_id == proc.org_id
 
     @pytest.mark.asyncio
     async def test_member_costs_a_single_lookup(self):

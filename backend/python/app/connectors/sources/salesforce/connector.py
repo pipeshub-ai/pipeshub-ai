@@ -4485,6 +4485,7 @@ class SalesforceConnector(BaseConnector):
 
                         person = self._create_person(
                             email=email,
+                            org_id=org_id,
                             first_name=contact.FirstName,
                             last_name=contact.LastName,
                             phone=contact.Phone,
@@ -4708,6 +4709,7 @@ class SalesforceConnector(BaseConnector):
                             continue
                         person = self._create_person(
                             email=lead_email,
+                            org_id=org_id,
                             first_name=lead.FirstName,
                             last_name=lead.LastName,
                             phone=lead.Phone,
