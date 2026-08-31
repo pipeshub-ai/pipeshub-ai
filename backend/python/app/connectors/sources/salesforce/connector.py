@@ -4527,6 +4527,19 @@ class SalesforceConnector(BaseConnector):
                 if not contact_with_edges:
                     continue
 
+                email_to_contact_ids: DefaultDict[str, List[str]] = defaultdict(list)
+                for p, dup_contact_edge, _ in contact_with_edges:
+                    email_to_contact_ids[p.email.lower()].append(
+                        dup_contact_edge.get("externalId") if dup_contact_edge else None
+                    )
+                for dup_email, dup_contact_ids in email_to_contact_ids.items():
+                    if len(dup_contact_ids) > 1:
+                        self.logger.warning(
+                            "Multiple Salesforce Contacts %s share email %r. If only some of them "
+                            "changed, their CONTACT/MEMBER_OF edges may be dropped this sync.",
+                            dup_contact_ids, dup_email,
+                        )
+
                 async with self.data_store_provider.transaction() as tx_store:
                     all_emails = [p.email.lower() for p, _, _ in contact_with_edges]
                     all_account_names = list({

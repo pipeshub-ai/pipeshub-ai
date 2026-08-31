@@ -5344,6 +5344,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER STARTS_WITH(perm._to, "{rec}/") OR STARTS_WITH(perm._to, "{rg}/")
                     LET n = DOCUMENT(perm._to)
                     FILTER n != null AND n.connectorId == {app_key_expr}
+                    FILTER n.isDeleted != true
                     LIMIT 1
                     RETURN 1
             ) > 0
@@ -5358,6 +5359,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER STARTS_WITH(perm2._to, "{rec}/") OR STARTS_WITH(perm2._to, "{rg}/")
                         LET n2 = DOCUMENT(perm2._to)
                         FILTER n2 != null AND n2.connectorId == {app_key_expr}
+                        FILTER n2.isDeleted != true
                         LIMIT 1
                         RETURN 1
             ) > 0

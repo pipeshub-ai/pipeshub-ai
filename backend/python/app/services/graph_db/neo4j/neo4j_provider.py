@@ -12939,12 +12939,14 @@ class Neo4jProvider(IGraphDBProvider):
                 MATCH ({principal_var})-[:PERMISSION {{type: 'USER'}}]->(granted)
                 WHERE (granted:Record OR granted:RecordGroup)
                   AND granted.connectorId = {app_var}.id
+                  AND coalesce(granted.isDeleted, false) = false
             }}
             OR EXISTS {{
                 MATCH ({principal_var})-[:PERMISSION {{type: 'USER'}}]->(via)-[:PERMISSION]->(granted)
                 WHERE (via:Group OR via:Role OR via:Teams)
                   AND (granted:Record OR granted:RecordGroup)
                   AND granted.connectorId = {app_var}.id
+                  AND coalesce(granted.isDeleted, false) = false
             }}
         )"""
 
@@ -12965,7 +12967,9 @@ class Neo4jProvider(IGraphDBProvider):
         a Salesforce contact is a separate thing from a platform identity that happens to
         share an address.
 
-        Idempotent - a second run finds nothing left to move.
+        Idempotent - a second run finds nothing left to move. If the User already holds
+        an edge to the same target, that edge is left untouched and the Person's copy is
+        dropped.
         """
         try:
             person_label = collection_to_label(CollectionNames.PEOPLE.value)
@@ -12994,7 +12998,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WITH p, u
                 MATCH (p)-[r:{permission_rel}]->(target)
                 MERGE (u)-[moved:{permission_rel}]->(target)
-                SET moved += properties(r)
+                ON CREATE SET moved = properties(r)
                 DELETE r
                 RETURN count(*) AS moved_permissions
             }}
@@ -13003,7 +13007,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WITH p, u
                 MATCH (p)-[r:{app_rel}]->(target)
                 MERGE (u)-[moved:{app_rel}]->(target)
-                SET moved += properties(r)
+                ON CREATE SET moved = properties(r)
                 DELETE r
                 RETURN count(*) AS moved_app_relations
             }}

@@ -3559,17 +3559,32 @@ class GoogleDriveTeamConnector(BaseConnector):
                 )
             self.logger.info(f"Streaming Drive file: {file_id}, convertTo: {convertTo}")
 
-            # If the caller already told us exactly who to impersonate, use that
-            # directly — no need to search permission holders. Only fall back to the
-            # broader candidate search when no user_id was given at all (e.g. the
-            # internal indexing stream route, whose JWT carries no user identity);
-            # resolve_explicit_user raises if a given user_id can't be resolved.
+            # If the caller already told us exactly who to impersonate, try that first —
+            # no need to search permission holders. resolve_explicit_user raises if a
+            # given user_id can't be resolved, so an unidentified caller never reaches
+            # the broader search.
             preferred_user = await resolve_explicit_user(self.logger, self.data_entities_processor, user_id)
-            if preferred_user:
-                candidates = [preferred_user]
-            else:
-                candidates = await get_impersonation_candidates(
+            candidates: List[User] = [preferred_user] if preferred_user else []
+
+            # A caller from outside this Workspace — an external collaborator who has
+            # since signed up — can never be impersonated, because the service account's
+            # delegation covers the synced domain only. Back them with the record's other
+            # permission holders, who can be. Safe because the route authorized this
+            # caller before streaming: impersonation picks whose credentials fetch the
+            # bytes, not who may read them. An empty membership set proves nothing about
+            # the caller, so it takes the same fallback.
+            preferred_is_impersonable = (
+                preferred_user is not None
+                and bool(self.synced_user_emails)
+                and (preferred_user.email or "").lower() in self.synced_user_emails
+            )
+            if not preferred_is_impersonable:
+                seen = {(user.email or "").lower() for user in candidates}
+                fallback = await get_impersonation_candidates(
                     self.data_entities_processor, record.id, self.synced_user_emails, self.logger
+                )
+                candidates.extend(
+                    user for user in fallback if (user.email or "").lower() not in seen
                 )
                 if not candidates:
                     self.logger.warning(f"No user found with permission to node: {record.id}, falling back to service account")

@@ -4334,6 +4334,11 @@ class TestPersonMigrationAndReaper:
         # alive here.
         assert "granted.connectorId = app.id" in reaper
 
+        # Soft-deleted grants must not keep membership alive — browse already drops them.
+        assert "coalesce(granted.isDeleted, false) = false" in reaper
+        assert "coalesce(orphan_record.isDeleted, false) = false" in browse
+        assert "coalesce(orphan_group.isDeleted, false) = false" in browse
+
     # -- rendered-query assertions -------------------------------------------------
     #
     # These render the query the way the driver would see it and then execute the method
@@ -4439,6 +4444,28 @@ class TestPersonMigrationAndReaper:
         for edge in PERSON_CRM_EDGES:
             rel = edge_collection_to_relationship(edge)
             assert f"MERGE (u)-[moved:{rel}]->" not in q
+
+    @pytest.mark.asyncio
+    async def test_migration_preserves_existing_user_edges_on_collision(self, mocked):
+        """MERGE matches any User->target edge of that type. Copying Person properties
+        onto it would replace OWNER with READER and isExternalUser False with True.
+        ON CREATE copies only when the User has no edge; the Person's copy is still
+        deleted either way."""
+        from app.config.constants.arangodb import PERSON_TRANSFERABLE_EDGES
+        from app.config.constants.neo4j import edge_collection_to_relationship
+
+        mocked.client.execute_query.return_value = [{"mode": "migrated"}]
+        await mocked.migrate_person_to_user("a@corp.com", "user-1")
+        q = self._query_of(mocked.client)
+
+        assert "SET moved += properties(r)" not in q
+        for edge in PERSON_TRANSFERABLE_EDGES:
+            rel = edge_collection_to_relationship(edge)
+            assert (
+                f"MERGE (u)-[moved:{rel}]->(target)\n"
+                "                ON CREATE SET moved = properties(r)\n"
+                "                DELETE r"
+            ) in q
 
     @pytest.mark.asyncio
     async def test_migration_deletes_person_only_when_not_crm(self, mocked):

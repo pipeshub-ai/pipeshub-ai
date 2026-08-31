@@ -22136,6 +22136,12 @@ class TestArangoPersonMigrationAndReaper:
             assert coll in browse
         assert "n.connectorId == @connector_id" in reaper
 
+        # Soft-deleted grants must not keep membership alive — browse already drops them.
+        assert "n.isDeleted != true" in reaper
+        assert "n2.isDeleted != true" in reaper
+        assert "r.isDeleted != true" in browse
+        assert "g.isDeleted != true" in browse
+
     # -- executing tests -----------------------------------------------------------
     #
     # migrate_person_to_user is several statements with dedup in Python, so these drive

@@ -838,15 +838,22 @@ class DataSourceEntitiesProcessor:
             self.logger.error("Failed to create permission edge: %s", e)
 
     async def _resolve_principal(
-        self, email: str, tx_store: TransactionStore
+        self, email: str, tx_store: TransactionStore, create_if_missing: bool = True
     ) -> tuple[str, str] | None:
         """
         Resolve an email to the graph principal a permission edge can originate from,
         returning ``(id, collection)``.
 
         A platform user wins over a Person; an email belonging to neither is an external
-        collaborator and gets a Person created for it, so that grants made to people
-        outside the workspace are represented rather than dropped.
+        collaborator and, when ``create_if_missing`` is true, gets a Person created for
+        it, so that grants made to people outside the workspace are represented rather
+        than dropped.
+
+        ``create_if_missing=False`` is for callers that must not create anything —
+        e.g. ``on_external_app_users``, whose contract is to grant a membership edge to
+        a principal some other write already established, not to originate one. Passing
+        false there turns an unresolved email into a no-op instead of a Person with no
+        permission edge behind it.
 
         The returned id is whatever survived the upsert, never the optimistic uuid4 on
         the local Person — a concurrent sync may have created the node first.
@@ -867,6 +874,9 @@ class DataSourceEntitiesProcessor:
             person = await tx_store.get_person_by_email(email)
             if person:
                 return (person.id, CollectionNames.PEOPLE.value)
+
+            if not create_if_missing:
+                return None
 
             person_id = await tx_store.upsert_person_by_email(Person(email=email.lower()))
             if person_id:
@@ -1926,8 +1936,11 @@ class DataSourceEntitiesProcessor:
         records need hoisting to app level.
 
         Principals are resolved, never created: a caller supplies emails it has already
-        seen on permissions, so _handle_record_permissions has created any Person that
-        should exist. An email that resolves to nothing has no grant and gets no edge.
+        seen on permissions, so _handle_record_permissions (or on_new_user_groups, for
+        group members) has created any Person that should exist. Resolution therefore
+        runs with create_if_missing=False — an email nothing else has already written a
+        Person or User for has no grant behind it, and gets no edge instead of a Person
+        this method would have to originate and the reaper would just delete next run.
 
         Membership creation is create-only, so a collaborator who is also a real app user
         keeps their unflagged edge.
@@ -1938,7 +1951,7 @@ class DataSourceEntitiesProcessor:
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 for email in emails:
-                    resolved = await self._resolve_principal(email, tx_store)
+                    resolved = await self._resolve_principal(email, tx_store, create_if_missing=False)
                     if not resolved:
                         self.logger.debug(
                             "No principal for external email %s; skipping app membership",
