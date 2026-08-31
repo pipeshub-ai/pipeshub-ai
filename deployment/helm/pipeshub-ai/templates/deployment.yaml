@@ -248,6 +248,14 @@ spec:
               value: "6334"
             - name: QDRANT_PORT
               value: "6333"
+
+            # Vector DB collection layout. Only read on the first startup that
+            # finds nothing persisted; from then on the stored value wins, and a
+            # value here that contradicts it fails startup — points already sit
+            # in collections a different strategy would not resolve.
+            - name: VECTOR_COLLECTION_STRATEGY
+              value: {{ .Values.vectorDb.collectionStrategy | default "single" | quote }}
+
             - name: HOME
               value: /home/user
             

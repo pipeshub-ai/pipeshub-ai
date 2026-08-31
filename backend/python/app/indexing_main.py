@@ -870,46 +870,6 @@ async def start_kafka_consumers(
         )
         consumers.append(("record", record_kafka_consumer, retry_producer))
 
-        # TODO: Remove this once the graph provider is fixed
-        # This is a temporary hack to reconnect the graph provider in worker thread event loop
-        # because it is in main event loop, but indexing in in worker thread loop
-
-        data_store = os.getenv("DATA_STORE", "arangodb").lower()
-        if data_store == "neo4j":
-            graph_provider = getattr(app_container, '_graph_provider', None)
-            if not graph_provider or not hasattr(graph_provider, 'client') or not graph_provider.client:
-                raise Exception("Neo4j Graph provider not initialized")
-
-            await record_kafka_consumer.initialize()
-            worker_loop = getattr(record_kafka_consumer, 'worker_loop', None)
-            if not worker_loop or not worker_loop.is_running():
-                raise Exception("Worker loop not initialized")
-
-            async def _reconnect() -> None:
-                if graph_provider.client.driver:
-                    try:
-                        await graph_provider.client.driver.close()
-                    except Exception as e:
-                        logger.warning("Failed to close existing Neo4j driver, proceeding with reconnection: %s", e)
-                    graph_provider.client.driver = None
-                await graph_provider.client.connect()
-
-            reconnect_coro = _reconnect()
-            try:
-                future = asyncio.run_coroutine_threadsafe(
-                    reconnect_coro,
-                    worker_loop,
-                )
-            except BaseException:
-                reconnect_coro.close()
-                raise
-            try:
-                await asyncio.wrap_future(future)
-            except BaseException:
-                future.cancel()
-                raise
-            logger.info("✅Neo4j Graph provider reconnected in worker thread event loop")
-
         record_message_handler = await KafkaUtils.create_record_message_handler(
             app_container, producer=retry_producer
         )

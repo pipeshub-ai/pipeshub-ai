@@ -1,24 +1,21 @@
-"""Unit tests for models, CollectionResolver, and CollectionType."""
+"""Unit tests for vector DB models, CollectionType, and name sanitization."""
 
 import pytest
 
-from app.services.vector_db.collections import CollectionResolver, CollectionType
+from app.services.vector_db.collections import (
+    sanitize_collection_name,
+)
 from app.services.vector_db.models import (
     FieldCondition,
     FilterExpression,
     FusionMethod,
-    HealthStatus,
     HybridSearchRequest,
     SparseVector,
     VectorChunkMetadata,
     VectorChunkPayload,
     VectorDBCapabilities,
-    VectorDBHealth,
-    VectorCollectionInfo,
-    VectorPoint,
     to_generic_sparse_vector,
 )
-
 
 # ---------------------------------------------------------------------------
 # VectorChunkMetadata / VectorChunkPayload — blockType / isImage fields
@@ -68,44 +65,60 @@ class TestVectorChunkMetadata:
 
 
 # ---------------------------------------------------------------------------
-# CollectionResolver
+# sanitize_collection_name
 # ---------------------------------------------------------------------------
 
 
-class TestCollectionResolver:
-    def test_default_resolves_to_records(self):
-        r = CollectionResolver()
-        assert r.resolve() == "records"
-        assert r.default() == "records"
+class TestSanitizeCollectionName:
+    def test_lowercases(self):
+        assert sanitize_collection_name("MyCollection") == "mycollection"
 
-    def test_entities_type(self):
-        r = CollectionResolver()
-        assert r.resolve(collection_type=CollectionType.ENTITIES) == "entities"
+    def test_replaces_illegal_chars_with_underscore(self):
+        assert sanitize_collection_name("google-drive.records!") == "google_drive_records_"
 
-    def test_tenant_prefix(self):
-        r = CollectionResolver()
-        assert r.resolve(tenant_id="acme") == "acme_records"
-        assert r.resolve(tenant_id="acme", collection_type=CollectionType.ENTITIES) == "acme_entities"
+    def test_strips_disallowed_leading_chars(self):
+        assert sanitize_collection_name("_-+records") == "records"
 
-    def test_tenant_set_at_init(self):
-        r = CollectionResolver(tenant_id="myorg")
-        assert r.default() == "myorg_records"
+    def test_all_disallowed_leading_chars_falls_back_to_placeholder(self):
+        assert sanitize_collection_name("___").startswith("collection_")
 
-    def test_tenant_override_at_call_wins_over_init(self):
-        r = CollectionResolver(tenant_id="myorg")
-        assert r.resolve(tenant_id="other") == "other_records"
+    def test_empty_string_falls_back_to_placeholder(self):
+        assert sanitize_collection_name("").startswith("collection_")
 
-    def test_special_chars_in_tenant_sanitised(self):
-        r = CollectionResolver()
-        name = r.resolve(tenant_id="My-Org.2024!")
-        # All non-alphanumeric chars replaced with underscores
-        assert "_" in name
-        assert "!" not in name
-        assert "." not in name
+    def test_placeholder_fallback_keeps_distinct_inputs_distinct(self):
+        """Two names that sanitize away entirely must not share a collection."""
+        assert sanitize_collection_name("___") != sanitize_collection_name("+++")
 
-    def test_none_tenant_override_uses_init_tenant(self):
-        r = CollectionResolver(tenant_id="base")
-        assert r.resolve(tenant_id=None) == "base_records"
+    def test_is_idempotent(self):
+        """The dedup path compares a fresh name against an already-resolved
+        one; a second pass that changed the answer would let a record be
+        skipped as a duplicate of something in a collection it never reached."""
+        for raw in ("Records", "___", "", "a" * 500, "Google Drive/Records", "+x-y"):
+            once = sanitize_collection_name(raw)
+            assert sanitize_collection_name(once) == once
+
+    def test_within_length_limit_is_unchanged(self):
+        name = "a" * 50
+        assert sanitize_collection_name(name) == name
+
+    def test_over_length_name_is_truncated_with_hash_suffix(self):
+        name = "a" * 250
+        result = sanitize_collection_name(name)
+        assert len(result) <= 200
+        assert result.startswith("a" * 10)
+        assert "_" in result
+
+    def test_over_length_truncation_avoids_collisions(self):
+        """Two different over-length names must not truncate to the same result."""
+        name_a = "a" * 250
+        name_b = "a" * 249 + "b"
+        assert sanitize_collection_name(name_a) != sanitize_collection_name(name_b)
+
+    def test_idempotent(self):
+        """Sanitizing an already-sanitized name is a no-op."""
+        once = sanitize_collection_name("Google_Drive-Records")
+        twice = sanitize_collection_name(once)
+        assert once == twice
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +195,17 @@ class TestVectorDBCapabilities:
             supports_server_side_text_search=True,
         )
         assert caps.supports_server_side_text_search is True
+
+    def test_multi_collection_defaults(self):
+        """New capability fields default to permissive values so a provider
+        that hasn't declared them yet is not artificially restricted."""
+        caps = VectorDBCapabilities()
+        assert caps.supports_multi_collection is True
+        assert caps.max_recommended_collections is None
+
+    def test_provider_can_declare_a_recommended_ceiling(self):
+        caps = VectorDBCapabilities(max_recommended_collections=200)
+        assert caps.max_recommended_collections == 200
 
 
 # ---------------------------------------------------------------------------

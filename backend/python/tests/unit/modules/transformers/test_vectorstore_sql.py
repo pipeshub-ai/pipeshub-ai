@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import app.modules.transformers.vectorstore as _vs_mod  # noqa: E402
 from app.models.blocks import (
     Block,
     BlockGroup,
@@ -14,11 +15,12 @@ from app.models.blocks import (
     GroupSubType,
     GroupType,
 )
-
-
-import app.modules.transformers.vectorstore as _vs_mod  # noqa: E402
+from tests.support.vector_db import (
+    make_collection_registry as _make_collection_registry,
+)
 
 _LANGCHAIN_DOCUMENT_IS_CLASS = isinstance(_vs_mod.Document, type)
+
 
 
 def _make_vectorstore():
@@ -36,7 +38,7 @@ def _make_vectorstore():
             logger=MagicMock(),
             config_service=AsyncMock(),
             graph_provider=AsyncMock(),
-            collection_name="test-sql",
+            collection_registry=_make_collection_registry(),
             vector_db_service=vdb,
         )
     return vs

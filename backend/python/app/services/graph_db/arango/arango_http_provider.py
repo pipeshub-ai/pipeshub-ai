@@ -126,7 +126,10 @@ from app.schema.arango.edges import (
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.common.utils import build_connector_stats_response, dedupe_agents_by_id
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.interface.graph_db_provider import (
+    IGraphDBProvider,
+    _distinct_connector_types,
+)
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_aql,
     build_page_records_for_vector_membership_backfill_aql,
@@ -8576,7 +8579,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "deleted_edges_count": deleted_edges,
                     "deleted_isoftype_targets_count": deleted_isoftype,
                     "virtual_record_ids": collected["virtual_record_ids"],
-                    "connector_id": connector_id
+                    "connector_id": connector_id,
+                    "connector_name": connector.get("type"),
                 }
 
             except Exception as tx_error:
@@ -18281,17 +18285,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_key: str,
         md5_checksum: str,
+        org_id: str,
         record_type: str | None = None,
         size_in_bytes: int | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
     ) -> list[dict]:
         """
-        Find duplicate records based on MD5 checksum.
+        Find duplicate records based on MD5 checksum, scoped to a single org.
         This method queries the RECORDS collection and works for all record types.
+
+        Deliberately not filtered by connector — see interface docstring.
+        Always filtered by org — see interface docstring.
 
         Args:
             record_key (str): The key of the current record to exclude from results
             md5_checksum (str): MD5 checksum of the record content
+            org_id (str): Restrict dedup matching to this org only
             record_type (Optional[str]): Optional record type to filter by
             size_in_bytes (Optional[int]): Optional file size in bytes to filter by
             transaction (Optional[str]): Optional transaction ID
@@ -18309,11 +18318,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record.md5Checksum == @md5_checksum
                 AND record._key != @record_key
+                AND record.orgId == @org_id
             """
 
             bind_vars = {
                 "md5_checksum": md5_checksum,
                 "record_key": record_key,
+                "org_id": org_id,
             }
 
             if record_type:
@@ -18394,6 +18405,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             md5_checksum = ref_record.get("md5Checksum")
             size_in_bytes = ref_record.get("sizeInBytes")
+            org_id = ref_record.get("orgId")
 
             if not md5_checksum:
                 # Expected, not a fault: duplicates are matched by md5Checksum
@@ -18422,6 +18434,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 AND record.sizeInBytes == @size_in_bytes
                 """
                 bind_vars["size_in_bytes"] = size_in_bytes
+
+            # Scoped to the reference record's own org: a queued duplicate in
+            # another org must never be silently indexed from this org's event.
+            if org_id:
+                query += """
+                AND record.orgId == @org_id
+                """
+                bind_vars["org_id"] = org_id
 
             query += """
                 LIMIT 1
@@ -18997,6 +19017,33 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get KB virtual IDs: {e}", exc_info=True)
             return {}
 
+    async def get_accessible_connector_types(
+        self,
+        user_id: str,
+        org_id: str,
+    ) -> list[str]:
+        """See ``IGraphDBProvider.get_accessible_connector_types``.
+
+        Built on ``get_user_apps`` rather than a new AQL query: the app
+        documents already carry ``type``, and reusing the traversal that
+        permission checks depend on keeps one definition of "apps this user can
+        reach" instead of two that can drift apart.
+        """
+        try:
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return []
+            user_key = user.get("_key") or user.get("id")
+            if not user_key:
+                return []
+            apps = await self.get_user_apps(user_key)
+            return _distinct_connector_types(apps)
+        except Exception as e:
+            # Narrowing is an optimization; a failure costs a wider search, not
+            # a wrong one, so it must never fail the query.
+            self.logger.warning("Could not resolve accessible connector types: %s", e)
+            return []
+
     async def get_accessible_virtual_record_ids(
         self,
         user_id: str,
@@ -19225,10 +19272,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "🔍 Finding records with virtualRecordId: %s", virtual_record_id
             )
 
-            # Base query
+            # Base query. Soft-deleted records are excluded: this answers
+            # "does anything still reference this content", and a tombstone
+            # answering yes would keep its vectors alive for ever.
+            # AQL `!= true` is null-safe, so records predating the field pass.
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record.virtualRecordId == @virtual_record_id
+                AND record.isDeleted != true
             """
 
             # Add optional filter for record IDs

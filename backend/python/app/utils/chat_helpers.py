@@ -17,7 +17,7 @@ from app.config.constants.service import config_node_constants
 from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import (
     is_jira_ticket_record,
 )
-from app.models.blocks import BlockType, GroupSubType, GroupType, SemanticMetadata
+from app.models.blocks import BlockType, GroupType, SemanticMetadata
 from app.models.entities import (
     CodeFileRecord,
     Connectors,
@@ -44,7 +44,8 @@ from app.modules.qna.prompt_templates import (
 from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
+from app.services.vector_db.collection_registry import CollectionRegistry
+from app.services.vector_db.strategy import QueryContext
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jinja_templates import compiled_template
 from app.utils.logger import create_logger
@@ -1744,8 +1745,8 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
     virtual_record_id_to_result: Dict[str, Dict[str, Any]],
     blob_store: BlobStorage,
     org_id: str,
-    graph_provider: Optional[IGraphDBProvider] = None,
-    flattened_results: Optional[List[Dict[str, Any]]] = None,
+    graph_provider: IGraphDBProvider | None = None,
+    flattened_results: List[Dict[str, Any]] | None = None,
 ) -> None:
     """
     For each SQL_TABLE record in virtual_record_id_to_result that has child_record_ids
@@ -2011,7 +2012,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             fk_count,
         )
 
-async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: Optional[IGraphDBProvider] = None) -> List[Dict[str, Any]]:
+async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> List[Dict[str, Any]]:
     flattened_results = []
     image_index = 0
     seen_chunks = set()
@@ -2019,7 +2020,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     new_type_results = []
     old_type_results = []
     # Cache for reconciliation metadata per virtual_record_id (block_id -> index mapping)
-    virtual_record_id_to_recon_metadata: Dict[str, Optional[Dict[str, Any]]] = {}
+    virtual_record_id_to_recon_metadata: Dict[str, Dict[str, Any] | None] = {}
     # Cache for fragment maps per virtual_record_id (container_index → fragment children)
     fragment_maps: Dict[str, Dict[int, list]] = {}
     if from_retrieval_service:
@@ -2626,7 +2627,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         meta = result.get("metadata",{})
 
         if virtual_record_id not in virtual_record_id_to_result:
-            record,point_id_to_blockIndex = await create_record_from_vector_metadata(meta,org_id,virtual_record_id,blob_store)
+            record,point_id_to_blockIndex = await create_record_from_vector_metadata(
+                meta, org_id, virtual_record_id, blob_store
+            )
             virtual_record_id_to_result[virtual_record_id] = record
             point_id_to_blockIndex_mappings[virtual_record_id] = point_id_to_blockIndex
 
@@ -2880,7 +2883,13 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
     except Exception as e:
         raise e
 
-async def create_record_from_vector_metadata(metadata: dict[str, Any], org_id: str, virtual_record_id: str,blob_store: BlobStorage) -> tuple[dict[str, Any], dict[str, int]]:
+async def create_record_from_vector_metadata(
+    metadata: dict[str, Any],
+    org_id: str,
+    virtual_record_id: str,
+    blob_store: BlobStorage,
+    collection_registry: Optional["CollectionRegistry"] = None,
+) -> tuple[dict[str, Any], dict[str, int]]:
     try:
         # Lazy import to avoid circular dependency: chat_helpers -> ContainerUtils -> RetrievalService -> chat_helpers
         from app.containers.utils.utils import ContainerUtils
@@ -2926,12 +2935,24 @@ async def create_record_from_vector_metadata(metadata: dict[str, Any], org_id: s
             "semantic_metadata": semantic_metadata,
             "extension": extension,
         }
-        blocks = []
         container_utils = ContainerUtils()
 
         vector_db_service = await container_utils.get_vector_db_service(blob_store.config_service)
+        if collection_registry is None:
+            # Built alongside the vector DB service this function already
+            # constructs, so the marginal cost is a memoised strategy read.
+            # The parameter exists so a caller wired through DI can hand one in
+            # instead, without this becoming a required argument everywhere.
+            collection_registry = await container_utils.create_collection_registry(
+                logger=logger,
+                config_service=blob_store.config_service,
+                vector_db_service=vector_db_service,
+            )
+        collection_names = await collection_registry.resolve_for_query(
+            QueryContext(org_id=org_id)
+        )
 
-# Create filter
+        # Create filter
         payload_filter = await vector_db_service.filter_collection(must={
             "virtualRecordId": virtual_record_id,
         })
@@ -2940,65 +2961,82 @@ async def create_record_from_vector_metadata(metadata: dict[str, Any], org_id: s
         # call silently truncates: OpenSearch caps size at 10k and RediSearch at
         # MAXSEARCHRESULTS, so an oversized limit returns a partial set that
         # looks complete.
+        # Every collection the strategy resolves, not just the first: under a
+        # strategy that splits by connector type, one VRID's blocks can be
+        # spread across several, and reconstructing from one would silently
+        # drop the rest of the document.
         points = []
-        next_offset = None
-        seen_offsets: set = set()
-        while True:
-            try:
-                result = await vector_db_service.scroll(
-                    collection_name=VECTOR_DB_COLLECTION_NAME,
-                    scroll_filter=payload_filter,
-                    limit=SCROLL_PAGE_SIZE,
-                    offset=next_offset,
-                )
-            except RuntimeError as e:
-                # A provider result ceiling (RediSearch MAXSEARCHRESULTS) is a
-                # hard stop, not a reason to fail the whole rebuild: reconstruct
-                # from what we have and say plainly that it is partial.
-                logger.error(
-                    "Vector scroll for %s stopped early after %d points: %s",
-                    virtual_record_id,
-                    len(points),
-                    e,
-                )
-                break
-            points.extend(result.points)
-            next_offset = result.next_offset
-            if not next_offset:
-                break
-            # Termination depends entirely on the provider advancing the cursor.
-            # A provider that repeats one refetches and re-appends the same page
-            # for ever, on a request path, so treat a repeat as the end.
-            if next_offset in seen_offsets:
-                logger.error(
-                    "Vector scroll for %s repeated offset %r after %d points; "
-                    "stopping with a partial result",
-                    virtual_record_id,
-                    next_offset,
-                    len(points),
-                )
-                break
-            seen_offsets.add(next_offset)
+        for collection_name in collection_names:
+            next_offset = None
+            seen_offsets: set = set()
+            while True:
+                try:
+                    result = await vector_db_service.scroll(
+                        collection_name=collection_name,
+                        scroll_filter=payload_filter,
+                        limit=SCROLL_PAGE_SIZE,
+                        offset=next_offset,
+                    )
+                except RuntimeError as e:
+                    # A provider result ceiling (RediSearch MAXSEARCHRESULTS) is a
+                    # hard stop, not a reason to fail the whole rebuild: reconstruct
+                    # from what we have and say plainly that it is partial.
+                    logger.error(
+                        "Vector scroll for %s in %s stopped early after %d points: %s",
+                        virtual_record_id,
+                        collection_name,
+                        len(points),
+                        e,
+                    )
+                    break
+                points.extend(result.points)
+                next_offset = result.next_offset
+                if not next_offset:
+                    break
+                # Termination depends entirely on the provider advancing the cursor.
+                # A provider that repeats one refetches and re-appends the same page
+                # for ever, on a request path, so treat a repeat as the end.
+                if next_offset in seen_offsets:
+                    logger.error(
+                        "Vector scroll for %s in %s repeated offset %r after %d "
+                        "points; stopping with a partial result",
+                        virtual_record_id,
+                        collection_name,
+                        next_offset,
+                        len(points),
+                    )
+                    break
+                seen_offsets.add(next_offset)
+                if len(points) >= MAX_SCROLL_POINTS:
+                    logger.error(
+                        "Vector scroll for %s hit the %d point ceiling; "
+                        "result is partial",
+                        virtual_record_id,
+                        MAX_SCROLL_POINTS,
+                    )
+                    break
             if len(points) >= MAX_SCROLL_POINTS:
-                logger.error(
-                    "Vector scroll for %s hit the %d point ceiling; "
-                    "result is partial",
-                    virtual_record_id,
-                    MAX_SCROLL_POINTS,
-                )
                 break
 
         point_id_to_blockIndex = {}
         new_payloads = []
 
-        for i,point in enumerate(points):
+        # Each point is carried with the block it produced, so the mapping can
+        # be built from final positions. Recording `enumerate(points)` instead
+        # was wrong twice over: the index skipped no payload-less point, and it
+        # described the pre-sort order while the caller indexes the sorted list
+        # (`blocks[index]`), so a citation could resolve to another block
+        # entirely. Points arrive from several collections under a
+        # multi-collection strategy, so they are not in block order.
+        points_and_blocks = []
+
+        for point in points:
             payload = point.payload
             if payload:
                 meta = payload.get("metadata")
                 page_content = payload.get("page_content")
                 block = create_block_from_metadata(meta,page_content)
-                point_id_to_blockIndex[point.id] = i
-                blocks.append(block)
+                points_and_blocks.append((point.id, block))
                 new_payloads.append({"metadata":{
                     "virtualRecordId": virtual_record_id,
                     "blockIndex": block.get("index"),
@@ -3009,9 +3047,11 @@ async def create_record_from_vector_metadata(metadata: dict[str, Any], org_id: s
                 "page_content": payload.get("page_content")
                 })
 
-        sorted_blocks = sorted(blocks, key=lambda x: x.get("index", 0))
-        for i,block in enumerate(sorted_blocks):
+        points_and_blocks.sort(key=lambda pair: pair[1].get("index", 0))
+        sorted_blocks = [block for _, block in points_and_blocks]
+        for i,(point_id,block) in enumerate(points_and_blocks):
             block["index"] = i
+            point_id_to_blockIndex[point_id] = i
 
         record["block_containers"] = {
             "blocks": sorted_blocks,

@@ -628,15 +628,33 @@ class TestValidateConnectorDeletionPermissions:
             logger=MagicMock(),
         )
 
-    def test_team_connector_non_admin_raises(self):
+    def test_team_connector_creator_passes(self):
+        """Whoever set a team connector up may take it down, without needing an
+        administrator — the rule the update path already applies."""
+        _validate_connector_deletion_permissions(
+            {"scope": ConnectorScope.TEAM.value, "createdBy": "user-a"},
+            "user-a",
+            is_admin=False,
+            logger=MagicMock(),
+        )
+
+    def test_team_connector_non_admin_non_creator_raises(self):
         with pytest.raises(HTTPException) as exc_info:
             _validate_connector_deletion_permissions(
                 {"scope": ConnectorScope.TEAM.value, "createdBy": "user-a"},
-                "user-a",
+                "user-b",
                 is_admin=False,
                 logger=MagicMock(),
             )
         assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
+
+    def test_team_connector_admin_who_is_not_the_creator_passes(self):
+        _validate_connector_deletion_permissions(
+            {"scope": ConnectorScope.TEAM.value, "createdBy": "user-a"},
+            "user-b",
+            is_admin=True,
+            logger=MagicMock(),
+        )
 
     def test_personal_connector_creator_passes(self):
         _validate_connector_deletion_permissions(
@@ -646,17 +664,18 @@ class TestValidateConnectorDeletionPermissions:
             logger=MagicMock(),
         )
 
-    def test_personal_connector_admin_not_creator_raises(self):
-        with pytest.raises(HTTPException) as exc_info:
-            _validate_connector_deletion_permissions(
-                {"scope": ConnectorScope.PERSONAL.value, "createdBy": "user-a"},
-                "user-b",
-                is_admin=True,
-                logger=MagicMock(),
-            )
-        assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
+    def test_personal_connector_admin_passes(self):
+        """Deletion is uniform across scopes: an administrator can remove a
+        personal connector whose creator is gone. Reading or altering it stays
+        blocked by _can_access_connector — a different act."""
+        _validate_connector_deletion_permissions(
+            {"scope": ConnectorScope.PERSONAL.value, "createdBy": "user-a"},
+            "user-b",
+            is_admin=True,
+            logger=MagicMock(),
+        )
 
-    def test_personal_connector_other_user_raises(self):
+    def test_personal_connector_other_non_admin_user_raises(self):
         with pytest.raises(HTTPException) as exc_info:
             _validate_connector_deletion_permissions(
                 {"scope": ConnectorScope.PERSONAL.value, "createdBy": "user-a"},
@@ -666,8 +685,20 @@ class TestValidateConnectorDeletionPermissions:
             )
         assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
-    def test_no_scope_passes(self):
-        """No explicit scope means neither team nor personal guard fires."""
+    def test_a_scopeless_stranger_is_still_refused(self):
+        """The rule no longer branches on scope, so an unknown scope must not
+        become an accidental way through."""
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_connector_deletion_permissions(
+                {"createdBy": "user-a"},
+                "user-b",
+                is_admin=False,
+                logger=MagicMock(),
+            )
+        assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
+
+    def test_no_scope_passes_for_the_creator(self):
+        """Scope no longer selects a rule; the creator is allowed regardless."""
         _validate_connector_deletion_permissions(
             {"createdBy": "user-a"},
             "user-a",

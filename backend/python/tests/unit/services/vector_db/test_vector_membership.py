@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.services.vector_db.collection_locator import StaticCollectionLocator
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -19,6 +20,17 @@ from app.services.vector_db.membership import (
     sync_vector_membership,
     vector_point_payload,
 )
+from tests.support.vector_db import (
+    make_collection_registry as _make_collection_registry,
+)
+
+
+def _loc(names=("records",)) -> StaticCollectionLocator:
+    """The single-collection locator these tests previously expressed as a
+    bare collection name."""
+    return StaticCollectionLocator(list(names))
+
+
 from app.services.vector_db.models import VectorPoint
 from app.services.vector_db.redis.utils import (
     hash_doc_to_payload,
@@ -259,7 +271,7 @@ class TestVectorStoreWritesMembership:
             logger=MagicMock(),
             config_service=AsyncMock(),
             graph_provider=AsyncMock(),
-            collection_name="records",
+            collection_registry=_make_collection_registry(),
             vector_db_service=mock_vdb,
         )
         vs.graph_provider.get_document = AsyncMock(return_value={"_key": "rec-1"})
@@ -272,6 +284,7 @@ class TestVectorStoreWritesMembership:
             await vs._embed_and_upsert_documents(
                 [Document(page_content="hello", metadata={"virtualRecordId": "vr-1"})],
                 "rec-1",
+                "records",
             )
         finally:
             from app.services.vector_db.membership import reset_membership_context
@@ -294,7 +307,7 @@ class TestBulkDeleteMembership:
             logger=MagicMock(),
             config_service=AsyncMock(),
             graph_provider=AsyncMock(),
-            collection_name="records",
+            collection_registry=_make_collection_registry(),
             vector_db_service=AsyncMock(),
         )
         pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(
@@ -321,7 +334,7 @@ class TestBulkDeleteMembership:
             logger=MagicMock(),
             config_service=AsyncMock(),
             graph_provider=AsyncMock(),
-            collection_name="records",
+            collection_registry=_make_collection_registry(),
             vector_db_service=AsyncMock(),
         )
         pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(
@@ -448,7 +461,7 @@ class TestSyncAndRewriteMembership:
         filt = object()
         vdb.filter_collection = AsyncMock(return_value=filt)
 
-        await sync_vector_membership(vdb, "records", gp, "vr-1", MagicMock())
+        await sync_vector_membership(vdb, _loc(), gp, "vr-1", MagicMock())
 
         vdb.set_payload.assert_awaited_once_with(
             "records",
@@ -459,7 +472,7 @@ class TestSyncAndRewriteMembership:
     @pytest.mark.asyncio
     async def test_sync_skips_empty_vrid(self):
         vdb = AsyncMock()
-        await sync_vector_membership(vdb, "records", _graph(), "", MagicMock())
+        await sync_vector_membership(vdb, _loc(), _graph(), "", MagicMock())
         vdb.set_payload.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -473,7 +486,7 @@ class TestSyncAndRewriteMembership:
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
 
         result = await rewrite_or_delete_virtual_record(
-            vdb, "records", gp, "vr-1", MagicMock()
+            vdb, _loc(), gp, "vr-1", MagicMock()
         )
 
         assert result == "rewritten"
@@ -487,7 +500,7 @@ class TestSyncAndRewriteMembership:
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
 
         result = await rewrite_or_delete_virtual_record(
-            vdb, "records", gp, "vr-1", MagicMock()
+            vdb, _loc(), gp, "vr-1", MagicMock()
         )
 
         assert result == "deleted"
@@ -503,7 +516,7 @@ class TestSyncAndRewriteMembership:
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
 
         result = await rewrite_or_delete_virtual_record(
-            vdb, "records", gp, "vr-1", MagicMock()
+            vdb, _loc(), gp, "vr-1", MagicMock()
         )
 
         assert result == "deleted"
@@ -527,7 +540,7 @@ class TestVectorStoreBindMembership:
                 records={"rec-1": {"connectorId": "conn-1", "recordGroupId": "rg-1"}},
                 edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/rg-1"}],
             ),
-            collection_name="records",
+            collection_registry=_make_collection_registry(),
             vector_db_service=mock_vdb,
         )
 
@@ -560,7 +573,7 @@ class TestVectorStoreBindMembership:
             logger=MagicMock(),
             config_service=AsyncMock(),
             graph_provider=gp,
-            collection_name="records",
+            collection_registry=_make_collection_registry(),
             vector_db_service=mock_vdb,
         )
 
@@ -623,8 +636,8 @@ class TestMembershipConcurrency:
         vdb.set_payload = AsyncMock(side_effect=_set_payload)
 
         await asyncio.gather(
-            sync_vector_membership(vdb, "records", gp, "vr-1", None),
-            sync_vector_membership(vdb, "records", gp, "vr-1", None),
+            sync_vector_membership(vdb, _loc(), gp, "vr-1", None),
+            sync_vector_membership(vdb, _loc(), gp, "vr-1", None),
         )
 
         assert trace == ["read", "write", "read", "write"], (
@@ -652,8 +665,8 @@ class TestMembershipConcurrency:
         vdb.set_payload = AsyncMock(side_effect=_set_payload)
 
         await asyncio.gather(
-            sync_vector_membership(vdb, "records", gp, "vr-a", None),
-            sync_vector_membership(vdb, "records", gp, "vr-b", None),
+            sync_vector_membership(vdb, _loc(), gp, "vr-a", None),
+            sync_vector_membership(vdb, _loc(), gp, "vr-b", None),
         )
         assert active["max"] == 2, "different VRIDs should not block each other"
 
@@ -667,7 +680,7 @@ class TestMembershipConcurrency:
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
 
         result = await asyncio.wait_for(
-            rewrite_or_delete_virtual_record(vdb, "records", gp, "vr-1", None),
+            rewrite_or_delete_virtual_record(vdb, _loc(), gp, "vr-1", None),
             timeout=5,
         )
         assert result == "rewritten"
@@ -692,13 +705,13 @@ class TestMembershipLockRelease:
         vdb.set_payload = AsyncMock(side_effect=ConnectionError("vector db gone"))
 
         with pytest.raises(ConnectionError):
-            await sync_vector_membership(vdb, "records", gp, "vr-err", None)
+            await sync_vector_membership(vdb, _loc(), gp, "vr-err", None)
 
         assert not _vrid_lock("vr-err").locked()
         # and the VRID is still usable afterwards
         vdb.set_payload = AsyncMock()
         await asyncio.wait_for(
-            sync_vector_membership(vdb, "records", gp, "vr-err", None), timeout=5
+            sync_vector_membership(vdb, _loc(), gp, "vr-err", None), timeout=5
         )
 
     @pytest.mark.asyncio
@@ -723,7 +736,7 @@ class TestMembershipLockRelease:
         vdb.set_payload = AsyncMock(side_effect=_hang)
 
         task = asyncio.create_task(
-            sync_vector_membership(vdb, "records", gp, "vr-cancel", None)
+            sync_vector_membership(vdb, _loc(), gp, "vr-cancel", None)
         )
         await started.wait()
         assert _vrid_lock("vr-cancel").locked()
@@ -753,7 +766,7 @@ class TestMembershipLockRelease:
         m.MEMBERSHIP_LOCK_TIMEOUT_SECONDS = 0.05
         try:
             with pytest.raises(asyncio.TimeoutError):
-                await m.sync_vector_membership(vdb, "records", gp, "vr-hang", None)
+                await m.sync_vector_membership(vdb, _loc(), gp, "vr-hang", None)
             assert not m._vrid_lock("vr-hang").locked()
         finally:
             m.MEMBERSHIP_LOCK_TIMEOUT_SECONDS = original
@@ -782,7 +795,7 @@ class TestDeleteConfirmation:
         m.EMPTY_CONFIRM_DELAY_SECONDS = 0
         try:
             result = await m.rewrite_or_delete_virtual_record(
-                vdb, "records", gp, "vr-lag", MagicMock()
+                vdb, _loc(), gp, "vr-lag", MagicMock()
             )
         finally:
             m.EMPTY_CONFIRM_DELAY_SECONDS = original
@@ -803,7 +816,7 @@ class TestDeleteConfirmation:
         m.EMPTY_CONFIRM_DELAY_SECONDS = 0
         try:
             result = await m.rewrite_or_delete_virtual_record(
-                vdb, "records", gp, "vr-gone", None
+                vdb, _loc(), gp, "vr-gone", None
             )
         finally:
             m.EMPTY_CONFIRM_DELAY_SECONDS = original
@@ -827,7 +840,7 @@ class TestDeleteConfirmation:
         original = m.EMPTY_CONFIRM_DELAY_SECONDS
         m.EMPTY_CONFIRM_DELAY_SECONDS = 0
         try:
-            await m.rewrite_or_delete_virtual_record(vdb, "records", gp, "vr-x", None)
+            await m.rewrite_or_delete_virtual_record(vdb, _loc(), gp, "vr-x", None)
         finally:
             m.EMPTY_CONFIRM_DELAY_SECONDS = original
 
@@ -994,13 +1007,13 @@ class TestStorageReconcileIsOptIn:
             logger=MagicMock(),
             config_service=AsyncMock(),
             graph_provider=AsyncMock(),
-            collection_name="records",
+            collection_registry=_make_collection_registry(),
             vector_db_service=vdb,
         )
 
         with _patch.dict(os.environ, {}, clear=False):
             os.environ.pop("VECTOR_STORAGE_RECONCILE_ENABLED", None)
-            await vs._reconcile_storage_layout(1024, False)
+            await vs._reconcile_storage_layout("records", 1024, False)
 
         vdb.reconcile_storage_layout.assert_not_awaited()
 
@@ -1019,12 +1032,12 @@ class TestStorageReconcileIsOptIn:
             logger=MagicMock(),
             config_service=AsyncMock(),
             graph_provider=AsyncMock(),
-            collection_name="records",
+            collection_registry=_make_collection_registry(),
             vector_db_service=vdb,
         )
 
         with _patch.dict(os.environ, {"VECTOR_STORAGE_RECONCILE_ENABLED": "true"}):
-            await vs._reconcile_storage_layout(1024, False)
+            await vs._reconcile_storage_layout("records", 1024, False)
 
         vdb.reconcile_storage_layout.assert_awaited_once()
 
@@ -1060,7 +1073,7 @@ class TestDeleteDuringIndexLeavesNoOrphans:
             logger=MagicMock(),
             config_service=AsyncMock(),
             graph_provider=graph,
-            collection_name="records",
+            collection_registry=_make_collection_registry(),
             vector_db_service=vdb,
         )
 
@@ -1103,7 +1116,7 @@ class TestDeleteDuringIndexLeavesNoOrphans:
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
         vs = self._vectorstore(gp, vdb)
 
-        await vs._resync_membership_after_write("vr-live")
+        await vs._resync_membership_after_write("vr-live", "rec-1")
 
         vdb.delete_points.assert_not_awaited()
         vdb.set_payload.assert_awaited_once()

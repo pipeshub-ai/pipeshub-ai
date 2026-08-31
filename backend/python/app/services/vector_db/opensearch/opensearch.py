@@ -90,6 +90,8 @@ _OS_CAPABILITIES = VectorDBCapabilities(
     supports_sparse_vectors=False,
     supports_server_side_text_search=True,
     supported_fusion_methods=[FusionMethod.RRF],
+    supports_multi_collection=True,
+    max_recommended_collections=200,
 )
 
 # Defaults used when _cfg is not yet loaded (e.g. connected_service fixture in tests)

@@ -7,6 +7,7 @@ export interface SmtpConfig {
 }
 
 export interface MailBody {
+  orgId?: string;
   productName?: string;
   emailTemplateType: string;
   isAutoEmail?: boolean;

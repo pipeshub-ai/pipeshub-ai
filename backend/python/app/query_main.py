@@ -1,5 +1,3 @@
-import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
-
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
@@ -11,19 +9,27 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.edition_config import authMiddleware, agent_router, agent_sharing_router, chatbot_router, search_router, ensure_org_context
+import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 from app.api.middlewares.request_context import RequestContextMiddleware
+from app.edition_config import (
+    agent_router,
+    agent_sharing_router,
+    authMiddleware,
+    chatbot_router,
+    ensure_org_context,
+    search_router,
+)
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
-from app.api.routes.health import router as health_router
 from app.api.routes.ai_models_registry import router as ai_models_registry_router
-from app.api.routes.speech import router as speech_router
+from app.api.routes.health import router as health_router
 from app.api.routes.skills import router as skills_router
+from app.api.routes.speech import router as speech_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.edition_containers import QueryAppContainer
 from app.health.health import Health
-from app.services.messaging.config import MessageBrokerType, get_message_broker_type
+from app.services.messaging.config import get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
@@ -219,21 +225,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # or a missing collection (first run, no data yet) simply skips silently.
         async def _warmup_knn_index() -> None:
             try:
-                from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
                 vector_db_svc = await container.vector_db_service()
                 if not hasattr(vector_db_svc, "warmup"):
                     return
-                collection_exists = await vector_db_svc.collection_exists(VECTOR_DB_COLLECTION_NAME)
-                if not collection_exists:
-                    logger.info(
-                        f"k-NN warmup skipped — collection '{VECTOR_DB_COLLECTION_NAME}' "
-                        "does not exist yet"
-                    )
+                managed = await retrieval_service.collection_registry.list_managed_collections()
+                if not managed:
+                    logger.info("k-NN warmup skipped — nothing indexed yet")
                     return
-                logger.info(
-                    f"🔥 Warming up k-NN index for collection '{VECTOR_DB_COLLECTION_NAME}'"
-                )
-                await vector_db_svc.warmup(VECTOR_DB_COLLECTION_NAME)
+                for entry in managed:
+                    if not await vector_db_svc.collection_exists(entry.name):
+                        continue
+                    logger.info(
+                        f"🔥 Warming up k-NN index for collection '{entry.name}'"
+                    )
+                    await vector_db_svc.warmup(entry.name)
                 logger.info("✅ k-NN index warmup complete")
             except Exception as warmup_error:
                 logger.warning(

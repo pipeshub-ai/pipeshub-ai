@@ -119,10 +119,12 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
         Args:
             key: The key to create
             value: The value to associate with the key
+            overwrite: If True, overwrite existing key. If False, skip if key exists.
             ttl: Optional time-to-live in seconds
 
-        Raises:
-            KeyError: If the key already exists
+        Returns:
+            True if the key was created or updated, False if the key already
+            existed and overwrite was False.
         """
         logger.debug("🔄 Creating key: %s", key)
         logger.debug("📋 TTL: %s seconds", ttl if ttl else "None")
@@ -130,8 +132,8 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
         with self.lock:
             self._cleanup_expired_keys()
             if key in self.store and not self.store[key].is_expired() and not overwrite:
-                logger.error("❌ Key already exists: %s", key)
-                raise KeyError(f'Key "{key}" already exists.')
+                logger.debug("⏭️ Skipping existing key: %s", key)
+                return False  # Key was not created (already exists)
 
             logger.debug("🔄 Storing new key-value pair")
             self.store[key] = KeyData(value, ttl)

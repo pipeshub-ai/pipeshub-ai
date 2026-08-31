@@ -28,6 +28,30 @@ if TYPE_CHECKING:
     )
 
 
+def _distinct_connector_types(apps: "list[dict] | None") -> list[str]:
+    """Distinct ``type`` values from a list of app documents, order preserved.
+
+    Shared by every provider: the app documents have the same shape whichever
+    graph returned them, so the extraction belongs beside the contract rather
+    than duplicated per backend. Apps without a type are skipped — an
+    untyped app cannot narrow anything, and guessing one would narrow the
+    search to a collection that does not exist.
+    """
+    types: list[str] = []
+    seen: set[str] = set()
+    for app in apps or []:
+        if not isinstance(app, dict):
+            continue
+        app_type = app.get("type")
+        if not app_type:
+            continue
+        value = str(app_type)
+        if value not in seen:
+            seen.add(value)
+            types.append(value)
+    return types
+
+
 class IGraphDBProvider(ABC):
     """
     Comprehensive interface for graph database operations.
@@ -2368,17 +2392,31 @@ class IGraphDBProvider(ABC):
         self,
         record_key: str,
         md5_checksum: str,
+        org_id: str,
         record_type: str | None = None,
         size_in_bytes: int | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
     ) -> list[dict]:
         """
-        Find duplicate records based on MD5 checksum.
-        This method queries the RECORDS collection and works for all record types.
+        Find duplicate records based on MD5 checksum, scoped to a single org.
+
+        Deliberately does NOT filter by connector: dedup decisions need to see
+        duplicates from *other* connectors too, so the caller can decide whether
+        the duplicate resolves to the same vector collection (skip indexing) or
+        a different one (index anyway) — narrowing this query to one connector
+        would hide the cross-connector case entirely. Each returned record is
+        the full RECORDS document, so callers already have connectorId,
+        connectorName, and orgId without any extra round trip.
+
+        ``org_id`` is required and always applied: two orgs holding
+        byte-identical content must never be treated as duplicates of each
+        other — matching cross-org would leak one org's virtualRecordId,
+        summaryDocumentId, and graph relationships onto another org's record.
 
         Args:
             record_key (str): The key of the current record to exclude from results
             md5_checksum (str): MD5 checksum of the record content
+            org_id (str): Restrict dedup matching to this org only
             record_type (Optional[str]): Optional record type to filter by
             size_in_bytes (Optional[int]): Optional file size in bytes to filter by
             transaction (Optional[str]): Optional transaction ID
@@ -2558,6 +2596,71 @@ class IGraphDBProvider(ABC):
             transaction (Optional[Any]): Optional transaction context
         """
         pass
+
+    @abstractmethod
+    async def get_records_by_virtual_record_id(
+        self,
+        virtual_record_id: str,
+        accessible_record_ids: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Keys of every live record sharing this virtualRecordId.
+
+        The authority for vector deletion. A point may be removed only when
+        this returns nothing: content is deduplicated, so one virtualRecordId
+        can be reached through several records, and deleting on the strength of
+        one of them disappearing would take the others' vectors with it.
+
+        Two properties the callers depend on, and that any implementation must
+        preserve:
+
+        - **Not scoped by connector or org.** The question is "does anything at
+          all still reference this content", so a record belonging to another
+          connector must be returned. Narrowing it would make the delete path
+          unsafe rather than stricter.
+        - **Soft-deleted records excluded.** A tombstone answering "yes, still
+          referenced" would strand its vectors permanently.
+
+        ``accessible_record_ids`` narrows to a permission-filtered set for read
+        paths; the delete path passes nothing and sees everything.
+
+        Args:
+            virtual_record_id: The content identity to look up
+            accessible_record_ids: Optional permission filter (read paths only)
+            transaction: Optional transaction ID
+
+        Returns:
+            List[str]: Record keys, empty when nothing references it
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_accessible_connector_types(
+        self,
+        user_id: str,
+        org_id: str,
+    ) -> list[str]:
+        """Distinct connector *types* this user can reach, as ``Connectors`` values.
+
+        The type ("DRIVE", "SLACK", "KB"), not the instance id — two Google
+        Drive connections yield one entry. Used by the query path to narrow a
+        multi-collection search to the collections the user could match in at
+        all, instead of fanning out across every one the deployment manages.
+
+        Purely an optimization, and callers must stay correct without it: an
+        empty list means "could not narrow", never "this user can reach
+        nothing". Permission enforcement stays with
+        ``get_accessible_virtual_record_ids``, which gates the actual results —
+        this only decides where to look.
+
+        Args:
+            user_id (str): The userId field value in the users collection
+            org_id (str): The organization to scope the lookup to
+
+        Returns:
+            List[str]: Distinct connector type values, in no particular order
+        """
+        raise NotImplementedError
 
     @abstractmethod
     async def get_accessible_virtual_record_ids(
@@ -3259,6 +3362,9 @@ class IGraphDBProvider(ABC):
             Dict[str, Any]: Dictionary containing:
                 - success (bool): Whether deletion was successful
                 - virtual_record_ids (List[str]): List of virtual record IDs for Qdrant cleanup
+                - connector_name (str | None): The app's type/Connectors enum value —
+                  needed by the vector cleanup consumer to resolve which collection(s)
+                  this connector's data lives in under a per-connector-type strategy
                 - deleted_records_count (int): Number of records deleted
                 - deleted_record_groups_count (int): Number of record groups deleted
                 - deleted_roles_count (int): Number of roles deleted

@@ -12,14 +12,16 @@ import pytest
 
 from app.exceptions.indexing_exceptions import (
     IndexingError,
-    MetadataProcessingError,
     VectorStoreError,
 )
-
+from tests.support.vector_db import (
+    make_collection_registry as _make_collection_registry,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_pipeline():
     """Create an IndexingPipeline with mocked dependencies."""
@@ -33,7 +35,7 @@ def _make_pipeline():
             logger=MagicMock(),
             config_service=AsyncMock(),
             graph_provider=AsyncMock(),
-            collection_name="test_collection",
+            collection_registry=_make_collection_registry(),
             vector_db_service=AsyncMock(),
         )
         return pipeline
@@ -50,9 +52,14 @@ class TestIndexingPipelineInit:
         pipeline = _make_pipeline()
         assert pipeline.sparse_embeddings is not None
 
-    def test_collection_name_set(self):
+    def test_locator_is_built_from_the_registry(self):
+        """VRID-scoped work resolves through the locator, not a fixed name."""
         pipeline = _make_pipeline()
-        assert pipeline.collection_name == "test_collection"
+        assert pipeline.collection_locator is not None
+        assert (
+            pipeline.collection_locator._strategy
+            is pipeline.collection_registry.strategy
+        )
 
     @pytest.mark.skip(reason="IndexingPipeline does not have a vector_store attribute")
     def test_vector_store_starts_as_none(self):
@@ -72,7 +79,7 @@ class TestIndexingPipelineInit:
                     logger=MagicMock(),
                     config_service=AsyncMock(),
                     graph_provider=AsyncMock(),
-                    collection_name="test",
+                    collection_registry=_make_collection_registry("test"),
                     vector_db_service=AsyncMock(),
                 )
 

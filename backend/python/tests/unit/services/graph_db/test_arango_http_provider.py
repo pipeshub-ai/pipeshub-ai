@@ -13670,20 +13670,20 @@ class TestFindDuplicateRecords:
         connected_provider.http_client.execute_aql = AsyncMock(
             return_value=[{"_key": "r2", "md5Checksum": "abc123"}]
         )
-        result = await connected_provider.find_duplicate_records("r1", "abc123")
+        result = await connected_provider.find_duplicate_records("r1", "abc123", org_id="org-1")
         assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_no_duplicates(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        result = await connected_provider.find_duplicate_records("r1", "abc123")
+        result = await connected_provider.find_duplicate_records("r1", "abc123", org_id="org-1")
         assert result == []
 
     @pytest.mark.asyncio
     async def test_with_record_type_filter(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
         result = await connected_provider.find_duplicate_records(
-            "r1", "abc123", record_type="FILE"
+            "r1", "abc123", org_id="org-1", record_type="FILE"
         )
         assert result == []
 
@@ -13691,15 +13691,26 @@ class TestFindDuplicateRecords:
     async def test_with_size_filter(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
         result = await connected_provider.find_duplicate_records(
-            "r1", "abc123", size_in_bytes=1024
+            "r1", "abc123", org_id="org-1", size_in_bytes=1024
         )
         assert result == []
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.find_duplicate_records("r1", "abc123")
+        result = await connected_provider.find_duplicate_records("r1", "abc123", org_id="org-1")
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_org_id_scoping_adds_bind_var(self, connected_provider):
+        """org_id is always passed as an AQL bind var, restricting dedup
+        matches to within-org."""
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+
+        await connected_provider.find_duplicate_records("r1", "abc123", org_id="org-9")
+
+        call_kwargs = connected_provider.http_client.execute_aql.await_args.kwargs
+        assert call_kwargs["bind_vars"]["org_id"] == "org-9"
 
 
 # ---------------------------------------------------------------------------
@@ -13750,6 +13761,22 @@ class TestFindNextQueuedDuplicate:
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
         result = await connected_provider.find_next_queued_duplicate("r1")
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_scopes_to_reference_records_org(self, connected_provider):
+        """The queued-duplicate search must never cross into another org —
+        scoped internally from the reference record's own orgId, so no
+        caller can omit it."""
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[
+                [{"_key": "r1", "md5Checksum": "abc", "orgId": "org-9"}],
+                [{"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}],
+            ]
+        )
+        await connected_provider.find_next_queued_duplicate("r1")
+
+        second_call_bind_vars = connected_provider.http_client.execute_aql.await_args_list[1].kwargs["bind_vars"]
+        assert second_call_bind_vars["org_id"] == "org-9"
 
 
 # ---------------------------------------------------------------------------
@@ -21834,7 +21861,11 @@ class TestGetConnectorStatsKB:
     @pytest.mark.asyncio
     async def test_kb_stats_query_filters(self, connected_provider):
         """KB stats query should filter by origin=UPLOAD, orgId, and exclude internal/placeholder/deleted."""
-        from app.config.constants.arangodb import Connectors, CollectionNames, OriginTypes
+        from app.config.constants.arangodb import (
+            CollectionNames,
+            Connectors,
+            OriginTypes,
+        )
         
         connected_provider.get_document = AsyncMock(return_value={
             "type": Connectors.KNOWLEDGE_BASE.value

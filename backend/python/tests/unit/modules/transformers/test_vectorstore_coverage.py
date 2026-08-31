@@ -1,18 +1,19 @@
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.exceptions.indexing_exceptions import (
-    EmbeddingError,
     IndexingError,
     VectorStoreError,
 )
-
+from tests.support.vector_db import (
+    make_collection_registry as _make_collection_registry,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 
 def _make_vectorstore():
@@ -37,7 +38,7 @@ def _make_vectorstore():
             logger=MagicMock(),
             config_service=AsyncMock(),
             graph_provider=AsyncMock(),
-            collection_name="test_collection",
+            collection_registry=_make_collection_registry(),
             vector_db_service=vdb,
         )
         return vs
@@ -188,7 +189,7 @@ class TestCreateEmbeddingsUnexpectedException:
         chunks = [Document(page_content="test", metadata={})]
 
         with pytest.raises(TypeError, match="unexpected type error"):
-            await vs._create_embeddings(chunks, "rec-1", "vr-1")
+            await vs._create_embeddings(chunks, "rec-1", "vr-1", "test_collection")
 
     @pytest.mark.asyncio
     async def test_vectorstore_error_propagated_from_document_chunks(self):
@@ -204,7 +205,7 @@ class TestCreateEmbeddingsUnexpectedException:
         chunks = [Document(page_content="test", metadata={})]
 
         with pytest.raises(VectorStoreError):
-            await vs._create_embeddings(chunks, "rec-1", "vr-1")
+            await vs._create_embeddings(chunks, "rec-1", "vr-1", "test_collection")
 
 
 # ===================================================================
@@ -571,6 +572,6 @@ class TestProcessDocumentChunksRemoteFailure:
         ]
 
         with pytest.raises(VectorStoreError, match="Failed to store batch"):
-            await vs._process_document_chunks(chunks)
+            await vs._process_document_chunks(chunks, "rec-1", "test_collection")
 
 

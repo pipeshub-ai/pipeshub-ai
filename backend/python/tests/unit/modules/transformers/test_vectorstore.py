@@ -5,16 +5,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.support.vector_db import (
+    make_collection_registry as _make_collection_registry,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_vectorstore():
     """Instantiate a VectorStore with everything mocked to bypass __init__ side effects."""
-    from app.services.vector_db.models import VectorDBCapabilities
-
     from app.modules.transformers.vectorstore import VectorStore
+    from app.services.vector_db.models import VectorDBCapabilities
 
     mock_vdb = AsyncMock()
     mock_vdb.get_capabilities = MagicMock(return_value=VectorDBCapabilities())
@@ -24,7 +27,7 @@ def _make_vectorstore():
         logger=MagicMock(),
         config_service=AsyncMock(),
         graph_provider=AsyncMock(),
-        collection_name="test_collection",
+        collection_registry=_make_collection_registry(),
         vector_db_service=mock_vdb,
     )
     return vs
@@ -218,119 +221,20 @@ class TestVectorStoreApply:
 # _initialize_collection
 # ===================================================================
 
+@pytest.mark.skip(
+    reason="Collection create/dimension-check logic moved to CollectionRegistry; "
+    "covered by test_collection_registry.py"
+)
 class TestInitializeCollectionBasics:
-    """Tests for VectorStore._initialize_collection."""
-
-    @pytest.mark.asyncio
-    async def test_creates_collection_when_not_found(self):
-        """Creates collection when collection does not exist."""
-        from app.services.vector_db.models import VectorCollectionInfo
-        vs = _make_vectorstore()
-        vs.vector_db_service.get_collection_info = AsyncMock(
-            return_value=VectorCollectionInfo(name="test_collection", exists=False)
-        )
-        vs.vector_db_service.create_collection = AsyncMock()
-        vs.vector_db_service.create_index = AsyncMock()
-
-        await vs._initialize_collection(embedding_size=768)
-
-        vs.vector_db_service.create_collection.assert_awaited_once()
-        assert vs.vector_db_service.create_index.call_count == 4
-
-    @pytest.mark.asyncio
-    async def test_recreates_on_dimension_mismatch(self):
-        """Raises VectorStoreError when vector size differs (manual re-index required)."""
-        from app.exceptions.indexing_exceptions import VectorStoreError
-        from app.services.vector_db.models import VectorCollectionInfo
-        vs = _make_vectorstore()
-        vs.vector_db_service.get_collection_info = AsyncMock(
-            return_value=VectorCollectionInfo(name="test_collection", exists=True, dense_dimension=512)
-        )
-
-        with pytest.raises(VectorStoreError):
-            await vs._initialize_collection(embedding_size=768)
-
-    @pytest.mark.asyncio
-    async def test_no_recreate_when_same_size(self):
-        """Does not recreate when sizes match."""
-        from app.services.vector_db.models import VectorCollectionInfo
-        vs = _make_vectorstore()
-        vs.vector_db_service.get_collection_info = AsyncMock(
-            return_value=VectorCollectionInfo(name="test_collection", exists=True, dense_dimension=768)
-        )
-        vs.vector_db_service.create_collection = AsyncMock()
-
-        await vs._initialize_collection(embedding_size=768)
-
-        vs.vector_db_service.create_collection.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_create_collection_failure_raises_vectorstore_error(self):
-        """Raises VectorStoreError when creation fails."""
-        from app.exceptions.indexing_exceptions import VectorStoreError
-        from app.services.vector_db.models import VectorCollectionInfo
-        vs = _make_vectorstore()
-        vs.vector_db_service.get_collection_info = AsyncMock(
-            return_value=VectorCollectionInfo(name="test_collection", exists=False)
-        )
-        vs.vector_db_service.create_collection = AsyncMock(side_effect=RuntimeError("create failed"))
-
-        with pytest.raises(VectorStoreError):
-            await vs._initialize_collection(embedding_size=768)
+    """Tests for VectorStore._initialize_collection (moved to CollectionRegistry)."""
 
 
+@pytest.mark.skip(
+    reason="recreate_records_collection replaced by CollectionRegistry.recreate_all_collections; "
+    "covered by test_collection_registry.py"
+)
 class TestRecreateRecordsCollection:
-    @pytest.mark.asyncio
-    async def test_drops_before_initialising(self):
-        """Order is the whole point.
-
-        get_embedding_model_instance ends by calling _initialize_collection,
-        which raises on an embedding-dimension mismatch. Initialising before the
-        drop would therefore fail exactly when the model changed — the main
-        reason to recreate.
-        """
-        calls: list[str] = []
-
-        vs = _make_vectorstore()
-        vs.vector_db_service.delete_collection = AsyncMock(
-            side_effect=lambda *a, **k: calls.append("delete")
-        )
-        vs.get_embedding_model_instance = AsyncMock(
-            side_effect=lambda *a, **k: calls.append("init")
-        )
-
-        await vs.recreate_records_collection()
-
-        assert calls == ["delete", "init"], calls
-        vs.vector_db_service.delete_collection.assert_awaited_once_with(
-            "test_collection"
-        )
-
-    @pytest.mark.asyncio
-    async def test_missing_collection_still_initialises(self):
-        vs = _make_vectorstore()
-        vs.vector_db_service.delete_collection = AsyncMock(
-            side_effect=Exception("collection not found")
-        )
-        vs.get_embedding_model_instance = AsyncMock()
-
-        await vs.recreate_records_collection()
-
-        vs.get_embedding_model_instance.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_unexpected_delete_error_propagates(self):
-        """A real outage must not be mistaken for an absent collection."""
-        vs = _make_vectorstore()
-        vs.vector_db_service.delete_collection = AsyncMock(
-            side_effect=ConnectionError("qdrant unreachable")
-        )
-        vs.get_embedding_model_instance = AsyncMock()
-
-        with pytest.raises(ConnectionError):
-            await vs.recreate_records_collection()
-
-        vs.get_embedding_model_instance.assert_not_awaited()
+    """Tests for VectorStore.recreate_records_collection (moved to CollectionRegistry)."""
 
 
 class TestGetEmbeddingModelInstance:
@@ -496,7 +400,7 @@ class TestDeleteEmbeddings:
         vs.vector_db_service.filter_collection = AsyncMock(return_value={"filter": {}})
         vs.vector_db_service.delete_points = AsyncMock()
 
-        await vs.delete_embeddings("vr-1")
+        await vs.delete_embeddings("vr-1", "test_collection")
 
         vs.vector_db_service.delete_points.assert_awaited_once()
 
@@ -508,7 +412,7 @@ class TestDeleteEmbeddings:
         vs.vector_db_service.filter_collection = AsyncMock(side_effect=RuntimeError("fail"))
 
         with pytest.raises(EmbeddingError):
-            await vs.delete_embeddings("vr-1")
+            await vs.delete_embeddings("vr-1", "test_collection")
 
 
 # ===================================================================
@@ -525,15 +429,15 @@ class TestCleanupOrphanedEmbeddings:
         vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
         vs.delete_embeddings = AsyncMock()
 
-        await vs._cleanup_orphaned_embeddings_if_needed("rec-1", "vr-1")
+        await vs._cleanup_orphaned_embeddings_if_needed("rec-1", "vr-1", "org-1")
 
         vs.delete_embeddings.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_missing_record_with_md5_duplicate_keeps_embeddings(self):
         """Keeps embeddings when record is gone but an MD5 duplicate exists."""
-        from app.models.entities import Record, RecordType
         from app.config.constants.arangodb import Connectors, OriginTypes
+        from app.models.entities import Record, RecordType
 
         vs = _make_vectorstore()
         vs.graph_provider.get_document = AsyncMock(return_value=None)
@@ -556,11 +460,14 @@ class TestCleanupOrphanedEmbeddings:
             size_in_bytes=100,
         )
 
-        await vs._cleanup_orphaned_embeddings_if_needed("rec-1", "vr-1", record)
+        await vs._cleanup_orphaned_embeddings_if_needed(
+            "rec-1", "vr-1", "org-1", record
+        )
 
         vs.graph_provider.find_duplicate_records.assert_awaited_once_with(
             record_key="rec-1",
             md5_checksum="abc123",
+            org_id="org-1",
             record_type=RecordType.FILE.value,
             size_in_bytes=100,
         )
@@ -569,8 +476,8 @@ class TestCleanupOrphanedEmbeddings:
     @pytest.mark.asyncio
     async def test_missing_record_without_duplicates_deletes_embeddings(self):
         """Deletes embeddings when record is gone and no MD5 duplicate exists."""
-        from app.models.entities import Record, RecordType
         from app.config.constants.arangodb import Connectors, OriginTypes
+        from app.models.entities import Record, RecordType
 
         vs = _make_vectorstore()
         vs.graph_provider.get_document = AsyncMock(return_value=None)
@@ -590,21 +497,66 @@ class TestCleanupOrphanedEmbeddings:
             md5_hash="abc123",
         )
 
-        await vs._cleanup_orphaned_embeddings_if_needed("rec-1", "vr-1", record)
+        with patch(
+            "app.modules.transformers.vectorstore.rewrite_or_delete_virtual_record",
+            new_callable=AsyncMock,
+        ) as release:
+            await vs._cleanup_orphaned_embeddings_if_needed(
+                "rec-1", "vr-1", "org-1", record
+            )
 
-        vs.delete_embeddings.assert_awaited_once_with("vr-1")
+        # Never a raw delete: the MD5 lookup above is org-scoped and cannot see
+        # a cross-org sibling sharing this VRID, so the graph gets the last word.
+        vs.delete_embeddings.assert_not_awaited()
+        release.assert_awaited_once()
+        # Second arg is the locator, not a fixed collection name: the VRID's
+        # collections are derived from its graph records.
+        assert release.await_args.args[1] is vs.collection_locator
+        assert release.await_args.args[3] == "vr-1"
 
     @pytest.mark.asyncio
-    async def test_missing_record_without_md5_deletes_embeddings(self):
-        """Deletes embeddings when record is gone and MD5 is unavailable."""
+    async def test_missing_record_without_md5_releases_virtual_record(self):
+        """Releases the VRID when the record is gone and MD5 is unavailable."""
         vs = _make_vectorstore()
         vs.graph_provider.get_document = AsyncMock(return_value=None)
         vs.delete_embeddings = AsyncMock()
 
-        await vs._cleanup_orphaned_embeddings_if_needed("rec-1", "vr-1")
+        with patch(
+            "app.modules.transformers.vectorstore.rewrite_or_delete_virtual_record",
+            new_callable=AsyncMock,
+        ) as release:
+            await vs._cleanup_orphaned_embeddings_if_needed(
+                "rec-1", "vr-1", "org-1"
+            )
 
         vs.graph_provider.find_duplicate_records.assert_not_called()
-        vs.delete_embeddings.assert_awaited_once_with("vr-1")
+        release.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cross_org_sibling_on_the_vrid_keeps_its_vectors(self):
+        """Regression: org-scoped dedup must not delete another org's vectors.
+
+        Dedup was global before it was scoped to an org, so upgraded
+        deployments hold VRIDs shared across orgs. Deleting org A's record
+        finds no in-org duplicate — and must still not drop the points org B's
+        record is using.
+        """
+        vs = _make_vectorstore()
+        vs.graph_provider.get_document = AsyncMock(return_value=None)
+        vs.graph_provider.find_duplicate_records = AsyncMock(return_value=[])
+        # A record in another org still references this VRID.
+        vs.graph_provider.get_records_by_virtual_record_id = AsyncMock(
+            return_value=[{"_key": "rec-in-org-b"}]
+        )
+        vs.vector_db_service.delete_points = AsyncMock()
+        vs.delete_embeddings = AsyncMock()
+
+        await vs._cleanup_orphaned_embeddings_if_needed(
+            "rec-1", "vr-1", "org-1"
+        )
+
+        vs.vector_db_service.delete_points.assert_not_awaited()
+        vs.delete_embeddings.assert_not_awaited()
 
 
 # ===================================================================
@@ -625,7 +577,7 @@ class TestStoreImagePoints:
         vs.vector_db_service.upsert_points = AsyncMock()
 
         mock_point = MagicMock()
-        await vs._store_image_points([mock_point])
+        await vs._store_image_points([mock_point], "test_collection")
 
         vs.vector_db_service.upsert_points.assert_awaited_once()
 
@@ -635,7 +587,7 @@ class TestStoreImagePoints:
         vs = _make_vectorstore()
         vs.vector_db_service.upsert_points = AsyncMock()
 
-        await vs._store_image_points([])
+        await vs._store_image_points([], "test_collection")
 
         vs.vector_db_service.upsert_points.assert_not_awaited()
         vs.logger.info.assert_called()
@@ -688,7 +640,7 @@ class TestProcessDocumentChunks:
         vs._embed_and_upsert_documents = AsyncMock()
 
         chunks = [Document(page_content="test", metadata={})]
-        await vs._process_document_chunks(chunks, "rec-1")
+        await vs._process_document_chunks(chunks, "rec-1", "test_collection")
 
         vs._embed_and_upsert_documents.assert_awaited()
 
@@ -702,7 +654,7 @@ class TestProcessDocumentChunks:
         vs._embed_and_upsert_documents = AsyncMock()
 
         chunks = [Document(page_content=f"test {i}", metadata={}) for i in range(5)]
-        await vs._process_document_chunks(chunks, "rec-1")
+        await vs._process_document_chunks(chunks, "rec-1", "test_collection")
 
         vs._embed_and_upsert_documents.assert_awaited()
 
@@ -717,7 +669,7 @@ class TestProcessDocumentChunks:
         vs.graph_provider.get_document = AsyncMock(return_value=None)
 
         chunks = [Document(page_content="test", metadata={})]
-        await vs._process_document_chunks(chunks, "rec-1")
+        await vs._process_document_chunks(chunks, "rec-1", "test_collection")
 
         vs.graph_provider.get_document.assert_awaited_once()
 
@@ -725,6 +677,7 @@ class TestProcessDocumentChunks:
     async def test_local_batch_failure_raises(self):
         """Raises VectorStoreError when local batch fails."""
         from langchain_core.documents import Document
+
         from app.exceptions.indexing_exceptions import VectorStoreError
 
         vs = _make_vectorstore()
@@ -733,7 +686,7 @@ class TestProcessDocumentChunks:
 
         chunks = [Document(page_content="test", metadata={})]
         with pytest.raises(VectorStoreError):
-            await vs._process_document_chunks(chunks, "rec-1")
+            await vs._process_document_chunks(chunks, "rec-1", "test_collection")
 
 
 # ===================================================================
@@ -750,7 +703,7 @@ class TestCreateEmbeddings:
         vs = _make_vectorstore()
 
         with pytest.raises(EmbeddingError, match="No chunks"):
-            await vs._create_embeddings([], "rec-1", "vr-1")
+            await vs._create_embeddings([], "rec-1", "vr-1", "test_collection")
 
     @pytest.mark.asyncio
     async def test_separates_document_and_image_chunks(self):
@@ -766,7 +719,7 @@ class TestCreateEmbeddings:
         doc = Document(page_content="text", metadata={})
         img = {"image_uri": "base64data", "metadata": {}}
 
-        await vs._create_embeddings([doc, img], "rec-1", "vr-1")
+        await vs._create_embeddings([doc, img], "rec-1", "vr-1", "test_collection")
 
         vs._process_document_chunks.assert_awaited_once()
         vs._process_image_embeddings.assert_awaited_once()
@@ -783,7 +736,7 @@ class TestCreateEmbeddings:
 
         doc = Document(page_content="text", metadata={})
 
-        await vs._create_embeddings([doc], "rec-1", "vr-1")
+        await vs._create_embeddings([doc], "rec-1", "vr-1", "test_collection")
 
         vs._process_document_chunks.assert_awaited_once()
         vs._process_image_embeddings.assert_not_awaited()
@@ -945,7 +898,7 @@ class TestIndexDocuments:
     @pytest.mark.asyncio
     async def test_table_block_groups_create_summary_embeddings(self):
         """Table block groups create summary embeddings."""
-        from app.models.blocks import Block, BlockGroup, BlocksContainer, GroupType
+        from app.models.blocks import BlockGroup, BlocksContainer, GroupType
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
@@ -1018,8 +971,8 @@ class TestIndexDocuments:
     @pytest.mark.asyncio
     async def test_get_embedding_model_failure_raises(self):
         """Raises IndexingError when get_embedding_model_instance fails."""
-        from app.models.blocks import BlocksContainer
         from app.exceptions.indexing_exceptions import IndexingError
+        from app.models.blocks import BlocksContainer
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(side_effect=RuntimeError("model fail"))
 
@@ -1032,8 +985,8 @@ class TestIndexDocuments:
     @pytest.mark.asyncio
     async def test_create_embeddings_failure_raises(self):
         """Raises IndexingError when _create_embeddings raises an unknown exception."""
-        from app.models.blocks import Block, BlocksContainer
         from app.exceptions.indexing_exceptions import IndexingError
+        from app.models.blocks import Block, BlocksContainer
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock(side_effect=RuntimeError("embed fail"))
@@ -1315,63 +1268,12 @@ class TestSplitIntoSentences:
 # _initialize_collection (lines 266-318)
 # ===================================================================
 
+@pytest.mark.skip(
+    reason="Collection create/dimension-check logic moved to CollectionRegistry; "
+    "covered by test_collection_registry.py"
+)
 class TestInitializeCollection:
-    """Tests for VectorStore._initialize_collection."""
-
-    @pytest.mark.asyncio
-    async def test_collection_exists_same_size(self):
-        """When collection exists with correct size, should not recreate."""
-        from app.services.vector_db.models import VectorCollectionInfo
-        vs = _make_vectorstore()
-        vs.vector_db_service.get_collection_info = AsyncMock(
-            return_value=VectorCollectionInfo(name="test_collection", exists=True, dense_dimension=1024)
-        )
-
-        await vs._initialize_collection(embedding_size=1024)
-        vs.vector_db_service.create_collection.assert_not_awaited()
-        assert vs.vector_db_service.create_index.call_count == 4
-
-    @pytest.mark.asyncio
-    async def test_collection_exists_different_size(self):
-        """When collection exists with wrong size, should raise VectorStoreError."""
-        from app.exceptions.indexing_exceptions import VectorStoreError
-        from app.services.vector_db.models import VectorCollectionInfo
-        vs = _make_vectorstore()
-        vs.vector_db_service.get_collection_info = AsyncMock(
-            return_value=VectorCollectionInfo(name="test_collection", exists=True, dense_dimension=512)
-        )
-
-        with pytest.raises(VectorStoreError):
-            await vs._initialize_collection(embedding_size=1024)
-
-    @pytest.mark.asyncio
-    async def test_collection_not_found_creates_new(self):
-        """When collection does not exist, should create it."""
-        from app.services.vector_db.models import VectorCollectionInfo
-        vs = _make_vectorstore()
-        vs.vector_db_service.get_collection_info = AsyncMock(
-            return_value=VectorCollectionInfo(name="test_collection", exists=False)
-        )
-        vs.vector_db_service.create_collection = AsyncMock()
-        vs.vector_db_service.create_index = AsyncMock()
-
-        await vs._initialize_collection(embedding_size=1024)
-        vs.vector_db_service.create_collection.assert_awaited_once()
-        assert vs.vector_db_service.create_index.call_count == 4
-
-    @pytest.mark.asyncio
-    async def test_collection_creation_failure(self):
-        """When collection creation fails, should raise VectorStoreError."""
-        from app.exceptions.indexing_exceptions import VectorStoreError
-        from app.services.vector_db.models import VectorCollectionInfo
-        vs = _make_vectorstore()
-        vs.vector_db_service.get_collection_info = AsyncMock(
-            return_value=VectorCollectionInfo(name="test_collection", exists=False)
-        )
-        vs.vector_db_service.create_collection = AsyncMock(side_effect=Exception("create failed"))
-
-        with pytest.raises(VectorStoreError, match="Failed to create collection"):
-            await vs._initialize_collection(embedding_size=1024)
+    """Tests for VectorStore._initialize_collection (moved to CollectionRegistry)."""
 
 
 # ===================================================================
@@ -1647,12 +1549,11 @@ class TestStoreImagePoints:
     @pytest.mark.asyncio
     async def test_stores_points(self):
         """Should upsert points when list is non-empty."""
-        import asyncio
         vs = _make_vectorstore()
         vs.vector_db_service.upsert_points = AsyncMock()
 
         mock_point = MagicMock()
-        await vs._store_image_points([mock_point])
+        await vs._store_image_points([mock_point], "test_collection")
         vs.vector_db_service.upsert_points.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1660,7 +1561,7 @@ class TestStoreImagePoints:
         """Should log and skip when no points to upsert."""
         vs = _make_vectorstore()
         vs.vector_db_service.upsert_points = AsyncMock()
-        await vs._store_image_points([])
+        await vs._store_image_points([], "test_collection")
         vs.vector_db_service.upsert_points.assert_not_awaited()
 
 
@@ -1708,7 +1609,7 @@ class TestProcessDocumentChunks:
         vs._embed_and_upsert_documents = AsyncMock()
 
         docs = [Document(page_content="text", metadata={})]
-        await vs._process_document_chunks(docs, "rec-1")
+        await vs._process_document_chunks(docs, "rec-1", "test_collection")
         vs._embed_and_upsert_documents.assert_awaited()
 
     @pytest.mark.asyncio
@@ -1720,34 +1621,36 @@ class TestProcessDocumentChunks:
         vs._embed_and_upsert_documents = AsyncMock()
 
         docs = [Document(page_content=f"text {i}", metadata={}) for i in range(5)]
-        await vs._process_document_chunks(docs, "rec-1")
+        await vs._process_document_chunks(docs, "rec-1", "test_collection")
         vs._embed_and_upsert_documents.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_local_batch_failure_raises(self):
         """Local batch failure should raise VectorStoreError."""
-        from app.exceptions.indexing_exceptions import VectorStoreError
         from langchain_core.documents import Document
+
+        from app.exceptions.indexing_exceptions import VectorStoreError
         vs = _make_vectorstore()
         vs.embedding_provider = None  # local
         vs._embed_and_upsert_documents = AsyncMock(side_effect=Exception("batch failed"))
 
         docs = [Document(page_content="text", metadata={})]
         with pytest.raises(VectorStoreError):
-            await vs._process_document_chunks(docs, "rec-1")
+            await vs._process_document_chunks(docs, "rec-1", "test_collection")
 
     @pytest.mark.asyncio
     async def test_remote_batch_failure_raises(self):
         """Remote batch failure should raise VectorStoreError."""
-        from app.exceptions.indexing_exceptions import VectorStoreError
         from langchain_core.documents import Document
+
+        from app.exceptions.indexing_exceptions import VectorStoreError
         vs = _make_vectorstore()
         vs.embedding_provider = "openai"
         vs._embed_and_upsert_documents = AsyncMock(side_effect=Exception("batch failed"))
 
         docs = [Document(page_content="text", metadata={})]
         with pytest.raises(VectorStoreError):
-            await vs._process_document_chunks(docs, "rec-1")
+            await vs._process_document_chunks(docs, "rec-1", "test_collection")
 
 
 # ===================================================================
@@ -1763,7 +1666,7 @@ class TestCreateEmbeddings:
         from app.exceptions.indexing_exceptions import EmbeddingError
         vs = _make_vectorstore()
         with pytest.raises(EmbeddingError, match="No chunks provided"):
-            await vs._create_embeddings([], "rec-1", "vr-1")
+            await vs._create_embeddings([], "rec-1", "vr-1", "test_collection")
 
     @pytest.mark.asyncio
     async def test_mixed_document_and_image_chunks(self):
@@ -1778,7 +1681,7 @@ class TestCreateEmbeddings:
         doc = Document(page_content="text", metadata={})
         img = {"image_uri": "data:image/png;base64,abc", "metadata": {}}
 
-        await vs._create_embeddings([doc, img], "rec-1", "vr-1")
+        await vs._create_embeddings([doc, img], "rec-1", "vr-1", "test_collection")
 
         vs._process_document_chunks.assert_awaited_once()
         vs._process_image_embeddings.assert_awaited_once()
@@ -1787,6 +1690,7 @@ class TestCreateEmbeddings:
     async def test_vectorstore_error_during_doc_processing(self):
         """VectorStoreError from doc processing should bubble up."""
         from langchain_core.documents import Document
+
         from app.exceptions.indexing_exceptions import VectorStoreError
         vs = _make_vectorstore()
         vs.delete_embeddings = AsyncMock()
@@ -1794,7 +1698,7 @@ class TestCreateEmbeddings:
 
         doc = Document(page_content="text", metadata={})
         with pytest.raises(VectorStoreError, match="Failed to store documents in vector store"):
-            await vs._create_embeddings([doc], "rec-1", "vr-1")
+            await vs._create_embeddings([doc], "rec-1", "vr-1", "test_collection")
 # ===================================================================
 # index_documents additional paths (lines 1051-1052, 1064->1061, etc.)
 # ===================================================================
@@ -1925,8 +1829,9 @@ class TestIndexDocumentsAdditional:
         )
 
         assert result is True
-        from app.modules.transformers.vectorstore import VectorStore as VS
         from langchain_core.documents import Document
+
+        from app.modules.transformers.vectorstore import VectorStore as VS
 
         vs.delete_blocks_by_ids.assert_not_called()
         vs._create_embeddings.assert_awaited_once()
@@ -2229,6 +2134,7 @@ class TestProcessDocumentChunksRemoteFailure:
     async def test_remote_batch_failure_raises(self):
         """Raises VectorStoreError when remote batch fails."""
         from langchain_core.documents import Document
+
         from app.exceptions.indexing_exceptions import VectorStoreError
 
         vs = _make_vectorstore()
@@ -2237,7 +2143,7 @@ class TestProcessDocumentChunksRemoteFailure:
 
         chunks = [Document(page_content="test", metadata={})]
         with pytest.raises(VectorStoreError):
-            await vs._process_document_chunks(chunks, "rec-1")
+            await vs._process_document_chunks(chunks, "rec-1", "test_collection")
 
 
 # ===================================================================
@@ -2347,7 +2253,7 @@ class TestIndexDocumentsImageDescription:
     @pytest.mark.asyncio
     async def test_table_block_with_data(self):
         """Table block group with data creates summary embedding."""
-        from app.models.blocks import Block, BlockGroup, BlocksContainer, GroupType
+        from app.models.blocks import BlockGroup, BlocksContainer, GroupType
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()

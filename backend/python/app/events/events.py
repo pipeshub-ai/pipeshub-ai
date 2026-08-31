@@ -1,45 +1,56 @@
 import asyncio
 import atexit
 import hashlib
+import json
 import logging
 import math
 import multiprocessing
 import os
 from collections.abc import AsyncGenerator
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from functools import lru_cache
+from io import BytesIO
 from pathlib import Path
 from typing import Any
-import json
 from uuid import uuid4
 
-from app.services.parsing.interface import ParserProvider
-from app.modules.transformers.pipeline import IndexingPipeline
-from bs4 import BeautifulSoup
-
-from io import BytesIO
-
 import pdfplumber
+from bs4 import BeautifulSoup
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    CODE_FILE_EXTENSION_VALUES,
+    CODE_FILE_MIME_TYPE_VALUES,
     CollectionNames,
     EventTypes,
     ExtensionTypes,
     MimeTypes,
     ProgressStatus,
-    CODE_FILE_EXTENSION_VALUES,
-    CODE_FILE_MIME_TYPE_VALUES,
     normalize_file_extension,
 )
 from app.events.processor import Processor
-from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.exceptions.indexing_exceptions import IndexingError
+from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.modules.transformers.pipeline import IndexingPipeline
+from app.events.dedup import DedupDecision, select_duplicate
 from app.services.base_client import ServiceUnavailableError
-from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.utils.libreoffice_convert import convert_with_libreoffice
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+)
+from app.services.parsing.interface import ParserProvider
 from app.services.resource_governor import classify
+from app.services.vector_db.strategies.single import SingleCollectionStrategy
+from app.services.vector_db.strategy import (
+    CollectionStrategy,
+    IncompleteCollectionContext,
+    RecordContext,
+    resolve_write_collection_name,
+)
+from app.utils.libreoffice_convert import convert_with_libreoffice
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -121,6 +132,7 @@ class EventProcessor:
         parsing_client=None,
         extraction_client=None,
         sink_orchestrator=None,
+        collection_strategy: CollectionStrategy | None = None,
     ) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing EventProcessor")
@@ -131,6 +143,9 @@ class EventProcessor:
         self.parsing_client = parsing_client
         self.extraction_client = extraction_client
         self.sink_orchestrator = sink_orchestrator
+        # Pure/synchronous — only used to compare "does this duplicate resolve
+        # to the same collection as the record being processed", never for I/O.
+        self.collection_strategy = collection_strategy or SingleCollectionStrategy()
 
     def _indexing_pipeline(self):
         """The single owner of vector-membership writes.
@@ -333,7 +348,9 @@ class EventProcessor:
         Documents are searchable after step 2 regardless of step 3/4 outcome.
         """
         from app.events.processor import convert_record_dict_to_record  # noqa: PLC0415
-        from app.modules.transformers.transformer import TransformContext  # noqa: PLC0415
+        from app.modules.transformers.transformer import (
+            TransformContext,  # noqa: PLC0415
+        )
 
         # ── Step 1: Parse ────────────────────────────────────────────────────
         self.logger.debug(
@@ -449,6 +466,7 @@ class EventProcessor:
                         virtual_record_id,
                         org_id,
                         semantic_metadata,
+                        record,
                     )
 
                 if semantic_metadata:
@@ -493,6 +511,19 @@ class EventProcessor:
             return False
         
         return True
+
+    def _require_persisted(self, success: bool, what: str, doc: dict[str, Any]) -> None:
+        """Refuse to report success for a graph write that failed.
+
+        `on_event` turns `skip_indexing=True` into PARSING_COMPLETE +
+        INDEXING_COMPLETE and consumes the message, and the reconciliation
+        sweep in `indexing_main` only revisits QUEUED/IN_PROGRESS records — so
+        a write that failed here would leave a record that is neither indexed
+        nor ever looked at again. IndexingError classifies as transient, so the
+        consumer redelivers and a persistent failure dead-letters visibly.
+        """
+        if not success:
+            raise IndexingError(what, details={"record_id": _record_key(doc)})
 
     async def mark_record_status(self, doc: dict[str, Any], status: ProgressStatus) -> None:
         """Persist the legacy pipeline's indexing and extraction status."""
@@ -573,23 +604,81 @@ class EventProcessor:
         record_type: str | None,
         size_in_bytes: int | None,
     ) -> list[dict]:
-        
+        # Dedup must never cross org boundaries — two orgs holding
+        # byte-identical content are not duplicates of each other.
+        org_id = doc.get("orgId") or ""
+        if not org_id:
+            # The filter is `orgId == ""`, which matches nothing — dedup is
+            # effectively off for this record. That fails safe (it re-indexes
+            # rather than borrowing another org's VRID), but silently, so say
+            # so: a record with no orgId is a data problem upstream.
+            self.logger.debug(
+                "Record %s has no orgId; MD5 dedup will match nothing",
+                _record_key(doc),
+            )
         return await self.graph_provider.find_duplicate_records(
             record_key=_record_key(doc),
             md5_checksum=md5_checksum,
+            org_id=org_id,
             record_type=record_type,
             size_in_bytes=size_in_bytes,
         )
+
+    def _resolve_write_collection(self, record_doc: dict[str, Any]) -> str | None:
+        """Which collection this record document's points belong (or would belong) to.
+
+        Goes through ``resolve_write_collection_name`` — the same validate,
+        resolve, sanitize sequence the write path uses — because the answer is
+        compared against another record's to decide whether to skip indexing.
+        A second spelling of that sequence (an unsanitized name, say) would let
+        a record be marked a duplicate of something living in a collection its
+        own vectors never reached.
+
+        ``None`` when the document lacks a field the strategy needs. Callers
+        treat that as "cannot prove same collection" and index anyway, which
+        costs a re-index and never loses a record.
+        """
+        ctx = RecordContext.from_graph_document(record_doc)
+        try:
+            return resolve_write_collection_name(self.collection_strategy, ctx)
+        except IncompleteCollectionContext as e:
+            self.logger.warning(
+                "Could not resolve a collection for record %s (%s); treating it as "
+                "a different collection so it is indexed rather than skipped",
+                _record_key(record_doc),
+                e,
+            )
+            return None
+
+    def _resolves_to_same_collection(
+        self, duplicate_doc: dict[str, Any], current_collection: str | None
+    ) -> bool:
+        """True only when both records provably resolve to the same collection.
+
+        Deliberately asymmetric: an unresolvable side is *not* a match, so the
+        record gets indexed. Skipping indexing on an unproven match is the one
+        outcome with no repair path — the record would be COMPLETED with no
+        vectors anywhere.
+        """
+        if current_collection is None:
+            return False
+        return self._resolve_write_collection(duplicate_doc) == current_collection
 
     async def _check_duplicate_by_md5(
         self,
         content: bytes | str | dict | list | None,
         doc: dict[str, Any],
-    ) -> bool:
-        """Check for duplicate records by MD5 hash and handle accordingly.
+    ) -> DedupDecision:
+        """Check for duplicate records by MD5 hash and decide whether to skip indexing.
 
-        Returns True if a duplicate was found and handled (caller should skip),
-        False otherwise.
+        A duplicate that resolves to the SAME collection as this record is fully
+        reused (metadata copied, indexing skipped). A duplicate that resolves to
+        a DIFFERENT collection (e.g. a different connector type under a future
+        per-connector-type strategy) still contributes its virtualRecordId —
+        content/blob identity is collection-independent — but this record is
+        indexed anyway, since its target collection has no vectors for it yet.
+        Under the default SingleCollectionStrategy every record resolves to the
+        same collection, so this degenerates to the original skip-or-not behaviour.
         """
         # Calculate MD5 from content
         existing_md5_checksum = doc.get("md5Checksum")
@@ -610,13 +699,14 @@ class EventProcessor:
                     doc,
                     {"md5Checksum": md5_checksum},
                 )
-                if not success:
-                    return True
+                self._require_persisted(
+                    success, "Failed to persist md5Checksum for record", doc
+                )
 
             self.logger.debug("🚀 Calculated md5_checksum: %s for record type: %s", md5_checksum, record_type)
 
         if not md5_checksum:
-            return False
+            return DedupDecision(virtual_record_id=None, skip_indexing=False)
         duplicate_records = await self._find_duplicate_records(
             doc=doc,
             md5_checksum=md5_checksum,
@@ -630,70 +720,97 @@ class EventProcessor:
             self.logger.debug(
                 f"🚀 No duplicate records found for record {_record_key(doc)}"
             )
-            return False
+            return DedupDecision(virtual_record_id=None, skip_indexing=False)
 
-        # Check for processed or in-progress duplicates
-        processed_duplicate = next(
-            (r for r in duplicate_records
-                if (r.get("virtualRecordId") and r.get("indexingStatus") == ProgressStatus.COMPLETED.value)
-                or (r.get("indexingStatus") == ProgressStatus.EMPTY.value)),
-            None
+        current_collection = self._resolve_write_collection(doc)
+        match = select_duplicate(
+            duplicate_records, current_collection, self._resolve_write_collection
         )
-
-        if processed_duplicate:
-            # Use data from processed duplicate
-            duplicate_fields = {
-                "isDirty": False,
-                "summaryDocumentId": processed_duplicate.get("summaryDocumentId"),
-                "virtualRecordId": processed_duplicate.get("virtualRecordId"),
-                "indexingStatus": processed_duplicate.get("indexingStatus"),
-                "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
-                # EMPTY duplicates never ran extraction, so this can be
-                # missing/None on the source record — don't propagate None.
-                "extractionStatus": (
-                    processed_duplicate.get("extractionStatus")
-                    or ProgressStatus.NOT_STARTED.value
-                ),
-                "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
-            }
-            success = await self.update_record_fields(doc, duplicate_fields)
-            if not success:
-                return True
-            
-            # Copy all relationships from the processed duplicate to this document
-            await self.graph_provider.copy_document_relationships(
-                _record_key(processed_duplicate),
+        if match is None:
+            self.logger.info(
+                "🚀 No usable duplicate for %s, proceeding with processing",
                 _record_key(doc),
             )
-            attached_vrid = processed_duplicate.get("virtualRecordId")
-            if attached_vrid:
+            return DedupDecision()
+
+        attached_vrid = match.record.get("virtualRecordId")
+
+        if match.is_processed:
+            if match.same_collection:
+                # The vectors this record needs already exist. Take the
+                # duplicate's state wholesale and skip indexing.
+                duplicate_fields = {
+                    "isDirty": False,
+                    "summaryDocumentId": match.record.get("summaryDocumentId"),
+                    "virtualRecordId": attached_vrid,
+                    "indexingStatus": match.record.get("indexingStatus"),
+                    "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
+                    # EMPTY duplicates never ran extraction, so this can be
+                    # missing/None on the source record — don't propagate None.
+                    "extractionStatus": (
+                        match.record.get("extractionStatus")
+                        or ProgressStatus.NOT_STARTED.value
+                    ),
+                    "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
+                }
+            elif attached_vrid:
+                # Same content, different collection: reuse the content
+                # identity (and with it the stored blob), but leave
+                # indexingStatus alone so this record still gets vectors of its
+                # own in its own collection.
+                duplicate_fields = {"virtualRecordId": attached_vrid}
+            else:
+                # A finished duplicate with no virtualRecordId has no content
+                # identity to lend. Writing the None would blank whatever this
+                # record already had.
+                duplicate_fields = {}
+
+            if duplicate_fields:
+                self._require_persisted(
+                    await self.update_record_fields(doc, duplicate_fields),
+                    "Failed to persist duplicate record fields",
+                    doc,
+                )
+
+            # Copy all relationships from the duplicate to this document
+            self._require_persisted(
+                await self.graph_provider.copy_document_relationships(
+                    _record_key(match.record),
+                    _record_key(doc),
+                ),
+                "Failed to copy duplicate record relationships",
+                doc,
+            )
+            if attached_vrid and match.same_collection:
                 await self.sync_vector_membership(attached_vrid)
             self.logger.debug(
-                f"✅ Duplicate record {_record_key(processed_duplicate)} returning TRUE"
+                "✅ Duplicate record %s resolved (same_collection=%s)",
+                _record_key(match.record),
+                match.same_collection,
             )
-            return True  # Duplicate handled
+            return DedupDecision(
+                virtual_record_id=attached_vrid, skip_indexing=match.same_collection
+            )
 
-        # Check if any duplicate is in progress
-        in_progress = next(
-            (r for r in duplicate_records if r.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value),
-            None
+        if not match.same_collection:
+            # In flight, but for a different collection — waiting would buy
+            # this record nothing, since that work leaves its own collection
+            # empty.
+            return DedupDecision()
+
+        self.logger.info(
+            f"🚀 Duplicate record {_record_key(match.record)} is being processed "
+            "into the same collection, changing status to QUEUED."
         )
-
-        if in_progress:
-            self.logger.info(
-                f"🚀 Duplicate record {_record_key(in_progress)} is being processed, "
-                "changing status to QUEUED."
-            )
+        self._require_persisted(
             await self.update_record_fields(
                 doc,
                 {"indexingStatus": ProgressStatus.QUEUED.value},
-            )
-            return True
-
-        self.logger.info(
-            f"🚀 No duplicate found, proceeding with processing for {_record_key(doc)}"
+            ),
+            "Failed to persist QUEUED status for duplicate record",
+            doc,
         )
-        return False  # No duplicate found, proceed with processing
+        return DedupDecision(skip_indexing=True)
 
     async def on_event(self, event_data: dict[str, Any]) -> AsyncGenerator[dict[str, Any], None]:
         """
@@ -791,11 +908,17 @@ class EventProcessor:
 
             # Calculate MD5 hash and check for duplicates for ALL record types
             try:
-                if await self._check_duplicate_by_md5(file_content, doc):
+                dedup_decision = await self._check_duplicate_by_md5(file_content, doc)
+                if dedup_decision.skip_indexing:
                     self.logger.info("Duplicate record detected, skipping processing")
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
+                if dedup_decision.virtual_record_id:
+                    # Different-collection duplicate: content identity was copied
+                    # onto `doc` inside _check_duplicate_by_md5; pick it up here
+                    # so the rest of this pipeline indexes under the reused VRID.
+                    virtual_record_id = dedup_decision.virtual_record_id
             except Exception as e:
                 self.logger.error(f"❌ Error in MD5/duplicate processing: {repr(e)}")
                 raise

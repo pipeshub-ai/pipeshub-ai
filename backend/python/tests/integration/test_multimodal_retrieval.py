@@ -27,6 +27,8 @@ from uuid import uuid4
 
 import pytest
 
+from tests.support.vector_db import make_collection_registry
+
 from app.models.blocks import BlockType
 from app.utils.chat_helpers import (
     build_message_content_array,
@@ -188,9 +190,15 @@ class TestVectorMetadataReconstructionToMessageContent:
         blob_store = AsyncMock()
         blob_store.config_service = AsyncMock()
 
+        from app.services.vector_db.models import ScrollResult
+
         mock_vector_service = AsyncMock()
         mock_vector_service.filter_collection = AsyncMock(return_value="mock_filter")
-        mock_vector_service.scroll = AsyncMock(return_value=([text_point, image_point], None))
+        # A real ScrollResult: the scroll loop reads `.points`/`.next_offset`,
+        # which a bare tuple does not have.
+        mock_vector_service.scroll = AsyncMock(
+            return_value=ScrollResult(points=[text_point, image_point], next_offset=None)
+        )
 
         real_utils_mod = sys.modules.pop("app.containers.utils.utils", None)
         fake_utils = ModuleType("app.containers.utils.utils")
@@ -201,7 +209,14 @@ class TestVectorMetadataReconstructionToMessageContent:
             mock_container = mock_cls_container.return_value
             mock_container.get_vector_db_service = AsyncMock(return_value=mock_vector_service)
             record, _ = await create_record_from_vector_metadata(
-                record_metadata, "org-1", "vr-1", blob_store
+                record_metadata,
+                "org-1",
+                "vr-1",
+                blob_store,
+                # Hand in the registry rather than letting the faked
+                # ContainerUtils build one: this test is about block
+                # reconstruction, not collection resolution.
+                make_collection_registry("records"),
             )
         finally:
             if real_utils_mod is not None:

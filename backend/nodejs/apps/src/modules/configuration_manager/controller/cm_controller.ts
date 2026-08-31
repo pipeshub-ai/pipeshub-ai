@@ -32,7 +32,7 @@ import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/mod
 import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
 import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
 import { loadConfigurationManagerConfig } from '../config/config';
-import { Org } from '../../user_management/schema/org.schema';
+import { findActiveOrgById } from '../../user_management/utils/org.utils';
 
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -1298,7 +1298,7 @@ export const createGoogleWorkspaceCredentials =
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const org = await Org.findOne({ orgId, isDeleted: false });
+      const org = await findActiveOrgById(orgId);
       if (!org) {
         throw new BadRequestError('Organisaton not found');
       }
@@ -1567,7 +1567,7 @@ export const getGoogleWorkspaceCredentials =
   (keyValueStoreService: KeyValueStoreService, userId: string, orgId: string) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const org = await Org.findOne({ orgId, isDeleted: false });
+      const org = await findActiveOrgById(orgId);
       if (!org) {
         throw new BadRequestError('Organisaton not found');
       }
@@ -1677,7 +1677,7 @@ export const deleteGoogleWorkspaceCredentials =
   (keyValueStoreService: KeyValueStoreService, orgId: string) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const org = await Org.findOne({ orgId, isDeleted: false });
+      const org = await findActiveOrgById(orgId);
       if (!org) {
         throw new BadRequestError('Organisaton not found');
       }

@@ -4,7 +4,6 @@ import hashlib
 import os
 import threading
 import time
-from typing import Optional
 
 import dotenv
 from cachetools import LRUCache
@@ -59,8 +58,8 @@ class ConfigurationService:
         self.logger.debug("📋 KV store type: %s", self._kv_store_type)
 
         # Redis Pub/Sub subscription task (for Redis store)
-        self._pubsub_task: Optional[asyncio.Task] = None
-        self._pubsub_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._pubsub_task: asyncio.Task | None = None
+        self._pubsub_loop: asyncio.AbstractEventLoop | None = None
         self._stopping = False
         # Serializes "check _stopping and create _pubsub_task" (in the watch
         # thread) against "check _pubsub_task and cancel it" (in close()), so
@@ -69,7 +68,7 @@ class ConfigurationService:
         self._pubsub_state_lock = threading.Lock()
 
         # etcd prefix watch ID (so we can cancel it on close)
-        self._etcd_watch_id: Optional[int] = None
+        self._etcd_watch_id: int | None = None
 
         # Start watch in background (etcd) or schedule Pub/Sub setup (Redis)
         self._start_watch()
@@ -390,6 +389,30 @@ class ConfigurationService:
         except Exception as e:
             self.logger.error("❌ Failed to set config %s: %s", key, str(e))
             return False
+
+    async def create_config_if_absent(
+        self, key: str, value: str | int | float | bool | dict | list
+    ) -> bool:
+        """Atomically create ``key`` only if it does not already exist.
+
+        Returns True when this call created it, False when a value was already
+        there. Unlike :meth:`set_config` this deliberately does **not** swallow
+        store failures: its callers exist to tell "nobody owns this value yet"
+        apart from "the store did not answer", and collapsing those two into one
+        ``False`` is what makes a transient outage look like a fresh install —
+        and overwrite a deployment-critical setting with a default.
+        """
+        created = await self.store.create_key(key, value, overwrite=False)
+        if created:
+            self.cache[key] = value
+            self.logger.info("✅ Created config key %s (was absent)", key)
+            await self._publish_cache_invalidation(key)
+        else:
+            # Someone else owns the value; drop any cached guess so the caller's
+            # read-back sees theirs rather than ours.
+            self.cache.pop(key, None)
+            self.logger.debug("Config key %s already exists; leaving it untouched", key)
+        return created
 
     async def update_config(self, key: str, value: str | int | float | bool | dict | list) -> bool:
         """Update configuration value with optional encryption"""

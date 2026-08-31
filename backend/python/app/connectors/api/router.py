@@ -2592,9 +2592,20 @@ def _validate_connector_deletion_permissions(
     """
     Validate that the user has permission to delete the connector instance.
 
-    Permission rules:
-    - Personal connectors: Only the owning user (creator) can delete
-    - Team connectors: Only administrators can delete
+    Permission rule, for either scope: **an administrator, or the user who
+    created it.**
+
+    Deletion is uniform where access is not. ``_can_access_connector`` still
+    keeps an administrator out of another user's personal connector for reads
+    and updates — seeing or altering someone's private data is a different act
+    from removing a connector that should no longer exist. Admins already carry
+    the authority to remove a member entirely, so withholding the narrower
+    power to clean up their connector left orphaned instances no one could
+    delete once their creator was gone.
+
+    Tenant isolation is enforced upstream in ``_can_access_connector``: the
+    instance has already been matched to the caller's organization before this
+    runs.
 
     Args:
         instance: Connector instance dictionary
@@ -2605,25 +2616,20 @@ def _validate_connector_deletion_permissions(
     Raises:
         HTTPException: 403 if user doesn't have permission to delete
     """
-    scope = instance.get("scope")
     created_by = instance.get("createdBy")
 
-    # For team connectors, only admins can delete
-    if scope == ConnectorScope.TEAM.value and not is_admin:
-        logger.error("Only administrators can delete team connectors")
-        raise HTTPException(
-            status_code=HttpStatusCode.FORBIDDEN.value,
-            detail="Only administrators can delete team connectors"
-        )
+    if is_admin or created_by == user_id:
+        return
 
-    # For personal connectors, only the creator (owning user) can delete
-    # Admins cannot delete personal connectors
-    if scope == ConnectorScope.PERSONAL.value and created_by != user_id:
-        logger.error("Only the creator can delete this personal connector")
-        raise HTTPException(
-            status_code=HttpStatusCode.FORBIDDEN.value,
-            detail="Only the creator can delete this personal connector"
-        )
+    logger.error(
+        "Only the creator or an administrator can delete this connector "
+        "(scope=%s)",
+        instance.get("scope"),
+    )
+    raise HTTPException(
+        status_code=HttpStatusCode.FORBIDDEN.value,
+        detail="Only the creator or an administrator can delete this connector"
+    )
 
 
 async def check_beta_connector_access(
@@ -7292,8 +7298,10 @@ async def delete_connector_instance(
                 detail="User not authenticated"
             )
 
-        # 2. Fetch and validate connector instance
-        instance = await connector_registry.get_connector_instance(
+        # 2. Fetch and validate connector instance under the *deletion* gate:
+        # the read gate 404s an admin on another user's personal connector,
+        # which would make the admin allowance below unreachable.
+        instance = await connector_registry.get_connector_instance_for_deletion(
             connector_id=connector_id,
             user_id=user_id,
             org_id=org_id,

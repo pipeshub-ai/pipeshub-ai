@@ -78,7 +78,10 @@ from app.models.permission import EntityType
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
 from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.common.utils import build_connector_stats_response, dedupe_agents_by_id
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.interface.graph_db_provider import (
+    IGraphDBProvider,
+    _distinct_connector_types,
+)
 from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_cypher,
@@ -2113,15 +2116,23 @@ class Neo4jProvider(IGraphDBProvider):
                 "🔍 Finding records with virtualRecordId: %s", virtual_record_id
             )
 
-            # Base query
+            # Base query. Soft-deleted records are excluded: this answers
+            # "does anything still reference this content", and a tombstone
+            # answering yes would keep its vectors alive for ever.
+            #
+            # `coalesce(...)` rather than the `<> true` used elsewhere in this
+            # file: in Cypher `null <> true` is null, which WHERE treats as
+            # false, so `<> true` silently drops every record predating the
+            # field instead of keeping it.
             query = """
             MATCH (r:Record {virtualRecordId: $virtual_record_id})
+            WHERE coalesce(r.isDeleted, false) = false
             """
 
             # Add optional filter for record IDs
             if accessible_record_ids:
                 query += """
-            WHERE r.id IN $accessible_record_ids
+            AND r.id IN $accessible_record_ids
             """
 
             query += """
@@ -3868,17 +3879,22 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         record_key: str,
         md5_checksum: str,
+        org_id: str,
         record_type: str | None = None,
         size_in_bytes: int | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
     ) -> list[dict]:
         """
-        Find duplicate records based on MD5 checksum.
+        Find duplicate records based on MD5 checksum, scoped to a single org.
         This method queries the RECORDS collection and works for all record types.
+
+        Deliberately not filtered by connector — see interface docstring.
+        Always filtered by org — see interface docstring.
 
         Args:
             record_key (str): The key of the current record to exclude from results
             md5_checksum (str): MD5 checksum of the record content
+            org_id (str): Restrict dedup matching to this org only
             record_type (Optional[str]): Optional record type to filter by
             size_in_bytes (Optional[int]): Optional file size in bytes to filter by
             transaction (Optional[str]): Optional transaction ID
@@ -3896,11 +3912,13 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (r:Record)
             WHERE r.md5Checksum = $md5_checksum
             AND r.id <> $record_key
+            AND r.orgId = $org_id
             """
 
             params = {
                 "md5_checksum": md5_checksum,
                 "record_key": record_key,
+                "org_id": org_id,
             }
 
             if record_type:
@@ -3979,6 +3997,7 @@ class Neo4jProvider(IGraphDBProvider):
             ref_record = dict(results[0]["record"])
             md5_checksum = ref_record.get("md5Checksum")
             size_in_bytes = ref_record.get("sizeInBytes")
+            org_id = ref_record.get("orgId")
 
             if not md5_checksum:
                 # Expected, not a fault: duplicates are matched by md5Checksum
@@ -4007,6 +4026,14 @@ class Neo4jProvider(IGraphDBProvider):
                 AND record.sizeInBytes = $size_in_bytes
                 """
                 params["size_in_bytes"] = size_in_bytes
+
+            # Scoped to the reference record's own org: a queued duplicate in
+            # another org must never be silently indexed from this org's event.
+            if org_id:
+                query += """
+                AND record.orgId = $org_id
+                """
+                params["org_id"] = org_id
 
             query += """
             RETURN record
@@ -4939,6 +4966,27 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.warning(f"Cached KB lookup failed, using live query: {str(e)}")
             return await self._get_kb_virtual_ids(user_id, org_id, kb_ids, None)
+
+    async def get_accessible_connector_types(
+        self,
+        user_id: str,
+        org_id: str,
+    ) -> list[str]:
+        """See ``IGraphDBProvider.get_accessible_connector_types``.
+
+        Built on ``get_user_apps`` rather than a new Cypher query: the app
+        nodes already carry ``type``, and reusing the traversal that permission
+        checks depend on keeps one definition of "apps this user can reach"
+        instead of two that can drift apart.
+        """
+        try:
+            apps = await self.get_user_apps(user_id)
+            return _distinct_connector_types(apps)
+        except Exception as e:
+            # Narrowing is an optimization; a failure costs a wider search, not
+            # a wrong one, so it must never fail the query.
+            self.logger.warning("Could not resolve accessible connector types: %s", e)
+            return []
 
     async def get_accessible_virtual_record_ids(
         self,
@@ -7309,7 +7357,8 @@ class Neo4jProvider(IGraphDBProvider):
                     "deleted_roles_count": deleted_roles,
                     "deleted_groups_count": deleted_groups,
                     "virtual_record_ids": collected["virtual_record_ids"],
-                    "connector_id": connector_id
+                    "connector_id": connector_id,
+                    "connector_name": connector.get("type"),
                 }
 
             except Exception as tx_error:

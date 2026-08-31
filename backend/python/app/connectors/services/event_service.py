@@ -751,7 +751,11 @@ class EventService:
                 f"Records: {result.get('deleted_records_count', 0)}"
             )
 
-            # Publish bulkDeleteRecords so the indexing service cleans up Qdrant embeddings
+            # Publish bulkDeleteRecords so the indexing service cleans up Qdrant embeddings.
+            # connectorName lets the consumer resolve which collection(s) this
+            # connector's data lives in under a per-connector-type strategy; it is
+            # read with .get() there so a redelivered message from an older
+            # producer still degrades to today's single-collection behaviour.
             virtual_record_ids = result.get("virtual_record_ids", [])
             if virtual_record_ids:
                 try:
@@ -762,6 +766,7 @@ class EventService:
                             "payload": {
                                 "orgId": org_id,
                                 "connectorId": connector_id,
+                                "connectorName": result.get("connector_name"),
                                 "virtualRecordIds": virtual_record_ids,
                                 "totalRecords": len(virtual_record_ids),
                             },

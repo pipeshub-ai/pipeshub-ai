@@ -16,9 +16,13 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.exceptions.indexing_exceptions import DocumentProcessingError, IndexingError
-from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+)
 from app.services.messaging.error_classifier import MessageErrorType
-
+from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -147,6 +151,114 @@ class TestBulkDeleteEvent:
         assert len(events) == 2
         assert events[0].data.count == 0
 
+    @pytest.mark.asyncio
+    async def test_a_refused_purge_is_not_acked(self):
+        """`bulk_delete_embeddings` reports success=False when no managed
+        collection resolved: nothing was deleted, and the mapping rows were
+        kept on purpose because they are the only handle the orphan sweeper
+        has on those points. Completing the message here would ack that as
+        done and strip the handle.
+        """
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock(
+            return_value={"virtual_record_ids_deleted": 0, "success": False}
+        )
+
+        with pytest.raises(IndexingError, match="did not complete"):
+            await _collect_events(
+                handler,
+                EventTypes.BULK_DELETE_RECORDS.value,
+                {"virtualRecordIds": ["vr1"]},
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_refused_purge_through_the_connector_path_is_not_acked(self):
+        """purge_connector forwards the same flag, so the connector-scoped
+        route must refuse identically."""
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector = AsyncMock(
+            return_value={"action": "filtered_delete", "success": False}
+        )
+
+        with pytest.raises(IndexingError, match="did not complete"):
+            await _collect_events(
+                handler,
+                EventTypes.BULK_DELETE_RECORDS.value,
+                {"virtualRecordIds": ["vr1"], "connectorId": "conn-1"},
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_drop_result_still_completes(self):
+        """purge_connector's drop and noop results carry no success key at all;
+        `.get("success") is False` must not read that absence as failure."""
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector = AsyncMock(
+            return_value={"action": "drop_collection", "collections": ["drive_records"]}
+        )
+
+        events = await _collect_events(
+            handler,
+            EventTypes.BULK_DELETE_RECORDS.value,
+            {"virtualRecordIds": ["vr1"], "connectorId": "conn-1"},
+        )
+
+        assert len(events) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_successful_purge_still_completes(self):
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock(
+            return_value={"virtual_record_ids_processed": 1, "success": True}
+        )
+
+        events = await _collect_events(
+            handler,
+            EventTypes.BULK_DELETE_RECORDS.value,
+            {"virtualRecordIds": ["vr1"]},
+        )
+
+        assert len(events) == 2
+
+    @pytest.mark.asyncio
+    async def test_bulk_delete_with_connector_id_routes_through_purge_connector(self):
+        """A connector-scoped payload builds a DeleteContext and goes through
+        purge_connector (registry-driven), not the bare bulk_delete_embeddings call."""
+        from app.services.vector_db.strategy import DeleteContext
+
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector = AsyncMock(
+            return_value={"action": "filtered_delete", "virtual_record_ids_processed": 2}
+        )
+        pipeline.bulk_delete_embeddings = AsyncMock()
+
+        payload = {
+            "virtualRecordIds": ["vr1", "vr2"],
+            "connectorId": "conn-1",
+            "connectorName": "GOOGLE_DRIVE",
+            "orgId": "org-1",
+        }
+        events = await _collect_events(handler, EventTypes.BULK_DELETE_RECORDS.value, payload)
+
+        assert len(events) == 2
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
+        pipeline.purge_connector.assert_awaited_once()
+        call_args = pipeline.purge_connector.call_args
+        ctx = call_args.args[0]
+        assert isinstance(ctx, DeleteContext)
+        assert ctx.org_id == "org-1"
+        assert ctx.connector_id == "conn-1"
+        assert ctx.connector_name == "GOOGLE_DRIVE"
+        assert call_args.args[1] == ["vr1", "vr2"]
+
 
 class TestSyncVectorMembershipEvent:
     @pytest.mark.asyncio
@@ -228,12 +340,31 @@ def _blob_with_blocks():
 
 
 class TestDeleteVectorCollectionEvent:
-    @pytest.mark.asyncio
-    async def test_recreates_collection_and_marks_ready(self):
+    @staticmethod
+    def _handler_with_vector_store(embedding_size=1024):
+        """Handler whose sink exposes a VectorStore-shaped double.
+
+        ``spec=VectorStore`` is the point of the fixture: a bare MagicMock
+        accepts any attribute, so a test written against a method that no
+        longer exists on the real class would keep passing while production
+        raised AttributeError.
+        """
+        from app.modules.transformers.vectorstore import VectorStore
+
         handler = _make_handler()
         sink = MagicMock()
-        sink.vector_store.recreate_records_collection = AsyncMock()
+        sink.vector_store = MagicMock(spec=VectorStore)
+        sink.vector_store.get_embedding_model_instance = AsyncMock(return_value=False)
+        sink.vector_store.embedding_size = embedding_size
         handler.event_processor.sink_orchestrator = sink
+        registry = AsyncMock()
+        registry.recreate_all_collections = AsyncMock(return_value=["records"])
+        handler.event_processor.processor.indexing_pipeline.collection_registry = registry
+        return handler, sink, registry
+
+    @pytest.mark.asyncio
+    async def test_recreates_every_managed_collection_and_marks_ready(self):
+        handler, _sink, registry = self._handler_with_vector_store()
 
         with patch(
             "app.services.messaging.kafka.handlers.record.mark_cleanup_phase",
@@ -247,8 +378,63 @@ class TestDeleteVectorCollectionEvent:
 
         assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
         assert events[0].data.record_id == "delete_vector_collection"
-        sink.vector_store.recreate_records_collection.assert_awaited_once()
-        mark.assert_awaited_once()
+        # The dimension comes from the live model, not the manifest: this event
+        # fires precisely because the model (and so the width) changed.
+        registry.recreate_all_collections.assert_awaited_once_with(1024)
+        assert mark.await_args.args[1] == PHASE_READY
+
+    @pytest.mark.asyncio
+    async def test_missing_vector_store_marks_failed(self):
+        """The cleanup job polls for a phase; a silent raise makes it wait out
+        its whole deadline with no explanation."""
+        handler = _make_handler()
+        handler.event_processor.sink_orchestrator = None
+
+        with patch(
+            "app.services.messaging.kafka.handlers.record.mark_cleanup_phase",
+            new_callable=AsyncMock,
+        ) as mark, pytest.raises(IndexingError):
+            await _collect_events(
+                handler,
+                EventTypes.DELETE_VECTOR_COLLECTION.value,
+                {"requestedByOrgId": "org-1"},
+            )
+
+        assert mark.await_args.args[1] == PHASE_FAILED
+
+    @pytest.mark.asyncio
+    async def test_rebuild_failure_marks_failed(self):
+        handler, _sink, registry = self._handler_with_vector_store()
+        registry.recreate_all_collections = AsyncMock(side_effect=Exception("qdrant down"))
+
+        with patch(
+            "app.services.messaging.kafka.handlers.record.mark_cleanup_phase",
+            new_callable=AsyncMock,
+        ) as mark, pytest.raises(Exception, match="qdrant down"):
+            await _collect_events(
+                handler,
+                EventTypes.DELETE_VECTOR_COLLECTION.value,
+                {"requestedByOrgId": "org-1"},
+            )
+
+        assert mark.await_args.args[1] == PHASE_FAILED
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_dimension_refuses_to_recreate(self):
+        """Recreating at the wrong width silently breaks every later upsert."""
+        handler, _sink, registry = self._handler_with_vector_store(embedding_size=None)
+
+        with patch(
+            "app.services.messaging.kafka.handlers.record.mark_cleanup_phase",
+            new_callable=AsyncMock,
+        ), pytest.raises(IndexingError):
+            await _collect_events(
+                handler,
+                EventTypes.DELETE_VECTOR_COLLECTION.value,
+                {"requestedByOrgId": "org-1"},
+            )
+
+        registry.recreate_all_collections.assert_not_awaited()
 
 
 class TestVectorDbOnlyReindex:
@@ -399,7 +585,12 @@ class TestVectorDbOnlyReindex:
                 },
             )
 
-        pipeline.delete_points_for_virtual_record.assert_awaited_once_with("vr-1")
+        # Carries the record's own context: the delete is scoped to the
+        # collection this record writes to, not to "the" collection.
+        pipeline.delete_points_for_virtual_record.assert_awaited_once()
+        vrid, ctx = pipeline.delete_points_for_virtual_record.await_args.args
+        assert vrid == "vr-1"
+        assert (ctx.org_id, ctx.connector_id) == ("org-1", "conn-1")
 
     @pytest.mark.asyncio
     async def test_fetches_blob_and_skips_source_download(self):
@@ -435,7 +626,12 @@ class TestVectorDbOnlyReindex:
         assert len(events) == 2
         # Unconditional delete: bulk_delete_embeddings would keep the points,
         # because the record still exists in the graph on a re-embed.
-        pipeline.delete_points_for_virtual_record.assert_awaited_once_with("vr-1")
+        # Carries the record's own context: the delete is scoped to the
+        # collection this record writes to, not to "the" collection.
+        pipeline.delete_points_for_virtual_record.assert_awaited_once()
+        vrid, ctx = pipeline.delete_points_for_virtual_record.await_args.args
+        assert vrid == "vr-1"
+        assert (ctx.org_id, ctx.connector_id) == ("org-1", "conn-1")
         pipeline.bulk_delete_embeddings.assert_not_awaited()
         sink.blob_storage.get_record_from_storage.assert_awaited_once_with("vr-1", "org-1")
         sink.index.assert_awaited_once()

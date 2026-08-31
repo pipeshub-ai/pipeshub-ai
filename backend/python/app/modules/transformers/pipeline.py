@@ -202,6 +202,7 @@ class IndexingPipeline:
                     record.virtual_record_id,
                     record.org_id,
                     record.semantic_metadata,
+                    record,
                 )
 
         await self.sink_orchestrator.enrich(ctx)

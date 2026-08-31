@@ -27,7 +27,8 @@ The Search index is named::
     {collection_name}_idx
 
 Multiple collections on one Redis instance are isolated by key-prefix / index.
-Future tenant separation adds a ``{tenant}_{collection}`` prefix via CollectionResolver.
+Collection names are resolved by CollectionStrategy and sanitized by
+``collections.sanitize_collection_name`` before they reach this provider.
 
 Minimum Redis version: 8.4 (FT.HYBRID command).  Health check enforces this.
 
@@ -85,6 +86,8 @@ _REDIS_CAPABILITIES = VectorDBCapabilities(
     supports_sparse_vectors=False,
     supports_server_side_text_search=True,
     supported_fusion_methods=[FusionMethod.RRF],
+    supports_multi_collection=True,
+    max_recommended_collections=500,
 )
 
 # RediSearch caps offset+limit at MAXSEARCHRESULTS; the default is 10000.

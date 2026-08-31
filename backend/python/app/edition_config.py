@@ -63,8 +63,28 @@ from app.connectors.api.connector_resolvers import (
     strip_redacted_fields,
 )
 vector_store_rebuild_available = True
-from app.connectors.api.router import router as connector_router
 # Low-level service classes (token refresh, OAuth registry, EventService):
 
 from app.edition_services import TokenRefreshService, ToolsetTokenRefreshService
 from app.edition_services import get_data_entities_processor_cls
+
+
+def __getattr__(name: str):
+    """Re-export `connector_router` without importing it at module load.
+
+    `app.connectors.api.router` imports the resolvers above from this module,
+    so importing it here made the two modules mutually dependent. That held
+    together only when `edition_config` was imported first: entering through
+    the router instead — as `pytest tests/unit/connectors` does — reached this
+    line while `router` was still partially initialized and raised ImportError.
+
+    Deferring to attribute access removes the cycle at import time while
+    keeping `from app.edition_config import connector_router` working, and the
+    ordering the resolvers need is then satisfied for free: by the time anyone
+    can read this attribute, the module is fully bound.
+    """
+    if name == "connector_router":
+        from app.connectors.api.router import router
+
+        return router
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

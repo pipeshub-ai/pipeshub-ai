@@ -1277,7 +1277,7 @@ class TestDeleteConnectorInstanceDeep:
             scope="team", created_by="u1",
             extra={"isActive": True},
         )
-        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
             return_value=instance
         )
 
@@ -1314,7 +1314,7 @@ class TestDeleteConnectorInstanceDeep:
         instance = _make_instance(
             scope="team", created_by="u1",
         )
-        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
             return_value=instance
         )
 
@@ -1346,7 +1346,7 @@ class TestDeleteConnectorInstanceDeep:
             scope="team", created_by="u1",
             extra={"isActive": True},
         )
-        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
             return_value=instance
         )
 

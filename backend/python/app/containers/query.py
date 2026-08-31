@@ -47,6 +47,13 @@ class QueryAppContainer(BaseAppContainer):
         graph_provider=graph_provider,
     )
 
+    collection_registry = providers.Resource(
+        container_utils.create_collection_registry,
+        logger=logger,
+        config_service=config_service,
+        vector_db_service=vector_db_service,
+    )
+
     retrieval_service = providers.Resource(
         container_utils.create_retrieval_service,
         config_service=config_service,
@@ -54,6 +61,7 @@ class QueryAppContainer(BaseAppContainer):
         vector_db_service=vector_db_service,
         graph_provider=graph_provider,
         blob_store=blob_store,
+        collection_registry=collection_registry,
     )
     reranker_service = providers.Singleton(
         RerankerService,

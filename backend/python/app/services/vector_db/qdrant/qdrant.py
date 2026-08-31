@@ -87,6 +87,8 @@ _QDRANT_CAPABILITIES = VectorDBCapabilities(
     supports_sparse_vectors=True,
     supports_server_side_text_search=False,
     supported_fusion_methods=[FusionMethod.RRF],
+    supports_multi_collection=True,
+    max_recommended_collections=1000,
 )
 
 
