@@ -230,6 +230,10 @@ async def get_config_service(request: Request) -> ConfigurationService:
     container: QueryAppContainer = request.app.container
     return container.config_service()
 
+async def get_semantic_cache_service(request: Request):
+    container: QueryAppContainer = request.app.container
+    return container.semantic_cache_service()
+
 
 async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     """Get model configuration based on user selection or fallback to default
@@ -1045,6 +1049,7 @@ async def askAIStream(
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(get_config_service),
+    semantic_cache_service = Depends(get_semantic_cache_service),
 ) -> StreamingResponse:
     """Perform semantic search across documents with streaming events and tool support.
 
@@ -1084,7 +1089,8 @@ async def askAIStream(
     )
 
     chat_mode = query_info.chatMode or "internal_search"
-    use_cache = chat_mode in ("internal_search", "quick")
+    bypass_cache = bool(query_info.previousConversations) or bool(query_info.attachments) or (query_info.retrievalMode and query_info.retrievalMode != "default")
+    use_cache = chat_mode in ("internal_search", "quick") and not bypass_cache
     
     if use_cache:
         async def cached_or_live_stream(base_stream):
@@ -1093,19 +1099,20 @@ async def askAIStream(
             import asyncio
             query_vector = None
             filters_hash_val = "none"
-            semantic_cache = SemanticCacheService(retrieval_service.vector_db_service)
+            semantic_cache = semantic_cache_service
             
             try:
                 await semantic_cache.initialize()
                 cache_scope = {
                     "orgId": _chat_user.get("orgId"),
                     "userId": _chat_user.get("userId"),
+                    "permissionsRevision": _chat_user.get("permissionsRevision", "0"),
                     "filters": query_info.filters,
                 }
                 filters_hash_val = hash_filters(cache_scope)
                 
-                is_model_initialized = await retrieval_service.get_embedding_model_instance()
-                if is_model_initialized and retrieval_service.dense_embeddings:
+                await retrieval_service.get_embedding_model_instance()
+                if retrieval_service.dense_embeddings:
                     query_vector = await retrieval_service.dense_embeddings.aembed_query(query_info.query)
                     if query_vector:
                         cached_resp = await semantic_cache.get_cached_response(
