@@ -14853,7 +14853,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars["parent_doc_id"] = parent_doc_id
             elif parent_type == "app":
                 bind_vars["parent_id"] = parent_id
-                bind_vars["parent_doc_id"] = parent_id
+                # @parent_doc_id is only referenced when depth >= 2
+                # (_build_children_intersection_aql). Binding it otherwise is
+                # Arango 1552 (undeclared bind parameter).
+                if depth is not None and depth >= 2:
+                    bind_vars["parent_doc_id"] = parent_id
 
         # Merge filter params
         bind_vars.update(filter_params)
@@ -21852,8 +21856,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
             # Soft delete the template using update_node
-            template_path = f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}"
-            result = await self.update_node(template_path, update_data, transaction=transaction)
+            result = await self.update_node(
+                template_id,
+                CollectionNames.AGENT_TEMPLATES.value,
+                update_data,
+                transaction=transaction,
+            )
 
             if not result:
                 self.logger.error(f"Failed to delete template {template_id}")

@@ -14603,6 +14603,74 @@ class TestGetKnowledgeHubSearch:
         assert result is not None
 
     @pytest.mark.asyncio
+    async def test_app_scope_omits_unused_parent_doc_id(self, connected_provider):
+        connected_provider._build_knowledge_hub_filter_conditions = MagicMock(
+            return_value=([], {})
+        )
+        connected_provider._build_scope_filters = MagicMock(
+            return_value=("", "", "true", "true")
+        )
+        connected_provider._build_children_intersection_aql = MagicMock(return_value="")
+        connected_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"total": 0, "paginated_refs": []}]
+        )
+        await connected_provider.get_knowledge_hub_search(
+            "org1", "uk1", skip=0, limit=10,
+            sort_field="name", sort_dir="ASC",
+            parent_id="app1", parent_type="app",
+        )
+        bind_vars = connected_provider.http_client.execute_aql.await_args_list[0].kwargs["bind_vars"]
+        assert bind_vars["parent_id"] == "app1"
+        assert "parent_doc_id" not in bind_vars
+
+    @pytest.mark.asyncio
+    async def test_app_scope_depth_1_omits_parent_doc_id(self, connected_provider):
+        connected_provider._build_knowledge_hub_filter_conditions = MagicMock(
+            return_value=([], {})
+        )
+        connected_provider._build_scope_filters = MagicMock(
+            return_value=("", "", "true", "true")
+        )
+        connected_provider._build_children_intersection_aql = MagicMock(return_value="")
+        connected_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"total": 0, "paginated_refs": []}]
+        )
+        await connected_provider.get_knowledge_hub_search(
+            "org1", "uk1", skip=0, limit=10,
+            sort_field="name", sort_dir="ASC",
+            parent_id="app1", parent_type="app",
+            depth=1,
+        )
+        bind_vars = connected_provider.http_client.execute_aql.await_args_list[0].kwargs["bind_vars"]
+        assert bind_vars["parent_id"] == "app1"
+        assert "parent_doc_id" not in bind_vars
+
+    @pytest.mark.asyncio
+    async def test_app_scope_depth_2_binds_parent_doc_id(self, connected_provider):
+        connected_provider._build_knowledge_hub_filter_conditions = MagicMock(
+            return_value=([], {})
+        )
+        connected_provider._build_scope_filters = MagicMock(
+            return_value=("", "", "true", "true")
+        )
+        connected_provider._build_children_intersection_aql = MagicMock(return_value="")
+        connected_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"total": 0, "paginated_refs": []}]
+        )
+        await connected_provider.get_knowledge_hub_search(
+            "org1", "uk1", skip=0, limit=10,
+            sort_field="name", sort_dir="ASC",
+            parent_id="app1", parent_type="app",
+            depth=2,
+        )
+        bind_vars = connected_provider.http_client.execute_aql.await_args_list[0].kwargs["bind_vars"]
+        assert bind_vars["parent_id"] == "app1"
+        assert bind_vars["parent_doc_id"] == "app1"
+
+    @pytest.mark.asyncio
     async def test_empty_result(self, connected_provider):
         connected_provider._build_knowledge_hub_filter_conditions = MagicMock(
             return_value=([], {})
@@ -15102,6 +15170,15 @@ class TestBuildChildrenIntersectionAql:
     def test_other(self, connected_provider):
         result = connected_provider._build_children_intersection_aql("x", "app")
         assert "final_accessible_rgs = accessible_rgs" in result
+        assert "@parent_doc_id" not in result
+
+    def test_app_depth_1_omits_parent_doc_id(self, connected_provider):
+        result = connected_provider._build_children_intersection_aql("x", "app", depth=1)
+        assert "@parent_doc_id" not in result
+
+    def test_app_depth_2_uses_parent_doc_id(self, connected_provider):
+        result = connected_provider._build_children_intersection_aql("x", "app", depth=2)
+        assert "@parent_doc_id" in result
 
     def test_none(self, connected_provider):
         result = connected_provider._build_children_intersection_aql(None, None)
