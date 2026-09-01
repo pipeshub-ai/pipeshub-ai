@@ -47,50 +47,24 @@ describe('ConnectorsCrawlingService', () => {
       expect(event.payload.origin).to.equal('CONNECTOR');
     });
 
-    it('does not publish for Local FS (canonical key)', async () => {
-      const publishEvent = sinon.stub().resolves();
-      const service = makeService(publishEvent);
+    // Local FS is server-driven like every other connector now: a scheduled
+    // tick must reach run_sync, which pulls from the user's desktop.
+    ;['localfs', 'Local FS', '  local_fs  '].forEach((connectorName) => {
+      it(`publishes a scheduled sync for Local FS ("${connectorName}")`, async () => {
+        const publishEvent = sinon.stub().resolves();
+        const service = makeService(publishEvent);
 
-      const result = await service.crawl(
-        orgId,
-        userId,
-        scheduleConfig,
-        'localfs',
-        connectorId,
-      );
+        const result = await service.crawl(
+          orgId,
+          userId,
+          scheduleConfig,
+          connectorName,
+          connectorId,
+        );
 
-      expect(result).to.deep.equal({ success: true });
-      expect(publishEvent.called).to.be.false;
-    });
-
-    it('does not publish for Local FS (display name with spaces)', async () => {
-      const publishEvent = sinon.stub().resolves();
-      const service = makeService(publishEvent);
-
-      await service.crawl(
-        orgId,
-        userId,
-        scheduleConfig,
-        'Local FS',
-        connectorId,
-      );
-
-      expect(publishEvent.called).to.be.false;
-    });
-
-    it('does not publish for Local FS (underscores / extra spaces)', async () => {
-      const publishEvent = sinon.stub().resolves();
-      const service = makeService(publishEvent);
-
-      await service.crawl(
-        orgId,
-        userId,
-        scheduleConfig,
-        '  local_fs  ',
-        connectorId,
-      );
-
-      expect(publishEvent.called).to.be.false;
+        expect(result).to.deep.equal({ success: true });
+        expect(publishEvent.calledOnce).to.be.true;
+      });
     });
 
     it('rethrows when publishEvent fails', async () => {

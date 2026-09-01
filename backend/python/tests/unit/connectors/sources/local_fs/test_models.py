@@ -5,9 +5,9 @@ from pydantic import ValidationError
 
 from app.connectors.sources.local_fs.models import (
     LocalFsFileEvent,
-    LocalFsFileEventBatchRequest,
     LocalFsFileEventBatchStats,
-    LocalFsFileEventSubmissionResponse,
+    LocalFsPullBatch,
+    LocalFsPullRequest,
 )
 
 
@@ -36,12 +36,10 @@ class TestLocalFsFileEvent:
             timestamp=42,
             size=1024,
             isDirectory=False,
-            contentField="file_0",
             sha256="0" * 64,
             mimeType="text/plain",
         )
         assert ev.oldPath == "a/old.txt"
-        assert ev.contentField == "file_0"
         assert ev.sha256 == "0" * 64
         assert ev.mimeType == "text/plain"
 
@@ -54,7 +52,6 @@ class TestLocalFsFileEvent:
         )
         assert ev.oldPath is None
         assert ev.size is None
-        assert ev.contentField is None
         assert ev.sha256 is None
         assert ev.mimeType is None
 
@@ -115,139 +112,92 @@ class TestLocalFsFileEvent:
         assert ev.size == 0
 
 
-class TestLocalFsFileEventBatchRequest:
-    def test_valid_batch(self):
-        req = LocalFsFileEventBatchRequest(
-            batchId="b1",
+class TestLocalFsPullRequest:
+    def _kwargs(self, **overrides) -> dict:
+        kwargs = {
+            "connectorId": "conn-1",
+            "runId": "run-1",
+            "batchIndex": 0,
+            "mode": "FULL",
+            "cursor": None,
+            "maxEvents": 50,
+            "timeoutMs": 60_000,
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_valid(self):
+        req = LocalFsPullRequest(**self._kwargs())
+        assert req.mode == "FULL"
+        assert req.cursor is None
+
+    def test_mode_is_constrained(self):
+        LocalFsPullRequest(**self._kwargs(mode="INCREMENTAL"))
+        with pytest.raises(ValidationError):
+            LocalFsPullRequest(**self._kwargs(mode="PARTIAL"))
+
+    def test_cursor_is_optional(self):
+        req = LocalFsPullRequest(
+            connectorId="c",
+            runId="r",
+            batchIndex=3,
+            mode="INCREMENTAL",
+            maxEvents=10,
+            timeoutMs=1000,
+        )
+        assert req.cursor is None
+
+
+class TestLocalFsPullBatch:
+    def test_valid_with_events(self):
+        batch = LocalFsPullBatch(
+            connectorId="conn-1",
+            runId="run-1",
+            batchIndex=0,
+            cursor="j:42",
+            hasMore=True,
             events=[
-                LocalFsFileEvent(
-                    type="MODIFIED",
-                    path="x",
-                    oldPath=None,
-                    timestamp=2,
-                    size=None,
-                    isDirectory=False,
-                )
+                {
+                    "type": "CREATED",
+                    "path": "a.txt",
+                    "timestamp": 1,
+                    "isDirectory": False,
+                }
             ],
-            timestamp=99,
         )
-        assert req.batchId == "b1"
-        assert len(req.events) == 1
-        assert req.timestamp == 99
-        assert req.resetBeforeApply is False
+        assert batch.hasMore is True
+        assert batch.events[0].path == "a.txt"
+        assert batch.rootPath is None
 
-    def test_reset_before_apply_default_false(self):
-        req = LocalFsFileEventBatchRequest(
-            batchId="b", events=[], timestamp=1
+    def test_events_default_empty(self):
+        # A page with no events but hasMore set is the desktop's keepalive.
+        batch = LocalFsPullBatch(
+            connectorId="c", runId="r", batchIndex=1, hasMore=True
         )
-        assert req.resetBeforeApply is False
+        assert batch.events == []
 
-    def test_reset_before_apply_can_be_true(self):
-        req = LocalFsFileEventBatchRequest(
-            batchId="b", events=[], timestamp=1, resetBeforeApply=True
-        )
-        assert req.resetBeforeApply is True
-
-    def test_empty_events_allowed(self):
-        # Batches with zero events are legal — the watcher may still want to
-        # emit a heartbeat or reset signal.
-        req = LocalFsFileEventBatchRequest(
-            batchId="b-empty", events=[], timestamp=1
-        )
-        assert req.events == []
-
-    def test_requires_batchId_and_timestamp(self):
+    def test_requires_identity_fields(self):
+        # connectorId/runId are what let a run reject a reply from the wrong
+        # machine, so they must not be optional.
         with pytest.raises(ValidationError):
-            LocalFsFileEventBatchRequest(events=[], timestamp=1)  # type: ignore[call-arg]
+            LocalFsPullBatch(runId="r", batchIndex=0, hasMore=False)  # type: ignore[call-arg]
         with pytest.raises(ValidationError):
-            LocalFsFileEventBatchRequest(batchId="b", events=[])  # type: ignore[call-arg]
-
-    def test_events_must_be_event_models(self):
-        with pytest.raises(ValidationError):
-            LocalFsFileEventBatchRequest(
-                batchId="b",
-                events=[{"not": "valid"}],  # type: ignore[list-item]
-                timestamp=1,
-            )
+            LocalFsPullBatch(connectorId="c", batchIndex=0, hasMore=False)  # type: ignore[call-arg]
 
 
 class TestLocalFsFileEventBatchStats:
     def test_valid(self):
-        stats = LocalFsFileEventBatchStats(processed=3, deleted=1)
+        stats = LocalFsFileEventBatchStats(processed=3, deleted=1, skipped=2)
         assert stats.processed == 3
         assert stats.deleted == 1
+        assert stats.skipped == 2
 
-    def test_zero_counts(self):
+    def test_skipped_defaults_to_zero(self):
         stats = LocalFsFileEventBatchStats(processed=0, deleted=0)
-        assert stats.processed == 0
-        assert stats.deleted == 0
+        assert stats.skipped == 0
 
     def test_required_fields(self):
         with pytest.raises(ValidationError):
             LocalFsFileEventBatchStats()  # type: ignore[call-arg]
         with pytest.raises(ValidationError):
             LocalFsFileEventBatchStats(processed=1)  # type: ignore[call-arg]
-
-
-class TestLocalFsFileEventSubmissionResponse:
-    def _stats(self, processed: int = 0, deleted: int = 0) -> LocalFsFileEventBatchStats:
-        return LocalFsFileEventBatchStats(processed=processed, deleted=deleted)
-
-    def test_valid(self):
-        resp = LocalFsFileEventSubmissionResponse(
-            success=True,
-            connectorId="conn-1",
-            batchId="batch-1",
-            stats=self._stats(processed=2, deleted=1),
-        )
-        assert resp.success is True
-        assert resp.connectorId == "conn-1"
-        assert resp.batchId == "batch-1"
-        assert resp.stats.processed == 2
-        assert resp.stats.deleted == 1
-
-    def test_required_fields(self):
-        # Missing every required field at once.
-        with pytest.raises(ValidationError):
-            LocalFsFileEventSubmissionResponse()  # type: ignore[call-arg]
-
-    @pytest.mark.parametrize(
-        "missing",
-        ["success", "connectorId", "batchId", "stats"],
-    )
-    def test_each_required_field_individually(self, missing: str):
-        kwargs: dict[str, object] = {
-            "success": True,
-            "connectorId": "c",
-            "batchId": "b",
-            "stats": self._stats(),
-        }
-        kwargs.pop(missing)
-        with pytest.raises(ValidationError) as ei:
-            LocalFsFileEventSubmissionResponse(**kwargs)  # type: ignore[arg-type]
-        assert missing in str(ei.value)
-
-    def test_stats_must_be_batch_stats_model(self):
-        # A bare dict that doesn't match LocalFsFileEventBatchStats must fail
-        # validation rather than be silently coerced.
-        with pytest.raises(ValidationError):
-            LocalFsFileEventSubmissionResponse(
-                success=True,
-                connectorId="c",
-                batchId="b",
-                stats={"unexpected": 1},  # type: ignore[arg-type]
-            )
-
-    def test_serializes_to_dict_with_camelcase_keys(self):
-        resp = LocalFsFileEventSubmissionResponse(
-            success=False,
-            connectorId="conn-2",
-            batchId="batch-2",
-            stats=self._stats(processed=5, deleted=3),
-        )
-        # The router relies on these exact field names in the JSON response.
-        dumped = resp.model_dump()
-        assert dumped["success"] is False
-        assert dumped["connectorId"] == "conn-2"
-        assert dumped["batchId"] == "batch-2"
-        assert dumped["stats"] == {"processed": 5, "deleted": 3}

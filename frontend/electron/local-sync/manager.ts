@@ -1,57 +1,46 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ConnectorFsWatcher, type BatchPayload } from './watcher/connector-fs-watcher';
-import {
-  LocalSyncJournal,
-  type ConnectorMeta,
-  type ScheduledConfig,
-} from './persistence/journal';
-import {
-  dispatchFileEventBatch as defaultDispatchFileEventBatch,
-  type DispatchFileEventBatchArgs,
-} from './transport/file-event-dispatcher';
+import { LocalSyncJournal, type ConnectorMeta, type JournalRecord } from './persistence/journal';
 import { expandWatchEventsForReplay, type WatchEvent } from './watcher/replay-event-expander';
+import {
+  decodeCursor,
+  encodeCursor,
+  pullFailure,
+  type ServePullPage,
+  type ServePullRequest,
+  type ServePullResponse,
+  type SyncMode,
+} from './pull-responder-types';
 import {
   connectorFileSegment,
   scanSyncRoot,
   type FileSnapshotMap,
 } from './persistence/watcher-state-store';
+import { IGNORED_PATTERNS } from './watcher/ignored-patterns';
 
-const RETRY_BASE_MS = 5_000;
-const RETRY_MAX_MS = 5 * 60_000;
-const FULL_SYNC_MODE_REPLACE = 'replace' as const;
-const RECOVERY_MODE_REPLAY_ONLY = 'replay-only' as const;
-// Cap per-batch retries so a permanent 4xx (auth/permission/schema rejection)
-// doesn't wedge the journal forever. After this many attempts the batch is
-// quarantined; replay skips it and proceeds to drain the rest of the journal.
-const MAX_BATCH_ATTEMPTS = 8;
+/** Bounded history so a straggler from an abandoned run gets STALE_RUN, not a restart. */
+const MAX_REMEMBERED_SUPERSEDED_RUNS = 8;
 
-type RecoveryMode = typeof FULL_SYNC_MODE_REPLACE | typeof RECOVERY_MODE_REPLAY_ONLY;
-
-export interface ReplayResult {
-  replayedBatches: number;
-  replayedEvents: number;
-  skippedBatches: number;
+export interface BootstrapResult {
+  connectorId: string;
+  ok: boolean;
+  error?: string;
 }
-
-export type DispatchFn = (args: DispatchFileEventBatchArgs) => Promise<unknown>;
 
 export interface LocalSyncManagerOptions {
   app: Pick<Electron.App, 'getPath'>;
   onStatusChange?: (status: ConnectorStatus) => void;
-  dispatchFileEventBatch?: DispatchFn;
 }
 
 export interface StartArgs {
   connectorId: string;
   connectorName?: string;
   rootPath: string;
-  apiBaseUrl: string;
-  accessToken: string;
+  apiBaseUrl?: string;
   includeSubfolders?: boolean;
   connectorDisplayType?: string;
   syncStrategy?: 'MANUAL' | 'SCHEDULED';
-  scheduledConfig?: ScheduledConfig;
 }
 
 interface RuntimeState {
@@ -59,21 +48,33 @@ interface RuntimeState {
   connectorName?: string;
   rootPath: string;
   normalizedRootPath: string;
-  apiBaseUrl: string;
-  accessToken: string;
+  apiBaseUrl?: string;
   connectorDisplayType?: string;
   syncStrategy: 'MANUAL' | 'SCHEDULED';
-  scheduledConfig: ScheduledConfig | null;
   watcher: ConnectorFsWatcher | null;
   watcherState: 'starting' | 'watching' | 'stopped';
   lastError: string | null;
-  scheduleTimer: NodeJS.Timeout | null;
   startSignature: string;
-  // Set true at the top of stop() so processBatch (called from the watcher's
-  // drain on stop) journals the events but skips network dispatch. Without
-  // this, app quit can block for up to 30s per pending batch waiting on a
-  // dispatch that the next session will replay anyway.
-  shuttingDown: boolean;
+}
+
+/**
+ * One server-driven run. Held in memory only: if the app restarts mid-run the
+ * next page cannot be resolved and the desktop answers CURSOR_UNKNOWN, which
+ * the connector recovers from by restarting the run as FULL.
+ */
+interface RunState {
+  runId: string;
+  mode: SyncMode;
+  /** FULL: the materialised sorted walk, plus a path -> index for cursor lookup. */
+  fullWalk: WatchEvent[] | null;
+  fullWalkIndex: Map<string, number> | null;
+  /**
+   * FULL: journal head captured *before* the walk. Edits journaled during the
+   * walk are handed back incrementally rather than assumed covered by it.
+   */
+  fullHandoffBatchId: string | null;
+  /** Byte-identical answer to a repeated (runId, batchIndex). */
+  lastPage: { batchIndex: number; response: ServePullPage } | null;
 }
 
 export interface ConnectorStatus {
@@ -86,7 +87,8 @@ export interface ConnectorStatus {
   lastAckBatchId: string | null;
   lastRecordedBatchId: string | null;
   syncStrategy: 'MANUAL' | 'SCHEDULED';
-  scheduledConfig: ScheduledConfig | null;
+  /** Set when another machine holds this connector's registration. */
+  ownedByOtherDevice: boolean;
   pendingCount: number;
   failedCount: number;
   syncedCount: number;
@@ -111,16 +113,6 @@ function loadWatcherStateFiles(baseDir: string, connectorId: string): FileSnapsh
   }
 }
 
-/** Matches ConnectorFsWatcher.applyFilters for files. */
-function buildFullSyncSignature(meta: ConnectorMeta | null): string {
-  if (!meta) return '';
-  return JSON.stringify({
-    rootPath: path.resolve(String(meta.rootPath || '')),
-    apiBaseUrl: String(meta.apiBaseUrl || ''),
-    includeSubfolders: meta.includeSubfolders !== false,
-  });
-}
-
 function normalizeSyncRootPath(rootPath: string): string {
   const resolved = path.resolve(String(rootPath || ''));
   try {
@@ -132,108 +124,74 @@ function normalizeSyncRootPath(rootPath: string): string {
 
 interface RuntimeSignatureArgs {
   rootPath: string;
-  apiBaseUrl: string;
   includeSubfolders?: boolean;
   connectorDisplayType?: string;
   syncStrategy?: 'MANUAL' | 'SCHEDULED';
-  scheduledConfig?: ScheduledConfig;
 }
 
 /**
- * Identity for an in-flight runtime. Includes everything that requires
- * recreating the watcher or scheduled timer; **excludes** accessToken so
- * routine token refreshes don't tear down sync. Renderer effects often refire
- * (Zustand connector list updates change array refs), so start() being called
- * with an unchanged config must be a no-op — otherwise the scheduled timer is
- * reset on every refire and never fires.
+ * Identity for an in-flight runtime — everything that requires recreating the
+ * watcher. Renderer effects refire often (Zustand list updates change array
+ * refs), so start() with an unchanged config must be a no-op rather than a
+ * teardown-and-remount that discards the correlator's buffered events.
  */
 function buildRuntimeSignature(args: RuntimeSignatureArgs): string {
-  const sched = args.syncStrategy === 'SCHEDULED' && args.scheduledConfig
-    ? {
-        intervalMinutes: Number(args.scheduledConfig.intervalMinutes) || 0,
-        timezone: args.scheduledConfig.timezone || null,
-      }
-    : null;
   return JSON.stringify({
     rootPath: path.resolve(String(args.rootPath || '')),
-    apiBaseUrl: String(args.apiBaseUrl || ''),
     includeSubfolders: args.includeSubfolders !== false,
     connectorDisplayType: String(args.connectorDisplayType || ''),
     syncStrategy: args.syncStrategy === 'SCHEDULED' ? 'SCHEDULED' : 'MANUAL',
-    scheduledConfig: sched,
   });
 }
 
+/**
+ * Owns the local watchers and answers the server's pull.
+ *
+ * Nothing here initiates a network call: the connector service drives every
+ * sync and this class only responds. Live watcher events accumulate in the
+ * journal as `pending` and are handed out one page at a time.
+ */
 export class LocalSyncManager {
   app: Pick<Electron.App, 'getPath'>;
   onStatusChange?: (status: ConnectorStatus) => void;
-  dispatchFileEventBatch: DispatchFn;
   baseDir: string;
   journal: LocalSyncJournal;
   private runtimes: Map<string, RuntimeState>;
-  private retryTimers: Map<string, NodeJS.Timeout>;
-  private retryAttempts: Map<string, number>;
-  private retryModes: Map<string, RecoveryMode>;
-  private lastReplaceSyncSignature: Map<string, string>;
-  private fullSyncInFlight: Map<string, Promise<void>>;
   private rootPathStartLocks: Map<string, RootPathLock>;
-  private replayInFlight: Map<string, Promise<ReplayResult>>;
-  // Per-connector serial chain: any replay or full-sync queues behind the
-  // previous op so the two never run concurrently. Without this, a scheduled
-  // replay could complete just before a REPLACE full-sync resets the backend
-  // and wiped its work — duplicate uploads + double-fired downstream side
-  // effects (chunking, embedding). Same-kind calls still coalesce via the
-  // *InFlight maps; cross-kind calls serialize through opChain.
-  private opChain: Map<string, Promise<unknown>>;
-  private tickInFlight: Map<string, Promise<void>>;
+  private runs: Map<string, RunState>;
+  private supersededRuns: Map<string, string[]>;
+  /** Serialises pulls per connector so a slow FULL walk can't race the next page. */
+  private pullChain: Map<string, Promise<unknown>>;
+  private foreignOwnedConnectors: Set<string>;
 
-  constructor({ app, onStatusChange, dispatchFileEventBatch }: LocalSyncManagerOptions) {
+  constructor({ app, onStatusChange }: LocalSyncManagerOptions) {
     this.app = app;
     this.onStatusChange = onStatusChange;
-    this.dispatchFileEventBatch = dispatchFileEventBatch || defaultDispatchFileEventBatch;
     this.baseDir = path.join(this.app.getPath('userData'), 'local-sync-journal');
     this.journal = new LocalSyncJournal(this.baseDir);
     this.runtimes = new Map();
-    // Retry scheduling keyed on connectorId so it survives even when the
-    // renderer hasn't (yet) called start() — i.e. during offline recovery on
-    // app launch before the window mounts the connector UI.
-    this.retryTimers = new Map();
-    this.retryAttempts = new Map();
-    this.retryModes = new Map();
-    this.lastReplaceSyncSignature = new Map();
-    this.fullSyncInFlight = new Map();
     this.rootPathStartLocks = new Map();
-    // Per-connector replay serialization. Without this, an armed retry timer
-    // and a live-event-driven replay() can fire concurrently — both iterate
-    // the journal in order, both POST the first failed batch, the backend
-    // sees duplicates, and the second to finish clobbers the other's
-    // status update. Coalesce them into one in-flight replay per connector.
-    this.replayInFlight = new Map();
-    this.opChain = new Map();
-    this.tickInFlight = new Map();
+    this.runs = new Map();
+    this.supersededRuns = new Map();
+    this.pullChain = new Map();
+    this.foreignOwnedConnectors = new Set();
   }
 
-  async init(): Promise<void> {
-    const connectorIds = this.journal.listConnectorIds();
-    for (const connectorId of connectorIds) {
-      // Recovery order on app restart:
-      //  1. Attempt replay, which is a no-op until a live runtime provides an
-      //     access token via start().
-      //  2. Watcher rescan+reconcile and backend full-sync run from start(),
-      //     once the renderer has supplied that token.
-      //
-      // Intentional non-behavior: we do NOT bootstrap the watcher or scheduled
-      // tick here, and we do NOT persist access tokens in journal metadata.
-      // While the app is closed nothing should be syncing; on reopen we wait
-      // for the renderer to mount the connector page, which calls start() and
-      // brings the live watcher / scheduled timer up.
-      try {
-        await this.replay(connectorId);
-      } catch (error) {
-        console.warn(`[local-sync] startup replay failed for ${connectorId}:`, error);
-        this.armRetry(connectorId, FULL_SYNC_MODE_REPLACE);
-      }
-    }
+  /** Connector ids this machine has a configured folder for — the register set. */
+  listConnectorIds(): string[] {
+    return this.journal
+      .listConnectorIds()
+      .filter((id) => Boolean(this.journal.getMeta(id)?.rootPath));
+  }
+
+  /** Record which connectors another machine already claimed, for the UI. */
+  setForeignOwnedConnectors(connectorIds: string[]): void {
+    this.foreignOwnedConnectors = new Set(connectorIds);
+    for (const connectorId of connectorIds) this.emitStatus(connectorId);
+  }
+
+  getRootPath(connectorId: string): string | null {
+    return this.journal.getMeta(connectorId)?.rootPath || null;
   }
 
   private emitStatus(connectorId: string): void {
@@ -256,34 +214,69 @@ export class LocalSyncManager {
     return null;
   }
 
-  private assertRootPathAvailable(normalizedRootPath: string, connectorId: string): void {
+  /** Read-only lookup backing both the throwing check in start() and the
+   * renderer's pre-activation preflight (checkRootPathConflict) — sets no
+   * locks, so calling it repeatedly (e.g. on every keystroke while editing a
+   * path) has no side effects. */
+  private findRootPathConflict(
+    normalizedRootPath: string,
+    connectorId: string,
+  ): RootPathLock | null {
     const existingRuntime = this.findRuntimeByRootPath(normalizedRootPath, connectorId);
     if (existingRuntime) {
-      const owner = existingRuntime.connectorName || existingRuntime.connectorId;
-      throw new Error(`Local sync root is already watched by connector "${owner}": ${normalizedRootPath}`);
+      return { connectorId: existingRuntime.connectorId, connectorName: existingRuntime.connectorName };
     }
     const lock = this.rootPathStartLocks.get(normalizedRootPath);
     if (lock && lock.connectorId !== connectorId) {
-      const owner = lock.connectorName || lock.connectorId;
+      return lock;
+    }
+    return null;
+  }
+
+  private assertRootPathAvailable(normalizedRootPath: string, connectorId: string): void {
+    const conflict = this.findRootPathConflict(normalizedRootPath, connectorId);
+    if (conflict) {
+      const owner = conflict.connectorName || conflict.connectorId;
       throw new Error(`Local sync root is already watched by connector "${owner}": ${normalizedRootPath}`);
     }
   }
 
+  /**
+   * Preflight for the renderer to call *before* activating a Local FS
+   * connector (toggling sync on / creating it) — lets the caller reject the
+   * activation outright instead of flipping the connector active in the
+   * backend and only discovering the root-path conflict when the watcher
+   * fails to start afterwards.
+   *
+   * This is per-machine by construction. Two laptops signed into one account
+   * cannot see each other here; that case is caught by socket registration.
+   */
+  checkRootPathConflict(
+    connectorId: string,
+    rootPath: string,
+  ): { available: boolean; ownerConnectorId?: string; ownerConnectorName?: string } {
+    if (!connectorId || !rootPath) return { available: true };
+    const normalizedRootPath = normalizeSyncRootPath(rootPath);
+    const conflict = this.findRootPathConflict(normalizedRootPath, connectorId);
+    if (!conflict) return { available: true };
+    return {
+      available: false,
+      ownerConnectorId: conflict.connectorId,
+      ownerConnectorName: conflict.connectorName,
+    };
+  }
+
   async start({
-    connectorId, connectorName, rootPath, apiBaseUrl, accessToken,
+    connectorId, connectorName, rootPath, apiBaseUrl,
     includeSubfolders,
     connectorDisplayType,
     syncStrategy,
-    scheduledConfig,
   }: StartArgs): Promise<ConnectorStatus> {
     if (!connectorId) throw new Error('connectorId is required');
     if (!rootPath) throw new Error('rootPath is required');
-    if (!apiBaseUrl) throw new Error('apiBaseUrl is required');
-    if (!accessToken) throw new Error('accessToken is required');
 
     const startSignature = buildRuntimeSignature({
-      rootPath, apiBaseUrl, includeSubfolders,
-      connectorDisplayType, syncStrategy, scheduledConfig,
+      rootPath, includeSubfolders, connectorDisplayType, syncStrategy,
     });
     const existing = this.runtimes.get(connectorId);
     if (
@@ -291,11 +284,6 @@ export class LocalSyncManager {
       && existing.startSignature === startSignature
       && (existing.watcherState === 'watching' || existing.watcherState === 'starting')
     ) {
-      // Same configuration — refresh access token in place (renderer may pass
-      // a fresh one) and keep the watcher + scheduled timer running. Without
-      // this the scheduled tick never fires: renderer effects refire faster
-      // than intervalMinutes (≥ 60s), and stop() clears the timer each time.
-      existing.accessToken = accessToken;
       this.emitStatus(connectorId);
       return this.getStatus(connectorId) as ConnectorStatus;
     }
@@ -307,103 +295,31 @@ export class LocalSyncManager {
     await this.stop(connectorId);
 
     const strategy: 'MANUAL' | 'SCHEDULED' = syncStrategy || 'MANUAL';
-    const activeScheduledConfig = strategy === 'SCHEDULED' ? scheduledConfig ?? null : null;
-    const interval = activeScheduledConfig && Math.max(1, Number(activeScheduledConfig.intervalMinutes || 0));
-
     this.journal.setMeta(connectorId, {
       connectorName, rootPath, apiBaseUrl,
       includeSubfolders,
       connectorDisplayType, syncStrategy: strategy,
-      scheduledConfig: activeScheduledConfig,
     });
 
     const runtime: RuntimeState = {
-      connectorId, connectorName, rootPath, normalizedRootPath, apiBaseUrl, accessToken,
+      connectorId, connectorName, rootPath, normalizedRootPath, apiBaseUrl,
       connectorDisplayType,
       syncStrategy: strategy,
-      scheduledConfig: activeScheduledConfig,
       watcher: null, watcherState: 'starting', lastError: null,
-      scheduleTimer: null,
       startSignature,
-      shuttingDown: false,
     };
     this.runtimes.set(connectorId, runtime);
     this.rootPathStartLocks.delete(normalizedRootPath);
-    const currentMeta = this.journal.getMeta(connectorId);
-    const currentFullSyncSignature = buildFullSyncSignature(currentMeta);
-    const shouldRunReplaceFullSync = this.lastReplaceSyncSignature.get(connectorId) !== currentFullSyncSignature;
 
     const processBatch = async ({ batchId, timestamp, events, source }: BatchPayload): Promise<void> => {
-      const backlogBeforeAppend = this.journal.getPendingOrFailedBatches(connectorId);
-      // Pre-compute replayEvents for batches containing directory-level events,
-      // using the watcher state as it looks right now. Mirrors CLI behavior:
-      // if the directory is deleted before a replay happens, we still know
-      // which children to re-send to the backend.
-      let replayEvents: WatchEvent[] | undefined;
-      if ((events || []).some((e) => e.isDirectory)) {
-        const stateFiles = loadWatcherStateFiles(this.baseDir, connectorId);
-        replayEvents = expandWatchEventsForReplay(events, stateFiles);
-      }
+      // Already expanded to file granularity by the watcher, against its live
+      // in-memory state — re-expanding here would duplicate every child, since
+      // the directory event stays in the array and this side can only read the
+      // debounced on-disk snapshot. Recording it as replayEvents is what makes
+      // resolveBatchEvents skip its own expansion when the batch is served.
+      const replayEvents = (events || []).some((e) => e.isDirectory) ? events : undefined;
       this.journal.appendBatch(connectorId, { batchId, timestamp, events, source, replayEvents });
-      this.emitStatus(connectorId);
-      if (!events || events.length === 0) {
-        this.journal.updateBatchStatus(connectorId, batchId, 'synced', { lastError: null });
-        runtime.lastError = null;
-        this.emitStatus(connectorId);
-        return;
-      }
-      // SCHEDULED strategy: hold the batch in the journal as 'pending' and let
-      // the scheduled tick (or the backend's localfs:resync trigger) drain it
-      // via replay(). Otherwise the user-visible "Every N Minutes" cadence is
-      // a lie — edits would propagate to the backend the moment the watcher
-      // fires.
-      //
-      // ALSO: if we're shutting down (manager.stop drains the watcher on app
-      // quit), keep the same journal-only behavior so app exit isn't blocked
-      // by an in-flight 30s dispatch. The next session's init() replays.
-      if (runtime.syncStrategy === 'SCHEDULED' || runtime.shuttingDown) {
-        const totalPending = this.journal.getPendingOrFailedBatches(connectorId).length;
-        const tag = runtime.shuttingDown ? 'SHUTDOWN' : 'SCHEDULED';
-        console.log(
-          `[local-sync:${connectorId}] ${tag}: queued batch ${batchId} with ${events.length} event(s) ` +
-          `(${totalPending} pending; next tick/launch will drain)`,
-        );
-        runtime.lastError = null;
-        this.emitStatus(connectorId);
-        return;
-      }
-      try {
-        if (backlogBeforeAppend.length > 0) {
-          await this.replay(connectorId);
-        } else {
-          await this.dispatchFileEventBatch({
-            apiBaseUrl: runtime.apiBaseUrl,
-            accessToken: runtime.accessToken,
-            connectorId,
-            batchId, timestamp, events,
-            rootPath: runtime.rootPath,
-            refreshAccessToken: () => this.refreshAccessTokenForConnector(connectorId),
-          });
-          this.journal.updateBatchStatus(connectorId, batchId, 'synced', { lastError: null });
-        }
-        runtime.lastError = null;
-        // Only cancel retry if no other failed/pending batches remain — a live
-        // success here doesn't mean the journal is drained. Cancelling
-        // unconditionally would strand prior failed batches until next failure
-        // or app restart.
-        if (this.journal.getPendingOrFailedBatches(connectorId).length === 0) {
-          this.cancelRetry(connectorId);
-        }
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        if (backlogBeforeAppend.length === 0) {
-          this.journal.updateBatchStatus(connectorId, batchId, 'failed', { lastError: msg });
-        }
-        runtime.lastError = msg;
-        if (backlogBeforeAppend.length === 0) {
-          this.armRetry(connectorId, RECOVERY_MODE_REPLAY_ONLY);
-        }
-      }
+      runtime.lastError = null;
       this.emitStatus(connectorId);
     };
 
@@ -421,311 +337,29 @@ export class LocalSyncManager {
       },
     });
 
-    // MANUAL: drain any backlog before live events flow so prior-session
-    // pendings dispatch in order. SCHEDULED: skip — edits must be held until
-    // the next tick (rule: "SCHEDULED — edits held until the tick"); the
-    // backend full-sync below + tick replay catch up any backlog.
-    if (strategy === 'MANUAL') {
-      try {
-        await this.replay(connectorId);
-      } catch (error) {
-        console.warn(`[local-sync] replay during start for ${connectorId}:`, error);
-      }
+    try {
+      await runtime.watcher.start();
+    } catch (error) {
+      // A runtime left registered after a failed start (missing folder,
+      // unmounted network drive) still answers findRuntimeByRootPath, so it
+      // would hold the sync root against every later attempt — including the
+      // retry that would have succeeded.
+      this.runtimes.delete(connectorId);
+      runtime.watcherState = 'stopped';
+      runtime.lastError = error instanceof Error ? error.message : String(error);
+      this.emitStatus(connectorId);
+      throw error;
     }
-    await runtime.watcher.start();
     runtime.watcherState = 'watching';
-
-    // Trigger a backend full-sync so it reconciles against actual disk state.
-    // This covers the "app restart → full sync" edge case: the backend crawls
-    // every file in the sync root and upserts/deletes as needed, independent
-    // of journal history. Re-check the signature here — `await this.replay`
-    // above can take long enough for an init()-launched full-sync to complete
-    // and update lastReplaceSyncSignature; without this re-check we'd run a
-    // redundant REPLACE for the same disk snapshot.
-    if (shouldRunReplaceFullSync && this.lastReplaceSyncSignature.get(connectorId) !== currentFullSyncSignature) {
-      this.triggerBackendFullSync(connectorId).then(() => {
-        this.lastReplaceSyncSignature.set(connectorId, currentFullSyncSignature);
-      }).catch((err: unknown) => {
-        console.warn(
-          `[local-sync:${connectorId}] backend full-sync trigger failed:`,
-          err instanceof Error ? err.message : err,
-        );
-        const rt = this.runtimes.get(connectorId);
-        if (rt) rt.lastError = err instanceof Error ? err.message : String(err);
-        this.armRetry(connectorId, FULL_SYNC_MODE_REPLACE);
-      });
-    }
-
-    // Scheduled-sync tick (desktop-side mirror of the backend cron job).
-    // Fires every `intervalMinutes`, runs replay + rescan — same work the
-    // CLI's `localfs:resync` socket listener triggers on each server cron tick.
-    if (strategy === 'SCHEDULED' && interval) {
-      const periodMs = Math.max(60_000, interval * 60_000);
-      this.armScheduledTick(runtime, periodMs);
-    }
 
     this.emitStatus(connectorId);
     return this.getStatus(connectorId) as ConnectorStatus;
   }
 
-  // Scan every file in the root folder and send CREATED events to the
-  // backend. The backend upserts idempotently (external_record_id is a
-  // deterministic hash of connector + relative path), so this is safe to
-  // call on every restart — it brings the backend in sync with actual disk
-  // state without relying on replaying historical journal events.
-  /**
-   * Coalesces concurrent full-syncs (e.g. init + start) into one in-flight run per connector,
-   * AND serializes against any in-flight replay so a REPLACE doesn't reset the backend
-   * mid-replay and clobber its work.
-   */
-  triggerBackendFullSync(connectorId: string): Promise<void> {
-    if (!connectorId) return Promise.resolve();
-    const inflight = this.fullSyncInFlight.get(connectorId);
-    if (inflight) return inflight;
-    const prev = this.opChain.get(connectorId) || Promise.resolve();
-    const p = prev
-      .catch(() => { /* prior op's error must not block this one */ })
-      .then(() => this._triggerBackendFullSyncBody(connectorId))
-      .finally(() => {
-        if (this.fullSyncInFlight.get(connectorId) === p) {
-          this.fullSyncInFlight.delete(connectorId);
-        }
-      });
-    this.fullSyncInFlight.set(connectorId, p);
-    this.opChain.set(connectorId, p.catch(() => {}));
-    return p;
-  }
-
-  private async _triggerBackendFullSyncBody(connectorId: string): Promise<void> {
-    const meta = this.journal.getMeta(connectorId);
-    if (!meta || !meta.rootPath || !meta.apiBaseUrl) return;
-    const token = this.getRuntimeAccessToken(connectorId);
-    if (!token) return;
-
-    const rootPath = path.resolve(meta.rootPath);
-    if (!fs.existsSync(rootPath)) return;
-
-    const includeSubfolders = meta.includeSubfolders !== false;
-    const scan = await scanSyncRoot(rootPath, { includeSubfolders });
-    const events: WatchEvent[] = [];
-    for (const [relPath, entry] of scan) {
-      if (entry.isDirectory) continue;
-      events.push({
-        type: 'CREATED',
-        path: relPath,
-        timestamp: Date.now(),
-        size: entry.size,
-        isDirectory: false,
-      });
-    }
-
-    const pending = this.journal.getPendingOrFailedBatches(connectorId);
-    const batchSize = 50;
-    try {
-      // REPLACE-mode contract: first batch carries `resetBeforeApply: true` so
-      // the backend wipes its prior snapshot before applying the new file set.
-      // An empty disk still needs one no-op batch to clear backend state.
-      const batches: Array<{ events: WatchEvent[]; resetBeforeApply: boolean }> = [];
-      if (events.length === 0) {
-        batches.push({ events: [], resetBeforeApply: true });
-      } else {
-        for (let i = 0; i < events.length; i += batchSize) {
-          batches.push({
-            events: events.slice(i, i + batchSize),
-            resetBeforeApply: i === 0,
-          });
-        }
-      }
-
-      for (const batch of batches) {
-        const batchId = `fullsync-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        await this.dispatchFileEventBatch({
-          apiBaseUrl: meta.apiBaseUrl,
-          accessToken: token,
-          connectorId,
-          batchId,
-          timestamp: Date.now(),
-          events: batch.events,
-          resetBeforeApply: batch.resetBeforeApply,
-          rootPath: meta.rootPath,
-          refreshAccessToken: () => this.refreshAccessTokenForConnector(connectorId),
-        });
-      }
-    } catch (err) {
-      const rt = this.runtimes.get(connectorId);
-      if (rt) rt.lastError = err instanceof Error ? err.message : String(err);
-      throw err;
-    }
-
-    // Only after all chunks succeed: mark stale incremental batches superseded.
-    for (const batch of pending) {
-      this.journal.updateBatchStatus(connectorId, batch.batchId, 'synced', { lastError: null });
-    }
-    if (pending.length > 0) {
-      console.log(`[local-sync:${connectorId}] full-sync: marked ${pending.length} stale journal batch(es) as synced`);
-    }
-
-    this.cancelRetry(connectorId);
-    this.lastReplaceSyncSignature.set(connectorId, buildFullSyncSignature(meta));
-    console.log(`[local-sync:${connectorId}] backend full-sync: sent ${events.length} file(s)`);
-  }
-
-  /**
-   * Replay pending/failed journal batches from the journal. Only startup/restart
-   * recovery escalates to a replace full-sync; reconnect recovery stays journal-driven.
-   */
-  async runRecoveryTick(connectorId: string): Promise<ReplayResult> {
-    const mode = this.retryModes.get(connectorId) || RECOVERY_MODE_REPLAY_ONLY;
-    const replayResult = await this.replay(connectorId);
-    if (mode === FULL_SYNC_MODE_REPLACE) {
-      await this.triggerBackendFullSync(connectorId);
-    }
-    return replayResult;
-  }
-
-  // Self-scheduling retry: when dispatch fails, re-run journal replay; when the
-  // startup replace-sync fails, replay first and then rebuild from disk.
-  // Keyed on connectorId so it works both while the watcher is running and
-  // during pre-start() startup recovery.
-  private armRetry(connectorId: string, mode: RecoveryMode): void {
-    if (!connectorId) return;
-    const nextMode: RecoveryMode = mode === FULL_SYNC_MODE_REPLACE
-      ? FULL_SYNC_MODE_REPLACE
-      : RECOVERY_MODE_REPLAY_ONLY;
-    const existingMode = this.retryModes.get(connectorId);
-    if (existingMode !== FULL_SYNC_MODE_REPLACE || nextMode === FULL_SYNC_MODE_REPLACE) {
-      this.retryModes.set(connectorId, nextMode);
-    }
-    if (this.retryTimers.has(connectorId)) return;
-    const attempt = this.retryAttempts.get(connectorId) || 0;
-    const delay = Math.min(RETRY_BASE_MS * 2 ** attempt, RETRY_MAX_MS);
-    this.retryAttempts.set(connectorId, attempt + 1);
-    const timer = setTimeout(() => {
-      this.retryTimers.delete(connectorId);
-      this.runRecoveryTick(connectorId)
-        .then(() => { this.retryAttempts.delete(connectorId); })
-        .catch(() => { this.armRetry(connectorId, this.retryModes.get(connectorId) ?? RECOVERY_MODE_REPLAY_ONLY); });
-    }, delay);
-    if (timer.unref) timer.unref();
-    this.retryTimers.set(connectorId, timer);
-  }
-
-  private cancelRetry(connectorId: string): void {
-    const timer = this.retryTimers.get(connectorId);
-    if (timer) { clearTimeout(timer); this.retryTimers.delete(connectorId); }
-    this.retryAttempts.delete(connectorId);
-    this.retryModes.delete(connectorId);
-  }
-
-  /**
-   * Self-rescheduling tick. We use setTimeout instead of setInterval so a slow
-   * tick never overlaps the next one; the timer is re-armed only after the
-   * current replay/rescan attempt finishes.
-   */
-  private armScheduledTick(runtime: RuntimeState, periodMs: number): void {
-    const connectorId = runtime.connectorId;
-    const delay = Math.max(1_000, periodMs);
-    runtime.scheduleTimer = setTimeout(() => {
-      runtime.scheduleTimer = null;
-      this.runScheduledTick(connectorId)
-        .catch((err: unknown) => {
-          console.warn(`[local-sync:${connectorId}] scheduled tick error:`, err);
-        })
-        .finally(() => {
-          // Re-arm only if the runtime is still alive — stop() deletes the
-          // runtime, and we must not resurrect the timer after teardown.
-          if (this.runtimes.get(connectorId) === runtime) {
-            this.armScheduledTick(runtime, periodMs);
-          }
-        });
-    }, delay);
-    if (runtime.scheduleTimer.unref) runtime.scheduleTimer.unref();
-  }
-
-  /**
-   * Single-flight per connector: a slow tick (large rescan, slow network,
-   * REPLACE in flight) can run longer than `intervalMinutes`, and the next
-   * timer fire would otherwise race the prior tick — `rescan` is not
-   * coalesced anywhere else and two concurrent rescans both call
-   * `commitReconcile`, mutating snapshot state and producing duplicate or
-   * missing offline events. If a tick is already running, we skip the new
-   * one (the in-flight tick will catch any deltas added since it started
-   * via its own rescan/replay).
-   */
-  runScheduledTick(connectorId: string): Promise<void> {
-    const existing = this.tickInFlight.get(connectorId);
-    if (existing) return existing;
-    const promise = this._runScheduledTickInner(connectorId).finally(() => {
-      if (this.tickInFlight.get(connectorId) === promise) {
-        this.tickInFlight.delete(connectorId);
-      }
-    });
-    this.tickInFlight.set(connectorId, promise);
-    return promise;
-  }
-
-  private async _runScheduledTickInner(connectorId: string): Promise<void> {
-    const runtime = this.runtimes.get(connectorId);
-    if (!runtime) return;
-    const tickStartedAt = Date.now();
-    const pendingBefore = this.journal.getPendingOrFailedBatches(connectorId).length;
-    console.log(
-      `[local-sync:${connectorId}] scheduled tick: starting ` +
-      `(${pendingBefore} batch(es) pending before rescan)`,
-    );
-    // Reset the per-tick error so a successful tick doesn't carry forward a
-    // stale message from a prior step (e.g. a transient rescan ENOENT that
-    // resolved by the time replay ran). Per-step failures below set lastError
-    // again — the *last* error of this tick is what surfaces.
-    runtime.lastError = null;
-    let stepError: string | null = null;
-    // Drain live events first: anything sitting in the correlator's 250ms
-    // window or the dispatcher's 1s buffer needs to reach the journal before
-    // we replay. Otherwise a change made just before the tick is invisible to
-    // both rescan (state already updated by applyEventsToState) and replay
-    // (journal hasn't received the batch yet) and slips to the next tick.
-    try { if (runtime.watcher) await runtime.watcher.drainLiveEvents(); } catch (err) {
-      stepError = err instanceof Error ? err.message : String(err);
-    }
-    // Rescan so any offline deltas land in the journal as 'pending' batches;
-    // then replay drains everything (including those new batches and anything
-    // held back by the SCHEDULED gate in processBatch) in one tick.
-    try { if (runtime.watcher) await runtime.watcher.rescan(); } catch (err) {
-      stepError = err instanceof Error ? err.message : String(err);
-    }
-    let replayResult: ReplayResult = { replayedBatches: 0, replayedEvents: 0, skippedBatches: 0 };
-    try { replayResult = await this.replay(connectorId); } catch (err) {
-      stepError = err instanceof Error ? err.message : String(err);
-    }
-    runtime.lastError = stepError;
-    const elapsedMs = Date.now() - tickStartedAt;
-    console.log(
-      `[local-sync:${connectorId}] scheduled tick: done in ${elapsedMs}ms — ` +
-      `replayed ${replayResult.replayedBatches} batch(es), ` +
-      `${replayResult.replayedEvents} event(s), ` +
-      `${replayResult.skippedBatches} skipped`,
-    );
-    this.emitStatus(connectorId);
-  }
-
   async stop(connectorId: string): Promise<ConnectorStatus | null> {
     if (!connectorId) return null;
-    // Always cancel any armed retry — init() can arm one before any runtime
-    // exists (offline recovery before renderer calls start()), and stop()
-    // must drain it whether or not a runtime is registered.
-    this.cancelRetry(connectorId);
     const runtime = this.runtimes.get(connectorId);
     if (!runtime) return this.getStatus(connectorId) as ConnectorStatus;
-    if (runtime.scheduleTimer) {
-      clearTimeout(runtime.scheduleTimer);
-      runtime.scheduleTimer = null;
-    }
-    // NOTE: regular stop() does NOT flip runtime.shuttingDown. stop() is
-    // called both on app quit (via shutdown()) and on watcher replacement
-    // (start() with a different signature, user-initiated disable). In the
-    // latter cases buffered events should still dispatch as part of the
-    // drain — only app quit needs the journal-only fast path. shutdown()
-    // sets shuttingDown on every runtime *before* calling stop().
     if (runtime.watcher) {
       try { await runtime.watcher.stop(); } catch { /* ignore */ }
     }
@@ -736,165 +370,429 @@ export class LocalSyncManager {
   }
 
   /**
-   * Replay batches from the journal. Mirrors CLI `replayPendingWatchBatches`.
+   * Forget a connector entirely: stop its watcher and delete its journal,
+   * cursor and watcher state.
    *
-   * - default: incremental — only `pending` + `failed`
-   * - { includeSynced: true }: full resync — replays every journal line,
-   *   flipping already-`synced` lines back through dispatch as if fresh.
-   *
-   * Stops on the FIRST failing batch and rethrows (CLI parity), preserving
-   * journal order so the backend never sees events out of order.
+   * Distinct from `stop()`, which only unmounts. Deleting a connector has to
+   * purge the journal too — `bootstrapFromJournal` mounts a watcher for every
+   * connector the journal knows about, so a leftover meta file resurrects the
+   * deleted connector on the next launch and its watcher then holds the sync
+   * root against any new connector pointed at the same folder.
    */
-  replay(connectorId: string, opts?: { includeSynced?: boolean }): Promise<ReplayResult> {
-    // Single-flight per connector: an armed retry timer and a live-event
-    // dispatch can both call replay() concurrently. Without coalescing,
-    // both iterate the journal in order and re-dispatch the same first
-    // pending batch — backend sees duplicates and the slower finisher's
-    // status write clobbers the faster one's mark.
-    const existing = this.replayInFlight.get(connectorId);
-    if (existing) return existing;
-    const prev = this.opChain.get(connectorId) || Promise.resolve();
+  async remove(connectorId: string): Promise<void> {
+    if (!connectorId) return;
+    await this.stop(connectorId);
+    this.journal.removeConnector(connectorId);
+    const statePath = path.join(
+      this.baseDir,
+      `watcher_state.${connectorFileSegment(connectorId)}.json`,
+    );
+    try {
+      if (fs.existsSync(statePath)) fs.unlinkSync(statePath);
+    } catch (error) {
+      console.warn(`[local-sync] could not remove watcher state for ${connectorId}:`, error);
+    }
+    this.runs.delete(connectorId);
+    this.supersededRuns.delete(connectorId);
+    this.pullChain.delete(connectorId);
+    this.foreignOwnedConnectors.delete(connectorId);
+  }
+
+  /**
+   * Drop journal state for connectors the backend no longer lists.
+   *
+   * `liveConnectorIds` must be *every* Local FS instance that exists, not just
+   * the ones eligible to mount — reaping against an activity-filtered list
+   * would throw away the pending events of a connector that was merely toggled
+   * off. Returns the ids actually removed.
+   */
+  async reap(liveConnectorIds: string[]): Promise<string[]> {
+    const live = new Set(liveConnectorIds);
+    const removed: string[] = [];
+    for (const connectorId of this.journal.listConnectorIds()) {
+      if (live.has(connectorId)) continue;
+      await this.remove(connectorId);
+      removed.push(connectorId);
+    }
+    if (removed.length > 0) {
+      console.log(`[local-sync] reaped deleted connector(s): ${removed.join(', ')}`);
+    }
+    return removed;
+  }
+
+  // ── Pull responder ───────────────────────────────────────────────────────
+
+  /**
+   * Answer one page of a server-driven run.
+   *
+   * A page is *not* marked synced when it is served. The server asking for the
+   * next page — i.e. arriving with a cursor past this batch — is the ack.
+   * These are Kafka consumer-offset semantics; committing on send would lose
+   * data whenever a run dies mid-flight.
+   */
+  servePull(request: ServePullRequest): Promise<ServePullResponse> {
+    const connectorId = String(request?.connectorId || '');
+    if (!connectorId) {
+      return Promise.resolve(
+        pullFailure(
+          { connectorId, runId: request?.runId || '', batchIndex: request?.batchIndex ?? 0 },
+          'CONFIG_MISMATCH',
+          'pull request carried no connectorId',
+          false,
+        ),
+      );
+    }
+    const prev = this.pullChain.get(connectorId) || Promise.resolve();
     const promise = prev
-      .catch(() => { /* prior op's error must not block this one */ })
-      .then(() => this._replayInner(connectorId, opts))
-      .finally(() => {
-        if (this.replayInFlight.get(connectorId) === promise) {
-          this.replayInFlight.delete(connectorId);
-        }
-      });
-    this.replayInFlight.set(connectorId, promise);
-    this.opChain.set(connectorId, promise.catch(() => {}));
+      .catch(() => { /* a prior page's failure must not block this one */ })
+      .then(() => this.servePullInner(request));
+    this.pullChain.set(connectorId, promise.catch(() => {}));
     return promise;
   }
 
-  private async _replayInner(
-    connectorId: string,
-    opts?: { includeSynced?: boolean },
-  ): Promise<ReplayResult> {
+  private async servePullInner(request: ServePullRequest): Promise<ServePullResponse> {
+    const { connectorId, runId, batchIndex, mode } = request;
     const meta = this.journal.getMeta(connectorId);
-    if (!meta || !meta.apiBaseUrl) {
-      return { replayedBatches: 0, replayedEvents: 0, skippedBatches: 0 };
+    if (!meta || !meta.rootPath) {
+      return pullFailure(
+        request,
+        'CONFIG_MISMATCH',
+        `connector ${connectorId} has no sync folder configured on this machine`,
+        false,
+      );
     }
-    const token = this.getRuntimeAccessToken(connectorId);
-    if (!token) return { replayedBatches: 0, replayedEvents: 0, skippedBatches: 0 };
+    if ((this.supersededRuns.get(connectorId) || []).includes(runId)) {
+      return pullFailure(request, 'STALE_RUN', `run ${runId} was superseded`, false);
+    }
 
-    const batches = this.journal.getReplayableBatches(connectorId, opts);
-    let replayedBatches = 0;
-    let replayedEvents = 0;
-    let skippedBatches = 0;
-    let rethrow: unknown = null;
+    let run = this.runs.get(connectorId);
+    if (!run || run.runId !== runId || run.mode !== mode) {
+      // A runId we have not seen is by definition the newer one — it arrived
+      // later. The run it replaces goes on the superseded list so its
+      // stragglers get STALE_RUN instead of silently resurrecting it.
+      if (run && run.runId !== runId) this.markSuperseded(connectorId, run.runId);
+      run = {
+        runId,
+        mode,
+        fullWalk: null,
+        fullWalkIndex: null,
+        fullHandoffBatchId: null,
+        lastPage: null,
+      };
+      this.runs.set(connectorId, run);
+    }
 
-    for (const batch of batches) {
-      // Poison-pill guard: a batch that has already failed MAX_BATCH_ATTEMPTS times
-      // is quarantined so it stops blocking the rest of the journal. The skip is
-      // safe-ish for our event types (file CREATED/MODIFIED/DELETED): subsequent
-      // events for the same path overwrite, and a manual full-resync wipes any
-      // leftover divergence. Without this, a permanent 4xx (e.g. revoked perms)
-      // retries forever at RETRY_MAX_MS cadence.
-      if ((batch.attemptCount || 0) >= MAX_BATCH_ATTEMPTS) {
-        this.journal.updateBatchStatus(connectorId, batch.batchId, 'quarantined', {
-          lastError: batch.lastError || `quarantined after ${MAX_BATCH_ATTEMPTS} attempts`,
-        });
-        console.warn(
-          `[local-sync:${connectorId}] quarantined batch ${batch.batchId} after ${batch.attemptCount} attempts: ${batch.lastError}`,
+    if (run.lastPage) {
+      // A deliberate re-send of the same index (the connector retries on
+      // timeout): answer from cache and do not advance.
+      if (run.lastPage.batchIndex === batchIndex) return run.lastPage.response;
+      if (batchIndex < run.lastPage.batchIndex) {
+        return pullFailure(
+          request,
+          'CURSOR_UNKNOWN',
+          `batch ${batchIndex} is behind the last served page ${run.lastPage.batchIndex}`,
+          false,
         );
-        skippedBatches += 1;
-        continue;
       }
+    }
 
-      const stored = Array.isArray(batch.replayEvents) && batch.replayEvents.length > 0
-        ? batch.replayEvents
-        : null;
-      const events: WatchEvent[] = stored
-        ? stored
-        : ((batch.events || []).some((e) => e.isDirectory)
-          ? expandWatchEventsForReplay(batch.events || [], loadWatcherStateFiles(this.baseDir, connectorId))
-          : (batch.events || []));
-
-      if (!events || events.length === 0) {
-        this.journal.updateBatchStatus(connectorId, batch.batchId, 'synced', { lastError: null });
-        skippedBatches += 1;
-        continue;
+    let page: ServePullResponse;
+    try {
+      page =
+        mode === 'FULL'
+          ? await this.serveFullPage(request, run, meta)
+          : await this.serveIncrementalPage(request, run, meta);
+    } catch (error) {
+      return pullFailure(
+        request,
+        'ROOT_UNREADABLE',
+        error instanceof Error ? error.message : String(error),
+        true,
+      );
+    }
+    if (page.ok) {
+      run.lastPage = { batchIndex, response: page };
+      // Nothing more will be read from a finished walk, and it can be large.
+      if (!page.hasMore) {
+        run.fullWalk = null;
+        run.fullWalkIndex = null;
       }
+    }
+    return page;
+  }
 
-      try {
-        await this.dispatchFileEventBatch({
-          apiBaseUrl: meta.apiBaseUrl,
-          accessToken: token,
-          connectorId,
-          batchId: batch.batchId,
-          timestamp: batch.timestamp,
-          events,
-          rootPath: meta.rootPath,
-          refreshAccessToken: () => this.refreshAccessTokenForConnector(connectorId),
-        });
-        this.journal.updateBatchStatus(connectorId, batch.batchId, 'synced', { lastError: null });
-        replayedBatches += 1;
-        replayedEvents += events.length;
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        // Mark failed first (this also increments attemptCount). If we've now hit
-        // the cap, quarantine on the spot so the *next* replay can proceed past it
-        // immediately rather than waiting for one more retry to see attemptCount==MAX.
-        this.journal.updateBatchStatus(connectorId, batch.batchId, 'failed', {
-          lastError: msg,
-        });
-        const updated = this.journal.listBatches(connectorId).find((b) => b.batchId === batch.batchId);
-        if (updated && (updated.attemptCount || 0) >= MAX_BATCH_ATTEMPTS) {
-          this.journal.updateBatchStatus(connectorId, batch.batchId, 'quarantined', {
-            lastError: msg,
-          });
-          console.warn(
-            `[local-sync:${connectorId}] quarantined batch ${batch.batchId} after ${updated.attemptCount} attempts: ${msg}`,
-          );
-          skippedBatches += 1;
-          // Don't break — continue draining the rest of the journal.
-          continue;
-        }
-        rethrow = error;
+  private markSuperseded(connectorId: string, runId: string): void {
+    const history = this.supersededRuns.get(connectorId) || [];
+    history.push(runId);
+    while (history.length > MAX_REMEMBERED_SUPERSEDED_RUNS) history.shift();
+    this.supersededRuns.set(connectorId, history);
+  }
+
+  private async serveIncrementalPage(
+    request: ServePullRequest,
+    _run: RunState,
+    meta: ConnectorMeta,
+  ): Promise<ServePullResponse> {
+    const { connectorId, runId, batchIndex, maxEvents } = request;
+    const watcher = await this.ensureWatcher(connectorId, meta);
+    // Anything sitting in the correlator's 250ms window or the dispatcher's 1s
+    // buffer has to reach the journal before we page over it, or an edit made
+    // just before the pull slips to the next run.
+    if (watcher) await watcher.drainLiveEvents();
+
+    const batches = this.journal.listBatches(connectorId);
+    let startIndex = 0;
+    if (request.cursor) {
+      const token = decodeCursor(request.cursor, 'INCREMENTAL');
+      if (!token || token.mode !== 'INCREMENTAL') {
+        return pullFailure(request, 'CURSOR_UNKNOWN', 'cursor is not an incremental token', false);
+      }
+      const idx = batches.findIndex((b) => b.batchId === token.afterBatchId);
+      if (idx < 0) {
+        return pullFailure(
+          request,
+          'CURSOR_UNKNOWN',
+          `journal no longer holds batch ${token.afterBatchId}`,
+          false,
+        );
+      }
+      startIndex = idx + 1;
+      // The cursor being past these batches *is* the server's ack for them.
+      this.commitThrough(connectorId, batches, idx);
+    }
+
+    const events: WatchEvent[] = [];
+    let consumedUpTo = startIndex - 1;
+    for (let i = startIndex; i < batches.length; i += 1) {
+      const batch = batches[i];
+      const batchEvents = await this.resolveBatchEvents(connectorId, batch, meta.rootPath);
+      // A single batch wider than maxEvents is still served whole: paging
+      // inside a batch would need a sub-batch cursor, and stalling would wedge
+      // the run.
+      if (batchEvents.length > 0 && events.length > 0 && events.length + batchEvents.length > maxEvents) {
         break;
       }
+      events.push(...batchEvents);
+      consumedUpTo = i;
+      if (events.length >= maxEvents) break;
     }
 
+    const hasMore = consumedUpTo < batches.length - 1;
+    const cursorBatchId = consumedUpTo >= 0 ? batches[consumedUpTo].batchId : null;
+    return {
+      ok: true,
+      connectorId,
+      runId,
+      batchIndex,
+      cursor: cursorBatchId
+        ? encodeCursor({ v: 1, mode: 'INCREMENTAL', afterBatchId: cursorBatchId })
+        : null,
+      hasMore,
+      events,
+      rootPath: meta.rootPath || null,
+    };
+  }
+
+  private async serveFullPage(
+    request: ServePullRequest,
+    run: RunState,
+    meta: ConnectorMeta,
+  ): Promise<ServePullResponse> {
+    const { connectorId, runId, batchIndex, maxEvents } = request;
+    if (!run.fullWalk) {
+      if (request.cursor) {
+        // The walk lived in memory and this process no longer has it (restart,
+        // or a superseded run). Guessing a resume point would silently drop
+        // files, so make the server re-seed instead.
+        return pullFailure(
+          request,
+          'CURSOR_UNKNOWN',
+          'full-run walk is no longer held in memory',
+          false,
+        );
+      }
+      const watcher = await this.ensureWatcher(connectorId, meta);
+      if (watcher) await watcher.drainLiveEvents();
+      const batches = this.journal.listBatches(connectorId);
+      run.fullHandoffBatchId = batches.length ? batches[batches.length - 1].batchId : null;
+      run.fullWalk = await this.buildFullWalk(meta);
+      run.fullWalkIndex = new Map(run.fullWalk.map((event, index) => [event.path, index]));
+    }
+
+    let start = 0;
+    if (request.cursor) {
+      const token = decodeCursor(request.cursor, 'FULL');
+      if (!token || token.mode !== 'FULL') {
+        return pullFailure(request, 'CURSOR_UNKNOWN', 'cursor is not a full-walk token', false);
+      }
+      const idx = run.fullWalkIndex?.get(token.afterPath);
+      if (idx === undefined) {
+        return pullFailure(
+          request,
+          'CURSOR_UNKNOWN',
+          `${token.afterPath} is not part of this walk`,
+          false,
+        );
+      }
+      start = idx + 1;
+    }
+
+    const slice = run.fullWalk.slice(start, start + Math.max(1, maxEvents));
+    const hasMore = start + slice.length < run.fullWalk.length;
+    // The last FULL page hands off to an incremental position rather than
+    // another walk token: the run is complete, and the connector persists this
+    // cursor for its *next* run, which is INCREMENTAL. Returning a FULL token
+    // there would fail its mode check every time and pin the connector to a
+    // full sync forever.
+    const cursor = hasMore
+      ? encodeCursor({ v: 1, mode: 'FULL', afterPath: slice[slice.length - 1].path })
+      : run.fullHandoffBatchId
+        ? encodeCursor({ v: 1, mode: 'INCREMENTAL', afterBatchId: run.fullHandoffBatchId })
+        : null;
+
+    return {
+      ok: true,
+      connectorId,
+      runId,
+      batchIndex,
+      cursor,
+      hasMore,
+      events: slice,
+      rootPath: meta.rootPath || null,
+    };
+  }
+
+  /**
+   * Whole-disk snapshot in sorted relative-path order, so `afterPath` is a
+   * stable resume key for the life of the run.
+   */
+  private async buildFullWalk(meta: ConnectorMeta): Promise<WatchEvent[]> {
+    const rootPath = path.resolve(String(meta.rootPath || ''));
+    if (!fs.existsSync(rootPath)) {
+      throw new Error(`Local sync root folder does not exist: ${rootPath}`);
+    }
+    const scan = await scanSyncRoot(rootPath, {
+      includeSubfolders: meta.includeSubfolders !== false,
+      ignoredPatterns: IGNORED_PATTERNS,
+    });
+    const relPaths = Array.from(scan.keys()).sort();
+    return relPaths.map((relPath) => {
+      const entry = scan.get(relPath)!;
+      return {
+        type: entry.isDirectory ? 'DIR_CREATED' : 'CREATED',
+        path: relPath,
+        // The file's own mtime, not now(): the connector stamps records with
+        // this and applies the modified/created sync filters against it.
+        timestamp: Math.round(entry.mtimeMs) || Date.now(),
+        ...(entry.isDirectory ? {} : { size: entry.size, sha256: entry.sha256 }),
+        isDirectory: entry.isDirectory,
+      } as WatchEvent;
+    });
+  }
+
+  private async resolveBatchEvents(
+    connectorId: string,
+    batch: JournalRecord,
+    rootPath: string | undefined,
+  ): Promise<WatchEvent[]> {
+    // Poison-pill guard: a batch set aside by an earlier build stays skipped
+    // rather than blocking every page behind it forever.
+    if (batch.status === 'quarantined') return [];
+    if (Array.isArray(batch.replayEvents) && batch.replayEvents.length > 0) {
+      return batch.replayEvents;
+    }
+    const events = batch.events || [];
+    if (!events.some((e) => e.isDirectory)) return events;
+    // Only reachable for batches journaled by a build that did not expand at
+    // the watcher; current batches always carry replayEvents.
+    return expandWatchEventsForReplay(
+      events,
+      loadWatcherStateFiles(this.baseDir, connectorId),
+      rootPath,
+    );
+  }
+
+  private commitThrough(
+    connectorId: string,
+    batches: JournalRecord[],
+    lastIndex: number,
+  ): void {
+    const acked: string[] = [];
+    for (let i = 0; i <= lastIndex && i < batches.length; i += 1) {
+      const batch = batches[i];
+      if (batch.status === 'pending' || batch.status === 'failed') acked.push(batch.batchId);
+    }
+    if (acked.length === 0) return;
+    this.journal.markBatchesSynced(connectorId, acked);
     this.emitStatus(connectorId);
-    if (rethrow) {
-      this.armRetry(connectorId, RECOVERY_MODE_REPLAY_ONLY);
-      throw rethrow;
+  }
+
+  /**
+   * Lazy mount. A pull can arrive with nothing watching — the UI no longer
+   * mounts a watcher as a side effect of pressing Sync — and without a mounted
+   * watcher an incremental page would report an empty journal forever. This is
+   * the safety net; the boot bootstrap is the strategy.
+   */
+  private async ensureWatcher(
+    connectorId: string,
+    meta: ConnectorMeta,
+  ): Promise<ConnectorFsWatcher | null> {
+    const runtime = this.runtimes.get(connectorId);
+    if (runtime?.watcher && runtime.watcherState === 'watching') return runtime.watcher;
+    if (!meta.rootPath) return null;
+    await this.start({
+      connectorId,
+      connectorName: meta.connectorName,
+      rootPath: meta.rootPath,
+      apiBaseUrl: meta.apiBaseUrl,
+      includeSubfolders: meta.includeSubfolders,
+      connectorDisplayType: meta.connectorDisplayType,
+      syncStrategy: meta.syncStrategy,
+    });
+    return this.runtimes.get(connectorId)?.watcher || null;
+  }
+
+  // ── Lifecycle ────────────────────────────────────────────────────────────
+
+  /**
+   * Mount a watcher for every Local FS connector this machine knows about, so
+   * the journal is warm between syncs and an incremental pull is cheap.
+   * Connectors already running or whose meta lacks a rootPath are skipped.
+   */
+  async bootstrapFromJournal(): Promise<BootstrapResult[]> {
+    const results: BootstrapResult[] = [];
+    for (const connectorId of this.journal.listConnectorIds()) {
+      if (this.runtimes.has(connectorId)) {
+        results.push({ connectorId, ok: true });
+        continue;
+      }
+      const meta = this.journal.getMeta(connectorId);
+      if (!meta || !meta.rootPath) continue;
+      try {
+        await this.start({
+          connectorId,
+          connectorName: meta.connectorName,
+          rootPath: meta.rootPath,
+          apiBaseUrl: meta.apiBaseUrl,
+          includeSubfolders: meta.includeSubfolders,
+          connectorDisplayType: meta.connectorDisplayType,
+          syncStrategy: meta.syncStrategy,
+        });
+        results.push({ connectorId, ok: true });
+      } catch (error) {
+        console.warn(`[local-sync] bootstrap start failed for ${connectorId}:`, error);
+        results.push({
+          connectorId,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
-    if (replayedBatches > 0) this.cancelRetry(connectorId);
-    return { replayedBatches, replayedEvents, skippedBatches };
+    return results;
   }
 
-  /**
-   * Refresh callback handed to the dispatcher: read the token held by the live
-   * runtime. The renderer calls start() with fresh tokens, and the unchanged
-   * configuration branch updates the runtime without rewriting local metadata.
-   */
-  private async refreshAccessTokenForConnector(connectorId: string): Promise<string | null> {
-    return this.getRuntimeAccessToken(connectorId);
-  }
-
-  private getRuntimeAccessToken(connectorId: string): string | null {
-    return this.runtimes.get(connectorId)?.accessToken || null;
-  }
-
-  /** Full resync: reset backend state from the current disk snapshot after replaying pending batches. */
-  async fullResync(connectorId: string): Promise<ReplayResult> {
-    const replayResult = await this.replay(connectorId);
-    await this.triggerBackendFullSync(connectorId);
-    return replayResult;
-  }
-
-  /**
-   * Stop all active watchers. Called on app quit. Marks every runtime as
-   * shutting down *before* calling stop() so the drain-on-stop path in
-   * processBatch journal-only-returns instead of awaiting a 30s network
-   * dispatch — app exit must not block on a slow backend.
-   */
+  /** Stop all active watchers. Called on app quit. */
   async shutdown(): Promise<void> {
-    for (const runtime of this.runtimes.values()) {
-      runtime.shuttingDown = true;
-    }
     const ids = Array.from(this.runtimes.keys());
     await Promise.allSettled(ids.map((id) => this.stop(id)));
   }
@@ -905,17 +803,18 @@ export class LocalSyncManager {
       const summary = this.journal.getSummary(connectorId);
       const cursor = this.journal.readCursor(connectorId);
       const watcherStatus = runtime && runtime.watcher ? runtime.watcher.getStatus() : null;
+      const meta = this.journal.getMeta(connectorId) || {};
       return {
         connectorId,
         watcherState: (runtime && runtime.watcherState) || 'stopped',
-        rootPath: (runtime && runtime.rootPath) || (this.journal.getMeta(connectorId) || {}).rootPath || null,
+        rootPath: (runtime && runtime.rootPath) || meta.rootPath || null,
         lastError: (runtime && runtime.lastError) || null,
         trackedFiles: watcherStatus ? watcherStatus.trackedFiles : null,
         pendingEvents: watcherStatus ? watcherStatus.pendingEvents : null,
         lastAckBatchId: cursor.lastAckBatchId || null,
         lastRecordedBatchId: cursor.lastRecordedBatchId || null,
-        syncStrategy: (runtime && runtime.syncStrategy) || (this.journal.getMeta(connectorId) || {}).syncStrategy || 'MANUAL',
-        scheduledConfig: (runtime && runtime.scheduledConfig) || (this.journal.getMeta(connectorId) || {}).scheduledConfig || null,
+        syncStrategy: (runtime && runtime.syncStrategy) || meta.syncStrategy || 'MANUAL',
+        ownedByOtherDevice: this.foreignOwnedConnectors.has(connectorId),
         ...summary,
       };
     }

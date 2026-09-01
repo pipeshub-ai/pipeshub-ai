@@ -29,6 +29,17 @@ files:
   - node_modules/readdirp/**/*
   - node_modules/to-regex-range/**/*
   - node_modules/fsevents/**/*
+  # socket.io-client and its transitive deps: the main process holds the
+  # desktop socket the connector service pulls file events over.
+  - node_modules/socket.io-client/**/*
+  - node_modules/socket.io-parser/**/*
+  - node_modules/engine.io-client/**/*
+  - node_modules/engine.io-parser/**/*
+  - node_modules/@socket.io/component-emitter/**/*
+  - node_modules/ws/**/*
+  - node_modules/xmlhttprequest-ssl/**/*
+  - node_modules/debug/**/*
+  - node_modules/ms/**/*
 asarUnpack:
   - electron/compile/preload.js
 afterPack: scripts/electron/after-pack.cjs

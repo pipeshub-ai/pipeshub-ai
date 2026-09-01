@@ -97,10 +97,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   localSync: {
     start: (payload: unknown) => ipcRenderer.invoke('local-sync/start', payload),
+    checkRootPathConflict: (connectorId: string, rootPath: string) => (
+      ipcRenderer.invoke('local-sync/check-root-path', { connectorId, rootPath })
+    ),
     stop: (connectorId: string) => ipcRenderer.invoke('local-sync/stop', { connectorId }),
+    /** Deleting a connector: unmount *and* purge its journal, cursor and watcher state. */
+    remove: (connectorId: string) => ipcRenderer.invoke('local-sync/remove', { connectorId }),
+    /** Drop journal state for connectors the backend no longer lists. */
+    reap: (connectorIds: string[]) => ipcRenderer.invoke('local-sync/reap', { connectorIds }),
     status: (connectorId?: string) => ipcRenderer.invoke('local-sync/status', { connectorId }),
-    replay: (connectorId?: string) => ipcRenderer.invoke('local-sync/replay', { connectorId }),
-    fullResync: (connectorId: string) => ipcRenderer.invoke('local-sync/full-resync', { connectorId }),
+    bootstrap: () => ipcRenderer.invoke('local-sync/bootstrap'),
+    /**
+     * Hand the refresh token to the main process at login. Main persists it
+     * with safeStorage and mints its own access tokens, so sync survives the
+     * window being closed.
+     */
+    setCredentials: (refreshToken: string, apiBaseUrl: string) => (
+      ipcRenderer.invoke('local-sync/credentials', { refreshToken, apiBaseUrl })
+    ),
+    clearCredentials: () => ipcRenderer.invoke('local-sync/clear-credentials'),
     onStatus: (callback: (payload: unknown) => void): (() => void) => {
       const listener = (_event: IpcRendererEvent, payload: unknown) => callback(payload);
       ipcRenderer.on('local-sync-status', listener);

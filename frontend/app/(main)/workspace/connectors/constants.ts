@@ -19,6 +19,14 @@ export const CONNECTOR_INSTANCE_STATUS = {
   IDLE: 'IDLE',
 } as const;
 
+/** App-node `lastError` when Local FS pulled and no desktop was registered. */
+export const LOCAL_FS_DESKTOP_OFFLINE = 'DESKTOP_OFFLINE';
+
+export const LOCAL_FS_DESKTOP_OFFLINE_TOAST_TITLE =
+  'Open the Pipeshub desktop app on the machine that owns this folder to resync.';
+
+export const LOCAL_FS_DESKTOP_OFFLINE_TOAST_DURATION_MS = 5000;
+
 // ========================================
 // Connector sync strategy display labels
 // ========================================

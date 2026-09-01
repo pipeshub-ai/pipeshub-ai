@@ -1,12 +1,15 @@
 """
-Local FS connector — personal scope, local folder on the connector host.
+Local FS connector — personal scope, local folder watched by the desktop app.
 
-Primary flow: set the folder path and options in the web app, save, then run a
-manual sync. No CLI is required for that path.
+``run_sync`` is server-driven like every other connector: it pulls pages of
+file-event *metadata* from the Electron desktop over an RPC relayed by the
+Node service, and applies them. No file bytes cross this path — content is
+fetched on demand in ``stream_record``. The server process never crawls
+``sync_root_path`` itself.
 
-The optional Pipeshub CLI can still write ``daemon.json`` for a future local
-agent; server-side ingest runs when the Python connector process can read
-``sync_root_path`` (same machine or volume mount).
+Full vs incremental is derived from the sync point, per the platform
+convention: no ``last_sync_time`` means a completed baseline does not exist
+yet, so the next run is FULL.
 
 Sync settings accept ``batchSize`` (preferred) or ``batch_size`` in etcd.
 """
@@ -16,12 +19,12 @@ import hashlib
 import json
 import mimetypes
 import os
+import time
 import unicodedata
 import uuid
 from logging import Logger
 from pathlib import Path
-from collections.abc import AsyncIterator
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 from fastapi import HTTPException
@@ -39,11 +42,20 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorSyncSkippedError,
+)
+from app.connectors.core.constants import ConnectorErrorCodes
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.sync_point.sync_point import (
+    SyncDataPointType,
+    SyncPoint,
+    generate_record_sync_point_key,
+)
 from app.connectors.core.interfaces.connector.apps import App
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
@@ -76,10 +88,13 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.jwt import generate_jwt
-from app.utils.streaming import create_stream_record_response
-from app.utils.time_conversion import parse_timestamp
+from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
-from .models import LocalFsFileEvent, LocalFsFileEventBatchStats
+from .models import (
+    LocalFsFileEvent,
+    LocalFsFileEventBatchStats,
+    LocalFsPullBatch,
+)
 
 # Canonical API / CLI connector type string (must match pipeshub-cli backend_client).
 LOCAL_FS_CONNECTOR_NAME = "Local FS"
@@ -90,27 +105,61 @@ FULL_SYNC_RESET_BATCH_SIZE = 500
 SYNC_ROOT_PATH_KEY = "sync_root_path"
 INCLUDE_SUBFOLDERS_KEY = "include_subfolders"
 LOCAL_FS_STORAGE_PATH_PREFIX = "storage://"
-LOCAL_FS_STORAGE_DOCUMENT_PATH_PREFIX = "local-fs"
 # No total timeout on storage reads/writes for Local FS: large desktop sync
 # payloads and slow links are expected (aligns with Node batch proxy timeout: 0).
 LOCAL_FS_STORAGE_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=None)
 LOCAL_FS_STORAGE_DELETE_TIMEOUT_SECONDS = 30
-# Node may respond with these when storage uses presigned direct upload (Location).
-STORAGE_UPLOAD_REDIRECT_STATUS_CODES = frozenset({301, 302, 307, 308})
+
+# --- Desktop pull RPC ---------------------------------------------------
+LOCAL_FS_PULL_ROUTE = "/api/v1/desktop/internal/local-fs/file-events/pull"
+LOCAL_FS_CONTENT_ROUTE = "/api/v1/desktop/internal/local-fs/content"
+LOCAL_FS_DESKTOP_SCOPE = "desktop:command"
+# Budget handed to the desktop. Each outer layer allows strictly more so a
+# hang surfaces as a meaningful DESKTOP_TIMEOUT from Node rather than an
+# opaque client-side abort: desktop 60s < Node emitWithAck 65s < us 90s.
+LOCAL_FS_PULL_DESKTOP_BUDGET_MS = 60_000
+LOCAL_FS_PULL_HTTP_TIMEOUT_SECONDS = 90
+# Content gets its own, much larger budget: the pull numbers are sized for a
+# page of metadata, and a large file streamed in 256KB frames blows straight
+# through them. Same strict layering (desktop 180s < Node 185s < us 210s).
+LOCAL_FS_CONTENT_DESKTOP_BUDGET_MS = 180_000
+LOCAL_FS_CONTENT_HTTP_TIMEOUT_SECONDS = 210
+# generate_jwt defaults to a 1h expiry and a full sync outlives it.
+LOCAL_FS_DESKTOP_TOKEN_TTL_SECONDS = 45 * 60
+LOCAL_FS_PULL_MAX_ATTEMPTS = 3
+LOCAL_FS_PULL_RETRY_BASE_SECONDS = 2
+# Runaway-run guards: a desktop that keeps answering "nothing yet, ask again"
+# must not spin forever.
+LOCAL_FS_MAX_EMPTY_BATCHES = 20
+LOCAL_FS_MAX_RUN_SECONDS = 6 * 3600
+LOCAL_FS_MAX_BATCHES_PER_RUN = 100_000
+# The desktop streams file bytes over the socket relay, so stream_record can
+# serve content and records are safe to hand to the indexing pipeline.
+LOCAL_FS_DESKTOP_CONTENT_AVAILABLE = True
 
 
-def _get_created_timestamp_ms(st: os.stat_result) -> int:
-    """
-    Best-effort file creation time for sync filters.
+class LocalFsDesktopError(Exception):
+    """The desktop agent could not serve a pull."""
 
-    Uses st_birthtime when present (macOS/BSD). Otherwise uses st_ctime: on Linux
-    this is metadata change time (not birth); on Windows ``st_ctime`` is creation
-    time, which matches the intended “created” semantics.
-    """
-    birth = getattr(st, "st_birthtime", None)
-    if birth is not None:
-        return int(birth * 1000)
-    return int(st.st_ctime * 1000)
+
+class LocalFsDesktopOfflineError(ConnectorSyncSkippedError, LocalFsDesktopError):
+    """No desktop is connected for this connector (Node answered 409)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(ConnectorErrorCodes.DESKTOP_OFFLINE, message)
+
+
+class LocalFsDesktopTimeoutError(LocalFsDesktopError):
+    """The desktop did not answer within its budget (Node answered 504)."""
+
+
+class LocalFsDesktopRemoteError(LocalFsDesktopError):
+    """The desktop answered, but with a failure (Node answered 502)."""
+
+    def __init__(self, code: str, message: str, retryable: bool) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.retryable = retryable
 
 
 def _get_datetime_filter_bounds_ms(
@@ -127,32 +176,6 @@ def _get_datetime_filter_bounds_ms(
         parse_timestamp(after_iso) if after_iso else None,
         parse_timestamp(before_iso) if before_iso else None,
     )
-
-
-def _file_stat_matches_date_filters(
-    st: os.stat_result, sync_filters: FilterCollection
-) -> bool:
-    """Apply sync ``modified`` / ``created`` filters using local file times (epoch ms)."""
-    mtime_ms = int(st.st_mtime * 1000)
-    created_ms = _get_created_timestamp_ms(st)
-
-    modified_f = sync_filters.get(SyncFilterKey.MODIFIED)
-    if modified_f is not None and not modified_f.is_empty():
-        after_ms, before_ms = _get_datetime_filter_bounds_ms(modified_f)
-        if after_ms is not None and mtime_ms < after_ms:
-            return False
-        if before_ms is not None and mtime_ms > before_ms:
-            return False
-
-    created_f = sync_filters.get(SyncFilterKey.CREATED)
-    if created_f is not None and not created_f.is_empty():
-        after_ms, before_ms = _get_datetime_filter_bounds_ms(created_f)
-        if after_ms is not None and created_ms < after_ms:
-            return False
-        if before_ms is not None and created_ms > before_ms:
-            return False
-
-    return True
 
 
 def _get_sync_config_value(
@@ -391,6 +414,18 @@ class LocalFsConnector(BaseConnector):
         self.include_subfolders: bool = True
         self.batch_size: int = 50
         self._owner_user_for_permissions: Optional[User] = None
+        # Seeded here so the memoization in _storage_base_url/_storage_token
+        # (which only caches when the attribute already exists) actually takes.
+        self._batch_storage_url_cache: Optional[str] = None
+        self._batch_storage_token_cache: Optional[str] = None
+        self._desktop_token_cache: Optional[str] = None
+        self._desktop_token_minted_at: float = 0.0
+        self.record_sync_point = SyncPoint(
+            connector_id=connector_id,
+            org_id=data_entities_processor.org_id,
+            sync_data_point_type=SyncDataPointType.RECORDS,
+            data_store_provider=data_store_provider,
+        )
 
     async def init(self) -> bool:
         try:
@@ -464,17 +499,6 @@ class LocalFsConnector(BaseConnector):
             f"{self.connector_id}:{normalized}".encode("utf-8")
         ).hexdigest()
 
-    def _resolve_event_file_path(self, root: Path, rel_path: str) -> Path:
-        candidate = (root / rel_path).resolve(strict=False)
-        try:
-            candidate.relative_to(root)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Path escapes sync root: {rel_path}",
-            ) from exc
-        return candidate
-
     async def _reload_sync_settings(self) -> None:
         config = await self.config_service.get_config(
             f"/services/connectors/{self.connector_id}/config"
@@ -484,13 +508,16 @@ class LocalFsConnector(BaseConnector):
         self.include_subfolders = include_subfolders
         self.batch_size = batch_size
 
-    async def _resolve_owner_user(self) -> Optional[User]:
-        user = await self.data_entities_processor.get_app_creator_user(self.connector_id)
-        if not user:
-            self.logger.error(
-                "Local FS: could not resolve creator user for connector app %s", self.connector_id
-            )
-        return user
+    @staticmethod
+    def _parse_user_from_graph_result(
+        raw: User | Dict[str, JsonValue] | None,
+    ) -> Optional[User]:
+        """Graph providers return user dicts; GraphTransactionStore may type them as User."""
+        if raw is None:
+            return None
+        if isinstance(raw, User):
+            return raw
+        return User.from_arango_user(raw)
 
     def _to_app_user(self, user: User) -> AppUser:
         return AppUser(
@@ -512,105 +539,6 @@ class LocalFsConnector(BaseConnector):
         allowed = {str(x).lower().lstrip(".") for x in items}
         ext = path.suffix.lower().lstrip(".") or ""
         return ext in allowed
-
-    def _iter_file_paths(self, root: Path) -> List[Path]:
-        out: List[Path] = []
-        if self.include_subfolders:
-            for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
-                for name in filenames:
-                    out.append(Path(dirpath) / name)
-        else:
-            for name in os.listdir(root):
-                p = root / name
-                if p.is_file():
-                    out.append(p)
-        return out
-
-    def _iter_folder_paths(self, root: Path) -> List[Path]:
-        out: List[Path] = []
-        if self.include_subfolders:
-            for dirpath, dirnames, _filenames in os.walk(root, followlinks=False):
-                for name in dirnames:
-                    out.append(Path(dirpath) / name)
-        else:
-            for name in os.listdir(root):
-                p = root / name
-                if p.is_dir() and not p.is_symlink():
-                    out.append(p)
-        return out
-
-    def _build_file_record(
-        self,
-        abs_path: Path,
-        root: Path,
-        external_record_group_id: str,
-        indexing_filters: FilterCollection,
-        st: Optional[os.stat_result] = None,
-        owner: Optional[User] = None,
-    ) -> Tuple[FileRecord, List[Permission]]:
-        rel = abs_path.relative_to(root).as_posix()
-        ext_id = self._external_record_id_for_rel_path(rel)
-        parent_rel_path = (
-            "/".join(rel.split("/")[:-1]) if "/" in rel else None
-        )
-        if st is None:
-            st = abs_path.stat()
-        mtime_ms = int(st.st_mtime * 1000)
-        revision = f"{mtime_ms}:{st.st_size}"
-        guessed, _ = mimetypes.guess_type(abs_path.name)
-        mime = guessed or MimeTypes.UNKNOWN.value
-        ext = abs_path.suffix.lower().lstrip(".") or None
-
-        record_id = str(uuid.uuid4())
-        file_record = FileRecord(
-            id=record_id,
-            record_name=abs_path.name,
-            record_type=RecordType.FILE,
-            record_group_type=RecordGroupType.DRIVE,
-            external_record_id=ext_id,
-            external_revision_id=revision,
-            external_record_group_id=external_record_group_id,
-            version=0,
-            origin=OriginTypes.CONNECTOR,
-            connector_name=self.connector_name,
-            connector_id=self.connector_id,
-            created_at=mtime_ms,
-            updated_at=mtime_ms,
-            source_created_at=mtime_ms,
-            source_updated_at=mtime_ms,
-            # Same-origin app route (see UPLOAD webUrl in kb_controllers); a bare filesystem path is
-            # interpreted by the browser as a path on the web host and returns 404.
-            weburl=f"/record/{record_id}",
-            parent_external_record_id=(
-                self._external_record_id_for_rel_path(parent_rel_path)
-                if parent_rel_path
-                else None
-            ),
-            parent_record_type=RecordType.FILE if parent_rel_path else None,
-            size_in_bytes=st.st_size,
-            is_file=True,
-            extension=ext,
-            path=str(abs_path.resolve()),
-            local_fs_relative_path=rel,
-            mime_type=mime,
-            preview_renderable=True,
-        )
-
-        if not indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-            file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-
-        effective_owner = owner or self._owner_user_for_permissions
-        perms: List[Permission] = []
-        if effective_owner:
-            perms.append(
-                Permission(
-                    external_id=effective_owner.id,
-                    email=effective_owner.email,
-                    type=PermissionType.OWNER,
-                    entity_type=EntityType.USER,
-                )
-            )
-        return file_record, perms
 
     @staticmethod
     def _parent_folder_rel_paths_for_file(rel_path: str) -> List[str]:
@@ -652,7 +580,7 @@ class LocalFsConnector(BaseConnector):
             updated_at=timestamp_ms,
             source_created_at=timestamp_ms,
             source_updated_at=timestamp_ms,
-            weburl=f"file://{folder_path}",
+            weburl=None,
             hide_weburl=True,
             is_internal=True,
             parent_external_record_id=(
@@ -675,7 +603,6 @@ class LocalFsConnector(BaseConnector):
         if effective_owner:
             perms.append(
                 Permission(
-                    external_id=effective_owner.id,
                     email=effective_owner.email,
                     type=PermissionType.OWNER,
                     entity_type=EntityType.USER,
@@ -766,13 +693,15 @@ class LocalFsConnector(BaseConnector):
         timestamp_ms: int,
         owner: User,
         upsert_buffer: List[Tuple[FileRecord, List[Permission]]],
-        delete_after_upsert_buffer: List[str],
+        move_buffer: List[Tuple[str, FileRecord, List[Permission]]],
         delete_only_buffer: List[str],
         emitted_folder_paths: set[str],
         flush_upserts,
+        flush_moves,
         flush_delete_only,
         batch_size: int,
-    ) -> None:
+    ) -> bool:
+        """Returns False when the event was skipped (unknown type)."""
         if event_type in {"DIR_CREATED", "CREATED", "MODIFIED"}:
             self._append_folder_upsert_records(
                 upsert_buffer,
@@ -785,37 +714,68 @@ class LocalFsConnector(BaseConnector):
             )
             if len(upsert_buffer) >= batch_size:
                 await flush_upserts()
-            return
+            return True
 
         if event_type in {"DIR_DELETED", "DELETED"}:
             delete_only_buffer.append(self._external_record_id_for_rel_path(rel_path))
             if len(delete_only_buffer) >= batch_size:
                 await flush_delete_only()
-            return
+            return True
 
         if event_type in {"DIR_RENAMED", "DIR_MOVED", "RENAMED", "MOVED"}:
-            self._append_folder_upsert_records(
-                upsert_buffer,
-                rel_path,
+            normalized_rel_path = rel_path.strip().replace("\\", "/").strip("/")
+            upsert_buffer.extend(
+                self._build_parent_folder_records(
+                    normalized_rel_path,
+                    root,
+                    external_record_group_id,
+                    timestamp_ms,
+                    emitted_folder_paths,
+                    owner=owner,
+                )
+            )
+
+            old_ext_id: Optional[str] = None
+            if old_rel_path:
+                new_ext_id = self._external_record_id_for_rel_path(normalized_rel_path)
+                candidate_old_ext_id = self._external_record_id_for_rel_path(old_rel_path)
+                if candidate_old_ext_id != new_ext_id:
+                    old_ext_id = candidate_old_ext_id
+
+            # A move needs its own folder record even if this exact path was
+            # already emitted earlier in the batch (e.g. as another event's
+            # ancestor folder) — retiring the old vertex takes priority over
+            # skipping a redundant re-upsert of identical fields.
+            already_emitted = normalized_rel_path in emitted_folder_paths
+            if already_emitted and old_ext_id is None:
+                if len(upsert_buffer) >= batch_size:
+                    await flush_upserts()
+                return True
+            emitted_folder_paths.add(normalized_rel_path)
+
+            folder_record, folder_perms = self._build_folder_record(
+                normalized_rel_path,
                 root,
                 external_record_group_id,
                 timestamp_ms,
-                emitted_folder_paths,
                 owner=owner,
             )
-            if old_rel_path:
-                old_ext_id = self._external_record_id_for_rel_path(old_rel_path)
-                new_ext_id = self._external_record_id_for_rel_path(rel_path)
-                if old_ext_id != new_ext_id:
-                    delete_after_upsert_buffer.append(old_ext_id)
-            if len(upsert_buffer) >= batch_size:
-                await flush_upserts()
-            return
+            if old_ext_id:
+                move_buffer.append((old_ext_id, folder_record, folder_perms))
+                if len(move_buffer) >= batch_size:
+                    await flush_moves()
+            else:
+                upsert_buffer.append((folder_record, folder_perms))
+                if len(upsert_buffer) >= batch_size:
+                    await flush_upserts()
+            return True
 
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail=f"Unsupported Local FS directory event type: {event_type}",
+        self.logger.warning(
+            "Local FS: skipping unsupported directory event type %s (%s)",
+            event_type,
+            rel_path,
         )
+        return False
 
     @staticmethod
     def _storage_document_id_from_path(record_path: str | None) -> str | None:
@@ -823,82 +783,6 @@ class LocalFsConnector(BaseConnector):
             return None
         document_id = record_path[len(LOCAL_FS_STORAGE_PATH_PREFIX) :].strip()
         return document_id or None
-
-    @staticmethod
-    def _extract_storage_document_id(response_payload: JsonValue) -> str:
-        """
-        Walk the storage service's upload response and return the document id.
-
-        Tolerated shapes (in priority order):
-          {"_id": "<id>"} | {"id": "<id>"} | {"documentId": "<id>"}
-          {"_id": {"$oid": "<id>"}}                    # MongoDB extended JSON
-          {"data": {...}}, {"document": {...}}         # wrapped responses
-        """
-        seen: set[int] = set()
-
-        def _walk(node: JsonValue) -> Optional[str]:
-            if not isinstance(node, dict) or id(node) in seen:
-                return None
-            seen.add(id(node))
-            for key in ("_id", "id", "documentId"):
-                raw = node.get(key)
-                if isinstance(raw, str) and raw:
-                    return raw
-                if isinstance(raw, dict):
-                    oid = raw.get("$oid") or raw.get("oid")
-                    if isinstance(oid, str) and oid:
-                        return oid
-            for wrap_key in ("data", "document", "result"):
-                inner = node.get(wrap_key)
-                if isinstance(inner, dict):
-                    found = _walk(inner)
-                    if found:
-                        return found
-            return None
-
-        found = _walk(response_payload)
-        if found:
-            return found
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_GATEWAY.value,
-            detail="Storage service did not return a recognizable document id",
-        )
-
-    @staticmethod
-    def _build_storage_document_name(rel_path: str) -> str:
-        """Build a storage-safe display name from a relative path."""
-        name = Path(rel_path.replace("\\", "/")).name or "file"
-        stem = Path(name).stem or name
-        safe = "".join(ch if ch not in {"/", "\\"} else "_" for ch in stem).strip()
-        return (safe or "file")[:180]
-
-    @staticmethod
-    def _build_storage_upload_filename(rel_path: str, mime_type: str | None) -> str:
-        """Build upload filename and enforce a binary extension when unknown."""
-        name = Path(rel_path.replace("\\", "/")).name or "file"
-        if not Path(name).suffix:
-            return f"{name}.bin"
-        guessed, _ = mimetypes.guess_type(name)
-        if not guessed and (
-            not mime_type
-            or mime_type in {MimeTypes.UNKNOWN.value, "application/octet-stream"}
-        ):
-            return f"{Path(name).stem or 'file'}.bin"
-        return name.replace("/", "_").replace("\\", "_")
-
-    def _require_org_id(self) -> str:
-        """Org id must be present before any storage upload — the JWT signs it."""
-        org_id = getattr(self.data_entities_processor, "org_id", None)
-        if not org_id:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=(
-                    "Local FS connector is not initialized for an org "
-                    "(data_entities_processor.org_id is unset); "
-                    "cannot dispatch storage uploads"
-                ),
-            )
-        return str(org_id)
 
     async def _bulk_get_records_by_external_ids(
         self, external_ids: List[str]
@@ -910,11 +794,171 @@ class LocalFsConnector(BaseConnector):
             return result
         for ext_id in unique_ids:
             record = await self.data_entities_processor.get_record_by_external_id(
-                self.connector_id, ext_id
+                connector_id=self.connector_id,
+                external_record_id=ext_id,
             )
             if record is not None:
                 result[ext_id] = record
         return result
+
+    async def _nodejs_base_url(self) -> str:
+        endpoints = await self.config_service.get_config(
+            config_node_constants.ENDPOINTS.value
+        )
+        if isinstance(endpoints, str):
+            try:
+                endpoints = json.loads(endpoints)
+            except json.JSONDecodeError:
+                endpoints = {}
+        node_url = (
+            ((endpoints or {}).get("nodejs") or {}).get("endpoint")
+            if isinstance(endpoints, dict)
+            else None
+        )
+        return str(node_url or DefaultEndpoints.NODEJS_ENDPOINT.value).rstrip("/")
+
+    async def _desktop_token(self) -> str:
+        now = time.monotonic()
+        if (
+            self._desktop_token_cache
+            and now - self._desktop_token_minted_at
+            < LOCAL_FS_DESKTOP_TOKEN_TTL_SECONDS
+        ):
+            return self._desktop_token_cache
+        token = await generate_jwt(
+            self.config_service,
+            {
+                "orgId": self.data_entities_processor.org_id,
+                "userId": self.created_by,
+                "scopes": [LOCAL_FS_DESKTOP_SCOPE],
+            },
+        )
+        self._desktop_token_cache = token
+        self._desktop_token_minted_at = now
+        return token
+
+    @staticmethod
+    def _desktop_error_for(
+        status: int, body: Dict[str, Any], context: str
+    ) -> LocalFsDesktopError:
+        if status == HttpStatusCode.CONFLICT.value:
+            return LocalFsDesktopOfflineError(f"No desktop connected ({context})")
+        if status == HttpStatusCode.GATEWAY_TIMEOUT.value:
+            return LocalFsDesktopTimeoutError(f"Desktop did not answer ({context})")
+        error = body.get("error") if isinstance(body.get("error"), dict) else {}
+        return LocalFsDesktopRemoteError(
+            str(error.get("code") or body.get("code") or f"HTTP_{status}"),
+            str(error.get("message") or body.get("message") or context),
+            retryable=bool(
+                error.get(
+                    "retryable",
+                    status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                )
+            ),
+        )
+
+    @staticmethod
+    async def _read_json_body(response: aiohttp.ClientResponse) -> Dict[str, Any]:
+        try:
+            parsed = await response.json(content_type=None)
+        except (aiohttp.ClientError, json.JSONDecodeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    async def _request_file_event_batch(
+        self,
+        *,
+        run_id: str,
+        batch_index: int,
+        cursor: Optional[str],
+        mode: str,
+        session: aiohttp.ClientSession,
+        expected_device_id: Optional[str] = None,
+    ) -> LocalFsPullBatch:
+        """Pull one page of file-event metadata from the desktop via Node.
+
+        Retries are deliberately NOT handled here — the caller re-sends the
+        same ``(runId, batchIndex)``, which the desktop answers from its
+        idempotency cache without advancing. A retry layer inside this method
+        would be invisible to that contract.
+
+        ``expected_device_id`` is checked on the *ack*, not asserted in the
+        request: the relay already routes to the registered socket, so an
+        expected device in the request would only restate that guarantee.
+        """
+        base_url = await self._nodejs_base_url()
+        token = await self._desktop_token()
+        request_payload = {
+            "connectorId": self.connector_id,
+            "runId": run_id,
+            "batchIndex": batch_index,
+            "mode": mode,
+            "cursor": cursor,
+            "maxEvents": max(1, self.batch_size),
+            "timeoutMs": LOCAL_FS_PULL_DESKTOP_BUDGET_MS,
+        }
+
+        try:
+            async with session.post(
+                f"{base_url}{LOCAL_FS_PULL_ROUTE}",
+                json=request_payload,
+                headers={"Authorization": f"Bearer {token}"},
+            ) as response:
+                status = response.status
+                body = await self._read_json_body(response)
+        except asyncio.TimeoutError as exc:
+            raise LocalFsDesktopTimeoutError(
+                f"Desktop pull timed out after {LOCAL_FS_PULL_HTTP_TIMEOUT_SECONDS}s "
+                f"(run={run_id} batch={batch_index})"
+            ) from exc
+        except aiohttp.ClientError as exc:
+            raise LocalFsDesktopRemoteError(
+                "NODE_UNREACHABLE",
+                f"Could not reach the desktop relay at {base_url}: {exc}",
+                retryable=True,
+            ) from exc
+
+        if status != HttpStatusCode.SUCCESS.value:
+            raise self._desktop_error_for(
+                status, body, f"run={run_id} batch={batch_index}"
+            )
+
+        data = body.get("data")
+        if not isinstance(data, dict):
+            raise LocalFsDesktopRemoteError(
+                "MALFORMED_RESPONSE",
+                "Desktop pull response had no data object",
+                retryable=False,
+            )
+        batch = LocalFsPullBatch.model_validate(data)
+
+        # The relay broadcasts to whatever socket claims this user; a reply
+        # from a different connector or a superseded run means the wrong
+        # machine answered and must not be applied.
+        if batch.connectorId != self.connector_id or batch.runId != run_id:
+            raise LocalFsDesktopRemoteError(
+                "RESPONSE_MISMATCH",
+                (
+                    f"Expected connector={self.connector_id} run={run_id}, "
+                    f"got connector={batch.connectorId} run={batch.runId}"
+                ),
+                retryable=False,
+            )
+        # Registration alone cannot hold ownership: when the owning machine
+        # disconnects the claim frees, a second machine takes it, and the next
+        # full run prunes everything the first one synced. The device pinned on
+        # the sync point is what makes changing machines an explicit act.
+        if expected_device_id and batch.deviceId != expected_device_id:
+            raise LocalFsDesktopRemoteError(
+                "RESPONSE_MISMATCH",
+                (
+                    f"Sync point is owned by device {expected_device_id}, but "
+                    f"device {batch.deviceId} answered. Clear the sync point to "
+                    "re-seed from this machine."
+                ),
+                retryable=False,
+            )
+        return batch
 
     async def _storage_base_url(self) -> str:
         cached = getattr(self, "_batch_storage_url_cache", None)
@@ -955,186 +999,6 @@ class LocalFsConnector(BaseConnector):
             self._batch_storage_token_cache = token
         return token
 
-    async def _upload_storage_file(
-        self,
-        *,
-        rel_path: str,
-        content: bytes,
-        mime_type: str | None,
-        existing_document_id: str | None = None,
-        org_id: str | None = None,
-        storage_url: str | None = None,
-        storage_token: str | None = None,
-        session: aiohttp.ClientSession | None = None,
-    ) -> str:
-        """Upload bytes to the storage service; return the document id.
-
-        ``org_id``, ``storage_url``, ``storage_token``, ``session`` may be
-        passed in to avoid re-fetching etcd config and re-establishing TLS for
-        every event in a batch.
-        """
-        if storage_url is None:
-            storage_url = await self._storage_base_url()
-        if storage_token is None:
-            storage_token = await self._storage_token()
-        if org_id is None:
-            org_id = self._require_org_id()
-        upload_filename = self._build_storage_upload_filename(rel_path, mime_type)
-        guessed, _ = mimetypes.guess_type(upload_filename)
-        upload_mime = mime_type or guessed or MimeTypes.UNKNOWN.value
-
-        form = aiohttp.FormData()
-        if existing_document_id:
-            url = (
-                f"{storage_url}/api/v1/document/internal/"
-                f"{existing_document_id}/uploadNextVersion"
-            )
-            form.add_field("nextVersionNote", "Local FS desktop sync")
-        else:
-            url = f"{storage_url}/api/v1/document/internal/upload"
-            form.add_field("documentName", self._build_storage_document_name(rel_path))
-            form.add_field(
-                "documentPath",
-                (
-                    f"{LOCAL_FS_STORAGE_DOCUMENT_PATH_PREFIX}/"
-                    f"{org_id}/{self.connector_id}"
-                ),
-            )
-            form.add_field("isVersionedFile", "true")
-        form.add_field(
-            "file",
-            content,
-            filename=upload_filename,
-            content_type=upload_mime,
-        )
-
-        timeout = LOCAL_FS_STORAGE_HTTP_TIMEOUT
-        try:
-            if session is None:
-                async with aiohttp.ClientSession(timeout=timeout) as owned_session:
-                    return await self._execute_storage_upload_request(
-                        owned_session,
-                        url,
-                        form,
-                        storage_token,
-                        existing_document_id,
-                        content,
-                    )
-            return await self._execute_storage_upload_request(
-                session,
-                url,
-                form,
-                storage_token,
-                existing_document_id,
-                content,
-            )
-        except asyncio.TimeoutError as exc:
-            raise HTTPException(
-                status_code=HttpStatusCode.GATEWAY_TIMEOUT.value,
-                detail=(
-                    f"Storage service timed out during Local FS upload ({rel_path})"
-                ),
-            ) from exc
-        except aiohttp.ClientError as exc:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_GATEWAY.value,
-                detail=(
-                    f"Could not reach storage service at {storage_url} for Local FS "
-                    f"upload ({rel_path}): {exc}"
-                ),
-            ) from exc
-
-    async def _execute_storage_upload_request(
-        self,
-        session: aiohttp.ClientSession,
-        url: str,
-        form: aiohttp.FormData,
-        storage_token: str,
-        existing_document_id: str | None,
-        file_content: bytes,
-    ) -> str:
-        """Execute upload call and return resolved storage document id."""
-        # Do not follow 301/302: aiohttp would re-issue as GET to Location, which
-        # breaks presigned PUT URLs (see aiohttp issue #3082).
-        async with session.post(
-            url,
-            data=form,
-            headers={"Authorization": f"Bearer {storage_token}"},
-            allow_redirects=False,
-        ) as response:
-            raw_text = await response.text()
-            try:
-                payload: JsonValue = json.loads(raw_text) if raw_text else {}
-            except json.JSONDecodeError:
-                payload = raw_text
-
-            if response.status in STORAGE_UPLOAD_REDIRECT_STATUS_CODES:
-                location = response.headers.get("Location") or response.headers.get(
-                    "location"
-                )
-                if not location:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.BAD_GATEWAY.value,
-                        detail={
-                            "message": (
-                                "Storage direct-upload redirect missing Location "
-                                "header"
-                            ),
-                            "status": response.status,
-                            "response": payload,
-                            "url": url,
-                        },
-                    )
-                put_headers = {"Content-Length": str(len(file_content))}
-                async with session.put(
-                    location,
-                    data=file_content,
-                    headers=put_headers,
-                ) as put_resp:
-                    put_text = await put_resp.text()
-                    if put_resp.status < 200 or put_resp.status >= 300:
-                        raise HTTPException(
-                            status_code=HttpStatusCode.BAD_GATEWAY.value,
-                            detail={
-                                "message": (
-                                    "Direct upload to storage (presigned URL) failed"
-                                ),
-                                "status": put_resp.status,
-                                "response": put_text,
-                                "location": location,
-                            },
-                        )
-                if existing_document_id:
-                    return existing_document_id
-                doc_hdr = response.headers.get("x-document-id") or response.headers.get(
-                    "X-Document-Id"
-                )
-                if isinstance(doc_hdr, str) and doc_hdr.strip():
-                    return doc_hdr.strip()
-                if isinstance(payload, dict):
-                    return self._extract_storage_document_id(payload)
-                raise HTTPException(
-                    status_code=HttpStatusCode.BAD_GATEWAY.value,
-                    detail=(
-                        "Storage direct-upload response missing document id "
-                        "(expected x-document-id header or JSON body)"
-                    ),
-                )
-
-            if response.status < 200 or response.status >= 300:
-                raise HTTPException(
-                    status_code=HttpStatusCode.BAD_GATEWAY.value,
-                    detail={
-                        "message": "Storage service rejected Local FS file upload",
-                        "status": response.status,
-                        "response": payload,
-                        "url": url,
-                    },
-                )
-            if existing_document_id:
-                return existing_document_id
-            return self._extract_storage_document_id(payload)
-
     async def _delete_storage_document(
         self,
         document_id: str | None,
@@ -1163,8 +1027,8 @@ class LocalFsConnector(BaseConnector):
                     session, storage_url, storage_token, document_id,
                 )
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            # Best-effort: a failed cleanup must not block the rename/delete
-            # event from being marked synced; the orphaned blob can be GC'd later.
+            # Best-effort: a failed cleanup must not block the delete event
+            # from being marked synced; the orphaned blob can be GC'd later.
             self.logger.warning(
                 "Local FS: could not delete storage document %s: %s",
                 document_id,
@@ -1192,17 +1056,6 @@ class LocalFsConnector(BaseConnector):
                     await response.text(),
                 )
 
-    async def _get_record_by_external_id(self, external_id: str) -> Optional[Record]:
-        return await self.data_entities_processor.get_record_by_external_id(
-            self.connector_id, external_id
-        )
-
-    async def _storage_document_id_for_external_id(self, external_id: str) -> str | None:
-        record = await self._get_record_by_external_id(external_id)
-        return self._storage_document_id_from_path(
-            getattr(record, "path", None)
-        )
-
     @staticmethod
     def _event_matches_date_filters(
         event: LocalFsFileEvent, sync_filters: FilterCollection
@@ -1227,14 +1080,12 @@ class LocalFsConnector(BaseConnector):
 
         return True
 
-    def _build_storage_file_record(
+    def _build_file_record(
         self,
         rel_path: str,
         event: LocalFsFileEvent,
-        storage_document_id: str,
         external_record_group_id: str,
         indexing_filters: FilterCollection,
-        content_size: int,
         owner: Optional[User] = None,
     ) -> Tuple[FileRecord, List[Permission]]:
         normalized_rel_path = rel_path.strip().replace("\\", "/")
@@ -1246,11 +1097,15 @@ class LocalFsConnector(BaseConnector):
         )
         name = Path(normalized_rel_path).name or "file"
         timestamp_ms = int(event.timestamp)
-        size = event.size if event.size is not None else content_size
+        size = event.size if event.size is not None else 0
         guessed, _ = mimetypes.guess_type(name)
         mime = event.mimeType or guessed or MimeTypes.UNKNOWN.value
         ext = Path(name).suffix.lower().lstrip(".") or None
-        revision = event.sha256 or f"{timestamp_ms}:{size}"
+        # No bytes reach the server during sync, so the desktop's full-content
+        # hash is the only change-detection signal we have — the caller
+        # already skips any event that arrives without one, so there is no
+        # timestamp/size fallback here to silently mask a missing hash.
+        revision = event.sha256
 
         record_id = str(uuid.uuid4())
         file_record = FileRecord(
@@ -1269,7 +1124,8 @@ class LocalFsConnector(BaseConnector):
             updated_at=timestamp_ms,
             source_created_at=timestamp_ms,
             source_updated_at=timestamp_ms,
-            weburl=f"/record/{record_id}",
+            weburl=None,
+            hide_weburl=True,
             parent_external_record_id=(
                 self._external_record_id_for_rel_path(parent_rel_path)
                 if parent_rel_path
@@ -1279,14 +1135,18 @@ class LocalFsConnector(BaseConnector):
             size_in_bytes=size,
             is_file=True,
             extension=ext,
-            path=f"{LOCAL_FS_STORAGE_PATH_PREFIX}{storage_document_id}",
+            # Must stay non-empty: stream_record rejects a blank path with a
+            # 400, and 4xx is terminal to the indexing consumer.
+            path=normalized_rel_path,
             local_fs_relative_path=normalized_rel_path,
             mime_type=mime,
             preview_renderable=True,
             sha256_hash=event.sha256,
         )
 
-        if not indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+        if not LOCAL_FS_DESKTOP_CONTENT_AVAILABLE:
+            file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        elif not indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
             file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
         effective_owner = owner or self._owner_user_for_permissions
@@ -1294,7 +1154,6 @@ class LocalFsConnector(BaseConnector):
         if effective_owner:
             perms.append(
                 Permission(
-                    external_id=effective_owner.id,
                     email=effective_owner.email,
                     type=PermissionType.OWNER,
                     entity_type=EntityType.USER,
@@ -1306,7 +1165,9 @@ class LocalFsConnector(BaseConnector):
         self,
         root: Path,
     ) -> tuple[User, FilterCollection, FilterCollection, str]:
-        owner = await self._resolve_owner_user()
+        owner_id = self.created_by
+
+        owner = await self.data_entities_processor.get_user_by_user_id(user_id=owner_id)
         if not owner:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
@@ -1336,7 +1197,6 @@ class LocalFsConnector(BaseConnector):
                     record_group,
                     [
                         Permission(
-                            external_id=owner.id,
                             email=owner.email,
                             type=PermissionType.OWNER,
                             entity_type=EntityType.USER,
@@ -1353,257 +1213,26 @@ class LocalFsConnector(BaseConnector):
     ) -> None:
         if not external_ids:
             return
+        # Resolve storage blobs before the graph rows disappear. Only records
+        # created by the retired push flow carry storage:// paths, so this is
+        # a no-op for anything synced since.
+        existing_records = await self._bulk_get_records_by_external_ids(external_ids)
         for external_id in external_ids:
-            await self.data_entities_processor.delete_record_by_external_id(
-                self.connector_id, external_id, user_id
+            record = existing_records.get(external_id)
+            if record is None:
+                continue
+            document_id = self._storage_document_id_from_path(
+                getattr(record, "path", None)
             )
-
-    def _prepare_upsert_record(
-        self,
-        root: Path,
-        rel_path: str,
-        rg_external: str,
-        sync_filters: FilterCollection,
-        indexing_filters: FilterCollection,
-        owner: Optional[User] = None,
-    ) -> Optional[Tuple[FileRecord, List[Permission]]]:
-        abs_path = self._resolve_event_file_path(root, rel_path)
-        if abs_path.is_symlink() or not abs_path.is_file():
-            return None
-        if not self._extension_allowed(abs_path, sync_filters):
-            return None
-        st = abs_path.stat()
-        if not _file_stat_matches_date_filters(st, sync_filters):
-            return None
-        return self._build_file_record(
-            abs_path, root, rg_external, indexing_filters, st=st, owner=owner
-        )
-
-    async def _reset_existing_records(
-        self, owner_user_id: str, delete_storage_documents: bool = False
-    ) -> int:
-        status_filters = [status.value for status in ProgressStatus]
-        deleted = 0
-
-        while True:
-            storage_document_ids: List[str] = []
-            async with self.data_store_provider.transaction() as tx_store:
-                records = await tx_store.get_records_by_status(
-                    self.data_entities_processor.org_id,
-                    self.connector_id,
-                    status_filters,
-                    limit=FULL_SYNC_RESET_BATCH_SIZE,
-                    offset=0,
-                )
-                if not records:
-                    return deleted
-
-                deleted_this_round = 0
-                for record in records:
-                    external_id = getattr(record, "external_record_id", None)
-                    if not external_id:
-                        continue
-                    if delete_storage_documents:
-                        document_id = self._storage_document_id_from_path(
-                            getattr(record, "path", None)
-                        )
-                        if document_id:
-                            storage_document_ids.append(document_id)
-                    await tx_store.delete_record_by_external_id(
-                        self.connector_id,
-                        external_id,
-                        owner_user_id,
-                    )
-                    deleted += 1
-                    deleted_this_round += 1
-
-                if deleted_this_round == 0:
-                    return deleted
-            for document_id in storage_document_ids:
+            await self.data_entities_processor.on_record_deleted(
+                record_id=record.id,
+            )
+            if document_id:
                 await self._delete_storage_document(document_id)
 
-    async def apply_file_event_batch(
-        self,
-        events: List[LocalFsFileEvent],
-        reset_before_apply: bool = False,
-    ) -> LocalFsFileEventBatchStats:
-        await self._reload_sync_settings()
-        root_raw = self.sync_root_path.strip()
-        if not root_raw:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail="Local FS sync_root_path is not configured",
-            )
-
-        ok_path, detail = _validate_sync_root_path(root_raw)
-        if not ok_path:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Local FS cannot use sync_root_path: {detail}",
-            )
-
-        root = Path(detail)
-        processed = 0
-        deleted = 0
-        upsert_buffer: List[Tuple[FileRecord, List[Permission]]] = []
-        # See apply_uploaded_file_event_batch for ordering rationale: hold
-        # the OLD-path delete from each rename until its replacement upsert
-        # has flushed, so a mid-batch failure can never drop a record before
-        # its successor exists.
-        delete_after_upsert_buffer: List[str] = []
-        delete_only_buffer: List[str] = []
-        emitted_folder_paths: set[str] = set()
-        batch_size = max(1, self.batch_size)
-
-        try:
-            owner, sync_filters, indexing_filters, rg_external = (
-                await self._ensure_owner_and_record_group(root)
-            )
-
-            async def flush_upserts() -> None:
-                nonlocal processed, deleted
-                if not upsert_buffer:
-                    return
-                await self.data_entities_processor.on_new_records(list(upsert_buffer))
-                processed += self._count_processed_file_records(upsert_buffer)
-                upsert_buffer.clear()
-                if delete_after_upsert_buffer:
-                    await self._delete_external_ids(
-                        list(delete_after_upsert_buffer), owner.id
-                    )
-                    deleted += len(delete_after_upsert_buffer)
-                    delete_after_upsert_buffer.clear()
-
-            async def flush_delete_only() -> None:
-                nonlocal deleted
-                if not delete_only_buffer:
-                    return
-                await self._delete_external_ids(
-                    list(delete_only_buffer), owner.id
-                )
-                deleted += len(delete_only_buffer)
-                delete_only_buffer.clear()
-
-            if reset_before_apply:
-                deleted += await self._reset_existing_records(owner.id)
-
-            for event in events:
-                event_type = event.type.strip().upper()
-                rel_path = event.path.strip().replace("\\", "/")
-                old_rel_path = (
-                    event.oldPath.strip().replace("\\", "/") if event.oldPath else ""
-                )
-
-                if not rel_path:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.BAD_REQUEST.value,
-                        detail="File event path is required",
-                    )
-                if event.isDirectory:
-                    await self._handle_directory_event_for_batch(
-                        event_type=event_type,
-                        rel_path=rel_path,
-                        old_rel_path=old_rel_path,
-                        root=root,
-                        external_record_group_id=rg_external,
-                        timestamp_ms=int(event.timestamp),
-                        owner=owner,
-                        upsert_buffer=upsert_buffer,
-                        delete_after_upsert_buffer=delete_after_upsert_buffer,
-                        delete_only_buffer=delete_only_buffer,
-                        emitted_folder_paths=emitted_folder_paths,
-                        flush_upserts=flush_upserts,
-                        flush_delete_only=flush_delete_only,
-                        batch_size=batch_size,
-                    )
-                    continue
-
-                if event_type in {"CREATED", "MODIFIED"}:
-                    record = self._prepare_upsert_record(
-                        root, rel_path, rg_external, sync_filters,
-                        indexing_filters, owner=owner,
-                    )
-                    if record is not None:
-                        upsert_buffer.extend(
-                            self._build_parent_folder_records(
-                                rel_path,
-                                root,
-                                rg_external,
-                                int(event.timestamp),
-                                emitted_folder_paths,
-                                owner=owner,
-                            )
-                        )
-                        upsert_buffer.append(record)
-                        if len(upsert_buffer) >= batch_size:
-                            await flush_upserts()
-                    continue
-
-                if event_type == "DELETED":
-                    delete_only_buffer.append(
-                        self._external_record_id_for_rel_path(rel_path)
-                    )
-                    if len(delete_only_buffer) >= batch_size:
-                        await flush_delete_only()
-                    continue
-
-                if event_type in {"RENAMED", "MOVED"}:
-                    record = self._prepare_upsert_record(
-                        root, rel_path, rg_external, sync_filters,
-                        indexing_filters, owner=owner,
-                    )
-                    if record is not None:
-                        upsert_buffer.extend(
-                            self._build_parent_folder_records(
-                                rel_path,
-                                root,
-                                rg_external,
-                                int(event.timestamp),
-                                emitted_folder_paths,
-                                owner=owner,
-                            )
-                        )
-                        upsert_buffer.append(record)
-                        if old_rel_path:
-                            # Validate the old path the same way as the new
-                            # one so a hostile rename can't sneak a path
-                            # escape past us.
-                            self._resolve_event_file_path(root, old_rel_path)
-                            old_ext_id = self._external_record_id_for_rel_path(
-                                old_rel_path
-                            )
-                            new_ext_id = self._external_record_id_for_rel_path(
-                                rel_path
-                            )
-                            if old_ext_id != new_ext_id:
-                                delete_after_upsert_buffer.append(old_ext_id)
-                        if len(upsert_buffer) >= batch_size:
-                            await flush_upserts()
-                    elif old_rel_path:
-                        # New file vanished or was filtered out; downgrade
-                        # the rename to a plain DELETE of the old path.
-                        self._resolve_event_file_path(root, old_rel_path)
-                        delete_only_buffer.append(
-                            self._external_record_id_for_rel_path(old_rel_path)
-                        )
-                        if len(delete_only_buffer) >= batch_size:
-                            await flush_delete_only()
-                    continue
-
-                raise HTTPException(
-                    status_code=HttpStatusCode.BAD_REQUEST.value,
-                    detail=f"Unsupported Local FS file event type: {event_type}",
-                )
-
-            await flush_upserts()
-            await flush_delete_only()
-
-            return LocalFsFileEventBatchStats(processed=processed, deleted=deleted)
-        finally:
-            self._owner_user_for_permissions = None
-
     @staticmethod
-    def _normalize_uploaded_rel_path(raw_path: str) -> str:
+    def _normalize_event_rel_path(raw_path: str) -> Optional[str]:
+        """Normalize a desktop-supplied relative path, or None if untrustworthy."""
         rel_path = raw_path.strip().replace("\\", "/")
         parts = rel_path.split("/")
         if (
@@ -1611,284 +1240,277 @@ class LocalFsConnector(BaseConnector):
             or rel_path.startswith("/")
             or any(part in {"", ".", ".."} for part in parts)
         ):
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Invalid relative Local FS path: {raw_path}",
-            )
+            return None
         return rel_path
 
-    async def apply_uploaded_file_event_batch(
+    @staticmethod
+    def _classify_event_kind(event_type: str, is_directory: bool) -> Optional[str]:
+        """Which buffer an event will land in, or None when it will be skipped.
+
+        RENAMED/MOVED classify as "move" even when the old path resolves to the
+        same external id and the event degenerates to a plain upsert. The bias is
+        only safe in that direction: a drain writes upserts before moves, so a
+        move-classified upsert still lands in the right slot, whereas an
+        upsert-classified move would be applied too early.
+        """
+        if is_directory:
+            if event_type in {"DIR_CREATED", "CREATED", "MODIFIED"}:
+                return "upsert"
+            if event_type in {"DIR_DELETED", "DELETED"}:
+                return "delete"
+            if event_type in {"DIR_RENAMED", "DIR_MOVED", "RENAMED", "MOVED"}:
+                return "move"
+            return None
+        if event_type == "DELETED":
+            return "delete"
+        if event_type in {"CREATED", "MODIFIED"}:
+            return "upsert"
+        if event_type in {"RENAMED", "MOVED"}:
+            return "move"
+        return None
+
+    async def _apply_file_event_batch(
         self,
         events: List[LocalFsFileEvent],
-        files_by_field: Dict[str, bytes],
-        reset_before_apply: bool = False,
+        *,
+        owner: User,
+        sync_filters: FilterCollection,
+        indexing_filters: FilterCollection,
+        external_record_group_id: str,
+        root_for_display: Path,
+        emitted_folder_paths: set[str],
+        seen_external_ids: Optional[set[str]] = None,
     ) -> LocalFsFileEventBatchStats:
-        """Apply desktop-uploaded Local FS events whose bytes are included in multipart.
+        """Apply one page of file-event metadata pulled from the desktop.
 
-        Ordering invariants (so a failure can't lose data):
-          1. RENAMED/MOVED: upload new content + upsert new record FIRST,
-             then delete the old DB record. The old storage blob is GC'd
-             best-effort after the upsert succeeds.
-          2. SHA mismatch on a single event ⇒ skip just that event with a
-             warning. The remaining events in the batch still run; the
-             watcher will resend a fresh MODIFIED for the changed file.
-          3. The owner is threaded as a local var (no instance state during
-             record building), so concurrent requests can't observe each
-             other's owner.
+        RENAMED/MOVED events update the existing DB record in place via
+        ``on_records_moved`` — same vertex id, re-pointed parent edge — instead
+        of deleting the old row and creating a new one. That preserves
+        permissions/graph edges across a rename and only triggers re-indexing
+        when the content hash (``external_revision_id``) actually changed, so
+        a same-content rename produces no indexing events at all.
+
+        A malformed or unsupported single event is skipped and counted, never
+        raised — this runs inside a background task, and one bad path must not
+        abandon the rest of the run.
         """
-        await self._reload_sync_settings()
-        org_id = self._require_org_id()
-        root_for_display = Path(self.sync_root_path.strip() or "Local FS")
         processed = 0
         deleted = 0
+        skipped = 0
         upsert_buffer: List[Tuple[FileRecord, List[Permission]]] = []
-        # Old DB records to remove AFTER their replacement upsert succeeds —
-        # for RENAMED/MOVED. Held separate from delete_only_buffer so we never
-        # flush an old-path delete before its new-path upsert lands.
-        delete_after_upsert_buffer: List[str] = []
+        # (old_external_id, new_record, permissions) for RENAMED/MOVED.
+        # on_records_moved retires the old row and upserts the new one
+        # atomically in one transaction, so there is no upsert-then-delete
+        # ordering to manage across buffers.
+        move_buffer: List[Tuple[str, FileRecord, List[Permission]]] = []
         # External ids from explicit DELETED events.
         delete_only_buffer: List[str] = []
-        # Old storage blobs to GC after the corresponding DB rows are gone.
-        storage_blobs_to_gc: List[str] = []
-        emitted_folder_paths: set[str] = set()
         batch_size = max(1, self.batch_size)
-        upload_timeout = LOCAL_FS_STORAGE_HTTP_TIMEOUT
 
-        try:
-            owner, sync_filters, indexing_filters, rg_external = (
-                await self._ensure_owner_and_record_group(root_for_display)
+        async def flush_upserts() -> None:
+            nonlocal processed
+            if not upsert_buffer:
+                return
+            if seen_external_ids is not None:
+                # Folder records count as seen too, or the full-run prune
+                # would delete every directory it just created.
+                for record, _perms in upsert_buffer:
+                    seen_external_ids.add(record.external_record_id)
+            await self.data_entities_processor.on_new_records(list(upsert_buffer))
+            processed += self._count_processed_file_records(upsert_buffer)
+            upsert_buffer.clear()
+
+        async def flush_moves() -> None:
+            nonlocal processed
+            if not move_buffer:
+                return
+            # The parent folder records for these moves are sitting in
+            # upsert_buffer; a moved record must never be written before the
+            # folder its edge points at.
+            await flush_upserts()
+            if seen_external_ids is not None:
+                for _old_ext_id, record, _perms in move_buffer:
+                    seen_external_ids.add(record.external_record_id)
+            await self.data_entities_processor.on_records_moved(list(move_buffer))
+            processed += self._count_processed_file_records(
+                [(record, perms) for _old_ext_id, record, perms in move_buffer]
+            )
+            move_buffer.clear()
+
+        async def flush_delete_only() -> None:
+            nonlocal deleted
+            if not delete_only_buffer:
+                return
+            await self._delete_external_ids(list(delete_only_buffer), owner.id)
+            deleted += len(delete_only_buffer)
+            delete_only_buffer.clear()
+
+        async def drain_all() -> None:
+            await flush_upserts()
+            await flush_moves()
+            await flush_delete_only()
+
+        # The three buffers are drained in a fixed order, so a page containing
+        # more than one kind of event would otherwise be applied out of order --
+        # e.g. a CREATED for a path would mint a record before the MOVED that
+        # re-keys the existing one onto it. Draining on every kind change keeps
+        # the desktop's ordering while still batching runs of the same kind.
+        prev_kind: Optional[str] = None
+
+        self.logger.info("Local FS: applying batch of %d event(s)", len(events))
+        for event in events:
+            event_type = event.type.strip().upper()
+            rel_path = self._normalize_event_rel_path(event.path)
+            if rel_path is None:
+                self.logger.warning(
+                    "Local FS: skipping event with unusable path %r", event.path
+                )
+                skipped += 1
+                continue
+
+            old_rel_path = ""
+            if event.oldPath:
+                old_rel_path = self._normalize_event_rel_path(event.oldPath) or ""
+                if not old_rel_path:
+                    self.logger.warning(
+                        "Local FS: ignoring unusable oldPath %r for %s; the "
+                        "previous record will be pruned by the next full run",
+                        event.oldPath,
+                        rel_path,
+                    )
+
+            if old_rel_path:
+                self.logger.debug(
+                    "Local FS: event %s for %s %r <- %r",
+                    event_type,
+                    "dir" if event.isDirectory else "file",
+                    rel_path,
+                    old_rel_path,
+                )
+            else:
+                self.logger.debug(
+                    "Local FS: event %s for %s %r",
+                    event_type,
+                    "dir" if event.isDirectory else "file",
+                    rel_path,
+                )
+
+            kind = self._classify_event_kind(event_type, event.isDirectory)
+            if kind is not None and prev_kind is not None and kind != prev_kind:
+                await drain_all()
+
+            if event.isDirectory:
+                handled = await self._handle_directory_event_for_batch(
+                    event_type=event_type,
+                    rel_path=rel_path,
+                    old_rel_path=old_rel_path,
+                    root=root_for_display,
+                    external_record_group_id=external_record_group_id,
+                    timestamp_ms=int(event.timestamp),
+                    owner=owner,
+                    upsert_buffer=upsert_buffer,
+                    move_buffer=move_buffer,
+                    delete_only_buffer=delete_only_buffer,
+                    emitted_folder_paths=emitted_folder_paths,
+                    flush_upserts=flush_upserts,
+                    flush_moves=flush_moves,
+                    flush_delete_only=flush_delete_only,
+                    batch_size=batch_size,
+                )
+                if not handled:
+                    skipped += 1
+                else:
+                    prev_kind = kind
+                continue
+
+            if event_type == "DELETED":
+                delete_only_buffer.append(
+                    self._external_record_id_for_rel_path(rel_path)
+                )
+                prev_kind = kind
+                if len(delete_only_buffer) >= batch_size:
+                    await flush_delete_only()
+                continue
+
+            if event_type not in {"CREATED", "MODIFIED", "RENAMED", "MOVED"}:
+                self.logger.warning(
+                    "Local FS: skipping unsupported file event type %s (%s)",
+                    event_type,
+                    rel_path,
+                )
+                skipped += 1
+                continue
+
+            if not event.sha256:
+                # The watcher always hashes full content now; a missing hash
+                # means a pre-upgrade desktop client or a failed local read,
+                # neither of which we can safely substitute a fake revision
+                # for without masking the real problem.
+                self.logger.warning(
+                    "Local FS: skipping event %s for %s — desktop sent no "
+                    "content hash",
+                    event_type,
+                    rel_path,
+                )
+                skipped += 1
+                continue
+
+            if not self._extension_allowed(Path(rel_path), sync_filters):
+                skipped += 1
+                continue
+            if not self._event_matches_date_filters(event, sync_filters):
+                skipped += 1
+                continue
+
+            new_ext_id = self._external_record_id_for_rel_path(rel_path)
+
+            # A rename/move only needs the in-place-update path when the old
+            # path actually resolves to a different external id (a missing/
+            # unusable oldPath, or the NFC-normalization same-id edge case,
+            # falls back to a plain upsert — the stale old row, if any, gets
+            # pruned by the next full run).
+            old_ext_id: Optional[str] = None
+            if event_type in {"RENAMED", "MOVED"} and old_rel_path:
+                candidate_old_ext_id = self._external_record_id_for_rel_path(old_rel_path)
+                if candidate_old_ext_id != new_ext_id:
+                    old_ext_id = candidate_old_ext_id
+
+            upsert_buffer.extend(
+                self._build_parent_folder_records(
+                    rel_path,
+                    root_for_display,
+                    external_record_group_id,
+                    int(event.timestamp),
+                    emitted_folder_paths,
+                    owner=owner,
+                )
+            )
+            file_record, file_permissions = self._build_file_record(
+                rel_path,
+                event,
+                external_record_group_id,
+                indexing_filters,
+                owner=owner,
             )
 
-            # Memoize storage URL + JWT for the duration of this batch so the
-            # per-event _upload_storage_file/_delete_storage_document calls
-            # share one etcd lookup. A delete-only batch never trips this
-            # because the cache stays empty.
-            self._batch_storage_url_cache = None
-            self._batch_storage_token_cache = None
+            prev_kind = kind
+            if old_ext_id:
+                move_buffer.append((old_ext_id, file_record, file_permissions))
+                if len(move_buffer) >= batch_size:
+                    await flush_moves()
+            else:
+                upsert_buffer.append((file_record, file_permissions))
+                if len(upsert_buffer) >= batch_size:
+                    await flush_upserts()
 
-            async def flush_upserts() -> None:
-                nonlocal processed, deleted
-                if not upsert_buffer:
-                    return
-                await self.data_entities_processor.on_new_records(list(upsert_buffer))
-                processed += self._count_processed_file_records(upsert_buffer)
-                upsert_buffer.clear()
-                # Once upserts land, it is safe to retire the matching
-                # old-path DB rows. Do it before any further upserts so a
-                # later mid-batch failure can't strand them as still-pending.
-                if delete_after_upsert_buffer:
-                    await self._delete_external_ids(
-                        list(delete_after_upsert_buffer), owner.id
-                    )
-                    deleted += len(delete_after_upsert_buffer)
-                    delete_after_upsert_buffer.clear()
+        # End of page: drain every buffer. _delete_external_ids GCs any
+        # storage blob left by the retired push flow as it deletes; moves are
+        # retired atomically inside on_records_moved itself.
+        await drain_all()
 
-            async def flush_delete_only() -> None:
-                nonlocal deleted
-                if not delete_only_buffer:
-                    return
-                await self._delete_external_ids(
-                    list(delete_only_buffer), owner.id
-                )
-                deleted += len(delete_only_buffer)
-                delete_only_buffer.clear()
-
-            if reset_before_apply:
-                deleted += await self._reset_existing_records(
-                    owner.id, delete_storage_documents=True
-                )
-
-            # Bulk pre-fetch existing records for paths we'll need them for.
-            relevant_ext_ids: List[str] = []
-            for event in events:
-                if event.isDirectory:
-                    continue
-                event_type = event.type.strip().upper()
-                if event_type in {"CREATED", "MODIFIED", "RENAMED", "MOVED"}:
-                    rel_path = self._normalize_uploaded_rel_path(event.path)
-                    relevant_ext_ids.append(
-                        self._external_record_id_for_rel_path(rel_path)
-                    )
-                if event_type in {"DELETED", "RENAMED", "MOVED"} and event.oldPath:
-                    old_rel = self._normalize_uploaded_rel_path(event.oldPath)
-                    relevant_ext_ids.append(
-                        self._external_record_id_for_rel_path(old_rel)
-                    )
-                if event_type == "DELETED":
-                    rel_path = self._normalize_uploaded_rel_path(event.path)
-                    relevant_ext_ids.append(
-                        self._external_record_id_for_rel_path(rel_path)
-                    )
-            existing_by_ext_id = await self._bulk_get_records_by_external_ids(
-                relevant_ext_ids
-            )
-
-            async with aiohttp.ClientSession(timeout=upload_timeout) as session:
-                for event in events:
-                    event_type = event.type.strip().upper()
-                    rel_path = self._normalize_uploaded_rel_path(event.path)
-                    old_rel_path = (
-                        self._normalize_uploaded_rel_path(event.oldPath)
-                        if event.oldPath
-                        else ""
-                    )
-
-                    if event.isDirectory:
-                        await self._handle_directory_event_for_batch(
-                            event_type=event_type,
-                            rel_path=rel_path,
-                            old_rel_path=old_rel_path,
-                            root=root_for_display,
-                            external_record_group_id=rg_external,
-                            timestamp_ms=int(event.timestamp),
-                            owner=owner,
-                            upsert_buffer=upsert_buffer,
-                            delete_after_upsert_buffer=delete_after_upsert_buffer,
-                            delete_only_buffer=delete_only_buffer,
-                            emitted_folder_paths=emitted_folder_paths,
-                            flush_upserts=flush_upserts,
-                            flush_delete_only=flush_delete_only,
-                            batch_size=batch_size,
-                        )
-                        continue
-
-                    if event_type == "DELETED":
-                        ext_id = self._external_record_id_for_rel_path(rel_path)
-                        existing = existing_by_ext_id.get(ext_id)
-                        document_id = self._storage_document_id_from_path(
-                            getattr(existing, "path", None)
-                        )
-                        if document_id:
-                            storage_blobs_to_gc.append(document_id)
-                        delete_only_buffer.append(ext_id)
-                        if len(delete_only_buffer) >= batch_size:
-                            await flush_delete_only()
-                        continue
-
-                    if event_type not in {"CREATED", "MODIFIED", "RENAMED", "MOVED"}:
-                        raise HTTPException(
-                            status_code=HttpStatusCode.BAD_REQUEST.value,
-                            detail=f"Unsupported Local FS file event type: {event_type}",
-                        )
-
-                    # Validate the multipart part is present before doing
-                    # anything destructive (no DB writes on a malformed event).
-                    if not event.contentField:
-                        raise HTTPException(
-                            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
-                            detail=f"Uploaded Local FS event for {rel_path} is missing contentField",
-                        )
-                    if event.contentField not in files_by_field:
-                        raise HTTPException(
-                            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
-                            detail=f"Missing upload part for contentField {event.contentField}",
-                        )
-                    content = files_by_field[event.contentField]
-
-                    if event.sha256:
-                        actual_sha = hashlib.sha256(content).hexdigest()
-                        if actual_sha.lower() != event.sha256.lower():
-                            # The user edited the file between the desktop
-                            # read and our check. Skip this event; the
-                            # watcher will resend a fresh MODIFIED. Don't
-                            # poison the rest of the batch.
-                            self.logger.warning(
-                                "Local FS: SHA-256 mismatch for %s "
-                                "(file modified mid-flight); skipping this event",
-                                rel_path,
-                            )
-                            continue
-
-                    if not self._extension_allowed(Path(rel_path), sync_filters):
-                        continue
-                    if not self._event_matches_date_filters(
-                        event, sync_filters
-                    ):
-                        continue
-
-                    new_ext_id = self._external_record_id_for_rel_path(rel_path)
-                    existing = existing_by_ext_id.get(new_ext_id)
-                    existing_document_id = self._storage_document_id_from_path(
-                        getattr(existing, "path", None)
-                    )
-
-                    storage_document_id = await self._upload_storage_file(
-                        rel_path=rel_path,
-                        content=content,
-                        mime_type=event.mimeType,
-                        existing_document_id=existing_document_id,
-                        org_id=org_id,
-                        # storage_url / storage_token are lazily resolved by
-                        # the helper on first need so a delete-only batch
-                        # avoids the etcd round trip; downstream tests can
-                        # also mock _upload_storage_file without having to
-                        # mock the JWT generator.
-                        session=session,
-                    )
-
-                    upsert_buffer.extend(
-                        self._build_parent_folder_records(
-                            rel_path,
-                            root_for_display,
-                            rg_external,
-                            int(event.timestamp),
-                            emitted_folder_paths,
-                            owner=owner,
-                        )
-                    )
-                    upsert_buffer.append(
-                        self._build_storage_file_record(
-                            rel_path,
-                            event,
-                            storage_document_id,
-                            rg_external,
-                            indexing_filters,
-                            len(content),
-                            owner=owner,
-                        )
-                    )
-
-                    # For renames at a different path, queue the OLD path's
-                    # DB row for deletion AFTER the upsert flushes (not
-                    # before — would otherwise drop the previous record
-                    # before its replacement is persisted, leaving a brief
-                    # window of data loss visible to search).
-                    if (
-                        event_type in {"RENAMED", "MOVED"}
-                        and old_rel_path
-                    ):
-                        old_ext_id = self._external_record_id_for_rel_path(
-                            old_rel_path
-                        )
-                        if old_ext_id != new_ext_id:
-                            old_existing = existing_by_ext_id.get(old_ext_id)
-                            old_doc_id = self._storage_document_id_from_path(
-                                getattr(old_existing, "path", None)
-                            )
-                            if old_doc_id and old_doc_id != storage_document_id:
-                                storage_blobs_to_gc.append(old_doc_id)
-                            delete_after_upsert_buffer.append(old_ext_id)
-
-                    if len(upsert_buffer) >= batch_size:
-                        await flush_upserts()
-
-                # End of loop: drain any remaining buffers in the right order.
-                await flush_upserts()
-                await flush_delete_only()
-
-                # Best-effort GC of orphaned storage blobs after the DB rows
-                # that referenced them are gone. Reuse the open session.
-                for document_id in storage_blobs_to_gc:
-                    await self._delete_storage_document(
-                        document_id,
-                        session=session,
-                    )
-
-            return LocalFsFileEventBatchStats(processed=processed, deleted=deleted)
-        finally:
-            self._owner_user_for_permissions = None
-            self._batch_storage_url_cache = None
-            self._batch_storage_token_cache = None
+        return LocalFsFileEventBatchStats(
+            processed=processed, deleted=deleted, skipped=skipped
+        )
 
     @staticmethod
     def _decode_storage_buffer_payload(
@@ -1983,6 +1605,43 @@ class LocalFsConnector(BaseConnector):
             },
         )
 
+    async def _fetch_desktop_content(self, record: FileRecord) -> bytes:
+        """Fetch one file's bytes from the desktop, relayed by Node."""
+        base_url = await self._nodejs_base_url()
+        token = await self._desktop_token()
+        rel_path = record.local_fs_relative_path or record.path
+        payload = {
+            "connectorId": self.connector_id,
+            "relPath": rel_path,
+            "externalRecordId": record.external_record_id,
+            "sha256": record.sha256_hash,
+            "timeoutMs": LOCAL_FS_CONTENT_DESKTOP_BUDGET_MS,
+        }
+        timeout = aiohttp.ClientTimeout(total=LOCAL_FS_CONTENT_HTTP_TIMEOUT_SECONDS)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{base_url}{LOCAL_FS_CONTENT_ROUTE}",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {token}"},
+                ) as response:
+                    if response.status == HttpStatusCode.SUCCESS.value:
+                        return await response.read()
+                    status = response.status
+                    body = await self._read_json_body(response)
+        except asyncio.TimeoutError as exc:
+            raise LocalFsDesktopTimeoutError(
+                f"Desktop content fetch timed out ({rel_path})"
+            ) from exc
+        except aiohttp.ClientError as exc:
+            raise LocalFsDesktopRemoteError(
+                "NODE_UNREACHABLE",
+                f"Could not reach the desktop relay at {base_url}: {exc}",
+                retryable=True,
+            ) from exc
+
+        raise self._desktop_error_for(status, body, f"content {rel_path}")
+
     async def stream_record(
         self,
         record: Record,
@@ -1994,221 +1653,322 @@ class LocalFsConnector(BaseConnector):
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Not a Local FS file record or path missing",
             )
+        # Records created by the retired push flow still have a storage blob.
         storage_document_id = self._storage_document_id_from_path(record.path)
         if storage_document_id:
             return await self._stream_storage_record(record, storage_document_id)
-        await self._reload_sync_settings()
-        root_raw = self.sync_root_path.strip()
-        if not root_raw:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail="Local FS sync_root_path is not configured",
-            )
-        ok_path, detail = _validate_sync_root_path(root_raw)
-        if not ok_path:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Local FS cannot use sync_root_path: {detail}",
-            )
-        root = Path(detail).resolve(strict=False)
-        raw_path = Path(record.path)
-        try:
-            if raw_path.is_absolute():
-                candidate = raw_path.expanduser().resolve(strict=False)
-            else:
-                candidate = (root / raw_path).resolve(strict=False)
-        except (OSError, ValueError) as e:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Invalid file path: {e}",
-            ) from e
-        if not candidate.is_relative_to(root):
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="File path is outside the configured Local FS folder",
-            )
-        if not candidate.is_file():
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail="Local file not found for this record",
-            )
-
-        p = candidate
 
         try:
-            handle = await asyncio.to_thread(p.open, "rb")
-        except OSError as e:
+            content = await self._fetch_desktop_content(record)
+        except LocalFsDesktopRemoteError as exc:
+            if not exc.retryable:
+                # A file the desktop can no longer read is terminal for this
+                # record — 404 lets the indexing consumer stop retrying.
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value,
+                    detail=f"Local FS content unavailable: {exc}",
+                ) from exc
             raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Cannot read file: {e}",
-            ) from e
+                status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
+                detail=f"Local FS desktop could not serve content: {exc}",
+            ) from exc
+        except LocalFsDesktopError as exc:
+            # 503 classifies as TRANSIENT for the indexing consumer, so the
+            # record is retried once the machine is back rather than failed.
+            raise HTTPException(
+                status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
+                detail=f"Local FS desktop is not available: {exc}",
+            ) from exc
 
-        async def _stream_chunks() -> AsyncIterator[bytes]:
-            chunk_size = 1 << 20  # 1 MiB
-            try:
-                while True:
-                    chunk = await asyncio.to_thread(handle.read, chunk_size)
-                    if not chunk:
-                        break
-                    yield chunk
-            finally:
-                await asyncio.to_thread(handle.close)
-
-        media = record.mime_type or "application/octet-stream"
-        return create_stream_record_response(
-            _stream_chunks(),
-            record.record_name,
-            media,
-            fallback_filename="file",
+        safe_filename = sanitize_filename_for_content_disposition(
+            record.record_name or "",
+            fallback="file",
+        )
+        return Response(
+            content=content,
+            media_type=record.mime_type or "application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_filename}"',
+            },
         )
 
+    def _sync_point_key(self) -> str:
+        return generate_record_sync_point_key(
+            RecordType.FILE.value, "localfs", self.connector_id
+        )
+
+    async def _write_sync_point(
+        self,
+        *,
+        cursor: Optional[str],
+        run_id: str,
+        batch_index: int,
+        last_sync_time: Optional[int],
+        device_id: Optional[str] = None,
+    ) -> None:
+        """Persist run progress.
+
+        ``update_sync_point`` rewrites the whole document, so an incremental
+        run has to carry ``last_sync_time`` and ``device_id`` forward
+        explicitly — dropping the former would silently demote the next run to
+        a destructive FULL, and dropping the latter would let any machine take
+        the folder over on its next tick.
+        """
+        payload: Dict[str, Any] = {
+            "cursor": cursor,
+            "last_batch_index": batch_index,
+            "run_id": run_id,
+        }
+        if device_id:
+            payload["device_id"] = device_id
+        if last_sync_time is not None:
+            payload["last_sync_time"] = last_sync_time
+            payload["last_run_id"] = run_id
+        await self.record_sync_point.update_sync_point(self._sync_point_key(), payload)
+
+    async def _pull_with_retry(
+        self,
+        *,
+        run_id: str,
+        batch_index: int,
+        cursor: Optional[str],
+        mode: str,
+        session: aiohttp.ClientSession,
+        expected_device_id: Optional[str] = None,
+    ) -> LocalFsPullBatch:
+        """Retry one page on transient faults.
+
+        The same ``(runId, batchIndex)`` is re-sent deliberately: the desktop
+        answers a repeat from its idempotency cache without advancing, so a
+        timeout that had actually succeeded cannot skip a page.
+        """
+        last_error: Optional[LocalFsDesktopError] = None
+        for attempt in range(LOCAL_FS_PULL_MAX_ATTEMPTS):
+            try:
+                return await self._request_file_event_batch(
+                    run_id=run_id,
+                    batch_index=batch_index,
+                    cursor=cursor,
+                    mode=mode,
+                    session=session,
+                    expected_device_id=expected_device_id,
+                )
+            except LocalFsDesktopOfflineError:
+                raise
+            except LocalFsDesktopRemoteError as exc:
+                if not exc.retryable:
+                    raise
+                last_error = exc
+            except LocalFsDesktopTimeoutError as exc:
+                last_error = exc
+            if attempt < LOCAL_FS_PULL_MAX_ATTEMPTS - 1:
+                await asyncio.sleep(LOCAL_FS_PULL_RETRY_BASE_SECONDS * 2**attempt)
+        raise LocalFsDesktopOfflineError(
+            f"Desktop unreachable after {LOCAL_FS_PULL_MAX_ATTEMPTS} attempts: "
+            f"{last_error}"
+        )
+
+    async def _prune_unseen_records(
+        self, owner_user_id: str, seen_external_ids: set[str]
+    ) -> int:
+        """Delete records a completed FULL run never observed.
+
+        Only reached after the desktop reported ``hasMore=false``, so a run
+        that dies midway prunes nothing and the previous snapshot stays live.
+        """
+        status_filters = [status.value for status in ProgressStatus]
+        stale: List[str] = []
+        offset = 0
+        while True:
+            records = await self.data_entities_processor.get_records_by_status(
+                self.connector_id,
+                status_filters,
+                limit=FULL_SYNC_RESET_BATCH_SIZE,
+                offset=offset,
+            )
+            if not records:
+                break
+            for record in records:
+                external_id = getattr(record, "external_record_id", None)
+                if external_id and external_id not in seen_external_ids:
+                    stale.append(external_id)
+            offset += len(records)
+
+        if not stale:
+            return 0
+        self.logger.info(
+            "Local FS: pruning %d record(s) absent from the full run", len(stale)
+        )
+        for start in range(0, len(stale), FULL_SYNC_RESET_BATCH_SIZE):
+            await self._delete_external_ids(
+                stale[start : start + FULL_SYNC_RESET_BATCH_SIZE], owner_user_id
+            )
+        return len(stale)
+
     async def run_sync(self) -> None:
+        """Pull file-event metadata from the desktop and apply it.
+
+        FULL vs INCREMENTAL comes from the sync point: no ``last_sync_time``
+        means no completed baseline exists yet. ``event_service`` deletes sync
+        points before a user-requested full sync.
+        """
         await self._reload_sync_settings()
+        sync_point = await self.record_sync_point.read_sync_point(
+            self._sync_point_key()
+        )
+        last_sync_time = sync_point.get("last_sync_time")
+        mode = "INCREMENTAL" if last_sync_time else "FULL"
+        cursor = sync_point.get("cursor") if mode == "INCREMENTAL" else None
+        # The machine that owns this folder. Empty on a first run: the first
+        # device to answer claims it, and only clearing the sync point (which
+        # forces a full re-seed) hands it to another.
+        device_id = sync_point.get("device_id") or None
+        run_id = str(uuid.uuid4())
 
-        root_raw = self.sync_root_path.strip()
-        if not root_raw:
-            self.logger.warning(
-                "Local FS: sync_root_path is empty; set Local folder path in the app or run pipeshub setup."
-            )
-            return
+        root_for_display = Path(self.sync_root_path.strip() or "Local FS")
+        emitted_folder_paths: set[str] = set()
+        seen_external_ids: Optional[set[str]] = set() if mode == "FULL" else None
+        processed = 0
+        deleted = 0
+        skipped = 0
+        batch_index = 0
+        empty_streak = 0
+        # One-shot, so a desktop that rejects every cursor cannot loop.
+        restarted_as_full = False
+        started = time.monotonic()
 
-        ok_path, detail = _validate_sync_root_path(root_raw)
-        if not ok_path:
-            # Expected for Electron-managed connectors: the path lives on the
-            # user's desktop, not the backend host. The Electron watcher seeds
-            # records via apply_file_event_batch, so this is informational.
-            self.logger.info(
-                "Local FS: backend cannot read sync_root_path (%s); "
-                "deferring initial seed to the client (Electron app / CLI).",
-                detail,
-            )
-            return
-        root = Path(detail)
-
+        self.logger.info(
+            "Local FS: starting %s sync (connector=%s run=%s)",
+            mode,
+            self.connector_id,
+            run_id,
+        )
         try:
-            self._owner_user_for_permissions = await self._resolve_owner_user()
-            owner = self._owner_user_for_permissions
-            if not owner:
-                return
-
-            sync_filters, indexing_filters = await load_connector_filters(
-                self.config_service, "localfs", self.connector_id, self.logger
+            owner, sync_filters, indexing_filters, rg_external = (
+                await self._ensure_owner_and_record_group(root_for_display)
             )
-
-            await self.data_entities_processor.on_new_app_users([self._to_app_user(owner)])
-
-            rg_external = self._record_group_external_id()
-            record_group = RecordGroup(
-                org_id=self.data_entities_processor.org_id,
-                name=root.name or str(root),
-                external_group_id=rg_external,
-                connector_name=self.connector_name,
-                connector_id=self.connector_id,
-                group_type=RecordGroupType.DRIVE,
-                web_url=f"file://{root}",
-            )
-            await self.data_entities_processor.on_new_record_groups(
-                [
-                    (
-                        record_group,
-                        [
-                            Permission(
-                                external_id=owner.id,
-                                email=owner.email,
-                                type=PermissionType.OWNER,
-                                entity_type=EntityType.USER,
-                            )
-                        ],
-                    )
-                ]
-            )
-
-            deleted = await self._reset_existing_records(
-                owner.id, delete_storage_documents=True
-            )
-
-            folder_paths = self._iter_folder_paths(root)
-            paths = self._iter_file_paths(root)
-            batch: List[Tuple[FileRecord, List[Permission]]] = []
-            emitted_folder_paths: set[str] = set()
-            processed = 0
-            for abs_folder_path in folder_paths:
-                try:
-                    if abs_folder_path.is_symlink():
-                        continue
-                    if not abs_folder_path.is_dir():
-                        continue
-                    st = abs_folder_path.stat()
-                    self._append_folder_upsert_records(
-                        batch,
-                        abs_folder_path.relative_to(root).as_posix(),
-                        root,
-                        rg_external,
-                        int(st.st_mtime * 1000),
-                        emitted_folder_paths,
-                        owner=owner,
-                    )
-                    if len(batch) >= self.batch_size:
-                        await self.data_entities_processor.on_new_records(batch)
-                        batch = []
-                        await asyncio.sleep(0)
-                except Exception as e:
-                    self.logger.warning(
-                        "Local FS: skip folder %s: %s",
-                        abs_folder_path,
-                        e,
-                        exc_info=True,
-                    )
-                    continue
-
-            for abs_path in paths:
-                try:
-                    if abs_path.is_symlink():
-                        continue
-                    if not abs_path.is_file():
-                        continue
-                    if not self._extension_allowed(abs_path, sync_filters):
-                        continue
-                    st = abs_path.stat()
-                    if not _file_stat_matches_date_filters(st, sync_filters):
-                        continue
-                    rel_path = abs_path.relative_to(root).as_posix()
-                    folder_records = self._build_parent_folder_records(
-                        rel_path,
-                        root,
-                        rg_external,
-                        int(st.st_mtime * 1000),
-                        emitted_folder_paths,
-                        owner=owner,
-                    )
-                    if folder_records:
-                        batch.extend(folder_records)
-                    batch.append(
-                        self._build_file_record(
-                            abs_path, root, rg_external, indexing_filters, st=st
+            timeout = aiohttp.ClientTimeout(total=LOCAL_FS_PULL_HTTP_TIMEOUT_SECONDS)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                while True:
+                    try:
+                        batch = await self._pull_with_retry(
+                            run_id=run_id,
+                            batch_index=batch_index,
+                            cursor=cursor,
+                            mode=mode,
+                            session=session,
+                            expected_device_id=device_id,
                         )
+                    except LocalFsDesktopRemoteError as exc:
+                        # The desktop lost the journal position our cursor
+                        # names (reinstall, pruned journal, upgraded token
+                        # format). Without this the same dead cursor is re-sent
+                        # every run and the connector never syncs again.
+                        if exc.code != "CURSOR_UNKNOWN" or restarted_as_full:
+                            raise
+                        self.logger.warning(
+                            "Local FS: desktop rejected cursor %r; restarting "
+                            "as a full run",
+                            cursor,
+                        )
+                        restarted_as_full = True
+                        mode = "FULL"
+                        cursor = None
+                        # The old baseline is unusable, so the sync point must
+                        # not claim one until this full run completes.
+                        last_sync_time = None
+                        run_id = str(uuid.uuid4())
+                        batch_index = 0
+                        empty_streak = 0
+                        emitted_folder_paths = set()
+                        seen_external_ids = set()
+                        continue
+                    # First page of a never-owned folder pins the answering
+                    # machine; from here on _request_file_event_batch rejects
+                    # anyone else.
+                    if device_id is None and batch.deviceId:
+                        device_id = batch.deviceId
+                        self.logger.info(
+                            "Local FS: connector %s is now owned by device %s",
+                            self.connector_id,
+                            device_id,
+                        )
+                    stats = await self._apply_file_event_batch(
+                        batch.events,
+                        owner=owner,
+                        sync_filters=sync_filters,
+                        indexing_filters=indexing_filters,
+                        external_record_group_id=rg_external,
+                        root_for_display=root_for_display,
+                        emitted_folder_paths=emitted_folder_paths,
+                        seen_external_ids=seen_external_ids,
                     )
-                    processed += 1
-                    if len(batch) >= self.batch_size:
-                        await self.data_entities_processor.on_new_records(batch)
-                        batch = []
-                        await asyncio.sleep(0)
-                except Exception as e:
-                    self.logger.warning("Local FS: skip %s: %s", abs_path, e)
-                    continue
+                    processed += stats.processed
+                    deleted += stats.deleted
+                    skipped += stats.skipped
+                    cursor = batch.cursor
 
-            if batch:
-                await self.data_entities_processor.on_new_records(batch)
+                    # Per-batch, so a crash costs at most one page of re-work.
+                    await self._write_sync_point(
+                        cursor=cursor,
+                        run_id=run_id,
+                        batch_index=batch_index,
+                        last_sync_time=last_sync_time,
+                        device_id=device_id,
+                    )
 
+                    empty_streak = 0 if batch.events else empty_streak + 1
+                    batch_index += 1
+                    if not batch.hasMore:
+                        break
+                    if empty_streak >= LOCAL_FS_MAX_EMPTY_BATCHES:
+                        raise LocalFsDesktopRemoteError(
+                            "STALLED",
+                            f"{empty_streak} consecutive empty batches with "
+                            "hasMore still set",
+                            retryable=False,
+                        )
+                    if time.monotonic() - started > LOCAL_FS_MAX_RUN_SECONDS:
+                        raise LocalFsDesktopRemoteError(
+                            "RUN_TOO_LONG",
+                            f"run exceeded {LOCAL_FS_MAX_RUN_SECONDS}s",
+                            retryable=False,
+                        )
+                    if batch_index >= LOCAL_FS_MAX_BATCHES_PER_RUN:
+                        raise LocalFsDesktopRemoteError(
+                            "TOO_MANY_BATCHES",
+                            f"run exceeded {LOCAL_FS_MAX_BATCHES_PER_RUN} batches",
+                            retryable=False,
+                        )
+
+            if seen_external_ids is not None:
+                deleted += await self._prune_unseen_records(
+                    owner.id, seen_external_ids
+                )
+
+            await self._write_sync_point(
+                cursor=cursor,
+                run_id=run_id,
+                batch_index=batch_index,
+                last_sync_time=get_epoch_timestamp_in_ms(),
+                device_id=device_id,
+            )
             self.logger.info(
-                "Local FS: finished sync from %s (%d file(s) processed, %d stale record(s) deleted)",
-                root,
+                "Local FS: %s sync complete (run=%s batches=%d processed=%d "
+                "deleted=%d skipped=%d)",
+                mode,
+                run_id,
+                batch_index,
                 processed,
                 deleted,
+                skipped,
             )
-        except Exception as e:
-            self.logger.error("Local FS run_sync failed: %s", e, exc_info=True)
+        except asyncio.CancelledError:
             raise
+        except LocalFsDesktopOfflineError:
+            raise
+        except LocalFsDesktopError as exc:
+            self.logger.warning("Local FS: sync aborted — %s", exc)
         finally:
             self._owner_user_for_permissions = None
 
