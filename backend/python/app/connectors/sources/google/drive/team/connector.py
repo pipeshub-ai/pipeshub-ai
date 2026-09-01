@@ -624,7 +624,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         if not self._external_emails:
             return
 
-        emails = sorted(self._external_emails)
+        emails = list(self._external_emails)
         try:
             await self.data_entities_processor.on_external_app_users(
                 emails, self.connector_id
