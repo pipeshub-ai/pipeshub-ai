@@ -172,6 +172,7 @@ app_schema = {
                 "type": ["string", "null"],
                 "enum": [m.value for m in PermissionModel] + [None],
             },
+            "lastError": {"type": ["string", "null"]},
             # KB-specific optional fields
             "orgId": {"type": ["string", "null"]},
             "description": {"type": ["string", "null"]},

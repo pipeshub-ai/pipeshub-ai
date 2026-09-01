@@ -3,7 +3,10 @@
 import logging
 
 from app.config.configuration_service import ConfigurationService
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorSyncSkippedError,
+)
 
 # from app.connectors.core.interfaces.data_store.data_store_provider import DataStoreProvider
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
@@ -299,13 +302,17 @@ class ConnectorFactory:
         return None
 
     @staticmethod
-    async def _run_sync_and_invalidate(connector: BaseConnector, connector_id: str) -> None:
+    async def _run_sync_and_invalidate(
+        connector: BaseConnector, connector_id: str, logger: logging.Logger
+    ) -> None:
         """Run a sync started outside `EventService`, then drop the connector's
         cached accessible-record map the same way that path does."""
         from app.services.cache.invalidation_hooks import notify_connector_sync_completed
 
         try:
             await connector.run_sync()
+        except ConnectorSyncSkippedError as exc:
+            logger.info("Startup sync skipped for %s — %s", connector_id, exc)
         finally:
             processor = getattr(connector, "data_entities_processor", None)
             org_id = getattr(processor, "org_id", None) if processor is not None else None
@@ -347,7 +354,8 @@ class ConnectorFactory:
                     )
                 else:
                     await sync_task_manager.start_sync(
-                        connector_id, cls._run_sync_and_invalidate(connector, connector_id)
+                        connector_id,
+                        cls._run_sync_and_invalidate(connector, connector_id, logger),
                     )
                     logger.info(f"Started sync for {name} {connector_id} connector")
                 return connector

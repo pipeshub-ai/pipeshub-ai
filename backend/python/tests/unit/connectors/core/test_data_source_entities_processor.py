@@ -5337,3 +5337,63 @@ class TestPlaceholderFlag:
         assert kwargs["record_group_id"] == "rg-1"
         assert kwargs["is_placeholder"] is True
         assert kwargs["status_filters"] is None
+
+
+class TestOnRecordsMovedDuplicateGuard:
+    """A move must never leave two vertices holding one external_record_id.
+
+    Records upsert by vertex id, so a CREATED for the destination path applied
+    before the move mints a second vertex that the move then collides with. Both
+    would survive, and every lookup by external id would resolve to an arbitrary
+    one of the pair.
+    """
+
+    pytestmark = pytest.mark.anyio
+
+    @staticmethod
+    def _setup(tx_store, old_record, interloper):
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        async def by_external_id(*, connector_id, external_id):  # noqa: ARG001
+            return old_record if external_id == "/ns/-/blob/HEAD/src/old.py" else interloper
+
+        tx_store.get_record_by_external_id = AsyncMock(side_effect=by_external_id)
+        tx_store.delete_parent_child_edge_to_record = AsyncMock()
+        tx_store.delete_record_by_key = AsyncMock()
+        return proc
+
+    async def test_vertex_already_holding_the_destination_id_is_retired(self) -> None:
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-original")
+        interloper = _make_old_record(record_id="rec-duplicate")
+        new_record = _make_code_record(record_id="fresh-uuid")
+        proc = self._setup(tx_store, old_record, interloper)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
+
+        tx_store.delete_record_by_key.assert_awaited_once_with("rec-duplicate")
+        tx_store.delete_parent_child_edge_to_record.assert_any_await("rec-duplicate")
+        # The move still reuses the original vertex, so its edges survive.
+        assert new_record.id == "rec-original"
+
+    async def test_nothing_is_retired_when_the_destination_id_is_free(self) -> None:
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-original")
+        new_record = _make_code_record(record_id="fresh-uuid")
+        proc = self._setup(tx_store, old_record, None)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
+
+        tx_store.delete_record_by_key.assert_not_awaited()
+
+    async def test_the_moving_record_is_never_mistaken_for_a_duplicate(self) -> None:
+        """A connector that re-sends a move it already applied resolves both
+        lookups to the same vertex — which must not delete the record."""
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-original")
+        new_record = _make_code_record(record_id="fresh-uuid")
+        proc = self._setup(tx_store, old_record, old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
+
+        tx_store.delete_record_by_key.assert_not_awaited()

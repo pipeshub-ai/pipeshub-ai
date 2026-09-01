@@ -69,6 +69,7 @@ import {
 import { NotificationService } from './modules/notification/service/notification.service';
 import { DesktopProxySocketGateway } from './modules/desktop_proxy/socket/desktop-proxy.gateway';
 import { DesktopProxyContainer } from './modules/desktop_proxy/container/desktop-proxy.container';
+import { createDesktopProxyRouter } from './modules/desktop_proxy/routes/desktop-proxy.routes';
 import { createGlobalRateLimiter } from './libs/middlewares/rate-limit.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
@@ -493,6 +494,12 @@ export class Application {
     this.app.use(
       '/api/v1/document',
       createStorageRouter(this.storageServiceContainer),
+    );
+
+    // desktop relay routes (connector service -> user's desktop app)
+    this.app.use(
+      '/api/v1/desktop',
+      createDesktopProxyRouter(this.desktopProxyContainer),
     );
 
     // enterprise search conversational routes

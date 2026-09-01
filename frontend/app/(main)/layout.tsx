@@ -21,6 +21,7 @@ import i18n from '@/lib/i18n/config'
 import { useLanguageStore } from '@/lib/store/language-store'
 import { UserProfileInitializer } from './components/user-profile-initializer'
 import { OrgProfileInitializer } from './components/org-profile-initializer'
+import { ElectronLocalSyncBootstrap } from './components/electron-local-sync-bootstrap'
 import { UserBackgroundSurvey } from "./components/surveys/user-background"
 import { OnboardingTour } from "./components/tours/onboarding"
 import { useOnboardingStore } from "./onboarding/store"
@@ -193,6 +194,10 @@ function AppLayout({
       {/* Hydrates user profile (name, email, isAdmin, avatar) once auth is ready */}
       <UserProfileInitializer />
       <OrgProfileInitializer />
+      {/* Desktop-only: brings up Local FS watchers already known to the
+          Electron journal as soon as auth is ready, without requiring the
+          user to open the connectors page first. */}
+      <ElectronLocalSyncBootstrap />
       <Flex
         style={{
           height: '100vh',
