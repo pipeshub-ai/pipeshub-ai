@@ -375,22 +375,6 @@ export const ConnectorsApi = {
     return data;
   },
 
-  /** Submit local filesystem file-event batches for incremental sync */
-  async submitFileEvents(
-    connectorId: string,
-    payload: {
-      batchId: string;
-      timestamp: number;
-      events: ConnectorFileEvent[];
-    }
-  ) {
-    const { data } = await apiClient.post(
-      `${BASE_URL}/${connectorId}/file-events`,
-      payload
-    );
-    return data;
-  },
-
   /**
    * Complete connector OAuth in a popup: forwards to Node, which proxies the connector service.
    * Same contract as the legacy SPA `/connectors/oauth/callback/...` page.

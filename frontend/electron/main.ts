@@ -9,13 +9,20 @@ import {
   dialog,
   shell,
   systemPreferences,
+  safeStorage,
   type IpcMainInvokeEvent,
   type IpcMainEvent,
   type NativeImage,
 } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import { LocalSyncManager, type ConnectorStatus } from './local-sync';
+import {
+  ContentStreamer,
+  DesktopCredentialsStore,
+  DesktopSocketClient,
+  LocalSyncManager,
+  type ConnectorStatus,
+} from './local-sync';
 import {
   openLocalFsRecordSource,
   type OpenLocalFsRecordSourcePayload,
@@ -32,6 +39,8 @@ const SCHEME = 'app';
 
 let mainWindow: BrowserWindow | null = null;
 let localSyncManager: LocalSyncManager | null = null;
+let desktopCredentials: DesktopCredentialsStore | null = null;
+let desktopSocket: DesktopSocketClient | null = null;
 let isQuitting = false;
 
 // Single-instance lock so only one app instance runs watchers / dispatch.
@@ -135,6 +144,11 @@ interface ConnectorIdPayload {
   connectorId?: string;
 }
 
+interface CredentialsPayload {
+  refreshToken?: string;
+  apiBaseUrl?: string;
+}
+
 app.whenReady().then(() => {
   // ── CORS bypass ──────────────────────────────────────────────────────────
   // The renderer runs under the app:// origin which the backend's CORS config
@@ -168,6 +182,38 @@ app.whenReady().then(() => {
     onStatusChange: (status: ConnectorStatus) => {
       if (!mainWindow || mainWindow.isDestroyed()) return;
       mainWindow.webContents.send('local-sync-status', status);
+    },
+  });
+
+  // Credentials live beside the journal so sync keeps working with the window
+  // closed — moving the scheduler server-side buys nothing if the desktop can
+  // only answer while a renderer is alive.
+  desktopCredentials = new DesktopCredentialsStore(localSyncManager.baseDir, safeStorage);
+  const contentStreamer = new ContentStreamer({
+    getRootPath: (connectorId: string) => localSyncManager?.getRootPath(connectorId) ?? null,
+  });
+  desktopSocket = new DesktopSocketClient({
+    credentials: desktopCredentials,
+    listConnectorIds: () => localSyncManager?.listConnectorIds() ?? [],
+    servePull: (request) =>
+      localSyncManager
+        ? localSyncManager.servePull(request)
+        : Promise.resolve({
+            ok: false as const,
+            runId: request.runId,
+            batchIndex: request.batchIndex,
+            error: {
+              code: 'INTERNAL' as const,
+              message: 'Local sync is not initialized',
+              retryable: true,
+            },
+          }),
+    serveContent: (request, emitChunk, abort) =>
+      contentStreamer.serve(request, emitChunk, abort),
+    onRegistration: (ack) => {
+      localSyncManager?.setForeignOwnedConnectors(
+        ack.rejected.map((entry) => entry.connectorId),
+      );
     },
   });
 
@@ -215,12 +261,41 @@ app.whenReady().then(() => {
 
   ipcMain.handle('local-sync/start', async (_event: IpcMainInvokeEvent, payload: Parameters<LocalSyncManager['start']>[0]) => {
     if (!localSyncManager) return null;
-    return localSyncManager.start(payload || ({} as Parameters<LocalSyncManager['start']>[0]));
+    const status = await localSyncManager.start(payload || ({} as Parameters<LocalSyncManager['start']>[0]));
+    // Await the claim: toggle-on publishes an immediate pull as soon as this
+    // IPC returns, and a fire-and-forget register loses that race.
+    await desktopSocket?.register();
+    return status;
+  });
+
+  ipcMain.handle('local-sync/check-root-path', async (_event: IpcMainInvokeEvent, payload: { connectorId: string; rootPath: string }) => {
+    if (!localSyncManager || !payload?.connectorId || !payload?.rootPath) {
+      return { available: true };
+    }
+    return localSyncManager.checkRootPathConflict(payload.connectorId, payload.rootPath);
   });
 
   ipcMain.handle('local-sync/stop', async (_event: IpcMainInvokeEvent, payload: ConnectorIdPayload) => {
     if (!localSyncManager || !payload?.connectorId) return null;
-    return localSyncManager.stop(payload.connectorId);
+    const status = await localSyncManager.stop(payload.connectorId);
+    // Release the claim so another machine can take the folder over without
+    // waiting for this app to quit.
+    desktopSocket?.unregister([payload.connectorId]);
+    return status;
+  });
+
+  ipcMain.handle('local-sync/remove', async (_event: IpcMainInvokeEvent, payload: ConnectorIdPayload) => {
+    if (!localSyncManager || !payload?.connectorId) return { ok: false };
+    await localSyncManager.remove(payload.connectorId);
+    desktopSocket?.unregister([payload.connectorId]);
+    return { ok: true };
+  });
+
+  ipcMain.handle('local-sync/reap', async (_event: IpcMainInvokeEvent, payload?: { connectorIds?: string[] }) => {
+    if (!localSyncManager || !Array.isArray(payload?.connectorIds)) return { removed: [] };
+    const removed = await localSyncManager.reap(payload.connectorIds);
+    if (removed.length > 0) desktopSocket?.unregister(removed);
+    return { removed };
   });
 
   ipcMain.handle('local-sync/status', async (_event: IpcMainInvokeEvent, payload?: ConnectorIdPayload) => {
@@ -228,18 +303,35 @@ app.whenReady().then(() => {
     return localSyncManager.getStatus(payload?.connectorId);
   });
 
-  ipcMain.handle('local-sync/full-resync', async (_event: IpcMainInvokeEvent, payload: ConnectorIdPayload) => {
-    if (!localSyncManager || !payload || !payload.connectorId) return null;
-    try {
-      const result = await localSyncManager.fullResync(payload.connectorId);
-      return { ok: true, ...result, status: localSyncManager.getStatus(payload.connectorId) };
-    } catch (error) {
-      return {
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-        status: localSyncManager.getStatus(payload.connectorId),
-      };
+  ipcMain.handle('local-sync/bootstrap', async () => {
+    if (!localSyncManager) return [];
+    const results = await localSyncManager.bootstrapFromJournal();
+    await desktopSocket?.register();
+    return results;
+  });
+
+  // The renderer hands the refresh token over at login; from then on main
+  // mints its own access tokens and no longer needs a window.
+  ipcMain.handle('local-sync/credentials', async (_event: IpcMainInvokeEvent, payload: CredentialsPayload) => {
+    if (!desktopCredentials || !payload?.refreshToken || !payload?.apiBaseUrl) {
+      return { ok: false, error: 'refreshToken and apiBaseUrl are required' };
     }
+    try {
+      const result = desktopCredentials.setCredentials({
+        refreshToken: payload.refreshToken,
+        apiBaseUrl: payload.apiBaseUrl,
+      });
+      await desktopSocket?.reconnectWithNewCredential();
+      return { ok: true, ...result };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  ipcMain.handle('local-sync/clear-credentials', async () => {
+    desktopCredentials?.clear();
+    desktopSocket?.disconnect();
+    return { ok: true };
   });
 
   ipcMain.handle('local-fs/open-record-source', async (_event: IpcMainInvokeEvent, payload: OpenLocalFsRecordSourcePayload) => {
@@ -327,23 +419,16 @@ app.whenReady().then(() => {
     if (controller) controller.abort();
   });
 
-  ipcMain.handle('local-sync/replay', async (_event: IpcMainInvokeEvent, payload?: ConnectorIdPayload) => {
-    if (!localSyncManager) return null;
-    if (payload?.connectorId) {
-      return localSyncManager.replay(payload.connectorId);
-    }
-    const connectorIds = localSyncManager.journal.listConnectorIds();
-    const results = [];
-    for (const connectorId of connectorIds) {
-      results.push(await localSyncManager.replay(connectorId));
-    }
-    return results;
-  });
-
   createWindow();
-  localSyncManager.init().catch((error: unknown) => {
-    console.warn('[local-sync] initialization failed:', error);
-  });
+  // Mount watchers and connect before any window work: the server owns sync
+  // cadence now, and a scheduled tick must land on a desktop that is answering
+  // even with the window closed.
+  localSyncManager
+    .bootstrapFromJournal()
+    .then(() => desktopSocket?.connect())
+    .catch((error: unknown) => {
+      console.warn('[local-sync] initialization failed:', error);
+    });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -360,6 +445,7 @@ app.on('before-quit', async (event) => {
   event.preventDefault();
   isQuitting = true;
   try {
+    desktopSocket?.disconnect();
     await localSyncManager.shutdown();
   } catch (error) {
     console.warn('[local-sync] shutdown error:', error);

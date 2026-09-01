@@ -10,6 +10,17 @@ import {
   DEFAULT_REST_PROXY_ALLOWED_PREFIXES,
   normalizeAndAssertRestProxyPath,
 } from './desktop-proxy-allowlist';
+import { LocalFsRelay } from './local-fs-relay';
+import {
+  DesktopRegisterAck,
+  DesktopRegisterPayload,
+  DesktopUnregisterPayload,
+  LocalFsContentAbortPayload,
+  LocalFsContentChunkPayload,
+  LocalFsFetchContentPayload,
+  LocalFsPullRequestPayload,
+  LocalFsPullResult,
+} from '../types/local-fs-pull.types';
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -19,6 +30,7 @@ type RestProxyQuery = Record<string, JsonPrimitive | undefined>;
 type RestProxySocketData = {
   userId: string;
   orgId: string;
+  deviceId?: string;
 };
 
 type ClientToServerEvents = {
@@ -26,6 +38,13 @@ type ClientToServerEvents = {
     req: RpcRequest,
     ack?: (res: RpcResponse) => void,
   ) => void;
+  'desktop:register': (
+    payload: DesktopRegisterPayload,
+    ack?: (res: DesktopRegisterAck) => void,
+  ) => void;
+  'desktop:unregister': (payload: DesktopUnregisterPayload) => void;
+  'localfs:content:chunk': (payload: LocalFsContentChunkPayload) => void;
+  'localfs:content:abort': (payload: LocalFsContentAbortPayload) => void;
 };
 
 type ServerToClientEvents = {
@@ -79,6 +98,7 @@ export class DesktopProxySocketGateway {
   });
   private io: Server | null = null;
   private namespace: Namespace | null = null;
+  private readonly localFsRelay = new LocalFsRelay();
 
   constructor(
     private readonly authTokenService: AuthTokenService,
@@ -115,8 +135,16 @@ export class DesktopProxySocketGateway {
       this.authTokenService
         .verifyToken(extractedToken)
         .then((decoded) => {
-          socket.data.userId = String(decoded.userId ?? '');
-          socket.data.orgId = String(decoded.orgId ?? '');
+          const userId = String(decoded.userId ?? '');
+          const orgId = String(decoded.orgId ?? '');
+          if (!userId || !orgId) {
+            // Otherwise the socket connects but can never be addressed,
+            // which reads as "desktop offline" forever.
+            next(new BadRequestError('Token is missing userId or orgId'));
+            return;
+          }
+          socket.data.userId = userId;
+          socket.data.orgId = orgId;
           next();
         })
         .catch(() => {
@@ -125,6 +153,7 @@ export class DesktopProxySocketGateway {
     });
 
     this.namespace.on('connection', (socket: RestProxySocket) => {
+      socket.join(`${socket.data.orgId}:${socket.data.userId}`);
       socket.on(
         'rpc:request',
         async (req: RpcRequest, ack?: (res: RpcResponse) => void) => {
@@ -136,6 +165,37 @@ export class DesktopProxySocketGateway {
           }
         },
       );
+
+      socket.on(
+        'desktop:register',
+        (
+          payload: DesktopRegisterPayload,
+          ack?: (res: DesktopRegisterAck) => void,
+        ) => {
+          const result = this.localFsRelay.register(
+            socket,
+            payload?.connectorIds || [],
+            payload?.deviceId,
+          );
+          if (ack) ack(result);
+        },
+      );
+
+      socket.on('desktop:unregister', (payload: DesktopUnregisterPayload) => {
+        this.localFsRelay.unregister(socket, payload?.connectorIds || []);
+      });
+
+      socket.on('localfs:content:chunk', (payload: LocalFsContentChunkPayload) => {
+        this.localFsRelay.handleContentChunk(socket, payload);
+      });
+
+      socket.on('localfs:content:abort', (payload: LocalFsContentAbortPayload) => {
+        this.localFsRelay.handleContentAbort(socket, payload);
+      });
+
+      socket.on('disconnect', () => {
+        this.localFsRelay.handleDisconnect(socket);
+      });
     });
 
     this.logger.info('REST proxy Socket.IO namespace initialized');
@@ -146,6 +206,41 @@ export class DesktopProxySocketGateway {
     this.namespace = null;
     void this.io?.close();
     this.io = null;
+  }
+
+  /** False until initialize() runs, which happens after routes are mounted. */
+  isReady(): boolean {
+    return this.namespace !== null;
+  }
+
+  /** Ask the desktop that registered this connector for one page of file events. */
+  async requestLocalFsFileEvents(
+    orgId: string,
+    userId: string,
+    connectorId: string,
+    payload: LocalFsPullRequestPayload,
+  ): Promise<LocalFsPullResult> {
+    return this.localFsRelay.requestFileEvents(
+      orgId,
+      userId,
+      connectorId,
+      payload,
+    );
+  }
+
+  /** Fetch one file's bytes from the desktop. Same seam as the pull above. */
+  async requestLocalFsContent(
+    orgId: string,
+    userId: string,
+    connectorId: string,
+    payload: LocalFsFetchContentPayload,
+  ): Promise<Buffer> {
+    return this.localFsRelay.requestContent(
+      orgId,
+      userId,
+      connectorId,
+      payload,
+    );
   }
 
   private async handleRequest(

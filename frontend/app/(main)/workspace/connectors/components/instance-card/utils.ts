@@ -1,4 +1,9 @@
-import { STRATEGY_LABELS, INTERVAL_LABELS, CONNECTOR_INSTANCE_STATUS } from '../../constants';
+import {
+  STRATEGY_LABELS,
+  INTERVAL_LABELS,
+  CONNECTOR_INSTANCE_STATUS,
+  LOCAL_FS_DESKTOP_OFFLINE,
+} from '../../constants';
 import { isConnectorInstanceOAuthAuthIncompleteForSyncUi, isOAuthType } from '../../utils/auth-helpers';
 import type {
   ConnectorInstance,
@@ -86,6 +91,9 @@ export function deriveSyncStatusState(
   }
   if (instance.status === CONNECTOR_INSTANCE_STATUS.SYNCING) {
     return { status: 'syncing', oauthAuthIncompleteForSync };
+  }
+  if (instance.lastError === LOCAL_FS_DESKTOP_OFFLINE) {
+    return { status: 'sync_failed', oauthAuthIncompleteForSync };
   }
 
   // 2. Instance-level boolean state

@@ -1,6 +1,8 @@
 import { Container } from 'inversify';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
+import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { Logger } from '../../../libs/services/logger.service';
 import { DesktopProxySocketGateway } from '../socket/desktop-proxy.gateway';
 
 export class DesktopProxyContainer {
@@ -20,6 +22,15 @@ export class DesktopProxyContainer {
     container
       .bind<AuthTokenService>(AuthTokenService)
       .toConstantValue(authTokenService);
+
+    container
+      .bind<AuthMiddleware>('AuthMiddleware')
+      .toConstantValue(
+        new AuthMiddleware(
+          Logger.getInstance({ service: 'DesktopProxy' }),
+          authTokenService,
+        ),
+      );
 
     container
       .bind<DesktopProxySocketGateway>(DesktopProxySocketGateway)

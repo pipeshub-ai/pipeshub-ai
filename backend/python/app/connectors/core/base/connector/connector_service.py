@@ -43,6 +43,15 @@ class ConnectorInitError(Exception):
     as a failure, so raising it there is safe."""
 
 
+class ConnectorSyncSkippedError(Exception):
+    """Sync could not run now. Event service writes ``code`` to App lastError
+    and does not treat the task as a crash."""
+
+    def __init__(self, code: str, message: str = "") -> None:
+        super().__init__(message or code)
+        self.code = code
+
+
 class BaseConnector(ABC):
     """Base abstract class for all connectors"""
     logger: Logger
