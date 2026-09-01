@@ -195,7 +195,7 @@ class CollectionNames(Enum):
     SQL_VIEWS = "sqlViews"
 
     # Users and groups
-    PEOPLE = "people"
+    PEOPLE = "person"
     USERS = "users"
     GROUPS = "groups"
     ROLES = "roles"
