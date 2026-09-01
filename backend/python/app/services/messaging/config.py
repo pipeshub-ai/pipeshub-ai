@@ -1,7 +1,6 @@
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from enum import Enum
-from typing import Optional
 
 from pydantic import BaseModel, Field, JsonValue
 
@@ -64,18 +63,18 @@ class StreamMessage(BaseModel):
 
     eventType: str
     payload: dict[str, JsonValue]
-    timestamp: Optional[int] = None
+    timestamp: int | None = None
     # Trace id propagated from the producer; optional so legacy messages parse.
-    requestId: Optional[str] = None
-    is_final_failure: Optional[bool] = None  # Set by consumer: True = will commit/dead-letter, False = will retry
+    requestId: str | None = None
+    is_final_failure: bool | None = None  # Set by consumer: True = will commit/dead-letter, False = will retry
 
 
 class PipelineEventData(BaseModel):
     """Data yielded alongside a pipeline event."""
 
-    record_id: Optional[str] = None
-    record_name: Optional[str] = None
-    count: Optional[int] = None
+    record_id: str | None = None
+    record_name: str | None = None
+    count: int | None = None
     # Set by the handler when yielding START_PARSING (it already knows
     # extension/mime/content length at that point) so the consumer can route
     # to the right resource_governor pool instead of re-deriving format from
@@ -88,7 +87,7 @@ class PipelineEvent(BaseModel):
     """Event yielded by the indexing pipeline handler."""
 
     event: IndexingEvent
-    data: Optional[PipelineEventData] = None
+    data: PipelineEventData | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +352,146 @@ class MessagingEnvConfig:
     def vector_membership_backfill_vrid_pause_ms(self) -> int:
         return int(os.getenv("VECTOR_MEMBERSHIP_BACKFILL_VRID_PAUSE_MS", "20"))
 
+    @property
+    def redis_max_deliveries(self) -> int:
+        """Delivery-count ceiling for the Redis dead-letter backstop.
+
+        Distinct from ``max_delivery_attempts``, which counts *processing
+        failures*. Redis's ``times_delivered`` counts every delivery: the
+        first read, a claim after a restart, an idle-drain recovery pass. A
+        record delivered three times may have failed zero times, so sharing
+        one threshold dead-letters healthy work — especially with fair
+        scheduling, where an entry legitimately sits un-ACKed while it waits
+        its turn. The backstop only needs to bound a true poison loop that
+        kills the process before the failure counter can be written (#2992),
+        so it is deliberately slack.
+        """
+        return max(
+            self.max_delivery_attempts + 1,
+            _env_int("REDIS_MAX_DELIVERIES", 10),
+        )
+
+    @property
+    def fair_scheduling_enabled(self) -> bool:
+        """Master switch for consumer-side fair scheduling.
+
+        Enabling it buffers messages in-process and dispatches them out of
+        broker order, which switches the Kafka consumer from "commit
+        offset+1 per message" to a contiguous commit watermark. Setting this
+        to ``false`` restores the exact pre-existing FIFO behavior with zero
+        buffering overhead.
+
+        Ships **on**: without it a single connector's backlog takes the whole
+        pipeline until it drains, which is the behaviour this exists to fix.
+        Note that it is a change in commit protocol, not just a tuning knob,
+        so it is worth being deliberate about on an upgrade rather than
+        discovering it.
+        """
+        return os.getenv("FAIR_SCHEDULING_ENABLED", "true").lower() == "true"
+
+    @property
+    def fair_scheduling_key_fields(self) -> tuple[str, ...]:
+        """Payload fields forming the hierarchical fairness key, outermost
+        first, comma-separated.
+
+        The default ``orgId,connectorId`` is deliberate: ``orgId`` separates
+        customers but *not* users within one customer -- every user in an org
+        shares its ``orgId``, so keying on it alone gives a single-org
+        install one queue and no fairness. ``connectorId`` (the connector
+        instance id, and the knowledge-base id for uploads) is what separates
+        one user's sync from another's. Fairness runs across orgs first, then
+        across connectors inside each org.
+        """
+        raw = os.getenv("FAIR_SCHEDULING_KEY_FIELDS", "orgId,connectorId")
+        fields = tuple(part.strip() for part in raw.split(",") if part.strip())
+        return fields or ("orgId", "connectorId")
+
+    @property
+    def fair_scheduling_quantum(self) -> int:
+        """Default DRR quantum: messages per key per round when no
+        ``WeightProvider`` is injected."""
+        return max(1, _env_int("FAIR_SCHEDULING_QUANTUM", 1))
+
+    @property
+    def fair_scheduling_max_buffer(self) -> int:
+        """Total buffered messages across every key. Bounds memory, not
+        throughput — a full buffer pauses reads, it never drops messages."""
+        return max(1, _env_int("FAIR_SCHEDULING_MAX_BUFFER", 2000))
+
+    @property
+    def fair_scheduling_max_per_entity(self) -> int:
+        """Per-key buffer cap. Exceeding it triggers overflow re-publish
+        (the excess message goes to the tail of the topic/stream) rather
+        than blocking other keys behind a single noisy one."""
+        return max(1, _env_int("FAIR_SCHEDULING_MAX_PER_ENTITY", 500))
+
+    @property
+    def fair_scheduling_parallel_partitions(self) -> bool:
+        """Let one Kafka partition have several records in flight at once.
+
+        Off by default. The consumer holds a partition for a record's whole
+        lifetime today, so with a single-partition ``record-events`` it
+        indexes exactly one record at a time no matter how high
+        ``MAX_CONCURRENT_INDEXING`` is set. Turning this on moves the
+        serialisation boundary from the partition to the individual record,
+        so concurrency comes from the pipeline gates instead of the topic's
+        partition count.
+
+        Requires fair scheduling (the commit watermark): without it,
+        completing offsets out of order within a partition would commit past
+        work that has not finished.
+        """
+        return (
+            os.getenv("FAIR_SCHEDULING_PARALLEL_PARTITIONS", "false").lower()
+            == "true"
+        )
+
+    @property
+    def fair_scheduling_lane_count(self) -> int:
+        """Number of broker lanes for the indexing topic.
+
+        ``1`` means no laning: the producer is left unwrapped and the publish
+        path is byte-for-byte what it was before lanes existed. Above 1 --
+        which is the default -- records are placed by fairness key so one
+        key's backlog never sits in front of another's, which is what lets a
+        full buffer pause a single lane instead of stalling every key behind
+        it.
+
+        On Kafka a lane *is* a partition, so this only switches key-based
+        routing on; the real lane count is the topic's partition count
+        (``KAFKA_TOPIC_PARTITIONS``, applied by the Node admin service). On
+        Redis Streams this is the actual number of ``record-events.N``
+        streams and must match on producers and consumers.
+        """
+        return max(1, _env_int("FAIR_SCHEDULING_LANE_COUNT", 8))
+
+    @property
+    def fair_scheduling_lane_key_field(self) -> str:
+        """Payload field a lane is chosen from.
+
+        Defaults to the *innermost* fairness level, ``connectorId``: lanes
+        have to separate what the scheduler separates, and ``orgId`` alone
+        cannot separate two users of the same org.
+        """
+        return os.getenv("FAIR_SCHEDULING_LANE_KEY_FIELD", "connectorId")
+
+    @property
+    def fair_scheduling_laned_topics(self) -> tuple[str, ...]:
+        """Topics subject to lane routing. Only the indexing topic by
+        default -- entity and sync events are low volume with no fairness
+        problem to solve."""
+        raw = os.getenv("FAIR_SCHEDULING_LANED_TOPICS", Topic.RECORD_EVENTS.value)
+        topics = tuple(part.strip() for part in raw.split(",") if part.strip())
+        return topics or (Topic.RECORD_EVENTS.value,)
+
+    @property
+    def fair_scheduling_max_dwell_seconds(self) -> float:
+        """How long a buffered offset may go unresolved before the consumer
+        force-commits past it. Bounds the damage from a dispatch path that
+        fails to settle its watermark claim: without it, one such offset
+        stalls every later commit on its partition until a restart."""
+        return _env_seconds("FAIR_SCHEDULING_MAX_DWELL_SECONDS", 900.0)
+
 
 messaging_env = MessagingEnvConfig()
 
@@ -390,7 +529,7 @@ class RedisConfig(BaseModel):
 
     host: str = "localhost"
     port: int = 6379
-    password: Optional[str] = None
+    password: str | None = None
     db: int = 0
 
 

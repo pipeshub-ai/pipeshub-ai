@@ -153,6 +153,7 @@ export class RecordRelationService {
 
     return {
       orgId: record.orgId,
+      connectorId: record.connectorId,
       recordId: record._key,
       recordName: record.recordName,
       recordType: record.recordType,
@@ -197,6 +198,7 @@ export class RecordRelationService {
     }
     return {
       orgId: record.orgId,
+      connectorId: record.connectorId,
       recordId: record._key,
       version: record.version || 1,
       signedUrlRoute: signedUrlRoute,
@@ -233,6 +235,7 @@ export class RecordRelationService {
     }
     return {
       orgId: record.orgId,
+      connectorId: record.connectorId,
       recordId: record._key,
       version: record.version || 1,
       extension: extension,
@@ -262,6 +265,7 @@ export class RecordRelationService {
     }
     return {
       orgId: record.orgId,
+      connectorId: record.connectorId,
       recordId: record._key,
       version: record.version || 1,
       signedUrlRoute: signedUrlRoute,

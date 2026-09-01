@@ -1735,14 +1735,14 @@ class TestProcessEventErrors:
         gp.get_document = AsyncMock(side_effect=[record, record])
         gp.update_node = AsyncMock(return_value=True)
         handler._trigger_next_queued_duplicate = AsyncMock()
-        
+
         # Mock bulk_delete_embeddings for REINDEX_RECORD path
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock()
         pipeline.delete_points_for_virtual_record = AsyncMock()
 
         ep = handler.event_processor
-        
+
         def _on_event_returns_failing_gen(event_data):
             return _failing_async_gen(
                 DocumentProcessingError(
@@ -1750,7 +1750,7 @@ class TestProcessEventErrors:
                     details={"dependency": "cairosvg"},
                 )
             )
-        
+
         ep.on_event = _on_event_returns_failing_gen
 
         payload = {
@@ -1793,20 +1793,20 @@ class TestProcessEventErrors:
             "indexingStatus": ProgressStatus.NOT_STARTED.value,
             "mimeType": "image/svg+xml",
         }
-        
+
         # First call: get record for processing (returns record)
         # Second call: __update_document_status tries to get record (returns None - record was deleted)
         gp.get_document = AsyncMock(side_effect=[record, None])
         gp.batch_update_nodes = AsyncMock(return_value=False)
         handler._trigger_next_queued_duplicate = AsyncMock()
-        
+
         # Mock bulk_delete_embeddings for REINDEX_RECORD path
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock()
         pipeline.delete_points_for_virtual_record = AsyncMock()
 
         ep = handler.event_processor
-        
+
         def _on_event_returns_failing_gen(event_data):
             return _failing_async_gen(
                 DocumentProcessingError(
@@ -1814,7 +1814,7 @@ class TestProcessEventErrors:
                     details={"dependency": "cairosvg"},
                 )
             )
-        
+
         ep.on_event = _on_event_returns_failing_gen
 
         payload = {
@@ -2661,7 +2661,7 @@ class TestDownloadFromSignedUrl:
 
         async def _iter_chunked_fail(chunk_size):
             raise IOError("Disk full")
-            yield  # make it a generator  # noqa: E115
+            yield  # make it a generator
 
         mock_response.content = MagicMock()
         mock_response.content.iter_chunked = _iter_chunked_fail

@@ -16,8 +16,10 @@ section 1 and exercised in isolation by
   ``cpu_quota`` expression, so an idle-CPU host must still ramp concurrency
   up when the real work is I/O-bound.
 
-``Pool.INDEX`` is asserted here too but only to pin the opposite property:
-pipeline width is fixed at its ceiling and never ramps.
+The index pools are asserted here too, but only to pin a different
+property: pipeline width warm-starts at half its ceiling rather than
+ramping from the count-pool floor, so it is never the thing throttling
+the first minute of a sync.
 
 Only the probe and the controller's clock are faked; the 2,000 tasks
 actually acquire/hold/release a real ``AdmissionGate`` and really
@@ -86,9 +88,19 @@ class TestSmallRecordScaling:
         floor_limit = floor_for(Pool.LIGHT_PARSE, governor.ceilings.light)
         light_ceiling = governor.ceilings.light
         assert light_gate.limit == floor_limit  # warm-start floor (derived ceiling)
-        # Pipeline width does not ramp at all — it is at its ceiling from
-        # the first acquire, before any sample has run.
-        assert governor.gate(Pool.INDEX).limit == governor.ceilings.index
+        # Pipeline width warm-starts at half its ceiling rather than at the
+        # count-pool floor: an index permit costs almost nothing next to a
+        # parse slot, so the pipeline fills immediately instead of ramping a
+        # permit at a time. (On this fixture's small ceiling the two happen
+        # to coincide; floor_for is what encodes the rule.) The tiers are
+        # asserted separately because the index budget is split per tier --
+        # one shared budget would let a queue of slow records hold every
+        # permit and starve the fast ones.
+        for pool, ceiling in (
+            (Pool.INDEX_HEAVY, governor.ceilings.index_heavy),
+            (Pool.INDEX_LIGHT, governor.ceilings.index_light),
+        ):
+            assert governor.gate(pool).limit == floor_for(pool, ceiling)
 
         records = [
             asyncio.create_task(_parse_one_record(light_gate, RECORD_COST_SECONDS))

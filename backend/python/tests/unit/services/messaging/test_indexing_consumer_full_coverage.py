@@ -1,17 +1,20 @@
 import asyncio
 import json
 import logging
-import ssl
-import threading
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData, StreamMessage, messaging_env
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+    StreamMessage,
+    messaging_env,
+)
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
-    FUTURE_CLEANUP_INTERVAL,
     IndexingKafkaConsumer,
 )
 

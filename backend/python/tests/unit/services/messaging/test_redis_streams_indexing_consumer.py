@@ -2051,6 +2051,13 @@ class TestDrainPending:
                 None,
             ]
         )
+        # Phase 2 only runs when the pending list holds something this
+        # consumer is not already tracking -- the XREADGROUP below bumps
+        # times_delivered on everything it returns, so it must not run
+        # speculatively.
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"message_id": "9-0"}]
+        )
 
         with patch.object(
             consumer, "_start_processing_task", new_callable=AsyncMock
@@ -2075,7 +2082,11 @@ class TestDrainPending:
         consumer.running = True
         consumer.redis = AsyncMock()
         consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
-        consumer.redis.xpending_range = AsyncMock(return_value=[])
+        # Non-empty so the Phase-2 gate lets the recovery read run: it is
+        # skipped when nothing in the pending list is unaccounted for.
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"message_id": "5-0"}]
+        )
         consumer.redis.xreadgroup = AsyncMock(
             side_effect=[
                 [(first_topic, [("5-0", _valid_fields()), ("9-0", _valid_fields())])],
@@ -2116,6 +2127,7 @@ class TestExceedsMaxRetries:
             "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
         ) as mock_env:
             mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
@@ -2129,7 +2141,7 @@ class TestExceedsMaxRetries:
         """Message at the delivery threshold should be ACK-ed (dead-lettered)."""
         consumer.redis = AsyncMock()
         consumer.redis.xpending_range = AsyncMock(
-            return_value=[{"times_delivered": 10}]
+            return_value=[{"times_delivered": 11}]
         )
         consumer.redis.xack = AsyncMock()
 
@@ -2137,6 +2149,7 @@ class TestExceedsMaxRetries:
             "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
         ) as mock_env:
             mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
@@ -2157,6 +2170,7 @@ class TestExceedsMaxRetries:
             "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
         ) as mock_env:
             mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
@@ -2176,6 +2190,7 @@ class TestExceedsMaxRetries:
             "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
         ) as mock_env:
             mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
@@ -2202,7 +2217,7 @@ class TestExceedsMaxRetries:
         consumer.retry_manager.get_count.return_value = 1  # app counter lagging
         consumer.redis = AsyncMock()
         consumer.redis.xpending_range = AsyncMock(
-            return_value=[{"times_delivered": 10}]
+            return_value=[{"times_delivered": 11}]
         )
         consumer.redis.xack = AsyncMock()
 
@@ -2210,6 +2225,7 @@ class TestExceedsMaxRetries:
             "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
         ) as mock_env:
             mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
@@ -2240,6 +2256,7 @@ class TestExceedsMaxRetries:
             "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
         ) as mock_env:
             mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
@@ -2264,7 +2281,7 @@ class TestExceedsMaxRetries:
         )
         consumer.redis = AsyncMock()
         consumer.redis.xpending_range = AsyncMock(
-            return_value=[{"times_delivered": 10}]
+            return_value=[{"times_delivered": 11}]
         )
         consumer.redis.xack = AsyncMock()
 
@@ -2272,6 +2289,7 @@ class TestExceedsMaxRetries:
             "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
         ) as mock_env:
             mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
@@ -2315,6 +2333,13 @@ class TestExceedsMaxRetries:
                 None,
                 None,
             ]
+        )
+        # Phase 2 only runs when the pending list holds something this
+        # consumer is not already tracking -- the XREADGROUP below bumps
+        # times_delivered on everything it returns, so it must not run
+        # speculatively.
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"message_id": "9-0"}]
         )
 
         with patch.object(
@@ -2449,7 +2474,6 @@ class TestConsumeLoop:
             call_count += 1
             if call_count >= 3:
                 consumer.running = False
-            return None
 
         consumer.redis.xreadgroup = mock_xreadgroup
 

@@ -14,8 +14,6 @@ Covers:
 import asyncio
 import json
 import logging
-import ssl
-import threading
 import time
 from collections.abc import AsyncGenerator
 from concurrent.futures import Future
@@ -34,7 +32,6 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
-    FUTURE_CLEANUP_INTERVAL,
     IndexingKafkaConsumer,
     _compute_retry_backoff_seconds,
 )

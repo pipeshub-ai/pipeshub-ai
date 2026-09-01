@@ -1,9 +1,13 @@
 from logging import Logger
-from typing import Optional, override
+from typing import override
 
 from redis.asyncio import Redis
 
-from app.services.messaging.config import REQUIRED_TOPICS, RedisStreamsConfig
+from app.services.messaging.config import (
+    REQUIRED_TOPICS,
+    MessageBrokerType,
+    RedisStreamsConfig,
+)
 from app.services.messaging.interface.admin import IMessageAdmin
 
 _ADMIN_INIT_GROUP = "admin_init"
@@ -19,10 +23,21 @@ class RedisStreamsAdmin(IMessageAdmin):
 
     @override
     async def ensure_topics_exist(
-        self, topics: Optional[list[str]] = None
+        self, topics: list[str] | None = None
     ) -> None:
-        topic_list = topics or REQUIRED_TOPICS
-        redis: Optional[Redis] = None
+        # Lanes are separate streams, so a laned install needs each
+        # record-events.N pre-created -- not for correctness (XGROUP CREATE
+        # MKSTREAM would make them lazily) but so lag dashboards and the
+        # consumer's own subscription see them from t=0 rather than after the
+        # first message lands on each.
+        from app.services.messaging.messaging_factory import lane_topics_for
+
+        topic_list = topics or [
+            lane
+            for topic in REQUIRED_TOPICS
+            for lane in lane_topics_for(topic, MessageBrokerType.REDIS)
+        ]
+        redis: Redis | None = None
         try:
             redis = Redis(
                 host=self.config.host,
@@ -68,7 +83,7 @@ class RedisStreamsAdmin(IMessageAdmin):
 
     @override
     async def list_topics(self) -> list[str]:
-        redis: Optional[Redis] = None
+        redis: Redis | None = None
         try:
             redis = Redis(
                 host=self.config.host,
