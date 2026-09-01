@@ -315,7 +315,7 @@ class TestJiraConnector:
         app_skip = frozenset({
             "created_at_timestamp", "updated_at_timestamp", "auth_type", "is_active",
             "is_agent_active", "is_configured", "is_authenticated", "created_by",
-            "updated_by", "status", "is_locked",
+            "updated_by", "last_synced_by", "status", "is_locked",
         })
         assert_graph_entity_matches(expected_app, graph_app, entity="app_metadata", skip_compare=app_skip)
 
