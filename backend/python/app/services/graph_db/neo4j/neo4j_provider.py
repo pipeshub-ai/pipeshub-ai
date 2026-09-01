@@ -618,7 +618,7 @@ class Neo4jProvider(IGraphDBProvider):
                 try:
                     await self.client.execute_query(constraint_query)
                 except Exception as e:
-                    self.logger.debug(f"Business key constraint creation (may already exist): {str(e)}")
+                    self.logger.warning(f"Business key constraint creation (may already exist): {str(e)}")
 
             self.logger.info(
                 f"✅ Created {len(business_key_constraints)} business key constraints"

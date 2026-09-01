@@ -7553,7 +7553,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             {
                 "user@example.com": ("123abc", "users", "USER"),
                 "group@example.com": ("456def", "groups", "GROUP"),
-                "external@example.com": ("789ghi", "people", "USER")
+                "external@example.com": ("789ghi", "person", "USER")
             }
         """
         if not emails:

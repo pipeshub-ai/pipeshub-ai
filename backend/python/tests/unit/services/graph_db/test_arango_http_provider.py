@@ -5263,14 +5263,16 @@ class TestPeopleEmailUniqueIndex:
         UPSERT, which ArangoDB does not make atomic on its own. Without the unique index
         two concurrent syncs resolving the same collaborator in the same org each insert
         a Person and the permission edges split across them."""
+        from app.config.constants.arangodb import CollectionNames
+
         connected_provider.http_client.ensure_persistent_index = AsyncMock(return_value=True)
         await connected_provider._ensure_indexes()
 
         people_calls = [
             c for c in connected_provider.http_client.ensure_persistent_index.await_args_list
-            if c.args and c.args[0] == "people"
+            if c.args and c.args[0] == CollectionNames.PEOPLE.value
         ]
-        assert people_calls, "no index registered on the people collection"
+        assert people_calls, "no index registered on the person collection"
         org_email_call = next(c for c in people_calls if c.args[1] == ["orgId", "email"])
         assert org_email_call.kwargs.get("unique") is True
 
@@ -5839,7 +5841,7 @@ class TestBulkGetEntityIdsByEmailFull:
         ]
         result = await connected_provider.bulk_get_entity_ids_by_email(["person@test.com"])
         assert "person@test.com" in result
-        assert result["person@test.com"][1] == "people"
+        assert result["person@test.com"][1] == "person"
         assert result["person@test.com"][2] == "USER"
 
     @pytest.mark.asyncio
@@ -22239,7 +22241,7 @@ class TestArangoPersonMigrationAndReaper:
         )
         edge = {
             "_id": "permission/e1", "_key": "e1", "_rev": "r1",
-            "_from": "people/p1", "_to": "records/rec1", "role": "READER",
+            "_from": "person/p1", "_to": "records/rec1", "role": "READER",
         }
         calls = self._script(
             connected_provider,
@@ -22270,7 +22272,7 @@ class TestArangoPersonMigrationAndReaper:
             return_value=Person(id="p1", email="a@x.io")
         )
         edge = {"_id": "permission/e1", "_key": "e1", "_rev": "r1",
-                "_from": "people/p1", "_to": "records/rec1"}
+                "_from": "person/p1", "_to": "records/rec1"}
         calls = self._script(
             connected_provider,
             [False],
@@ -22346,8 +22348,8 @@ class TestArangoPersonMigrationAndReaper:
         self._script(
             connected_provider,
             [                                        # stale flagged edges
-                {"edge": "e1", "principal": "people/p1"},
-                {"edge": "e2", "principal": "people/p2"},
+                {"edge": "e1", "principal": "person/p1"},
+                {"edge": "e2", "principal": "person/p2"},
                 {"edge": "e3", "principal": "users/u9"},   # a user, never swept
             ],
             [],                                      # delete the membership edges
@@ -22364,7 +22366,7 @@ class TestArangoPersonMigrationAndReaper:
             [],
         )
         assert await connected_provider.reap_stale_external_app_relations("c1") == 0
-        assert not any("REMOVE key IN people" in q for q, _ in calls)
+        assert not any("REMOVE key IN person" in q for q, _ in calls)
 
     @pytest.mark.asyncio
     async def test_reaper_no_ops_when_nothing_is_stale(self, connected_provider):
