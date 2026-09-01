@@ -19687,13 +19687,16 @@ paths:
                 $ref: '#/components/schemas/Organization'
         '400':
           description: |
-            Request validation failed. Possible reasons:
+            Request validation failed, or the request was well-formed but rejected. Possible reasons:
 
             - Missing required fields (accountType, contactEmail, adminFullName, password)
             - accountType is not one of: individual, business
             - contactEmail is not a valid email address
             - password is shorter than 8 characters
             - registeredName is required when accountType is business
+            - Password does not meet complexity requirements (requires uppercase, lowercase, number, and special character)
+            - Organization already exists
+            - contactEmail does not contain a valid domain (e.g. emailname@example.com)
           content:
             application/json:
               schema:
@@ -19702,8 +19705,6 @@ paths:
           description: |
             Internal server error. Possible reasons:
 
-            - Organization already exists
-            - Password does not meet complexity requirements (requires uppercase, lowercase, number, and special character)
             - Database save failure
             - Event service error
           content:
