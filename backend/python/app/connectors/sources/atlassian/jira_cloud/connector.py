@@ -102,7 +102,6 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import (
-    NotificationRecipientRole,
     NotificationSeverity,
     NotificationType,
 )
@@ -603,7 +602,6 @@ class JiraConnector(BaseConnector):
                         f"Couldn't sync issues for {len(failed_keys)} project(s): {preview}. "
                         "Retry sync; check Jira access if it keeps failing."
                     ),
-                    recipient_roles=[NotificationRecipientRole.ADMIN],
                 )
 
             self.logger.info(
@@ -624,7 +622,6 @@ class JiraConnector(BaseConnector):
                         "may not be reflected yet. Run the sync again; if it keeps failing, "
                         "check the connector's configuration."
                     ),
-                    recipient_roles=[NotificationRecipientRole.ADMIN],
                 )
             raise
 
@@ -1143,7 +1140,6 @@ class JiraConnector(BaseConnector):
                                 "appear in search. Ask a Jira admin to grant it to enable deletion "
                                 "detection."
                             ),
-                            recipient_roles=[NotificationRecipientRole.ADMIN],
                             payload={
                                 "redirect_link": None,
                             }
@@ -1418,7 +1414,6 @@ class JiraConnector(BaseConnector):
                                 "Couldn't list users from Jira. The connector's Jira account "
                                 "needs the Browse users and groups global permission."
                             ),
-                            recipient_roles=[NotificationRecipientRole.ADMIN],
                         )
                     return users
                 raise Exception(f"Failed to fetch users: {response.text()}")
@@ -1552,7 +1547,6 @@ class JiraConnector(BaseConnector):
                             "so some users may not see all the Jira issues they can access "
                             "in Jira. Ask a Jira admin to grant it."
                         ),
-                        recipient_roles=[NotificationRecipientRole.ADMIN],
                         payload={
                             "redirect_link": None
                         }
@@ -1629,7 +1623,6 @@ class JiraConnector(BaseConnector):
                 payload={
                     "redirect_link": f"{self.site_url}/plugins/servlet/project-config/{project_key}/permissions",
                 },
-                recipient_roles=[NotificationRecipientRole.ADMIN],
             )
             return [Permission(
                 entity_type=EntityType.USER,
@@ -1905,7 +1898,6 @@ class JiraConnector(BaseConnector):
                 "Couldn't load groups from Jira. The connector's Jira account needs "
                 "the Browse users and groups global permission."
             ),
-            recipient_roles=[NotificationRecipientRole.ADMIN],
         )
 
     async def _map_bounded(
@@ -2375,8 +2367,8 @@ class JiraConnector(BaseConnector):
             preview = ", ".join(failed_project_keys[:10])
             if len(failed_project_keys) > 10:
                 preview = f"{preview}, and {len(failed_project_keys) - 10} more"
-            self.logger.error(
-                "❌ Project role sync failed for %s/%s projects: %s",
+            self.logger.warning(
+                "Project role sync failed for %s/%s projects: %s",
                 len(failed_project_keys), len(project_keys), preview,
             )
             await self.notify(
@@ -2389,7 +2381,6 @@ class JiraConnector(BaseConnector):
                     "on those projects, but can also be temporary rate limiting — existing roles are "
                     "preserved and will retry next sync."
                 ),
-                recipient_roles=[NotificationRecipientRole.ADMIN],
             )
 
         # Step 4: Sync all roles in batch
@@ -2701,7 +2692,6 @@ class JiraConnector(BaseConnector):
                     "due to Jira rate limiting or a temporary error. Their existing access is "
                     "preserved and they'll retry on the next sync."
                 ),
-                recipient_roles=[NotificationRecipientRole.ADMIN],
             )
 
         return record_groups, projects
