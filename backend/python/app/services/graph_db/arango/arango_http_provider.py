@@ -21856,8 +21856,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
             # Soft delete the template using update_node
-            template_path = f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}"
-            result = await self.update_node(template_path, update_data, transaction=transaction)
+            result = await self.update_node(
+                template_id,
+                CollectionNames.AGENT_TEMPLATES.value,
+                update_data,
+                transaction=transaction,
+            )
 
             if not result:
                 self.logger.error(f"Failed to delete template {template_id}")
