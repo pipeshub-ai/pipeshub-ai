@@ -44,7 +44,7 @@ class TestBuildDynamicToolsWebAdapterWiring:
         context = _make_context()
         context.tool_state["web_search_config"] = {"provider": "duckduckgo", "configuration": {}}
 
-        tools = _build_dynamic_tools(context)
+        tools, _groups = _build_dynamic_tools(context)
 
         web_tools = [t for t in tools if t.name in ("dynamic__web_search", "dynamic__fetch_url")]
         assert len(web_tools) == 2
@@ -54,7 +54,7 @@ class TestBuildDynamicToolsWebAdapterWiring:
         context = _make_context()
         context.tool_state["web_search_config"] = None
 
-        tools = _build_dynamic_tools(context)
+        tools, _groups = _build_dynamic_tools(context)
 
         assert not any(t.name in ("dynamic__web_search", "dynamic__fetch_url") for t in tools)
 
@@ -67,5 +67,4 @@ class TestBuildDynamicToolsWebAdapterWiring:
         assert context.tool_state.get("citation_ref_mapper") is None
 
         _build_dynamic_tools(context)
-
         assert context.tool_state["citation_ref_mapper"] is not None

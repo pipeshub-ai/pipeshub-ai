@@ -634,7 +634,6 @@ class RecordRelations(Enum):
     METHOD = "METHOD"          # class -> method
     # Cross-file, written by the edge-resolution pass once a repo is indexed.
     CALLS = "CALLS"
-    INDIRECT_CALL = "INDIRECT_CALL"
     IMPORTS = "IMPORTS"            # file -> imported symbol
     IMPORTS_FROM = "IMPORTS_FROM"  # file -> imported module file
     RE_EXPORTS = "RE_EXPORTS"
@@ -664,6 +663,7 @@ class EventTypes(Enum):
     BULK_DELETE_RECORDS = "bulkDeleteRecords"
     SYNC_VECTOR_MEMBERSHIP = "syncVectorMembership"
     DELETE_VECTOR_COLLECTION = "deleteVectorCollection"
+    BUILD_CODE_EDGES = "buildCodeEdges"
 
 
 class AccountType(Enum):

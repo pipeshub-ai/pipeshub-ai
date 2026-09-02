@@ -269,7 +269,6 @@ def _build_finding_information(
         surfaces.retrieval is not None,
         surfaces.has_web_search,
         surfaces.has_service_tools,
-        surfaces.code_graph,
     ])
     if surface_count == 0 and not surfaces.can_fetch_full_record:
         return ""
@@ -283,15 +282,6 @@ def _build_finding_information(
         precedence.append(
             f"Internal knowledge (`{surfaces.retrieval}`) — this organization's "
             "own documents, tickets, and data."
-        )
-    if surfaces.code_graph:
-        from app.agents.actions.code_graph.query import QUERY_CODE_GRAPH_TOOL_NAME
-        precedence.append(
-            f"Code structure (`{QUERY_CODE_GRAPH_TOOL_NAME}`, "
-            "`codegraph__find_call_neighbors`, `codegraph__read_code`, "
-            "`codegraph__find_symbol_path`) — the indexed call/import/inheritance "
-            "graph of this organization's repositories. The only source that "
-            "returns relationships between symbols rather than text matching a query."
         )
     if surfaces.has_service_tools:
         apps_label = ", ".join(
@@ -369,63 +359,9 @@ def _build_finding_information(
             "exists."
         )
 
-    if surfaces.code_graph:
-        from app.agents.actions.code_graph.query import QUERY_CODE_GRAPH_TOOL_NAME
-        parts.append(
-            "**Code graph — pick the right tool by task shape:**\n"
-            f"- *Module structure or broad overview* → `{QUERY_CODE_GRAPH_TOOL_NAME}` "
-            "with `group_by='directory'`. Start from a broad glob (`'**'`, "
-            "`'backend/**'`), then narrow into each result worth opening.\n"
-            f"- *What uses/depends on a symbol* → `{QUERY_CODE_GRAPH_TOOL_NAME}` with "
-            "`select='file#qualified_name'`, `relations=['CALLS']` or "
-            "`['IMPORTS_FROM']`, `direction='inbound'`.\n"
-            "- *What a symbol calls/uses* → same, with `direction='outbound'`.\n"
-            "- *Callers/callees with call-site lines* → `codegraph__find_call_neighbors` "
-            "— returns the exact line of each call site. Pair with "
-            "`codegraph__read_code(lines=...)` to see the call in context.\n"
-            "- *How two symbols connect* → `codegraph__find_symbol_path` traces "
-            "across calls, imports, inheritance, containment. Single-language only; "
-            "cross-language boundaries (frontend→backend HTTP) have no edge — read "
-            "the route handler instead.\n"
-            "- *Reading source* → `codegraph__read_code`. Prefer `qualified_name` for "
-            "a single definition over broad line ranges. One whole-file read is "
-            "cheaper than five separate symbol reads of the same file.\n\n"
-            "`group_by` and `depth` are mutually exclusive — always set `depth=0` "
-            "(the default) when using `group_by`.\n\n"
-            "Results are ranked by `degree` (edge count). State the number when "
-            "citing centrality: 'X imports Y (14 edges)' is a finding, "
-            "'X depends on Y' is a guess.\n\n"
-            "For broad questions, drill into EVERY group from the top-level "
-            "rollup before diving deep into any one. A top-level group like "
-            "'backend' (hundreds of files) usually contains multiple service "
-            "layers — call `group_by='directory'` on it (`backend/**`) to "
-            "reveal them before jumping to a specific subdirectory. A missing "
-            "layer is worse than a shallow one. For narrow questions, go "
-            "directly to the symbol or file.\n\n"
-            "When your response covers multiple modules or layers discovered "
-            "through the code graph, include a Mermaid diagram for each major "
-            "subsystem or flow you describe — a text-only list of components "
-            "is incomplete when the relationships between them are the point. "
-            "Aim for at least one diagram per major section of your response.\n\n"
-            "For each major pattern or design decision you identify through the "
-            "graph, explain WHY it was designed that way — what invariant it "
-            "maintains, what failure mode it prevents, or how to extend it. "
-            "A rollup tells you WHAT exists; read_code on the highest-degree "
-            "symbols tells you WHY.\n\n"
-            "Maximize coverage per turn: batch related rollup calls in parallel "
-            "(multiple `group_by='directory'` calls in one turn), use "
-            "`qualified_name` reads for specific symbols rather than whole-file "
-            "reads, and use `kinds=['function','class']` to filter noise from "
-            "broad queries."
-        )
-
     if surfaces.can_fetch_full_record:
-        from app.agents.actions.code_graph.query import QUERY_CODE_GRAPH_TOOL_NAME
         from app.modules.agents.record_escalation.policy import policy_text
-        parts.append(policy_text(
-            _FETCH_FULL_RECORD_TOOL_NAME,
-            QUERY_CODE_GRAPH_TOOL_NAME if surfaces.code_graph else None,
-        ))
+        parts.append(policy_text(_FETCH_FULL_RECORD_TOOL_NAME))
 
     return "\n## Finding Information\n\n" + "\n\n".join(parts)
 

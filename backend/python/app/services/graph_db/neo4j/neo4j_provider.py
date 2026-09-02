@@ -2240,6 +2240,40 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Count nodes by filters failed: {str(e)}")
             return 0
 
+    async def has_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        try:
+            label = collection_to_label(collection)
+            conditions: list[str] = []
+            parameters: dict[str, Any] = {}
+            for field, value in (filters or {}).items():
+                parameter = f"filter_{field}"
+                conditions.append(f"node.{field} = ${parameter}")
+                parameters[parameter] = value
+            for field, values in (in_filters or {}).items():
+                parameter = f"in_filter_{field}"
+                conditions.append(f"node.{field} IN ${parameter}")
+                parameters[parameter] = values
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            query = f"""
+            MATCH (node:{label})
+            {where_clause}
+            RETURN 1 AS matched
+            LIMIT 1
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return bool(rows)
+        except Exception as e:
+            self.logger.error(f"❌ Node existence check failed: {str(e)}")
+            raise
+
     async def get_nodes_updated_since(
         self,
         collection: str,

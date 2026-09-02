@@ -1050,6 +1050,17 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def has_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        """Return whether any node matches equality and membership filters."""
+        pass
+
+    @abstractmethod
     async def get_nodes_updated_since(
         self,
         collection: str,

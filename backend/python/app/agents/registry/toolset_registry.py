@@ -365,6 +365,13 @@ class ToolsetRegistry:
             'app.agents.actions.calculator.date_calculator',
             'app.agents.actions.knowledge_hub.knowledge_hub',
             'app.agents.actions.knowledge_graph.knowledge_graph',
+            # Registered here even though `tool_loader` gates it on
+            # has_code_connector/has_code_knowledge: `@ToolsetBuilder` registers
+            # the class when the module is imported, and this list is the only
+            # thing that imports it. Omitting it does not disable the gate — it
+            # skips the toolset before the gate ever runs, so the loader logs
+            # nothing and the tools are silently absent.
+            'app.agents.actions.code_graph.code_graph',
             'app.agents.actions.coding_sandbox.coding_sandbox',
             'app.agents.actions.database_sandbox.database_sandbox',
             'app.agents.actions.image_generator.image_generator',

@@ -92,38 +92,63 @@ class TestKnowledgeToolsetGate:
         assert not any("search_internal_knowledge" in name for name in registry.names())
 
 
-class TestCodeGraphDynamicToolsGate:
+def _patch_codegraph_toolset_registry():
+    """Mock the toolset registry to include the CodeGraph class."""
+    from app.agents.actions.code_graph.code_graph import CodeGraph
+
+    fake_registry = MagicMock()
+    fake_registry.get_all_toolsets.return_value = {
+        "codegraph": {
+            "class": CodeGraph,
+            "isInternal": True,
+            "description": "Code graph tools",
+            "essential": False,
+        },
+    }
+    return (
+        patch(
+            "app.agents.registry.toolset_registry.get_toolset_registry",
+            return_value=fake_registry,
+        ),
+        patch(
+            "app.agents.agent_loop.tool_loader.ClientFactoryRegistry.get_factory",
+            return_value=None,
+        ),
+    )
+
+
+class TestCodeGraphToolsetGate:
     """The code graph is a view over files a repo connector ingested, so its
-    tools are built per request and gated on the same pair as Slack's context
-    tools: the org has one configured AND this agent has one attached."""
+    toolset is gated on has_code_connector AND has_code_knowledge in the
+    class-based toolset loop (via _CODE_GRAPH_TOOLSETS in tool_loader.py)."""
 
-    def _names(self, *, connector: bool, knowledge: bool) -> list[str]:
-        context = _make_context()
-        context.tool_state["has_code_connector"] = connector
-        context.tool_state["has_code_knowledge"] = knowledge
+    async def test_both_flags_load_the_tools(self) -> None:
+        context = _make_context(has_code_connector=True, has_code_knowledge=True)
         context.tool_state["graph_provider"] = MagicMock()
-        return [t.name for t in _build_dynamic_tools(context)]
+        registry_patch, factory_patch = _patch_codegraph_toolset_registry()
+        with registry_patch, factory_patch:
+            registry = await PipesHubToolLoader().load(context)
 
-    def test_both_flags_build_the_tools(self) -> None:
-        names = self._names(connector=True, knowledge=True)
-        assert "codegraph__query_code_graph" in names
-        assert "codegraph__get_symbol_code" in names
+        assert any("query_code_graph" in name for name in registry.names())
+        assert any("read_code" in name for name in registry.names())
 
-    def test_attached_but_connector_gone_builds_nothing(self) -> None:
+    async def test_attached_but_connector_gone_skips_toolset(self) -> None:
         """Attached knowledge is a stored list, so an agent can still name a
         connector the org has since deleted. The org flag is what catches it."""
-        assert self._names(connector=False, knowledge=True) == []
+        context = _make_context(has_code_connector=False, has_code_knowledge=True)
+        registry_patch, factory_patch = _patch_codegraph_toolset_registry()
+        with registry_patch, factory_patch:
+            registry = await PipesHubToolLoader().load(context)
 
-    def test_org_has_a_repo_but_agent_is_not_scoped_to_it(self) -> None:
-        assert self._names(connector=True, knowledge=False) == []
+        assert not any("query_code_graph" in name for name in registry.names())
 
-    def test_no_graph_provider_builds_nothing(self) -> None:
-        """A tool that can only ever fail is worse than no tool."""
-        context = _make_context()
-        context.tool_state["has_code_connector"] = True
-        context.tool_state["has_code_knowledge"] = True
-        context.tool_state["graph_provider"] = None
-        assert _build_dynamic_tools(context) == []
+    async def test_org_has_a_repo_but_agent_is_not_scoped_to_it(self) -> None:
+        context = _make_context(has_code_connector=True, has_code_knowledge=False)
+        registry_patch, factory_patch = _patch_codegraph_toolset_registry()
+        with registry_patch, factory_patch:
+            registry = await PipesHubToolLoader().load(context)
+
+        assert not any("query_code_graph" in name for name in registry.names())
 
 
 class TestBuildDynamicToolsWebSearchGate:
@@ -135,7 +160,7 @@ class TestBuildDynamicToolsWebSearchGate:
         context = _make_context()
         context.tool_state["web_search_config"] = None
 
-        tools = _build_dynamic_tools(context)
+        tools, _groups = _build_dynamic_tools(context)
 
         assert tools == []
 
@@ -159,7 +184,7 @@ class TestBuildDynamicToolsWebSearchGate:
                 side_effect=[("web_search", "search"), ("fetch_url", "fetch")],
             ),
         ):
-            tools = _build_dynamic_tools(context)
+            tools, _groups = _build_dynamic_tools(context)
 
         assert len(tools) == 2
 
@@ -180,7 +205,7 @@ class TestBuildDynamicToolsConnectorKnowledgeGate:
             }
         )
 
-        tools = _build_dynamic_tools(context)
+        tools, _groups = _build_dynamic_tools(context)
 
         assert tools == []
 
@@ -204,7 +229,7 @@ class TestBuildDynamicToolsConnectorKnowledgeGate:
                 return_value=("sql", "execute_sql_query"),
             ),
         ):
-            tools = _build_dynamic_tools(context)
+            tools, _groups = _build_dynamic_tools(context)
 
         assert len(tools) == 1
 
@@ -218,7 +243,7 @@ class TestBuildDynamicToolsConnectorKnowledgeGate:
             }
         )
 
-        tools = _build_dynamic_tools(context)
+        tools, _groups = _build_dynamic_tools(context)
 
         assert tools == []
 

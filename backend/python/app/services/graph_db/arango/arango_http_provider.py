@@ -3290,6 +3290,39 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Count nodes by filters failed: {str(e)}")
             return 0
 
+    async def has_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        conditions: list[str] = []
+        bind_vars: dict[str, Any] = {}
+        for field, value in (filters or {}).items():
+            parameter = f"filter_{field}"
+            conditions.append(f"doc.{field} == @{parameter}")
+            bind_vars[parameter] = value
+        for field, values in (in_filters or {}).items():
+            parameter = f"in_filter_{field}"
+            conditions.append(f"doc.{field} IN @{parameter}")
+            bind_vars[parameter] = values
+        filter_clause = f"FILTER {' AND '.join(conditions)}" if conditions else ""
+        query = f"""
+        FOR doc IN {collection}
+            {filter_clause}
+            LIMIT 1
+            RETURN 1
+        """
+        try:
+            rows = await self.http_client.execute_aql(
+                query, bind_vars=bind_vars, txn_id=transaction
+            )
+            return bool(rows)
+        except Exception as e:
+            self.logger.error(f"❌ Node existence check failed: {str(e)}")
+            raise
+
     async def get_nodes_updated_since(
         self,
         collection: str,

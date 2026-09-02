@@ -31,7 +31,6 @@ class Relation:
 
     # Cross-file -- target is a bare name, deferred to the resolver.
     CALLS = "CALLS"
-    INDIRECT_CALL = "INDIRECT_CALL"
     IMPORTS = "IMPORTS"
     IMPORTS_FROM = "IMPORTS_FROM"
     RE_EXPORTS = "RE_EXPORTS"
@@ -104,7 +103,6 @@ class PendingEdgeFact:
     receiver: str | None = None
     receiver_type: str | None = None
     qualified_prefix: str | None = None
-    indirect: bool = False
     context: str | None = None
     # EXPORTS names a symbol in *this* file; resolving it against the whole repo
     # would happily bind to a same-named symbol elsewhere.
@@ -130,8 +128,6 @@ class PendingEdgeFact:
             out["receiverType"] = self.receiver_type
         if self.qualified_prefix:
             out["qualifiedPrefix"] = self.qualified_prefix
-        if self.indirect:
-            out["indirect"] = True
         if self.context:
             out["context"] = self.context
         if self.restrict_to_file:

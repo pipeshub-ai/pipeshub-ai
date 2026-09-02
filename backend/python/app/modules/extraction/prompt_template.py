@@ -202,9 +202,20 @@ The individual symbols in this file (functions, classes, methods) are already in
    - These link this file to files elsewhere in the repository, so prefer concepts another file could share.
 
 4. **Summary**:
-   - 2 to 4 sentences, written for a developer searching the codebase.
-   - Cover: what the file is responsible for, which feature or workflow it serves, which external
-     systems it touches, and the one or two entry points a caller would use.
+   - Open with the file's path and what KIND of artifact it is, as one clause. Copy the path
+     verbatim from "File under analysis" above. Choose the kind from: implementation, test suite,
+     test fixtures, configuration, type definitions, script, documentation.
+
+       "app/services/vector_db/vector_db_provider_factory.py — factory that ..."
+       "tests/unit/parsers/test_html_parser_shim.py — test suite for ..."
+
+     Without this, a test file is summarised in the vocabulary of the thing it tests and reads
+     as that thing's implementation, so a search for the implementation returns the test.
+   - Then 2 to 4 sentences: what the file is responsible for, which feature or workflow it serves,
+     which external systems it touches, and the one or two entry points a caller would use.
+   - Name the concrete identifiers this file owns — environment variables, configuration keys,
+     class names, route paths, topic names. Those are the strings a developer actually types when
+     searching, and they appear in few other files.
    - Do not enumerate every symbol, and do not describe the file's size or structure.
 
 5. **Design Patterns**:

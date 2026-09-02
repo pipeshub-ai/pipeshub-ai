@@ -61,6 +61,10 @@ from app.utils.image_utils import normalize_image_to_base64
 
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 
+# `FileRole.TEST`, inlined rather than imported: this module indexes every
+# record type and must not take a dependency on the code parser to do it.
+_TEST_FILE_ROLE = "test"
+
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
 
 
@@ -240,16 +244,48 @@ def _build_text_documents(
     return documents
 
 
+def _record_context_line(record: "Record | None") -> str:
+    """``name — path`` for the record a block belongs to, or "".
+
+    The words that identify a file live in its name and path, and none of them
+    appear in the source text of the symbols inside it. An abstract method is
+    the worst case: `BaseConnector.stream_record` is a signature and a
+    docstring, so a search for "stream record implementation" matched it on
+    almost nothing and returned six test files instead. Repeating this line on
+    every block is what puts those terms in front of the index at all.
+    """
+    if record is None:
+        return ""
+    name = (getattr(record, "record_name", None) or "").strip()
+    path = (getattr(record, "external_record_id", None) or "").strip()
+    # Repo-hosting connectors prefix the path with routing noise
+    # ("/org/repo/-/blob/HEAD/") that is identical for every file in the repo
+    # and so separates nothing.
+    for marker in ("/-/blob/HEAD/", "/-/raw/HEAD/", "/blob/HEAD/"):
+        if marker in path:
+            path = path.split(marker, 1)[1]
+            break
+    parts = [p for p in (name, path) if p]
+    if len(parts) == 2 and parts[0] == parts[1]:
+        parts = parts[:1]
+    return " — ".join(parts)
+
+
 def _build_code_documents(
     code_blocks: List,
     virtual_record_id: str,
     org_id: str,
+    context: str = "",
 ) -> List[Document]:
     """One embeddable Document per code symbol.
 
     Sentence-splitting is meaningless for code, so each symbol is embedded
     whole from ``block.data["text"]`` — the raw source text produced by the
     parser, same pattern every other block type follows.
+
+    Each symbol additionally carries ``context`` (see ``_record_context_line``)
+    and its own qualified name, so a block says WHERE it lives and not only
+    what it contains.
     """
     documents: List[Document] = []
     for block in code_blocks:
@@ -257,6 +293,9 @@ def _build_code_documents(
         text = data.get("text") or ""
         if not text.strip():
             continue
+        code_meta = getattr(block, "code_metadata", None)
+        qualified_name = (getattr(code_meta, "qualified_name", None) or "").strip()
+        header = " · ".join(p for p in (context, qualified_name) if p)
         metadata = {
             "virtualRecordId": virtual_record_id,
             "blockId": block.id,
@@ -265,7 +304,10 @@ def _build_code_documents(
             "isBlockGroup": False,
         }
         documents.append(
-            Document(page_content=text, metadata={**metadata, "isBlock": True})
+            Document(
+                page_content=f"{header}\n{text}" if header else text,
+                metadata={**metadata, "isBlock": True},
+            )
         )
     return documents
 
@@ -424,7 +466,20 @@ class VectorStore(Transformer):
         virtual_record_id: str,
         org_id: str,
         semantic_metadata: "SemanticMetadata",
+        record: "Record | None" = None,
     ) -> Document | None:
+        """The record-level summary vector, or None when it would mislead.
+
+        A test file's extracted summary describes the thing it tests, in that
+        thing's own vocabulary — a Jira connector test summarises as
+        "synchronization workflow, users, groups, projects, permissions", which
+        is indistinguishable from the connector. Giving every test a second
+        vector that reads like an implementation is why a search for one
+        returned six of them ahead of the file that defines it. Tests stay
+        reachable through their own content blocks.
+        """
+        if (getattr(record, "file_role", None) or "").strip().lower() == _TEST_FILE_ROLE:
+            return None
         summary = (semantic_metadata.summary or "").strip()
         if not summary:
             return None
@@ -451,7 +506,7 @@ class VectorStore(Transformer):
         if semantic_metadata is None:
             return
         summary_doc = self._build_record_summary_document(
-            record_id, virtual_record_id, org_id, semantic_metadata
+            record_id, virtual_record_id, org_id, semantic_metadata, record
         )
         if summary_doc:
             documents_to_embed.append(summary_doc)
@@ -507,7 +562,7 @@ class VectorStore(Transformer):
     ) -> None:
         """Embed the record-level summary after extraction completes."""
         summary_doc = self._build_record_summary_document(
-            record_id, virtual_record_id, org_id, semantic_metadata
+            record_id, virtual_record_id, org_id, semantic_metadata, record
         )
         if summary_doc is None:
             return
@@ -1247,7 +1302,7 @@ class VectorStore(Transformer):
                     semantic_metadata = getattr(record, "semantic_metadata", None)
                     if semantic_metadata:
                         summary_doc = self._build_record_summary_document(
-                            record_id, virtual_record_id, org_id, semantic_metadata
+                            record_id, virtual_record_id, org_id, semantic_metadata, record
                         )
                         if summary_doc:
                             await self._process_document_chunks([summary_doc], record_id, collection_name)
@@ -1311,7 +1366,10 @@ class VectorStore(Transformer):
             # ── Code blocks ──
             if code_blocks:
                 documents_to_embed.extend(
-                    _build_code_documents(code_blocks, virtual_record_id, org_id)
+                    _build_code_documents(
+                        code_blocks, virtual_record_id, org_id,
+                        _record_context_line(record),
+                    )
                 )
                 self.logger.info("✅ Added code documents for embedding")
 
