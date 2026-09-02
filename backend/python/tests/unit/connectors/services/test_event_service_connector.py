@@ -612,7 +612,9 @@ class TestHandleStartSync:
         )
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock) as mock_ensure:
             result = await service._handle_start_sync("gmail", {"orgId": "org1", "connectorId": "c1"})
-            assert result is False
+            # Acked, not redelivered: disabled is a deliberate state, so False
+            # would stall the partition behind a connector that will never run.
+            assert result is True
             mock_ensure.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -623,7 +625,9 @@ class TestHandleStartSync:
         )
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock) as mock_ensure:
             result = await service._handle_start_sync("gmail", {"orgId": "org1", "connectorId": "c1"})
-            assert result is False
+            # Acked, not redelivered: disabled is a deliberate state, so False
+            # would stall the partition behind a connector that will never run.
+            assert result is True
             mock_ensure.assert_not_awaited()
 
     @pytest.mark.asyncio

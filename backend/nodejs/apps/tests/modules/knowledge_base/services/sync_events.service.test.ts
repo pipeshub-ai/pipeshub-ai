@@ -223,7 +223,9 @@ describe('SyncEventProducer - coverage', () => {
       expect(mockProducer.publish.calledOnce).to.be.true
       const [topic, message] = mockProducer.publish.firstCall.args
       expect(topic).to.equal('sync-events')
-      expect(message.key).to.equal('connectorSync')
+      // Keyed by connectorId, not eventType: keying by type puts every
+      // connector of one kind on a single partition.
+      expect(message.key).to.equal('conn-1')
       expect(JSON.parse(message.value)).to.deep.include({ eventType: 'connectorSync' })
       expect(message.headers.eventType).to.equal('connectorSync')
       expect(instance.logger.info.calledOnce).to.be.true
