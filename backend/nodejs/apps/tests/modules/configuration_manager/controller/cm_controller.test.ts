@@ -191,6 +191,7 @@ describe('ConfigurationManager Controller', () => {
           { capability: 'bucketAccess', passed: true },
           { capability: 'upload', passed: true },
           { capability: 'read', passed: true },
+          { capability: 'getContent', passed: true },
           { capability: 'signedUrlGet', passed: true },
           { capability: 'signedUrlPut', passed: true },
         ],

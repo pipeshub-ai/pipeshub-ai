@@ -11,6 +11,7 @@ export type S3CapabilityName =
   | 'bucketAccess'
   | 'upload'
   | 'read'
+  | 'getContent'
   | 'signedUrlGet'
   | 'signedUrlPut';
 
@@ -33,6 +34,8 @@ export interface S3HealthCheckCredentials {
 }
 
 const HEALTH_CHECK_PREFIX = '.pipeshub-health-check';
+const HEALTH_CHECK_CONTENT = 'pipeshub-s3-health-check';
+const SIGNED_URL_FETCH_TIMEOUT_MS = 15_000;
 
 function formatError(error: unknown): string {
   if (error instanceof StorageError) {
@@ -53,7 +56,7 @@ function buildFailureMessage(checks: S3CapabilityCheckResult[]): string {
   const summary = failedChecks
     .map((check) => `${check.capability}: ${check.error ?? 'failed'}`)
     .join('; ');
-  return `S3 health check failed. Verify credentials, bucket name, region, and IAM permissions (s3:PutObject, s3:GetObject, s3:DeleteObject). ${summary}`;
+  return `S3 health check failed. Verify credentials, bucket name, region, and IAM permissions (s3:PutObject, s3:GetObject, s3:DeleteObject). If getContent fails but upload/read succeed, the configured region likely does not match the bucket's actual region. ${summary}`;
 }
 
 export function buildS3HealthCheckErrorMessage(
@@ -131,7 +134,7 @@ export async function validateS3Capabilities(
   try {
     const uploadResult = await adapter.uploadDocumentToStorageService({
       documentPath: testKey,
-      buffer: Buffer.from('pipeshub-s3-health-check'),
+      buffer: Buffer.from(HEALTH_CHECK_CONTENT),
       mimeType: 'text/plain',
       isVersioned: false,
     });
@@ -162,7 +165,13 @@ export async function validateS3Capabilities(
     } as Document;
 
     try {
-      await adapter.getBufferFromStorageService(probeDocument);
+      const readResult = await adapter.getBufferFromStorageService(probeDocument);
+      const downloaded = readResult.data?.toString('utf-8');
+      if (downloaded !== HEALTH_CHECK_CONTENT) {
+        throw new Error(
+          `Content mismatch: expected '${HEALTH_CHECK_CONTENT}' but got '${downloaded?.slice(0, 100) ?? '(empty)'}'`,
+        );
+      }
       checks.push({ capability: 'read', passed: true });
       logger.info('S3 read check passed');
     } catch (error) {
@@ -174,8 +183,10 @@ export async function validateS3Capabilities(
       });
     }
 
+    let signedGetUrl: string | undefined;
     try {
-      await adapter.getSignedUrl(probeDocument);
+      const signedUrlResult = await adapter.getSignedUrl(probeDocument);
+      signedGetUrl = signedUrlResult.data;
       checks.push({ capability: 'signedUrlGet', passed: true });
       logger.info('S3 signedUrlGet check passed');
     } catch (error) {
@@ -186,10 +197,53 @@ export async function validateS3Capabilities(
         error: formatError(error),
       });
     }
+
+    if (signedGetUrl) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), SIGNED_URL_FETCH_TIMEOUT_MS);
+        try {
+          const response = await fetch(signedGetUrl, { signal: controller.signal });
+          if (!response.ok) {
+            throw new Error(
+              `Signed URL returned HTTP ${response.status}. This usually indicates a region mismatch — the configured region '${region}' may not match the bucket's actual region`,
+            );
+          }
+          const body = await response.text();
+          if (body !== HEALTH_CHECK_CONTENT) {
+            throw new Error(
+              `Content mismatch via signed URL: expected '${HEALTH_CHECK_CONTENT}' but got '${body.slice(0, 100)}'`,
+            );
+          }
+        } finally {
+          clearTimeout(timeout);
+        }
+        checks.push({ capability: 'getContent', passed: true });
+        logger.info('S3 getContent check passed');
+      } catch (error) {
+        logger.error('S3 getContent check failed', { error: formatError(error) });
+        checks.push({
+          capability: 'getContent',
+          passed: false,
+          error: formatError(error),
+        });
+      }
+    } else {
+      checks.push({
+        capability: 'getContent',
+        passed: false,
+        error: 'Skipped because signed URL generation failed',
+      });
+    }
   } else {
     checks.push(
       {
         capability: 'read',
+        passed: false,
+        error: 'Skipped because upload check failed',
+      },
+      {
+        capability: 'getContent',
         passed: false,
         error: 'Skipped because upload check failed',
       },
