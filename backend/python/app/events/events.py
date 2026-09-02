@@ -51,6 +51,7 @@ from app.services.vector_db.strategy import (
     resolve_write_collection_name,
 )
 from app.utils.cpu_offload import offload_if_large
+from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.libreoffice_convert import convert_with_libreoffice
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -98,30 +99,6 @@ def shutdown_pdf_ocr_pool() -> bool:
     _get_pdf_ocr_detection_pool().shutdown(wait=False, cancel_futures=True)
     _get_pdf_ocr_detection_pool.cache_clear()
     return True
-
-
-# OS/filesystem metadata "files" that connectors might occasionally hand us wearing
-# a real document's extension/MIME type.
-_METADATA_FILE_SIGNATURES: dict[str, bytes] = {
-    "AppleDouble": b"\x00\x05\x16\x07",
-    "AppleSingle": b"\x00\x05\x16\x00",
-    "DS_Store": b"\x00\x00\x00\x01BAB1",
-    "BinaryPlist": b"bplist",
-    "OLE_Compound_ThumbsDB": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",
-    "WindowsLnk": b"\x4c\x00\x00\x00\x01\x14\x02\x00",
-    "VimSwap": b"Vim!",
-}
-
-
-def _match_metadata_file_signature(file_content: bytes) -> str | None:
-    """Name of the matched signature if *file_content* is OS/filesystem
-    metadata masquerading as a real document, else None."""
-    if not isinstance(file_content, (bytes, bytearray)):
-        return None
-    for name, magic in _METADATA_FILE_SIGNATURES.items():
-        if file_content.startswith(magic):
-            return name
-    return None
 
 
 def _detect_pdf_needs_ocr(file_content: bytes) -> bool:
@@ -974,7 +951,7 @@ class EventProcessor:
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
-            metadata_file_match = _match_metadata_file_signature(file_content)
+            metadata_file_match = match_metadata_file_signature(file_content)
             if metadata_file_match:
                 self.logger.info(
                     "❌ Skipping OS metadata file (%s): %s",
