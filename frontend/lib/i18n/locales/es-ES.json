@@ -282,6 +282,7 @@
     "clearFilter": "Limpiar filtros"
   },
   "form": {
+    "leaveBlankToKeep": "Déjalo vacío para conservar el valor existente.",
     "title": "Título",
     "description": "Descripción",
     "search": "Buscar",
@@ -2025,7 +2026,6 @@
         "apiToken": "Token de API",
         "credentialsHeading": "Credenciales (opcional)",
         "credentialsHint": "Añade las credenciales ahora, o sáltalo y conéctate más tarde desde la pestaña Conexión y herramientas.",
-        "leaveBlankToKeep": "Déjalo vacío para conservar el valor existente.",
         "multiEnvIncomplete": "Completa todas las variables de entorno obligatorias, o déjalas todas en blanco para conectar más tarde.",
         "oauthPairRequired": "Introduce tanto el ID de cliente como el secreto de cliente, o deja ambos vacíos.",
         "connectAfterCreateHint": "Guarda este servidor y luego vuelve a abrir Gestionar para conectarlo."

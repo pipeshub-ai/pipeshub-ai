@@ -283,6 +283,7 @@
     "clearFilter": "Filter löschen"
   },
   "form": {
+    "leaveBlankToKeep": "Leer lassen, um den vorhandenen Wert zu behalten.",
     "title": "Titel",
     "description": "Beschreibung",
     "search": "Suchen",
@@ -2028,7 +2029,6 @@
         "apiToken": "API-Token",
         "credentialsHeading": "Anmeldedaten (optional)",
         "credentialsHint": "Fügen Sie jetzt Anmeldedaten hinzu oder überspringen Sie dies und verbinden Sie sich später über den Tab \"Verbindung & Tools\".",
-        "leaveBlankToKeep": "Leer lassen, um den vorhandenen Wert zu behalten.",
         "multiEnvIncomplete": "Füllen Sie jede erforderliche Umgebungsvariable aus, oder lassen Sie alle leer, um später zu verbinden.",
         "oauthPairRequired": "Geben Sie sowohl die Client-ID als auch das Client-Secret ein, oder lassen Sie beide leer.",
         "connectAfterCreateHint": "Speichern Sie diesen Server und öffnen Sie dann erneut \"Verwalten\", um ihn zu verbinden."

@@ -296,6 +296,7 @@
     "clearFilter": "Clear Filter"
   },
   "form": {
+    "leaveBlankToKeep": "Leave blank to keep the existing value.",
     "title": "Title",
     "description": "Description",
     "search": "Search",
@@ -2128,7 +2129,6 @@
         "apiToken": "API Token",
         "credentialsHeading": "Credentials (optional)",
         "credentialsHint": "Add credentials now, or skip and connect later from the Connection & Tools tab.",
-        "leaveBlankToKeep": "Leave blank to keep the existing value.",
         "multiEnvIncomplete": "Fill in every required environment variable, or leave them all blank to connect later.",
         "oauthPairRequired": "Enter both the client ID and client secret, or leave both blank.",
         "connectAfterCreateHint": "Save this server, then reopen Manage to connect it."

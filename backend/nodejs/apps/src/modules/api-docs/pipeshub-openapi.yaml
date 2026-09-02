@@ -12314,8 +12314,9 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Success response from getAIModelsProviders. Returns the full stored
-        models bucket map (masked when secrets are hidden).
+        Success response from getAIModelsProviders. Returns the stored models
+        bucket map. Each entry's `configuration` includes only `model`,
+        `modelFriendlyName`, and `dimensions` when those keys were stored.
       required:
         - status
         - models
@@ -12338,6 +12339,8 @@ components:
       description: |
         Success response from getModelsByType. Returns stored provider entries
         for a single model type bucket (not the flattened available-models shape).
+        Each entry's `configuration` includes only `model`, `modelFriendlyName`,
+        and `dimensions` when stored.
       required:
         - status
         - models
@@ -12834,12 +12837,13 @@ components:
       description: |
         Provider-specific configuration stored on each AI model entry.
 
-        **Passthrough contract:** `additionalProperties` is intentionally `true` at this
-        level only. Node validation uses Zod `configurationSchema` with `.passthrough()`
-        so provider-specific keys reach the Python backend unchanged. The canonical field
-        list for each provider lives in `backend/python/app/config/ai_models/providers/`;
-        new providers may add keys without updating this spec. Do not set
-        `additionalProperties: false` here unless every registry field is enumerated.
+        **Read shape:** user-facing GET responses return only `model`,
+        `modelFriendlyName`, and `dimensions` (when stored). Values are copied as-is;
+        other keys including credentials are omitted.
+
+        **Write shape:** create and update still accept the full provider payload
+        (Zod `configurationSchema` with `.passthrough()`). An omitted key retains
+        the stored value; send an empty string to clear one.
 
         Properties below are the documented union of the Zod base shape and registry-defined
         configuration keys (all optional unless required by a given provider at runtime).
@@ -34477,7 +34481,9 @@ paths:
       tags:
         - AI Models Providers
       summary: Get models by type
-      description: Get all configured models of a specific type.
+      description: |
+        Get all configured models of a specific type. Each entry's `configuration`
+        includes only `model`, `modelFriendlyName`, and `dimensions` when stored.
       operationId: getModelsByType
       security:
         - bearerAuth: []
@@ -34902,7 +34908,13 @@ paths:
       tags:
         - AI Models Providers
       summary: Update AI model provider
-      description: Update an existing AI model provider configuration.
+      description: |
+        Update an existing AI model provider configuration.
+
+        Credential keys omitted from `configuration` retain their stored value,
+        which is how a client that never received them can save other edits. The
+        health check runs against the merged configuration. Send an empty string
+        to clear a credential.
       operationId: updateAIModelProvider
       security:
         - bearerAuth: []
@@ -36403,7 +36415,9 @@ paths:
         - Configuration Manager
       summary: Get AI models configuration
       description: |
-        Retrieve the AI models configuration for the organization.
+        Retrieve the AI models configuration for the organization. Each entry's
+        `configuration` includes only `model`, `modelFriendlyName`, and
+        `dimensions` when stored.
       operationId: getAIModelsConfig
       security:
         - bearerAuth: []
@@ -36458,7 +36472,8 @@ paths:
       description: |
         Retrieve all configured AI model provider entries grouped by model type
         (admin-only). Returns the stored KV shape under `models`, not the flattened
-        list from getAvailableModelsByType.
+        list from getAvailableModelsByType. Each entry's `configuration` includes
+        only `model`, `modelFriendlyName`, and `dimensions` when stored.
       operationId: getAIModelsProviders
       security:
         - bearerAuth: []

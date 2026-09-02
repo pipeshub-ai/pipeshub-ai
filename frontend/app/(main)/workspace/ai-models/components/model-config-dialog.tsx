@@ -94,6 +94,33 @@ function sanitizeAzureOpenAiCommaFreeValue(value: unknown): unknown {
   return value.split(',')[0].trim();
 }
 
+/** Top-level entry fields, not part of GET `configuration`. */
+const TOP_LEVEL_FIELD_NAMES = new Set([
+  'isMultimodal',
+  'isReasoning',
+  'contextLength',
+  'modelFriendlyName',
+]);
+
+/**
+ * GET `configuration` is only `model`, `modelFriendlyName`, and `dimensions`.
+ * Every other registry field is absent, so it renders blank, waives `required`,
+ * and is omitted from the update unless the user types in it.
+ */
+function findHiddenCredentialFields(
+  mode: 'add' | 'edit',
+  editModel: ConfiguredModel | null,
+  fields: AIModelProviderField[]
+): Set<string> {
+  if (mode !== 'edit' || !editModel) return new Set();
+  const configured = (editModel.configuration ?? {}) as Record<string, unknown>;
+  return new Set(
+    fields
+      .map((f) => f.name)
+      .filter((name) => !TOP_LEVEL_FIELD_NAMES.has(name) && !(name in configured))
+  );
+}
+
 function isFieldValueSatisfied(field: AIModelProviderField, value: unknown): boolean {
   if (!field.required) return true;
   const t = field.fieldType;
@@ -109,8 +136,14 @@ function isFieldValueSatisfied(field: AIModelProviderField, value: unknown): boo
   return String(value ?? '').trim() !== '';
 }
 
-function allRequiredFieldsValid(fields: AIModelProviderField[], values: Record<string, unknown>): boolean {
-  return fields.every((f) => isFieldValueSatisfied(f, values[f.name]));
+function allRequiredFieldsValid(
+  fields: AIModelProviderField[],
+  values: Record<string, unknown>,
+  hiddenCredentials: Set<string>
+): boolean {
+  return fields.every(
+    (f) => hiddenCredentials.has(f.name) || isFieldValueSatisfied(f, values[f.name])
+  );
 }
 
 function compatIcon(fieldName: string): string {
@@ -191,17 +224,20 @@ export function ModelConfigDialog({
     trustRemoteCode: boolean;
   } | null>(null);
   const downloadResolverRef = useRef<((ready: boolean) => void) | null>(null);
+  const touchedFieldsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!open || !provider || !capability) {
       setFields([]);
       setValues({});
       setError(null);
+      touchedFieldsRef.current = new Set();
       return;
     }
 
     const capFields = provider.fields[capability] ?? [];
     setFields(capFields as AIModelProviderField[]);
+    touchedFieldsRef.current = new Set();
 
     if (mode === 'edit' && editModel) {
       const initial: Record<string, unknown> = {};
@@ -239,6 +275,11 @@ export function ModelConfigDialog({
     }
   }, [open, provider, capability, mode, editModel]);
 
+  const hiddenCredentials = useMemo(
+    () => findHiddenCredentialFields(mode, editModel, fields),
+    [mode, editModel, fields]
+  );
+
   const handleFieldChange = useCallback(
     (name: string, value: unknown) => {
       const next =
@@ -246,6 +287,7 @@ export function ModelConfigDialog({
         (name === 'model' || name === 'deploymentName')
           ? sanitizeAzureOpenAiCommaFreeValue(value)
           : value;
+      touchedFieldsRef.current.add(name);
       setValues((prev) => ({ ...prev, [name]: next }));
     },
     [provider?.providerId]
@@ -329,8 +371,14 @@ export function ModelConfigDialog({
       // JSON.stringify silently drops keys whose value is `undefined`, so an
       // undefined FILE value would disappear from the request body and arrive at
       // the backend as a missing key — producing a cryptic KeyError there.
+      // A stripped credential file (e.g. Vertex AI's service account JSON) is
+      // legitimately blank on edit — the stored one is kept — so it is not
+      // missing unless the user cleared it themselves.
       const missingRequiredFiles = fields.filter((f) => {
         const field = f as AIModelProviderField;
+        if (hiddenCredentials.has(field.name) && !touchedFieldsRef.current.has(field.name)) {
+          return false;
+        }
         return (
           field.fieldType === 'FILE' &&
           field.required &&
@@ -350,6 +398,10 @@ export function ModelConfigDialog({
         // Skip undefined values — JSON.stringify would silently drop them,
         // causing the backend to see a missing key instead of a clear error.
         if (val === undefined) continue;
+        // A stripped credential the user never touched is sent as an absent key,
+        // which tells the backend to keep the stored value. Touching it and
+        // clearing it still sends "", which clears it.
+        if (hiddenCredentials.has(key) && !touchedFieldsRef.current.has(key)) continue;
         if (topLevelKeys.includes(key)) {
           topLevel[key] = val;
         } else {
@@ -453,8 +505,9 @@ export function ModelConfigDialog({
   }, [provider?.iconPath]);
 
   const formValid = useMemo(
-    () => (fields.length === 0 ? true : allRequiredFieldsValid(fields, values)),
-    [fields, values]
+    () =>
+      fields.length === 0 ? true : allRequiredFieldsValid(fields, values, hiddenCredentials),
+    [fields, values, hiddenCredentials]
   );
 
   const primaryBlocked = saving || !provider || !capability || !formValid;
@@ -509,6 +562,7 @@ export function ModelConfigDialog({
         values={values}
         saving={saving}
         error={error}
+        hiddenCredentials={hiddenCredentials}
         onFieldChange={handleFieldChange}
       />
       {downloadTarget && (
@@ -553,6 +607,7 @@ function ModelConfigFormBody({
   values,
   saving,
   error,
+  hiddenCredentials,
   onFieldChange,
 }: {
   provider: AIModelProvider | null;
@@ -562,9 +617,13 @@ function ModelConfigFormBody({
   values: Record<string, unknown>;
   saving: boolean;
   error: string | null;
+  hiddenCredentials: Set<string>;
   onFieldChange: (name: string, value: unknown) => void;
 }) {
   const { t } = useTranslation();
+  const leaveBlankPlaceholder = t('form.leaveBlankToKeep');
+  const placeholderFor = (field: AIModelProviderField) =>
+    hiddenCredentials.has(field.name) ? leaveBlankPlaceholder : field.placeholder;
   const instanceField = useMemo(
     () => fields.find((f) => f.name === 'modelFriendlyName') ?? null,
     [fields]
@@ -699,7 +758,7 @@ function ModelConfigFormBody({
           {modelConfigFields.map((field) => (
             <SchemaFormField
               key={field.name}
-              field={toSchemaField(field)}
+              field={toSchemaField(field, placeholderFor(field))}
               value={values[field.name]}
               onChange={onFieldChange}
               disabled={saving}
@@ -758,14 +817,14 @@ function ModelConfigFormBody({
   );
 }
 
-function toSchemaField(field: AIModelProviderField): SchemaField {
+function toSchemaField(field: AIModelProviderField, placeholder?: string): SchemaField {
   return {
     name: field.name,
     displayName: field.displayName,
     fieldType: field.fieldType,
     required: field.required,
     defaultValue: field.defaultValue,
-    placeholder: field.placeholder,
+    placeholder: placeholder ?? field.placeholder,
     description: field.description,
     isSecret: field.isSecret,
     options: field.options?.map((o) => ({ id: o.value, label: o.label })),

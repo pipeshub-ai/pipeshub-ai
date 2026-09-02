@@ -296,6 +296,7 @@
     "clearFilter": "清除篩選"
   },
   "form": {
+    "leaveBlankToKeep": "留白即保留現有的值。",
     "title": "標題",
     "description": "描述",
     "search": "搜尋",
@@ -2116,7 +2117,6 @@
         "apiToken": "API Token",
         "credentialsHeading": "憑證（選填）",
         "credentialsHint": "立即新增憑證，或先跳過並稍後從「連線與工具」分頁進行連線。",
-        "leaveBlankToKeep": "留白即保留現有的值。",
         "multiEnvIncomplete": "請填寫所有必要的環境變數，或全部留白以便稍後連線。",
         "oauthPairRequired": "請同時輸入用戶端 ID 和用戶端密鑰，或兩者皆留白。",
         "connectAfterCreateHint": "請先儲存此伺服器，然後重新開啟「管理」進行連線。"

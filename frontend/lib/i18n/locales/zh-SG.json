@@ -296,6 +296,7 @@
     "clearFilter": "清除筛选"
   },
   "form": {
+    "leaveBlankToKeep": "留空则保留现有值。",
     "title": "标题",
     "description": "描述",
     "search": "搜索",
@@ -2116,7 +2117,6 @@
         "apiToken": "API Token",
         "credentialsHeading": "凭证（可选）",
         "credentialsHint": "现在添加凭证，或跳过并稍后在“连接与工具”标签页中连接。",
-        "leaveBlankToKeep": "留空则保留现有值。",
         "multiEnvIncomplete": "请填写所有必需的环境变量，或全部留空以便稍后连接。",
         "oauthPairRequired": "请同时输入客户端 ID 和客户端密钥，或两者都留空。",
         "connectAfterCreateHint": "保存此服务器，然后重新打开“管理”进行连接。"
