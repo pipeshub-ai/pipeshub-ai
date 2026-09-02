@@ -75,6 +75,7 @@ from app.sources.external.box.box import BoxDataSource
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
     not_found_at_source,
+    raise_for_stream_fetch,
     to_stream_error,
 )
 from app.utils.streaming import create_stream_record_response, stream_content
@@ -2222,17 +2223,20 @@ class BoxConnector(BaseConnector):
                 file_id=record.external_record_id
             )
 
-            if response.success and response.data:
-                # Response.data is the download URL (shared link or existing link)
-                return str(response.data)
-
-            # An unsuccessful response with no exception carries no status; the
-            # likely cause is the file being gone. Auth failures arrive as SDK
-            # exceptions and are mapped below.
-            self.logger.warning(
-                f"Failed to get download URL for {record.record_name}: {response.error}"
+            # Box API failures arrive as BoxAPIError and are mapped below; the
+            # wrapper only reports success=False when the SDK never made the call.
+            if not response.success:
+                self.logger.warning(
+                    f"Failed to get download URL for {record.record_name}: {response.error}"
+                )
+            raise_for_stream_fetch(
+                success=response.success,
+                has_payload=bool(response.data),
+                connector=self.display_name,
+                message=response.error,
             )
-            raise not_found_at_source(self.display_name)
+            # Response.data is the download URL (shared link or existing link)
+            return str(response.data)
 
         except HTTPException:
             raise

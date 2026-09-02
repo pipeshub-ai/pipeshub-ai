@@ -6,8 +6,10 @@ from datetime import date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, MimeTypes, ProgressStatus
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import FilterCollection, FilterOptionsResponse
 from app.connectors.sources.zoom.connector import (
     ZoomConnector,
@@ -260,8 +262,9 @@ class TestZoomConnectorFreshDatasource:
         connector.data_source = MagicMock()
         connector.config_service.get_config = AsyncMock(return_value={"credentials": {}})
 
-        with pytest.raises(RuntimeError, match="No OAuth access token available"):
+        with pytest.raises(HTTPException) as ei:
             await connector._get_fresh_datasource()
+        assert ei.value.status_code == HttpStatusCode.CONFLICT.value
 
 
 class TestZoomConnectorSyncFlow:
@@ -768,7 +771,8 @@ class TestFetchTranscript:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_download_failure_returns_none(self) -> None:
+    async def test_download_failure_raises_with_source_status(self) -> None:
+        """A blocked download must not read as "meeting had no transcript"."""
         connector = _make_connector()
         ds = self._make_ds()
         ds.meeting_transcript_metadata = AsyncMock(return_value=MagicMock(
@@ -776,12 +780,13 @@ class TestFetchTranscript:
             data={"download_url": "https://zoom.us/dl/transcript"},
         ))
         ds.meeting_transcript_download = AsyncMock(return_value=MagicMock(
-            success=False, message="403",
+            success=False, message="403", status_code=403,
         ))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
 
-        result = await connector._fetch_transcript("some-uuid")
-        assert result is None
+        with pytest.raises(HTTPException) as ei:
+            await connector._fetch_transcript("some-uuid")
+        assert ei.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     @pytest.mark.asyncio
     async def test_successful_transcript_returned(self) -> None:
@@ -801,14 +806,15 @@ class TestFetchTranscript:
         assert result == "Hello world"
 
     @pytest.mark.asyncio
-    async def test_exception_during_fetch_returns_none(self) -> None:
+    async def test_exception_during_fetch_is_mapped(self) -> None:
         connector = _make_connector()
         ds = self._make_ds()
         ds.meeting_transcript_metadata = AsyncMock(side_effect=RuntimeError("crash"))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
 
-        result = await connector._fetch_transcript("some-uuid")
-        assert result is None
+        with pytest.raises(HTTPException) as ei:
+            await connector._fetch_transcript("some-uuid")
+        assert ei.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
 
 # ============================================================================
@@ -1074,8 +1080,9 @@ class TestGetFreshDatasourceErrors:
         connector.external_client = MagicMock()
         connector.data_source = None
 
-        with pytest.raises(RuntimeError, match="data source is not initialised"):
+        with pytest.raises(HTTPException) as ei:
             await connector._get_fresh_datasource()
+        assert ei.value.status_code == HttpStatusCode.CONFLICT.value
 
     @pytest.mark.asyncio
     async def test_raises_when_config_missing(self) -> None:
@@ -1084,8 +1091,9 @@ class TestGetFreshDatasourceErrors:
         connector.data_source = MagicMock()
         connector.config_service.get_config = AsyncMock(return_value=None)
 
-        with pytest.raises(RuntimeError, match="configuration not found"):
+        with pytest.raises(HTTPException) as ei:
             await connector._get_fresh_datasource()
+        assert ei.value.status_code == HttpStatusCode.CONFLICT.value
 
 
 class TestRunSyncInitAndAppUsers:
@@ -1238,18 +1246,21 @@ class TestApiWrapperEdgeCases:
 
 class TestFetchTranscriptEdgeCases:
     @pytest.mark.asyncio
-    async def test_unknown_zoom_code_logs_warning(self) -> None:
+    async def test_unknown_zoom_code_logs_warning_and_raises(self) -> None:
         connector = _make_connector()
         ds = MagicMock()
         ds.meeting_transcript_metadata = AsyncMock(return_value=MagicMock(
             success=False,
             data={"code": 9999},
             message="unexpected",
+            status_code=401,
         ))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
 
-        result = await connector._fetch_transcript("uuid-1")
-        assert result is None
+        with pytest.raises(HTTPException) as ei:
+            await connector._fetch_transcript("uuid-1")
+        # An expired token is a reconnect prompt, not "no transcript".
+        assert ei.value.status_code == HttpStatusCode.CONFLICT.value
         connector.logger.warning.assert_called_once_with(
             "Zoom: transcript metadata call failed for %s "
             "(zoom_code=%s, message=%s)",
@@ -1380,21 +1391,29 @@ class TestStreamRecord:
         connector._list_meeting_participants.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_stream_record_participants_fetch_failure(self) -> None:
+    async def test_stream_record_participants_fetch_failure_propagates(self) -> None:
+        """A failed participants call must not be served as an empty section."""
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._fetch_transcript = AsyncMock(return_value="")  # type: ignore[method-assign]
         connector._list_meeting_participants = AsyncMock(  # type: ignore[method-assign]
-            side_effect=Exception("participants down")
+            side_effect=HTTPException(status_code=HttpStatusCode.CONFLICT.value, detail="expired")
         )
 
         record = _make_meeting_record(id="rec-3")
 
-        response = await connector.stream_record(record)
-        body = await _read_streaming_response(response)
-        payload = json.loads(body.decode("utf-8"))
+        with pytest.raises(HTTPException) as ei:
+            await connector.stream_record(record)
+        assert ei.value.status_code == HttpStatusCode.CONFLICT.value
 
-        assert payload["block_groups"][1]["data"] == ""
+    @pytest.mark.asyncio
+    async def test_stream_record_without_data_source_raises(self) -> None:
+        connector = _make_connector()
+        connector.data_source = None
+
+        with pytest.raises(HTTPException) as ei:
+            await connector.stream_record(_make_meeting_record(id="rec-4"))
+        assert ei.value.status_code == HttpStatusCode.CONFLICT.value
 
 
 class TestConnectionAndAccess:

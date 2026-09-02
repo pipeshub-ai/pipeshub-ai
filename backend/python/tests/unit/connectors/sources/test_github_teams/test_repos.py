@@ -889,14 +889,15 @@ class TestLargeBlobFallback:
             if method is c.data_source.get_file_contents:
                 return ok_response(empty_content)
             if method is c.data_source.get_git_blob:
-                return failed_response("404")
+                return failed_response("gone", status_code=HttpStatusCode.NOT_FOUND.value)
             raise AssertionError(f"unexpected ds_call for {method!r}")
 
         c.runtime.ds_call.side_effect = dispatch
 
         sync = ReposSync(c)
-        with pytest.raises(Exception, match="blobsha1"):
+        with pytest.raises(HTTPException) as exc:
             await sync.fetch_code_file_content(self._record())
+        assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
 
 
 class TestPruneDeletedPaths:
@@ -1088,8 +1089,9 @@ class TestFetchCodeFileContentErrors:
             connector_name="GITHUB TEAMS", connector_id="github-conn-1",
             external_record_id="/1/blob/a.py", file_path="a.py",
         )
-        with pytest.raises(Exception, match="Repository id not found"):
+        with pytest.raises(HTTPException) as exc:
             await ReposSync(make_mock_connector()).fetch_code_file_content(record)
+        assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
     async def test_repo_lookup_failure_raises(self) -> None:
         record = CodeFileRecord(
@@ -1100,9 +1102,13 @@ class TestFetchCodeFileContentErrors:
             file_path="a.py",
         )
         c = make_mock_connector()
-        c.runtime.ds_call.return_value = failed_response("404")
-        with pytest.raises(Exception, match="Failed to resolve repo"):
+        c.runtime.ds_call.return_value = failed_response(
+            "unauthorized", status_code=HttpStatusCode.UNAUTHORIZED.value
+        )
+        # An expired token must ask the user to reconnect (409), not claim a 404.
+        with pytest.raises(HTTPException) as exc:
             await ReposSync(c).fetch_code_file_content(record)
+        assert exc.value.status_code == HttpStatusCode.CONFLICT.value
 
     async def test_contents_failure_raises(self) -> None:
         record = CodeFileRecord(
@@ -1118,12 +1124,15 @@ class TestFetchCodeFileContentErrors:
             if method is c.data_source.get_repo_by_id:
                 return ok_response(make_repo(repo_id=1))
             if method is c.data_source.get_file_contents:
-                return failed_response("500")
+                return failed_response(
+                    "server error", status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value
+                )
             raise AssertionError(f"unexpected {method!r}")
 
         c.runtime.ds_call.side_effect = dispatch
-        with pytest.raises(Exception, match="Failed to fetch content"):
+        with pytest.raises(HTTPException) as exc:
             await ReposSync(c).fetch_code_file_content(record)
+        assert exc.value.status_code == HttpStatusCode.BAD_GATEWAY.value
 
     async def test_missing_file_path_raises(self) -> None:
         record = CodeFileRecord(
@@ -1133,8 +1142,9 @@ class TestFetchCodeFileContentErrors:
             external_record_id="/1/blob/a.py", external_record_group_id="1-code-repository",
             file_path="",
         )
-        with pytest.raises(Exception, match="Cannot resolve repo path"):
+        with pytest.raises(HTTPException) as exc:
             await ReposSync(make_mock_connector()).fetch_code_file_content(record)
+        assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
 
 class TestTimestampLifecycle:

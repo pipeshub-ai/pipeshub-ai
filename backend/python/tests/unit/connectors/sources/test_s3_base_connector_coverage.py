@@ -31,11 +31,12 @@ from app.models.entities import RecordType, User
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.status_code = status_code
     return r
 
 
@@ -638,7 +639,7 @@ class TestGetSignedUrl:
     async def test_access_denied(self, s3_connector):
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.generate_presigned_url = AsyncMock(
-            return_value=_make_response(False, error="AccessDenied")
+            return_value=_make_response(False, error="AccessDenied", status_code=403)
         )
         s3_connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         record = MagicMock()
@@ -654,7 +655,7 @@ class TestGetSignedUrl:
     async def test_no_such_key(self, s3_connector):
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.generate_presigned_url = AsyncMock(
-            return_value=_make_response(False, error="NoSuchKey")
+            return_value=_make_response(False, error="NoSuchKey", status_code=404)
         )
         s3_connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         record = MagicMock()

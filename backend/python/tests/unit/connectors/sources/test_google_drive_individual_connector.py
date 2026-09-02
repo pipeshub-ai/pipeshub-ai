@@ -2032,7 +2032,8 @@ class TestGetFileMetadataFromDrive:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector._get_file_metadata_from_drive("f1")
-        assert exc_info.value.status_code == 500
+        # Drive's own status is mapped: a 403 is a denial, not an opaque 500.
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_generic_exception(self, connector):
@@ -2246,8 +2247,9 @@ class TestStreamRecord:
         resp = MagicMock()
         resp.status = 403
         resp.reason = "Forbidden"
+        # Not a quota reason: those are remapped to 429 by _is_rate_limit_403.
         http_err = HttpError(resp, b"forbidden")
-        http_err.error_details = [{"reason": "rateLimitExceeded"}]
+        http_err.error_details = [{"reason": "insufficientPermissions"}]
 
         connector.google_client.get_client.return_value = mock_service
 

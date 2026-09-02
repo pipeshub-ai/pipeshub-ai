@@ -1969,7 +1969,7 @@ class TestLinearStreamRecord:
         record.external_record_id = "att-1"
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_webpage_record(self):
@@ -1992,7 +1992,7 @@ class TestLinearStreamRecord:
         record.external_record_id = "x"
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
 
 
 # ===================================================================
@@ -3214,7 +3214,7 @@ class TestStreamRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_webpage(self):
@@ -3271,7 +3271,7 @@ class TestStreamRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_unsupported_type(self):
@@ -3284,7 +3284,7 @@ class TestStreamRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_stream_inits_datasource_if_none(self):

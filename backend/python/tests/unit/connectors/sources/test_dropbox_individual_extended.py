@@ -527,9 +527,13 @@ class TestGetSignedUrl:
         assert result == "https://dl.dropbox.com/temp"
 
     async def test_no_external_id(self, connector):
+        from fastapi import HTTPException
+
         record = MagicMock(external_record_id=None, path=None, id="r1")
-        result = await connector.get_signed_url(record)
-        assert result is None
+        # A missing local path is not a file deleted at Dropbox.
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     async def test_not_initialized(self, connector):
         connector.data_source = None

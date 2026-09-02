@@ -19,6 +19,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from fastapi import HTTPException
+
 from app.sources.external.github.github_async import GhObject
 
 from app.config.constants.arangodb import (
@@ -28,6 +30,8 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
 from app.connectors.core.base.sync_point.sync_point import generate_record_sync_point_key
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.models.blocks import (
@@ -515,18 +519,32 @@ class IssuesSync:
         c = self.c
         external_group_id: str = getattr(record, "external_record_group_id", None) or ""
         if not external_group_id:
-            raise Exception("Repository id not found on ticket record.")
+            raise HTTPException(
+                HttpStatusCode.BAD_REQUEST.value, "Repository id not found on ticket record."
+            )
         repo_id = int(external_group_id.split("-")[0])
         issue_number = int(str(record.external_record_id).rsplit("/", 1)[-1])
 
         repo_res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
         if not repo_res.success or not repo_res.data:
-            raise Exception(f"Failed to resolve repo id={repo_id} for record {record.external_record_id}: {repo_res.error}")
+            raise_for_stream_fetch(
+                success=repo_res.success,
+                has_payload=bool(repo_res.data),
+                connector=c.display_name,
+                status=repo_res.status_code,
+                message=repo_res.error,
+            )
         owner, repo_name = repo_res.data.owner.login, repo_res.data.name
 
         issue_res = await c.runtime.ds_call(c.data_source.get_issue, owner, repo_name, issue_number)
         if not issue_res.success or not issue_res.data:
-            raise Exception(f"Failed to fetch issue for record {record.external_record_id}: {issue_res.error}")
+            raise_for_stream_fetch(
+                success=issue_res.success,
+                has_payload=bool(issue_res.data),
+                connector=c.display_name,
+                status=issue_res.status_code,
+                message=issue_res.error,
+            )
         issue = issue_res.data
 
         markdown_raw: str = getattr(issue, "body", "") or ""

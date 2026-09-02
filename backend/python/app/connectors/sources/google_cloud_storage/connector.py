@@ -1317,31 +1317,14 @@ class GCSConnector(BaseConnector):
                 return response.data.get("url")
 
             error_msg = response.error or "Unknown error"
-            error_str = str(error_msg)
-            if any(
-                phrase in error_str
-                for phrase in ["403", "denied", "permission", "PermissionDenied", "Forbidden"]
-            ):
-                self.logger.error(
-                    f"❌ ACCESS DENIED: Failed to generate signed URL. "
-                    f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
-                )
-                source_status = HttpStatusCode.FORBIDDEN.value
-            elif any(
-                phrase in error_str
-                for phrase in ["404", "NotFound", "NoSuchKey", "not found"]
-            ):
-                self.logger.error(
-                    f"❌ KEY NOT FOUND: The object may not exist or the key is incorrect. "
-                    f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
-                )
-                source_status = HttpStatusCode.NOT_FOUND.value
-            else:
-                self.logger.error(
-                    f"❌ FAILED: Failed to generate signed URL. "
-                    f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
-                )
-                source_status = None
+            # The status comes off the google.api_core exception. The error text
+            # embeds the bucket and object key, so matching phrases in it would
+            # let a key like "hr/permissions/2024.xlsx" pick the status.
+            source_status = getattr(response, "status_code", None)
+            self.logger.error(
+                f"❌ FAILED: Failed to generate signed URL (status {source_status}). "
+                f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
+            )
             raise map_source_status(source_status, connector=self.display_name)
         except HTTPException:
             raise

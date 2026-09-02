@@ -36,6 +36,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
     map_source_status,
     not_found_at_source,
     to_stream_error,
@@ -507,12 +508,12 @@ class JiraConnector(BaseConnector):
     async def _get_fresh_datasource(self) -> JiraDataSource:
         """Return a DataSource; for OAuth, refresh the access token from config if it changed."""
         if not self.external_client:
-            raise Exception("Jira client not initialized. Call init() first.")
+            raise connector_not_ready(self.display_name)
 
         config_path = OAUTH_JIRA_CONFIG_PATH.format(connector_id=self.connector_id)
         config = await self.config_service.get_config(config_path)
         if not config:
-            raise Exception("Jira configuration not found")
+            raise connector_not_ready(self.display_name)
 
         auth_config = config.get("auth", {}) or {}
         auth_type = auth_config.get("authType", "OAUTH")
@@ -522,7 +523,7 @@ class JiraConnector(BaseConnector):
         credentials_config = config.get("credentials", {}) or {}
         fresh_token = credentials_config.get("access_token", "")
         if not fresh_token:
-            raise Exception("No OAuth access token available")
+            raise connector_not_ready(self.display_name)
 
         internal_client = self.external_client.get_client()
         if internal_client.get_token() != fresh_token:
@@ -4241,7 +4242,12 @@ class JiraConnector(BaseConnector):
 
             return response
 
-        raise Exception(f"Failed {ctx} after {max_attempts} attempts: {last_exc}") from last_exc
+        # Re-raised bare: to_stream_error reads the status/timeout off the SDK
+        # exception itself and does not walk __cause__, so wrapping it here would
+        # turn a 504-worthy ReadTimeout into a generic 500.
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError(f"Failed {ctx} after {max_attempts} attempts")
 
     async def _search_issues_with_retry(
         self,

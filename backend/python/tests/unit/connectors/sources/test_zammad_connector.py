@@ -1411,12 +1411,13 @@ def connector(mock_logger_fullcov, mock_data_entities_processor_fullcov,
     return c
 
 
-def _resp(success=True, data=None, error=None, message=None):
+def _resp(success=True, data=None, error=None, message=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
     r.message = message
+    r.status_code = status_code
     return r
 
 
@@ -2096,7 +2097,7 @@ class TestStreamRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
 
     async def test_stream_error_reraises(self, connector):
         connector._process_ticket_blockgroups_for_streaming = AsyncMock(
@@ -3149,7 +3150,9 @@ class TestProcessKBAnswerBlockgroupsForStreaming:
     async def test_kb_answer_no_content(self, connector):
         ds = _mock_ds()
         ds.init_knowledge_base = AsyncMock(return_value=_resp(success=False))
-        ds.get_kb_answer = AsyncMock(return_value=_resp(success=False))
+        ds.get_kb_answer = AsyncMock(
+            return_value=_resp(success=False, status_code=404)
+        )
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         record = MagicMock()
@@ -3158,8 +3161,9 @@ class TestProcessKBAnswerBlockgroupsForStreaming:
         record.weburl = None
         record.inherit_permissions = False
 
-        result = await connector._process_kb_answer_blockgroups_for_streaming(record)
-        assert b"Empty Answer" in result
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._process_kb_answer_blockgroups_for_streaming(record)
+        assert exc_info.value.status_code == 404
 
     async def test_kb_answer_direct_data(self, connector):
         ds = _mock_ds()

@@ -28,7 +28,10 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    not_downloadable,
     not_found_at_source,
+    raise_for_stream_fetch,
     to_stream_error,
 )
 from app.connectors.core.base.sync_point.sync_point import (
@@ -1530,10 +1533,7 @@ class OutlookIndividualConnector(BaseConnector):
         """Stream record content (email or attachment) using /me API."""
         try:
             if not self.external_outlook_client:
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail=OutlookHTTPDetails.CLIENT_NOT_INITIALIZED,
-                )
+                raise connector_not_ready(self.display_name)
 
             # Ensure we have fresh token before streaming operations
             await self._get_fresh_graph_client()
@@ -1589,25 +1589,26 @@ class OutlookIndividualConnector(BaseConnector):
             raise to_stream_error(e, connector=self.display_name) from e
 
     async def _get_message_by_id_external(self, message_id: str) -> Message | None:
-        """Get a specific message by ID for authenticated user using /me API."""
-        try:
-            if not self.external_outlook_client:
-                raise Exception("External Outlook client not initialized")
+        """Get a specific message by ID for authenticated user using /me API.
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.me_get_message(
-                message_id=message_id
-            )
+        Returns None only when Graph succeeded but returned no message. Every
+        failure raises: the caller turns None into a 404, and an expired token
+        or a 429 must not be reported to the user as a deleted email.
+        """
+        if not self.external_outlook_client:
+            raise connector_not_ready(self.display_name)
 
-            if not response.success:
-                self.logger.error(f"Failed to get message {message_id}: {response.error}")
-                return None
+        response: OutlookCalendarContactsResponse = await self.external_outlook_client.me_get_message(
+            message_id=message_id
+        )
 
-            # response.data is Message Pydantic object
-            return response.data
+        if not response.success:
+            self.logger.error(f"Failed to get message {message_id}: {response.error}")
+            # MSGraphResponse has no HTTP status — do not invent a 404.
+            raise RuntimeError(response.error or f"Failed to get message {message_id}")
 
-        except Exception as e:
-            self.logger.error(f"Error getting message {message_id}: {e}")
-            return None
+        # response.data is Message Pydantic object
+        return response.data
 
     @staticmethod
     def _decode_content_bytes(content_bytes: bytes | str) -> bytes:
@@ -1627,41 +1628,51 @@ class OutlookIndividualConnector(BaseConnector):
             return raw
 
     async def _download_attachment_external(self, message_id: str, attachment_id: str) -> bytes:
-        """Download attachment content for authenticated user using /me API."""
-        try:
-            if not self.external_outlook_client:
-                raise Exception("External Outlook client not initialized")
+        """Download attachment content for authenticated user using /me API.
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.me_messages_get_attachments(
-                message_id=message_id,
-                attachment_id=attachment_id
+        Raises rather than returning empty bytes: a failed download that returns
+        ``b''`` streams a zero-byte file with a 200 the client cannot detect.
+        """
+        if not self.external_outlook_client:
+            raise connector_not_ready(self.display_name)
+
+        response: OutlookCalendarContactsResponse = await self.external_outlook_client.me_messages_get_attachments(
+            message_id=message_id,
+            attachment_id=attachment_id
+        )
+
+        if not response.success:
+            self.logger.error(
+                f"Failed to download attachment {attachment_id} for message {message_id}: {response.error}"
+            )
+        raise_for_stream_fetch(
+            success=response.success,
+            has_payload=response.data is not None,
+            connector=self.display_name,
+            message=response.error,
+        )
+
+        # Extract attachment content from FileAttachment SDK object
+        # response.data is the SDK object itself (not a dict with 'value')
+        attachment_data = response.data
+
+        # Try both snake_case and camelCase attribute names
+        if hasattr(attachment_data, 'content_bytes'):
+            content_bytes = attachment_data.content_bytes
+        elif hasattr(attachment_data, 'contentBytes'):
+            content_bytes = attachment_data.contentBytes
+        elif isinstance(attachment_data, dict):
+            content_bytes = attachment_data.get('content_bytes') or attachment_data.get('contentBytes')
+        else:
+            content_bytes = None
+
+        if not content_bytes:
+            raise not_downloadable(
+                OutlookHTTPDetails.ATTACHMENT_NOT_DOWNLOADABLE,
+                connector=self.display_name,
             )
 
-            if not response.success or not response.data:
-                return b''
-
-            # Extract attachment content from FileAttachment SDK object
-            # response.data is the SDK object itself (not a dict with 'value')
-            attachment_data = response.data
-
-            # Try both snake_case and camelCase attribute names
-            if hasattr(attachment_data, 'content_bytes'):
-                content_bytes = attachment_data.content_bytes
-            elif hasattr(attachment_data, 'contentBytes'):
-                content_bytes = attachment_data.contentBytes
-            elif isinstance(attachment_data, dict):
-                content_bytes = attachment_data.get('content_bytes') or attachment_data.get('contentBytes')
-            else:
-                content_bytes = None
-
-            if not content_bytes:
-                return b''
-
-            return self._decode_content_bytes(content_bytes)
-
-        except Exception as e:
-            self.logger.error(f"Error downloading attachment {attachment_id} for message {message_id}: {e}")
-            return b''
+        return self._decode_content_bytes(content_bytes)
 
 
     def get_signed_url(self, record: Record) -> str | None:

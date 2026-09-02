@@ -37,11 +37,12 @@ from app.models.entities import FileRecord, Record, RecordType
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.status_code = status_code
     return r
 
 
@@ -628,7 +629,7 @@ class TestGetSignedUrl:
     async def test_access_denied(self, s3_connector):
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.generate_presigned_url = AsyncMock(
-            return_value=_make_response(False, error="AccessDenied")
+            return_value=_make_response(False, error="AccessDenied", status_code=403)
         )
         s3_connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         record = MagicMock()
@@ -644,7 +645,7 @@ class TestGetSignedUrl:
     async def test_no_such_key(self, s3_connector):
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.generate_presigned_url = AsyncMock(
-            return_value=_make_response(False, error="NoSuchKey")
+            return_value=_make_response(False, error="NoSuchKey", status_code=404)
         )
         s3_connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         record = MagicMock()
@@ -1301,11 +1302,12 @@ def connector(mock_logger_fullcov, mock_dep, mock_dsp, mock_cs):
     return c
 
 
-def _resp(success=True, data=None, error=None):
+def _resp(success=True, data=None, error=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.status_code = status_code
     return r
 
 
@@ -1538,7 +1540,7 @@ class TestGetSignedUrlFullCoverage:
     async def test_access_denied(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.generate_presigned_url = AsyncMock(
-            return_value=_resp(False, error="AccessDenied: not authorized")
+            return_value=_resp(False, error="AccessDenied: not authorized", status_code=403)
         )
         connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         rec = _record()
@@ -1550,13 +1552,35 @@ class TestGetSignedUrlFullCoverage:
     async def test_no_such_key(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.generate_presigned_url = AsyncMock(
-            return_value=_resp(False, error="NoSuchKey")
+            return_value=_resp(False, error="NoSuchKey", status_code=404)
         )
         connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         rec = _record()
         with pytest.raises(HTTPException) as exc_info:
             await connector.get_signed_url(rec)
         assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_error_text_does_not_pick_the_status(self, connector):
+        """The status is the botocore one, not whatever words the message holds.
+
+        The message is built from the source's own strings, so a bucket or key
+        name containing "NoSuchKey" or "AccessDenied" used to decide the status
+        the user sees.
+        """
+        connector.data_source = MagicMock()
+        connector.data_source.generate_presigned_url = AsyncMock(
+            return_value=_resp(
+                False,
+                error="AccessDenied: access to legal/NoSuchKey-audit.pdf is denied",
+                status_code=403,
+            )
+        )
+        connector._get_bucket_region = AsyncMock(return_value="us-east-1")
+        rec = _record(external_record_id="mybucket/legal/NoSuchKey-audit.pdf")
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(rec)
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_generic_error(self, connector):
