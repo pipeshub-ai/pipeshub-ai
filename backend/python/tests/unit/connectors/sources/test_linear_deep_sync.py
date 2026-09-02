@@ -129,7 +129,7 @@ class TestLinearRunSync:
             mock_filters.return_value = (FilterCollection(), FilterCollection())
             connector._fetch_users = AsyncMock(return_value=[])
             connector._fetch_teams = AsyncMock(return_value=([], []))
-            connector._sync_issues_for_teams = AsyncMock(return_value=set())
+            connector._sync_issues_for_teams = AsyncMock(return_value=(set(), []))
             connector._sync_attachments = AsyncMock()
             connector._sync_documents = AsyncMock()
             connector._sync_projects_for_teams = AsyncMock()
@@ -177,7 +177,7 @@ class TestLinearRunSync:
                 [(MagicMock(), [])],  # user groups
                 [(rg, [])],  # record groups
             ))
-            connector._sync_issues_for_teams = AsyncMock(return_value=set())
+            connector._sync_issues_for_teams = AsyncMock(return_value=(set(), []))
             connector._sync_attachments = AsyncMock()
             connector._sync_documents = AsyncMock()
             connector._sync_projects_for_teams = AsyncMock()

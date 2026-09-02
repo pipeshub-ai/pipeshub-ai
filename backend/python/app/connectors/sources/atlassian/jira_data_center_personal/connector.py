@@ -37,6 +37,7 @@ from app.connectors.sources.atlassian.jira_data_center.connector import (
 )
 from app.models.entities import AppUser, RecordGroup, RecordGroupType
 from app.models.permission import Permission
+from app.services.notification.types import NotificationSeverity, NotificationType
 
 
 @(
@@ -352,6 +353,25 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
                 full_sync_project_ids=sync_stats.get("full_sync_project_ids") or set(),
             )
 
+            failed_keys = sync_stats.get("failed_project_keys") or []
+            if failed_keys:
+                preview = ", ".join(failed_keys[:10])
+                if len(failed_keys) > 10:
+                    preview = f"{preview}, and {len(failed_keys) - 10} more"
+                self.logger.error(
+                    "❌ Jira DC Personal sync: %s/%s project(s) failed to sync issues: %s",
+                    len(failed_keys), len(projects), preview,
+                )
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("couldn't sync some projects"),
+                    message=(
+                        f"Couldn't sync issues for {len(failed_keys)} project(s): {preview}. "
+                        "Retry sync; check Jira access if it keeps failing."
+                    ),
+                )
+
             self.logger.info(
                 "✅ Jira DC Personal connector %s sync completed. Total: %s issues "
                 "(New: %s, Updated: %s) across %s projects; placeholders backfilled: %s",
@@ -365,6 +385,16 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
 
         except Exception as e:
             self.logger.error("Error during Jira DC Personal sync: %s", e, exc_info=True)
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=self._notification_title("sync failed"),
+                message=(
+                    f"The sync stopped due to an error: {str(e)[:200]}. Recent Jira changes "
+                    "may not be reflected yet. Run the sync again; if it keeps failing, "
+                    "check the connector's configuration."
+                ),
+            )
             raise
 
     async def _fetch_projects(

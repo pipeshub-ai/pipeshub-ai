@@ -1395,7 +1395,8 @@ class TestLinearRunSync:
                     return_value=[MagicMock(email="alice@test.com")]
                 )
                 with patch.object(
-                    c, "_sync_issues_for_teams", new_callable=AsyncMock, return_value=set()
+                    c, "_sync_issues_for_teams", new_callable=AsyncMock,
+                    return_value=(set(), [])
                 ):
                     with patch.object(c, "_sync_attachments", new_callable=AsyncMock):
                         with patch.object(c, "_sync_documents", new_callable=AsyncMock):
@@ -5575,7 +5576,7 @@ class TestRunSync:
                             connector,
                             "_sync_issues_for_teams",
                             new_callable=AsyncMock,
-                            return_value=set(),
+                            return_value=(set(), []),
                         ):
                             with patch.object(
                                 connector,
@@ -5646,7 +5647,7 @@ class TestRunSync:
                             connector,
                             "_sync_issues_for_teams",
                             new_callable=AsyncMock,
-                            return_value=set(),
+                            return_value=(set(), []),
                         ):
                             with patch.object(
                                 connector,
