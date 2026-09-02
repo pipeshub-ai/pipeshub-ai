@@ -5,6 +5,8 @@ import threading
 import time
 import uuid
 from collections import deque
+from collections.abc import Awaitable, Callable
+from concurrent.futures import CancelledError as FuturesCancelledError
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import wait as futures_wait
 from logging import Logger
@@ -21,6 +23,11 @@ from app.services.messaging.config import (
     StreamMessage,
     compute_retry_backoff_seconds,
     messaging_env,
+)
+from app.services.messaging.disposition import (
+    AbandonedMessageSink,
+    describe_message,
+    notify_abandoned,
 )
 from app.services.messaging.distributed_concurrency import DistributedLeaseSet
 from app.services.messaging.error_classifier import (
@@ -113,6 +120,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         fair_scheduler_config: FairSchedulerConfig | None = None,
         key_extractor: FairnessKeyExtractor | None = None,
         weight_provider: WeightProvider | None = None,
+        disposition_sink: Optional[AbandonedMessageSink] = None,
     ) -> None:
         self.logger = logger
         self.config = config
@@ -120,6 +128,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # lets one process re-read another process's still-active messages.
         self.consumer_name = f"{config.client_id}-{uuid.uuid4().hex}"
         self.retry_manager = retry_manager
+        # Told about every message this consumer gives up on, before the XACK
+        # that makes it unrecoverable — see disposition.AbandonedMessageSink.
+        self.disposition_sink = disposition_sink
         self.producer = producer
         self.concurrency_manager = concurrency_manager
         # When set, node-local parsing/indexing admission is delegated to the
@@ -565,6 +576,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         topic: str,
         message_id: str,
         stable_message_id: str | None = None,
+        parsed_message: StreamMessage | None = None,
     ) -> bool:
         """Check if message should be dead-lettered based on failure retry count.
 
@@ -605,13 +617,18 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 self.logger.error("Error checking app-tracked retry count: %s", e)
             else:
                 if failure_count >= max_attempts:
-                    await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore
-                    await self._clear_retry_tracking(tracking_id)
-                    self.logger.warning(
-                        "Dead-lettered %s after %d transient failures (max %d)",
+                    await self._abandon_message(
                         message_id,
-                        failure_count,
-                        max_attempts,
+                        tracking_id,
+                        parsed_message,
+                        reason=(
+                            f"exhausted {failure_count} of {max_attempts} "
+                            "allowed failures"
+                        ),
+                        attempts=failure_count,
+                        ack=lambda: self.redis.xack(  # type: ignore[union-attr]
+                            topic, self.config.group_id, message_id
+                        ),
                     )
                     return True
                 # Fall through to the times_delivered backstop below: the
@@ -631,19 +648,65 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if details:
                 times_delivered = details[0].get("times_delivered", 0)
                 if times_delivered >= delivery_backstop:
-                    await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore
-                    await self._clear_retry_tracking(tracking_id)
-                    self.logger.warning(
-                        "Dead-lettered %s after %d transient failures (max %d)",
+                    await self._abandon_message(
                         message_id,
-                        times_delivered,
-                        delivery_backstop,
+                        tracking_id,
+                        parsed_message,
+                        reason=(
+                            f"delivered {times_delivered} times "
+                            f"(backstop {delivery_backstop}); likely crashing "
+                            "the consumer before the failure counter is written"
+                        ),
+                        attempts=times_delivered,
+                        ack=lambda: self.redis.xack(  # type: ignore[union-attr]
+                            topic, self.config.group_id, message_id
+                        ),
                     )
                     return True
         except Exception as e:
             self.logger.error("Error checking delivery count: %s", e)
 
         return False
+
+    async def _abandon_message(
+        self,
+        message_id: str,
+        tracking_id: str,
+        parsed_message: StreamMessage | None,
+        *,
+        reason: str,
+        attempts: int,
+        ack: Callable[[], Awaitable[Any]],
+    ) -> None:
+        """Give up on a message: tell the sink, then acknowledge it.
+
+        The notification comes first and on every path. An XACK is final — the
+        entry leaves the PEL and nothing redelivers it — so a record whose
+        message is dropped without this is left on whatever status it happened
+        to hold, which no recovery sweep revisits, and the log names only a
+        stream id that no longer resolves to anything.
+
+        ``ack`` is supplied by the caller because acknowledging is loop-bound:
+        the drain loop owns ``self.redis`` directly, while the processing
+        wrapper runs on the worker loop and has to bridge back (see
+        ``_ack_message``).
+        """
+        await notify_abandoned(
+            self.disposition_sink,
+            self.logger,
+            parsed_message,
+            reason=reason,
+            attempts=attempts,
+        )
+        self.logger.warning(
+            "Dead-lettered %s (%s, tracking id %s): %s",
+            message_id,
+            describe_message(parsed_message),
+            tracking_id,
+            reason,
+        )
+        await ack()
+        await self._clear_retry_tracking(tracking_id)
 
     async def _wait_out_backpressure(self) -> None:
         """Block while any downstream service has an active 429+Retry-After
@@ -727,7 +790,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                             if self.__already_held(message_id):
                                 continue
                             if await self._should_dead_letter(
-                                topic, message_id, stable_message_id
+                                topic, message_id, stable_message_id, parsed_message
                             ):
                                 continue
                             processed_any = True
@@ -812,7 +875,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                 if self.__already_held(message_id):
                                     continue
                                 if await self._should_dead_letter(
-                                    topic, message_id, stable_message_id
+                                    topic, message_id, stable_message_id, parsed_message
                                 ):
                                     continue
                                 processed_any = True
@@ -1090,10 +1153,25 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """Parse a freshly read entry and hand it to the scheduler."""
         parsed = await self._parse_message(message_id, fields)
         if parsed is None:
+            # No recordId can be recovered from an envelope that would not
+            # parse. The entry itself is not logged: it carries the whole
+            # record payload, and XACK leaves it in the stream, so XRANGE on
+            # the id below retrieves it without putting customer data in the
+            # logs. The size is here because a truncated write is the usual
+            # cause.
             self.logger.warning(
-                "Unparseable message %s from stream %s; acknowledging without retry",
+                "Unparseable message %s from stream %s (%d byte payload); "
+                "acknowledging without retry",
                 message_id,
                 stream_name,
+                len(fields.get(_MESSAGE_VALUE_FIELD, "") or ""),
+            )
+            await notify_abandoned(
+                self.disposition_sink,
+                self.logger,
+                None,
+                reason=f"unparseable envelope on {stream_name}",
+                attempts=1,
             )
             try:
                 await self._ack_message(stream_name, message_id)
@@ -1550,6 +1628,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 self._active_futures.discard(f)
             try:
                 _ = f.result()
+            except FuturesCancelledError:
+                # Shutdown cancelled the task. The entry was never ACKed, so it
+                # stays in the PEL and is redelivered — this is a normal
+                # outcome, not the unhandled-exception case below.
+                self.logger.info(
+                    "Processing task for %s was cancelled; entry left for "
+                    "redelivery",
+                    message_id,
+                )
             except Exception as exc:
                 self.logger.error("Task completed with unhandled exception: %s", exc)
 
@@ -1823,10 +1910,18 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             parsed_message = await self._parse_message(message_id, fields)
         if parsed_message is None:
             self.logger.warning(
-                "Unparseable message %s from stream %s; "
+                "Unparseable message %s from stream %s (%d byte payload); "
                 "acknowledging without retry",
                 message_id,
                 stream_name,
+                len(fields.get(_MESSAGE_VALUE_FIELD, "") or ""),
+            )
+            await notify_abandoned(
+                self.disposition_sink,
+                self.logger,
+                None,
+                reason=f"unparseable envelope on {stream_name}",
+                attempts=1,
             )
             try:
                 await self._ack_message(stream_name, message_id)
@@ -2071,6 +2166,19 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
             return True
 
+        except asyncio.CancelledError:
+            # A BaseException, so the recovery below cannot see it: no failure
+            # is counted, nothing is re-queued and nothing is ACKed. That is the
+            # correct outcome — the entry stays in the PEL and is redelivered —
+            # but it has to be visible, and it has to name the record, because
+            # the handler has already written a status on the way out.
+            self.logger.warning(
+                "Processing of %s (%s) was cancelled; leaving it un-acked for "
+                "redelivery",
+                message_id,
+                describe_message(parsed_message),
+            )
+            raise
         except RedisAcknowledgementError as e:
             self.logger.warning("%s", e)
             return False
@@ -2100,31 +2208,38 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 # Update is_final_failure for terminal errors
                 if parsed_message:
                     parsed_message.is_final_failure = True
-                # Terminal error: ACK immediately to skip this message
-                self.logger.warning(
-                    "Terminal error for %s, ACK'ing to skip: %s",
+                # Terminal error: ACK immediately to skip this message. Route
+                # it through the sink too — the handler usually wrote FAILED on
+                # its way out, in which case this is a no-op, but an error
+                # raised before it ever ran (a malformed envelope, a missing
+                # orgId) leaves no trace at all otherwise.
+                await self._abandon_message(
                     message_id,
-                    type(e).__name__,
+                    stable_message_id,
+                    parsed_message,
+                    reason=f"terminal error: {type(e).__name__}",
+                    attempts=1,
+                    ack=lambda: self._ack_message(stream_name, message_id),
                 )
-                await self._ack_message(stream_name, message_id)
                 acked = True
-                await self._clear_retry_tracking(stable_message_id)
             elif self.retry_manager is not None and parsed_message:
                 failure_count, should_dead_letter = (
                     await self._increment_retry_and_check(stable_message_id)
                 )
                 if should_dead_letter:
-                    await self._ack_message(stream_name, message_id)
-                    acked = True
-                    await self._clear_retry_tracking(stable_message_id)
-                    self.logger.warning(
-                        "Dead-lettered %s (tracking ID: %s) after %d transient failures (max %d): %s",
+                    await self._abandon_message(
                         message_id,
                         stable_message_id,
-                        failure_count,
-                        messaging_env.max_delivery_attempts,
-                        type(e).__name__,
+                        parsed_message,
+                        reason=(
+                            f"{failure_count} transient failures "
+                            f"(max {messaging_env.max_delivery_attempts}), "
+                            f"last was {type(e).__name__}"
+                        ),
+                        attempts=failure_count,
+                        ack=lambda: self._ack_message(stream_name, message_id),
                     )
+                    acked = True
                 else:
                     # RE-QUEUE: Publish back to same stream for retry, then ACK
                     try:

@@ -41,6 +41,7 @@ from app.services.messaging.scheduling.key_extractors import CompositeKeyExtract
 
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
+    from app.services.messaging.disposition import AbandonedMessageSink
     from app.services.resource_governor import ResourceGovernor
 
 
@@ -182,6 +183,7 @@ class MessagingFactory:
         fair_scheduler_config: FairSchedulerConfig | None = None,
         key_extractor: FairnessKeyExtractor | None = None,
         weight_provider: WeightProvider | None = None,
+        disposition_sink: "AbandonedMessageSink | None" = None,
     ) -> IMessagingConsumer:
         """Create a messaging consumer based on broker type.
 
@@ -245,6 +247,7 @@ class MessagingFactory:
                     fair_scheduler_config=effective_fair_config,
                     key_extractor=effective_key_extractor,
                     weight_provider=weight_provider,
+                    disposition_sink=disposition_sink,
                 )
             return KafkaMessagingConsumer(logger, config, retry_manager)
         else:
@@ -266,5 +269,6 @@ class MessagingFactory:
                     fair_scheduler_config=effective_fair_config,
                     key_extractor=effective_key_extractor,
                     weight_provider=weight_provider,
+                    disposition_sink=disposition_sink,
                 )
             return RedisStreamsConsumer(logger, config, retry_manager)

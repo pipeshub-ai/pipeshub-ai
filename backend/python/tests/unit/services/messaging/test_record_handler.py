@@ -20,6 +20,7 @@ from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
     PipelineEventData,
+    StreamMessage,
 )
 from app.services.messaging.error_classifier import MessageErrorType
 from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
@@ -1971,7 +1972,80 @@ class TestProcessEventErrors:
         assert updates.get("indexingStatus") == ProgressStatus.QUEUED.value
 
     @pytest.mark.asyncio
-    async def test_cancellation_reverts_all_in_progress_statuses(self):
+    async def test_cancellation_on_the_final_attempt_still_writes_nothing(self):
+        """Cancellation is checked before is_final, and this is why.
+
+        is_final_failure is set from the retry count before the handler runs,
+        so a record on its last attempt that is then cancelled by a shutdown
+        used to take the FAILED branch -- misreporting a record the broker is
+        about to redeliver, and clearing the processingStartedAt the stale scan
+        needs to recover it.
+        """
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(
+            return_value={
+                "_key": "r1",
+                "virtualRecordId": "vr1",
+                "parsingStatus": ProgressStatus.IN_PROGRESS.value,
+                "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+                "mimeType": "application/pdf",
+            }
+        )
+        gp.update_node = AsyncMock(return_value=True)
+        gp.batch_update_nodes = AsyncMock(return_value=True)
+
+        entered_processor = asyncio.Event()
+        never_complete = asyncio.Event()
+
+        async def blocked_events(_event_data):
+            entered_processor.set()
+            await never_complete.wait()
+            if False:
+                yield None
+
+        handler.event_processor.on_event = blocked_events
+        payload = {
+            "recordId": "r1",
+            "virtualRecordId": "vr1",
+            "orgId": "org-1",
+            "mimeType": "application/pdf",
+            "extension": "pdf",
+            "signedUrl": "https://example.com/file.pdf",
+            # the difference from the test below
+            "is_final_failure": True,
+        }
+
+        with patch.object(
+            handler,
+            "_download_from_signed_url",
+            new=AsyncMock(return_value=b"pdf"),
+        ):
+            event_generator = handler.process_event(
+                EventTypes.NEW_RECORD.value,
+                payload,
+            )
+            processing = asyncio.create_task(anext(event_generator))
+            await asyncio.wait_for(entered_processor.wait(), timeout=1)
+            processing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await processing
+            await event_generator.aclose()
+
+        gp.update_node.assert_not_awaited()
+        gp.batch_update_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_leaves_the_record_in_progress(self):
+        """A cancelled record must stay IN_PROGRESS, not fall back to QUEUED.
+
+        The revert-to-QUEUED path exists because the consumer re-queues the
+        message; a cancellation schedules no such retry — the broker entry is
+        simply left unacknowledged and redelivered. Writing QUEUED here put the
+        record in the one state no sweep reconciles, so if the process never
+        came back it was stranded for ever. IN_PROGRESS with its
+        processingStartedAt intact is what the stale-record scan looks for.
+        """
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         record = {
@@ -2021,10 +2095,7 @@ class TestProcessEventErrors:
                 await processing
             await event_generator.aclose()
 
-        updates = gp.update_node.await_args.args[2]
-        assert updates["parsingStatus"] == ProgressStatus.NOT_STARTED.value
-        assert updates["indexingStatus"] == ProgressStatus.QUEUED.value
-        assert updates["processingStartedAt"] is None
+        gp.update_node.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_transient_failure_after_completed_does_not_downgrade(self):
@@ -3653,3 +3724,181 @@ class TestTerminalConditionsDrain:
             IndexingEvent.INDEXING_COMPLETE,
         ]
 
+
+
+# ===========================================================================
+# on_message_abandoned — the terminal status a discarded message leaves behind
+# ===========================================================================
+
+
+class TestOnMessageAbandoned:
+    """The handler's AbandonedMessageSink implementation.
+
+    This is what stops a discarded message from stranding its record. Before it
+    existed, a consumer that gave up on a message acknowledged it and wrote
+    nothing, so the record kept the status it was created with — QUEUED — which
+    the stale scan (IN_PROGRESS only) and the connector sweep (inactive
+    connectors only) both ignore. It sat there for ever, and the only log line
+    named the broker's message id, not the record.
+    """
+
+    @staticmethod
+    def _message(record_id="r1", event_type="newRecord"):
+        payload = {"recordId": record_id} if record_id else {"orgId": "org-1"}
+        return StreamMessage(eventType=event_type, payload=payload)
+
+    @pytest.mark.asyncio
+    async def test_marks_the_record_failed_with_a_reason(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(
+            return_value={
+                "_key": "r1",
+                "indexingStatus": ProgressStatus.QUEUED.value,
+                "parsingStatus": ProgressStatus.NOT_STARTED.value,
+            }
+        )
+        gp.update_node = AsyncMock(return_value=True)
+        gp.compare_and_set_indexing_status = AsyncMock(return_value=["r1"])
+
+        await handler.on_message_abandoned(
+            self._message(), reason="4 transient failures", attempts=4
+        )
+
+        updates = gp.update_node.await_args.args[2]
+        assert updates["indexingStatus"] == ProgressStatus.FAILED.value
+        assert updates["extractionStatus"] == ProgressStatus.FAILED.value
+        assert updates["processingStartedAt"] is None
+        assert "4 transient failures" in updates["reason"]
+        assert "4 attempt" in updates["reason"]
+
+    @pytest.mark.parametrize(
+        "settled_status",
+        [
+            ProgressStatus.COMPLETED.value,
+            ProgressStatus.EMPTY.value,
+            ProgressStatus.AUTO_INDEX_OFF.value,
+            ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+            ProgressStatus.FAILED.value,
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_never_downgrades_a_settled_record(self, settled_status):
+        """A duplicate delivery of a finished record must not be rewritten.
+
+        AUTO_INDEX_OFF matters most here: the connector parked that record
+        deliberately, and turning it into a failure would misreport it. FAILED
+        is in the list so the specific reason the handler recorded survives —
+        this path only has a generic one to offer.
+        """
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(
+            return_value={"_key": "r1", "indexingStatus": settled_status}
+        )
+        gp.update_node = AsyncMock(return_value=True)
+
+        await handler.on_message_abandoned(
+            self._message(), reason="poison", attempts=3
+        )
+
+        gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_tolerates_a_deleted_record(self):
+        """A record can be deleted between the event and the abandonment."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value=None)
+        gp.update_node = AsyncMock(return_value=True)
+
+        await handler.on_message_abandoned(
+            self._message(), reason="poison", attempts=3
+        )
+
+        gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_op_for_record_less_events(self):
+        """Bulk-delete and membership-sync events carry no recordId."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock()
+
+        await handler.on_message_abandoned(
+            self._message(record_id=None, event_type="bulkDeleteRecords"),
+            reason="poison",
+            attempts=3,
+        )
+
+        gp.get_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_op_for_an_unparseable_envelope(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock()
+
+        await handler.on_message_abandoned(None, reason="unparseable", attempts=1)
+
+        gp.get_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_record_that_completes_concurrently_is_not_buried(self):
+        """The settled check is a read; the write has to be conditional.
+
+        A concurrent delivery can finish the record between the two, and an
+        unconditional write would bury a COMPLETED record as FAILED. The swap
+        is claimed from the exact status that was read, so a record that moved
+        on is left alone.
+        """
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(
+            return_value={"_key": "r1", "indexingStatus": ProgressStatus.QUEUED.value}
+        )
+        # Nothing swapped: someone else moved the record first.
+        gp.compare_and_set_indexing_status = AsyncMock(return_value=[])
+        gp.update_node = AsyncMock(return_value=True)
+
+        await handler.on_message_abandoned(
+            self._message(), reason="poison", attempts=3
+        )
+
+        gp.compare_and_set_indexing_status.assert_awaited_once_with(
+            ["r1"], ProgressStatus.QUEUED.value, ProgressStatus.FAILED.value
+        )
+        gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_never_raises_when_the_graph_is_down(self):
+        """The caller is mid-acknowledgement and cannot handle an exception."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(side_effect=Exception("graph down"))
+        gp.compare_and_set_indexing_status = AsyncMock(return_value=["r1"])
+
+        await handler.on_message_abandoned(
+            self._message(), reason="poison", attempts=3
+        )
+
+    @pytest.mark.asyncio
+    async def test_reports_a_write_that_did_not_land(self):
+        """update_node returns False rather than raising.
+
+        This is the record's last write; a silently dropped one recreates the
+        bug this method exists to fix, so it has to be logged as an error.
+        """
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(
+            return_value={"_key": "r1", "indexingStatus": ProgressStatus.QUEUED.value}
+        )
+        gp.update_node = AsyncMock(return_value=False)
+        gp.compare_and_set_indexing_status = AsyncMock(return_value=["r1"])
+
+        await handler.on_message_abandoned(
+            self._message(), reason="poison", attempts=3
+        )
+
+        assert handler.logger.error.called

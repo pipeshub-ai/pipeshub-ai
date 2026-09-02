@@ -2812,3 +2812,78 @@ class TestModuleConstants:
 
     def test_message_value_field_constant(self):
         assert _MESSAGE_VALUE_FIELD == "value"
+
+
+# ===================================================================
+# Abandonment: nothing is discarded without a terminal record status
+# ===================================================================
+
+
+class TestAbandonmentNotifiesTheSink:
+    """A discarded message must leave its record in a terminal, visible state.
+
+    An XACK is final — the entry leaves the PEL and nothing redelivers it. If
+    the record's status is not made terminal first, no recovery sweep revisits
+    it: the stale scan filters on IN_PROGRESS and the connector sweep only
+    touches connectors that are gone. That is how records sat in QUEUED for
+    ever with nothing in the logs but a stream id.
+    """
+
+    @staticmethod
+    def _with_counters(consumer, *, failures):
+        consumer.retry_manager = AsyncMock()
+        consumer.retry_manager.get_count = AsyncMock(return_value=failures)
+        consumer.redis = AsyncMock()
+        consumer.redis.xack = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_sink_hears_about_it_before_the_ack(self, consumer):
+        self._with_counters(consumer, failures=99)
+        calls = []
+        sink = AsyncMock()
+        sink.on_message_abandoned = AsyncMock(
+            side_effect=lambda *a, **kw: calls.append("sink")
+        )
+        consumer.disposition_sink = sink
+        consumer.redis.xack = AsyncMock(
+            side_effect=lambda *a, **kw: calls.append("xack")
+        )
+        message = StreamMessage(
+            eventType="newRecord", payload={"recordId": "rec-1"}
+        )
+
+        result = await consumer._should_dead_letter(
+            "topic-a", "1-0", None, message
+        )
+
+        assert result is True
+        assert calls == ["sink", "xack"]
+        assert sink.on_message_abandoned.await_args.args[0] is message
+
+    @pytest.mark.asyncio
+    async def test_a_failing_sink_does_not_block_the_ack(self, consumer):
+        """Losing the status write is bad; stalling the stream is worse."""
+        self._with_counters(consumer, failures=99)
+        sink = AsyncMock()
+        sink.on_message_abandoned = AsyncMock(side_effect=Exception("graph down"))
+        consumer.disposition_sink = sink
+
+        result = await consumer._should_dead_letter("topic-a", "1-0")
+
+        assert result is True
+        consumer.redis.xack.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_healthy_message_is_not_abandoned(self, consumer):
+        self._with_counters(consumer, failures=0)
+        sink = AsyncMock()
+        consumer.disposition_sink = sink
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"times_delivered": 2}]
+        )
+
+        result = await consumer._should_dead_letter("topic-a", "1-0")
+
+        assert result is False
+        sink.on_message_abandoned.assert_not_awaited()
+        consumer.redis.xack.assert_not_awaited()

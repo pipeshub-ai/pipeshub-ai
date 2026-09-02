@@ -337,6 +337,19 @@ class MessagingEnvConfig:
         return int(os.getenv("STALE_INDEXING_RECOVERY_PAGE_SIZE", "100"))
 
     @property
+    def stranded_record_republish_after_seconds(self) -> float:
+        """How long a record may sit unqueued before its event is re-sent.
+
+        Zero disables the sweep. Guards the gap no other recovery path covers:
+        a record on a live connector whose event was lost or never published is
+        invisible to the stale scan (which only looks at IN_PROGRESS) and to the
+        inactive-connector sweep. Set it well above the largest backlog the
+        broker is expected to carry, or records legitimately waiting their turn
+        will be published a second time.
+        """
+        return _env_seconds("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", 0.0)
+
+    @property
     def vector_membership_backfill_interval_seconds(self) -> float:
         return float(os.getenv("VECTOR_MEMBERSHIP_BACKFILL_INTERVAL_SECONDS", "30"))
 
@@ -483,6 +496,21 @@ class MessagingEnvConfig:
         raw = os.getenv("FAIR_SCHEDULING_LANED_TOPICS", Topic.RECORD_EVENTS.value)
         topics = tuple(part.strip() for part in raw.split(",") if part.strip())
         return topics or (Topic.RECORD_EVENTS.value,)
+
+    @property
+    def fair_scheduling_metrics_per_connector(self) -> bool:
+        """Label the dispatch counter by connector as well as org.
+
+        Off by default because it multiplies that metric's series count by
+        the number of connector instances, which is unbounded. Worth turning
+        on for a single-org install, where labelling by org alone collapses
+        every connector into one series and the per-connector share -- the
+        thing fair scheduling exists to produce -- becomes invisible.
+        """
+        return (
+            os.getenv("FAIR_SCHEDULING_METRICS_PER_CONNECTOR", "false").lower()
+            == "true"
+        )
 
     @property
     def fair_scheduling_max_dwell_seconds(self) -> float:

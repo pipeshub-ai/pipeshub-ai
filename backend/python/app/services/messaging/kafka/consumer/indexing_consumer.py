@@ -25,6 +25,11 @@ from app.services.messaging.config import (
     compute_retry_backoff_seconds,
     messaging_env,
 )
+from app.services.messaging.disposition import (
+    AbandonedMessageSink,
+    describe_message,
+    notify_abandoned,
+)
 from app.services.messaging.distributed_concurrency import DistributedLeaseSet
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
@@ -163,6 +168,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         fair_scheduler_config: FairSchedulerConfig | None = None,
         key_extractor: FairnessKeyExtractor | None = None,
         weight_provider: WeightProvider | None = None,
+        disposition_sink: Optional[AbandonedMessageSink] = None,
     ) -> None:
         self.logger = logger
         self.consumer: AIOKafkaConsumer | None = None
@@ -170,6 +176,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.kafka_config = kafka_config
         self.consume_task = None
         self.retry_manager = retry_manager
+        # Told about every message this consumer gives up on, before the commit
+        # that makes it unrecoverable — see disposition.AbandonedMessageSink.
+        self.disposition_sink = disposition_sink
         self.producer = producer
         self.concurrency_manager = concurrency_manager
         # When set, node-local parsing/indexing admission is delegated to the
@@ -1707,6 +1716,38 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.error(f"Failed to re-queue message to {topic}: {e}")
             raise
 
+    async def __abandon_message(
+        self,
+        message_id: str,
+        tracking_id: str,
+        parsed_message: StreamMessage | None,
+        *,
+        reason: str,
+        attempts: int,
+    ) -> None:
+        """Give up on a message: tell the sink, then drop its tracking.
+
+        The caller commits immediately afterwards, which is final — so a record
+        whose message is dropped without this notification is left on whatever
+        status it happened to hold, which no recovery sweep revisits, and the
+        log names only an offset that explains nothing.
+        """
+        await notify_abandoned(
+            self.disposition_sink,
+            self.logger,
+            parsed_message,
+            reason=reason,
+            attempts=attempts,
+        )
+        self.logger.warning(
+            "Dead-lettered %s (%s, tracking id %s): %s",
+            message_id,
+            describe_message(parsed_message),
+            tracking_id,
+            reason,
+        )
+        await self._clear_retry_tracking(tracking_id)
+
     async def __commit_if_appropriate(
         self,
         message: ConsumerRecord,
@@ -1737,15 +1778,30 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.info(f"Message {message_id} processed successfully")
             await self._clear_retry_tracking(stable_message_id)
         elif is_terminal_error:
-            self.logger.warning(f"Terminal error for {message_id}, committing without retry")
-            await self._clear_retry_tracking(stable_message_id)
+            # Route it through the sink as well — the handler usually wrote
+            # FAILED on its way out, in which case this is a no-op, but an
+            # error raised before it ever ran (a malformed envelope, a missing
+            # orgId) leaves no trace at all otherwise.
+            await self.__abandon_message(
+                message_id,
+                stable_message_id,
+                parsed_message,
+                reason="terminal error",
+                attempts=1,
+            )
         elif self.retry_manager and parsed_message:
             count, should_dead_letter = await self._increment_retry_and_check(stable_message_id)
             if should_dead_letter:
-                self.logger.warning(
-                    f"Dead-lettering {message_id} (tracking ID: {stable_message_id}) after {count} transient failures"
+                await self.__abandon_message(
+                    message_id,
+                    stable_message_id,
+                    parsed_message,
+                    reason=(
+                        f"{count} transient failures "
+                        f"(max {messaging_env.max_delivery_attempts})"
+                    ),
+                    attempts=count,
                 )
-                await self._clear_retry_tracking(stable_message_id)
             else:
                 # RE-QUEUE: Publish back to same topic for retry
                 try:
@@ -2139,6 +2195,19 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             )
             return success
 
+        except asyncio.CancelledError:
+            # A BaseException, so the recovery below cannot see it: no failure
+            # is counted, nothing is re-queued and nothing is committed. That is
+            # the correct outcome — the offset resolves as redeliver — but it
+            # has to be visible, and it has to name the record, because the
+            # handler has already written a status on the way out.
+            self.logger.warning(
+                "Processing of %s (%s) was cancelled; leaving the offset "
+                "uncommitted for redelivery",
+                message_id,
+                describe_message(parsed_message),
+            )
+            raise
         except Exception as e:
             # Log the full exception chain for debugging
             exception_chain = format_exception_chain(e)

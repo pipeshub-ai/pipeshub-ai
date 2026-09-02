@@ -2023,3 +2023,94 @@ class TestConsumeLoop:
         mock_consumer.getmany = mock_getmany
         consumer.consumer = mock_consumer
         await consumer._IndexingKafkaConsumer__consume_loop()
+
+
+# ===================================================================
+# Abandonment: nothing is discarded without a terminal record status
+# ===================================================================
+
+
+class TestKafkaAbandonmentNotifiesTheSink:
+    """A committed-away message must leave its record in a terminal state.
+
+    Committing past an offset is final. If the record's status is not made
+    terminal first, no recovery sweep revisits it — the stale scan filters on
+    IN_PROGRESS and the connector sweep only touches connectors that are gone —
+    so the record waits for ever with only an offset in the logs to explain it.
+    """
+
+    @staticmethod
+    def _parsed():
+        return StreamMessage(eventType="newRecord", payload={"recordId": "r1"})
+
+    @pytest.mark.asyncio
+    async def test_dead_letter_notifies_the_sink_before_committing(self, consumer):
+        sink = AsyncMock()
+        consumer.disposition_sink = sink
+        consumer.retry_manager = AsyncMock()
+        consumer.retry_manager.increment_and_check = AsyncMock(
+            return_value=(3, True)
+        )
+        order = []
+        sink.on_message_abandoned = AsyncMock(
+            side_effect=lambda *a, **kw: order.append("sink")
+        )
+        consumer._commit_offset = AsyncMock(
+            side_effect=lambda *a, **kw: order.append("commit")
+        )
+
+        await consumer._IndexingKafkaConsumer__commit_if_appropriate(
+            _make_message(offset=7), self._parsed(), success=False
+        )
+
+        assert order == ["sink", "commit"]
+        assert (
+            sink.on_message_abandoned.await_args.args[0].payload["recordId"] == "r1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_terminal_error_also_notifies_the_sink(self, consumer):
+        """An error raised before the handler body ran wrote no status itself."""
+        sink = AsyncMock()
+        consumer.disposition_sink = sink
+        consumer._commit_offset = AsyncMock()
+
+        await consumer._IndexingKafkaConsumer__commit_if_appropriate(
+            _make_message(offset=7),
+            self._parsed(),
+            success=False,
+            is_terminal_error=True,
+        )
+
+        sink.on_message_abandoned.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_sink_does_not_stop_the_commit(self, consumer):
+        """A stalled partition would be a worse failure than the lost status."""
+        sink = AsyncMock()
+        sink.on_message_abandoned = AsyncMock(side_effect=Exception("graph down"))
+        consumer.disposition_sink = sink
+        consumer.retry_manager = AsyncMock()
+        consumer.retry_manager.increment_and_check = AsyncMock(
+            return_value=(3, True)
+        )
+        consumer._commit_offset = AsyncMock()
+
+        await consumer._IndexingKafkaConsumer__commit_if_appropriate(
+            _make_message(offset=7), self._parsed(), success=False
+        )
+
+        consumer._commit_offset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_success_never_notifies_the_sink(self, consumer):
+        sink = AsyncMock()
+        consumer.disposition_sink = sink
+        consumer.retry_manager = AsyncMock()
+        consumer._commit_offset = AsyncMock()
+
+        await consumer._IndexingKafkaConsumer__commit_if_appropriate(
+            _make_message(offset=7), self._parsed(), success=True
+        )
+
+        sink.on_message_abandoned.assert_not_awaited()
