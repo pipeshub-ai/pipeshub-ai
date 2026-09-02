@@ -291,6 +291,68 @@ config:
   accessibleRecordsCacheTtl: 300
   # 0 disables the signed-URL cache. Keep well under the 3600s signing lifetime.
   signedUrlCacheSeconds: 0
+  # Which coding sandbox `run_code` executes in. Left unset the service falls
+  # back to "local", which runs model-generated code as a subprocess of the
+  # query service itself — no network namespace and no filesystem boundary
+  # beyond rlimits. Pinned here so a chart install is isolated by default,
+  # matching what every docker-compose file already does.
+  #
+  # "docker" needs a reachable Docker daemon: mount the host socket via
+  # `extraVolumes`/`extraVolumeMounts`, or point DOCKER_HOST at a
+  # daemon/DinD sidecar. Without one, `run_code` fails at provision with a
+  # daemon error — set sandboxMode to "local" deliberately if that is what
+  # you want on this cluster, and understand the isolation you are giving up.
+  sandboxMode: "docker"
+  # Image `run_code` containers are started from (SANDBOX_MODE=docker only).
+  sandboxDockerImage: "pipeshub/sandbox:latest"
+  # Address of the Docker daemon for SANDBOX_MODE=docker. Leave empty to use
+  # the DinD sidecar (see `sandbox.dind`) when it is enabled, or set it to
+  # reach a daemon you run yourself, e.g. "tcp://docker-daemon.svc:2375".
+  dockerHost: ""
+
+# --- Coding sandbox execution ------------------------------------------------
+sandbox:
+  # Docker-in-Docker sidecar, so SANDBOX_MODE=docker has a daemon to talk to.
+  #
+  # Off by default, and that is deliberate. DinD needs a PRIVILEGED container,
+  # which is the one exception to this chart's otherwise uniform posture
+  # (runAsNonRoot, drop ALL capabilities, no privilege escalation). A
+  # privileged container can escape to the node, so enabling this trades a
+  # node-level risk for the isolation that keeps model-generated code off the
+  # application pod. Make that trade knowingly:
+  #
+  #   - Pod Security Admission `restricted` and OpenShift's default SCC will
+  #     REJECT this pod. You need a `privileged`/`baseline` namespace label or
+  #     a matching SCC.
+  #   - Every container in this pod can reach the daemon on localhost:2375 and
+  #     therefore has root on the node. Do not co-locate untrusted sidecars.
+  #
+  # Alternatives that avoid a privileged container entirely:
+  #   - SANDBOX_MODE=e2b with E2B_API_KEY (execution moves off-cluster)
+  #   - config.dockerHost pointing at a daemon you run and secure yourself
+  #   - a rootless image (docker:<ver>-dind-rootless) via `image` below, which
+  #     needs its own cgroup/seccomp accommodations — verify on your cluster
+  dind:
+    enabled: false
+    image: "docker:27-dind"
+    pullPolicy: "IfNotPresent"
+    # The daemon listens on plain TCP bound to the pod's localhost. TLS is
+    # off because the socket never leaves the pod's network namespace;
+    # exposing this port beyond the pod would be handing out node root.
+    port: 2375
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+    # /var/lib/docker. emptyDir means the sandbox image is re-pulled after
+    # every pod restart; size this for that image plus the layers a run
+    # creates. Set `existingClaim` to keep the cache across restarts.
+    storage:
+      sizeLimit: "20Gi"
+      existingClaim: ""
   # Light records take their own cluster-wide indexing lease pool. Leave false
   # for one release: a previous-build replica admits every record into the
   # shared "indexing" pool at the full budget, so during a rolling upgrade a

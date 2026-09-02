@@ -40,6 +40,10 @@ _FALSY_ENV_VALUES = {"0", "false", "no", "off"}
 # same as not warning at all.
 _warned_about_host_isolation = False
 
+# `SANDBOX_MODE` value -> backend name. The only accepted spellings; anything
+# else is a misconfiguration rather than a hint to guess from.
+_SANDBOX_MODES = {"LOCAL": "local", "DOCKER": "docker", "E2B": "e2b"}
+
 
 def _env_bool(key: str, default: bool = True) -> bool:
     raw = os.environ.get(key)
@@ -156,17 +160,7 @@ class EnvSandboxSettingsLoader:
     _DEFAULT_NPM_REGISTRY = "https://registry.npmjs.org"
 
     async def load(self, ctx: SandboxContext) -> SandboxSettings:
-        configured = os.environ.get(self._ENV_SANDBOX_MODE)
-        mode_raw = (configured or "LOCAL").strip().upper()
-        if mode_raw == "DOCKER":
-            backend = "docker"
-        elif mode_raw == "E2B":
-            backend = "e2b"
-        else:
-            backend = "local"
-
-        if backend == "local" and configured is None:
-            self._warn_about_implicit_host_isolation()
+        backend = self._resolve_backend()
 
         backend_options: dict[str, dict[str, Any]] = {}
 
@@ -195,6 +189,37 @@ class EnvSandboxSettingsLoader:
             ),
         )
 
+
+    def _resolve_backend(self) -> str:
+        """`SANDBOX_MODE` -> backend name, rejecting anything unrecognised.
+
+        Mapping an unknown value to `local` is the most permissive possible
+        reading of a value the operator clearly meant to be something else,
+        and it silently downgrades to the weakest isolation: `SANDBOX_MODE=docekr`
+        would run generated code as a subprocess of this service while the
+        operator believes it is containerised. That is worse than an unset
+        variable, where at least nobody thinks otherwise.
+
+        Blank reads as unset rather than invalid, matching how shell and
+        Compose `${VAR:-default}` treat an empty value.
+        """
+        configured = os.environ.get(self._ENV_SANDBOX_MODE)
+        mode_raw = (configured or "").strip().upper()
+
+        if not mode_raw:
+            self._warn_about_implicit_host_isolation()
+            return "local"
+
+        backend = _SANDBOX_MODES.get(mode_raw)
+        if backend is None:
+            raise ValueError(
+                f"{self._ENV_SANDBOX_MODE}={configured!r} is not a supported "
+                f"coding sandbox. Use one of: "
+                f"{', '.join(sorted(v for v in _SANDBOX_MODES.values()))}. "
+                f"Leave it unset only if you accept running generated code as "
+                f"a subprocess of this service."
+            )
+        return backend
 
     @staticmethod
     def _warn_about_implicit_host_isolation() -> None:

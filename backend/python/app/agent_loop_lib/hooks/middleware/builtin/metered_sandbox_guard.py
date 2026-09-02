@@ -15,6 +15,8 @@ metered-backend concerns on top via the same PRE_TOOL_USE pipeline.
 
 from __future__ import annotations
 
+import math
+
 from app.agent_loop_lib.hooks.middleware.context import ToolCallContext
 
 __all__ = ["metered_sandbox_guard"]
@@ -35,7 +37,10 @@ def metered_sandbox_guard(
             when it would take the total PAST the budget, not after it
             already has. ``None`` (default) means unlimited.
         default_timeout: what to charge a call that omits ``timeout`` or
-            passes an unusable value. The tool substitutes its own default
+            passes a non-numeric one. A numeric but INVALID timeout
+            (negative, zero, NaN, infinite) is denied instead — it is a
+            malformed argument the model should correct, not a missing one
+            to substitute a default for. The tool substitutes its own default
             and the provider bills for that time, so charging zero here
             would let an agent that never sets a timeout run unbounded
             billed time against a configured budget.
@@ -45,6 +50,21 @@ def metered_sandbox_guard(
     async def _middleware(ctx: ToolCallContext, next_fn) -> None:
         timeout = ctx.tool_input.get("timeout")
         if isinstance(timeout, (int, float)):
+            # Validated BEFORE any comparison or accounting. The budget is a
+            # running float the model can steer, and an unchecked value
+            # breaks it permanently rather than just for this call: a
+            # negative timeout SUBTRACTS, buying back time already spent,
+            # and NaN/-inf compare False against everything, so they slip
+            # past both gates and then make the total NaN/-inf forever —
+            # every later check silently passes and the cap is gone. `+inf`
+            # happens to be caught by `max_timeout` below, but relying on
+            # that would leave the other two open.
+            if not math.isfinite(timeout) or timeout <= 0:
+                ctx.deny(
+                    f"timeout must be a positive, finite number of seconds; "
+                    f"got {timeout!r}"
+                )
+                return
             if timeout > max_timeout:
                 ctx.deny(
                     f"timeout {timeout}s exceeds the configured max of "

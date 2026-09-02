@@ -133,3 +133,106 @@ class TestMeteredSandboxGuard:
             allowed += 1
 
         assert allowed <= 4, f"{allowed} un-timed calls ran against a 100s budget"
+
+
+class TestMalformedTimeoutCannotCorruptTheBudget:
+    """The budget is a running float the model can influence. Anything that
+    reaches the accumulator unvalidated can break it permanently:
+
+    - a NEGATIVE timeout subtracts, so repeated calls drive the total down
+      and buy back unlimited time;
+    - NaN compares False against everything, so it passes both gates and then
+      makes `total` NaN forever — every later comparison is False and the cap
+      is silently gone;
+    - -inf does the same, permanently.
+
+    `json.loads` accepts `NaN`/`-Infinity` literals, so these arrive through
+    ordinary tool arguments rather than requiring anything exotic.
+    """
+
+    async def test_negative_timeout_is_rejected(self) -> None:
+        mw = metered_sandbox_guard(max_timeout=120, max_cumulative_s=100)
+        ctx = FakeToolCallContext(tool_input={"timeout": -1000})
+        await mw(ctx, _next)
+        assert ctx.denied
+
+    async def test_negative_timeout_does_not_refund_the_budget(self) -> None:
+        mw = metered_sandbox_guard(max_timeout=120, max_cumulative_s=100)
+
+        await mw(FakeToolCallContext(tool_input={"timeout": 90}), _next)
+        for _ in range(3):
+            await mw(FakeToolCallContext(tool_input={"timeout": -1000}), _next)
+
+        # 90s is spent; a 90s call must not fit in the remaining 10s.
+        ctx = FakeToolCallContext(tool_input={"timeout": 90})
+        await mw(ctx, _next)
+        assert ctx.denied, "negative timeouts bought back budget"
+
+    async def test_zero_timeout_is_rejected(self) -> None:
+        mw = metered_sandbox_guard(max_timeout=120, max_cumulative_s=100)
+        ctx = FakeToolCallContext(tool_input={"timeout": 0})
+        await mw(ctx, _next)
+        assert ctx.denied
+
+    async def test_nan_timeout_is_rejected(self) -> None:
+        mw = metered_sandbox_guard(max_timeout=120, max_cumulative_s=100)
+        ctx = FakeToolCallContext(tool_input={"timeout": float("nan")})
+        await mw(ctx, _next)
+        assert ctx.denied
+
+    async def test_nan_does_not_disable_the_budget_for_later_calls(self) -> None:
+        """The severe one: NaN in the accumulator is permanent, so every
+        later check silently passes."""
+        mw = metered_sandbox_guard(max_timeout=120, max_cumulative_s=100)
+        await mw(FakeToolCallContext(tool_input={"timeout": float("nan")}), _next)
+
+        allowed = 0
+        for _ in range(10):
+            ctx = FakeToolCallContext(tool_input={"timeout": 120})
+            await mw(ctx, _next)
+            if not ctx.denied:
+                allowed += 1
+
+        assert allowed == 0, f"{allowed} of 10 over-budget calls ran after a NaN"
+
+    async def test_negative_infinity_is_rejected(self) -> None:
+        mw = metered_sandbox_guard(max_timeout=120, max_cumulative_s=100)
+        ctx = FakeToolCallContext(tool_input={"timeout": float("-inf")})
+        await mw(ctx, _next)
+        assert ctx.denied
+
+    async def test_negative_infinity_does_not_disable_the_budget(self) -> None:
+        mw = metered_sandbox_guard(max_timeout=120, max_cumulative_s=100)
+        await mw(FakeToolCallContext(tool_input={"timeout": float("-inf")}), _next)
+
+        ctx = FakeToolCallContext(tool_input={"timeout": 120})
+        await mw(ctx, _next)
+        assert ctx.denied
+
+    async def test_positive_infinity_is_still_rejected(self) -> None:
+        """Already caught by max_timeout; pinned so it stays caught."""
+        mw = metered_sandbox_guard(max_timeout=120, max_cumulative_s=100)
+        ctx = FakeToolCallContext(tool_input={"timeout": float("inf")})
+        await mw(ctx, _next)
+        assert ctx.denied
+
+    async def test_the_deny_reason_says_what_is_wrong(self) -> None:
+        """The model has to be able to correct the call from the message."""
+        mw = metered_sandbox_guard(max_timeout=120)
+        ctx = FakeToolCallContext(tool_input={"timeout": -5})
+        await mw(ctx, _next)
+        assert "positive" in ctx.deny_reason.lower()
+
+    async def test_a_rejected_value_never_reaches_the_accumulator(self) -> None:
+        """Even with no budget configured, a bad value must not run."""
+        ran = {"n": 0}
+
+        async def _counting_next() -> None:
+            ran["n"] += 1
+
+        mw = metered_sandbox_guard(max_timeout=120)
+        for bad in (-1, 0, float("nan"), float("-inf"), float("inf")):
+            ctx = FakeToolCallContext(tool_input={"timeout": bad})
+            await mw(ctx, _counting_next)
+            assert ctx.denied, bad
+        assert ran["n"] == 0

@@ -157,3 +157,82 @@ class TestImplicitLocalFallbackIsLoud:
         # more than once.
         warnings = [r for r in caplog.records if "SANDBOX_MODE" in r.getMessage()]
         assert len(warnings) == 1, f"warned {len(warnings)} times across 5 loads"
+
+
+class TestInvalidSandboxModeIsRejected:
+    """A typo'd `SANDBOX_MODE` selected `local` silently — the weakest
+    isolation, chosen by the most permissive reading of a value the operator
+    clearly meant to be something else. Worse than the unset case: there the
+    operator knows they configured nothing, here they believe they configured
+    container isolation and got a subprocess on the pod.
+
+    The legacy `app/sandbox/manager.py::get_sandbox_mode` at least logged
+    "Unknown SANDBOX_MODE=%s, falling back to local"; the settings loader that
+    replaced it dropped even that.
+    """
+
+    def _reset_warning_state(self) -> None:
+        from app.agent_loop_lib.sandbox.coding import settings as settings_module
+
+        settings_module._warned_about_host_isolation = False
+
+    @pytest.mark.parametrize("value", ["docekr", "daytona", "kubernetes", "e2b2", "loc al"])
+    async def test_unrecognised_value_raises(self, monkeypatch, value: str) -> None:
+        monkeypatch.setenv("SANDBOX_MODE", value)
+        self._reset_warning_state()
+
+        with pytest.raises(ValueError) as excinfo:
+            await EnvSandboxSettingsLoader().load(SandboxContext())
+
+        message = str(excinfo.value)
+        assert value in message, "the rejected value should be echoed back"
+        # And the operator needs to know what IS accepted.
+        for supported in ("local", "docker", "e2b"):
+            assert supported in message.lower()
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [("docker", "docker"), ("DOCKER", "docker"), ("Docker", "docker"),
+         ("e2b", "e2b"), ("E2B", "e2b"),
+         ("local", "local"), ("LOCAL", "local"),
+         ("  docker  ", "docker")],
+    )
+    async def test_supported_values_are_accepted(
+        self, monkeypatch, value: str, expected: str,
+    ) -> None:
+        monkeypatch.setenv("SANDBOX_MODE", value)
+        self._reset_warning_state()
+        settings = await EnvSandboxSettingsLoader().load(SandboxContext())
+        assert settings.backend == expected
+
+    @pytest.mark.parametrize("value", ["", "   "])
+    async def test_blank_reads_as_unset_not_invalid(
+        self, monkeypatch, value: str, caplog,
+    ) -> None:
+        """Shell and Compose `${VAR:-default}` both treat an empty value as
+        unset, so a blank `SANDBOX_MODE=` follows that convention rather than
+        erroring — but it still gets the host-isolation warning."""
+        import logging
+
+        monkeypatch.setenv("SANDBOX_MODE", value)
+        self._reset_warning_state()
+
+        with caplog.at_level(logging.WARNING):
+            settings = await EnvSandboxSettingsLoader().load(SandboxContext())
+
+        assert settings.backend == "local"
+        assert "SANDBOX_MODE" in caplog.text
+
+    async def test_explicit_local_is_accepted_without_warning(
+        self, monkeypatch, caplog,
+    ) -> None:
+        import logging
+
+        monkeypatch.setenv("SANDBOX_MODE", "local")
+        self._reset_warning_state()
+
+        with caplog.at_level(logging.WARNING):
+            settings = await EnvSandboxSettingsLoader().load(SandboxContext())
+
+        assert settings.backend == "local"
+        assert "SANDBOX_MODE" not in caplog.text

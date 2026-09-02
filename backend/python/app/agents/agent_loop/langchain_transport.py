@@ -759,6 +759,12 @@ class LangChainTransport(LLMTransport):
         lc_llm = self._bind_tools(tools)
 
         chunks: list[AIMessage] = []
+        # Whether a StreamEvent actually reached the caller. Distinct from
+        # `chunks`, which counts what the PROVIDER sent: OpenAI-family
+        # streams open with a role-only chunk carrying empty content, so a
+        # disconnect in the first moments buffers a chunk while the client
+        # has seen nothing. Retryability turns on this, not on `chunks`.
+        emitted = False
         fallback_llm: BaseChatModel | None = None
         fallback_mode: str | None = None
         original_exc: Exception | None = None
@@ -771,12 +777,14 @@ class LangChainTransport(LLMTransport):
                     chunks.append(chunk)
                     text = getattr(chunk, "content", None)
                     if isinstance(text, str) and text:
+                        emitted = True
                         yield TextDeltaEvent(delta=text)
                     elif isinstance(text, list):
                         for block in text:
                             if isinstance(block, dict) and block.get("type") == "text":
                                 delta = block.get("text", "")
                                 if delta:
+                                    emitted = True
                                     yield TextDeltaEvent(delta=delta)
 
                     # Extended-thinking / reasoning deltas (Claude extended
@@ -790,6 +798,7 @@ class LangChainTransport(LLMTransport):
                         if block.get("type") == "reasoning":
                             reasoning_delta = block.get("reasoning", "")
                             if reasoning_delta:
+                                emitted = True
                                 yield ThinkingDeltaEvent(delta=reasoning_delta)
 
                     # Tool-call argument deltas — used by Agent.step()'s streaming
@@ -815,6 +824,7 @@ class LangChainTransport(LLMTransport):
                         # still tells the loop nothing, so it is still skipped.
                         if not args_delta and not name and not tc_id:
                             continue
+                        emitted = True
                         yield ToolCallDeltaEvent(
                             index=tc_chunk.get("index") or 0,
                             id=tc_id,
@@ -838,11 +848,19 @@ class LangChainTransport(LLMTransport):
                     )
                     raise self._wrap_error(original_exc, "stream") from original_exc
                 if chunks:
-                    # Deltas already reached the client. Marking this
-                    # non-retryable is what stops the outer retry wrapper
-                    # from re-running the call and duplicating them — this
-                    # `if` alone only guards the retry a few lines below.
-                    raise self._wrap_error(exc, "stream", retryable=False) from exc
+                    # Still no INTERNAL retry once the provider has sent
+                    # anything: `chunks` is not reset between attempts, so
+                    # re-streaming would aggregate both attempts into one
+                    # response.
+                    #
+                    # The OUTER retry wrapper is a different question. It
+                    # re-runs the whole call, which only hurts if the client
+                    # already saw output — so that is gated on `emitted`,
+                    # letting a disconnect after nothing but a role-only
+                    # chunk still be retried.
+                    raise self._wrap_error(
+                        exc, "stream", retryable=False if emitted else None,
+                    ) from exc
                 relocated = self._tool_image_fallback(exc, messages, system)
                 if relocated is not None:
                     original_exc = exc

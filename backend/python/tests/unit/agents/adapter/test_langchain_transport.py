@@ -1517,3 +1517,96 @@ class TestPartialStreamIsNeverReplayed:
             async for _ in transport.stream([UserMessage(content="hi")]):
                 pass
         assert model.stream_attempts == 1
+
+
+class _EmitsThenFailsModel(_FakeModel):
+    """Yields the given chunks, then raises.
+
+    Lets a test distinguish "the provider sent us something" from "the client
+    saw something" — an empty or metadata-only chunk is the former but not the
+    latter.
+    """
+
+    def __init__(self, exc: Exception, chunks: list[AIMessageChunk]) -> None:
+        super().__init__()
+        self._exc = exc
+        self._chunks = chunks
+
+    async def astream(self, messages: list, config: Any = None) -> "AsyncIterator[AIMessageChunk]":
+        for chunk in self._chunks:
+            yield chunk
+        raise self._exc
+
+
+class TestRetryabilityFollowsWhatTheClientSaw:
+    """The reason a mid-stream failure is non-retryable is that retrying would
+    replay text the user already read. That turns on whether a StreamEvent was
+    YIELDED, not on whether the provider sent a chunk.
+
+    OpenAI-family providers open a stream with a role-only chunk carrying empty
+    content, so a disconnect in the first moments — exactly the transient case
+    worth retrying — arrives with a chunk already buffered and nothing shown.
+    """
+
+    def _protocol_error(self) -> Exception:
+        import httpx
+
+        return httpx.RemoteProtocolError("incomplete chunked read")
+
+    async def _stream_error(self, model: _FakeModel) -> TransportError:
+        transport = LangChainTransport(model)
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        return exc_info.value
+
+    async def test_empty_chunk_then_disconnect_is_still_retryable(self) -> None:
+        model = _EmitsThenFailsModel(
+            self._protocol_error(), [AIMessageChunk(content="")],
+        )
+        assert (await self._stream_error(model)).retryable is True
+
+    async def test_several_empty_chunks_then_disconnect_is_retryable(self) -> None:
+        model = _EmitsThenFailsModel(
+            self._protocol_error(), [AIMessageChunk(content="") for _ in range(3)],
+        )
+        assert (await self._stream_error(model)).retryable is True
+
+    async def test_metadata_only_chunk_then_disconnect_is_retryable(self) -> None:
+        chunk = AIMessageChunk(content="", response_metadata={"model_name": "gpt-4"})
+        model = _EmitsThenFailsModel(self._protocol_error(), [chunk])
+        assert (await self._stream_error(model)).retryable is True
+
+    async def test_empty_content_list_then_disconnect_is_retryable(self) -> None:
+        """Anthropic-shaped content: a list whose blocks carry no text."""
+        chunk = AIMessageChunk(content=[{"type": "text", "text": ""}])
+        model = _EmitsThenFailsModel(self._protocol_error(), [chunk])
+        assert (await self._stream_error(model)).retryable is True
+
+    async def test_real_text_then_disconnect_is_not_retryable(self) -> None:
+        """The case the gate exists for: the user has read this."""
+        model = _EmitsThenFailsModel(
+            self._protocol_error(),
+            [AIMessageChunk(content="Here is your answer")],
+        )
+        assert (await self._stream_error(model)).retryable is False
+
+    async def test_empty_then_real_text_then_disconnect_is_not_retryable(self) -> None:
+        model = _EmitsThenFailsModel(
+            self._protocol_error(),
+            [AIMessageChunk(content=""), AIMessageChunk(content="visible")],
+        )
+        assert (await self._stream_error(model)).retryable is False
+
+    async def test_the_client_really_saw_nothing_in_the_retryable_case(self) -> None:
+        """Guards the premise: if these chunks did produce events, the test
+        above would be asserting the wrong thing."""
+        model = _EmitsThenFailsModel(
+            self._protocol_error(), [AIMessageChunk(content="")],
+        )
+        transport = LangChainTransport(model)
+        seen: list[Any] = []
+        with pytest.raises(TransportError):
+            async for event in transport.stream([UserMessage(content="hi")]):
+                seen.append(event)
+        assert seen == []

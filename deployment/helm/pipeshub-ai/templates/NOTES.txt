@@ -88,4 +88,37 @@ Your application is accessible via the configured ingress:
 
 {{- end }}
 
+{{- if eq .Values.config.sandboxMode "local" }}
+
+== CODING SANDBOX: NO ISOLATION ==
+
+SANDBOX_MODE=local. Code the model generates runs as a subprocess of the
+application pod, sharing its network and filesystem, bounded only by rlimits.
+That is fine for a single-tenant development cluster and is NOT fine for a
+shared or internet-reachable one.
+
+For container isolation:
+  --set config.sandboxMode=docker --set sandbox.dind.enabled=true
+
+{{- else if .Values.sandbox.dind.enabled }}
+
+== CODING SANDBOX: DOCKER-IN-DOCKER ==
+
+`run_code` executes in throwaway containers via the privileged `dind` sidecar.
+Two things to know:
+
+  * The sidecar is PRIVILEGED and can escape to the node. Pod Security
+    Admission `restricted` and OpenShift's default SCC will reject this pod;
+    label the namespace `privileged`/`baseline` or grant a matching SCC.
+  * Anything running in this pod can reach the daemon on localhost:{{ .Values.sandbox.dind.port }}
+    and therefore has root on the node. Do not add untrusted sidecars here.
+
+{{- if not .Values.sandbox.dind.storage.existingClaim }}
+  * /var/lib/docker is an emptyDir, so {{ .Values.config.sandboxDockerImage }}
+    is re-pulled after every pod restart. Set
+    sandbox.dind.storage.existingClaim to keep the cache.
+{{- end }}
+
+{{- end }}
+
 For more information, visit: https://pipeshub.com

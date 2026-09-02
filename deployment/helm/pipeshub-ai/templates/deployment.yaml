@@ -1,5 +1,6 @@
 {{- /* Validate required secrets before deployment */ -}}
 {{- include "pipeshub-ai.validateRequiredSecrets" . }}
+{{- include "pipeshub-ai.validateSandbox" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -94,6 +95,20 @@ spec:
               value: {{ .Values.config.signedUrlCacheSeconds | quote }}
             - name: DISTRIBUTED_INDEXING_CONCURRENCY
               value: {{ .Values.config.distributedIndexingConcurrency | quote }}
+            # Coding sandbox. Set explicitly: the service's own fallback is
+            # "local", which executes generated code on this pod.
+            - name: SANDBOX_MODE
+              value: {{ .Values.config.sandboxMode | quote }}
+            - name: SANDBOX_DOCKER_IMAGE
+              value: {{ .Values.config.sandboxDockerImage | quote }}
+            {{- $dockerHost := .Values.config.dockerHost }}
+            {{- if and (not $dockerHost) .Values.sandbox.dind.enabled }}
+            {{- $dockerHost = printf "tcp://localhost:%v" .Values.sandbox.dind.port }}
+            {{- end }}
+            {{- if $dockerHost }}
+            - name: DOCKER_HOST
+              value: {{ $dockerHost | quote }}
+            {{- end }}
             # Resource-governor tuning. Every one defaults to "" so the
             # governor derives it from the pod's CPU/memory limits; set one
             # only to pin it. Mirrors the same list in docker-compose.yml.
@@ -356,6 +371,53 @@ spec:
             periodSeconds: {{ .Values.healthCheck.livenessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.healthCheck.livenessProbe.timeoutSeconds }}
             failureThreshold: {{ .Values.healthCheck.livenessProbe.failureThreshold }}
+        {{- if .Values.sandbox.dind.enabled }}
+        # Docker-in-Docker: gives SANDBOX_MODE=docker a daemon, so
+        # model-generated code runs in a throwaway container instead of as a
+        # subprocess of the application. See `sandbox.dind` in values.yaml for
+        # the privilege trade this makes.
+        - name: dind
+          image: {{ .Values.sandbox.dind.image | quote }}
+          imagePullPolicy: {{ .Values.sandbox.dind.pullPolicy | quote }}
+          securityContext:
+            # The daemon needs to create namespaces, mount filesystems and
+            # manage cgroups, which no unprivileged container can do. This
+            # deliberately overrides the pod-level runAsNonRoot.
+            privileged: true
+            runAsNonRoot: false
+            runAsUser: 0
+          env:
+            # Plain TCP on the pod's own loopback. Setting an empty
+            # DOCKER_TLS_CERTDIR is what switches dockerd off its default TLS
+            # listener; there is no transport to protect here, since the
+            # address is unreachable from outside the pod.
+            - name: DOCKER_TLS_CERTDIR
+              value: ""
+          args:
+            - "--host=tcp://0.0.0.0:{{ .Values.sandbox.dind.port }}"
+            - "--host=unix:///var/run/docker.sock"
+          resources:
+            {{- toYaml .Values.sandbox.dind.resources | nindent 12 }}
+          volumeMounts:
+            - name: dind-storage
+              mountPath: /var/lib/docker
+          livenessProbe:
+            exec:
+              command: ["docker", "info"]
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          startupProbe:
+            # Pulling the sandbox image on a cold cache can take a while;
+            # this is what stops a slow first start being read as a crash.
+            exec:
+              command: ["docker", "info"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 30
+        {{- end }}
           {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -369,6 +431,16 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if .Values.sandbox.dind.enabled }}
+        - name: dind-storage
+          {{- if .Values.sandbox.dind.storage.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.sandbox.dind.storage.existingClaim | quote }}
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.sandbox.dind.storage.sizeLimit | quote }}
+          {{- end }}
+        {{- end }}
         - name: cache
           emptyDir: {}
         - name: app-logs
