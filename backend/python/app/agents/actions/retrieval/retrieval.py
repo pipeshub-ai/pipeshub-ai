@@ -28,6 +28,7 @@ from app.models.entities import RecordType
 from app.modules.agents.context.source_catalog import SourceCatalog
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.transformers.blob_storage import BlobStorage
+from app.services.gemini_file_search import build_gemini_citable_results
 from app.utils.chat_helpers import (
     CitationRefMapper,
     ImageBudget,
@@ -493,9 +494,22 @@ class Retrieval:
                 search_results = results.get("searchResults", [])
                 virtual_to_record_map = results.get("virtual_to_record_map", {})
 
+            gemini_result = None
+            try:
+                gemini_result = await retrieval_service.search_gemini_file_search_with_filters(
+                    query=search_query,
+                    user_id=user_id,
+                    org_id=org_id,
+                    filter_groups=filter_groups,
+                )
+            except Exception:
+                logger_instance.warning(
+                    "Gemini File Search retrieval failed", exc_info=True
+                )
+
             logger_instance.info(f"✅ Retrieved {len(search_results)} documents")
 
-            if not search_results:
+            if not search_results and not gemini_result:
                 return json.dumps({
                     "status": "success",
                     "message": "No results found",
@@ -531,6 +545,21 @@ class Retrieval:
                 virtual_to_record_map,
                 graph_provider=graph_provider,
             )
+            if gemini_result:
+                try:
+                    gemini_results, gemini_records, _ = await build_gemini_citable_results(
+                        gemini_result,
+                        blob_store,
+                        org_id,
+                        is_multimodal_llm,
+                        config_service,
+                    )
+                    flattened_results.extend(gemini_results)
+                    virtual_record_id_to_result.update(gemini_records)
+                except Exception as exc:
+                    logger_instance.warning(
+                        "Failed to format Gemini File Search citations: %s", exc
+                    )
             logger_instance.info(f"Processed {len(flattened_results)} flattened results")
 
             # === GRAPH CONTEXT ENRICHMENT ===

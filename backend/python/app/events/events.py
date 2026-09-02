@@ -8,7 +8,6 @@ import multiprocessing
 import os
 from collections.abc import AsyncGenerator
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
@@ -29,12 +28,17 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     normalize_file_extension,
 )
+from app.events.dedup import DedupDecision, select_duplicate
 from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import IndexingError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.transformers.pipeline import IndexingPipeline
-from app.events.dedup import DedupDecision, select_duplicate
 from app.services.base_client import ServiceUnavailableError
+from app.services.gemini_file_search import (
+    MAX_FILE_SEARCH_DOCUMENT_BYTES,
+    GeminiFileSearchDocumentError,
+    GeminiFileSearchService,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     IndexingEvent,
@@ -147,6 +151,131 @@ class EventProcessor:
         # Pure/synchronous — only used to compare "does this duplicate resolve
         # to the same collection as the record being processed", never for I/O.
         self.collection_strategy = collection_strategy or SingleCollectionStrategy()
+
+    async def _update_gemini_file_search_status(
+        self, record_id: str, status: dict[str, Any]
+    ) -> None:
+        """Persist portable File Search metadata on the record node."""
+        encoded = GeminiFileSearchService.encode_file_search_status(
+            {**status, "updatedAt": get_epoch_timestamp_in_ms()}
+        )
+        await self.graph_provider.update_node(
+            record_id,
+            CollectionNames.RECORDS.value,
+            {"geminiFileSearch": encoded},
+        )
+
+    async def _resolve_kb_gemini_store(
+        self,
+        service: GeminiFileSearchService,
+        org_id: str,
+        record: dict[str, Any],
+    ) -> tuple[str | None, str | None]:
+        kb_id = record.get("connectorId") or record.get("recordGroupId")
+        if not kb_id or not self.config_service:
+            return None, kb_id
+
+        cache_key = f"/services/geminiFileStore/{kb_id}"
+        try:
+            cached = await self.config_service.get_config(cache_key, use_cache=False)
+            if isinstance(cached, dict) and cached.get("storeName"):
+                return str(cached["storeName"]), kb_id
+        except Exception:
+            self.logger.debug("Gemini store cache miss for KB %s", kb_id)
+
+        store_name = await service.ensure_store(org_id=org_id, kb_id=kb_id)
+        if store_name:
+            try:
+                await self.config_service.set_config(
+                    cache_key,
+                    {
+                        "storeName": store_name,
+                        "embeddingModel": service.embedding_model,
+                    },
+                )
+            except Exception:
+                self.logger.warning(
+                    "Could not cache Gemini File Search store for KB %s",
+                    kb_id,
+                    exc_info=True,
+                )
+        return store_name, kb_id
+
+    async def _index_gemini_file_search(
+        self,
+        *,
+        record_id: str,
+        org_id: str,
+        record_name: str,
+        mime_type: str | None,
+        content: bytes | str,
+        record: dict[str, Any],
+    ) -> None:
+        """Best-effort secondary indexing; never blocks PipesHub indexing."""
+        try:
+            service = await GeminiFileSearchService.create(
+                self.logger, self.config_service
+            )
+            if not service.is_enabled() or not service.supports_mime_type(mime_type):
+                return
+
+            content_bytes = content.encode("utf-8") if isinstance(content, str) else content
+            if len(content_bytes) > MAX_FILE_SEARCH_DOCUMENT_BYTES:
+                await self._update_gemini_file_search_status(
+                    record_id,
+                    {
+                        "status": "SKIPPED",
+                        "reason": "Document exceeds Gemini File Search's 100 MB limit",
+                    },
+                )
+                return
+
+            store_name, kb_id = await self._resolve_kb_gemini_store(
+                service, org_id, record
+            )
+            await self._update_gemini_file_search_status(
+                record_id,
+                {
+                    "status": "IN_PROGRESS",
+                    "storeName": store_name,
+                    "embeddingModel": service.embedding_model,
+                },
+            )
+            result = await service.index_file(
+                org_id=org_id,
+                record_id=record_id,
+                record_name=record_name,
+                mime_type=mime_type,
+                content=content_bytes,
+                store_name=store_name,
+                kb_id=kb_id,
+                custom_metadata=GeminiFileSearchService.build_custom_metadata(record, None),
+            )
+            if result:
+                await self._update_gemini_file_search_status(
+                    record_id,
+                    {
+                        "status": "COMPLETED",
+                        "storeName": result.store_name,
+                        "documentName": result.document_name,
+                        "operationName": result.operation_name,
+                        "embeddingModel": service.embedding_model,
+                        "indexedAt": get_epoch_timestamp_in_ms(),
+                    },
+                )
+        except Exception as exc:
+            failure: dict[str, Any] = {"status": "FAILED", "reason": str(exc)}
+            if isinstance(exc, GeminiFileSearchDocumentError):
+                failure.update(
+                    {
+                        "storeName": exc.store_name,
+                        "documentName": exc.document_name,
+                    }
+                )
+            self.logger.warning(
+                "Gemini File Search indexing failed for %s: %s", record_id, exc
+            )
+            await self._update_gemini_file_search_status(record_id, failure)
 
     def _indexing_pipeline(self):
         """The single owner of vector-membership writes.
@@ -949,6 +1078,15 @@ class EventProcessor:
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
+
+            await self._index_gemini_file_search(
+                record_id=record_id,
+                org_id=org_id,
+                record_name=record_name,
+                mime_type=mime_type,
+                content=file_content,
+                record=doc,
+            )
 
             # Fail fast, before writing IN_PROGRESS, if the parsing service's
             # circuit breaker is already open. This is an in-memory check (no

@@ -40,7 +40,10 @@ import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
-import { FileBufferInfo, RejectedFileInfo } from '../../../libs/middlewares/file_processor/fp.interface';
+import {
+  FileBufferInfo,
+  RejectedFileInfo,
+} from '../../../libs/middlewares/file_processor/fp.interface';
 import { getFileExtension } from '../../../libs/utils/file-extension.util';
 import { scopedStorageServiceJwtGenerator } from '../../../libs/utils/createJwt';
 const logger = Logger.getInstance({
@@ -326,11 +329,7 @@ export const listKnowledgeBases =
 
       // Validate permissions filter
       if (permissions) {
-        const validPermissions = [
-          'OWNER',
-          'WRITER',
-          'READER',
-        ];
+        const validPermissions = ['OWNER', 'WRITER', 'READER'];
         const invalidPermissions = permissions.filter(
           (p) => !validPermissions.includes(p),
         );
@@ -651,7 +650,9 @@ const placeholderErrorMessage = (err: unknown): string => {
       err.message
     );
   }
-  return err instanceof Error ? err.message : 'Failed to create placeholder document';
+  return err instanceof Error
+    ? err.message
+    : 'Failed to create placeholder document';
 };
 
 // SSE headers for the streaming upload response. No global compression is
@@ -806,7 +807,8 @@ const streamKbUpload = async (opts: {
           ? filePath.split('/').pop() || originalname
           : filePath;
         const extension = getFileExtension(fileName);
-        const correctMimeType = (extension && getMimeType(extension)) || mimetype;
+        const correctMimeType =
+          (extension && getMimeType(extension)) || mimetype;
         const key: string = randomUUID();
         const webUrl = `/record/${key}`;
         const validLastModified =
@@ -924,7 +926,8 @@ const assertKbWritePermission = async (
   if (kbCheckResponse.statusCode !== 200) {
     throw new InternalServerError('Failed to verify knowledge base access');
   }
-  const kbUserRole = (kbCheckResponse.data as KbCheckData | undefined)?.userRole;
+  const kbUserRole = (kbCheckResponse.data as KbCheckData | undefined)
+    ?.userRole;
   if (!kbUserRole || !['OWNER', 'WRITER'].includes(kbUserRole)) {
     throw new ForbiddenError(
       'You do not have permission to upload to this knowledge base',
@@ -939,10 +942,7 @@ const assertKbWritePermission = async (
  * processor middleware which attaches filePath/lastModified to each buffer.
  */
 export const uploadRecords =
-  (
-    keyValueStoreService: KeyValueStoreService,
-    appConfig: AppConfig,
-  ) =>
+  (keyValueStoreService: KeyValueStoreService, appConfig: AppConfig) =>
   async (
     req: AuthenticatedUserRequest,
     res: Response,
@@ -1000,7 +1000,9 @@ export const uploadRecords =
       }
 
       logger.info(
-        folderId ? 'Processing file upload to folder' : 'Processing file upload to KB',
+        folderId
+          ? 'Processing file upload to folder'
+          : 'Processing file upload to KB',
         {
           totalFiles: fileBuffers.length,
           kbId,
@@ -1136,7 +1138,10 @@ export const updateRecord =
           req.headers as Record<string, string>,
         );
 
-        if (getRecordResponse.statusCode < 200 || getRecordResponse.statusCode >= 300) {
+        if (
+          getRecordResponse.statusCode < 200 ||
+          getRecordResponse.statusCode >= 300
+        ) {
           throw handleBackendError(getRecordResponse, 'get record for update');
         }
 
@@ -1186,15 +1191,12 @@ export const updateRecord =
         } catch (storageError: any) {
           const is404 = storageError?.response?.status === 404;
 
-          logger.error(
-            'Failed to upload file to storage',
-            {
-              recordId,
-              storageDocumentId: storageDocumentId,
-              error: storageError.message,
-              is404,
-            },
-          );
+          logger.error('Failed to upload file to storage', {
+            recordId,
+            storageDocumentId: storageDocumentId,
+            error: storageError.message,
+            is404,
+          });
 
           if (is404) {
             throw new InternalServerError(
@@ -1303,7 +1305,10 @@ export const getRecordById =
         req.headers as Record<string, string>,
       );
 
-      const responseForClient: Record<string, any> = { ...response, data: { ...(response?.data || {}) } };
+      const responseForClient: Record<string, any> = {
+        ...response,
+        data: { ...(response?.data || {}) },
+      };
       if (responseForClient.data?.record) {
         responseForClient.data.record = { ...responseForClient.data.record };
         // TODO: Move this response shaping into a typed mapper once the connector contract drops record._id.
@@ -1354,7 +1359,11 @@ export const reindexRecord =
         );
       }
 
-      const reindexBody: { depth: number; force: boolean; statusFilters?: string[] } = {
+      const reindexBody: {
+        depth: number;
+        force: boolean;
+        statusFilters?: string[];
+      } = {
         depth,
         force,
       };
@@ -1405,7 +1414,11 @@ export const reindexRecordGroup =
         );
       }
 
-      const reindexBody: { depth: number; force: boolean; statusFilters?: string[] } = {
+      const reindexBody: {
+        depth: number;
+        force: boolean;
+        statusFilters?: string[];
+      } = {
         depth,
         force,
       };
@@ -1485,6 +1498,89 @@ export const deleteRecord =
     }
   };
 
+export const deleteRecordGeminiFileSearch =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { recordId } = req.params;
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/records/${recordId}/gemini-file-search`,
+        HttpMethod.DELETE,
+        req.headers as Record<string, string>,
+      );
+      handleConnectorResponse(
+        response,
+        res,
+        'Deleting Gemini File Search document',
+        'Gemini File Search document not deleted',
+      );
+    } catch (error) {
+      next(handleBackendError(error, 'delete Gemini File Search document'));
+    }
+  };
+
+export const getGeminiFileSearchConfig =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/gemini-file-search/config`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
+      handleConnectorResponse(
+        response,
+        res,
+        'Fetching Gemini File Search config',
+        'Gemini File Search config not found',
+      );
+    } catch (error) {
+      next(handleBackendError(error, 'fetch Gemini File Search config'));
+    }
+  };
+
+export const updateGeminiFileSearchConfig =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/gemini-file-search/config`,
+        HttpMethod.PUT,
+        req.headers as Record<string, string>,
+        req.body,
+      );
+      handleConnectorResponse(
+        response,
+        res,
+        'Updating Gemini File Search config',
+        'Gemini File Search config not updated',
+      );
+    } catch (error) {
+      next(handleBackendError(error, 'update Gemini File Search config'));
+    }
+  };
+
+export const getGeminiFileSearchKbStats =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { kbId } = req.params;
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/gemini-file-search/kb/${kbId}/stats`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
+      handleConnectorResponse(
+        response,
+        res,
+        'Fetching Gemini File Search stats',
+        'Gemini File Search stats not found',
+      );
+    } catch (error) {
+      next(handleBackendError(error, 'fetch Gemini File Search stats'));
+    }
+  };
+
 /**
  * Create permissions for multiple users on a knowledge base
  */
@@ -1510,11 +1606,7 @@ export const createKBPermission =
 
       // Validate role only if it's provided (for users)
       if (role) {
-        const validRoles = [
-          'OWNER',
-          'WRITER',
-          'READER',
-        ];
+        const validRoles = ['OWNER', 'WRITER', 'READER'];
         if (!validRoles.includes(role)) {
           throw new BadRequestError(
             `Invalid role. Must be one of: ${validRoles.join(', ')}`,
@@ -1587,11 +1679,7 @@ export const updateKBPermission =
         throw new BadRequestError('Role is required');
       }
 
-      const validRoles = [
-        'OWNER',
-        'WRITER',
-        'READER',
-      ];
+      const validRoles = ['OWNER', 'WRITER', 'READER'];
       if (!validRoles.includes(role)) {
         throw new BadRequestError(
           `Invalid role. Must be one of: ${validRoles.join(', ')}`,

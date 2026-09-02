@@ -1,5 +1,12 @@
 // Enumerations for the RecordDocument model
-export type RecordType = 'FILE' | 'WEBPAGE' | 'COMMENT' | 'MESSAGE' | 'EMAIL' | 'TICKET' | 'OTHERS';
+export type RecordType =
+  | 'FILE'
+  | 'WEBPAGE'
+  | 'COMMENT'
+  | 'MESSAGE'
+  | 'EMAIL'
+  | 'TICKET'
+  | 'OTHERS';
 export type OriginType = 'UPLOAD' | 'CONNECTOR';
 export type ConnectorName =
   | 'ONEDRIVE'
@@ -22,13 +29,25 @@ export type IndexingStatus =
   | 'ENABLE_MULTIMODAL_MODELS'
   | 'QUEUED';
 
+export interface IGeminiFileSearchMetadata {
+  status?: string;
+  storeName?: string | null;
+  documentName?: string | null;
+  operationName?: string | null;
+  embeddingModel?: string | null;
+  indexedAt?: number | null;
+  updatedAt?: number | null;
+  deletedAt?: number | null;
+  reason?: string | null;
+}
+
 // Interface for a generic record document.
 export interface IRecordDocument {
   _key: string;
   // Optional properties can be omitted on document creation
   orgId: string;
   sizeInBytes?: number;
-  
+
   // Required fields
   recordName: string;
   externalRecordId: string;
@@ -62,9 +81,10 @@ export interface IRecordDocument {
   isDirty?: boolean; // default: false, indicates need for re-indexing
   reason?: string;
   virtualRecordId?: string;
-  summaryDocumentId?:string;
+  summaryDocumentId?: string;
   webUrl?: string;
   mimeType?: string;
+  geminiFileSearch?: IGeminiFileSearchMetadata | string | null;
 }
 
 export interface IFileBuffer {
