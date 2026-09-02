@@ -460,8 +460,10 @@ class Processor:
                         self.logger.debug(f"⏭️ Skipping empty page {page_number}")
                         continue
 
-                    # Parse each page through DoclingProcessor (no LLM calls)
-                    page_filename = f"{Path(recordName).stem}_page_{page_number}.md"
+                    # Parse each page through DoclingProcessor (no LLM calls).
+                    # Strip leading dots from the stem
+                    safe_stem = Path(recordName).stem.lstrip(".") or "document"
+                    page_filename = f"{safe_stem}_page_{page_number}.md"
                     md_bytes = page_markdown.encode('utf-8')
 
                     try:
