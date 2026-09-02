@@ -116,29 +116,12 @@ def _make_issue_data(issue_id="iss-1", identifier="ENG-1", updated="2024-06-01T0
 class TestLinearRunSync:
 
     @pytest.mark.asyncio
-    async def test_initializes_if_no_datasource(self):
+    async def test_raises_if_no_datasource(self):
         connector = _make_connector()
         connector.data_source = None
-        connector.init = AsyncMock(return_value=True)
 
-        with patch(
-            "app.connectors.sources.linear.connector.load_connector_filters",
-            new_callable=AsyncMock,
-        ) as mock_filters:
-            from app.connectors.core.registry.filters import FilterCollection
-            mock_filters.return_value = (FilterCollection(), FilterCollection())
-            connector._fetch_users = AsyncMock(return_value=[])
-            connector._fetch_teams = AsyncMock(return_value=([], []))
-            connector._sync_issues_for_teams = AsyncMock(return_value=(set(), []))
-            connector._sync_attachments = AsyncMock()
-            connector._sync_documents = AsyncMock()
-            connector._sync_projects_for_teams = AsyncMock()
-            connector._sync_deleted_issues = AsyncMock()
-            connector._sync_deleted_projects = AsyncMock()
-            connector._sweep_placeholder_records = AsyncMock(return_value=0)
-
+        with pytest.raises(RuntimeError, match="not initialized"):
             await connector.run_sync()
-            connector.init.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_no_active_users_returns_early(self):

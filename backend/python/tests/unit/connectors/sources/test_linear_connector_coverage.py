@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 
 from app.config.constants.arangodb import Connectors, ProgressStatus, RecordRelations
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperatorType,
@@ -1311,8 +1312,8 @@ class TestLinearInitOrgData:
             MockClient.build_from_services = AsyncMock(return_value=mock_client)
             with patch("app.connectors.sources.linear.connector.LinearDataSource") as MockDS:
                 MockDS.return_value = mock_ds
-                result = await c.init()
-                assert result is False
+                with pytest.raises(ConnectorInitError, match="No organization data"):
+                    await c.init()
 
     @pytest.mark.asyncio
     async def test_init_none_org_data(self):
@@ -1328,8 +1329,8 @@ class TestLinearInitOrgData:
             MockClient.build_from_services = AsyncMock(return_value=mock_client)
             with patch("app.connectors.sources.linear.connector.LinearDataSource") as MockDS:
                 MockDS.return_value = mock_ds
-                result = await c.init()
-                assert result is False
+                with pytest.raises(ConnectorInitError, match="No organization data"):
+                    await c.init()
 
 
 # ===================================================================
