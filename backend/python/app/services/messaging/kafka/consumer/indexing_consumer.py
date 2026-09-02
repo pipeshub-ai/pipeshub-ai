@@ -1992,9 +1992,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
                 async def consume_handler_events() -> None:
                     nonlocal parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool
-                    async with asyncio.timeout(messaging_env.record_processing_timeout):
-                        event_gen = self.message_handler(parsed_message)
-                        try:
+                    event_gen = self.message_handler(parsed_message)
+                    try:
+                        async with asyncio.timeout(messaging_env.record_processing_timeout):
                             async for event in event_gen:
                                 if (
                                     event.event == IndexingEvent.START_PARSING
@@ -2069,15 +2069,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                         f"Released indexing gate for {message_id}"
                                     )
                                     success = True
-                        finally:
-                            # If this coroutine is cancelled (timeout, or the
-                            # renewal-loss path cancelling handler_task below)
-                            # while suspended on the semaphore acquire, the
-                            # CancelledError lands here — not inside the
-                            # handler generator. Explicitly closing it
-                            # delivers GeneratorExit so the handler's own
-                            # cleanup (reverting IN_PROGRESS) still runs.
-                            await event_gen.aclose()
+                    finally:
+                        # Close the handler generator OUTSIDE the timeout scope
+                        # so that asyncio.timeout's pending CancelledError cannot
+                        # interrupt the aclose() and orphan inner generators
+                        # (whose GC-finalized cleanup would run in a different
+                        # contextvars.Context, breaking ContextVar.reset()).
+                        await event_gen.aclose()
 
                 handler_task: asyncio.Task[None] | None = None
                 try:
