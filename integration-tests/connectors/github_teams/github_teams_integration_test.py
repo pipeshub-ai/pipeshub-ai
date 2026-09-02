@@ -95,7 +95,7 @@ from connectors.github_teams.github_test_utils import (  # noqa: E402
     add_comment,
     add_sub_issue,
     blob_sha_for_path,
-    close_issue,
+    delete_issue,
     close_pull,
     commit_changes,
     create_issue,
@@ -1210,7 +1210,7 @@ class TestGitHubTeamsIncremental:
             finally:
                 for number in (child_num, parent_num):
                     if number:
-                        await close_issue(github_rest, org, repo_name, number)
+                        await delete_issue(github_rest, org, repo_name, number)
 
     @pytest.mark.order(16)
     async def test_tc_incr_pr_001_update_only(

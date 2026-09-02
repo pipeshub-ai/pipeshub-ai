@@ -399,20 +399,55 @@ async def add_sub_issue(
     )
 
 
-async def close_issue(
+async def delete_issue(
     rest: GitHubAsyncRESTClient, owner: str, repo: str, number: int
-) -> None:
-    """Close an artifact issue.
+) -> bool:
+    """Hard-delete an artifact issue so the repo returns to its seeded state.
 
-    GitHub has no ordinary delete for issues, and the connector has no tombstone
-    for one either (a deleted issue leaves a ghost ticket — known gap). Closing is
-    the honest cleanup: the artifact stops being active without pretending the
-    record can be reaped.
+    REST has no issue-delete endpoint; the GraphQL ``deleteIssue`` mutation does the
+    job and needs admin on the repo. It takes the issue's GraphQL node id rather than
+    its number, so the issue is fetched first.
+
+    Safe here even though the connector has no tombstone for a deleted issue: every
+    mutation test owns a throw-away connector destroyed immediately after cleanup, so
+    no later sync of that connector can observe the deletion, and the next run starts
+    from a fresh checkpoint. Falls back to closing when the delete is refused, so an
+    under-privileged token degrades instead of leaving the artifact behind entirely.
     """
     try:
-        await update_issue(rest, owner, repo, number, state="closed")
+        issue = await gh_call_with_retry(
+            rest.get_json, f"/repos/{owner}/{repo}/issues/{number}",
+            context=f"delete_issue lookup {owner}/{repo}#{number}",
+        )
+        node_id = (issue or {}).get("node_id")
+        if not node_id:
+            raise RuntimeError("issue payload carried no node_id")
+        result = await gh_call_with_retry(
+            rest.post_json, "/graphql",
+            {
+                "query": "mutation($id: ID!) { deleteIssue(input: {issueId: $id})"
+                         " { clientMutationId } }",
+                "variables": {"id": node_id},
+            },
+            context=f"deleteIssue {owner}/{repo}#{number}",
+        )
+        # GraphQL reports failures as HTTP 200 with an errors array.
+        if isinstance(result, dict) and result.get("errors"):
+            raise RuntimeError(str(result["errors"])[:200])
+        return True
     except Exception as e:
-        logger.warning("Could not close artifact issue %s/%s#%s: %s", owner, repo, number, e)
+        logger.warning(
+            "Could not delete %s/%s#%s (%s); falling back to closing it",
+            owner, repo, number, e,
+        )
+        try:
+            await update_issue(rest, owner, repo, number, state="closed")
+        except Exception as close_error:
+            logger.warning(
+                "Could not close %s/%s#%s either: %s", owner, repo, number, close_error,
+            )
+        return False
+
 
 
 async def create_pull(
@@ -439,6 +474,13 @@ async def update_pull(
 async def close_pull(
     rest: GitHubAsyncRESTClient, owner: str, repo: str, number: int
 ) -> None:
+    """Close an artifact PR.
+
+    GitHub exposes no way to DELETE a pull request: there is no REST endpoint and no
+    ``deletePullRequest`` GraphQL mutation (only ``deletePullRequestReview`` and
+    friends). Closing it and deleting its head branch is the most that can be
+    reclaimed, so closed PRs are the one artifact that accumulates.
+    """
     try:
         await update_pull(rest, owner, repo, number, state="closed")
     except Exception as e:
@@ -586,9 +628,9 @@ async def reap_own_artifacts(
         for pr in await list_pulls(rest, owner, repo, state="open"):
             if _is_own_artifact(pr.get("title")):
                 await close_pull(rest, owner, repo, pr["number"])
-        for issue in await list_issues(rest, owner, repo, state="open"):
+        for issue in await list_issues(rest, owner, repo, state="all"):
             if _is_own_artifact(issue.get("title")):
-                await close_issue(rest, owner, repo, issue["number"])
+                await delete_issue(rest, owner, repo, issue["number"])
     except Exception as e:
         logger.warning("TEARDOWN: could not close artifacts for run %s: %s", GH_IT_RUN_ID, e)
 
@@ -614,9 +656,9 @@ async def sweep_stale_artifacts(
         logger.warning("SETUP: stale code sweep failed (continuing): %s", e)
 
     try:
-        for issue in await list_issues(rest, owner, repo, state="open"):
+        for issue in await list_issues(rest, owner, repo, state="all"):
             if _is_stale_artifact(issue, cutoff):
-                await close_issue(rest, owner, repo, issue["number"])
+                await delete_issue(rest, owner, repo, issue["number"])
         for pr in await list_pulls(rest, owner, repo, state="open"):
             if _is_stale_artifact(pr, cutoff):
                 await close_pull(rest, owner, repo, pr["number"])
