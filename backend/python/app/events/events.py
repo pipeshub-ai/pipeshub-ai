@@ -538,7 +538,10 @@ class EventProcessor:
                 else None
             ),
         }
-        await self.update_record_fields(doc, fields)
+        success = await self.update_record_fields(doc, fields)
+        self._require_persisted(
+            success, f"Failed to persist status {status.value} for record", doc
+        )
         self.logger.debug(
             f"🔍 Record {record_id}: Successfully updated status to {status.value}"
         )

@@ -484,6 +484,61 @@ async def test_apple_double_sidecar_is_skipped_before_parsing() -> None:
 
 
 @pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_apple_double_sidecar_does_not_complete_if_status_write_fails() -> None:
+    """If persisting FILE_TYPE_NOT_SUPPORTED fails (update_node returns
+    False, not an exception), on_event must raise instead of yielding
+    PARSING_COMPLETE/INDEXING_COMPLETE — otherwise the message would be
+    treated as handled while the record is stuck at its prior status with
+    nothing left to ever revisit it."""
+    parsing_client = MagicMock()
+    parsing_client.circuit_open = False
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+
+    graph_provider = MagicMock()
+    graph_provider.get_document = AsyncMock(return_value={
+        "_key": "rec-1",
+        "orgId": "org-1",
+        "recordName": "._Report.pdf",
+        "recordType": "FILE",
+        "indexingStatus": "NOT_STARTED",
+        "mimeType": "application/pdf",
+        "connectorName": None,
+        "origin": "UPLOAD",
+        "externalRecordId": "ext-rec-1",
+        "connectorId": "connector-1",
+        "createdAtTimestamp": 1000000,
+        "updatedAtTimestamp": 1000000,
+    })
+    graph_provider.get_departments = AsyncMock(return_value=[])
+    graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+    graph_provider.batch_update_nodes = AsyncMock(return_value=True)
+    graph_provider.find_duplicate_records = AsyncMock(return_value=[])
+    graph_provider.update_node = AsyncMock(return_value=False)  # simulate write failure
+
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        graph_provider=graph_provider,
+    )
+
+    event_data = _make_event_data()
+    event_data["payload"]["recordName"] = "._Report.pdf"
+    event_data["payload"]["buffer"] = b"\x00\x05\x16\x07" + b"\x00" * 32
+
+    from app.exceptions.indexing_exceptions import IndexingError  # noqa: PLC0415
+
+    events = []
+    with pytest.raises(IndexingError):
+        async for event in ep.on_event(event_data):
+            events.append(event)
+
+    # No completion event was yielded before the failed write was surfaced.
+    event_types = [e.event for e in events]
+    assert IndexingEvent.INDEXING_COMPLETE not in event_types
+    parsing_client.parse.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_apple_double_sidecar_is_skipped_in_legacy_pipeline() -> None:
     """Same guard applies when USE_PARSING_SERVICE is unset (legacy dispatch) —
     the check runs before the service/legacy branch, so neither PDF handler
