@@ -96,6 +96,10 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import (
+    NotificationSeverity,
+    NotificationType,
+)
 from app.sources.client.linear.linear import LinearClient
 from app.sources.external.linear.linear import LinearDataSource
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -317,6 +321,9 @@ class LinearConnector(BaseConnector):
 
         self.sync_filters = None
         self.indexing_filters = None
+
+    def _notification_title(self, event: str) -> str:
+        return f"{self.connector_instance_name or 'Linear'} connector {event}"
 
     async def init(self) -> bool:
         """
@@ -583,7 +590,21 @@ class LinearConnector(BaseConnector):
                 self.logger.info(f"📁 Synced {len(team_record_groups)} Linear teams as RecordGroups")
 
             # Step 7: Sync issues for teams
-            full_sync_team_ids = await self._sync_issues_for_teams(team_record_groups)
+            full_sync_team_ids, failed_issue_team_keys = await self._sync_issues_for_teams(team_record_groups)
+
+            if failed_issue_team_keys:
+                preview = ", ".join(failed_issue_team_keys[:5])
+                if len(failed_issue_team_keys) > 5:
+                    preview += f" (+{len(failed_issue_team_keys) - 5} more)"
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("couldn't sync some teams"),
+                    message=(
+                        f"Couldn't sync issues for {len(failed_issue_team_keys)} team(s): {preview}. "
+                        "Retry sync; check Linear access if it keeps failing."
+                    ),
+                )
 
             # Step 8: Sync attachments separately (Linear doesn't update issue.updatedAt when attachments are added)
             await self._sync_attachments(team_record_groups)
@@ -616,6 +637,16 @@ class LinearConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error during Linear sync: {e}", exc_info=True)
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=self._notification_title("sync failed"),
+                message=(
+                    f"The sync stopped due to an error: {str(e)[:200]}. Recent Linear changes "
+                    "may not be reflected yet. Run the sync again; if it keeps failing, "
+                    "check the connector's configuration."
+                ),
+            )
             raise
 
     async def _fetch_users(self) -> List[AppUser]:
@@ -875,7 +906,7 @@ class LinearConnector(BaseConnector):
     async def _sync_issues_for_teams(
         self,
         team_record_groups: List[Tuple[RecordGroup, List[Permission]]]
-    ) -> set[str]:
+    ) -> Tuple[set[str], List[str]]:
         """
         Sync issues for all teams with batch processing and incremental sync.
         Uses simple team-level sync points.
@@ -890,13 +921,14 @@ class LinearConnector(BaseConnector):
             team_record_groups: List of (RecordGroup, permissions) tuples for teams to sync
 
         Returns:
-            Team external ids that ran a full issue sync (no prior checkpoint).
+            Tuple of (full_sync_team_ids, failed_team_keys).
         """
         if not team_record_groups:
             self.logger.info("ℹ️ No teams to sync issues for")
-            return set()
+            return set(), []
 
         full_sync_team_ids: set[str] = set()
+        failed_team_keys: List[str] = []
 
         for team_record_group, team_perms in team_record_groups:
             try:
@@ -968,9 +1000,10 @@ class LinearConnector(BaseConnector):
             except Exception as e:
                 team_name = team_record_group.name or team_record_group.short_name or "unknown"
                 self.logger.error(f"❌ Error syncing issues for team {team_name}: {e}", exc_info=True)
+                failed_team_keys.append(team_name)
                 continue
 
-        return full_sync_team_ids
+        return full_sync_team_ids, failed_team_keys
 
     async def _sweep_placeholder_records(
         self,
@@ -1542,6 +1575,15 @@ class LinearConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing attachments: {e}", exc_info=True)
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=self._notification_title("couldn't sync attachments"),
+                message=(
+                    f"Attachment sync failed: {str(e)[:200]}. "
+                    "Existing attachments are preserved; they'll retry on the next sync."
+                ),
+            )
 
     async def _sync_documents(
         self,
@@ -1704,6 +1746,15 @@ class LinearConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing documents: {e}", exc_info=True)
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=self._notification_title("couldn't sync documents"),
+                message=(
+                    f"Document sync failed: {str(e)[:200]}. "
+                    "Existing documents are preserved; they'll retry on the next sync."
+                ),
+            )
 
     async def _sync_projects_for_teams(
         self,
@@ -1724,6 +1775,8 @@ class LinearConnector(BaseConnector):
         if not team_record_groups:
             self.logger.info("ℹ️ No teams to sync projects for")
             return
+
+        failed_team_keys: List[str] = []
 
         for team_record_group, team_perms in team_record_groups:
             try:
@@ -1784,7 +1837,22 @@ class LinearConnector(BaseConnector):
             except Exception as e:
                 team_name = team_record_group.name or team_record_group.short_name or "unknown"
                 self.logger.error(f"❌ Error syncing projects for team {team_name}: {e}", exc_info=True)
+                failed_team_keys.append(team_name)
                 continue
+
+        if failed_team_keys:
+            preview = ", ".join(failed_team_keys[:5])
+            if len(failed_team_keys) > 5:
+                preview += f" (+{len(failed_team_keys) - 5} more)"
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=self._notification_title("couldn't sync projects for some teams"),
+                message=(
+                    f"Couldn't sync projects for {len(failed_team_keys)} team(s): {preview}. "
+                    "Retry sync; check Linear access if it keeps failing."
+                ),
+            )
 
     async def _fetch_projects_for_team_batch(
         self,

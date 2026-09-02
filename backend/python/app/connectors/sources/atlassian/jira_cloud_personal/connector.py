@@ -353,7 +353,6 @@ class JiraCloudPersonalConnector(JiraConnector):
                         f"Couldn't sync issues for {len(failed_keys)} project(s): {preview}. "
                         "Retry sync; check Jira access if it keeps failing."
                     ),
-                    recipient_user_ids=[self.created_by],
                 )
 
             self.logger.info(
@@ -379,7 +378,6 @@ class JiraCloudPersonalConnector(JiraConnector):
                         "may not be reflected yet. Run the sync again; if it keeps failing, "
                         "check the connector's configuration."
                     ),
-                    recipient_user_ids=[self.created_by],
                 )
             raise
 
