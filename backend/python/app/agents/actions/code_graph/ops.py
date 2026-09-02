@@ -10,6 +10,7 @@ file, so the path is what disambiguates it -- two indexed files can each hold
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import deque
 from typing import TYPE_CHECKING, Any
@@ -22,26 +23,60 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "CALL_RELATIONS",
+    "CODE_RELATIONS",
+    "CROSS_FILE_RELATIONS",
     "DEFAULT_MAX_DEPTH",
     "DEFAULT_MAX_LINES",
     "DEFAULT_NEIGHBOR_LIMIT",
+    "MAX_NEIGHBOUR_DEPTH",
+    "STRUCTURAL_RELATIONS",
+    "TEST_ROLE",
     "SymbolRef",
     "attach_file_paths",
-    "find_call_neighbors_impl",
     "find_symbol_path_impl",
+    "get_accessible_record_ids",
+    "get_neighbour_impl",
+    "get_record_roles",
     "read_code_impl",
     "resolve_symbol",
 ]
 
-# "Who calls this" is about calls, not about every way two symbols relate.
-CALL_RELATIONS = [
-    RecordRelations.CALLS.value,
-    RecordRelations.INDIRECT_CALL.value,
+TEST_ROLE = "test"
+
+# Written at parse time, both endpoints inside one file. These describe how a
+# file is put together, which is `list_code`'s question, not a dependency.
+STRUCTURAL_RELATIONS = [
+    RecordRelations.CONTAINS.value,
+    RecordRelations.DEFINES.value,
+    RecordRelations.METHOD.value,
 ]
+
+# Written by the edge-resolution pass once a repo is indexed: one symbol
+# reaching another. `get_neighbour` defaults to these -- including METHOD would
+# make "what calls this class" answer with the class's own methods.
+CROSS_FILE_RELATIONS = [
+    RecordRelations.CALLS.value,
+    RecordRelations.IMPORTS.value,
+    RecordRelations.IMPORTS_FROM.value,
+    RecordRelations.RE_EXPORTS.value,
+    RecordRelations.EXPORTS.value,
+    RecordRelations.INHERITS.value,
+    RecordRelations.EXTENDS.value,
+]
+
+# Everything the code parser emits. `find_symbol_path` walks all of it: two
+# methods of the same class are connected only through their container, so
+# dropping the structural edges there breaks the search (see `_bfs_edges`).
+CODE_RELATIONS = [*STRUCTURAL_RELATIONS, *CROSS_FILE_RELATIONS]
 
 DEFAULT_NEIGHBOR_LIMIT = 25
 DEFAULT_MAX_DEPTH = 6
+# A neighbour walk is for tracing a specific chain, not surveying the repo:
+# fan-out compounds per hop, so a deep walk returns more than it explains.
+MAX_NEIGHBOUR_DEPTH = 3
+# Frontier width per hop while walking past the first. The caller's `limit`
+# bounds what comes back; this bounds what is traversed to find it.
+_NEIGHBOUR_FANOUT = 200
 # Default ceiling on a whole-file read. Enough for ~95% of files outright, and
 # it is the hub files an architecture question lands on that overrun it -- which
 # is exactly where an uncapped read costs thousands of tokens of context.
@@ -198,18 +233,17 @@ async def _readable_blocks(
     org_id: str,
     user_id: str,
     keys: list[str],
-    allowed: dict[str, bool] | None = None,
+    accessible: set[str] | None = None,
     connector_id: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Load block nodes by key, dropping any whose record the user cannot read.
 
-    ``allowed`` memoises the per-record verdict; pass one across several calls in
-    the same request to check each record once.
+    ``accessible`` is the pre-computed set of record IDs the user may read
+    (from ``get_accessible_record_ids``).  When provided the access check is an
+    O(1) set lookup per block instead of a graph traversal per record.  When
+    ``None`` the function falls back to parallel per-record checks.
 
     ``connector_id`` re-applies the repo scope on nodes reached by traversal.
-    Edges cannot span connectors today -- the edge builder indexes one
-    ``recordGroupId`` at a time -- but that is an invariant of another module,
-    and a scope boundary should not depend on one.
     """
     if not keys:
         return {}
@@ -221,20 +255,32 @@ async def _readable_blocks(
         logger.warning("Block batch load failed: %s", exc)
         return {}
 
-    out: dict[str, dict[str, Any]] = {}
-    allowed = {} if allowed is None else allowed
+    candidates: list[dict[str, Any]] = []
     for row in rows or []:
         if row.get("orgId") != org_id:
             continue
         if connector_id is not None and row.get("connectorId") != connector_id:
             continue
-        record_id = row.get("recordId")
-        if record_id not in allowed:
-            allowed[record_id] = await _user_can_read(
-                graph_provider, user_id, org_id, record_id
-            )
-        if allowed[record_id]:
-            out[row.get("_key") or row.get("id")] = row
+        candidates.append(row)
+
+    if accessible is not None:
+        out = {
+            (row.get("_key") or row.get("id")): row
+            for row in candidates
+            if row.get("recordId") in accessible
+        }
+    else:
+        unique_rids = list({r.get("recordId") for r in candidates if r.get("recordId")})
+        verdicts = await asyncio.gather(*(
+            _user_can_read(graph_provider, user_id, org_id, rid)
+            for rid in unique_rids
+        ))
+        allowed = dict(zip(unique_rids, verdicts))
+        out = {
+            (row.get("_key") or row.get("id")): row
+            for row in candidates
+            if allowed.get(row.get("recordId"), False)
+        }
 
     await attach_file_paths(graph_provider, org_id, out.values())
     return out
@@ -265,11 +311,60 @@ async def attach_file_paths(
         block["filePath"] = paths.get(block.get("recordId"))
 
 
+async def get_record_roles(
+    graph_provider: Any, org_id: str, record_ids: set[str] | list[str]
+) -> dict[str, str]:
+    """``fileRole`` per record, read from ``codeFiles``."""
+    if not record_ids:
+        return {}
+    ids = sorted(record_ids)
+    try:
+        rows = await graph_provider.get_nodes_by_field_in(
+            collection=_CODE_FILES,
+            field_name="_key",
+            field_values=ids,
+            return_fields=["_key", "fileRole"],
+        )
+    except Exception as exc:
+        logger.warning("File role lookup failed: %s", exc)
+        return {}
+    out: dict[str, str] = {}
+    for raw in rows or []:
+        row = raw
+        if isinstance(raw, dict) and len(raw) <= 2 and ("b" in raw or "node" in raw):
+            row = raw.get("b") or raw.get("node") or raw
+        key = row.get("_key") or row.get("id")
+        role = row.get("fileRole")
+        if key and role:
+            out[key] = role
+    return out
+
+
+async def get_accessible_record_ids(
+    graph_provider: Any, org_id: str, user_id: str
+) -> set[str] | None:
+    """Every record the caller may read, in one bulk query.
+
+    Backed by ``get_accessible_virtual_record_ids`` (which itself sits behind a
+    Redis cache with a 300 s TTL), so repeated calls in the same agent turn are
+    near-free.  Returns ``None`` when the bulk lookup is unavailable; callers
+    must fall back to per-record ``_user_can_read`` in that case.
+    """
+    try:
+        mapping = await graph_provider.get_accessible_virtual_record_ids(
+            user_id=user_id, org_id=org_id
+        )
+    except Exception as exc:
+        logger.warning("Bulk permission lookup failed: %s", exc)
+        return None
+    return {r for r in (mapping or {}).values() if r}
+
+
 # ---------------------------------------------------------------------------
 # Tool 1 — callers / callees
 # ---------------------------------------------------------------------------
 
-async def find_call_neighbors_impl(
+async def get_neighbour_impl(
     *,
     graph_provider: Any,
     connector_id: str,
@@ -277,43 +372,96 @@ async def find_call_neighbors_impl(
     user_id: str,
     file_path: str,
     qualified_name: str,
-    direction: str,
+    direction: str = "any",
+    edge_types: list[str] | None = None,
+    depth: int = 1,
     limit: int = DEFAULT_NEIGHBOR_LIMIT,
+    include_tests: bool = False,
 ) -> dict[str, Any]:
-    if direction not in ("caller", "callee"):
-        return {"error": "direction must be 'caller' or 'callee'"}
+    if direction not in ("inbound", "outbound", "any"):
+        return {"error": "direction must be 'inbound', 'outbound' or 'any'"}
 
-    anchor = await resolve_symbol(graph_provider, org_id, file_path, qualified_name, connector_id)
+    # Rejected, not filtered. Dropping an unrecognized type and carrying on
+    # would answer a typo (`['CALL']`) with every relation instead of none --
+    # a narrower request silently becoming the broadest possible one.
+    unknown = [e for e in (edge_types or []) if e not in CODE_RELATIONS]
+    if unknown:
+        return {"error": (
+            f"unknown edge_types {unknown}. Valid: {', '.join(CODE_RELATIONS)}"
+        )}
+    relations = list(edge_types) if edge_types else list(CROSS_FILE_RELATIONS)
+    depth = max(1, min(int(depth or 1), MAX_NEIGHBOUR_DEPTH))
+
+    anchor, accessible = await asyncio.gather(
+        resolve_symbol(graph_provider, org_id, file_path, qualified_name, connector_id),
+        get_accessible_record_ids(graph_provider, org_id, user_id),
+    )
     if anchor is None:
         return {"error": f"No symbol {qualified_name!r} in {file_path!r}"}
-    if not await _user_can_read(graph_provider, user_id, org_id, anchor.get("recordId")):
-        return {"symbol": None, "direction": direction, "neighbors": []}
 
-    # A caller points *at* this symbol, so the edge is inbound.
-    edge_direction = "inbound" if direction == "caller" else "outbound"
-    try:
-        rows = await graph_provider.get_neighbors_by_relationship_types(
-            node_key=anchor.get("_key") or anchor.get("id"),
-            node_collection=_BLOCKS,
-            relationship_types=CALL_RELATIONS,
-            direction=edge_direction,
-            limit=limit,
-        )
-    except Exception as exc:
-        logger.exception("Neighbour walk failed")
-        return {"error": f"Failed to walk the call graph: {exc}"}
+    anchor_rid = anchor.get("recordId")
+    empty = {"symbol": None, "direction": direction, "neighbors": []}
+    if accessible is not None:
+        if anchor_rid not in accessible:
+            return empty
+    elif not await _user_can_read(graph_provider, user_id, org_id, anchor_rid):
+        return empty
 
-    block_keys = [r["key"] for r in rows or [] if r.get("collection") == _BLOCKS and r.get("key")]
+    anchor_key = anchor.get("_key") or anchor.get("id")
+    visited = {anchor_key}
+    frontier = [anchor_key]
+    rows: list[dict[str, Any]] = []
+    for hop in range(1, depth + 1):
+        if not frontier:
+            break
+        try:
+            batch = await graph_provider.get_neighbors_for_nodes_by_relationship_types(
+                node_keys=frontier[:_NEIGHBOUR_FANOUT],
+                node_collection=_BLOCKS,
+                relationship_types=relations,
+                direction=direction,
+                limit=_NEIGHBOUR_FANOUT,
+            )
+        except Exception as exc:
+            logger.exception("Neighbour walk failed")
+            return {"error": f"Failed to walk the code graph: {exc}"}
+
+        next_frontier: list[str] = []
+        for row in batch or []:
+            key = row.get("key")
+            if not key:
+                continue
+            row["hop"] = hop
+            rows.append(row)
+            if row.get("collection") == _BLOCKS and key not in visited:
+                visited.add(key)
+                next_frontier.append(key)
+        frontier = next_frontier
+
+    block_keys = [r["key"] for r in rows if r.get("collection") == _BLOCKS and r.get("key")]
     blocks = await _readable_blocks(graph_provider, org_id, user_id, block_keys,
-                                     connector_id=connector_id)
+                                     accessible=accessible, connector_id=connector_id)
+
+    if not include_tests:
+        rid_set = {b.get("recordId") for b in blocks.values() if b.get("recordId")}
+        roles = await get_record_roles(graph_provider, org_id, rid_set)
+        blocks = {k: b for k, b in blocks.items()
+                  if roles.get(b.get("recordId")) != TEST_ROLE}
 
     neighbors: list[dict[str, Any]] = []
-    for row in rows or []:
+    for row in rows:
+        # `limit` bounds what is returned, and rows arrive breadth-first, so a
+        # truncated walk keeps the nearest neighbours rather than an arbitrary
+        # slice of the far ones.
+        if len(neighbors) >= limit:
+            break
         block = blocks.get(row.get("key"))
         if block is None:
             continue
         ref = SymbolRef.from_block(block)
         ref["relation"] = row.get("relationshipType")
+        if depth > 1:
+            ref["hop"] = row.get("hop")
         if row.get("line") is not None:
             ref["line"] = row.get("line")
         if row.get("confidence"):
@@ -324,7 +472,12 @@ async def find_call_neighbors_impl(
         "symbol": SymbolRef.from_block(anchor),
         "connector_id": connector_id,
         "direction": direction,
+        "edge_types": relations,
+        "depth": depth,
         "neighbors": neighbors,
+        # Silence reads as absence: a model that thinks it saw every neighbour
+        # will state a wrong conclusion confidently.
+        "truncated": len(neighbors) >= limit,
     }
 
 
@@ -343,6 +496,7 @@ async def read_code_impl(
     qualified_name: str | None = None,
     lines: str | None = None,
     max_lines: int | None = None,
+    include_tests: bool = False,
 ) -> dict[str, Any]:
     """Source for one symbol, one line range, or a whole file.
 
@@ -356,26 +510,36 @@ async def read_code_impl(
     line range is for when the caller already knows *which* part it wants.
     """
     if qualified_name:
-        block = await resolve_symbol(
-            graph_provider, org_id, file_path, qualified_name, connector_id
+        block, accessible = await asyncio.gather(
+            resolve_symbol(graph_provider, org_id, file_path, qualified_name, connector_id),
+            get_accessible_record_ids(graph_provider, org_id, user_id),
         )
         if block is None:
             return {"error": f"No symbol {qualified_name!r} in {file_path!r}"}
         record_id = block.get("recordId")
     else:
         block = None
-        # The path lives on `codeFiles`, not on blocks, so the record is
-        # looked up there. More than one id means two connectors indexed the
-        # same path; the caller's connector picks between them.
-        record_ids = await _records_for_path(graph_provider, org_id, file_path)
+        record_ids, accessible = await asyncio.gather(
+            _records_for_path(graph_provider, org_id, file_path),
+            get_accessible_record_ids(graph_provider, org_id, user_id),
+        )
         record_id = await _record_in_connector(
             graph_provider, org_id, record_ids, connector_id
         )
         if record_id is None:
             return {"error": f"No indexed file at {file_path!r}"}
 
-    if not await _user_can_read(graph_provider, user_id, org_id, record_id):
+    if accessible is not None:
+        if record_id not in accessible:
+            return {"error": f"No indexed file at {file_path!r}"}
+    elif not await _user_can_read(graph_provider, user_id, org_id, record_id):
         return {"error": f"No indexed file at {file_path!r}"}
+
+    if not include_tests:
+        roles = await get_record_roles(graph_provider, org_id, {record_id})
+        if roles.get(record_id) == TEST_ROLE:
+            return {"error": f"{file_path!r} is a test file; set include_tests=true to read it"}
+
     if blob_store is None:
         return {"error": "Blob storage is not available."}
 
@@ -396,6 +560,10 @@ async def read_code_impl(
     if not record:
         return {"error": f"No stored content for {file_path!r}"}
 
+    # `_record_id` is an internal handle the tool wrapper strips before the
+    # model sees it: record-escalation keys on record ids, but every code tool
+    # addresses files by path, and carrying both identities to the model invites
+    # passing the wrong one.
     if qualified_name:
         found = _find_blob_block(record, qualified_name)
         if found is None:
@@ -403,13 +571,16 @@ async def read_code_impl(
         ref = SymbolRef.from_block(block)
         ref["connector_id"] = connector_id
         ref["code"] = found
+        ref["_record_id"] = record_id
         return ref
 
     span = _parse_line_range(lines)
     if lines and span is None:
         return {"error": f"lines must look like '40-80', got {lines!r}"}
     budget = DEFAULT_MAX_LINES if max_lines is None else max(1, int(max_lines))
-    return _file_code(record, file_path, connector_id, span, budget)
+    out = _file_code(record, file_path, connector_id, span, budget)
+    out["_record_id"] = record_id
+    return out
 
 
 async def _record_in_connector(
@@ -542,17 +713,42 @@ async def find_symbol_path_impl(
     file_path_b: str,
     qualified_name_b: str,
     max_depth: int = DEFAULT_MAX_DEPTH,
+    edge_types: list[str] | None = None,
+    include_tests: bool = False,
 ) -> dict[str, Any]:
-    start = await resolve_symbol(graph_provider, org_id, file_path_a, qualified_name_a, connector_id)
+    unknown = [e for e in (edge_types or []) if e not in CODE_RELATIONS]
+    if unknown:
+        return {"error": (
+            f"unknown edge_types {unknown}. Valid: {', '.join(CODE_RELATIONS)}"
+        )}
+
+    start, end, accessible = await asyncio.gather(
+        resolve_symbol(graph_provider, org_id, file_path_a, qualified_name_a, connector_id),
+        resolve_symbol(graph_provider, org_id, file_path_b, qualified_name_b, connector_id),
+        get_accessible_record_ids(graph_provider, org_id, user_id),
+    )
     if start is None:
         return {"error": f"No symbol {qualified_name_a!r} in {file_path_a!r}"}
-    end = await resolve_symbol(graph_provider, org_id, file_path_b, qualified_name_b, connector_id)
     if end is None:
         return {"error": f"No symbol {qualified_name_b!r} in {file_path_b!r}"}
 
     for block in (start, end):
-        if not await _user_can_read(graph_provider, user_id, org_id, block.get("recordId")):
+        rid = block.get("recordId")
+        if accessible is not None:
+            if rid not in accessible:
+                return {"found": False, "hops": []}
+        elif not await _user_can_read(graph_provider, user_id, org_id, rid):
             return {"found": False, "hops": []}
+
+    if not include_tests:
+        check_ids = {r for r in (start.get("recordId"), end.get("recordId")) if r}
+        roles = await get_record_roles(graph_provider, org_id, check_ids)
+        for sym in (start, end):
+            if roles.get(sym.get("recordId")) == TEST_ROLE:
+                return {
+                    "found": False, "hops": [],
+                    "note": "Endpoint is in a test file; set include_tests=true to include test files",
+                }
 
     start_key = start.get("_key") or start.get("id")
     end_key = end.get("_key") or end.get("id")
@@ -560,7 +756,7 @@ async def find_symbol_path_impl(
         return {"found": True, "hops": []}
 
     edges = await _bfs_edges(
-        graph_provider, start_key, end_key, max_depth=max_depth
+        graph_provider, start_key, end_key, max_depth=max_depth, relations=edge_types
     )
     if edges is None:
         return {"found": False, "hops": []}
@@ -570,7 +766,7 @@ async def find_symbol_path_impl(
         keys.add(edge["from"])
         keys.add(edge["to"])
     blocks = await _readable_blocks(graph_provider, org_id, user_id, sorted(keys),
-                                     connector_id=connector_id)
+                                     accessible=accessible, connector_id=connector_id)
 
     hops: list[dict[str, Any]] = []
     for edge in edges:
@@ -596,8 +792,14 @@ async def _bfs_edges(
     end_key: str,
     *,
     max_depth: int,
+    relations: list[str] | None = None,
 ) -> list[dict[str, str]] | None:
-    """Breadth-first search over every relation type, ignoring edge direction.
+    """Breadth-first search over every code relation, ignoring edge direction.
+
+    Defaults to all of `CODE_RELATIONS`, structural edges included -- unlike
+    `get_neighbour`, which excludes them. Two methods of the same class are
+    connected only through their container, so narrowing this to the cross-file
+    edges finds no path between them.
 
     Undirected on purpose: CONTAINS runs parent->child while CALLS runs
     caller->callee, so a strictly directed search finds nothing between two
@@ -607,7 +809,7 @@ async def _bfs_edges(
     identically on Arango and Neo4j, and so each hop keeps the relation type and
     direction a native call would not return.
     """
-    all_relations = [r.value for r in RecordRelations]
+    all_relations = list(relations) if relations else list(CODE_RELATIONS)
     parents: dict[str, tuple[str, str, str]] = {}
     visited = {start_key}
     frontier = [start_key]

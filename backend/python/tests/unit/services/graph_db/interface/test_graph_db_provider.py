@@ -226,6 +226,7 @@ class TestAbstractMethodInventory:
         "get_edges_by_target_keys",
         "delete_edges_by_source_keys",
         "count_nodes_by_filters",
+        "has_nodes_by_filters",
         "get_nodes_updated_since",
         # Record operations
         "get_record_by_path",

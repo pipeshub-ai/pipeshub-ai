@@ -33,7 +33,7 @@ CONFIDENCE_INFERRED = "INFERRED"
 _SCAN_PAGE = 2000
 _WRITE_CHUNK = 500
 
-_CALL_RELATIONS = {RecordRelations.CALLS.value, RecordRelations.INDIRECT_CALL.value}
+_CALL_RELATIONS = {RecordRelations.CALLS.value}
 _MODULE_RELATIONS = {
     RecordRelations.IMPORTS_FROM.value,
     RecordRelations.RE_EXPORTS.value,

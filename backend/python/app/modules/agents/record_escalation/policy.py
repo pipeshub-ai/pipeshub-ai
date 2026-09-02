@@ -203,7 +203,7 @@ def build_candidates(
     )
 
 
-def policy_text(tool_ref: str, code_graph_ref: str | None = None) -> str:
+def policy_text(tool_ref: str) -> str:
     """
     Return the full-record fetch policy injected into system prompts.
 
@@ -217,41 +217,8 @@ def policy_text(tool_ref: str, code_graph_ref: str | None = None) -> str:
     "unless", not a co-equal step — without a gate/judge backstop, giving it
     equal billing reads as permission to stop after step 1.
 
-    `tool_ref` is the tool name the model should call. `code_graph_ref` is
-    passed only when a code-graph tool is actually granted -- naming a tool the
-    caller cannot call is worse than saying nothing.
-
-    The code exception lives INSIDE this procedure on purpose. A paragraph
-    elsewhere in the prompt was tried first and lost to these numbered steps:
-    the observed failure was this recipe executing verbatim on an architecture
-    question, reading whole files one at a time, which can never show a
-    relationship BETWEEN files.
+    `tool_ref` is the tool name the model should call.
     """
-    code_step = ""
-    if code_graph_ref:
-        code_step = (
-            f"\n\nException — code questions. When the question is about how code "
-            f"connects — architecture, dependencies, what calls or imports what, "
-            f"debugging a call chain, finding all usages, or understanding module "
-            f"structure — reading individual records is the wrong instrument. "
-            f"A whole file never shows a relationship between files. Use "
-            f"`{code_graph_ref}` instead:\n"
-            f"- Module overview: `group_by=\"directory\"` over a broad path, then "
-            f"narrow.\n"
-            f"- Symbol usages: `select='<file>#<qualified_name>'` with "
-            f"`relations=[\"CALLS\"]` and `direction=\"inbound\"`.\n"
-            f"- Symbol dependencies: same, with `direction=\"outbound\"`.\n"
-            f"- Read a record only for a symbol the graph named that you still "
-            f"need the source text of.\n\n"
-            f"Before answering a broad code question, check that you have "
-            f"explored every major directory the top-level rollup revealed. "
-            f"A response that describes some layers but silently omits others is "
-            f"worse than one that covers all layers at less depth.\n\n"
-            f"Results are ranked by `degree` — how many edges touch a symbol or "
-            f"module. When the graph gives you a weight, a direction, or a "
-            f"degree, state the number: \"X imports Y (14 edges)\" is a finding, "
-            f"\"X depends on Y\" is a guess that happens to be right."
-        )
     return (
         f"## Reading Records in Full\n\n"
         f"Search results are ranked fragments, not complete documents. "
@@ -270,5 +237,4 @@ def policy_text(tool_ref: str, code_graph_ref: str | None = None) -> str:
         f"each record you hold ('you have 4 of 87 blocks'), which tells you "
         f"whether reading further would add anything; use it when present. "
         f"Pass the exact Record ID value(s) shown — never invent IDs."
-        + code_step
     )

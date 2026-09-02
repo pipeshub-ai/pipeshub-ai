@@ -139,11 +139,9 @@ source AND tried at least one reformulated query.
 # Embed policy_text() here (the canonical single source) rather than re-stating
 # the guidance inline — this is the ONLY place the fetch-record policy appears
 # for the exploration agent; main agent gets it from prompt_builder.py.
-def _fetch_record_policy_for_exploration(tool_names: list[str] | None = None) -> str:
-    from app.modules.agents.context.tool_names import granted
+def _fetch_record_policy_for_exploration() -> str:
     from app.modules.agents.record_escalation.policy import policy_text
-    code_graph = granted("codegraph.query_code_graph", tool_names or [])
-    return "\n\n" + policy_text("knowledgegraph__fetch_record", code_graph)
+    return "\n\n" + policy_text("knowledgegraph__fetch_record")
 
 
 def _internal_exploration_instructions(
@@ -165,7 +163,7 @@ def _internal_exploration_instructions(
     Note: the full-record fetch policy (policy_text()) is the canonical
     single source for that guidance — it is appended here rather than
     duplicated in _EXPLORATION_PLAYBOOK's prose."""
-    fetch_policy = _fetch_record_policy_for_exploration(tool_names)
+    fetch_policy = _fetch_record_policy_for_exploration()
     base = _EXPLORATION_PLAYBOOK + fetch_policy
     if context is None or not context.agent_knowledge:
         return base

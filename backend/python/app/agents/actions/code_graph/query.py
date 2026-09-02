@@ -15,6 +15,7 @@ Kept separate from ``ops.py`` so the narrow tools stay readable; both share
 """
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import logging
 import posixpath
@@ -26,10 +27,13 @@ from app.config.constants.arangodb import CollectionNames, RecordRelations
 from app.modules.parsers.code_parser.models import FILLER_KINDS
 
 from .ops import (
+    TEST_ROLE,
     SymbolRef,
     _readable_blocks,
     _user_can_read,
     attach_file_paths,
+    get_accessible_record_ids,
+    get_record_roles,
     resolve_symbol,
 )
 
@@ -508,23 +512,6 @@ async def _expand(
 _ROLLUP_ROW_LIMIT = 100000
 
 
-async def _accessible_records(graph_provider: Any, org_id: str, user_id: str) -> set[str] | None:
-    """Every record the caller may read, in one query.
-
-    The per-record gate used elsewhere is one traversal per record, which does
-    not survive a whole-repo rollup. ``None`` means the bulk lookup is
-    unavailable, and the caller must fall back rather than assume access.
-    """
-    try:
-        mapping = await graph_provider.get_accessible_virtual_record_ids(
-            user_id=user_id, org_id=org_id
-        )
-    except Exception as exc:
-        logger.warning("Bulk permission lookup failed: %s", exc)
-        return None
-    return {r for r in (mapping or {}).values() if r}
-
-
 async def _rollup_rows(
     graph_provider: Any,
     org_id: str,
@@ -653,36 +640,6 @@ async def _prefix_exists(
     return bool(rows)
 
 
-async def _record_roles(
-    graph_provider: Any, org_id: str, record_ids: set[str]
-) -> dict[str, str]:
-    """``fileRole`` per record, read from ``codeFiles``.
-
-    A record with no ``codeFiles`` row (a .py uploaded to a KB) has no role and
-    is kept: an unknown role is not evidence of a test.
-    """
-    if not record_ids:
-        return {}
-    try:
-        rows = await graph_provider.get_nodes_by_field_in(
-            collection=_CODE_FILES,
-            field_name="_key",
-            field_values=sorted(record_ids),
-            return_fields=["_key", "fileRole"],
-        )
-    except Exception as exc:
-        logger.warning("File role lookup failed: %s", exc)
-        return {}
-    out: dict[str, str] = {}
-    for raw in rows or []:
-        row = _unwrap(raw)
-        key = row.get("_key") or row.get("id")
-        role = row.get("fileRole")
-        if key and role:
-            out[key] = role
-    return out
-
-
 async def _record_paths(graph_provider: Any, org_id: str, record_ids: set[str]) -> dict[str, str]:
     """filePath for a set of records, read from the record itself."""
     if not record_ids:
@@ -710,6 +667,7 @@ async def query_code_graph_impl(
     group_by: str = "none",
     kinds: list[str] | None = None,
     limit: int = DEFAULT_QUERY_LIMIT,
+    include_tests: bool = False,
 ) -> dict[str, Any]:
     if not (connector_id or "").strip():
         return {"error": CONNECTOR_ID_REQUIRED}
@@ -738,6 +696,8 @@ async def query_code_graph_impl(
         # An empty listing means this was never a directory. `conversations/
         # stream` is a URL fragment; answering it with "no such directory" is a
         # dead end for something free text finds.
+        if not include_tests:
+            listing["files"] = [f for f in listing["files"] if f.get("role") != TEST_ROLE]
         if listing["directories"] or listing["files"]:
             return {
                 "select": select,
@@ -754,7 +714,7 @@ async def query_code_graph_impl(
             graph_provider=graph_provider, org_id=org_id, user_id=user_id,
             connector_id=connector_id, select=select, relations=relations,
             direction=direction, group_by=group_by, limit=limit,
-            dropped_depth=bool(depth),
+            dropped_depth=bool(depth), include_tests=include_tests,
         )
 
     scan_capped = False
@@ -793,14 +753,19 @@ async def query_code_graph_impl(
     # discloses that the file exists and how much is in it, so a denial and a
     # miss have to produce the same payload.
     if wanted_kinds:
-        # A path selector returns every span that tiles the file -- imports,
-        # statements, header -- which is roughly half the payload. The noise
-        # filter only runs on the text branch, so this is the way to ask a file
-        # for its definitions.
         matched = [m for m in matched if (m.get("kind") or "").lower() in wanted_kinds]
 
-    allowed: dict[str, bool] = {}
-    matched = await _readable_only(graph_provider, org_id, user_id, matched, allowed)
+    _rids = {b.get("recordId") for b in matched if b.get("recordId")}
+    coros: list = [get_accessible_record_ids(graph_provider, org_id, user_id)]
+    if not include_tests:
+        coros.append(get_record_roles(graph_provider, org_id, _rids))
+    results = await asyncio.gather(*coros)
+    accessible: set[str] | None = results[0]
+    if not include_tests:
+        _roles: dict[str, str] = results[1]
+        matched = [b for b in matched if _roles.get(b.get("recordId")) != TEST_ROLE]
+
+    matched = await _readable_only(graph_provider, org_id, user_id, matched, accessible)
 
     if not matched:
         return {
@@ -830,8 +795,8 @@ async def query_code_graph_impl(
     if depth:
         visited, edges = await _expand(graph_provider, seed_keys, relations, direction, depth)
 
-    blocks = await _readable_blocks(graph_provider, org_id, user_id, sorted(visited), allowed,
-                                     connector_id=connector_id)
+    blocks = await _readable_blocks(graph_provider, org_id, user_id, sorted(visited),
+                                     accessible=accessible, connector_id=connector_id)
     edges = [e for e in edges if e["from"] in blocks
              and (e.get("collection") == _RECORDS or e["to"] in blocks)]
 
@@ -980,6 +945,7 @@ async def _grouped_result(
     group_by: str,
     limit: int,
     dropped_depth: bool = False,
+    include_tests: bool = False,
 ) -> dict[str, Any]:
     """The module view: every edge under a path prefix, rolled up.
 
@@ -1005,7 +971,7 @@ async def _grouped_result(
         prefix = posixpath.commonprefix(paths) if paths else ""
         prefix = prefix.rsplit("/", 1)[0] + "/" if "/" in prefix else prefix
 
-    readable = await _accessible_records(graph_provider, org_id, user_id)
+    readable = await get_accessible_record_ids(graph_provider, org_id, user_id)
     if readable is None:
         # An infrastructure failure, not a permission decision — saying so
         # reveals nothing about any record, and beats reporting "no
@@ -1030,8 +996,11 @@ async def _grouped_result(
     wanted = {r.get(end) for r in rows for end in ("srcRecord", "dstRecord")} & readable
     wanted = {r for r in wanted if r}
     paths = await _record_paths(graph_provider, org_id, wanted)
-    roles = await _record_roles(graph_provider, org_id, wanted)
-    excluded = {r for r, role in roles.items() if role in _ROLLUP_EXCLUDED_ROLES}
+    if include_tests:
+        excluded: set[str] = set()
+    else:
+        roles = await get_record_roles(graph_provider, org_id, wanted)
+        excluded = {r for r, role in roles.items() if role in _ROLLUP_EXCLUDED_ROLES}
 
     module_depth = _module_depth_for(prefix) if group_by == "directory" else 0
     result = _group_rows(rows, readable, paths, group_by, module_depth, excluded)
@@ -1118,16 +1087,25 @@ async def _readable_only(
     org_id: str,
     user_id: str,
     blocks: list[dict],
-    allowed: dict[str, bool],
+    accessible: set[str] | None = None,
 ) -> list[dict]:
-    """Drop blocks whose owning record the caller cannot read, keeping order."""
-    out = []
-    for block in blocks:
-        record_id = block.get("recordId")
-        if record_id not in allowed:
-            allowed[record_id] = await _user_can_read(graph_provider, user_id, org_id, record_id)
-        if allowed[record_id]:
-            out.append(block)
-    return out
+    """Drop blocks whose owning record the caller cannot read, keeping order.
+
+    When ``accessible`` is provided (from ``get_accessible_record_ids``), the
+    check is an O(1) set lookup per block.  Otherwise falls back to parallel
+    per-record ``_user_can_read`` calls.
+    """
+    if accessible is not None:
+        return [b for b in blocks if b.get("recordId") in accessible]
+
+    unique_rids = list({b.get("recordId") for b in blocks if b.get("recordId")})
+    if not unique_rids:
+        return []
+    verdicts = await asyncio.gather(*(
+        _user_can_read(graph_provider, user_id, org_id, rid)
+        for rid in unique_rids
+    ))
+    allowed = dict(zip(unique_rids, verdicts))
+    return [b for b in blocks if allowed.get(b.get("recordId"), False)]
 
 

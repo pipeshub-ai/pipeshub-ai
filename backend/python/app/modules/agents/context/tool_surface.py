@@ -149,7 +149,7 @@ class ToolSurfaces:
 
         # ── Code-graph surface ───────────────────────────────────────────────
         code_graph = bool(granted_any(
-            ["codegraph.query_code_graph", "codegraph.find_call_neighbors"],
+            ["codegraph.query_code_graph", "codegraph.get_neighbour"],
             names_set,
         ))
 
