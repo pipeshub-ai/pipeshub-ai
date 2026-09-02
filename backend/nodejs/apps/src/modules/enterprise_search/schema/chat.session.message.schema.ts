@@ -1,15 +1,11 @@
 import mongoose, { Schema, Model } from 'mongoose';
 import {
-  IConversation,
-  IMessage,
+  IChatSessionMessageDocument,
   IFeedback,
-  IMessageCitation,
   IFollowUpQuestion,
+  IMessageCitation,
 } from '../types/conversation.interfaces';
-import {
-  CONFIDENCE_LEVELS,
-  REASONING_EFFORT_VALUES,
-} from '../constants/constants';
+import { CONFIDENCE_LEVELS, REASONING_EFFORT_VALUES } from '../constants/constants';
 
 const toolCallItemSchema = new Schema(
   {
@@ -40,7 +36,11 @@ const followUpQuestionSchema = new Schema<IFollowUpQuestion>(
 
 const messageCitationSchema = new Schema<IMessageCitation>(
   {
-    citationId: { type: Schema.Types.ObjectId, ref: 'citations' },
+    // Matches the actually-registered citation model name ('citation',
+    // singular — see citation.schema.ts). The old embedded schema says
+    // `ref: 'citations'` and every populate() call site compensates with an
+    // explicit `model: 'citation'`; fixed here instead of carried forward.
+    citationId: { type: Schema.Types.ObjectId, ref: 'citation' },
     relevanceScore: { type: Number, min: 0, max: 1 },
     excerpt: { type: String },
     context: { type: String },
@@ -80,7 +80,7 @@ const feedbackSchema = new Schema<IFeedback>(
     },
     citationFeedback: [
       {
-        citationId: { type: Schema.Types.ObjectId, ref: 'citations' },
+        citationId: { type: Schema.Types.ObjectId, ref: 'citation' },
         isRelevant: { type: Boolean },
         relevanceScore: { type: Number, min: 1, max: 5 },
         comment: { type: String },
@@ -140,8 +140,30 @@ const attachmentRefSchema = new Schema(
   { _id: false },
 );
 
-const messageSchema = new Schema<IMessage>(
+/**
+ * One message row. Formerly an embedded subdocument of `conversations` /
+ * `agentConversations`; now its own collection ordered by `seq` (see
+ * allocateSeq in utils.ts) rather than array position, so a session can
+ * exceed MongoDB's 16MB document limit and large threads don't have to be
+ * loaded/rewritten in full on every turn.
+ *
+ * `sessionId` / `orgId` / `seq` are internal addressing fields, not part of
+ * any documented response shape — attachMessages() strips them before a
+ * message ever reaches a response.
+ */
+const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
   {
+    sessionId: {
+      type: Schema.Types.ObjectId,
+      required: true,
+      ref: 'ChatSession',
+      index: true,
+    },
+    orgId: { type: Schema.Types.ObjectId, required: true, index: true },
+    // Per-session monotonic sort key allocated from the parent session's
+    // `nextSeq` counter. Gaps are legal; never treat this as a count or index.
+    seq: { type: Number, required: true },
+
     messageType: {
       type: String,
       enum: [
@@ -205,85 +227,23 @@ const messageSchema = new Schema<IMessage>(
     // Persisted chain-of-thought (additive, opt-out — see reasoningTurnSchema).
     reasoning: [reasoningTurnSchema],
     // Ordered agent-activity transcript (additive, `agui` protocol only) --
-    // now populated for internal_search/web_search/universal-agent turns
-    // too, since all three run through the same agent loop as agent-key
-    // conversations. `Mixed` for the same reason as agent.conversation.
-    // schema.ts's identical field: shape varies by `type`, and `sub_agent`
-    // nests the same shape recursively.
+    // Mixed for the same reason as the legacy schema's identical field:
+    // shape varies by `type`, and `sub_agent` nests the same shape recursively.
     parts: [Schema.Types.Mixed],
   },
-  { timestamps: true },
-);
-
-// Schema for the overall conversation/thread
-const conversationSchema = new Schema<IConversation>(
   {
-    userId: { type: Schema.Types.ObjectId, required: true, index: true },
-    orgId: { type: Schema.Types.ObjectId, required: true, index: true },
-    title: { type: String },
-    initiator: { type: Schema.Types.ObjectId, required: true, index: true },
-    messages: [messageSchema],
-    isShared: { type: Boolean, default: false },
-    shareLink: { type: String },
-    sharedWith: [
-      {
-        userId: { type: Schema.Types.ObjectId },
-        accessLevel: { type: String, enum: ['read', 'write'], default: 'read' },
-      },
-      { _id: false },
-    ],
-    isDeleted: { type: Boolean, default: false },
-    deletedBy: { type: Schema.Types.ObjectId },
-    isArchived: { type: Boolean, default: false },
-    archivedBy: { type: Schema.Types.ObjectId },
-    lastActivityAt: { type: Number, default: Date.now },
-    status: {
-      type: String,
-      enum: ['None', 'Inprogress', 'Complete', 'Failed'],
-    },
-    failReason: { type: String },
-    // Model information used for this conversation
-    modelInfo: {
-      modelKey: { type: String },
-      modelName: { type: String },
-      modelProvider: { type: String },
-      chatMode: { type: String, default: 'quick' },
-      modelFriendlyName: { type: String },
-      reasoningEffort: { type: String, enum: REASONING_EFFORT_VALUES },
-    },
-    // Errors array to track errors during conversation
-    conversationErrors: [
-      {
-        message: { type: String, required: true },
-        errorType: { type: String },
-        timestamp: { type: Date, default: Date.now },
-        messageId: { type: Schema.Types.ObjectId },
-        stack: { type: String },
-        metadata: { type: Map, of: Schema.Types.Mixed },
-      },
-    ],
-    // Additional metadata for useful information
-    metadata: {
-      type: Map,
-      of: Schema.Types.Mixed,
-    },
-    // Phase 2 migration bookkeeping: set once this document has been copied
-    // into chatSessions/chatSessionMessages (see chat_sessions.migration.ts).
-    // Declared on the schema (not just written via the native driver) so
-    // `strictQuery` cannot silently drop the `{isMigrated: {$ne: true}}`
-    // scan filter or the completion write.
-    isMigrated: { type: Boolean, index: true },
+    timestamps: true, // parity with the old embedded messageSchema
+    versionKey: false, // embedded subdocuments never had __v; a top-level one would be a new, leaking field
+    collection: 'chatSessionMessages',
   },
-  { timestamps: true },
 );
 
-// Create additional indexes as needed
-conversationSchema.index({ orgId: 1, initiator: 1 });
-conversationSchema.index({ isShared: 1 });
-conversationSchema.index({ 'messages.content': 'text' });
+// Serves both the seq-ordered read path and duplicate-seq protection —
+// the real backstop for allocateSeq's optimistic $inc allocation.
+chatSessionMessageSchema.index({ sessionId: 1, seq: 1 }, { unique: true });
 
-// Export the model
-export const Conversation: Model<IConversation> = mongoose.model<IConversation>(
-  'conversations',
-  conversationSchema,
-);
+export const ChatSessionMessage: Model<IChatSessionMessageDocument> =
+  mongoose.model<IChatSessionMessageDocument>(
+    'ChatSessionMessage',
+    chatSessionMessageSchema,
+  );

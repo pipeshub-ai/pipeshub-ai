@@ -1,11 +1,10 @@
 import {
   AIServiceResponse,
-  IAgentConversation,
   IAIModel,
   IAppliedFilterNode,
   IChatAttachmentRef,
-  IConversation,
-  IConversationDocument,
+  IChatSessionDocument,
+  IChatSessionMessageDocument,
   IMessage,
   IMessageCitation,
   IMessageDocument,
@@ -17,16 +16,14 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   BadRequestError,
   InternalServerError,
+  NotFoundError,
 } from '../../../libs/errors/http.errors';
 import Citation, { ICitation } from '../schema/citation.schema';
-import { CONVERSATION_STATUS } from '../constants/constants';
+import { CONVERSATION_STATUS, ONLY_AGENT } from '../constants/constants';
 import { Logger } from '../../../libs/services/logger.service';
-import {
-  IAgentConversationDocument,
-  AgentConversation,
-} from '../schema/agent.conversation.schema';
 import { Response } from 'express';
-import { Conversation } from '../schema/conversation.schema';
+import { ChatSession } from '../schema/chat.session.schema';
+import { ChatSessionMessage } from '../schema/chat.session.message.schema';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import {
   sanitizeForResponse,
@@ -115,6 +112,61 @@ function extractSearchParameter(searchParam: unknown): string {
   return searchParam;
 }
 
+/**
+ * Shared XSS-validation + regex-escaping for the title/content search param,
+ * used by both `buildFilter` and `buildAgentConversationFilter` (and by their
+ * callers' async content-match lookup — see `findSessionIdsMatchingContent`)
+ * so the two computations of "the escaped search term" can never drift.
+ */
+export const validateAndEscapeSearch = (
+  searchParam: unknown,
+  options: { formatSpecifiers?: boolean } = {},
+): string => {
+  const searchValue = extractSearchParameter(searchParam);
+
+  validateNoXSS(searchValue, 'search parameter');
+  if (options.formatSpecifiers) {
+    validateNoFormatSpecifiers(searchValue, 'search parameter');
+  }
+
+  if (searchValue.length > 1000) {
+    throw new BadRequestError(
+      'Search parameter too long (max 1000 characters)',
+    );
+  }
+
+  // Escape special regex characters to prevent regex injection
+  return searchValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+};
+
+/**
+ * Case-insensitive substring match against message content, scoped to one
+ * org. An unanchored `$regex` can't use an index, so this is a collection
+ * scan either way; `limit` bounds the result set (and therefore memory) at
+ * the cost of silently truncating pathological searches — see the Phase 1
+ * plan's "Search" section. Replacing this with a real text index is a
+ * Phase 2 follow-up.
+ */
+export const findSessionIdsMatchingContent = async (
+  orgId: string,
+  escapedSearch: string,
+  limit = 10000,
+): Promise<mongoose.Types.ObjectId[]> => {
+  const rows = await ChatSessionMessage.aggregate<{
+    _id: mongoose.Types.ObjectId;
+  }>([
+    {
+      $match: {
+        orgId: new mongoose.Types.ObjectId(orgId),
+        content: { $regex: escapedSearch, $options: 'i' },
+      },
+    },
+    { $group: { _id: '$sessionId' } },
+    { $limit: limit },
+  ]);
+  return rows.map((r) => r._id);
+};
+
 export const buildAIFailureResponseMessage = (): IMessage => ({
   messageType: 'error',
   content: 'Error Generating Response, Please try again',
@@ -123,8 +175,179 @@ export const buildAIFailureResponseMessage = (): IMessage => ({
   updatedAt: new Date(),
 });
 
+// ---------------------------------------------------------------------------
+// Core chatSessions / chatSessionMessages helpers (Phase 1)
+// ---------------------------------------------------------------------------
+
 /**
- * Attach populated citation documents across ALL messages of a conversation.
+ * Allocate a contiguous block of `n` sequence numbers for a session via an
+ * atomic `$inc` on the session's `nextSeq` counter. Race-free by
+ * construction (concurrent callers each get a disjoint block from the same
+ * counter); the unique `{sessionId, seq}` index on chatSessionMessages is
+ * the backstop. Returns the END of the allocated block — the block itself
+ * is `[end - n + 1 .. end]`. `seq` is a sort key only: never derive a count,
+ * an index, or a page offset from it, and never assume no gaps.
+ */
+export const allocateSeq = async (
+  sessionId: mongoose.Types.ObjectId | string,
+  n: number,
+  mongoSession?: ClientSession | null,
+): Promise<number> => {
+  const updated = await ChatSession.findOneAndUpdate(
+    { _id: sessionId },
+    { $inc: { nextSeq: n } },
+    {
+      new: true,
+      projection: { nextSeq: 1 }, // overrides the schema's `select: false` for this one read
+      session: mongoSession || undefined,
+    },
+  );
+  if (!updated) {
+    throw new NotFoundError(
+      'Chat session not found while allocating message sequence',
+    );
+  }
+  return updated.nextSeq as number;
+};
+
+/**
+ * Append one or more messages to a session's message collection. Allocates
+ * their `seq` block first, then inserts — see the Phase 1 plan's "Ordering"
+ * section for why (a crash between the two leaves nothing inconsistent: no
+ * message row exists yet). Returns the inserted documents (not `.lean()`)
+ * so callers can `.toObject()` them for `attachPopulatedCitations` fallback
+ * without a second query.
+ */
+export const appendMessages = async (
+  sessionId: mongoose.Types.ObjectId | string,
+  orgId: mongoose.Types.ObjectId | string,
+  messages: IMessage[],
+  mongoSession?: ClientSession | null,
+): Promise<IChatSessionMessageDocument[]> => {
+  if (messages.length === 0) {
+    return [];
+  }
+  const endSeq = await allocateSeq(sessionId, messages.length, mongoSession);
+  const startSeq = endSeq - messages.length + 1;
+  const toInsert = messages.map((message, i) => ({
+    ...message,
+    sessionId,
+    orgId,
+    seq: startSeq + i,
+  }));
+  return ChatSessionMessage.insertMany(toInsert, {
+    ordered: true,
+    session: mongoSession || undefined,
+  }) as unknown as Promise<IChatSessionMessageDocument[]>;
+};
+
+/**
+ * Wholesale-replace one message's content, preserving its `_id`/`sessionId`/
+ * `orgId`/`seq`. Mirrors the old `conversation.messages[index] = newMessage`
+ * array-element replacement (regeneration intentionally discards the prior
+ * message's citations/feedback/etc. — only its identity and position stay
+ * stable), so this is a full `findOneAndReplace`, not a `$set` merge (which
+ * would leave stale fields the new content doesn't mention).
+ */
+export const updateMessageById = async (
+  messageId: mongoose.Types.ObjectId | string,
+  newContent: IMessage,
+  mongoSession?: ClientSession | null,
+): Promise<IChatSessionMessageDocument | null> => {
+  const existing = await ChatSessionMessage.findById(messageId, undefined, {
+    session: mongoSession || undefined,
+  });
+  if (!existing) {
+    return null;
+  }
+  return ChatSessionMessage.findOneAndReplace(
+    { _id: messageId },
+    {
+      ...newContent,
+      sessionId: existing.sessionId,
+      orgId: existing.orgId,
+      seq: existing.seq,
+    },
+    { new: true, session: mongoSession || undefined, runValidators: true },
+  );
+};
+
+/** Append a feedback entry to one message's `feedback` array. */
+export const appendMessageFeedback = async (
+  messageId: mongoose.Types.ObjectId | string,
+  feedbackEntry: unknown,
+  mongoSession?: ClientSession | null,
+): Promise<IChatSessionMessageDocument | null> => {
+  return ChatSessionMessage.findOneAndUpdate(
+    { _id: messageId },
+    { $push: { feedback: feedbackEntry } },
+    { new: true, session: mongoSession || undefined, runValidators: true },
+  );
+};
+
+/**
+ * Fetch a session's messages, `seq`-ordered (ascending = chronological,
+ * matching the old embedded array's order). `.lean()`, matching every
+ * existing read path. Short-circuits to `[]` when `limit <= 0` — MongoDB's
+ * own `.limit(0)` means "no limit", the opposite of what a zero-message
+ * page must return.
+ */
+export const getMessages = async (
+  sessionId: mongoose.Types.ObjectId | string,
+  options: {
+    skip?: number;
+    limit?: number;
+    populateCitations?: boolean;
+    sort?: 1 | -1;
+  } = {},
+  mongoSession?: ClientSession | null,
+): Promise<any[]> => {
+  const { skip = 0, limit, populateCitations = false, sort = 1 } = options;
+  if (limit !== undefined && limit <= 0) {
+    return [];
+  }
+  let query = ChatSessionMessage.find({ sessionId }).sort({ seq: sort });
+  if (skip) {
+    query = query.skip(skip);
+  }
+  if (limit !== undefined) {
+    query = query.limit(limit);
+  }
+  if (populateCitations) {
+    query = query.populate({
+      path: 'citations.citationId',
+      model: 'citation',
+      select: '-__v',
+    });
+  }
+  if (mongoSession) {
+    query = query.session(mongoSession);
+  }
+  return query.lean().exec();
+};
+
+/**
+ * Reconstruct the legacy `{...session, messages: [...]}` response shape
+ * from a session object and an already-fetched messages array. Pure and
+ * synchronous — this is the structural leakage guard for in-memory
+ * `.toObject()` results that never passed through a query projection:
+ * strips `nextSeq`/`sessionType` from the session and `sessionId`/`orgId`/
+ * `seq` from each message, neither of which is part of any documented
+ * response shape.
+ */
+export const attachMessages = (session: any, messages: any[]): any => {
+  const { nextSeq, sessionType, ...cleanSession } = session ?? {};
+  return {
+    ...cleanSession,
+    messages: (messages || []).map((message: any) => {
+      const { sessionId, orgId, seq, ...rest } = message;
+      return rest;
+    }),
+  };
+};
+
+/**
+ * Attach populated citation documents across ALL messages of a session.
  *
  * Earlier implementations built a lookup map from ONLY the newly-created
  * citations for the current response and then applied it to every message in
@@ -136,101 +359,97 @@ export const buildAIFailureResponseMessage = (): IMessage => ({
  * `getConversationById` path correctly populates citations).
  *
  * Strategy:
- *   1. Re-fetch the conversation with `populate` on every citationId across
- *      all messages (matches the GET path).
+ *   1. Re-fetch ALL of the session's messages with `populate` on every
+ *      citationId (matches the GET path).
  *   2. For each message citation, if populate resolved to a full Citation
  *      document, use it. Otherwise fall back to the newly-created
  *      `fallbackCitations` array (handles transactional edge cases where the
  *      just-saved citation isn't visible to a follow-up query).
+ *
+ * `fallbackMessages` (typically just the message(s) the caller had in hand
+ * from the write it just performed) is used instead of the fresh fetch when
+ * Mongoose isn't connected (unit tests — see the readyState guard below) or
+ * the fetch throws; it will not include older history in that case, which is
+ * an accepted gap for the disconnected/test-only path (see the Phase 1
+ * plan's "Known Phase 2 items").
  */
-export const attachPopulatedCitations = async <
-  T extends IConversation | IAgentConversation,
->(
-  conversationId: mongoose.Types.ObjectId | string | undefined,
-  updatedConversationObject: T,
+export const attachPopulatedCitations = async (
+  session: any,
+  fallbackMessages: any[],
   fallbackCitations: ICitation[],
-  isAgent: boolean,
-  session?: ClientSession | null,
-): Promise<T> => {
-  let plainConversation: T = updatedConversationObject;
+  mongoSession?: ClientSession | null,
+): Promise<any> => {
+  const sessionId = session?._id;
+  let messages = fallbackMessages;
 
   // Only attempt the populate round-trip when Mongoose is actually connected.
   // In unit tests (and any environment without an active DB connection) the
   // default Mongoose buffering would hang this call for ~10s before failing,
-  // which is both slow and unnecessary — the fallback branch below handles
-  // those cases using the newly-created citations.
+  // which is both slow and unnecessary — the fallback branch handles those
+  // cases using the caller-supplied messages.
   const isConnected = mongoose.connection?.readyState === 1;
 
-  if (conversationId && isConnected) {
+  if (sessionId && isConnected) {
     try {
-      const Model = isAgent ? AgentConversation : Conversation;
-      const query = (Model as any).findById(conversationId).populate({
-        path: 'messages.citations.citationId',
-        model: 'citation',
-        select: '-__v',
-      });
-      if (session) {
-        query.session(session);
-      }
-      const populated = await query.lean().exec();
-      if (populated) {
-        plainConversation = populated as T;
-      }
+      messages = await getMessages(
+        sessionId,
+        { populateCitations: true },
+        mongoSession,
+      );
     } catch (err: any) {
       logger.warn(
         'Failed to populate citations for conversation response; falling back to newly-created citations only',
-        { conversationId: conversationId?.toString(), error: err?.message },
+        { conversationId: sessionId?.toString(), error: err?.message },
       );
     }
   }
 
+  const attached = attachMessages(session, messages);
   return {
-    ...plainConversation,
-    messages: (plainConversation.messages as IMessage[]).map(
-      (message: IMessage) => ({
-        ...message,
-        citations:
-          message.citations?.map((citation: IMessageCitation) => {
-            // After populate, `citationId` is the full Citation document;
-            // otherwise it's still an ObjectId / string reference. We must
-            // explicitly exclude ObjectId here because some bson versions
-            // expose inherited properties that make a plain `'_id' in x`
-            // check truthy on an ObjectId.
-            const populated = citation.citationId as unknown as
-              | (ICitation & { _id?: mongoose.Types.ObjectId })
-              | mongoose.Types.ObjectId
-              | string
-              | undefined;
-            const isPopulatedCitationDoc =
-              !!populated &&
-              typeof populated === 'object' &&
-              !(populated instanceof mongoose.Types.ObjectId) &&
-              (populated as any)._bsontype !== 'ObjectId' &&
-              '_id' in populated;
-            if (isPopulatedCitationDoc) {
-              const doc = populated as ICitation & {
-                _id?: mongoose.Types.ObjectId;
-              };
-              return {
-                ...citation,
-                citationId: doc._id,
-                citationData: doc as ICitation,
-              };
-            }
-            // Fallback to the newly-created citations for this response.
+    ...attached,
+    messages: attached.messages.map((message: IMessage) => ({
+      ...message,
+      citations:
+        message.citations?.map((citation: IMessageCitation) => {
+          // After populate, `citationId` is the full Citation document;
+          // otherwise it's still an ObjectId / string reference. We must
+          // explicitly exclude ObjectId here because some bson versions
+          // expose inherited properties that make a plain `'_id' in x`
+          // check truthy on an ObjectId.
+          const populated = citation.citationId as unknown as
+            | (ICitation & { _id?: mongoose.Types.ObjectId })
+            | mongoose.Types.ObjectId
+            | string
+            | undefined;
+          const isPopulatedCitationDoc =
+            !!populated &&
+            typeof populated === 'object' &&
+            !(populated instanceof mongoose.Types.ObjectId) &&
+            (populated as any)._bsontype !== 'ObjectId' &&
+            '_id' in populated;
+          if (isPopulatedCitationDoc) {
+            const doc = populated as ICitation & {
+              _id?: mongoose.Types.ObjectId;
+            };
             return {
               ...citation,
-              citationData: citation.citationId
-                ? fallbackCitations.find(
-                    (c: ICitation) =>
-                      c._id?.toString() === citation.citationId?.toString(),
-                  )
-                : undefined,
+              citationId: doc._id,
+              citationData: doc as ICitation,
             };
-          }) || [],
-      }),
-    ),
-  } as T;
+          }
+          // Fallback to the newly-created citations for this response.
+          return {
+            ...citation,
+            citationData: citation.citationId
+              ? fallbackCitations.find(
+                  (c: ICitation) =>
+                    c._id?.toString() === citation.citationId?.toString(),
+                )
+              : undefined,
+          };
+        }) || [],
+    })),
+  };
 };
 
 export const buildAIResponseMessage = (
@@ -425,8 +644,13 @@ export const buildSortOptions = (req: AuthenticatedUserRequest) => {
   };
 };
 
-export const addComputedFields = (
-  conversation: IConversation | IConversationDocument,
+export const addComputedFields = <
+  T extends {
+    initiator: { toString(): string };
+    sharedWith?: Array<{ userId: { toString(): string }; accessLevel: string }>;
+  },
+>(
+  conversation: T,
   userId: string,
 ) => {
   return {
@@ -440,13 +664,19 @@ export const addComputedFields = (
 };
 
 /**
- * Base access filter for conversations / enterprise searches in list and
+ * Base access filter for chat sessions / enterprise searches in list and
  * by-id flows. Matches either:
  * - rows owned by this user (`userId`), or
  * - rows explicitly shared with this user (`isShared` and `sharedWith` contains
  *   their id).
  *
  * The shared branch uses `$and` so `isShared: true` alone does not grant access.
+ *
+ * `contentMatchIds`, when provided, ORs an `_id: {$in: ...}` clause into the
+ * search predicate alongside the title regex — see
+ * `findSessionIdsMatchingContent`. Callers that don't pass it (the 8
+ * `EnterpriseSemanticSearch` call sites, whose documents have no `messages`)
+ * get exactly today's title-only search behaviour.
  */
 export const buildFilter = (
   req: AuthenticatedUserRequest,
@@ -455,6 +685,7 @@ export const buildFilter = (
   id?: string, // conversationId or searchId
   owned: boolean = true,
   shared: boolean = true,
+  contentMatchIds?: mongoose.Types.ObjectId[],
 ) => {
   if (!owned && !shared) {
     throw new BadRequestError('Either owned or shared must be true');
@@ -485,28 +716,16 @@ export const buildFilter = (
   }
 
   // Handle search with XSS validation
-  // Use helper function to safely extract and validate search parameter
   if (req.query.search) {
-    const searchValue = extractSearchParameter(req.query.search);
-
-    // Validate search parameter for XSS
-    validateNoXSS(searchValue, 'search parameter');
-
-    // Additional validation: limit search length
-    if (searchValue.length > 1000) {
-      throw new BadRequestError(
-        'Search parameter too long (max 1000 characters)',
-      );
-    }
-
-    // Escape special regex characters to prevent regex injection
-    const escapedSearch = searchValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedSearch = validateAndEscapeSearch(req.query.search);
 
     filter.$and = [
       {
         $or: [
           { title: { $regex: escapedSearch, $options: 'i' } },
-          { 'messages.content': { $regex: escapedSearch, $options: 'i' } },
+          ...(contentMatchIds && contentMatchIds.length > 0
+            ? [{ _id: { $in: contentMatchIds } }]
+            : []),
         ],
       },
     ];
@@ -826,7 +1045,7 @@ export const buildMessageSortOptions = (
 };
 
 export const buildConversationResponse = (
-  conversation: IConversationDocument,
+  conversation: IChatSessionDocument,
   userId: string,
   pagination: {
     page: number;
@@ -888,7 +1107,7 @@ export const buildConversationResponse = (
 
 // Helper function to save complete conversation
 export const saveCompleteConversation = async (
-  conversation: IConversationDocument,
+  conversation: IChatSessionDocument,
   completeData: IAIResponse,
   orgId: string,
   session?: ClientSession | null,
@@ -916,10 +1135,18 @@ export const saveCompleteConversation = async (
       { data: completeData, statusCode: 200 },
       citations,
       modelInfo,
-    ) as IMessageDocument;
+    );
 
-    // Update conversation
-    conversation.messages.push(aiResponseMessage);
+    // Insert it before flipping the session to Complete — see "Ordering" in
+    // the Phase 1 plan: a crash between the two leaves a persisted message
+    // under a stale (Inprogress) status, which is recoverable.
+    const [insertedMessage] = await appendMessages(
+      conversation._id as mongoose.Types.ObjectId,
+      conversation.orgId,
+      [aiResponseMessage],
+      session,
+    );
+
     if (modelInfo) {
       const fieldsToUpdate: Array<keyof IAIModel> = [
         'modelKey',
@@ -949,10 +1176,9 @@ export const saveCompleteConversation = async (
     }
 
     return attachPopulatedCitations(
-      updatedConversation._id as mongoose.Types.ObjectId,
-      updatedConversation.toObject() as IConversation,
+      updatedConversation.toObject(),
+      [insertedMessage!.toObject()],
       citations,
-      false,
       session,
     );
   } catch (error: any) {
@@ -964,10 +1190,9 @@ export const saveCompleteConversation = async (
   }
 };
 
-// Helper function to mark conversation as failed
 // Helper function to add error to conversation errors array
 export const addErrorToConversation = (
-  conversation: IConversationDocument | IAgentConversationDocument,
+  conversation: IChatSessionDocument,
   errorMessage: string,
   errorType?: string,
   messageId?: mongoose.Types.ObjectId,
@@ -988,7 +1213,7 @@ export const addErrorToConversation = (
 };
 
 export const markConversationFailed = async (
-  conversation: IConversationDocument,
+  conversation: IChatSessionDocument,
   failReason: string,
   session?: ClientSession | null,
   errorType?: string,
@@ -996,6 +1221,16 @@ export const markConversationFailed = async (
   metadata?: Map<string, any>,
 ): Promise<void> => {
   try {
+    // Insert the failure message first — see "Ordering" in the Phase 1 plan.
+    const failedMessage = buildAIFailureResponseMessage();
+    failedMessage.content = failReason;
+    await appendMessages(
+      conversation._id as mongoose.Types.ObjectId,
+      conversation.orgId,
+      [failedMessage],
+      session,
+    );
+
     conversation.status = CONVERSATION_STATUS.FAILED;
     conversation.failReason = failReason;
     conversation.lastActivityAt = Date.now();
@@ -1009,12 +1244,6 @@ export const markConversationFailed = async (
       stack,
       metadata,
     );
-
-    // Add failure message
-    const failedMessage = buildAIFailureResponseMessage() as IMessageDocument;
-    // Update the error message content with the exact error
-    failedMessage.content = failReason;
-    conversation.messages.push(failedMessage);
 
     // Save failed conversation
     const savedWithError = session
@@ -1042,11 +1271,13 @@ export const markConversationFailed = async (
 };
 
 /**
- * Replace a message at a specific index with an error message (used for regeneration)
+ * Replace a message (identified by its `_id`) with an error message — used
+ * for regeneration. Positional (`messageIndex`) addressing no longer applies
+ * once messages live in their own collection.
  */
 export const replaceMessageWithError = async (
-  conversation: IConversationDocument | IAgentConversationDocument,
-  messageIndex: number,
+  conversation: IChatSessionDocument,
+  messageId: mongoose.Types.ObjectId | string,
   errorMessage: string,
   session?: ClientSession | null,
   errorType?: string,
@@ -1054,35 +1285,39 @@ export const replaceMessageWithError = async (
   metadata?: Map<string, any>,
 ): Promise<void> => {
   try {
-    if (messageIndex < 0 || messageIndex >= conversation.messages.length) {
-      throw new InternalServerError(
-        'Invalid message index for error replacement',
-      );
-    }
-
     conversation.status = CONVERSATION_STATUS.FAILED;
     conversation.failReason = errorMessage;
     conversation.lastActivityAt = Date.now();
 
+    const messageObjectId =
+      typeof messageId === 'string'
+        ? new mongoose.Types.ObjectId(messageId)
+        : messageId;
+
     // Add error to errors array
-    const originalMessage = conversation.messages[
-      messageIndex
-    ] as IMessageDocument;
     addErrorToConversation(
       conversation,
       errorMessage,
       errorType,
-      originalMessage._id as mongoose.Types.ObjectId,
+      messageObjectId,
       stack,
       metadata,
     );
 
-    // Replace the message at the specified index with error message
-    const failedMessage = buildAIFailureResponseMessage() as IMessageDocument;
+    // Replace the message with an error message, preserving its _id/seq
+    const failedMessage = buildAIFailureResponseMessage();
     failedMessage.content = errorMessage;
-    // Preserve the original message ID
-    failedMessage._id = originalMessage._id;
-    conversation.messages[messageIndex] = failedMessage;
+    const updatedMessage = await updateMessageById(
+      messageId,
+      failedMessage,
+      session,
+    );
+    if (!updatedMessage) {
+      logger.error('Failed to replace message with error: message not found', {
+        conversationId: conversation._id,
+        messageId,
+      });
+    }
 
     // Save updated conversation
     const savedWithError = session
@@ -1092,20 +1327,20 @@ export const replaceMessageWithError = async (
     if (!savedWithError) {
       logger.error('Failed to replace message with error', {
         conversationId: conversation._id,
-        messageIndex,
+        messageId,
         errorMessage,
       });
     }
 
     logger.debug('Message replaced with error', {
       conversationId: conversation._id,
-      messageIndex,
+      messageId,
       errorMessage,
     });
   } catch (error: any) {
     logger.error('Error replacing message with error', {
       conversationId: conversation._id,
-      messageIndex,
+      messageId,
       error: error.message,
     });
     throw error;
@@ -1116,7 +1351,7 @@ export const replaceMessageWithError = async (
  * Save complete agent conversation data to database
  */
 export const saveCompleteAgentConversation = async (
-  conversation: IAgentConversationDocument,
+  conversation: IChatSessionDocument,
   completeData: IAIResponse,
   orgId: string,
   session?: ClientSession | null,
@@ -1144,10 +1379,15 @@ export const saveCompleteAgentConversation = async (
       { data: completeData, statusCode: 200 },
       citations,
       modelInfo,
-    ) as IMessageDocument;
+    );
 
-    // Update conversation
-    conversation.messages.push(aiResponseMessage);
+    const [insertedMessage] = await appendMessages(
+      conversation._id as mongoose.Types.ObjectId,
+      conversation.orgId,
+      [aiResponseMessage],
+      session,
+    );
+
     if (modelInfo) {
       const fieldsToUpdate: Array<keyof IAIModel> = [
         'modelKey',
@@ -1177,10 +1417,9 @@ export const saveCompleteAgentConversation = async (
     }
 
     return attachPopulatedCitations(
-      updatedConversation._id as mongoose.Types.ObjectId,
-      updatedConversation.toObject() as IAgentConversation,
+      updatedConversation.toObject(),
+      [insertedMessage!.toObject()],
       citations,
-      true,
       session,
     );
   } catch (error: any) {
@@ -1197,7 +1436,7 @@ export const saveCompleteAgentConversation = async (
  * Mark agent conversation as failed
  */
 export const markAgentConversationFailed = async (
-  conversation: IAgentConversationDocument,
+  conversation: IChatSessionDocument,
   failReason: string,
   session?: ClientSession | null,
   errorType?: string,
@@ -1205,6 +1444,14 @@ export const markAgentConversationFailed = async (
   metadata?: Map<string, any>,
 ): Promise<void> => {
   try {
+    const failedMessage = buildAIFailureResponseMessage();
+    await appendMessages(
+      conversation._id as mongoose.Types.ObjectId,
+      conversation.orgId,
+      [failedMessage],
+      session,
+    );
+
     conversation.status = CONVERSATION_STATUS.FAILED;
     conversation.failReason = failReason;
     conversation.lastActivityAt = Date.now();
@@ -1217,10 +1464,6 @@ export const markAgentConversationFailed = async (
       stack,
       metadata,
     );
-
-    // Add failure message
-    const failedMessage = buildAIFailureResponseMessage() as IMessageDocument;
-    conversation.messages.push(failedMessage);
 
     // Save failed conversation
     const savedWithError = session
@@ -1251,17 +1494,20 @@ export const markAgentConversationFailed = async (
 };
 
 /**
- * Build filter for agent conversations
+ * Build filter for agent conversations. `ONLY_AGENT` is applied here (in
+ * addition to always requiring a concrete `agentKey`) as defense-in-depth
+ * now that agent and plain-chat sessions share one collection.
  */
-
 export const buildAgentConversationFilter = (
   req: any,
   orgId: string,
   userId: string,
   agentKey: string,
   conversationId?: string,
+  contentMatchIds?: mongoose.Types.ObjectId[],
 ) => {
   const filter: any = {
+    ...ONLY_AGENT,
     agentKey,
     orgId: new mongoose.Types.ObjectId(orgId),
     $or: [{ userId: new mongoose.Types.ObjectId(userId) }],
@@ -1273,29 +1519,18 @@ export const buildAgentConversationFilter = (
   }
 
   // Handle search with XSS and format string validation
-  // Use helper function to safely extract and validate search parameter
   if (req.query.search) {
-    const searchValue = extractSearchParameter(req.query.search);
-
-    // Validate search parameter for XSS and format specifiers
-    validateNoXSS(searchValue, 'search parameter');
-    validateNoFormatSpecifiers(searchValue, 'search parameter');
-
-    // Additional validation: limit search length
-    if (searchValue.length > 1000) {
-      throw new BadRequestError(
-        'Search parameter too long (max 1000 characters)',
-      );
-    }
-
-    // Escape special regex characters to prevent regex injection
-    const escapedSearch = searchValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedSearch = validateAndEscapeSearch(req.query.search, {
+      formatSpecifiers: true,
+    });
 
     filter.$and = [
       {
         $or: [
           { title: { $regex: escapedSearch, $options: 'i' } },
-          { 'messages.content': { $regex: escapedSearch, $options: 'i' } },
+          ...(contentMatchIds && contentMatchIds.length > 0
+            ? [{ _id: { $in: contentMatchIds } }]
+            : []),
         ],
       },
     ];
@@ -1344,6 +1579,7 @@ export const buildAgentSharedWithMeFilter = (
   agentKey: string,
 ) => {
   const filter: any = {
+    ...ONLY_AGENT,
     agentKey,
     orgId: new mongoose.Types.ObjectId(orgId),
     isDeleted: false,
@@ -1361,32 +1597,6 @@ export const buildAgentSharedWithMeFilter = (
   }
 
   return filter;
-};
-
-/**
- * Add computed fields for agent conversations
- */
-export const addAgentConversationComputedFields = (
-  conversation: any,
-  userId: string,
-) => {
-  return {
-    ...conversation,
-    isOwner: conversation.userId?.toString() === userId?.toString(),
-    canEdit:
-      conversation.userId?.toString() === userId?.toString() ||
-      conversation.sharedWith?.some(
-        (share: any) =>
-          share.userId?.toString() === userId?.toString() &&
-          share.accessLevel === 'write',
-      ),
-    canView: true, // User can view if they got this conversation in results
-    messageCount: conversation.messages?.length || 0,
-    lastMessage:
-      conversation.messages?.length > 0
-        ? conversation.messages[conversation.messages.length - 1]
-        : null,
-  };
 };
 
 /**
@@ -1410,9 +1620,10 @@ export const validateAgentConversationAccess = async (
   userId: string,
   orgId: string,
   accessLevel: 'read' | 'write' = 'read',
-): Promise<IAgentConversationDocument | null> => {
+): Promise<IChatSessionDocument | null> => {
   try {
-    const conversation = await AgentConversation.findOne({
+    const conversation = await ChatSession.findOne({
+      ...ONLY_AGENT,
       _id: conversationId,
       agentKey,
       orgId,
@@ -1441,192 +1652,6 @@ export const validateAgentConversationAccess = async (
 };
 
 /**
- * Get agent conversation statistics
- */
-export const getAgentConversationStats = async (
-  agentKey: string,
-  orgId: string,
-  userId: string,
-) => {
-  try {
-    const stats = await AgentConversation.aggregate([
-      {
-        $match: {
-          agentKey,
-          orgId,
-          userId,
-          isDeleted: false,
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          totalConversations: { $sum: 1 },
-          completedConversations: {
-            $sum: { $cond: [{ $eq: ['$status', 'Complete'] }, 1, 0] },
-          },
-          failedConversations: {
-            $sum: { $cond: [{ $eq: ['$status', 'Failed'] }, 1, 0] },
-          },
-          inProgressConversations: {
-            $sum: { $cond: [{ $eq: ['$status', 'Inprogress'] }, 1, 0] },
-          },
-          totalMessages: { $sum: { $size: '$messages' } },
-          avgMessagesPerConversation: { $avg: { $size: '$messages' } },
-          lastActivity: { $max: '$lastActivityAt' },
-        },
-      },
-    ]);
-
-    return (
-      stats[0] || {
-        totalConversations: 0,
-        completedConversations: 0,
-        failedConversations: 0,
-        inProgressConversations: 0,
-        totalMessages: 0,
-        avgMessagesPerConversation: 0,
-        lastActivity: null,
-      }
-    );
-  } catch (error: any) {
-    logger.error('Error getting agent conversation stats', {
-      agentKey,
-      orgId,
-      userId,
-      error: error.message,
-    });
-    throw error;
-  }
-};
-
-/**
- * Search agent conversations
- */
-export const searchAgentConversations = async (
-  agentKey: string,
-  orgId: string,
-  userId: string,
-  searchQuery: string,
-  options: {
-    page?: number;
-    limit?: number;
-    sortBy?: string;
-    sortOrder?: 'asc' | 'desc';
-  } = {},
-) => {
-  try {
-    const {
-      page = 1,
-      limit = 20,
-      sortBy = 'lastActivityAt',
-      sortOrder = 'desc',
-    } = options;
-
-    const skip = (page - 1) * limit;
-    const sort: any = {};
-    sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
-
-    const searchFilter = {
-      agentKey,
-      orgId,
-      userId,
-      isDeleted: false,
-      $or: [
-        { title: { $regex: searchQuery, $options: 'i' } },
-        { 'messages.content': { $regex: searchQuery, $options: 'i' } },
-      ],
-    };
-
-    const [conversations, totalCount] = await Promise.all([
-      AgentConversation.find(searchFilter)
-        .sort(sort)
-        .skip(skip)
-        .limit(limit)
-        .select('-messages') // Exclude messages for list view
-        .lean()
-        .exec(),
-      AgentConversation.countDocuments(searchFilter),
-    ]);
-
-    return {
-      conversations: conversations.map((conv) =>
-        addAgentConversationComputedFields(conv, userId),
-      ),
-      pagination: {
-        page,
-        limit,
-        total: totalCount,
-        pages: Math.ceil(totalCount / limit),
-        hasNextPage: page < Math.ceil(totalCount / limit),
-        hasPrevPage: page > 1,
-      },
-      searchQuery,
-    };
-  } catch (error: any) {
-    logger.error('Error searching agent conversations', {
-      agentKey,
-      orgId,
-      userId,
-      searchQuery,
-      error: error.message,
-    });
-    throw error;
-  }
-};
-
-/**
- * Archive/Unarchive agent conversation
- */
-export const toggleAgentConversationArchive = async (
-  conversationId: string,
-  agentKey: string,
-  userId: string,
-  orgId: string,
-  archive: boolean,
-): Promise<IAgentConversationDocument | null> => {
-  try {
-    const conversation = await validateAgentConversationAccess(
-      conversationId,
-      agentKey,
-      userId,
-      orgId,
-      'write',
-    );
-
-    if (!conversation) {
-      return null;
-    }
-
-    conversation.isArchived = archive;
-    conversation.archivedBy = archive ? (userId as any) : undefined;
-    conversation.lastActivityAt = Date.now();
-
-    const updatedConversation = await conversation.save();
-
-    logger.debug(`Agent conversation ${archive ? 'archived' : 'unarchived'}`, {
-      conversationId,
-      agentKey,
-      userId,
-      archived: archive,
-    });
-
-    return updatedConversation;
-  } catch (error: any) {
-    logger.error(
-      `Error ${archive ? 'archiving' : 'unarchiving'} agent conversation`,
-      {
-        conversationId,
-        agentKey,
-        userId,
-        error: error.message,
-      },
-    );
-    throw error;
-  }
-};
-
-/**
  * Delete agent conversation (soft delete)
  */
 export const deleteAgentConversation = async (
@@ -1634,7 +1659,7 @@ export const deleteAgentConversation = async (
   agentKey: string,
   userId: string,
   orgId: string,
-): Promise<IAgentConversationDocument | null> => {
+): Promise<IChatSessionDocument | null> => {
   try {
     const conversation = await validateAgentConversationAccess(
       conversationId,
@@ -1775,15 +1800,13 @@ export const sendSSECompleteEvent = (
 export const handleRegenerationStreamData = (
   chunk: Buffer,
   buffer: string,
-  existingConversation:
-    | IConversationDocument
-    | IAgentConversationDocument
-    | null,
-  messageIndex: number,
+  existingConversation: IChatSessionDocument | null,
+  messageId: mongoose.Types.ObjectId | string | null,
   session: ClientSession | null,
   requestId: string,
   res: Response,
   onCompleteData: (data: IAIResponse) => void,
+  isAgentSession: boolean,
   protocol?: SSEProtocol,
 ): string => {
   const chunkStr = chunk.toString();
@@ -1825,11 +1848,11 @@ export const handleRegenerationStreamData = (
       } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
         try {
           const errorData = JSON.parse(dataLine);
-          if (existingConversation && messageIndex >= 0) {
+          if (existingConversation && messageId) {
             const errorMessage = errorData.message || 'Unknown error occurred';
             replaceMessageWithError(
               existingConversation,
-              messageIndex,
+              messageId,
               errorMessage,
               session,
               'streaming_error',
@@ -1871,10 +1894,11 @@ export const handleRegenerationStreamData = (
               createdAt: new Date(),
               updatedAt: new Date(),
             };
-            if ('agentKey' in existingConversation) {
-              void AgentConversation.findByIdAndUpdate(
-                existingConversation._id,
-                { $push: { messages: toolCallMessage } },
+            if (isAgentSession) {
+              void appendMessages(
+                existingConversation._id as mongoose.Types.ObjectId,
+                existingConversation.orgId,
+                [toolCallMessage],
               ).catch((saveErr: any) => {
                 logger.error(
                   'Failed to persist ask_user_question tool_call message during regenerate',
@@ -1909,12 +1933,12 @@ export const handleRegenerationStreamData = (
       } else if (!agui && eventType === 'error' && dataLine) {
         try {
           const errorData = JSON.parse(dataLine);
-          if (existingConversation && messageIndex >= 0) {
+          if (existingConversation && messageId) {
             const errorMessage =
               errorData.error || errorData.message || 'Unknown error occurred';
             replaceMessageWithError(
               existingConversation,
-              messageIndex,
+              messageId,
               errorMessage,
               session,
               'streaming_error',
@@ -1936,11 +1960,11 @@ export const handleRegenerationStreamData = (
             parseError: parseError.message,
             dataLine,
           });
-          if (existingConversation && messageIndex >= 0) {
+          if (existingConversation && messageId) {
             const errorMessage = `Failed to parse error event: ${parseError.message}`;
             replaceMessageWithError(
               existingConversation,
-              messageIndex,
+              messageId,
               errorMessage,
               session,
               'parse_error',
@@ -1978,10 +2002,11 @@ export const handleRegenerationStreamData = (
               createdAt: new Date(),
               updatedAt: new Date(),
             };
-            if ('agentKey' in existingConversation) {
-              void AgentConversation.findByIdAndUpdate(
-                existingConversation._id,
-                { $push: { messages: toolCallMessage } },
+            if (isAgentSession) {
+              void appendMessages(
+                existingConversation._id as mongoose.Types.ObjectId,
+                existingConversation.orgId,
+                [toolCallMessage],
               ).catch((saveErr: any) => {
                 logger.error(
                   'Failed to persist ask_user_question tool_call message during regenerate',
@@ -2023,8 +2048,8 @@ export const handleRegenerationStreamData = (
  */
 export const handleRegenerationSuccess = async (
   completeData: IAIResponse,
-  existingConversation: IConversationDocument | IAgentConversationDocument,
-  messageIndex: number,
+  existingConversation: IChatSessionDocument,
+  messageId: mongoose.Types.ObjectId | string,
   orgId: string,
   session: ClientSession | null,
   modelInfo?: IAIModel,
@@ -2048,18 +2073,24 @@ export const handleRegenerationSuccess = async (
     }) || [],
   );
 
-  // Build AI response message
+  // Build AI response message and replace the original message with it,
+  // preserving the original's _id/seq (see updateMessageById).
   const aiResponseMessage = buildAIResponseMessage(
     { statusCode: 200, data: completeData },
     savedCitations,
     modelInfo,
-  ) as IMessageDocument;
+  );
 
-  // Preserve the original message ID
-  const originalMessage = existingConversation.messages[
-    messageIndex
-  ] as IMessageDocument;
-  aiResponseMessage._id = originalMessage._id;
+  const updatedMessage = await updateMessageById(
+    messageId,
+    aiResponseMessage,
+    session,
+  );
+  if (!updatedMessage) {
+    throw new InternalServerError(
+      'Failed to update conversation with regenerated response: message not found',
+    );
+  }
 
   if (modelInfo) {
     const fieldsToUpdate: Array<keyof IAIModel> = [
@@ -2078,8 +2109,6 @@ export const handleRegenerationSuccess = async (
     }
   }
 
-  // Update the conversation with the new message at the same index
-  existingConversation.messages[messageIndex] = aiResponseMessage;
   existingConversation.lastActivityAt = Date.now();
   existingConversation.status = CONVERSATION_STATUS.COMPLETE;
 
@@ -2097,13 +2126,10 @@ export const handleRegenerationSuccess = async (
   // Populate citationData across ALL messages so the frontend can rebuild its
   // citationMaps for the entire conversation. Otherwise previous messages lose
   // inline citation chips (see attachPopulatedCitations docstring).
-  const isAgent =
-    (updatedConversation as IAgentConversationDocument).agentKey !== undefined;
   const responseConversation = await attachPopulatedCitations(
-    updatedConversation._id as mongoose.Types.ObjectId,
-    updatedConversation.toObject() as IConversation | IAgentConversation,
+    updatedConversation.toObject(),
+    [updatedMessage.toObject()],
     savedCitations,
-    isAgent,
     session,
   );
 
@@ -2119,11 +2145,8 @@ export const handleRegenerationSuccess = async (
 export const handleRegenerationError = async (
   res: Response,
   error: Error | any,
-  existingConversation:
-    | IConversationDocument
-    | IAgentConversationDocument
-    | null,
-  messageIndex: number,
+  existingConversation: IChatSessionDocument | null,
+  messageId: mongoose.Types.ObjectId | string | null,
   conversationId: string,
   session: ClientSession | null,
   requestId: string,
@@ -2132,30 +2155,29 @@ export const handleRegenerationError = async (
 ): Promise<void> => {
   const errorMessage = error.message || 'Unknown error occurred';
 
-  if (existingConversation && messageIndex >= 0) {
+  if (existingConversation && messageId) {
     try {
       await replaceMessageWithError(
         existingConversation,
-        messageIndex,
+        messageId,
         errorMessage,
         session,
         errorType,
         error.stack,
       );
 
-      // Determine the model type from the conversation object itself
-      // Check if it's an AgentConversation by looking for agentKey property
-      // or by checking the constructor
-      const isAgentConversation =
-        'agentKey' in existingConversation ||
-        existingConversation.constructor === AgentConversation;
-
-      // Reload conversation to get updated state using the appropriate model
-      const updatedConversation = isAgentConversation
-        ? await AgentConversation.findById(conversationId)
-        : await Conversation.findById(conversationId);
+      // Reload conversation to get updated state
+      const updatedConversation = await ChatSession.findById(conversationId);
       if (updatedConversation) {
-        const plainConversation = updatedConversation.toObject();
+        const messages = await getMessages(
+          updatedConversation._id as mongoose.Types.ObjectId,
+          {},
+          session,
+        );
+        const plainConversation = attachMessages(
+          updatedConversation.toObject(),
+          messages,
+        );
         await sendSSEErrorEvent(
           res,
           errorMessage,

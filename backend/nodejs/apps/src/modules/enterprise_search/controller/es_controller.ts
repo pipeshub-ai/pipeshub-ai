@@ -47,13 +47,15 @@ import {
   IAgentConversation,
   IAIModel,
   IAIResponse,
-  IConversationDocument,
+  IChatSession,
+  IChatSessionDocument,
   IMessage,
   IMessageCitation,
   IMessageDocument,
 } from '../types/conversation.interfaces';
 import { IConversation } from '../types/conversation.interfaces';
-import { Conversation } from '../schema/conversation.schema';
+import { ChatSession } from '../schema/chat.session.schema';
+import { ChatSessionMessage } from '../schema/chat.session.message.schema';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import {
   addComputedFields,
@@ -71,6 +73,12 @@ import {
   getPaginationParams,
   sortMessages,
   attachPopulatedCitations,
+  appendMessages,
+  getMessages,
+  attachMessages,
+  appendMessageFeedback,
+  findSessionIdsMatchingContent,
+  validateAndEscapeSearch,
 } from '../utils/utils';
 import {
   AGUIEventType,
@@ -88,11 +96,11 @@ import Citation, {
   AiSearchResponse,
   ICitation,
 } from '../schema/citation.schema';
-import { CONVERSATION_STATUS } from '../constants/constants';
 import {
-  AgentConversation,
-  IAgentConversationDocument,
-} from '../schema/agent.conversation.schema';
+  CONVERSATION_STATUS,
+  EXCLUDE_AGENT,
+  ONLY_AGENT,
+} from '../constants/constants';
 import { Users } from '../../user_management/schema/users.schema';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
@@ -784,7 +792,7 @@ export const streamChat =
     const orgId = req.user?.orgId;
 
     let session: ClientSession | null = null;
-    let savedConversation: IConversationDocument | null = null;
+    let savedConversation: IChatSessionDocument | null = null;
 
     const modelInfo = extractModelInfo(req.body);
     const protocol = resolveProtocol(
@@ -815,28 +823,39 @@ export const streamChat =
         req.body.attachments,
       );
 
-      const userConversationData: Partial<IConversation> = {
+      const userConversationData: Partial<IChatSession> = {
         orgId,
         userId,
         initiator: userId,
         title: req.body.query.slice(0, 100),
-        messages: [userQueryMessage] as IMessageDocument[],
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
         // Store model and mode information
         modelInfo: modelInfo,
+        sessionType: 'chat',
       };
 
       // Start transaction if replica set is available
       if (rsAvailable) {
         session = await mongoose.startSession();
         await session.withTransaction(async () => {
-          const conversation = new Conversation(userConversationData);
+          const conversation = new ChatSession(userConversationData);
           savedConversation = await conversation.save({ session });
+          await appendMessages(
+            savedConversation._id as mongoose.Types.ObjectId,
+            orgId as mongoose.Types.ObjectId,
+            [userQueryMessage],
+            session,
+          );
         });
       } else {
-        const conversation = new Conversation(userConversationData);
+        const conversation = new ChatSession(userConversationData);
         savedConversation = await conversation.save();
+        await appendMessages(
+          savedConversation._id as mongoose.Types.ObjectId,
+          orgId as mongoose.Types.ObjectId,
+          [userQueryMessage],
+        );
       }
 
       if (!savedConversation) {
@@ -990,7 +1009,7 @@ export const streamChat =
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
                   void markConversationFailed(
-                    savedConversation as IConversationDocument,
+                    savedConversation,
                     errorMessage,
                     session,
                     'streaming_error',
@@ -1045,7 +1064,7 @@ export const streamChat =
                       ? new Map(Object.entries(errorData.metadata as Record<string, unknown>))
                       : undefined;
                   void markConversationFailed(
-                    savedConversation as IConversationDocument,
+                    savedConversation,
                     errorMessage,
                     session,
                     'streaming_error',
@@ -1069,7 +1088,7 @@ export const streamChat =
                 if (savedConversation) {
                   const parseFailMsg = `Failed to parse error event: ${parseError.message}`;
                   void markConversationFailed(
-                    savedConversation as IConversationDocument,
+                    savedConversation,
                     parseFailMsg,
                     session,
                     'parse_error',
@@ -1097,9 +1116,10 @@ export const streamChat =
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
-                  void Conversation.findByIdAndUpdate(
-                    savedConversation._id,
-                    { $push: { messages: toolCallMessage } },
+                  void appendMessages(
+                    savedConversation._id as mongoose.Types.ObjectId,
+                    savedConversation.orgId,
+                    [toolCallMessage],
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
                       requestId,
@@ -1129,9 +1149,10 @@ export const streamChat =
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
-                  void Conversation.findByIdAndUpdate(
-                    savedConversation._id,
-                    { $push: { messages: toolCallMessage } },
+                  void appendMessages(
+                    savedConversation._id as mongoose.Types.ObjectId,
+                    savedConversation.orgId,
+                    [toolCallMessage],
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
                       requestId,
@@ -1201,12 +1222,14 @@ export const streamChat =
             );
           } else if (!upstreamAiErrorEventForwarded) {
             // Mark as failed if no complete data received (and AI did not already send error SSE)
-            await markConversationFailed(
-              savedConversation as IConversationDocument,
-              'No complete response received from AI service',
-              session,
-              'incomplete_response',
-            );
+            if (savedConversation) {
+              await markConversationFailed(
+                savedConversation,
+                'No complete response received from AI service',
+                session,
+                'incomplete_response',
+              );
+            }
 
             // Send error event
             res.write(
@@ -1229,7 +1252,7 @@ export const streamChat =
 
           if (savedConversation) {
             await markConversationFailed(
-              savedConversation as IConversationDocument,
+              savedConversation,
               `Failed to save conversation: ${dbError.message}`,
               session,
               'database_error',
@@ -1260,7 +1283,7 @@ export const streamChat =
           // Mark conversation as failed
           if (savedConversation) {
             await markConversationFailed(
-              savedConversation as IConversationDocument,
+              savedConversation,
               `Stream error: ${error.message}`,
               session,
               'stream_error',
@@ -1294,7 +1317,7 @@ export const streamChat =
         // Mark conversation as failed if it was created
         if (savedConversation) {
           await markConversationFailed(
-            savedConversation as IConversationDocument,
+            savedConversation,
             error.message || 'Internal server error',
             session,
             'internal_error',
@@ -1452,24 +1475,30 @@ export const createConversation =
         req.body.attachments,
       );
 
-      const userConversationData: Partial<IConversation> = {
+      const userConversationData: Partial<IChatSession> = {
         orgId,
         userId,
         initiator: userId,
         title: req.body.query.slice(0, 100),
-        messages: [userQueryMessage] as IMessageDocument[],
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
         modelInfo: modelInfo,
+        sessionType: 'chat',
       };
 
-      const conversation = new Conversation(userConversationData);
+      const conversation = new ChatSession(userConversationData);
       const savedConversation = session
         ? await conversation.save({ session })
         : await conversation.save();
       if (!savedConversation) {
         throw new InternalServerError('Failed to create conversation');
       }
+      await appendMessages(
+        savedConversation._id as mongoose.Types.ObjectId,
+        savedConversation.orgId,
+        [userQueryMessage],
+        session,
+      );
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/chat`,
@@ -1540,9 +1569,14 @@ export const createConversation =
           aiResponseData,
           citations,
           modelInfo,
-        ) as IMessageDocument;
+        );
         // Add the AI message to the conversation
-        savedConversation.messages.push(aiResponseMessage);
+        const [insertedAiMessage] = await appendMessages(
+          savedConversation._id as mongoose.Types.ObjectId,
+          savedConversation.orgId,
+          [aiResponseMessage],
+          session,
+        );
         savedConversation.lastActivityAt = Date.now();
         savedConversation.status = CONVERSATION_STATUS.COMPLETE; // Successful conversation
 
@@ -1554,10 +1588,9 @@ export const createConversation =
           throw new InternalServerError('Failed to update conversation');
         }
         const responseConversation = await attachPopulatedCitations(
-          updatedConversation._id as mongoose.Types.ObjectId,
-          updatedConversation.toObject() as IConversation,
+          updatedConversation.toObject(),
+          [insertedAiMessage!.toObject()],
           citations,
-          false,
           session,
         );
         return {
@@ -1578,9 +1611,13 @@ export const createConversation =
             error.message || 'Unknown error occurred';
         }
         // persist and serve the error message to the user.
-        const failedMessage =
-          buildAIFailureResponseMessage() as IMessageDocument;
-        savedConversation.messages.push(failedMessage);
+        const failedMessage = buildAIFailureResponseMessage();
+        await appendMessages(
+          savedConversation._id as mongoose.Types.ObjectId,
+          savedConversation.orgId,
+          [failedMessage],
+          session,
+        );
         savedConversation.lastActivityAt = Date.now();
 
         const savedWithError = session
@@ -1744,11 +1781,12 @@ export const addMessage =
       // Extract common operations into a helper function.
       async function performAddMessage(session?: ClientSession | null) {
         // Get existing conversation
-        const conversation = await Conversation.findOne({
+        const conversation = await ChatSession.findOne({
           _id: req.params.conversationId,
           orgId,
           userId,
           isDeleted: false,
+          ...EXCLUDE_AGENT,
         });
 
         if (!conversation) {
@@ -1763,7 +1801,11 @@ export const addMessage =
         // in case of bot_response message
         // Format previous conversations for context
         const previousConversations = formatPreviousConversations(
-          conversation.messages,
+          (await getMessages(
+            conversation._id as mongoose.Types.ObjectId,
+            {},
+            session,
+          )) as IMessage[],
         );
         logger.debug('Previous conversations', {
           previousConversations,
@@ -1776,7 +1818,12 @@ export const addMessage =
           req.body.attachments,
         );
         // First, add the user message to the existing conversation
-        conversation.messages.push(userQueryMessage as IMessageDocument);
+        await appendMessages(
+          conversation._id as mongoose.Types.ObjectId,
+          conversation.orgId,
+          [userQueryMessage],
+          session,
+        );
         conversation.lastActivityAt = Date.now();
 
         // Save the user message to the existing conversation first
@@ -1892,9 +1939,14 @@ export const addMessage =
             aiResponseData,
             savedCitations,
             modelInfo,
-          ) as IMessageDocument;
+          );
           // Add the AI message to the existing conversation
-          savedConversation.messages.push(aiResponseMessage);
+          const [insertedAiMessage] = await appendMessages(
+            savedConversation._id as mongoose.Types.ObjectId,
+            savedConversation.orgId,
+            [aiResponseMessage],
+            session,
+          );
           savedConversation.lastActivityAt = Date.now();
           savedConversation.status = CONVERSATION_STATUS.COMPLETE;
 
@@ -1911,10 +1963,9 @@ export const addMessage =
 
           // Return the updated conversation with new messages.
           const responseConversation = await attachPopulatedCitations(
-            updatedConversation._id as mongoose.Types.ObjectId,
-            updatedConversation.toObject() as IConversation,
+            updatedConversation.toObject(),
+            [insertedAiMessage!.toObject()],
             savedCitations,
-            false,
             session,
           );
           return {
@@ -1930,9 +1981,13 @@ export const addMessage =
           conversation.failReason = error.message || 'Unknown error occurred';
 
           // persist and serve the error message to the user.
-          const failedMessage =
-            buildAIFailureResponseMessage() as IMessageDocument;
-          conversation.messages.push(failedMessage);
+          const failedMessage = buildAIFailureResponseMessage();
+          await appendMessages(
+            conversation._id as mongoose.Types.ObjectId,
+            conversation.orgId,
+            [failedMessage],
+            session,
+          );
           conversation.lastActivityAt = Date.now();
           const saveGeneralError = session
             ? await conversation.save({ session })
@@ -2011,7 +2066,7 @@ export const addMessageStream =
     const { conversationId } = req.params;
 
     let session: ClientSession | null = null;
-    let existingConversation: IConversationDocument | null = null;
+    let existingConversation: IChatSessionDocument | null = null;
 
     const modelInfo = extractModelInfo(req.body);
     const protocol = resolveProtocol(
@@ -2028,11 +2083,12 @@ export const addMessageStream =
       session?: ClientSession | null,
     ): Promise<void> {
       // Get existing conversation
-      const conversation = await Conversation.findOne({
+      const conversation = await ChatSession.findOne({
         _id: conversationId,
         orgId,
         userId,
         isDeleted: false,
+        ...EXCLUDE_AGENT,
       });
 
       if (!conversation) {
@@ -2060,13 +2116,18 @@ export const addMessageStream =
       }
 
       // First, add the user message to the existing conversation
-      conversation.messages.push(
-        buildUserQueryMessage(
-          req.body.query,
-          req.body.appliedFilters,
-          req.body.chatMode,
-          req.body.attachments,
-        ) as IMessageDocument,
+      await appendMessages(
+        conversation._id as mongoose.Types.ObjectId,
+        conversation.orgId,
+        [
+          buildUserQueryMessage(
+            req.body.query,
+            req.body.appliedFilters,
+            req.body.chatMode,
+            req.body.attachments,
+          ),
+        ],
+        session,
       );
       conversation.lastActivityAt = Date.now();
 
@@ -2132,13 +2193,16 @@ export const addMessageStream =
       if (!existingConversation) {
         throw new NotFoundError('Conversation not found');
       }
+      const confirmedConversation = existingConversation as IChatSessionDocument;
 
       // Format previous conversations for context (excluding the user message we just added)
+      const allMessagesSoFar = (await getMessages(
+        confirmedConversation._id as mongoose.Types.ObjectId,
+        {},
+        session,
+      )) as IMessage[];
       const previousConversations = formatPreviousConversations(
-        (existingConversation as IConversationDocument).messages.slice(
-          0,
-          -1,
-        ) as IMessage[],
+        allMessagesSoFar.slice(0, -1),
       );
 
       const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
@@ -2254,18 +2318,20 @@ export const addMessageStream =
                 const errorData = JSON.parse(dataLine);
                 const errorMessage = errorData.message || 'Unknown error occurred';
                 upstreamAiErrorEventForwarded = true;
-                void markConversationFailed(
-                  existingConversation as IConversationDocument,
-                  errorMessage,
-                  session,
-                  'streaming_error',
-                  errorData.stack,
-                ).catch((markErr: any) => {
-                  logger.error('Failed to mark conversation from AI RUN_ERROR SSE', {
-                    requestId,
-                    error: markErr?.message,
+                if (existingConversation) {
+                  void markConversationFailed(
+                    existingConversation,
+                    errorMessage,
+                    session,
+                    'streaming_error',
+                    errorData.stack,
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark conversation from AI RUN_ERROR SSE', {
+                      requestId,
+                      error: markErr?.message,
+                    });
                   });
-                });
+                }
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
                 logger.error('Failed to parse RUN_ERROR event data', {
@@ -2303,21 +2369,23 @@ export const addMessageStream =
                   errorData.error ||
                   'Unknown error occurred';
                 upstreamAiErrorEventForwarded = true;
-                void markConversationFailed(
-                  existingConversation as IConversationDocument,
-                  errorMessage,
-                  session,
-                  'streaming_error',
-                  errorData.stack,
-                  errorData.metadata
-                    ? new Map(Object.entries(errorData.metadata))
-                    : undefined,
-                ).catch((markErr: any) => {
-                  logger.error('Failed to mark conversation from AI error SSE', {
-                    requestId,
-                    error: markErr?.message,
+                if (existingConversation) {
+                  void markConversationFailed(
+                    existingConversation,
+                    errorMessage,
+                    session,
+                    'streaming_error',
+                    errorData.stack,
+                    errorData.metadata
+                      ? new Map(Object.entries(errorData.metadata))
+                      : undefined,
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark conversation from AI error SSE', {
+                      requestId,
+                      error: markErr?.message,
+                    });
                   });
-                });
+                }
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
                 logger.error('Failed to parse error event data', {
@@ -2329,7 +2397,7 @@ export const addMessageStream =
                 const errorMessage = `Failed to parse error event: ${parseError.message}`;
                 if (existingConversation) {
                   void markConversationFailed(
-                    existingConversation as IConversationDocument,
+                    existingConversation,
                     errorMessage,
                     session,
                     'parse_error',
@@ -2357,9 +2425,11 @@ export const addMessageStream =
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
-                  void Conversation.findByIdAndUpdate(
-                    existingConversation._id,
-                    { $push: { messages: toolCallMessage } },
+                  void appendMessages(
+                    existingConversation._id as mongoose.Types.ObjectId,
+                    existingConversation.orgId,
+                    [toolCallMessage as unknown as IMessage],
+                    session,
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
                       requestId,
@@ -2389,9 +2459,11 @@ export const addMessageStream =
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
-                  void Conversation.findByIdAndUpdate(
-                    existingConversation._id,
-                    { $push: { messages: toolCallMessage } },
+                  void appendMessages(
+                    existingConversation._id as mongoose.Types.ObjectId,
+                    existingConversation.orgId,
+                    [toolCallMessage as unknown as IMessage],
+                    session,
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
                       requestId,
@@ -2451,7 +2523,14 @@ export const addMessageStream =
               ) as IMessageDocument;
 
               // Add the AI message to the existing conversation
-              existingConversation.messages.push(aiResponseMessage);
+              const insertedAiMessage = (
+                await appendMessages(
+                  existingConversation._id as mongoose.Types.ObjectId,
+                  existingConversation.orgId,
+                  [aiResponseMessage],
+                  session,
+                )
+              )[0];
               existingConversation.lastActivityAt = Date.now();
               existingConversation.status = CONVERSATION_STATUS.COMPLETE;
 
@@ -2468,10 +2547,9 @@ export const addMessageStream =
 
               // Return the updated conversation in the same format as addMessage
               const responseConversation = await attachPopulatedCitations(
-                updatedConversation._id as mongoose.Types.ObjectId,
-                updatedConversation.toObject() as IConversation,
+                updatedConversation.toObject(),
+                [insertedAiMessage!.toObject()],
                 savedCitations,
-                false,
                 session,
               );
 
@@ -2512,7 +2590,12 @@ export const addMessageStream =
                 // Add error message using existing utility
                 const failedMessage =
                   buildAIFailureResponseMessage() as IMessageDocument;
-                existingConversation.messages.push(failedMessage);
+                await appendMessages(
+                  existingConversation._id as mongoose.Types.ObjectId,
+                  existingConversation.orgId,
+                  [failedMessage],
+                  session,
+                );
                 existingConversation.lastActivityAt = Date.now();
 
                 const saveGeneralError = session
@@ -2599,7 +2682,7 @@ export const addMessageStream =
         try {
           if (existingConversation) {
             await markConversationFailed(
-              existingConversation as IConversationDocument,
+              existingConversation,
               error.message,
               session,
               'stream_error',
@@ -2636,33 +2719,31 @@ export const addMessageStream =
       try {
         // Mark conversation as failed if it exists
         if (existingConversation) {
-          (existingConversation as IConversationDocument).status =
-            CONVERSATION_STATUS.FAILED;
-          (existingConversation as IConversationDocument).failReason =
-            error.message || 'Internal server error';
+          const conv = existingConversation as IChatSessionDocument;
+          conv.status = CONVERSATION_STATUS.FAILED;
+          conv.failReason = error.message || 'Internal server error';
 
           // Add error message using existing utility
           const failedMessage =
             buildAIFailureResponseMessage() as IMessageDocument;
-          (existingConversation as IConversationDocument).messages.push(
-            failedMessage,
+          await appendMessages(
+            conv._id as mongoose.Types.ObjectId,
+            conv.orgId,
+            [failedMessage],
+            session,
           );
-          (existingConversation as IConversationDocument).lastActivityAt =
-            Date.now();
+          conv.lastActivityAt = Date.now();
 
           const saveGeneralError = session
-            ? await (existingConversation as IConversationDocument).save({
-                session,
-              })
-            : await (existingConversation as IConversationDocument).save();
+            ? await conv.save({ session })
+            : await conv.save();
 
           if (!saveGeneralError) {
             logger.error(
               'Failed to save conversation general error status in catch block',
               {
                 requestId,
-                conversationId: (existingConversation as IConversationDocument)
-                  ._id,
+                conversationId: conv._id,
               },
             );
           }
@@ -2745,27 +2826,38 @@ export const getAllConversations = async (
     const sortOptions = buildSortOptions(req);
 
     const isOwned = source === 'owned';
-    const filter = buildFilter(
-      req,
-      orgId,
-      userId,
-      conversationId as string,
-      isOwned,
-      !isOwned,
-    );
-    let selection = Conversation.find(filter)
+    let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
+    if (req.query.search) {
+      const escapedSearch = validateAndEscapeSearch(req.query.search);
+      contentMatchIds = await findSessionIdsMatchingContent(
+        orgId,
+        escapedSearch,
+      );
+    }
+    const filter = {
+      ...buildFilter(
+        req,
+        orgId,
+        userId,
+        conversationId as string,
+        isOwned,
+        !isOwned,
+        contentMatchIds,
+      ),
+      ...EXCLUDE_AGENT,
+    };
+    let selection = ChatSession.find(filter)
       .sort(sortOptions as any)
       .skip(skip)
       .limit(limit)
-      .select('-__v')
-      .select('-messages');
+      .select('-__v');
     if (!isOwned) {
-      selection = selection.select('-sharedWith');
+      selection = selection.select('-sharedWith') as typeof selection;
     }
 
     const [conversations, totalCount] = await Promise.all([
       selection.lean().exec(),
-      Conversation.countDocuments(filter),
+      ChatSession.countDocuments(filter),
     ]);
 
     const processedConversations = conversations.map((conversation: any) =>
@@ -2827,7 +2919,23 @@ export const getConversationById = async (
     const { page, limit } = getPaginationParams(req);
 
     // Build the base filter with access control
-    const baseFilter = buildFilter(req, orgId, userId, conversationId);
+    let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
+    if (req.query.search) {
+      const escapedSearch = validateAndEscapeSearch(req.query.search);
+      contentMatchIds = await findSessionIdsMatchingContent(
+        orgId,
+        escapedSearch,
+      );
+    }
+    const baseFilter = buildFilter(
+      req,
+      orgId,
+      userId,
+      conversationId,
+      true,
+      true,
+      contentMatchIds,
+    );
 
     // Build message filter
     const messageFilter = buildMessageFilter(req);
@@ -2838,25 +2946,11 @@ export const getConversationById = async (
       sortOrder as string,
     );
 
-    const countResult = await Conversation.aggregate([
-      { $match: baseFilter },
-      { $project: { messageCount: { $size: '$messages' } } },
-    ]);
-
-    if (!countResult.length) {
-      throw new NotFoundError('Conversation not found');
-    }
-
-    const totalMessages = countResult[0].messageCount;
-
-    // Calculate skip and limit for backward pagination
-    const skip = Math.max(0, totalMessages - page * limit);
-    const effectiveLimit = Math.min(limit, totalMessages - skip);
-
-    // Get conversation with paginated messages
-    const conversationWithMessages = await Conversation.findOne(baseFilter)
+    const session = await ChatSession.findOne({
+      ...baseFilter,
+      ...EXCLUDE_AGENT,
+    })
       .select({
-        messages: { $slice: [skip, effectiveLimit] },
         title: 1,
         initiator: 1,
         createdAt: 1,
@@ -2864,15 +2958,32 @@ export const getConversationById = async (
         sharedWith: 1,
         status: 1,
         failReason: 1,
-        modelInfo:1,
-      })
-      .populate({
-        path: 'messages.citations.citationId',
-        model: 'citation',
-        select: '-__v',
+        modelInfo: 1,
       })
       .lean()
       .exec();
+
+    if (!session) {
+      throw new NotFoundError('Conversation not found');
+    }
+
+    const sessionId = session._id as unknown as Types.ObjectId;
+
+    const totalMessages = await ChatSessionMessage.countDocuments({
+      sessionId,
+    });
+
+    // Calculate skip and limit for backward pagination
+    const skip = Math.max(0, totalMessages - page * limit);
+    const effectiveLimit = Math.min(limit, totalMessages - skip);
+
+    const messages = await getMessages(sessionId, {
+      skip,
+      limit: effectiveLimit,
+      populateCitations: true,
+    });
+
+    const conversationWithMessages = attachMessages(session, messages);
 
     // Sort messages using existing helper
     const sortedMessages = sortMessages(
@@ -2883,7 +2994,7 @@ export const getConversationById = async (
 
     // Build conversation response using existing helper
     const conversationResponse = buildConversationResponse(
-      conversationWithMessages as unknown as IConversationDocument,
+      conversationWithMessages as unknown as IChatSessionDocument,
       userId,
       {
         page,
@@ -2961,24 +3072,29 @@ export const deleteConversationById = async (
     // Common helper that performs the delete operation.
     async function performDeleteConversation(session?: ClientSession | null) {
       // Get conversation with access control
-      const conversation: IConversation | null = await Conversation.findOne({
-        _id: conversationId,
-        userId,
-        orgId,
-        isDeleted: false,
-        $or: [
-          { initiator: userId },
-          { 'sharedWith.userId': userId, 'sharedWith.accessLevel': 'write' },
-        ],
-      });
+      const conversation = await ChatSession.findOne(
+        {
+          _id: conversationId,
+          userId,
+          orgId,
+          isDeleted: false,
+          $or: [
+            { initiator: userId },
+            { 'sharedWith.userId': userId, 'sharedWith.accessLevel': 'write' },
+          ],
+          ...EXCLUDE_AGENT,
+        },
+        undefined,
+        { session },
+      );
 
       if (!conversation) {
         throw new NotFoundError('Conversation not found');
       }
 
       // Perform soft delete on the conversation
-      const updatedConversation = await Conversation.findByIdAndUpdate(
-        conversationId,
+      const updatedConversation = await ChatSession.findOneAndUpdate(
+        { _id: conversationId, ...EXCLUDE_AGENT },
         {
           $set: {
             isDeleted: true,
@@ -2997,10 +3113,16 @@ export const deleteConversationById = async (
         throw new InternalServerError('Failed to delete conversation');
       }
 
-      // Extract all citation IDs from messages
-      const citationIds = conversation.messages
-        .filter((msg: IMessage) => msg.citations && msg.citations.length)
-        .flatMap((msg: IMessage) =>
+      // Extract all citation IDs from messages (projected query, not the
+      // full document — message bodies are no longer embedded)
+      const sessionMessages = await ChatSessionMessage.find(
+        { sessionId: conversationId },
+        { citations: 1 },
+        { session: session || undefined },
+      ).lean();
+      const citationIds = sessionMessages
+        .filter((msg) => msg.citations && msg.citations.length)
+        .flatMap((msg) =>
           msg.citations?.map(
             (citation: IMessageCitation) => citation.citationId,
           ),
@@ -3114,12 +3236,13 @@ export const shareConversationById =
         }
 
         // Get conversation with access control
-        const conversation: IConversation | null = await Conversation.findOne({
+        const conversation = await ChatSession.findOne({
           _id: conversationId,
           orgId,
           userId,
           isDeleted: false,
           initiator: userId, // Only initiator can share
+          ...EXCLUDE_AGENT,
         });
 
         if (!conversation) {
@@ -3190,8 +3313,8 @@ export const shareConversationById =
         updateObject.sharedWith = mergedSharedWith;
 
         // Update the conversation
-        const updatedConversation = await Conversation.findByIdAndUpdate(
-          conversationId,
+        const updatedConversation = await ChatSession.findOneAndUpdate(
+          { _id: conversationId, ...EXCLUDE_AGENT },
           updateObject,
           {
             new: true,
@@ -3208,7 +3331,7 @@ export const shareConversationById =
         return updatedConversation;
       }
 
-      let updatedConversation: IConversationDocument | null = null;
+      let updatedConversation: IChatSessionDocument | null = null;
       if (rsAvailable) {
         session = await mongoose.startSession();
         session.startTransaction();
@@ -3220,10 +3343,14 @@ export const shareConversationById =
 
       // Grant READER permission edges on all attachments in this conversation
       // to every user it was just shared with.
+      const sessionMessages = await ChatSessionMessage.find(
+        { sessionId: conversationId },
+        { attachments: 1 },
+      ).lean();
       const attachmentRecordIds = [
         ...new Set(
-          (updatedConversation.messages ?? [])
-            .flatMap((msg: IMessage) => msg.attachments ?? [])
+          sessionMessages
+            .flatMap((msg) => msg.attachments ?? [])
             .map((att: any) => att.recordId as string | undefined)
             .filter((id): id is string => Boolean(id)),
         ),
@@ -3328,11 +3455,12 @@ export const unshareConversationById =
 
     async function performUnshareConversation(session?: ClientSession | null) {
       // Get conversation with access control
-      const conversation = await Conversation.findOne({
+      const conversation = await ChatSession.findOne({
         _id: conversationId,
         orgId,
         isDeleted: false,
         initiator: userId, // Only initiator can unshare
+        ...EXCLUDE_AGENT,
       });
 
       if (!conversation) {
@@ -3359,8 +3487,8 @@ export const unshareConversationById =
       }
 
       // Update the conversation
-      const updatedConversation = await Conversation.findByIdAndUpdate(
-        conversationId,
+      const updatedConversation = await ChatSession.findOneAndUpdate(
+        { _id: conversationId, ...EXCLUDE_AGENT },
         updateObject,
         {
           new: true,
@@ -3377,7 +3505,7 @@ export const unshareConversationById =
       return updatedConversation;
     }
 
-    let updatedConversation: IConversationDocument | null = null;
+    let updatedConversation: IChatSessionDocument | null = null;
     if (rsAvailable) {
       session = await mongoose.startSession();
       session.startTransaction();
@@ -3389,10 +3517,14 @@ export const unshareConversationById =
 
     // Revoke READER permission edges on all attachments in this conversation
     // for the users who were just removed from sharing.
+    const sessionMessages = await ChatSessionMessage.find(
+      { sessionId: conversationId },
+      { attachments: 1 },
+    ).lean();
     const attachmentRecordIds = [
       ...new Set(
-        (updatedConversation.messages ?? [])
-          .flatMap((msg: IMessage) => msg.attachments ?? [])
+        sessionMessages
+          .flatMap((msg) => msg.attachments ?? [])
           .map((att: any) => att.recordId as string | undefined)
           .filter((id): id is string => Boolean(id)),
       ),
@@ -3468,7 +3600,7 @@ export const unshareConversationById =
  * Configuration for regeneration function
  */
 interface RegenerationConfig {
-  conversationModel: typeof Conversation | typeof AgentConversation;
+  isAgentSession: boolean;
   buildQueryFilter: (
     conversationId: string,
     orgId: string | undefined,
@@ -3494,11 +3626,7 @@ async function regenerateAnswersInternal(
   const userId = req.user?.userId;
   const orgId = req.user?.orgId;
 
-  let existingConversation:
-    | IConversationDocument
-    | IAgentConversationDocument
-    | null = null;
-  let messageIndex = -1;
+  let existingConversation: IChatSessionDocument | null = null;
 
   const modelInfo = extractModelInfo(req.body);
   const protocol = resolveProtocol(
@@ -3509,7 +3637,7 @@ async function regenerateAnswersInternal(
   // Helper function to validate and get conversation
   async function performRegenerateAnswersValidation(
     session?: ClientSession | null,
-  ): Promise<IConversationDocument | IAgentConversationDocument> {
+  ): Promise<{ conversation: IChatSessionDocument; userQuery: IMessage }> {
     if (!conversationId) {
       throw new BadRequestError('Conversation ID is required');
     }
@@ -3522,8 +3650,7 @@ async function regenerateAnswersInternal(
       agentKey,
     );
 
-    // Type assertion needed because TypeScript can't infer the correct overload
-    const conversation = await (config.conversationModel as any).findOne(
+    const conversation = await ChatSession.findOne(
       queryFilter,
       null,
       session ? { session } : undefined,
@@ -3533,15 +3660,20 @@ async function regenerateAnswersInternal(
       throw new NotFoundError('Conversation not found or unauthorized');
     }
 
-    // Ensure there are messages
-    if (!conversation.messages || conversation.messages.length === 0) {
+    // Fetch the last 2 messages (newest first) to validate without positional
+    // addressing into a (now non-existent) embedded array.
+    const lastTwoMessages = (await getMessages(
+      conversation._id as mongoose.Types.ObjectId,
+      { limit: 2, sort: -1 },
+      session,
+    )) as Array<IMessage & { _id: mongoose.Types.ObjectId }>;
+
+    if (lastTwoMessages.length === 0) {
       throw new BadRequestError('No messages found in conversation');
     }
 
     // Get the last message and validate it
-    const lastMessage: IMessageDocument = conversation.messages[
-      conversation.messages.length - 1
-    ] as IMessageDocument;
+    const lastMessage = lastTwoMessages[0]!;
 
     if (lastMessage._id?.toString() !== messageId) {
       throw new BadRequestError(
@@ -3553,27 +3685,22 @@ async function regenerateAnswersInternal(
     }
 
     // Get user query from the previous message
-    if (conversation.messages.length < 2) {
+    if (lastTwoMessages.length < 2) {
       throw new BadRequestError('No user query found to regenerate response');
     }
-    const userQuery = conversation.messages[
-      conversation.messages.length - 2
-    ] as IMessageDocument;
+    const userQuery = lastTwoMessages[1]!;
     if (userQuery.messageType !== 'user_query') {
       throw new BadRequestError('Previous message must be a user query');
     }
-
-    messageIndex = conversation.messages.length - 1;
 
     logger.debug('Regenerate answers validation passed', {
       requestId,
       conversationId,
       messageId,
-      messageIndex,
       timestamp: new Date().toISOString(),
     });
 
-    return conversation;
+    return { conversation, userQuery };
   }
 
   try {
@@ -3588,27 +3715,34 @@ async function regenerateAnswersInternal(
     });
 
     // Validate conversation and message
+    let validationResult: {
+      conversation: IChatSessionDocument;
+      userQuery: IMessage;
+    } | null = null;
     if (rsAvailable) {
       session = await mongoose.startSession();
-      existingConversation = await session.withTransaction(() =>
+      validationResult = await session.withTransaction(() =>
         performRegenerateAnswersValidation(session),
       );
     } else {
-      existingConversation = await performRegenerateAnswersValidation();
+      validationResult = await performRegenerateAnswersValidation();
     }
 
-    if (!existingConversation || messageIndex === -1) {
+    if (!validationResult) {
       throw new NotFoundError('Conversation or message not found');
     }
+    existingConversation = validationResult.conversation;
+    const userQuery = validationResult.userQuery;
 
-    // Get user query from the previous message
-    const userQuery = existingConversation.messages[
-      messageIndex - 1
-    ] as IMessageDocument;
-
-    // Format previous conversations up to this message
+    // Format previous conversations up to this message (exclude last bot
+    // response and the user query that triggered it)
+    const allMessagesForRegen = (await getMessages(
+      existingConversation._id as mongoose.Types.ObjectId,
+      {},
+      session,
+    )) as IMessage[];
     const previousConversations = formatPreviousConversations(
-      existingConversation.messages.slice(0, -2), // Exclude last bot response and user query
+      allMessagesForRegen.slice(0, -2),
     );
 
     // For the assistant (non-agent-key) path, detect universal agent mode from chatMode
@@ -3677,7 +3811,7 @@ async function regenerateAnswersInternal(
         chunk,
         buffer,
         existingConversation,
-        messageIndex,
+        messageId || null,
         session,
         requestId || '',
         res,
@@ -3690,6 +3824,7 @@ async function regenerateAnswersInternal(
             citationsCount: completeData?.citations?.length || 0,
           });
         },
+        config.isAgentSession,
         protocol,
       );
     });
@@ -3704,7 +3839,7 @@ async function regenerateAnswersInternal(
               await handleRegenerationSuccess(
                 completeData,
                 existingConversation,
-                messageIndex,
+                messageId || '',
                 orgId || '',
                 session,
                 modelInfo,
@@ -3731,12 +3866,12 @@ async function regenerateAnswersInternal(
             );
           } catch (error: any) {
             // Update conversation status for general errors
-            if (existingConversation && messageIndex >= 0) {
+            if (existingConversation && messageId) {
               await handleRegenerationError(
                 res,
                 error,
                 existingConversation,
-                messageIndex,
+                messageId,
                 conversationId || '',
                 session,
                 requestId || '',
@@ -3755,23 +3890,31 @@ async function regenerateAnswersInternal(
           }
         } else {
           // Mark as failed if no complete data received
-          if (existingConversation && messageIndex >= 0) {
+          if (existingConversation && messageId) {
             const errorMessage =
               'No complete response received from AI service';
             await replaceMessageWithError(
               existingConversation,
-              messageIndex,
+              messageId,
               errorMessage,
               session,
               'incomplete_response',
             );
 
             // Reload conversation to get updated state
-            const updatedConversation = await (config.conversationModel as any).findById(
+            const updatedConversation = await ChatSession.findById(
               conversationId || '',
             );
             if (updatedConversation) {
-              const plainConversation = updatedConversation.toObject();
+              const messages = await getMessages(
+                updatedConversation._id as mongoose.Types.ObjectId,
+                {},
+                session,
+              );
+              const plainConversation = attachMessages(
+                updatedConversation.toObject(),
+                messages,
+              );
               await sendSSEErrorEvent(
                 res,
                 errorMessage,
@@ -3802,13 +3945,13 @@ async function regenerateAnswersInternal(
           },
         );
 
-        // Try to replace message with error if we have the index
-        if (existingConversation && messageIndex >= 0) {
+        // Try to replace message with error if we have the message id
+        if (existingConversation && messageId) {
           try {
             const errorMessage = `Failed to save regenerated AI response: ${dbError.message}`;
             await replaceMessageWithError(
               existingConversation,
-              messageIndex,
+              messageId,
               errorMessage,
               session,
               'database_error',
@@ -3816,11 +3959,19 @@ async function regenerateAnswersInternal(
             );
 
             // Reload conversation to get updated state
-            const updatedConversation = await (config.conversationModel as any).findById(
+            const updatedConversation = await ChatSession.findById(
               conversationId || '',
             );
             if (updatedConversation) {
-              const plainConversation = updatedConversation.toObject();
+              const messages = await getMessages(
+                updatedConversation._id as mongoose.Types.ObjectId,
+                {},
+                session,
+              );
+              const plainConversation = attachMessages(
+                updatedConversation.toObject(),
+                messages,
+              );
               await sendSSEErrorEvent(
                 res,
                 errorMessage,
@@ -3871,7 +4022,7 @@ async function regenerateAnswersInternal(
           res,
           error,
           existingConversation,
-          messageIndex,
+          messageId || null,
           conversationId || '',
           session,
           requestId || '',
@@ -3912,7 +4063,7 @@ async function regenerateAnswersInternal(
         res,
         error,
         existingConversation,
-        messageIndex,
+        messageId || null,
         conversationId || '',
         session,
         requestId || '',
@@ -3945,12 +4096,13 @@ export const regenerateAnswers =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response) => {
     await regenerateAnswersInternal(appConfig, req, res, {
-      conversationModel: Conversation,
+      isAgentSession: false,
       buildQueryFilter: (conversationId, orgId, userId) => ({
         _id: conversationId,
         orgId,
         userId,
         isDeleted: false,
+        ...EXCLUDE_AGENT,
         $or: [
           { initiator: userId },
           { 'sharedWith.userId': userId },
@@ -3985,12 +4137,13 @@ export const updateTitle = async (
     });
 
     const applyTitleUpdate = async (txnSession: ClientSession | null) => {
-      const conv = await Conversation.findOne(
+      const conv = await ChatSession.findOne(
         {
           _id: conversationId,
           orgId,
           userId,
           isDeleted: false,
+          ...EXCLUDE_AGENT,
         },
         null,
         txnSession ? { session: txnSession } : {},
@@ -4050,7 +4203,6 @@ export const updateTitle = async (
 };
 
 async function performFeedbackUpdate(params: {
-  model: mongoose.Model<any>;
   query: Record<string, any>;
   conversationId: string;
   messageId: string;
@@ -4059,21 +4211,27 @@ async function performFeedbackUpdate(params: {
   userAgent: string | undefined;
   session?: ClientSession | null;
 }): Promise<{ updatedConversation: any; feedbackEntry: any }> {
-  const { model, query, conversationId, messageId, userId, body, userAgent, session } = params;
+  const { query, messageId, userId, body, userAgent, session } = params;
 
-  const conversation = await model.findOne(query);
+  const conversation = await ChatSession.findOne(
+    query,
+    null,
+    session ? { session } : undefined,
+  );
   if (!conversation) {
     throw new NotFoundError('Conversation not found');
   }
 
-  const messageIndex = conversation.messages.findIndex(
-    (msg: IMessageDocument) => msg._id?.toString() === messageId,
+  const message = await ChatSessionMessage.findOne(
+    { _id: messageId, sessionId: conversation._id },
+    null,
+    session ? { session } : undefined,
   );
-  if (messageIndex === -1) {
+  if (!message) {
     throw new NotFoundError('Message not found');
   }
 
-  if (conversation.messages[messageIndex]?.messageType !== 'bot_response') {
+  if (message.messageType !== 'bot_response') {
     throw new BadRequestError('Feedback is only allowed for bot responses');
   }
 
@@ -4082,25 +4240,23 @@ async function performFeedbackUpdate(params: {
     feedbackProvider: userId,
     timestamp: Date.now(),
     metrics: {
-      timeToFeedback:
-        Date.now() - Number(conversation.messages[messageIndex]?.createdAt),
+      timeToFeedback: Date.now() - Number(message.createdAt),
       userInteractionTime: body.metrics?.userInteractionTime,
       feedbackSessionId: body.metrics?.feedbackSessionId,
       userAgent,
     },
   };
 
-  const updatePath = `messages.${messageIndex}.feedback`;
-  const updatedConversation = await model.findByIdAndUpdate(
-    conversationId,
-    { $push: { [updatePath]: feedbackEntry } },
-    { new: true, session, runValidators: true },
+  const updatedMessage = await appendMessageFeedback(
+    messageId,
+    feedbackEntry,
+    session,
   );
-  if (!updatedConversation) {
+  if (!updatedMessage) {
     throw new InternalServerError('Failed to update feedback');
   }
 
-  return { updatedConversation, feedbackEntry };
+  return { updatedConversation: conversation, feedbackEntry };
 }
 
 export const updateFeedback = async (
@@ -4129,6 +4285,7 @@ export const updateFeedback = async (
       _id: conversationId,
       orgId,
       isDeleted: false,
+      ...EXCLUDE_AGENT,
       $or: [
         { initiator: userId },
         { 'sharedWith.userId': userId },
@@ -4141,13 +4298,13 @@ export const updateFeedback = async (
       session = await mongoose.startSession();
       ({ updatedConversation, feedbackEntry } = await session.withTransaction(
         () => performFeedbackUpdate({
-          model: Conversation, query, conversationId: conversationId!, messageId: messageId!,
+          query, conversationId: conversationId!, messageId: messageId!,
           userId: userId!, body: req.body, userAgent: req.headers['user-agent'], session,
         }),
       ));
     } else {
       ({ updatedConversation, feedbackEntry } = await performFeedbackUpdate({
-        model: Conversation, query, conversationId: conversationId!, messageId: messageId!,
+        query, conversationId: conversationId!, messageId: messageId!,
         userId: userId!, body: req.body, userAgent: req.headers['user-agent'],
       }));
     }
@@ -4210,11 +4367,12 @@ export const archiveConversation = async (
 
     async function performArchiveConversation(session?: ClientSession | null) {
       // Get conversation with access control
-      const conversation = await Conversation.findOne({
+      const conversation = await ChatSession.findOne({
         _id: conversationId,
         userId,
         orgId,
         isDeleted: false,
+        ...EXCLUDE_AGENT,
         $or: [
           { initiator: userId },
           { 'sharedWith.userId': userId, 'sharedWith.accessLevel': 'write' },
@@ -4232,9 +4390,9 @@ export const archiveConversation = async (
       }
 
       // Perform soft delete
-      const updatedConversation: IConversationDocument | null =
-        await Conversation.findByIdAndUpdate(
-          conversationId,
+      const updatedConversation: IChatSessionDocument | null =
+        await ChatSession.findOneAndUpdate(
+          { _id: conversationId, ...EXCLUDE_AGENT },
           {
             $set: {
               isArchived: true,
@@ -4256,7 +4414,7 @@ export const archiveConversation = async (
       return updatedConversation;
     }
 
-    let updatedConversation: IConversationDocument | null = null;
+    let updatedConversation: IChatSessionDocument | null = null;
     if (rsAvailable) {
       session = await mongoose.startSession();
       session.startTransaction();
@@ -4321,11 +4479,12 @@ export const unarchiveConversation = async (
       session?: ClientSession | null,
     ) {
       // Get conversation with access control
-      const conversation = await Conversation.findOne({
+      const conversation = await ChatSession.findOne({
         _id: conversationId,
         userId,
         orgId,
         isDeleted: false,
+        ...EXCLUDE_AGENT,
         $or: [
           { initiator: userId },
           { 'sharedWith.userId': userId, 'sharedWith.accessLevel': 'write' },
@@ -4343,9 +4502,9 @@ export const unarchiveConversation = async (
       }
 
       // Perform soft delete
-      const updatedConversation: IConversationDocument | null =
-        await Conversation.findByIdAndUpdate(
-          conversationId,
+      const updatedConversation: IChatSessionDocument | null =
+        await ChatSession.findOneAndUpdate(
+          { _id: conversationId, ...EXCLUDE_AGENT },
           {
             $set: {
               isArchived: false,
@@ -4366,7 +4525,7 @@ export const unarchiveConversation = async (
       return updatedConversation;
     }
 
-    let updatedConversation: IConversationDocument | null = null;
+    let updatedConversation: IChatSessionDocument | null = null;
     if (rsAvailable) {
       session = await mongoose.startSession();
       session.startTransaction();
@@ -4427,30 +4586,72 @@ export const listAllArchivesConversation = async (
     });
 
     const { skip, limit, page } = getPaginationParams(req);
+    let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
+    if (req.query.search) {
+      const escapedSearch = validateAndEscapeSearch(req.query.search);
+      contentMatchIds = await findSessionIdsMatchingContent(
+        orgId,
+        escapedSearch,
+      );
+    }
     const filter = {
-      ...buildFilter(req, orgId, userId, conversationId as string),
+      ...buildFilter(
+        req,
+        orgId,
+        userId,
+        conversationId as string,
+        true,
+        true,
+        contentMatchIds,
+      ),
       isArchived: true, // Add archived filter
       archivedBy: { $exists: true }, // Ensure it was properly archived
     };
     const sortOptions = buildSortOptions(req);
+    const sessionFilter = { ...filter, ...EXCLUDE_AGENT };
 
     // Execute query
     const [conversations, totalCount] = await Promise.all([
-      Conversation.find(filter)
+      ChatSession.find(sessionFilter)
         .sort(sortOptions as any)
         .skip(skip)
         .limit(limit)
         .select('-__v')
-        .select('-citations')
         .lean()
         .exec(),
-      Conversation.countDocuments(filter),
+      ChatSession.countDocuments(sessionFilter),
     ]);
+
+    // Batch-fetch every message for the page in one query, grouped in
+    // memory by sessionId — never a per-row query.
+    const pageIds = conversations.map((c: any) => c._id);
+    const allMessages = await ChatSessionMessage.find({
+      sessionId: { $in: pageIds },
+    })
+      .sort({ seq: 1 })
+      .lean()
+      .exec();
+    const messagesBySession = new Map<string, any[]>();
+    for (const message of allMessages) {
+      const key = message.sessionId.toString();
+      const bucket = messagesBySession.get(key);
+      if (bucket) {
+        bucket.push(message);
+      } else {
+        messagesBySession.set(key, [message]);
+      }
+    }
 
     // Process results with computed fields and restructured citations
     const processedConversations = conversations.map((conversation: any) => {
+      const sessionMessages =
+        messagesBySession.get(conversation._id.toString()) || [];
+      const conversationWithMessages = attachMessages(
+        conversation,
+        sessionMessages,
+      );
       const conversationWithComputedFields = addComputedFields(
-        conversation as IConversation,
+        conversationWithMessages as IConversation,
         userId,
       );
 
@@ -4526,16 +4727,10 @@ export const searchArchivedConversations =
     if (!rawSearch || typeof rawSearch !== 'string' || !rawSearch.trim()) {
       throw new BadRequestError('search query parameter is required');
     }
-    if (Array.isArray(rawSearch)) {
-      throw new BadRequestError('Search parameter must be a string, not an array');
-    }
     const searchValue = rawSearch.trim();
-    validateNoXSS(searchValue, 'search parameter');
-    validateNoFormatSpecifiers(searchValue, 'search parameter');
-    if (searchValue.length > 1000) {
-      throw new BadRequestError('Search parameter too long (max 1000 characters)');
-    }
-    const escapedSearch = searchValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedSearch = validateAndEscapeSearch(searchValue, {
+      formatSpecifiers: true,
+    });
 
     // ── Pagination ─────────────────────────────────────────────────
     const { skip, limit, page } = getPaginationParams(req);
@@ -4552,19 +4747,24 @@ export const searchArchivedConversations =
     const orgOid = new mongoose.Types.ObjectId(`${orgId}`);
     const userOid = new mongoose.Types.ObjectId(`${userId}`);
 
-    const searchCondition = {
+    // Message content now lives in chatSessionMessages; resolve matching
+    // session ids up front instead of an inline `messages.content` regex.
+    const contentMatchIds = await findSessionIdsMatchingContent(
+      orgId,
+      escapedSearch,
+    );
+    const titleOrContentMatch = {
       $or: [
         { title: { $regex: escapedSearch, $options: 'i' } },
-        { 'messages.content': { $regex: escapedSearch, $options: 'i' } },
+        ...(contentMatchIds.length > 0
+          ? [{ _id: { $in: contentMatchIds } }]
+          : []),
       ],
     };
 
-    // ── Assistant (Conversation) filter ─────────────────────────────
-    const assistantFilter: any = {
-      orgId: orgOid,
-      isDeleted: false,
-      isArchived: true,
-      archivedBy: { $exists: true },
+    // ── Per-type access predicates (both now against chatSessions) ──
+    const assistantAccessPredicate: any = {
+      ...EXCLUDE_AGENT,
       $or: [
         { userId: userOid },
         {
@@ -4574,46 +4774,49 @@ export const searchArchivedConversations =
           ],
         },
       ],
-      $and: [searchCondition],
     };
 
-    // ── Agent (AgentConversation) filter ─────────────────────────────
-    const agentFilter: any = {
+    const agentAccessPredicate: any = {
+      ...ONLY_AGENT,
+      userId: userOid,
+    };
+    if (deletedAgentKeys !== null) {
+      agentAccessPredicate.agentKey = { $nin: deletedAgentKeys };
+    }
+
+    const baseFilter = {
       orgId: orgOid,
       isDeleted: false,
       isArchived: true,
       archivedBy: { $exists: true },
-      userId: userOid,
-      $and: [searchCondition],
+      $and: [titleOrContentMatch],
     };
-    if (deletedAgentKeys !== null) {
-      agentFilter.agentKey = { $nin: deletedAgentKeys };
-    }
 
-    // ── Execute queries: $unionWith aggregation + per-source counts ──
-    // $unionWith (Mongo 4.4+) merges both collections server-side so that
-    // sort, skip, and limit are pushed to MongoDB — avoiding unbounded
-    // in-memory loads when the search matches many documents.
+    // ── Execute: single $match ORing both per-type predicates, one
+    // combined aggregation replacing the old cross-collection $unionWith,
+    // and one countDocuments per predicate ──
     const [aggregateResult, assistantCount, agentCount] = await Promise.all([
-      Conversation.aggregate([
-        { $match: assistantFilter },
-        { $addFields: { source: 'assistant' } },
+      ChatSession.aggregate([
         {
-          $unionWith: {
-            coll: AgentConversation.collection.name,
-            pipeline: [
-              { $match: agentFilter },
-              { $addFields: { source: 'agent' } },
-            ],
+          $match: {
+            ...baseFilter,
+            $or: [assistantAccessPredicate, agentAccessPredicate],
+          },
+        },
+        {
+          $addFields: {
+            source: {
+              $cond: [{ $eq: ['$sessionType', 'agent'] }, 'agent', 'assistant'],
+            },
           },
         },
         { $sort: { lastActivityAt: -1 } },
         { $skip: skip },
         { $limit: limit },
-        { $project: { messages: 0, __v: 0 } },
+        { $project: { __v: 0, nextSeq: 0, sessionType: 0 } },
       ]),
-      Conversation.countDocuments(assistantFilter),
-      AgentConversation.countDocuments(agentFilter),
+      ChatSession.countDocuments({ ...baseFilter, ...assistantAccessPredicate }),
+      ChatSession.countDocuments({ ...baseFilter, ...agentAccessPredicate }),
     ]);
 
     const totalCount = assistantCount + agentCount;
@@ -5735,7 +5938,7 @@ export const deleteAgent =
     const { agentKey } = req.params;
 
     let session: ClientSession | null = null;
-    let savedConversation: IAgentConversationDocument | null = null;
+    let savedConversation: IChatSessionDocument | null = null;
 
     const modelInfo = extractModelInfo(req.body);
     const protocol = resolveProtocol(
@@ -5766,31 +5969,43 @@ export const deleteAgent =
         req.body.attachments,
       );
 
-      const userConversationData: Partial<IAgentConversation> = {
+      const userConversationData: Partial<IChatSession> = {
         orgId,
         userId,
         initiator: userId,
         title: req.body.query.slice(0, 100),
-        messages: [userQueryMessage] as IMessageDocument[],
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
         agentKey,
         modelInfo,
+        sessionType: 'agent',
       };
 
       // Start transaction if replica set is available
       if (rsAvailable) {
         session = await mongoose.startSession();
         await session.withTransaction(async () => {
-          const conversation = new AgentConversation(userConversationData);
+          const conversation = new ChatSession(userConversationData);
           savedConversation = (await conversation.save({
             session,
-          })) as IAgentConversationDocument;
+          })) as IChatSessionDocument;
+          await appendMessages(
+            savedConversation._id as mongoose.Types.ObjectId,
+            savedConversation.orgId,
+            [userQueryMessage],
+            session,
+          );
         });
       } else {
-        const conversation = new AgentConversation(userConversationData);
+        const conversation = new ChatSession(userConversationData);
         savedConversation =
-          (await conversation.save()) as IAgentConversationDocument;
+          (await conversation.save()) as IChatSessionDocument;
+        await appendMessages(
+          savedConversation._id as mongoose.Types.ObjectId,
+          savedConversation.orgId,
+          [userQueryMessage],
+          session,
+        );
       }
 
       if (!savedConversation) {
@@ -5950,7 +6165,7 @@ export const deleteAgent =
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
                   void markAgentConversationFailed(
-                    savedConversation as IAgentConversationDocument,
+                    savedConversation,
                     errorMessage,
                     session,
                     'streaming_error',
@@ -5985,9 +6200,11 @@ export const deleteAgent =
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
-                  void AgentConversation.findByIdAndUpdate(
-                    savedConversation._id,
-                    { $push: { messages: toolCallMessage } },
+                  void appendMessages(
+                    savedConversation._id as mongoose.Types.ObjectId,
+                    savedConversation.orgId,
+                    [toolCallMessage as unknown as IMessage],
+                    session,
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
                       requestId,
@@ -6038,7 +6255,7 @@ export const deleteAgent =
                       ? new Map(Object.entries(errorData.metadata as Record<string, unknown>))
                       : undefined;
                   void markAgentConversationFailed(
-                    savedConversation as IAgentConversationDocument,
+                    savedConversation,
                     errorMessage,
                     session,
                     'streaming_error',
@@ -6062,7 +6279,7 @@ export const deleteAgent =
                 if (savedConversation) {
                   const parseFailMsg = `Failed to parse error event: ${parseError.message}`;
                   void markAgentConversationFailed(
-                    savedConversation as IAgentConversationDocument,
+                    savedConversation,
                     parseFailMsg,
                     session,
                     'parse_error',
@@ -6090,9 +6307,11 @@ export const deleteAgent =
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
-                  void AgentConversation.findByIdAndUpdate(
-                    savedConversation._id,
-                    { $push: { messages: toolCallMessage } },
+                  void appendMessages(
+                    savedConversation._id as mongoose.Types.ObjectId,
+                    savedConversation.orgId,
+                    [toolCallMessage as unknown as IMessage],
+                    session,
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
                       requestId,
@@ -6163,11 +6382,13 @@ export const deleteAgent =
             );
           } else if (!upstreamAiErrorEventForwarded) {
             // Mark as failed if no complete data received (and AI did not already send error SSE)
-            await markAgentConversationFailed(
-              savedConversation as IAgentConversationDocument,
-              'No complete response received from AI service',
-              session,
-            );
+            if (savedConversation) {
+              await markAgentConversationFailed(
+                savedConversation,
+                'No complete response received from AI service',
+                session,
+              );
+            }
 
             // Send error event
             res.write(
@@ -6212,7 +6433,7 @@ export const deleteAgent =
           // Mark conversation as failed
           if (savedConversation) {
             await markAgentConversationFailed(
-              savedConversation as IAgentConversationDocument,
+              savedConversation,
               `Stream error: ${error.message}`,
               session,
             );
@@ -6245,7 +6466,7 @@ export const deleteAgent =
         // Mark conversation as failed if it was created
         if (savedConversation) {
           await markAgentConversationFailed(
-            savedConversation as IAgentConversationDocument,
+            savedConversation,
             error.message || 'Internal server error',
             session,
           );
@@ -6330,25 +6551,31 @@ export const createAgentConversation =
         req.body.attachments,
       );
 
-      const userConversationData: Partial<IAgentConversation> = {
+      const userConversationData: Partial<IChatSession> = {
         orgId,
         userId,
         initiator: userId,
         title: req.body.query.slice(0, 100),
-        messages: [userQueryMessage] as IMessageDocument[],
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
         agentKey,
         modelInfo,
+        sessionType: 'agent',
       };
 
-      const conversation = new AgentConversation(userConversationData);
+      const conversation = new ChatSession(userConversationData);
       const savedConversation = session
         ? await conversation.save({ session })
-        : ((await conversation.save()) as IAgentConversationDocument);
+        : ((await conversation.save()) as IChatSessionDocument);
       if (!savedConversation) {
         throw new InternalServerError('Failed to create conversation');
       }
+      await appendMessages(
+        savedConversation._id as mongoose.Types.ObjectId,
+        savedConversation.orgId,
+        [userQueryMessage],
+        session,
+      );
 
       const aiPayload: Record<string, unknown> = {
         query: req.body.query,
@@ -6425,7 +6652,14 @@ export const createAgentConversation =
           modelInfo,
         ) as IMessageDocument;
         // Add the AI message to the conversation
-        savedConversation.messages.push(aiResponseMessage);
+        const insertedAiMessage = (
+          await appendMessages(
+            savedConversation._id as mongoose.Types.ObjectId,
+            savedConversation.orgId,
+            [aiResponseMessage],
+            session,
+          )
+        )[0];
         savedConversation.lastActivityAt = Date.now();
         savedConversation.status = CONVERSATION_STATUS.COMPLETE as any; // Successful conversation
 
@@ -6437,10 +6671,9 @@ export const createAgentConversation =
           throw new InternalServerError('Failed to update conversation');
         }
         const responseConversation = await attachPopulatedCitations(
-          updatedConversation._id as mongoose.Types.ObjectId,
-          updatedConversation.toObject() as IAgentConversation,
+          updatedConversation.toObject(),
+          [insertedAiMessage!.toObject()],
           citations,
-          true,
           session,
         );
         return {
@@ -6463,7 +6696,12 @@ export const createAgentConversation =
         // persist and serve the error message to the user.
         const failedMessage =
           buildAIFailureResponseMessage() as IMessageDocument;
-        savedConversation.messages.push(failedMessage);
+        await appendMessages(
+          savedConversation._id as mongoose.Types.ObjectId,
+          savedConversation.orgId,
+          [failedMessage],
+          session,
+        );
         savedConversation.lastActivityAt = Date.now();
 
         const savedWithError = session
@@ -6575,12 +6813,13 @@ export const createAgentConversation =
       // Extract common operations into a helper function.
       async function performAddMessage(session?: ClientSession | null) {
         // Get existing conversation
-        const conversation = await AgentConversation.findOne({
+        const conversation = await ChatSession.findOne({
           _id: req.params.conversationId,
           agentKey,
           orgId,
           userId,
           isDeleted: false,
+          ...ONLY_AGENT,
         });
 
         if (!conversation) {
@@ -6594,9 +6833,13 @@ export const createAgentConversation =
         // add previous conversations to the conversation
         // in case of bot_response message
         // Format previous conversations for context
-        const previousConversations = formatPreviousConversations(
-          conversation.messages,
-        );
+        const existingMessages = (await getMessages(
+          conversation._id as mongoose.Types.ObjectId,
+          {},
+          session,
+        )) as IMessage[];
+        const previousConversations =
+          formatPreviousConversations(existingMessages);
         logger.debug('Previous conversations', {
           previousConversations,
         });
@@ -6608,7 +6851,12 @@ export const createAgentConversation =
           req.body.attachments,
         );
         // First, add the user message to the existing conversation
-        conversation.messages.push(userQueryMessage as IMessageDocument);
+        await appendMessages(
+          conversation._id as mongoose.Types.ObjectId,
+          conversation.orgId,
+          [userQueryMessage],
+          session,
+        );
         conversation.lastActivityAt = Date.now();
 
         const fieldsToUpdate: Array<keyof IAIModel> = [
@@ -6629,7 +6877,7 @@ export const createAgentConversation =
         // Save the user message to the existing conversation first
         const savedConversation = session
           ? await conversation.save({ session })
-          : ((await conversation.save()) as IAgentConversationDocument);
+          : ((await conversation.save()) as IChatSessionDocument);
 
         if (!savedConversation) {
           throw new InternalServerError(
@@ -6747,7 +6995,14 @@ export const createAgentConversation =
             modelInfo,
           ) as IMessageDocument;
           // Add the AI message to the existing conversation
-          savedConversation.messages.push(aiResponseMessage);
+          const insertedAiMessage = (
+            await appendMessages(
+              savedConversation._id as mongoose.Types.ObjectId,
+              savedConversation.orgId,
+              [aiResponseMessage],
+              session,
+            )
+          )[0];
           savedConversation.lastActivityAt = Date.now();
           savedConversation.status = CONVERSATION_STATUS.COMPLETE as any;
 
@@ -6764,10 +7019,9 @@ export const createAgentConversation =
 
           // Return the updated conversation with new messages.
           const responseConversation = await attachPopulatedCitations(
-            updatedConversation._id as mongoose.Types.ObjectId,
-            updatedConversation.toObject() as IAgentConversation,
+            updatedConversation.toObject(),
+            [insertedAiMessage!.toObject()],
             savedCitations,
-            true,
             session,
           );
           return {
@@ -6785,7 +7039,12 @@ export const createAgentConversation =
           // persist and serve the error message to the user.
           const failedMessage =
             buildAIFailureResponseMessage() as IMessageDocument;
-          conversation.messages.push(failedMessage);
+          await appendMessages(
+            conversation._id as mongoose.Types.ObjectId,
+            conversation.orgId,
+            [failedMessage],
+            session,
+          );
           conversation.lastActivityAt = Date.now();
           const saveGeneralError = session
             ? await conversation.save({ session })
@@ -6880,7 +7139,7 @@ export const addMessageStreamToAgentConversation =
     const { conversationId, agentKey } = req.params;
 
     let session: ClientSession | null = null;
-    let existingConversation: IAgentConversationDocument | null = null;
+    let existingConversation: IChatSessionDocument | null = null;
 
     const modelInfo = extractModelInfo(req.body);
     const protocol = resolveProtocol(
@@ -6897,12 +7156,13 @@ export const addMessageStreamToAgentConversation =
       session?: ClientSession | null,
     ): Promise<void> {
       // Get existing conversation
-      const conversation = await AgentConversation.findOne({
+      const conversation = await ChatSession.findOne({
         _id: conversationId,
         agentKey,
         orgId,
         userId,
         isDeleted: false,
+        ...ONLY_AGENT,
       });
 
       if (!conversation) {
@@ -6929,20 +7189,25 @@ export const addMessageStreamToAgentConversation =
       }
 
       // First, add the user message to the existing conversation
-      conversation.messages.push(
-        buildUserQueryMessage(
-          req.body.query,
-          req.body.appliedFilters,
-          req.body.chatMode,
-          req.body.attachments,
-        ) as IMessageDocument,
+      await appendMessages(
+        conversation._id as mongoose.Types.ObjectId,
+        conversation.orgId,
+        [
+          buildUserQueryMessage(
+            req.body.query,
+            req.body.appliedFilters,
+            req.body.chatMode,
+            req.body.attachments,
+          ),
+        ],
+        session,
       );
       conversation.lastActivityAt = Date.now();
 
       // Save the user message to the existing conversation first
       const savedConversation = session
         ? await conversation.save({ session })
-        : ((await conversation.save()) as IAgentConversationDocument);
+        : ((await conversation.save()) as IChatSessionDocument);
 
       if (!savedConversation) {
         throw new InternalServerError(
@@ -7003,13 +7268,16 @@ export const addMessageStreamToAgentConversation =
       if (!existingConversation) {
         throw new NotFoundError('Conversation not found');
       }
+      const confirmedConversation = existingConversation as IChatSessionDocument;
 
       // Format previous conversations for context (excluding the user message we just added)
+      const allMessagesSoFar = (await getMessages(
+        confirmedConversation._id as mongoose.Types.ObjectId,
+        {},
+        session,
+      )) as IMessage[];
       const previousConversations = formatPreviousConversations(
-        (existingConversation as IConversationDocument).messages.slice(
-          0,
-          -1,
-        ) as IMessage[],
+        allMessagesSoFar.slice(0, -1),
       );
 
       // Prepare AI payload
@@ -7123,13 +7391,15 @@ export const addMessageStreamToAgentConversation =
                 const errorData = JSON.parse(dataLine);
                 const errorMessage = errorData.message || 'Unknown error occurred';
                 upstreamAiErrorEventForwarded = true;
-                markAgentConversationFailed(
-                  existingConversation as IAgentConversationDocument,
-                  errorMessage,
-                  session,
-                  'streaming_error',
-                  errorData.stack,
-                );
+                if (existingConversation) {
+                  markAgentConversationFailed(
+                    existingConversation,
+                    errorMessage,
+                    session,
+                    'streaming_error',
+                    errorData.stack,
+                  );
+                }
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
                 logger.error('Failed to parse RUN_ERROR event data', {
@@ -7153,9 +7423,11 @@ export const addMessageStreamToAgentConversation =
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
-                  void AgentConversation.findByIdAndUpdate(
-                    existingConversation._id,
-                    { $push: { messages: toolCallMessage } },
+                  void appendMessages(
+                    existingConversation._id as mongoose.Types.ObjectId,
+                    existingConversation.orgId,
+                    [toolCallMessage as unknown as IMessage],
+                    session,
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
                       requestId,
@@ -7199,16 +7471,18 @@ export const addMessageStreamToAgentConversation =
                   errorData.error ||
                   'Unknown error occurred';
                 upstreamAiErrorEventForwarded = true;
-                markAgentConversationFailed(
-                  existingConversation as IAgentConversationDocument,
-                  errorMessage,
-                  session,
-                  'streaming_error',
-                  errorData.stack,
-                  errorData.metadata
-                    ? new Map(Object.entries(errorData.metadata))
-                    : undefined,
-                );
+                if (existingConversation) {
+                  markAgentConversationFailed(
+                    existingConversation,
+                    errorMessage,
+                    session,
+                    'streaming_error',
+                    errorData.stack,
+                    errorData.metadata
+                      ? new Map(Object.entries(errorData.metadata))
+                      : undefined,
+                  );
+                }
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
                 logger.error('Failed to parse error event data', {
@@ -7219,7 +7493,7 @@ export const addMessageStreamToAgentConversation =
                 upstreamAiErrorEventForwarded = true;
                 if (existingConversation) {
                   markAgentConversationFailed(
-                    existingConversation as IAgentConversationDocument,
+                    existingConversation,
                     `Failed to parse error event: ${parseError.message}`,
                     session,
                     'parse_error',
@@ -7242,9 +7516,11 @@ export const addMessageStreamToAgentConversation =
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
-                  void AgentConversation.findByIdAndUpdate(
-                    existingConversation._id,
-                    { $push: { messages: toolCallMessage } },
+                  void appendMessages(
+                    existingConversation._id as mongoose.Types.ObjectId,
+                    existingConversation.orgId,
+                    [toolCallMessage as unknown as IMessage],
+                    session,
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
                       requestId,
@@ -7304,14 +7580,21 @@ export const addMessageStreamToAgentConversation =
               ) as IMessageDocument;
 
               // Add the AI message to the existing conversation
-              existingConversation.messages.push(aiResponseMessage);
+              const insertedAiMessage = (
+                await appendMessages(
+                  existingConversation._id as mongoose.Types.ObjectId,
+                  existingConversation.orgId,
+                  [aiResponseMessage],
+                  session,
+                )
+              )[0];
               existingConversation.lastActivityAt = Date.now();
               existingConversation.status = CONVERSATION_STATUS.COMPLETE as any;
 
               // Save the updated conversation with AI response
               const updatedConversation = session
                 ? await existingConversation.save({ session })
-                : ((await existingConversation.save()) as IAgentConversationDocument);
+                : ((await existingConversation.save()) as IChatSessionDocument);
 
               if (!updatedConversation) {
                 throw new InternalServerError(
@@ -7321,10 +7604,9 @@ export const addMessageStreamToAgentConversation =
 
               // Return the updated conversation in the same format as addMessage
               const responseConversation = await attachPopulatedCitations(
-                updatedConversation._id as mongoose.Types.ObjectId,
-                updatedConversation.toObject() as IAgentConversation,
+                updatedConversation.toObject(),
+                [insertedAiMessage!.toObject()],
                 savedCitations,
-                true,
                 session,
               );
 
@@ -7365,7 +7647,12 @@ export const addMessageStreamToAgentConversation =
                 // Add error message using existing utility
                 const failedMessage =
                   buildAIFailureResponseMessage() as IMessageDocument;
-                existingConversation.messages.push(failedMessage);
+                await appendMessages(
+                  existingConversation._id as mongoose.Types.ObjectId,
+                  existingConversation.orgId,
+                  [failedMessage],
+                  session,
+                );
                 existingConversation.lastActivityAt = Date.now();
 
                 const saveGeneralError = session
@@ -7401,7 +7688,7 @@ export const addMessageStreamToAgentConversation =
 
               const savedWithError = session
                 ? await existingConversation.save({ session })
-                : ((await existingConversation.save()) as IAgentConversationDocument);
+                : ((await existingConversation.save()) as IChatSessionDocument);
 
               if (!savedWithError) {
                 logger.error('Failed to save conversation error state', {
@@ -7452,7 +7739,7 @@ export const addMessageStreamToAgentConversation =
         try {
           if (existingConversation) {
             markAgentConversationFailed(
-              existingConversation as IAgentConversationDocument,
+              existingConversation,
               error.message,
               session,
             );
@@ -7489,34 +7776,31 @@ export const addMessageStreamToAgentConversation =
       try {
         // Mark conversation as failed if it exists
         if (existingConversation) {
-          (existingConversation as IAgentConversationDocument).status =
-            CONVERSATION_STATUS.FAILED as any;
-          (existingConversation as IAgentConversationDocument).failReason =
-            error.message || 'Internal server error';
+          const conv = existingConversation as IChatSessionDocument;
+          conv.status = CONVERSATION_STATUS.FAILED as any;
+          conv.failReason = error.message || 'Internal server error';
 
           // Add error message using existing utility
           const failedMessage =
             buildAIFailureResponseMessage() as IMessageDocument;
-          (existingConversation as IAgentConversationDocument).messages.push(
-            failedMessage,
+          await appendMessages(
+            conv._id as mongoose.Types.ObjectId,
+            conv.orgId,
+            [failedMessage],
+            session,
           );
-          (existingConversation as IAgentConversationDocument).lastActivityAt =
-            Date.now();
+          conv.lastActivityAt = Date.now();
 
           const saveGeneralError = session
-            ? await (existingConversation as IAgentConversationDocument).save({
-                session,
-              })
-            : await (existingConversation as IAgentConversationDocument).save();
+            ? await conv.save({ session })
+            : await conv.save();
 
           if (!saveGeneralError) {
             logger.error(
               'Failed to save conversation general error status in catch block',
               {
                 requestId,
-                conversationId: (
-                  existingConversation as IAgentConversationDocument
-                )._id,
+                conversationId: conv._id,
               },
             );
           }
@@ -7574,13 +7858,14 @@ export const regenerateAgentAnswers =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response) => {
     await regenerateAnswersInternal(appConfig, req, res, {
-      conversationModel: AgentConversation,
+      isAgentSession: true,
       buildQueryFilter: (conversationId, orgId, userId, agentKey) => ({
         _id: conversationId,
         agentKey,
         orgId,
         userId,
         isDeleted: false,
+        ...ONLY_AGENT,
         $or: [
           { initiator: userId },
           { 'sharedWith.userId': userId },
@@ -7616,6 +7901,16 @@ export const getAllAgentConversations = async (
     });
 
     const { skip, limit, page } = getPaginationParams(req);
+    let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
+    if (req.query.search) {
+      const escapedSearch = validateAndEscapeSearch(req.query.search, {
+        formatSpecifiers: true,
+      });
+      contentMatchIds = await findSessionIdsMatchingContent(
+        orgId,
+        escapedSearch,
+      );
+    }
     const filter = {
       ...buildAgentConversationFilter(
         req,
@@ -7623,6 +7918,7 @@ export const getAllAgentConversations = async (
         userId,
         agentKey as string,
         conversationId as string,
+        contentMatchIds,
       ),
       // Sidebar / chat list: omit archived threads (archived view uses a dedicated route).
       isArchived: { $ne: true },
@@ -7638,21 +7934,19 @@ export const getAllAgentConversations = async (
     // Execute query
     const [conversations, totalCount, sharedWithMeConversations] =
       await Promise.all([
-        AgentConversation.find(filter)
+        ChatSession.find(filter)
           .sort(sortOptions as any)
           .skip(skip)
           .limit(limit)
           .select('-__v')
-          .select('-messages')
           .lean()
           .exec(),
-        AgentConversation.countDocuments(filter),
-        AgentConversation.find(sharedWithMeFilter)
+        ChatSession.countDocuments(filter),
+        ChatSession.find(sharedWithMeFilter)
           .sort(sortOptions as any)
           .skip(skip)
           .limit(limit)
           .select('-__v')
-          .select('-messages')
           .select('-sharedWith')
           .lean()
           .exec(),
@@ -7735,12 +8029,23 @@ export const getAgentConversationById = async (
     const { page, limit } = getPaginationParams(req);
 
     // Build the base filter with access control
+    let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
+    if (req.query.search) {
+      const escapedSearch = validateAndEscapeSearch(req.query.search, {
+        formatSpecifiers: true,
+      });
+      contentMatchIds = await findSessionIdsMatchingContent(
+        orgId,
+        escapedSearch,
+      );
+    }
     const baseFilter = buildAgentConversationFilter(
       req,
       orgId,
       userId,
       agentKey as string,
       conversationId as string,
+      contentMatchIds,
     );
 
     // Build message filter
@@ -7752,25 +8057,11 @@ export const getAgentConversationById = async (
       sortOrder as string,
     );
 
-    const countResult = await AgentConversation.aggregate([
-      { $match: baseFilter },
-      { $project: { messageCount: { $size: '$messages' } } },
-    ]);
-
-    if (!countResult.length) {
-      throw new NotFoundError('Conversation not found');
-    }
-
-    const totalMessages = countResult[0].messageCount;
-
-    // Calculate skip and limit for backward pagination
-    const skip = Math.max(0, totalMessages - page * limit);
-    const effectiveLimit = Math.min(limit, totalMessages - skip);
-
-    // Get conversation with paginated messages
-    const conversationWithMessages = await AgentConversation.findOne(baseFilter)
+    const session = await ChatSession.findOne({
+      ...baseFilter,
+      ...ONLY_AGENT,
+    })
       .select({
-        messages: { $slice: [skip, effectiveLimit] },
         title: 1,
         initiator: 1,
         createdAt: 1,
@@ -7780,13 +8071,30 @@ export const getAgentConversationById = async (
         failReason: 1,
         modelInfo: 1,
       })
-      .populate({
-        path: 'messages.citations.citationId',
-        model: 'citation',
-        select: '-__v',
-      })
       .lean()
       .exec();
+
+    if (!session) {
+      throw new NotFoundError('Conversation not found');
+    }
+
+    const sessionId = session._id as unknown as Types.ObjectId;
+
+    const totalMessages = await ChatSessionMessage.countDocuments({
+      sessionId,
+    });
+
+    // Calculate skip and limit for backward pagination
+    const skip = Math.max(0, totalMessages - page * limit);
+    const effectiveLimit = Math.min(limit, totalMessages - skip);
+
+    const messages = await getMessages(sessionId, {
+      skip,
+      limit: effectiveLimit,
+      populateCitations: true,
+    });
+
+    const conversationWithMessages = attachMessages(session, messages);
 
     // Sort messages using existing helper
     const sortedMessages = sortMessages(
@@ -7797,7 +8105,7 @@ export const getAgentConversationById = async (
 
     // Build conversation response using existing helper
     const conversationResponse = buildConversationResponse(
-      conversationWithMessages as unknown as IAgentConversationDocument,
+      conversationWithMessages as unknown as IChatSessionDocument,
       userId,
       {
         page,
@@ -7908,13 +8216,14 @@ export const archiveAgentConversation = async (
     });
 
     async function performArchive(s?: ClientSession | null) {
-      const conversation = await AgentConversation.findOne(
+      const conversation = await ChatSession.findOne(
         {
           _id: conversationId,
           userId,
           orgId,
           agentKey,
           isDeleted: false,
+          ...ONLY_AGENT,
         },
         null,
         { session: s },
@@ -7928,8 +8237,8 @@ export const archiveAgentConversation = async (
         throw new BadRequestError('Agent conversation already archived');
       }
 
-      const updated = await AgentConversation.findByIdAndUpdate(
-        conversationId,
+      const updated = await ChatSession.findOneAndUpdate(
+        { _id: conversationId, ...ONLY_AGENT },
         {
           $set: {
             isArchived: true,
@@ -8009,13 +8318,14 @@ export const unarchiveAgentConversation = async (
     });
 
     async function performUnarchive(s?: ClientSession | null) {
-      const conversation = await AgentConversation.findOne(
+      const conversation = await ChatSession.findOne(
         {
           _id: conversationId,
           userId,
           orgId,
           agentKey,
           isDeleted: false,
+          ...ONLY_AGENT,
         },
         null,
         { session: s },
@@ -8029,8 +8339,8 @@ export const unarchiveAgentConversation = async (
         throw new BadRequestError('Agent conversation is not archived');
       }
 
-      const updated = await AgentConversation.findByIdAndUpdate(
-        conversationId,
+      const updated = await ChatSession.findOneAndUpdate(
+        { _id: conversationId, ...ONLY_AGENT },
         {
           $set: {
             isArchived: false,
@@ -8103,23 +8413,39 @@ export const listAllArchivesAgentConversation = () =>
     });
 
     const { skip, limit, page } = getPaginationParams(req);
+    let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
+    if (req.query.search) {
+      const escapedSearch = validateAndEscapeSearch(req.query.search, {
+        formatSpecifiers: true,
+      });
+      contentMatchIds = await findSessionIdsMatchingContent(
+        orgId,
+        escapedSearch,
+      );
+    }
     const filter = {
-      ...buildAgentConversationFilter(req, orgId, userId, agentKey as string),
+      ...buildAgentConversationFilter(
+        req,
+        orgId,
+        userId,
+        agentKey as string,
+        undefined,
+        contentMatchIds,
+      ),
       isArchived: true,
       archivedBy: { $exists: true },
     };
     const sortOptions = buildSortOptions(req);
 
     const [conversations, totalCount] = await Promise.all([
-      AgentConversation.find(filter)
+      ChatSession.find(filter)
         .sort(sortOptions as any)
         .skip(skip)
         .limit(limit)
         .select('-__v')
-        .select('-messages')
         .lean()
         .exec(),
-      AgentConversation.countDocuments(filter),
+      ChatSession.countDocuments(filter),
     ]);
 
     const processedConversations = conversations.map((conversation: any) => ({
@@ -8184,12 +8510,13 @@ export const updateAgentConversationTitle = async (
       timestamp: new Date().toISOString(),
     });
 
-    const conversation = await AgentConversation.findOne({
+    const conversation = await ChatSession.findOne({
       _id: conversationId,
       orgId,
       userId,
       agentKey,
       isDeleted: false,
+      ...ONLY_AGENT,
     });
 
     if (!conversation) {
@@ -8262,6 +8589,7 @@ export const updateAgentFeedback = async (
       userId,
       agentKey,
       isDeleted: false,
+      ...ONLY_AGENT,
     };
 
     let updatedConversation, feedbackEntry;
@@ -8269,13 +8597,13 @@ export const updateAgentFeedback = async (
       session = await mongoose.startSession();
       ({ updatedConversation, feedbackEntry } = await session.withTransaction(
         () => performFeedbackUpdate({
-          model: AgentConversation, query, conversationId: conversationId!, messageId: messageId!,
+          query, conversationId: conversationId!, messageId: messageId!,
           userId: userId!, body: req.body, userAgent: req.headers['user-agent'], session,
         }),
       ));
     } else {
       ({ updatedConversation, feedbackEntry } = await performFeedbackUpdate({
-        model: AgentConversation, query, conversationId: conversationId!, messageId: messageId!,
+        query, conversationId: conversationId!, messageId: messageId!,
         userId: userId!, body: req.body, userAgent: req.headers['user-agent'],
       }));
     }
@@ -8364,6 +8692,7 @@ export const listAllAgentsArchivedConversationsGrouped =
       isArchived: true,
       archivedBy: { $exists: true },
       isDeleted: false,
+      ...ONLY_AGENT,
     };
     if (deletedAgentKeys !== null) {
       filter.agentKey = { $nin: deletedAgentKeys };
@@ -8372,18 +8701,18 @@ export const listAllAgentsArchivedConversationsGrouped =
     // Amazon DocumentDB does not support the $facet stage (see AWS aggregation compatibility).
     // Use a cheap count pipeline + the full data pipeline instead of $facet.
     const [countRows, rawGroups] = await Promise.all([
-      AgentConversation.aggregate<{ totalAgentCount: number }>([
+      ChatSession.aggregate<{ totalAgentCount: number }>([
         { $match: filter },
         { $group: { _id: '$agentKey' } },
         { $count: 'totalAgentCount' },
       ]),
-      AgentConversation.aggregate([
+      ChatSession.aggregate([
         { $match: filter },
         // Sort by lastActivityAt desc — must match the per-agent archive endpoint's default sort
         // so that the initial 5 chats here align with page 1 of the per-agent pagination
         { $sort: { lastActivityAt: -1 as const } },
         // Exclude heavy fields before grouping
-        { $project: { __v: 0, messages: 0 } },
+        { $project: { __v: 0, messages: 0, nextSeq: 0, sessionType: 0 } },
         {
           $group: {
             _id: '$agentKey',
