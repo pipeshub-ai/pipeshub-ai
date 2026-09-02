@@ -23,19 +23,20 @@ from app.config.constants.arangodb import (
 from app.config.constants.service import config_node_constants
 from app.exceptions.fastapi_responses import Status
 from app.models.blocks import GroupType
+from app.modules.retrieval.result_merging import (
+    CollectionResults,
+    ResultMerger,
+    merge_collection_results,
+    merger_for,
+)
 from app.modules.transformers.blob_storage import BlobStorage
+from app.services.gemini_file_search import GeminiFileSearchService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     FusionMethod,
     HybridSearchRequest,
-)
-from app.modules.retrieval.result_merging import (
-    CollectionResults,
-    ResultMerger,
-    merge_collection_results,
-    merger_for,
 )
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.services.vector_db.strategy import ContextAxis, QueryContext
@@ -804,6 +805,94 @@ class RetrievalService:
         return await graph_provider.get_accessible_virtual_record_ids(
             user_id=user_id, org_id=org_id, filters=filters, time_range=time_range
         )
+
+    async def search_gemini_file_search_with_filters(
+        self,
+        query: str,
+        user_id: str,
+        org_id: str,
+        filter_groups: dict[str, list[str]] | None = None,
+    ) -> dict[str, Any] | None:
+        """Run permission-scoped multimodal retrieval over completed stores."""
+        service = await GeminiFileSearchService.create(self.logger, self.config_service)
+        if not service.is_enabled():
+            return None
+
+        filter_groups = filter_groups or {}
+        accessible = await self._get_accessible_virtual_ids_task(
+            user_id,
+            org_id,
+            {key.lower(): values for key, values in filter_groups.items()},
+            self.graph_provider,
+        )
+        if not accessible:
+            return None
+
+        selected_record_ids = set(filter_groups.get("record_ids") or [])
+        record_ids = list(dict.fromkeys(accessible.values()))
+        if selected_record_ids:
+            record_ids = [record_id for record_id in record_ids if record_id in selected_record_ids]
+        if not record_ids:
+            return None
+
+        records = await self.graph_provider.get_records_by_record_ids(record_ids, org_id)
+        stores: dict[str, list[dict[str, Any]]] = {}
+        for record in records or []:
+            status = GeminiFileSearchService.decode_file_search_status(
+                record.get("geminiFileSearch")
+            )
+            store_name = status.get("storeName")
+            if status.get("status") == "COMPLETED" and store_name:
+                stores.setdefault(str(store_name), []).append(record)
+        if not stores:
+            return None
+
+        metadata_filter = " OR ".join(
+            f'recordId="{GeminiFileSearchService.escape_filter_value(record_id)}"'
+            for record_id in record_ids
+        )
+        answer = await service.answer(
+            query=query,
+            store_names=list(stores)[: service.max_stores_per_query],
+            metadata_filter=metadata_filter,
+        )
+        if not answer or not answer.text.strip():
+            return None
+
+        all_records = [record for bucket in stores.values() for record in bucket]
+        by_id = {
+            str(record.get("_key") or record.get("id")): record
+            for record in all_records
+            if record.get("_key") or record.get("id")
+        }
+        citations = []
+        for citation in answer.citations:
+            metadata_record_id = next(
+                (
+                    item.get("stringValue")
+                    for item in citation.get("customMetadata") or []
+                    if isinstance(item, dict) and item.get("key") == "recordId"
+                ),
+                None,
+            )
+            record = by_id.get(str(metadata_record_id)) if metadata_record_id else None
+            if record is None:
+                self.logger.warning("Discarding unresolved Gemini citation")
+                continue
+            media_id = citation.get("mediaId")
+            citations.append(
+                {
+                    **citation,
+                    "record": record,
+                    "media": answer.media.get(media_id) if media_id else None,
+                }
+            )
+
+        return {
+            "answer": answer.text,
+            "citations": citations,
+            "storeNames": answer.store_names,
+        }
 
     async def _get_user_cached(self, user_id: str) -> dict[str, Any] | None:
         """

@@ -1,0 +1,95 @@
+---
+title: Gemini File Search
+description: Augment your RAG with Google's multimodal File Search — index images, charts, and diagrams alongside text for richer retrieval.
+---
+
+# Gemini File Search
+
+PipesHub augments its own hybrid vector search with Google's **Gemini File Search** — a multimodal retrieval layer that can embed and search through images, charts, and diagrams in your documents, not just text.
+
+## How it works
+
+When Gemini File Search is enabled, every query runs **two searches in parallel**:
+
+1. **PipesHub vector search** (always on) — hybrid dense + sparse search over text chunks in Qdrant, scoped by your permissions and KB filters.
+2. **Gemini File Search** (when enabled) — multimodal search over your indexed files using `gemini-embedding-2`, which embeds images alongside text.
+
+Both results are merged into a single context block for the LLM, with proper citation chips that deep-link to the source files.
+
+## Key features
+
+- **Multimodal embedding** — `gemini-embedding-2` embeds both text AND images, so charts and diagrams in PDFs become searchable
+- **Per-KB stores** — one Gemini File Search store per Knowledge Base; files across folders share a single store
+- **Auto-metadata** — each indexed file carries record metadata (recordId, recordName, mimeType, collection, origin, etc.) for query-time filtering
+- **Media download** — when Gemini cites an image (chart/diagram), the image is downloaded and surfaced as a clickable citation chip
+- **First-class citations** — Gemini results enter the same citation pipeline as PipesHub's own results, so the LLM cites `[source](refN)` and the UI renders proper numbered chips
+- **Graceful degradation** — if Gemini fails or is disabled, queries fall back to PipesHub-only results with no errors
+
+## Setup
+
+### 1. Add a Gemini API key
+
+Go to **Settings → AI Models → Gemini** and add an API key from [Google AI Studio](https://aistudio.google.com/apikey). Make it the **default** Gemini entry.
+
+> **Important:** The key must be an **AIza key** (Google AI Studio / Google GenAI SDK), not a Vertex AI service-account key. File Search uses the `google-genai` Python SDK.
+
+### 2. Enable File Search
+
+Go to **Settings → Gemini File Search** (sidebar, below Web Search) and toggle it on. You can also configure:
+- **Generation model** (default: `gemini-3.5-flash`)
+- **Embedding model** (default: `models/gemini-embedding-2`)
+- **Max stores per query** (default: 5)
+- **Max media per query** (default: 5)
+
+### 3. Re-index your files
+
+Files must be re-indexed after enabling File Search — the feature hooks into the indexing pipeline. Go to your Knowledge Base and click **Re-index** on each file (or re-index the whole KB).
+
+Watch the status chip on each file row — it will show:
+- ✦ **Ready** (COMPLETED) — file is indexed in Gemini
+- ✦ **Indexing** (IN_PROGRESS) — file is being uploaded/chunked/embedded
+- ✦ **Failed** (FAILED) — Gemini rejected the file (check logs)
+
+## Viewing store stats
+
+Each KB with a Gemini store shows a `✦ N` badge in both:
+- The **Connectors & Collections** panel (chat input)
+- The **Knowledge Base page** header bar
+
+Click the badge to see: store size, active/pending/failed document counts, and the embedding model.
+
+## File picker (per-file scoping)
+
+Inside the **Connectors & Collections** panel, you can expand a KB row and then expand a record-group to see individual files with checkboxes. Selecting specific files scopes your chat query to only those files via a `record_ids` filter.
+
+## Supported file types
+
+Gemini File Search supports a wide range of formats including:
+- PDF, DOCX, PPTX, XLSX
+- PNG and JPEG
+- Plain text, Markdown, HTML
+- And many more (see Google's [Supported file types](https://ai.google.dev/gemini-api/docs/file-search#supported-file-types))
+
+## Limitations
+
+- **Audio and video** are not supported by Gemini File Search
+- **Rate limits** - quotas vary by model and usage tier. Review Google's [current rate limits](https://ai.google.dev/gemini-api/docs/rate-limits) before production use.
+- **Per-document size** - Gemini File Search only indexes files up to 100 MB. Larger files still upload and use PipesHub's normal RAG pipeline, but the Gemini status chip shows that multimodal indexing was skipped.
+- **Store size** — Gemini recommends keeping individual stores under 20 GB for optimal retrieval latency
+- **One store per KB** — all files in a KB share one Gemini store. The store is NOT per-folder.
+
+## API reference
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/v1/gemini-file-search/config` | GET | Get global settings (enable toggle + models) |
+| `/api/v1/gemini-file-search/config` | PUT | Update global settings |
+| `/api/v1/gemini-file-search/kb/:kbId/stats` | GET | Get store size + doc counts for a KB |
+| `/api/v1/records/:recordId/gemini-file-search` | DELETE | Remove a file's document from its Gemini store |
+
+## Technical details
+
+- **Status storage:** The `geminiFileSearch` status field is stored as a JSON string on record nodes (not a nested map) for cross-DB compatibility (Neo4j + Arango).
+- **Key resolution:** The API key is read from the Gemini provider card in the AI Models config (`/services/aiModels` KV node), preferring the `isDefault` entry. Env vars (`GEMINI_API_KEY`) are a last-resort fallback.
+- **Polling:** Document indexing state is polled via the File Search Documents API (`documents.list`), not `client.operations.get()` (which only supports video LROs in the current SDK).
+- **Citation building:** Gemini citations are converted into first-class flattened results that enter the same `build_message_content_array` → `CitationRefMapper` pipeline as PipesHub's own vector search results.

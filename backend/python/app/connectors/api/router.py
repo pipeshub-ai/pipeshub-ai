@@ -26,8 +26,6 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from googleapiclient.errors import HttpError
-from googleapiclient.http import HttpRequest, MediaIoBaseDownload
 from jose import JWTError
 from pydantic import BaseModel, ValidationError
 
@@ -60,6 +58,53 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+)
+from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.token_service.oauth_service import (
+    OAuthProvider,
+    OAuthToken,
+)
+from app.connectors.core.constants import (
+    AuthFieldKeys,
+    ConnectorRegistryAuthMetadataKeys,
+    ConnectorRequestKeys,
+    ConnectorStateKeys,
+    OAuthConfigKeys,
+)
+from app.connectors.core.factory.connector_factory import ConnectorFactory
+from app.connectors.core.registry.auth_builder import AuthType
+from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
+from app.connectors.core.registry.connector_builder import ConnectorScope
+from app.connectors.core.registry.connector_registry import ConnectorRegistry
+from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.vector_store_rebuild import (
+    VectorStoreRebuildBusyError,
+    VectorStoreRebuildConflictError,
+    acquire_rebuild_lock,
+    assert_no_indexing_in_flight,
+    list_rebuild_apps,
+    release_rebuild_lock,
+    schedule_vector_store_job_async,
+    start_vector_store_cleanup,
+    start_vector_store_reindex,
+)
+from app.connectors.sources.local_fs.connector import LocalFsConnector
+from app.connectors.sources.local_fs.file_events import (
+    _normalize_connector_type_value,
+    _parse_local_fs_file_event_batch_request,
+    _parse_local_fs_uploaded_file_event_batch_request,
+    _update_connector_status,
+)
+from app.connectors.sources.local_fs.models import (
+    LocalFsFileEventSubmissionResponse,
+)
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    FOLDER_MIME_TYPES,
+)
+from app.core.signed_url import SignedUrlHandler
 from app.edition_config import (
     allowed_connector_list_scopes,
     annotate_oauth_inheritance,
@@ -81,55 +126,13 @@ from app.edition_config import (
     strip_redacted_fields,
     vector_store_rebuild_available,
 )
-from app.edition_services import get_data_entities_processor_cls
-from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
-from app.connectors.core.base.connector.instance_lock import connector_init_lock
-from app.connectors.core.base.token_service.oauth_service import (
-    OAuthProvider,
-    OAuthToken,
-)
-from app.connectors.core.constants import (
-    AuthFieldKeys,
-    ConnectorRegistryAuthMetadataKeys,
-    ConnectorRequestKeys,
-    ConnectorStateKeys,
-    OAuthConfigKeys,
-)
-from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.core.registry.auth_builder import AuthType
-from app.connectors.core.registry.connector_builder import ConnectorScope
-from app.connectors.core.registry.connector_registry import ConnectorRegistry
-from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
-from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
-from app.connectors.sources.local_fs.connector import LocalFsConnector
-from app.connectors.sources.local_fs.file_events import (
-    _normalize_connector_type_value,
-    _parse_local_fs_file_event_batch_request,
-    _parse_local_fs_uploaded_file_event_batch_request,
-    _update_connector_status,
-)
-from app.connectors.sources.local_fs.models import (
-    LocalFsFileEventBatchStats,
-    LocalFsFileEventSubmissionResponse,
-)
-from app.connectors.services.kafka_service import KafkaService
-from app.connectors.services.vector_store_rebuild import (
-    VectorStoreRebuildBusyError,
-    VectorStoreRebuildConflictError,
-    acquire_rebuild_lock,
-    assert_no_indexing_in_flight,
-    list_rebuild_apps,
-    release_rebuild_lock,
-    schedule_vector_store_job_async,
-    start_vector_store_cleanup,
-    start_vector_store_reindex,
-)
 from app.edition_containers import ConnectorAppContainer
-from app.core.signed_url import SignedUrlHandler
+from app.edition_services import get_data_entities_processor_cls
 from app.models.entities import Record, RecordType
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
 from app.services.featureflag.platform_settings import read_platform_feature_flag
+from app.services.gemini_file_search import GeminiFileSearchService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.rebuild_state import PHASE_DROPPING, get_cleanup_phase
 from app.utils.api_call import make_api_call
@@ -137,7 +140,11 @@ from app.utils.chat_helpers import record_to_text
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
-from app.utils.oauth_config import extract_oauth_error_message, fetch_oauth_config_by_id, get_oauth_config
+from app.utils.oauth_config import (
+    extract_oauth_error_message,
+    fetch_oauth_config_by_id,
+    get_oauth_config,
+)
 from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -2083,6 +2090,179 @@ async def delete_record(
             status_code=500,
             detail=f"Internal server error while deleting record: {str(e)}"
         ) from e
+
+
+_GEMINI_FILE_SEARCH_CONFIG_PATH = "/services/geminiFileSearch"
+_GEMINI_FILE_SEARCH_DEFAULTS = {
+    "enabled": False,
+    "generationModel": "gemini-3.5-flash",
+    "embeddingModel": "models/gemini-embedding-2",
+    "maxStoresPerQuery": 5,
+    "maxMediaPerQuery": 5,
+}
+
+
+@router.get(
+    "/api/v1/gemini-file-search/config",
+    dependencies=[Depends(require_scopes(OAuthScopes.SEMANTIC_READ))],
+)
+@inject
+async def get_gemini_file_search_config(
+    config_service: ConfigurationService = Depends(
+        Provide[ConnectorAppContainer.config_service]
+    ),
+) -> dict:
+    stored = await config_service.get_config(
+        _GEMINI_FILE_SEARCH_CONFIG_PATH, use_cache=False
+    )
+    config = {
+        **_GEMINI_FILE_SEARCH_DEFAULTS,
+        **(stored if isinstance(stored, dict) else {}),
+    }
+    config["maxStoresPerQuery"] = min(
+        max(int(config.get("maxStoresPerQuery") or 5), 1), 5
+    )
+    return {"success": True, "config": config}
+
+
+@router.put(
+    "/api/v1/gemini-file-search/config",
+    dependencies=[Depends(require_scopes(OAuthScopes.SEMANTIC_WRITE))],
+)
+@inject
+async def update_gemini_file_search_config(
+    request: Request,
+    config_service: ConfigurationService = Depends(
+        Provide[ConnectorAppContainer.config_service]
+    ),
+) -> dict:
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Expected a JSON object")
+
+    config = dict(_GEMINI_FILE_SEARCH_DEFAULTS)
+    for key in config:
+        if key not in body:
+            continue
+        value = body[key]
+        if key == "enabled":
+            if not isinstance(value, bool):
+                raise HTTPException(status_code=400, detail="enabled must be a boolean")
+            config[key] = value
+        elif key in {"maxStoresPerQuery", "maxMediaPerQuery"}:
+            if isinstance(value, bool):
+                raise HTTPException(status_code=400, detail=f"{key} must be an integer")
+            try:
+                config[key] = int(value)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"{key} must be an integer"
+                ) from exc
+        elif isinstance(value, str) and value.strip():
+            config[key] = value.strip()
+        else:
+            raise HTTPException(
+                status_code=400, detail=f"{key} must be a non-empty string"
+            )
+
+    config["maxStoresPerQuery"] = min(max(config["maxStoresPerQuery"], 1), 5)
+    config["maxMediaPerQuery"] = min(max(config["maxMediaPerQuery"], 0), 20)
+    if not await config_service.set_config(_GEMINI_FILE_SEARCH_CONFIG_PATH, config):
+        raise HTTPException(status_code=503, detail="Failed to persist configuration")
+    return {"success": True, "config": config}
+
+
+@router.get(
+    "/api/v1/gemini-file-search/kb/{kb_id}/stats",
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))],
+)
+@inject
+async def get_gemini_file_search_kb_stats(
+    kb_id: str,
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    config_service: ConfigurationService = Depends(
+        Provide[ConnectorAppContainer.config_service]
+    ),
+) -> dict:
+    logger = request.app.container.logger()
+    user_id = request.state.user.get("userId")
+    user = await graph_provider.get_user_by_user_id(user_id)
+    user_key = (user or {}).get("id") or (user or {}).get("_key")
+    role = (
+        await graph_provider.get_user_kb_permission(kb_id, user_key)
+        if user_key
+        else None
+    )
+    if not role:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    cached = await config_service.get_config(
+        f"/services/geminiFileStore/{kb_id}", use_cache=False
+    )
+    if not isinstance(cached, dict) or not cached.get("storeName"):
+        return {"success": True, "configured": False, "kbId": kb_id}
+
+    service = await GeminiFileSearchService.create(logger, config_service)
+    stats = await service.get_store_stats(str(cached["storeName"]))
+    return {
+        "success": True,
+        "configured": True,
+        "kbId": kb_id,
+        "storeName": cached["storeName"],
+        "embeddingModel": cached.get("embeddingModel"),
+        "stats": stats,
+    }
+
+
+@router.delete(
+    "/api/v1/records/{record_id}/gemini-file-search",
+    dependencies=[
+        Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE, OAuthScopes.KB_DELETE))
+    ],
+)
+@inject
+async def delete_record_gemini_file_search(
+    record_id: str,
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    config_service: ConfigurationService = Depends(
+        Provide[ConnectorAppContainer.config_service]
+    ),
+) -> dict:
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    record_details = await graph_provider.check_record_access_with_details(
+        user_id=user_id, org_id=org_id, record_id=record_id
+    )
+    if not record_details:
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    permission = next(iter(record_details.get("permissions") or []), {})
+    if permission.get("relationship") not in {"OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER"}:
+        raise HTTPException(status_code=403, detail="You do not have permission to delete this document")
+
+    record = record_details.get("record") or record_details
+    metadata = GeminiFileSearchService.decode_file_search_status(
+        record.get("geminiFileSearch")
+    )
+    document_name = metadata.get("documentName")
+    store_name = metadata.get("storeName")
+    service = await GeminiFileSearchService.create(
+        request.app.container.logger(), config_service
+    )
+    if document_name:
+        await service.delete_document(document_name)
+
+    await graph_provider.update_node(
+        record_id,
+        CollectionNames.RECORDS.value,
+        {
+            "geminiFileSearch": GeminiFileSearchService.encode_file_search_status(
+                {**metadata, "status": "DELETED", "deletedAt": get_epoch_timestamp_in_ms()}
+            )
+        },
+    )
+    return {"success": True, "recordId": record_id}
 
 def _parse_reindex_body(request_body: dict | None) -> tuple[int, list[str] | None]:
     """Parse depth and optional statusFilters from a reindex request body."""

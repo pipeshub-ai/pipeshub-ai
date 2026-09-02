@@ -1456,6 +1456,7 @@
         "groups": "Groups",
         "teams": "Teams",
         "webSearch": "Web Search",
+        "geminiFileSearch": "Gemini File Search",
         "tenants": "Tenants",
         "superOrgs": "Organisations",
         "oauthApps": "OAuth Apps"

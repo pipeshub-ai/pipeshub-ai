@@ -64,6 +64,7 @@ const WORKSPACE_ITEMS: NavItem[] = [
   { icon: 'mail', labelKey: 'workspace.sidebar.nav.mail', route: '/workspace/mail', adminOnly: true },
   { icon: 'edit_note', labelKey: 'workspace.sidebar.nav.prompts', route: '/workspace/prompts', adminOnly: true },
   { icon: 'travel_explore', labelKey: 'workspace.sidebar.nav.webSearch', route: '/workspace/web-search', adminOnly: true },
+  { icon: 'document_scanner', labelKey: 'workspace.sidebar.nav.geminiFileSearch', route: '/workspace/gemini-file-search', adminOnly: true },
 ];
 
 const PERSONAL_ITEMS: NavItem[] = [

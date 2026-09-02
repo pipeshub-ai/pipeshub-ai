@@ -20,7 +20,8 @@ export interface IServiceRecord {
   indexingStatus: string;
   version: number;
   summaryDocumentId: string;
-  virtualRecordId:string;
+  virtualRecordId: string;
+  geminiFileSearch?: Record<string, unknown> | string | null;
   fileRecord: IServiceFileRecord | null;
   mailRecord: IServiceMailRecord | null;
 }

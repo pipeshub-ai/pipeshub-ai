@@ -3,6 +3,10 @@ import { Container } from 'inversify';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import {
   deleteRecord,
+  deleteRecordGeminiFileSearch,
+  getGeminiFileSearchConfig,
+  updateGeminiFileSearchConfig,
+  getGeminiFileSearchKbStats,
   getRecordById,
   updateRecord,
   getRecordBuffer,
@@ -48,7 +52,10 @@ import {
 } from '../validators/validators';
 // Clean up unused commented import
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
-import { extensionToMimeType, getMimeType } from '../../storage/mimetypes/mimetypes';
+import {
+  extensionToMimeType,
+  getMimeType,
+} from '../../storage/mimetypes/mimetypes';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { FileProcessorService } from '../../../libs/middlewares/file_processor/fp.service';
@@ -57,7 +64,10 @@ import { getPlatformSettingsFromStore } from '../../configuration_manager/utils/
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { RequestHandler, Response, NextFunction } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
-import { validateNoXSS, validateNoFormatSpecifiers } from '../../../utils/xss-sanitization';
+import {
+  validateNoXSS,
+  validateNoFormatSpecifiers,
+} from '../../../utils/xss-sanitization';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
@@ -65,9 +75,7 @@ const logger = Logger.getInstance({
   service: 'KnowledgeBaseRoutes',
 });
 
-export function createKnowledgeBaseRouter(
-  container: Container,
-): Router {
+export function createKnowledgeBaseRouter(container: Container): Router {
   const router = Router();
   const appConfig = container.get<AppConfig>('AppConfig');
   const keyValueStoreService = container.get<KeyValueStoreService>(
@@ -229,6 +237,35 @@ export function createKnowledgeBaseRouter(
     requireScopes(OAuthScopeNames.KB_DELETE),
     ValidationMiddleware.validate(deleteRecordSchema),
     deleteRecord(appConfig),
+  );
+
+  router.delete(
+    '/record/:recordId/gemini-file-search',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_DELETE),
+    ValidationMiddleware.validate(deleteRecordSchema),
+    deleteRecordGeminiFileSearch(appConfig),
+  );
+
+  router.get(
+    '/gemini-file-search/config',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
+    getGeminiFileSearchConfig(appConfig),
+  );
+
+  router.put(
+    '/gemini-file-search/config',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
+    updateGeminiFileSearchConfig(appConfig),
+  );
+
+  router.get(
+    '/gemini-file-search/kb/:kbId/stats',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
+    getGeminiFileSearchKbStats(appConfig),
   );
 
   // Old api for streaming records
