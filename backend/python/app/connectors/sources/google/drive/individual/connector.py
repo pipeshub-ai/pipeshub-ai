@@ -90,8 +90,8 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
     map_source_status,
     not_downloadable,
     to_stream_error,
@@ -1520,10 +1520,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     ) from http_error
                 except Exception as chunk_error:
                     self.logger.error(f"Error during {error_context}: {str(chunk_error)}")
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=f"Error during {error_context}",
-                    )
+                    raise to_stream_error(
+                        chunk_error, connector=self.display_name
+                    ) from chunk_error
 
                 buffer.seek(0)
                 content = buffer.read()
@@ -1537,10 +1536,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
             raise
         except Exception as stream_error:
             self.logger.error(f"Error in {error_context} stream: {str(stream_error)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error setting up {error_context} stream",
-            )
+            raise to_stream_error(
+                stream_error, connector=self.display_name
+            ) from stream_error
         finally:
             buffer.close()
 
@@ -1618,21 +1616,12 @@ class GoogleDriveIndividualConnector(BaseConnector):
             return await self.drive_data_source.execute(metadata_request.execute)
         except HttpError as http_error:
             self.logger.error(f"Error fetching file metadata from Drive: {str(http_error)}")
-            if http_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value,
-                    detail="File not found in Google Drive"
-                )
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error fetching file metadata: {str(http_error)}"
-            )
+            raise map_source_status(
+                http_error.resp.status, connector=self.display_name
+            ) from http_error
         except Exception as e:
             self.logger.error(f"Error getting file metadata: {str(e)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error getting file metadata: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     def get_signed_url(self, record: Record) -> Optional[str]:
         """Get a signed URL for a specific record."""
@@ -1661,6 +1650,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 )
 
             self.logger.info(f"Streaming Drive file: {file_id}, convertTo: {convertTo}")
+
+            if not self.google_client or not self.drive_data_source:
+                raise connector_not_ready(self.display_name)
 
             # Get drive service
             drive_service = self.google_client.get_client()

@@ -1101,7 +1101,8 @@ class TestStreamRecord:
         record = _make_file_record(external_record_group_id=None)
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
-        assert exc_info.value.status_code == 404
+        # Local metadata gap, not a deleted file.
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.azure_files.connector.create_stream_record_response")
@@ -1135,17 +1136,36 @@ class TestStreamRecord:
     @pytest.mark.asyncio
     async def test_stream_fallback_not_found(self, conn):
         from fastapi import HTTPException
+
+        class _AzureNotFound(Exception):
+            status_code = 404
+
         conn.data_source = MagicMock()
         conn.data_source.generate_file_sas_url = AsyncMock(
             return_value=_make_response(False, error="no key")
         )
-        conn.data_source.download_file = AsyncMock(
-            return_value=_make_response(False, error="not found in share")
-        )
+        conn.data_source.download_file = AsyncMock(side_effect=_AzureNotFound("gone"))
         record = _make_file_record()
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
         assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_stream_fallback_auth_error_is_not_reported_as_deleted(self, conn):
+        from fastapi import HTTPException
+
+        class _AzureUnauthorized(Exception):
+            status_code = 401
+
+        conn.data_source = MagicMock()
+        conn.data_source.generate_file_sas_url = AsyncMock(
+            return_value=_make_response(False, error="no key")
+        )
+        conn.data_source.download_file = AsyncMock(side_effect=_AzureUnauthorized("401"))
+        record = _make_file_record()
+        with pytest.raises(HTTPException) as exc_info:
+            await conn.stream_record(record)
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_stream_fallback_other_error(self, conn):

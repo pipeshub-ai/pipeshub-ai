@@ -269,26 +269,28 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response with download URL (string)
+
+        Raises:
+            Exception: SDK errors propagate. This feeds the user-facing streaming path,
+                which needs BoxAPIError's status to tell an expired token from a deleted
+                file; flattening it to a message made every failure look like a 404.
         """
         client = await self._get_client()
         manager = getattr(client, 'downloads', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'downloads' not found")
 
-        try:
-            loop = asyncio.get_running_loop()
-            # Get download URL (creates shared link if needed, expires ~24 hours)
-            response = await loop.run_in_executor(
-                None,
-                lambda: manager.get_download_file_url(
-                    file_id=file_id,
-                    version=version,
-                    access_token=access_token
-                )
+        loop = asyncio.get_running_loop()
+        # Get download URL (creates shared link if needed, expires ~24 hours)
+        response = await loop.run_in_executor(
+            None,
+            lambda: manager.get_download_file_url(
+                file_id=file_id,
+                version=version,
+                access_token=access_token
             )
-            return BoxResponse(success=True, data=response)
-        except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+        )
+        return BoxResponse(success=True, data=response)
 
     async def files_get_file_content(self, file_id: str, **kwargs) -> BoxResponse:
         """Get file content/download file

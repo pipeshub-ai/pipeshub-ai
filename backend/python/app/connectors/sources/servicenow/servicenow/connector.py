@@ -36,6 +36,12 @@ from app.connectors.core.constants import (
     OAuthRedirectPaths,
 )
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -394,7 +400,7 @@ class ServiceNowConnector(BaseConnector):
             ServiceNowDataSource with current valid token
         """
         if not self.servicenow_client:
-            raise Exception("ServiceNow client not initialized. Call init() first.")
+            raise connector_not_ready(self.display_name)
 
         connector_id = self.connector_id
 
@@ -402,13 +408,13 @@ class ServiceNowConnector(BaseConnector):
         config = await self.config_service.get_config(ServiceNowConfigPaths.CONNECTOR_CONFIG.format(connector_id=connector_id))
 
         if not config:
-            raise Exception("ServiceNow configuration not found")
+            raise connector_not_ready(self.display_name)
 
         credentials = config.get(OAuthConfigKeys.CREDENTIALS) or {}
         fresh_token = credentials.get(OAuthConfigKeys.ACCESS_TOKEN)
 
         if not fresh_token:
-            raise Exception("No access token available")
+            raise connector_not_ready(self.display_name)
 
         # Update client's token if it changed (mutation)
         if self.servicenow_client.access_token != fresh_token:
@@ -566,9 +572,7 @@ class ServiceNowConnector(BaseConnector):
             raise  # Re-raise HTTP exceptions as-is
         except Exception as e:
             self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Failed to stream record: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _fetch_article_content(self, article_sys_id: str) -> str:
         """
@@ -604,18 +608,13 @@ class ServiceNowConnector(BaseConnector):
                     sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE
                 )
             except ServiceNowAPIError as e:
-                raise HTTPException(
-                    status_code=e.status_code,
-                    detail=f"Failed to fetch article: {e.message}"
-                )
+                self.logger.error(f"Failed to fetch article {article_sys_id}: {e.message}")
+                raise map_source_status(e.status_code, connector=self.display_name) from e
 
             # Extract article from result array
             articles = response.result
             if not articles or len(articles) == 0:
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value,
-                    detail=f"Article not found: {article_sys_id}"
-                )
+                raise not_found_at_source(self.display_name)
 
             article = articles[0]
 
@@ -633,10 +632,7 @@ class ServiceNowConnector(BaseConnector):
             raise  # Re-raise HTTP exceptions
         except Exception as e:
             self.logger.error(f"Failed to fetch article content: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to fetch article content: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _fetch_attachment_content(self, attachment_sys_id: str) -> bytes:
         """
@@ -659,10 +655,7 @@ class ServiceNowConnector(BaseConnector):
             file_content = await datasource.download_attachment(attachment_sys_id)
 
             if not file_content:
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value,
-                    detail=f"Attachment not found or empty: {attachment_sys_id}"
-                )
+                raise not_found_at_source(self.display_name)
 
             return file_content
 
@@ -670,16 +663,10 @@ class ServiceNowConnector(BaseConnector):
             raise  # Re-raise HTTP exceptions
         except ServiceNowAPIError as e:
             self.logger.error(f"ServiceNow API error downloading attachment: {e.message}")
-            raise HTTPException(
-                status_code=e.status_code,
-                detail=f"Failed to download attachment: {e.message}"
-            )
+            raise map_source_status(e.status_code, connector=self.display_name) from e
         except Exception as e:
             self.logger.error(f"Failed to download attachment: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to download attachment: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     def get_signed_url(self, record: Record) -> Optional[str]:
         """

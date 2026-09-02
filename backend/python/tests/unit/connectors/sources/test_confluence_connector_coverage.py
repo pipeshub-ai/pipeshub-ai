@@ -1136,7 +1136,7 @@ class TestStreamRecord:
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.external_record_id = "p1"
         record.record_name = "T"
-        c._fetch_page_content = AsyncMock(side_effect=Exception("fail"))
+        c._fetch_page_data_with_adf = AsyncMock(side_effect=Exception("fail"))
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
         assert exc_info.value.status_code == 500

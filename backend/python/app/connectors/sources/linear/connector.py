@@ -26,6 +26,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -4541,6 +4542,7 @@ class LinearConnector(BaseConnector):
                     project_response.data and project_response.data.get("project")
                 ),
                 connector=self.display_name,
+                status=project_response.status_code,
                 message=project_response.message,
             )
 
@@ -4654,6 +4656,7 @@ class LinearConnector(BaseConnector):
                 success=response.success,
                 has_payload=bool(response.data and response.data.get("issue")),
                 connector=self.display_name,
+                status=response.status_code,
                 message=response.message,
             )
 
@@ -4757,6 +4760,7 @@ class LinearConnector(BaseConnector):
                 success=response.success,
                 has_payload=bool(response.data and response.data.get("document")),
                 connector=self.display_name,
+                status=response.status_code,
                 message=response.message,
             )
 
@@ -4827,7 +4831,10 @@ class LinearConnector(BaseConnector):
             elif record.record_type == RecordType.LINK:
                 # Stream attachment/link as markdown (clickable link format)
                 if not record.weburl:
-                    raise ValueError(f"LinkRecord {record.external_record_id} missing weburl")
+                    raise not_downloadable(
+                        f"LinkRecord {record.external_record_id} has no URL to open.",
+                        connector=self.display_name,
+                    )
 
                 # Return simple markdown link format (same as issue/comment descriptions)
                 link_name = record.record_name or 'Link'
@@ -4857,7 +4864,10 @@ class LinearConnector(BaseConnector):
             elif record.record_type == RecordType.FILE:
                 # Stream file content from external_record_id (file URL)
                 if not record.external_record_id:
-                    raise ValueError(f"FileRecord {record.id} missing external_record_id (file URL)")
+                    raise not_downloadable(
+                        f"FileRecord {record.id} has no source URL to download from.",
+                        connector=self.display_name,
+                    )
 
                 # Download file content and stream it with authentication
                 async def file_stream() -> AsyncGenerator[bytes, None]:
@@ -4891,7 +4901,10 @@ class LinearConnector(BaseConnector):
                 )
 
             else:
-                raise ValueError(f"Unsupported record type for streaming: {record.record_type}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=f"Unsupported record type for streaming: {record.record_type}",
+                )
 
         except HTTPException:
             raise

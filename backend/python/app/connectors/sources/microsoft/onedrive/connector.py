@@ -1753,7 +1753,11 @@ class OneDriveConnector(BaseConnector):
             # Reinitialize credential if needed (user might be accessing files after days of inactivity)
             await self._reinitialize_credential_if_needed()
 
-            return await self.msgraph_client.get_signed_url(record.external_record_group_id, record.external_record_id)
+            return await self.msgraph_client.get_signed_url(
+                record.external_record_group_id,
+                record.external_record_id,
+                raise_on_error=True,
+            )
         except HTTPException:
             raise
         except Exception as e:

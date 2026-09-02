@@ -1886,5 +1886,6 @@ class TestGetFreshDatasourceOAuth:
             "credentials": {},
         })
 
-        with pytest.raises(Exception, match="No OAuth access token"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409

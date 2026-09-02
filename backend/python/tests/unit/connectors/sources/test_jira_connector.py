@@ -177,8 +177,9 @@ class TestGetFreshDatasource:
         connector = _make_connector()
         connector.external_client = None
 
-        with pytest.raises(Exception, match="not initialized"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_api_token_returns_existing_datasource(self):
@@ -198,8 +199,9 @@ class TestGetFreshDatasource:
         connector.external_client = MagicMock()
         connector.config_service.get_config = AsyncMock(return_value=None)
 
-        with pytest.raises(Exception, match="not found"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
 
 # ===========================================================================
@@ -2296,5 +2298,6 @@ class TestGetFreshDatasourceOAuth:
             "credentials": {},
         })
 
-        with pytest.raises(Exception, match="No OAuth access token"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409

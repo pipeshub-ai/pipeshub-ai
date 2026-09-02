@@ -925,7 +925,8 @@ class TestGetFileMetadataFromDrive:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector._get_file_metadata_from_drive("f1")
-        assert exc_info.value.status_code == 500
+        # Drive's own status is mapped: a 403 is a denial, not an opaque 500.
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_generic_exception(self, connector):
@@ -2574,7 +2575,8 @@ class TestGetFileMetadataFromDriveFullCoverage:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector._get_file_metadata_from_drive("f1")
-        assert exc_info.value.status_code == 500
+        # Drive's own status is mapped: a 403 is a denial, not an opaque 500.
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_generic_exception(self, connector):

@@ -16,11 +16,15 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from fastapi import HTTPException
+
 from app.config.constants.arangodb import (
     MimeTypes,
     OriginTypes,
     ProgressStatus,
 )
+from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
 from app.models.entities import Record, RecordGroupType, RecordType, TicketRecord, ItemType
 from app.models.blocks import (
     BlockGroup,
@@ -269,18 +273,24 @@ class IssuesSync:
         c = self.c
         raw_url = getattr(record, "weburl", "") or ""
         if not raw_url:
-            raise ValueError("Web URL is required for indexing ticket")
+            raise HTTPException(
+                HttpStatusCode.BAD_REQUEST.value, "Web URL is required for indexing ticket"
+            )
         issue_number = parse_item_id_from_url(raw_url)
         external_group_id: str = getattr(record, "external_record_group_id")
         if not external_group_id:
-            raise Exception("Project id not found.")
+            raise HTTPException(HttpStatusCode.BAD_REQUEST.value, "Project id not found.")
         project_id = external_group_id.split("-")[0]
 
         issue_res = await c.runtime.ds_call(c.data_source.get_issue, project_id=project_id, issue_iid=issue_number)
-        if not issue_res.success:
-            raise Exception(f"Failed to fetch issue details for record {record.external_record_id}: {issue_res.error}")
-        if not issue_res.data:
-            raise Exception(f"No issue data found for record {record.external_record_id}")
+        if not issue_res.success or not issue_res.data:
+            raise_for_stream_fetch(
+                success=issue_res.success,
+                has_payload=bool(issue_res.data),
+                connector=c.display_name,
+                status=issue_res.status_code,
+                message=issue_res.error,
+            )
 
         base_project_url = f"{c._gitlab_base_url}/api/v4/projects/{project_id}"
         block_group_number = 0

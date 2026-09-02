@@ -99,11 +99,12 @@ def connector(mock_logger, mock_data_entities_processor,
     return c
 
 
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.status_code = status_code
     return r
 
 
@@ -519,12 +520,13 @@ class TestStreamRecordComprehensive:
     async def test_stream_not_found(self, connector):
         connector.data_source = AsyncMock()
         connector.data_source.export_page_markdown = AsyncMock(
-            return_value=_make_response(success=False)
+            return_value=_make_response(success=False, status_code=404)
         )
         record = MagicMock()
         record.external_record_id = "page/1"
-        with pytest.raises(HTTPException):
+        with pytest.raises(HTTPException) as ei:
             await connector.stream_record(record)
+        assert ei.value.status_code == 404
 
 
 # ===========================================================================

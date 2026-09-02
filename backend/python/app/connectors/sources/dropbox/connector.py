@@ -91,9 +91,9 @@ from app.sources.client.dropbox.dropbox_ import (
     DropboxTokenConfig,
 )
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
+    not_downloadable,
     not_found_at_source,
     raise_for_stream_fetch,
     to_stream_error,
@@ -2837,20 +2837,50 @@ class DropboxConnector(BaseConnector):
             file_record = await self.data_entities_processor.get_file_record_by_id(record.id)
             if not user_with_permission:
                 self.logger.warning(f"No user found with permission to node: {record.id}")
-                return None
+                raise not_downloadable(
+                    "PipesHub has no user with access to this item, so it cannot be "
+                    "downloaded.",
+                    connector=self.display_name,
+                )
             if not file_record:
                 self.logger.warning(f"No file record found for node: {record.id}")
-                return None
+                raise not_downloadable(
+                    "This item is missing the file metadata needed to download it.",
+                    connector=self.display_name,
+                )
 
             members = [UserSelectorArg("email", user_with_permission.email)]
             team_member_info = await self.data_source.team_members_get_info_v2(members=members)
-            team_member_id = team_member_info.data.members_info[0].get_member_info().profile.team_member_id
+            raise_for_stream_fetch(
+                success=team_member_info.success,
+                has_payload=bool(getattr(team_member_info.data, "members_info", None)),
+                connector=self.display_name,
+                message=team_member_info.error,
+            )
+            member_item = team_member_info.data.members_info[0]
+            # MembersGetInfoItem is a union: the id_not_found arm has no profile,
+            # so get_member_info() would raise an opaque AttributeError.
+            if hasattr(member_item, "is_member_info") and not member_item.is_member_info():
+                self.logger.warning(
+                    f"Dropbox has no team member for {user_with_permission.email}"
+                )
+                raise not_downloadable(
+                    "PipesHub could not resolve this item's owner in the Dropbox team, "
+                    "so it cannot be downloaded.",
+                    connector=self.display_name,
+                )
+            team_member_id = member_item.get_member_info().profile.team_member_id
             # Dropbox uses path or file ID for temporary links. ID is more robust.
             team_folder_id = None
             if record.external_record_group_id and not record.external_record_group_id.startswith("dbmid:"):
                 team_folder_id = record.external_record_group_id
 
-            response = await self.data_source.files_get_temporary_link(path=file_record.path, team_folder_id=team_folder_id, team_member_id=team_member_id)
+            response = await self.data_source.files_get_temporary_link(
+                path=file_record.path,
+                team_folder_id=team_folder_id,
+                team_member_id=team_member_id,
+                raise_on_error=True,
+            )
             if not response.success or not response.data:
                 self.logger.error(
                     f"Failed to get temporary link for record {record.id}: {response.error}"

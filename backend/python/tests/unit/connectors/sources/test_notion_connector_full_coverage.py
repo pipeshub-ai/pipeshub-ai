@@ -69,10 +69,11 @@ def _make_connector():
     return conn
 
 
-def _api_resp(success=True, data=None, error=None):
+def _api_resp(success=True, data=None, error=None, status=None):
     resp = MagicMock()
     resp.success = success
     resp.error = error
+    resp.status_code = status
     if data is not None:
         resp.data = MagicMock()
         resp.data.json.return_value = data
@@ -298,14 +299,15 @@ class TestGetCommentAttachmentUrl:
     async def test_api_failure_returns_signed_url(self):
         conn = _make_connector()
         ds = MagicMock()
-        ds.retrieve_comment = AsyncMock(return_value=_api_resp(False))
+        ds.retrieve_comment = AsyncMock(return_value=_api_resp(False, status=404))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
         record = _make_file_record(
             external_record_id="ca_commentid_report.pdf",
             signed_url="https://fallback.url",
         )
-        result = await conn._get_comment_attachment_url(record)
-        assert result == "https://fallback.url"
+        with pytest.raises(HTTPException) as exc_info:
+            await conn._get_comment_attachment_url(record)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_no_attachments_returns_signed_url(self):
@@ -402,14 +404,15 @@ class TestGetBlockFileUrl:
     async def test_api_failure_returns_signed_url(self):
         conn = _make_connector()
         ds = MagicMock()
-        ds.retrieve_block = AsyncMock(return_value=_api_resp(False))
+        ds.retrieve_block = AsyncMock(return_value=_api_resp(False, status=403))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
         record = _make_file_record(
             external_record_id="block-1",
             signed_url="https://old.url",
         )
-        result = await conn._get_block_file_url(record)
-        assert result == "https://old.url"
+        with pytest.raises(HTTPException) as exc_info:
+            await conn._get_block_file_url(record)
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_file_key_returns_url(self):
@@ -949,16 +952,18 @@ class TestGetFreshDatasource:
     async def test_no_client_raises(self):
         conn = _make_connector()
         conn.notion_client = None
-        with pytest.raises(Exception, match="not initialized"):
+        with pytest.raises(HTTPException) as exc_info:
             await conn._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_config_raises(self):
         conn = _make_connector()
         conn.notion_client = MagicMock()
         conn.config_service.get_config = AsyncMock(return_value=None)
-        with pytest.raises(Exception, match="not found"):
+        with pytest.raises(HTTPException) as exc_info:
             await conn._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_access_token_raises(self):
@@ -967,8 +972,9 @@ class TestGetFreshDatasource:
         conn.config_service.get_config = AsyncMock(
             return_value={"auth": {"authType": "API_TOKEN"}, "credentials": {}}
         )
-        with pytest.raises(Exception, match="No access token"):
+        with pytest.raises(HTTPException) as exc_info:
             await conn._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_token_unchanged(self):
@@ -1638,10 +1644,13 @@ class TestFetchBlockChildrenRecursive:
     async def test_api_failure(self):
         conn = _make_connector()
         ds = MagicMock()
-        ds.retrieve_block_children = AsyncMock(return_value=_api_resp(False, error="err"))
+        ds.retrieve_block_children = AsyncMock(
+            return_value=_api_resp(False, error="err", status=429)
+        )
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
-        result = await conn._fetch_block_children_recursive("page-1")
-        assert result == []
+        with pytest.raises(HTTPException) as exc_info:
+            await conn._fetch_block_children_recursive("page-1")
+        assert exc_info.value.status_code == 429
 
     @pytest.mark.asyncio
     async def test_non_dict_response(self):
@@ -1665,13 +1674,13 @@ class TestFetchBlockChildrenRecursive:
         assert len(result) == 2
 
     @pytest.mark.asyncio
-    async def test_exception_breaks_loop(self):
+    async def test_transport_error_is_not_swallowed(self):
         conn = _make_connector()
         ds = MagicMock()
         ds.retrieve_block_children = AsyncMock(side_effect=Exception("network"))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
-        result = await conn._fetch_block_children_recursive("page-1")
-        assert result == []
+        with pytest.raises(HTTPException):
+            await conn._fetch_block_children_recursive("page-1")
 
 
 # ===================================================================
@@ -3291,12 +3300,15 @@ class TestFetchAsBlocks:
     async def test_fetch_data_source_metadata_failure(self):
         conn = _make_connector()
         ds = MagicMock()
-        ds.retrieve_data_source_by_id = AsyncMock(return_value=_api_resp(False, error="not found"))
+        ds.retrieve_data_source_by_id = AsyncMock(
+            return_value=_api_resp(False, error="not found", status=404)
+        )
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
         parser = MagicMock()
 
-        result = await conn._fetch_data_source_as_blocks("ds-1", parser)
-        assert result.blocks == []
+        with pytest.raises(HTTPException) as exc_info:
+            await conn._fetch_data_source_as_blocks("ds-1", parser)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_fetch_data_source_query_failure(self):

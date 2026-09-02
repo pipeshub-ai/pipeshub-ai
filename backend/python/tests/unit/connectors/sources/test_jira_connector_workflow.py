@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
@@ -190,8 +191,9 @@ class TestJiraFreshDatasource:
     async def test_no_client_raises(self):
         connector, *_ = _make_connector()
         connector.external_client = None
-        with pytest.raises(Exception, match="not initialized"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
 
 # ===========================================================================

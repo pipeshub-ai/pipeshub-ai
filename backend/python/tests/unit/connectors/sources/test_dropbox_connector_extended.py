@@ -715,6 +715,8 @@ class TestGetSignedUrl:
 
     @pytest.mark.asyncio
     async def test_folder_record(self):
+        from fastapi import HTTPException
+
         c = _make_connector()
         record = MagicMock()
         record.record_type = RecordType.FILE
@@ -722,8 +724,9 @@ class TestGetSignedUrl:
         record.external_record_group_id = "group-1"
         record.external_record_id = "id:d1"
 
-        result = await c.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await c.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
 
 # ===========================================================================

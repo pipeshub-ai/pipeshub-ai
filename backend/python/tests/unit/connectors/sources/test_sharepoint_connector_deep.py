@@ -720,14 +720,17 @@ class TestGetSignedUrl:
 
     @pytest.mark.asyncio
     async def test_no_drive_id(self):
+        from fastapi import HTTPException
+
         c, *_ = _make_connector()
         c._reinitialize_credential_if_needed = AsyncMock()
         record = MagicMock()
         record.record_type = RecordType.FILE
         record.external_record_group_id = None
         record.id = "r1"
-        result = await c.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await c.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_success(self):

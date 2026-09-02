@@ -7,6 +7,7 @@ from logging import Logger
 from typing import Any, Optional
 from uuid import uuid4
 
+from fastapi import HTTPException  # pyright: ignore[reportMissingImports]
 from fastapi.responses import StreamingResponse  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel, Field  # pyright: ignore[reportMissingImports]
 
@@ -23,6 +24,11 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -484,19 +490,19 @@ class ZoomConnector(BaseConnector):
         token has changed — identical to the Jira connector pattern.
         """
         if not self.external_client:
-            raise RuntimeError("Zoom client is not initialised. Call init() first.")
+            raise connector_not_ready(self.display_name)
         if self.data_source is None:
-            raise RuntimeError("Zoom data source is not initialised. Call init() first.")
+            raise connector_not_ready(self.display_name)
 
         config = await self.config_service.get_config(
             f"/services/connectors/{self.connector_id}/config"
         )
         if not config:
-            raise RuntimeError("Zoom configuration not found in config store.")
+            raise connector_not_ready(self.display_name)
 
         fresh_token: str = (config.get("credentials") or {}).get("access_token") or ""
         if not fresh_token:
-            raise RuntimeError("No OAuth access token available for Zoom connector.")
+            raise connector_not_ready(self.display_name)
 
         internal = self.external_client.get_client()
         if internal.get_token() != fresh_token:
@@ -596,9 +602,13 @@ class ZoomConnector(BaseConnector):
         return meetings
 
     async def _list_meeting_participants(
-        self, encoded_uuid: str
+        self, encoded_uuid: str, raise_on_error: bool = False
     ) -> list[ZoomParticipant]:
-        """GET /v2/report/meetings/{uuid}/participants — paginated."""
+        """GET /v2/report/meetings/{uuid}/participants — paginated.
+
+        Sync builds permissions best-effort and must not abort on one bad
+        meeting, so failures stop pagination silently unless *raise_on_error*.
+        """
         datasource = await self._get_fresh_datasource()
         participants: list[ZoomParticipant] = []
         next_page_token: Optional[str] = None
@@ -609,6 +619,18 @@ class ZoomConnector(BaseConnector):
                 next_page_token=next_page_token,
             )
             if not res.success or not res.data:
+                if raise_on_error and not res.success:
+                    self.logger.warning(
+                        "Zoom: participants call failed for %s — %s",
+                        encoded_uuid, res.message,
+                    )
+                    raise_for_stream_fetch(
+                        success=False,
+                        has_payload=False,
+                        connector=self.display_name,
+                        status=res.status_code,
+                        message=res.message or res.error,
+                    )
                 break
             participants.extend(
                 ZoomParticipant.model_validate(p)
@@ -637,7 +659,9 @@ class ZoomConnector(BaseConnector):
     async def _fetch_transcript(self, meeting_uuid: str) -> Optional[str]:
         """Fetch AI Companion transcript for a past meeting.
 
-        Returns transcript text, or None on 3322 / not found / failure.
+        Returns None only when Zoom itself says there is nothing to fetch (the
+        3322 / meeting-not-found body codes). Every other failure raises, so an
+        expired token is not served to the caller as an empty transcript.
         """
         datasource = await self._get_fresh_datasource()
         raw_uuid = str(meeting_uuid or "").strip()
@@ -658,17 +682,24 @@ class ZoomConnector(BaseConnector):
                     self.logger.debug(
                         "Zoom: no AI transcript for %s (code 3322)", meeting_uuid
                     )
-                elif zoom_code in _ZOOM_CODES_MEETING_NOT_FOUND:
+                    return None
+                if zoom_code in _ZOOM_CODES_MEETING_NOT_FOUND:
                     self.logger.debug(
                         "Zoom: meeting not found/expired for %s (code %s)", meeting_uuid, zoom_code
                     )
-                else:
-                    self.logger.warning(
-                        "Zoom: transcript metadata call failed for %s "
-                        "(zoom_code=%s, message=%s)",
-                        meeting_uuid, zoom_code, meta_resp.message,
-                    )
-                return None
+                    return None
+                self.logger.warning(
+                    "Zoom: transcript metadata call failed for %s "
+                    "(zoom_code=%s, message=%s)",
+                    meeting_uuid, zoom_code, meta_resp.message,
+                )
+                raise_for_stream_fetch(
+                    success=False,
+                    has_payload=False,
+                    connector=self.display_name,
+                    status=meta_resp.status_code,
+                    message=meta_resp.message or meta_resp.error,
+                )
 
             if not isinstance(meta_resp.data, dict):
                 return None
@@ -685,7 +716,13 @@ class ZoomConnector(BaseConnector):
                 self.logger.warning(
                     "Zoom: transcript download failed for %s — %s", meeting_uuid, dl_resp.message
                 )
-                return None
+                raise_for_stream_fetch(
+                    success=False,
+                    has_payload=False,
+                    connector=self.display_name,
+                    status=dl_resp.status_code,
+                    message=dl_resp.message or dl_resp.error,
+                )
 
             text = (
                 dl_resp.data.get("transcript_text")  # type: ignore[union-attr]
@@ -694,12 +731,14 @@ class ZoomConnector(BaseConnector):
             )
             return str(text) if text else None
 
+        except HTTPException:
+            raise
         except Exception as exc:
             self.logger.error(
                 "❌ Zoom: transcript fetch failed for %s: %s", meeting_uuid, exc,
                 exc_info=True,
             )
-            return None
+            raise to_stream_error(exc, connector=self.display_name) from exc
 
     # ============================================================================
     # Meeting concurrency helper
@@ -1015,21 +1054,21 @@ class ZoomConnector(BaseConnector):
         convertTo: Optional[str] = None,
     ) -> StreamingResponse:
 
+        if not self.data_source:
+            raise connector_not_ready(self.display_name)
+
         transcript = ""
         participants_md = ""
 
-        if record.external_record_id and self.data_source:
+        if record.external_record_id:
             meeting_uuid = record.external_record_id
             transcript = await self._fetch_transcript(meeting_uuid) or ""
 
-            try:
-                encoded = self._encode_uuid(meeting_uuid)
-                participants = await self._list_meeting_participants(encoded)
-                participants_md = self._build_participants_markdown(participants)
-            except Exception as exc:
-                self.logger.warning(
-                    "Zoom: could not fetch participants for %s: %s", meeting_uuid, exc
-                )
+            encoded = self._encode_uuid(meeting_uuid)
+            participants = await self._list_meeting_participants(
+                encoded, raise_on_error=True
+            )
+            participants_md = self._build_participants_markdown(participants)
 
         block_groups = [
             BlockGroup(

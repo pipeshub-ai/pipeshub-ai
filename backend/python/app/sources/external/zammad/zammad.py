@@ -1137,7 +1137,8 @@ class ZammadDataSource:
             return ZammadResponse(
                 success=status_ok,
                 data=response.json() if response_text else None,
-                message="get_kb_answer succeeded" if status_ok else "get_kb_answer failed"
+                message="get_kb_answer succeeded" if status_ok else "get_kb_answer failed",
+                status_code=response.status,
             )
         except Exception as e:
             return ZammadResponse(

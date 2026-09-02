@@ -1379,7 +1379,7 @@ class TestStreamMailRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector._stream_mail_record(gmail_service, "msg-1", record)
-        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+        assert exc_info.value.status_code == HttpStatusCode.BAD_GATEWAY.value
 
     @pytest.mark.asyncio
     async def test_stream_mail_general_exception(self, connector):

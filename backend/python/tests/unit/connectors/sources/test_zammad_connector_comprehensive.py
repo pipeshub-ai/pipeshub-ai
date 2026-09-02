@@ -275,7 +275,7 @@ class TestStreamRecord:
         record.record_type = RecordType.PROJECT
         with pytest.raises(HTTPException) as exc_info:
             await zammad_connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
 
     async def test_stream_error_raises(self, zammad_connector):
         record = MagicMock()

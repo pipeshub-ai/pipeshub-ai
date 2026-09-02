@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
+from fastapi import HTTPException
+
 from app.config.constants.arangodb import (
     SUPPORTED_CODE_FILE_EXTENSIONS,
     CollectionNames,
@@ -31,6 +33,8 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
 from app.connectors.core.constants import (
     IconPaths,
 )
@@ -896,36 +900,37 @@ class ReposSync:
     ) -> AsyncGenerator[bytes, None]:
         """Stream code file content from GitLab."""
         c = self.c
-        try:
-            file_path = (
-                _repo_path_from_blob_web_url(record.weburl)
-                or record.file_path
+        file_path = (
+            _repo_path_from_blob_web_url(record.weburl)
+            or record.file_path
+        )
+        if not file_path:
+            file_path = await c.data_entities_processor.get_record_path(record.id)
+        if not file_path:
+            raise HTTPException(
+                HttpStatusCode.BAD_REQUEST.value,
+                f"Cannot resolve repo path for record {record.id}: "
+                f"weburl={record.weburl!r}, file_path={record.file_path!r}",
             )
-            if not file_path:
-                file_path = await c.data_entities_processor.get_record_path(record.id)
-            if not file_path:
-                raise ValueError(
-                    f"Cannot resolve repo path for record {record.id}: "
-                    f"weburl={record.weburl!r}, file_path={record.file_path!r}"
-                )
-            external_group_id = getattr(record, "external_record_group_id", None)
-            if not external_group_id:
-                raise ValueError("Project id not found.")
-            project_id = external_group_id.split("-")[0]
-            file_res = await c.runtime.ds_call(c.data_source.get_file_content, project_id=project_id, file_path=file_path)
-            if not file_res.success:
-                raise Exception(f"Error fetching file content for project {project_id} path {file_path}: {file_res.error}")
-            file_data = file_res.data
-            if not file_data:
-                raise Exception(f"No file content returned by GitLab for project {project_id} path {file_path}")
-            content_b64 = getattr(file_data, "content", None)
-            if content_b64 is None:
-                yield b""
-                return
-            decoded_bytes = await asyncio.to_thread(base64.b64decode, content_b64)
-            yield decoded_bytes
-        except Exception as e:
-            raise Exception(f"Error fetching code content for record {record.id}: {e}") from e
+        external_group_id = getattr(record, "external_record_group_id", None)
+        if not external_group_id:
+            raise HTTPException(HttpStatusCode.BAD_REQUEST.value, "Project id not found.")
+        project_id = external_group_id.split("-")[0]
+        file_res = await c.runtime.ds_call(c.data_source.get_file_content, project_id=project_id, file_path=file_path)
+        if not file_res.success or not file_res.data:
+            raise_for_stream_fetch(
+                success=file_res.success,
+                has_payload=bool(file_res.data),
+                connector=c.display_name,
+                status=file_res.status_code,
+                message=file_res.error,
+            )
+        content_b64 = getattr(file_res.data, "content", None)
+        if content_b64 is None:
+            yield b""
+            return
+        decoded_bytes = await asyncio.to_thread(base64.b64decode, content_b64)
+        yield decoded_bytes
 
     # ------------------------------------------------------------------
     # Timestamp backfill

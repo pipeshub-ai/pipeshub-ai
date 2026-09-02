@@ -1178,24 +1178,14 @@ class S3CompatibleBaseConnector(BaseConnector):
                 return response.data
 
             error_msg = response.error or "Unknown error"
-            if "AccessDenied" in error_msg or "not authorized" in error_msg or "Forbidden" in error_msg:
-                self.logger.error(
-                    f"❌ ACCESS DENIED: Failed to generate presigned URL. "
-                    f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
-                )
-                source_status = HttpStatusCode.FORBIDDEN.value
-            elif "NoSuchKey" in error_msg or "NotFound" in error_msg:
-                self.logger.error(
-                    f"❌ KEY NOT FOUND: The key may be incorrect. "
-                    f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
-                )
-                source_status = HttpStatusCode.NOT_FOUND.value
-            else:
-                self.logger.error(
-                    f"❌ FAILED: Failed to generate presigned URL. "
-                    f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
-                )
-                source_status = None
+            # The status comes off the botocore error. The error text is built
+            # from the source's own strings, so matching phrases in it would let
+            # a bucket or key name pick the status the user sees.
+            source_status = getattr(response, "status_code", None)
+            self.logger.error(
+                f"❌ FAILED: Failed to generate presigned URL (status {source_status}). "
+                f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
+            )
             raise map_source_status(source_status, connector=self.display_name)
         except HTTPException:
             raise

@@ -45,7 +45,7 @@ def _make_connector():
     dep.on_new_records = AsyncMock()
     ds_provider = MagicMock()
     config_service = AsyncMock()
-    return RSSConnector(
+    conn = RSSConnector(
         logger=logger,
         data_entities_processor=dep,
         data_store_provider=ds_provider,
@@ -54,6 +54,9 @@ def _make_connector():
         scope="personal",
         created_by="test-user-id",
     )
+    # stream_record refuses to run without a live session (409).
+    conn.session = MagicMock()
+    return conn
 
 
 def _make_mock_response(status=200, content=b"<html>body</html>", headers=None):

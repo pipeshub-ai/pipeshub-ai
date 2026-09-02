@@ -565,8 +565,9 @@ async def test_init_build_raises_returns_false():
 async def test_get_fresh_datasource_requires_init():
     conn = _make_connector()
     conn.external_client = None
-    with pytest.raises(RuntimeError, match="init"):
+    with pytest.raises(HTTPException) as exc_info:
         await conn._get_fresh_datasource()
+    assert exc_info.value.status_code == 409
 
 
 @pytest.mark.asyncio
@@ -4688,7 +4689,7 @@ class TestGetIssueWithRetryDC:
         ds.get_issue_v2 = AsyncMock(side_effect=httpx.RemoteProtocolError("disconnected"))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             with patch("asyncio.sleep", new_callable=AsyncMock):
-                with pytest.raises(Exception, match="after 3 attempts"):
+                with pytest.raises(httpx.RemoteProtocolError):
                     await conn._get_issue_with_retry("10001", fields=["summary"], max_attempts=3)
         assert ds.get_issue_v2.await_count == 3
 

@@ -79,9 +79,9 @@ from app.sources.client.dropbox.dropbox_ import (
     DropboxTokenConfig,
 )
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
+    not_downloadable,
     not_found_at_source,
     raise_for_stream_fetch,
     to_stream_error,
@@ -1083,8 +1083,13 @@ class DropboxIndividualConnector(BaseConnector):
                 target_identifier = getattr(record, 'path', None)
             if not target_identifier:
                 self.logger.warning(f"Cannot generate signed URL: Record {record.id} missing external_id")
-                return None
-            response = await self.data_source.files_get_temporary_link(path=target_identifier)
+                raise not_downloadable(
+                    "This item is missing its Dropbox path and cannot be downloaded.",
+                    connector=self.display_name,
+                )
+            response = await self.data_source.files_get_temporary_link(
+                path=target_identifier, raise_on_error=True
+            )
             if not response.success or not response.data:
                 self.logger.error(
                     f"Failed to get temporary link for record {record.id}: {response.error}"

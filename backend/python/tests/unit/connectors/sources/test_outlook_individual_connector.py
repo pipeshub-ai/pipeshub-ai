@@ -989,10 +989,10 @@ class TestApiHelpersAndFactory:
         )
 
         found = await connector._get_message_by_id_external("m1")
-        missing = await connector._get_message_by_id_external("m2")
 
         assert found.id == "m1"
-        assert missing is None
+        with pytest.raises(RuntimeError):
+            await connector._get_message_by_id_external("m2")
 
     @pytest.mark.asyncio
     async def test_download_attachment_external_success_and_empty(self, connector):
@@ -1006,10 +1006,10 @@ class TestApiHelpersAndFactory:
         )
 
         downloaded = await connector._download_attachment_external("m1", "a1")
-        missing = await connector._download_attachment_external("m1", "a2")
 
         assert downloaded == b"hello"
-        assert missing == b""
+        with pytest.raises(RuntimeError):
+            await connector._download_attachment_external("m1", "a2")
 
     @pytest.mark.asyncio
     async def test_get_child_folders_recursive_handles_no_children_and_errors(self, connector):
@@ -1457,7 +1457,7 @@ class TestCoverageBoostBranches:
         connector.external_outlook_client = None
         with pytest.raises(HTTPException) as exc:
             await connector.stream_record(MagicMock(record_type=RecordType.MAIL))
-        assert exc.value.status_code == 500
+        assert exc.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_get_message_by_id_external_conversion_and_error_paths(self, connector):
@@ -1480,7 +1480,8 @@ class TestCoverageBoostBranches:
         assert (await connector._get_message_by_id_external("2")).id == "d"
         assert (await connector._get_message_by_id_external("3")).id == "x"
         assert await connector._get_message_by_id_external("4") is None
-        assert await connector._get_message_by_id_external("5") is None
+        with pytest.raises(RuntimeError):
+            await connector._get_message_by_id_external("5")
 
     @pytest.mark.asyncio
     async def test_download_attachment_external_additional_paths(self, connector):
@@ -1492,7 +1493,10 @@ class TestCoverageBoostBranches:
             ]
         )
         assert await connector._download_attachment_external("m", "a") == b"x"
-        assert await connector._download_attachment_external("m", "b") == b""
+        # itemAttachment: 200 with no contentBytes must not stream a 0-byte 200.
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._download_attachment_external("m", "b")
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_cleanup_additional_branches(self, connector):
@@ -1670,22 +1674,28 @@ class TestCoverageBoostDeltaAndFolders:
     @pytest.mark.asyncio
     async def test_get_message_by_id_external_not_initialized_and_exception(self, connector):
         connector.external_outlook_client = None
-        assert await connector._get_message_by_id_external("m1") is None
+        with pytest.raises(HTTPException) as exc:
+            await connector._get_message_by_id_external("m1")
+        assert exc.value.status_code == 409
 
         connector.external_outlook_client = MagicMock()
         connector.external_outlook_client.me_get_message = AsyncMock(side_effect=Exception("boom"))
-        assert await connector._get_message_by_id_external("m2") is None
+        with pytest.raises(Exception, match="boom"):
+            await connector._get_message_by_id_external("m2")
 
     @pytest.mark.asyncio
     async def test_download_attachment_external_not_initialized_and_exception(self, connector):
         connector.external_outlook_client = None
-        assert await connector._download_attachment_external("m1", "a1") == b""
+        with pytest.raises(HTTPException) as exc:
+            await connector._download_attachment_external("m1", "a1")
+        assert exc.value.status_code == 409
 
         connector.external_outlook_client = MagicMock()
         connector.external_outlook_client.me_messages_get_attachments = AsyncMock(
             side_effect=Exception("boom")
         )
-        assert await connector._download_attachment_external("m1", "a1") == b""
+        with pytest.raises(Exception, match="boom"):
+            await connector._download_attachment_external("m1", "a1")
 
     @pytest.mark.asyncio
     async def test_get_message_attachments_external_not_initialized_and_exception(self, connector):

@@ -17,11 +17,15 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from fastapi import HTTPException
+
 from app.config.constants.arangodb import (
     MimeTypes,
     OriginTypes,
     ProgressStatus,
 )
+from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
 from app.models.entities import Record, RecordGroupType, RecordType, PullRequestRecord
 from app.models.blocks import (
     Block,
@@ -231,18 +235,25 @@ class MergeRequestsSync:
         c = self.c
         raw_url = getattr(record, "weburl", "") or ""
         if not raw_url:
-            raise ValueError("Web URL is required for indexing merge request")
+            raise HTTPException(
+                HttpStatusCode.BAD_REQUEST.value,
+                "Web URL is required for indexing merge request",
+            )
         mr_number = parse_item_id_from_url(raw_url)
         external_group_id = getattr(record, "external_record_group_id")
         if not external_group_id:
-            raise Exception("Project id not found.")
+            raise HTTPException(HttpStatusCode.BAD_REQUEST.value, "Project id not found.")
         project_id = external_group_id.split("-")[0]
 
         mr_res = await c.runtime.ds_call(c.data_source.get_merge_request, project_id=project_id, mr_iid=mr_number)
-        if not mr_res.success:
-            raise Exception(f"Failed to fetch merge request details for record {record.external_record_id}: {mr_res.error}")
-        if not mr_res.data:
-            raise Exception(f"No merge request data found for record {record.external_record_id}")
+        if not mr_res.success or not mr_res.data:
+            raise_for_stream_fetch(
+                success=mr_res.success,
+                has_payload=bool(mr_res.data),
+                connector=c.display_name,
+                status=mr_res.status_code,
+                message=mr_res.error,
+            )
 
         base_project_url = f"{c._gitlab_base_url}/api/v4/projects/{project_id}"
         block_group_number = 0
@@ -286,7 +297,13 @@ class MergeRequestsSync:
             c.data_source.list_merge_requests_commits, project_id=project_id, mr_iid=mr_number, get_all=True,
         )
         if not mr_commits_res.success:
-            raise Exception(f"Failed to fetch commits for merge request {mr_number}: {mr_commits_res.error}")
+            raise_for_stream_fetch(
+                success=mr_commits_res.success,
+                has_payload=bool(mr_commits_res.data),
+                connector=c.display_name,
+                status=mr_commits_res.status_code,
+                message=mr_commits_res.error,
+            )
 
         mr_commits = mr_commits_res.data or []
         commits_block_start = block_number
