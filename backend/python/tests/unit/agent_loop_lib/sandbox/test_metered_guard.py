@@ -42,7 +42,13 @@ class TestMeteredSandboxGuard:
         assert "300" in ctx.deny_reason
         assert "120" in ctx.deny_reason
 
-    async def test_cumulative_budget_exhausted(self) -> None:
+    async def test_cumulative_budget_is_enforced_before_overspending(self) -> None:
+        """The budget has to be checked against what THIS call would add.
+
+        Comparing only the already-accepted total lets the request that
+        crosses the line through, so a 100s budget bought 120s of billed
+        sandbox time — the cap is exceeded by up to one full request.
+        """
         mw = metered_sandbox_guard(max_timeout=120, max_cumulative_s=100)
 
         ctx1 = FakeToolCallContext(tool_input={"timeout": 60})
@@ -51,12 +57,31 @@ class TestMeteredSandboxGuard:
 
         ctx2 = FakeToolCallContext(tool_input={"timeout": 60})
         await mw(ctx2, _next)
+        assert ctx2.denied, "60 + 60 exceeds the 100s budget"
+        assert "budget" in ctx2.deny_reason.lower()
+
+    async def test_a_request_that_still_fits_is_allowed(self) -> None:
+        """Denying pre-emptively must not deny everything once the budget is
+        partly spent — a smaller call that fits still runs."""
+        mw = metered_sandbox_guard(max_timeout=120, max_cumulative_s=100)
+
+        await mw(FakeToolCallContext(tool_input={"timeout": 60}), _next)
+        ctx2 = FakeToolCallContext(tool_input={"timeout": 30})
+        await mw(ctx2, _next)
         assert not ctx2.denied
 
-        ctx3 = FakeToolCallContext(tool_input={"timeout": 60})
-        await mw(ctx3, _next)
-        assert ctx3.denied
-        assert "budget" in ctx3.deny_reason.lower()
+    async def test_a_denied_request_does_not_consume_budget(self) -> None:
+        """A call that never ran must not be charged, or one oversized
+        request would exhaust the budget for everything after it."""
+        mw = metered_sandbox_guard(max_timeout=120, max_cumulative_s=100)
+
+        denied = FakeToolCallContext(tool_input={"timeout": 110})
+        await mw(denied, _next)
+        assert denied.denied
+
+        ctx = FakeToolCallContext(tool_input={"timeout": 90})
+        await mw(ctx, _next)
+        assert not ctx.denied, "the rejected 110s must not have been billed"
 
     async def test_no_cumulative_limit_by_default(self) -> None:
         mw = metered_sandbox_guard(max_timeout=1000)
@@ -75,12 +100,36 @@ class TestMeteredSandboxGuard:
         await mw(ctx_deny, _next)
         assert ctx_deny.denied
 
-    async def test_non_numeric_timeout_ignored(self) -> None:
-        mw = metered_sandbox_guard(max_timeout=60, max_cumulative_s=100)
+    async def test_non_numeric_timeout_is_not_a_free_pass(self) -> None:
+        """An unusable `timeout` still runs the sandbox at its default, so it
+        has to be charged at that rate rather than treated as free."""
+        mw = metered_sandbox_guard(max_timeout=60, max_cumulative_s=100, default_timeout=30)
         ctx = FakeToolCallContext(tool_input={"timeout": "fast"})
         await mw(ctx, _next)
         assert not ctx.denied
 
         ctx2 = FakeToolCallContext(tool_input={"timeout": 50})
         await mw(ctx2, _next)
-        assert not ctx2.denied
+        assert not ctx2.denied  # 30 + 50 = 80, still within 100
+
+        ctx3 = FakeToolCallContext(tool_input={"timeout": 50})
+        await mw(ctx3, _next)
+        assert ctx3.denied, "80 + 50 exceeds the budget"
+
+    async def test_omitting_timeout_does_not_bypass_the_budget(self) -> None:
+        """The hole this closes: a call with no `timeout` argument was
+        charged 0, so an agent that never sets one could run unlimited
+        billed sandbox time against a configured cap. The tool substitutes
+        its default and the provider bills for it, so the guard must too.
+        """
+        mw = metered_sandbox_guard(max_timeout=120, max_cumulative_s=100, default_timeout=30)
+
+        allowed = 0
+        for _ in range(20):
+            ctx = FakeToolCallContext(tool_input={})
+            await mw(ctx, _next)
+            if ctx.denied:
+                break
+            allowed += 1
+
+        assert allowed <= 4, f"{allowed} un-timed calls ran against a 100s budget"

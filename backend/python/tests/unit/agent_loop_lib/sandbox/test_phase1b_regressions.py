@@ -760,3 +760,125 @@ class TestNetworkFlagStaysConsistentAcrossLayers:
         settings = await EnvSandboxSettingsLoader().load(SandboxContext())
         assert settings.allow_network is True
         assert sandbox_network_enabled() is True
+
+
+class TestReconnectPreservesTheProviderClock:
+    """`expires_at` tells callers when E2B will reclaim the VM. E2B counts
+    from when IT created the sandbox, so a reconnect that restarts the clock
+    reports an expiry that is simply wrong — and the closer to the real
+    deadline you reconnect, the wronger it gets. A caller trusting it would
+    hand work to a sandbox that is about to disappear underneath it.
+    """
+
+    def _attached(self, *, created_at: float | None, timeout: int = 300):
+        from app.agent_loop_lib.sandbox.coding.e2b import E2BCodingSandbox
+
+        return E2BCodingSandbox.attach(
+            MagicMock(), sandbox_id="sbx-1", e2b_timeout=timeout,
+            created_at=created_at,
+        )
+
+    def test_expiry_is_measured_from_the_original_creation(self) -> None:
+        import time
+
+        created = time.time() - 280          # VM is 280s into a 300s life
+        sandbox = self._attached(created_at=created, timeout=300)
+
+        remaining = sandbox.expires_at - time.time()
+        assert 0 < remaining < 30, (
+            f"reports {remaining:.0f}s left on a VM with ~20s to live"
+        )
+
+    def test_ref_round_trips_the_creation_time(self) -> None:
+        """`SandboxRef.created_at` is the only record of the provider clock
+        that survives this process, so reconnect must read it back."""
+        import time
+
+        created = time.time() - 120
+        sandbox = self._attached(created_at=created, timeout=300)
+        assert sandbox.ref.created_at == created
+        assert sandbox.ref.expires_at == created + 300
+
+    def test_unknown_creation_time_does_not_crash(self) -> None:
+        """Falling back to "now" over-reports, but a missing timestamp must
+        not take the reconnect down."""
+        sandbox = self._attached(created_at=None, timeout=300)
+        assert sandbox.expires_at is not None
+
+    async def test_factory_reconnect_passes_the_ref_timestamp(self) -> None:
+        import sys
+        import time
+        import types
+
+        from app.agent_loop_lib.sandbox.coding.base import SandboxRef
+        from app.agent_loop_lib.sandbox.coding.factories.e2b import (
+            E2BCodingSandboxFactory,
+        )
+
+        created = time.time() - 200
+        ref = SandboxRef(
+            backend="e2b", sandbox_id="sbx-9", created_at=created,
+            expires_at=created + 300,
+        )
+
+        # The SDK is an optional dependency; stub the one symbol reconnect uses.
+        fake_module = types.ModuleType("e2b_code_interpreter")
+        fake_module.AsyncSandbox = MagicMock(connect=AsyncMock(return_value=MagicMock()))
+        factory = E2BCodingSandboxFactory(
+            config=E2BCodingSandboxFactory.config_model(
+                api_key="sk-test", e2b_timeout=300,
+            ),
+        )
+        with patch.dict(sys.modules, {"e2b_code_interpreter": fake_module}):
+            sandbox = await factory.reconnect(ref)
+
+        assert sandbox.ref.created_at == created
+
+
+class TestNetworkFlagReachesRemoteBackends:
+    """`SANDBOX_ALLOW_NETWORK=false` is an operator saying generated code must
+    not reach the internet. Docker honoured it; E2B did not — the micro-VM was
+    created with `allow_internet_access` at its default of True, so the code
+    got full egress from a deployment that had explicitly disabled it.
+    """
+
+    def setup_method(self) -> None:
+        reset_default_governor()
+
+    def teardown_method(self) -> None:
+        reset_default_governor()
+
+    async def _e2b_factory(self, monkeypatch, allow_network: str):
+        from app.agent_loop_lib.sandbox.coding.factories.e2b import (
+            E2BCodingSandboxFactory,
+        )
+        from app.agents.agent_loop.sandbox_bridge import (
+            build_coding_sandbox_manager,
+        )
+
+        monkeypatch.setenv("SANDBOX_MODE", "e2b")
+        monkeypatch.setenv("SANDBOX_ALLOW_NETWORK", allow_network)
+        with patch.object(E2BCodingSandboxFactory, "is_installed", return_value=True):
+            manager = await build_coding_sandbox_manager()
+        return manager._factories[SandboxType.CODING].backend_factory
+
+    async def test_disabling_network_reaches_the_e2b_vm(self, monkeypatch) -> None:
+        factory = await self._e2b_factory(monkeypatch, "false")
+        assert factory.config.allow_internet_access is False
+        # And the capability must report it, or the contract suite's
+        # "supports_network=False means denied" check is meaningless here.
+        assert factory.capabilities().supports_network is False
+
+    async def test_enabled_network_still_reaches_the_e2b_vm(self, monkeypatch) -> None:
+        factory = await self._e2b_factory(monkeypatch, "true")
+        assert factory.config.allow_internet_access is True
+
+    async def test_package_installs_keep_their_own_channel(self, monkeypatch) -> None:
+        """`allow_network_on_install` is deliberately independent: the Docker
+        backend runs code with `network_mode=none` while the install phase
+        joins a dedicated egress bridge to a configured registry. Coupling
+        the two would break `install_packages` for every deployment that
+        disables code egress.
+        """
+        factory = await self._e2b_factory(monkeypatch, "false")
+        assert factory.shared.allow_network_on_install is True

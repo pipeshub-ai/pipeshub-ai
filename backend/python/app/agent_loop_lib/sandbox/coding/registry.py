@@ -40,6 +40,10 @@ CODING_SANDBOX_TOOL_PATTERN = "/toolsets/coding_sandbox/**"
 # Only used when a metered backend declares no `max_timeout_s` of its own.
 _DEFAULT_METERED_MAX_TIMEOUT_S = 120.0
 
+# Mirrors `CodeRequest.timeout` — what a `run_code` call costs when the model
+# names no timeout of its own.
+_DEFAULT_SANDBOX_TIMEOUT_S = 30.0
+
 
 class BackendHealth(BaseModel):
     """Result of a factory's ``health_check()``."""
@@ -140,6 +144,11 @@ class SandboxBackendFactory(ABC):
                 path_pattern=CODING_SANDBOX_TOOL_PATTERN,
                 middleware=metered_sandbox_guard(
                     max_timeout=caps.max_timeout_s or _DEFAULT_METERED_MAX_TIMEOUT_S,
+                    # What a call that omits `timeout` will actually cost —
+                    # the tool substitutes this and the provider bills it.
+                    default_timeout=getattr(
+                        self._shared, "default_timeout", _DEFAULT_SANDBOX_TIMEOUT_S,
+                    ),
                 ),
             ),
         ]

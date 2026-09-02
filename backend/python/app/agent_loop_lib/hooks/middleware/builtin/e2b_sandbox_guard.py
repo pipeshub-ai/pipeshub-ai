@@ -16,9 +16,11 @@ __all__ = ["e2b_sandbox_guard"]
 def e2b_sandbox_guard(
     max_timeout: float = 120.0,
     max_cumulative_s: float | None = None,
+    default_timeout: float = 30.0,
 ):
     """Thin alias — delegates to ``metered_sandbox_guard``."""
     return metered_sandbox_guard(
         max_timeout=max_timeout,
         max_cumulative_s=max_cumulative_s,
+        default_timeout=default_timeout,
     )

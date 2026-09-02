@@ -370,3 +370,61 @@ class TestGetArtifactContent:
         success, payload = await manager.get_artifact_content(artifact_id="code-1")
         assert success is False
         assert "unavailable" in json.loads(payload)["error"]
+
+
+class TestGetArtifactContentBoundsTheFetch:
+    """`registry.get_content()` pulls the WHOLE blob into memory before
+    anything is decoded or sliced, so `max_chars` bounds the response but not
+    the read. A multi-hundred-MB artifact would be fetched and decoded in
+    full just to return 40 000 characters of it.
+
+    `ArtifactMetadata.size_bytes` is known before the fetch, so the check
+    belongs there — no blob retrieved and no decode attempted.
+    """
+
+    def _manager_for(self, size_bytes: int):
+        metadata = _make_metadata(
+            artifact_id="big-1", name="huge.csv", mime_type="text/csv",
+            size_bytes=size_bytes,
+        )
+        registry = MagicMock()
+        registry.resolve = AsyncMock(return_value=metadata)
+        registry.get_content = AsyncMock(return_value=b"x" * 10)
+        return _make_manager(registry=registry)
+
+    async def test_oversized_artifact_is_refused_without_fetching(self) -> None:
+        from app.agents.actions.artifacts.artifacts import _MAX_ARTIFACT_FETCH_BYTES
+
+        manager, registry = self._manager_for(_MAX_ARTIFACT_FETCH_BYTES + 1)
+        success, payload = await manager.get_artifact_content(artifact_id="big-1")
+
+        assert success is False
+        registry.get_content.assert_not_awaited(), "the blob must never be read"
+        body = json.loads(payload)
+        assert "too large" in body["error"].lower()
+        assert "get_artifact_download_url" in body["error"]
+
+    async def test_normal_sized_artifact_is_unaffected(self) -> None:
+        manager, registry = self._manager_for(10)
+        success, _ = await manager.get_artifact_content(artifact_id="big-1")
+        assert success is True
+        registry.get_content.assert_awaited_once()
+
+    async def test_unknown_size_still_reads(self) -> None:
+        """Artifacts written before `size_bytes` was recorded report 0. A
+        missing size is not evidence of a large file, and refusing on it
+        would make old artifacts permanently unreadable."""
+        manager, registry = self._manager_for(0)
+        success, _ = await manager.get_artifact_content(artifact_id="big-1")
+        assert success is True
+        registry.get_content.assert_awaited_once()
+
+    async def test_paging_a_large_but_allowed_file_still_works(self) -> None:
+        """The fetch ceiling has to sit well above `max_chars`, or `offset`
+        paging through a legitimately long program would be impossible."""
+        from app.agents.actions.artifacts.artifacts import (
+            _MAX_ARTIFACT_CONTENT_CHARS,
+            _MAX_ARTIFACT_FETCH_BYTES,
+        )
+
+        assert _MAX_ARTIFACT_FETCH_BYTES > _MAX_ARTIFACT_CONTENT_CHARS * 4

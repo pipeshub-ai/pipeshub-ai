@@ -85,3 +85,75 @@ class TestConfigServiceSandboxSettingsLoader:
     async def test_config_service_loader_raises(self) -> None:
         with pytest.raises(NotImplementedError):
             await ConfigServiceSandboxSettingsLoader().load(SandboxContext())
+
+
+class TestImplicitLocalFallbackIsLoud:
+    """`SANDBOX_MODE` unset resolves to `local`, which is `IsolationLevel.HOST`
+    — a subprocess on the service host with the host's network and no way to
+    take it away. Every shipped compose file sets `SANDBOX_MODE:-docker`, but
+    the Helm chart sets it nowhere, so a Helm install lands here silently.
+
+    Whether that default should change is a deployment decision; that it
+    should be SILENT is not.
+    """
+
+    def _reset_warning_state(self) -> None:
+        from app.agent_loop_lib.sandbox.coding import settings as settings_module
+
+        settings_module._warned_about_host_isolation = False
+
+    async def test_absent_mode_warns(self, monkeypatch, caplog) -> None:
+        import logging
+
+        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        self._reset_warning_state()
+
+        with caplog.at_level(logging.WARNING):
+            settings = await EnvSandboxSettingsLoader().load(SandboxContext())
+
+        assert settings.backend == "local"
+        assert "SANDBOX_MODE" in caplog.text
+        assert "isolation" in caplog.text.lower()
+
+    async def test_explicitly_choosing_local_does_not_warn(
+        self, monkeypatch, caplog,
+    ) -> None:
+        """An operator who typed `local` has made the call knowingly; nagging
+        them every run would train them to ignore the message that matters."""
+        import logging
+
+        monkeypatch.setenv("SANDBOX_MODE", "local")
+        self._reset_warning_state()
+
+        with caplog.at_level(logging.WARNING):
+            await EnvSandboxSettingsLoader().load(SandboxContext())
+
+        assert "SANDBOX_MODE" not in caplog.text
+
+    async def test_isolated_backend_does_not_warn(self, monkeypatch, caplog) -> None:
+        import logging
+
+        monkeypatch.setenv("SANDBOX_MODE", "docker")
+        self._reset_warning_state()
+
+        with caplog.at_level(logging.WARNING):
+            await EnvSandboxSettingsLoader().load(SandboxContext())
+
+        assert "SANDBOX_MODE" not in caplog.text
+
+    async def test_warns_once_not_per_request(self, monkeypatch, caplog) -> None:
+        """`load()` runs on every agent build; a per-request warning would
+        bury the logs and get filtered out."""
+        import logging
+
+        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        self._reset_warning_state()
+
+        with caplog.at_level(logging.WARNING):
+            for _ in range(5):
+                await EnvSandboxSettingsLoader().load(SandboxContext())
+
+        # Count RECORDS, not substring hits — the message names the env var
+        # more than once.
+        warnings = [r for r in caplog.records if "SANDBOX_MODE" in r.getMessage()]
+        assert len(warnings) == 1, f"warned {len(warnings)} times across 5 loads"

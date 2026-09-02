@@ -96,7 +96,15 @@ _STOP_REASON_TRUNCATED = {"length", "max_tokens"}
 # library network/timeout errors plus each SDK's consistent
 # "*Connection*"/"*Timeout*" naming convention covers the common transient
 # cases without a hard dependency on any one provider's package.
-_NETWORK_ERROR_NAME_HINTS = ("connectionerror", "connecttimeout", "readtimeout", "timeouterror", "apitimeouterror", "apiconnectionerror")
+# "protocolerror" covers httpx/httpcore's `RemoteProtocolError` — "peer closed
+# connection without sending complete message body", the way a gateway
+# dropping a stream mid-response actually surfaces. It carries no HTTP status
+# and is not an OSError, so without this it read as a permanent failure and a
+# transient blip killed the turn instead of being retried.
+_NETWORK_ERROR_NAME_HINTS = (
+    "connectionerror", "connecttimeout", "readtimeout", "timeouterror",
+    "apitimeouterror", "apiconnectionerror", "protocolerror", "incompleteread",
+)
 
 # Substrings providers/gateways actually emit when reasoning + bound function
 # tools can't both go through the API shape the request used. Matched
@@ -380,7 +388,17 @@ class LangChainTransport(LLMTransport):
             return None
         return self._to_langchain(messages, system, relocate=True)
 
-    def _wrap_error(self, exc: Exception, context: str) -> TransportError:
+    def _wrap_error(
+        self, exc: Exception, context: str, *, retryable: bool | None = None,
+    ) -> TransportError:
+        """Wrap a provider exception as a `TransportError`.
+
+        `retryable=False` forces a non-retryable result regardless of the
+        exception type. `stream()` passes it once any delta has reached the
+        client: `retry_model_call` (the PRE_MODEL_CALL wrapper) re-runs the
+        WHOLE model call, so a transient error arriving mid-stream would
+        otherwise replay text the user has already seen.
+        """
         status_code = getattr(exc, "status_code", None)
         # 529 is Anthropic's non-standard "overloaded_error" status —
         # capacity exhaustion across all customers, not this request's
@@ -392,9 +410,11 @@ class LangChainTransport(LLMTransport):
         # default (`transport/base.py`) and the native
         # `AnthropicTransport._RETRYABLE_STATUS_CODES` — retryable=True
         # here only gets a retry if that config list also allows the code.
-        retryable = (
-            status_code in (429, 500, 502, 503, 504, 529) if status_code else _is_network_error(exc)
-        )
+        if retryable is None:
+            retryable = (
+                status_code in (429, 500, 502, 503, 504, 529)
+                if status_code else _is_network_error(exc)
+            )
         return TransportError(
             f"LangChain transport error ({context}): {exc}",
             status_code=status_code,
@@ -818,7 +838,11 @@ class LangChainTransport(LLMTransport):
                     )
                     raise self._wrap_error(original_exc, "stream") from original_exc
                 if chunks:
-                    raise self._wrap_error(exc, "stream") from exc
+                    # Deltas already reached the client. Marking this
+                    # non-retryable is what stops the outer retry wrapper
+                    # from re-running the call and duplicating them — this
+                    # `if` alone only guards the retry a few lines below.
+                    raise self._wrap_error(exc, "stream", retryable=False) from exc
                 relocated = self._tool_image_fallback(exc, messages, system)
                 if relocated is not None:
                     original_exc = exc

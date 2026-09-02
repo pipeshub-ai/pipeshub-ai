@@ -336,7 +336,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await telemetry.pusher.stop()
 
     # Cancel background warmup tasks if still running.
-    for _warmup_attr in ("embedding_warmup_task", "knn_warmup_task"):
+    for _warmup_attr in (
+        "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
+    ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():
             warmup_task.cancel()

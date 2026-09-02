@@ -47,6 +47,15 @@ def _result(success: bool, payload: dict[str, Any]) -> tuple[bool, str]:
 # past it when a file really is larger.
 _MAX_ARTIFACT_CONTENT_CHARS = 40_000
 
+# Refuse to FETCH an artifact bigger than this. `registry.get_content()` pulls
+# the whole blob into memory before anything is decoded or sliced, so
+# `_MAX_ARTIFACT_CONTENT_CHARS` bounds the response but not the read — without
+# this, returning 40 000 characters of a 500 MB file would still load 500 MB.
+# Checked against `ArtifactMetadata.size_bytes`, which is known before the
+# fetch. Deliberately far above the response cap so `offset` can still page
+# through a legitimately long program.
+_MAX_ARTIFACT_FETCH_BYTES = 5_000_000
+
 
 @ToolsetBuilder("Artifact Manager")\
     .in_group("Internal Tools")\
@@ -391,6 +400,23 @@ class ArtifactManager:
                 actor=actor, ref=artifact_id,
                 conversation_id=self.chat_state.get("conversation_id"),
             )
+            # Size is known from metadata, so an oversized artifact is
+            # rejected before the blob is read rather than after. A 0/absent
+            # size means "not recorded" (artifacts predating the field), not
+            # "empty" — refusing on that would make them unreadable forever.
+            if metadata.size_bytes and metadata.size_bytes > _MAX_ARTIFACT_FETCH_BYTES:
+                return _result(False, {
+                    "success": False,
+                    "artifact_id": metadata.artifact_id,
+                    "name": metadata.name,
+                    "size_bytes": metadata.size_bytes,
+                    "error": (
+                        f"{metadata.name!r} is too large to read into context "
+                        f"({metadata.size_bytes} bytes, limit {_MAX_ARTIFACT_FETCH_BYTES}). "
+                        "Use get_artifact_download_url for a link, or pass its name to "
+                        "run_code's input_artifacts to process it inside the sandbox."
+                    ),
+                })
             raw = await registry.get_content(actor=actor, artifact_id=metadata.artifact_id)
         except ArtifactNotFoundError:
             return _result(False, {"success": False, "error": f"No artifact found for {artifact_id!r}"})

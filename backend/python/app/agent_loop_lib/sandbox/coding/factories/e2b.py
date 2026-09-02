@@ -90,6 +90,10 @@ class E2BCodingSandboxFactory(SandboxBackendFactory):
             template=cfg.template,
             e2b_timeout=self._effective_ttl_s(),
             allow_internet_access=cfg.allow_internet_access,
+            # The provider's clock, not ours: E2B reclaims relative to when
+            # it created the VM, so the ref's timestamp is what makes
+            # `expires_at` honest after a reconnect.
+            created_at=ref.created_at,
         )
 
     def capabilities(self) -> SandboxCapabilities:

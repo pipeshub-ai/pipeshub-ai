@@ -259,6 +259,20 @@ async def build_coding_sandbox_manager(
         max_lifetime_s=max_lifetime_s,
     )
 
+    # `allow_network` is about the sandboxed CODE's egress, and each backend
+    # spells that differently — Docker as `allow_network`, E2B as
+    # `allow_internet_access`. Left unset, E2B defaults to True and a
+    # deployment that disabled network still handed generated code the
+    # internet. `allow_network_on_install` is deliberately NOT derived from
+    # it: the install phase reaches a configured registry through its own
+    # channel (Docker runs code with `network_mode=none` while the install
+    # container joins the egress bridge), so coupling them would break
+    # `install_packages` for everyone who disables code egress.
+    if settings.backend == "e2b":
+        settings.backend_options.setdefault("e2b", {}).setdefault(
+            "allow_internet_access", network_enabled,
+        )
+
     # PipesHub's own Docker defaults, applied only where the settings loader
     # left a gap so an explicitly configured value always wins.
     if settings.backend == "docker":

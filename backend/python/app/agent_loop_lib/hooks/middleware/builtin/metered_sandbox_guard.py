@@ -23,6 +23,7 @@ __all__ = ["metered_sandbox_guard"]
 def metered_sandbox_guard(
     max_timeout: float = 120.0,
     max_cumulative_s: float | None = None,
+    default_timeout: float = 30.0,
 ):
     """PRE_TOOL_USE middleware factory for the coding sandbox toolset,
     applicable to any metered backend (``SandboxCapabilities.is_metered``).
@@ -30,9 +31,14 @@ def metered_sandbox_guard(
     Args:
         max_timeout: deny any ``timeout`` argument above this many seconds.
         max_cumulative_s: optional running budget (in seconds) of
-            cumulative requested ``timeout`` across calls; once exceeded,
-            further coding-sandbox tool calls are denied. ``None`` (default)
-            means unlimited.
+            cumulative requested ``timeout`` across calls. A call is denied
+            when it would take the total PAST the budget, not after it
+            already has. ``None`` (default) means unlimited.
+        default_timeout: what to charge a call that omits ``timeout`` or
+            passes an unusable value. The tool substitutes its own default
+            and the provider bills for that time, so charging zero here
+            would let an agent that never sets a timeout run unbounded
+            billed time against a configured budget.
     """
     cumulative = {"total": 0.0}
 
@@ -47,14 +53,24 @@ def metered_sandbox_guard(
                 return
             requested = float(timeout)
         else:
-            requested = 0.0
+            # No usable timeout given: the tool falls back to its own
+            # default and the sandbox runs (and bills) for that long.
+            requested = default_timeout
 
-        if max_cumulative_s is not None and cumulative["total"] > max_cumulative_s:
+        # Checked against what THIS call would add. Comparing only the
+        # already-spent total lets the request that crosses the line
+        # through, overshooting the cap by up to one full request.
+        if max_cumulative_s is not None and cumulative["total"] + requested > max_cumulative_s:
             ctx.deny(
-                "cumulative sandbox time budget exhausted for this session"
+                f"this call would need {requested:g}s and only "
+                f"{max(0.0, max_cumulative_s - cumulative['total']):g}s of the "
+                f"{max_cumulative_s:g}s sandbox time budget is left for this session"
             )
             return
 
+        # Charged only once the call is going to run — a denied request
+        # never reaches the provider, so billing it would exhaust the
+        # budget for calls that would have fit.
         cumulative["total"] += requested
         await next_fn()
 

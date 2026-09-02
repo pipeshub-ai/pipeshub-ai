@@ -104,6 +104,7 @@ class E2BCodingSandbox(CodingSandboxBackend):
         e2b_timeout: int = 300,
         allow_internet_access: bool = True,
         context: SandboxContext | None = None,
+        created_at: float | None = None,
     ) -> "E2BCodingSandbox":
         """Wrap an already-connected `AsyncSandbox` (the reconnect path).
 
@@ -116,6 +117,13 @@ class E2BCodingSandbox(CodingSandboxBackend):
         has is unknown to this process, and `install_packages` is idempotent,
         so the cost of re-checking is a no-op install rather than a missing
         dependency at run time.
+
+        `created_at` is when E2B created the VM, carried across processes on
+        `SandboxRef.created_at`. It matters because E2B counts the TTL from
+        its own creation moment: stamping "now" here would restart the clock
+        locally and report an `expires_at` further out than the deadline the
+        provider will actually enforce — worst exactly when it matters most,
+        reconnecting to a sandbox that is nearly expired.
         """
         sandbox = cls(
             api_key=api_key,
@@ -126,7 +134,10 @@ class E2BCodingSandbox(CodingSandboxBackend):
         )
         sandbox._sbx = sbx
         sandbox._sandbox_id = sandbox_id
-        sandbox._created_at = time.time()
+        # `time.time()` only when the caller genuinely has no record of the
+        # provider's clock — it over-reports the remaining life, so it is a
+        # last resort rather than a default.
+        sandbox._created_at = created_at if created_at is not None else time.time()
         return sandbox
 
     def _provider_metadata(self) -> dict[str, str]:

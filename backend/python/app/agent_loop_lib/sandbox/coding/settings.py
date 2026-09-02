@@ -15,6 +15,7 @@ Phase 4 (``ConfigServiceSandboxSettingsLoader``): per-org settings through
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Protocol, runtime_checkable
 
@@ -30,7 +31,14 @@ __all__ = [
     "ConfigServiceSandboxSettingsLoader",
 ]
 
+logger = logging.getLogger(__name__)
+
 _FALSY_ENV_VALUES = {"0", "false", "no", "off"}
+
+# `load()` runs on every agent build, so this warns once per process — a
+# per-request line would bury the logs and get filtered out, which is the
+# same as not warning at all.
+_warned_about_host_isolation = False
 
 
 def _env_bool(key: str, default: bool = True) -> bool:
@@ -148,13 +156,17 @@ class EnvSandboxSettingsLoader:
     _DEFAULT_NPM_REGISTRY = "https://registry.npmjs.org"
 
     async def load(self, ctx: SandboxContext) -> SandboxSettings:
-        mode_raw = os.environ.get(self._ENV_SANDBOX_MODE, "LOCAL").strip().upper()
+        configured = os.environ.get(self._ENV_SANDBOX_MODE)
+        mode_raw = (configured or "LOCAL").strip().upper()
         if mode_raw == "DOCKER":
             backend = "docker"
         elif mode_raw == "E2B":
             backend = "e2b"
         else:
             backend = "local"
+
+        if backend == "local" and configured is None:
+            self._warn_about_implicit_host_isolation()
 
         backend_options: dict[str, dict[str, Any]] = {}
 
@@ -181,6 +193,33 @@ class EnvSandboxSettingsLoader:
                 max_total_sandboxes=_env_cap(self._ENV_MAX_TOTAL, 50),
                 max_per_org=_env_cap(self._ENV_MAX_PER_ORG, 10),
             ),
+        )
+
+
+    @staticmethod
+    def _warn_about_implicit_host_isolation() -> None:
+        """Say so when nobody chose this backend.
+
+        `local` is `IsolationLevel.HOST`: model-generated code runs as a
+        subprocess of the service, with the service's network and filesystem
+        reach, bounded only by rlimits. Every shipped docker-compose file
+        sets `SANDBOX_MODE=${SANDBOX_MODE:-docker}`, but the Helm chart sets
+        it nowhere — so a Helm install silently lands here.
+
+        Only the IMPLICIT fallback warns. An operator who typed `local` has
+        made the call knowingly, and nagging them every run would train them
+        to filter out the message that matters.
+        """
+        global _warned_about_host_isolation
+        if _warned_about_host_isolation:
+            return
+        _warned_about_host_isolation = True
+        logger.warning(
+            "SANDBOX_MODE is not set — falling back to the 'local' coding "
+            "sandbox, which runs generated code as a subprocess on this host "
+            "(isolation=host: no network namespace, no filesystem boundary "
+            "beyond rlimits). Set SANDBOX_MODE=docker for container isolation, "
+            "or SANDBOX_MODE=local explicitly to silence this."
         )
 
 
