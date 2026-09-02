@@ -7326,6 +7326,7 @@ async def toggle_connector_instance(
                 "syncAction": "immediate",
                 "scope": instance.get("scope"),
                 "fullSync": full_sync,
+                "syncedBy": user_info.get("userId", ""),
             }
 
             message = {

@@ -341,8 +341,8 @@ class JiraCloudPersonalConnector(JiraConnector):
                 preview = ", ".join(failed_keys[:10])
                 if len(failed_keys) > 10:
                     preview = f"{preview}, and {len(failed_keys) - 10} more"
-                self.logger.error(
-                    "❌ Jira Cloud Personal sync: %s/%s project(s) failed to sync issues: %s",
+                self.logger.warning(
+                    "⚠️ Jira Cloud Personal sync: %s/%s project(s) failed to sync issues: %s",
                     len(failed_keys), len(projects), preview,
                 )
                 await self.notify(

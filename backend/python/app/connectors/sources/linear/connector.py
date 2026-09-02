@@ -26,7 +26,7 @@ from app.config.constants.arangodb import (
     RecordRelations,
 )
 from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -361,7 +361,7 @@ class LinearConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Linear client: {e}")
-            return False
+            raise ConnectorInitError(str(e)) from e
 
     async def _get_fresh_datasource(self) -> LinearDataSource:
         """
@@ -637,16 +637,17 @@ class LinearConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error during Linear sync: {e}", exc_info=True)
-            await self.notify(
-                type=NotificationType.CONNECTOR_SYNC_ERROR,
-                severity=NotificationSeverity.ERROR,
-                title=self._notification_title("sync failed"),
-                message=(
-                    f"The sync stopped due to an error: {str(e)[:200]}. Recent Linear changes "
-                    "may not be reflected yet. Run the sync again; if it keeps failing, "
-                    "check the connector's configuration."
-                ),
-            )
+            if not isinstance(e, ConnectorInitError):
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("sync failed"),
+                    message=(
+                        f"The sync stopped due to an error: {str(e)[:200]}. Recent Linear changes "
+                        "may not be reflected yet. Run the sync again; if it keeps failing, "
+                        "check the connector's configuration."
+                    ),
+                )
             raise
 
     async def _fetch_users(self) -> List[AppUser]:
