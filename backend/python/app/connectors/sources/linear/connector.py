@@ -521,9 +521,12 @@ class LinearConnector(BaseConnector):
         try:
             self.logger.info(f"🚀 Starting Linear sync for connector {self.connector_id}")
 
-            # Ensure data source is initialized
             if not self.data_source:
-                await self.init()
+                init_error = RuntimeError(
+                    f"Linear connector {self.connector_id} not initialized. Call init() first."
+                )
+                init_error._notification_sent = True
+                raise init_error
 
             # Load sync and indexing filters (loaded in run_sync to ensure latest values)
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -637,7 +640,7 @@ class LinearConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error during Linear sync: {e}", exc_info=True)
-            if not isinstance(e, ConnectorInitError):
+            if not isinstance(e, ConnectorInitError) and not getattr(e, "_notification_sent", False):
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,
                     severity=NotificationSeverity.ERROR,
