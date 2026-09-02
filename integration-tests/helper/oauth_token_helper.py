@@ -370,3 +370,26 @@ def authenticate_connector_with_refresh_token(
         "toggle_sync will complete authentication.",
         connector_id,
     )
+
+
+def inject_access_token(connector_id: str, access_token: str) -> None:
+    """Inject a bare access token into the backend KV store, with no token exchange.
+
+    ``authenticate_connector_with_refresh_token`` cannot be used for providers that
+    issue no refresh token — GitHub OAuth Apps and classic PATs both fall in that
+    group, and ``grant_type=refresh_token`` is simply not a supported grant there.
+
+    ``refresh_token`` is deliberately written empty rather than omitted:
+    ``TokenRefreshService._is_connector_authenticated`` gates on
+    ``bool(credentials['refresh_token'])``, so an empty value keeps the connector out
+    of the background refresh scan entirely. A placeholder non-empty value would be
+    picked up, fail to refresh, and eventually flip ``isAuthenticated`` to False.
+    """
+    secret_key = os.getenv("SECRET_KEY")
+    if not secret_key:
+        raise ValueError(
+            "SECRET_KEY is not set; it must match the backend's value to write "
+            "connector credentials into the KV store."
+        )
+    _write_credentials_to_kv(connector_id, access_token, "", _derive_key(secret_key))
+    logger.info("Injected access token for connector %s", connector_id)
