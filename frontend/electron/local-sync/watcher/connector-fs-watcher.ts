@@ -7,12 +7,43 @@ import { expandWatchEventsForReplay, type WatchEvent } from './replay-event-expa
 import {
   WatcherStateStore,
   scanSyncRoot,
-  contentQuickHash,
+  contentFileHash,
   normalizeRelKey,
   type FileSnapshotEntry,
   type FileSnapshotMap,
 } from '../persistence/watcher-state-store';
 import { IGNORED_PATTERNS } from './ignored-patterns';
+
+/**
+ * chokidar holds a file's `add` back until its size has been stable this long,
+ * so any window that has to outlive a freshly-moved file's `add` must exceed it.
+ */
+const AWAIT_WRITE_FINISH_STABILITY_MS = 1500;
+const AWAIT_WRITE_FINISH_POLL_MS = 200;
+/** Slack on top of the derived move-ledger lifetime. */
+const MOVE_LEDGER_MARGIN_MS = 1000;
+/** A move is one entry, so this only bounds pathological churn. */
+const MAX_MOVE_LEDGER_ENTRIES = 64;
+
+/**
+ * One directory move we have already reported per-file. `suffixes` holds the
+ * children we synthesized events for, so the raw chokidar events for those same
+ * children can be recognised and dropped without swallowing a genuinely new
+ * file that appears inside the moved directory afterwards.
+ */
+interface MoveLedgerEntry {
+  oldPrefix: string;
+  newPrefix: string;
+  suffixes: Set<string>;
+  expiresAt: number;
+}
+
+/** '' when path *is* prefix, the child suffix when under it, null otherwise. */
+function suffixUnder(prefix: string, candidate: string): string | null {
+  if (!prefix) return null;
+  if (candidate === prefix) return '';
+  return candidate.startsWith(`${prefix}/`) ? candidate.slice(prefix.length + 1) : null;
+}
 
 export interface ConnectorFsWatcherStatus {
   running: boolean;
@@ -57,7 +88,7 @@ export interface ConnectorFsWatcherArgs {
 
 /**
  * Watches `rootPath` with chokidar, correlates raw events into high-level FileEvents
- * (handling rename/move via inode + quickHash), deduplicates within batches, and
+ * (handling rename/move via inode + full-content sha256), deduplicates within batches, and
  * emits batches via onBatch. Performs startup reconciliation against a persisted
  * per-connector watcher_state.*.json so offline changes are captured.
  */
@@ -77,8 +108,11 @@ export class ConnectorFsWatcher {
   private running: boolean;
   private ready: boolean;
   private stateSyncTimer: NodeJS.Timeout | null;
-  private syntheticSuppressionWindowMs: number;
-  private suppressedEventKeys: Map<string, number>;
+  private moveLedgerTtlMs: number;
+  private moveLedger: MoveLedgerEntry[];
+  /** Serialises listener bodies so two emits cannot interleave their awaits
+   * and observe each other's half-applied state. */
+  private listenerChain: Promise<void>;
 
   stateStore: WatcherStateStore;
   dispatcher: BatchDispatcher;
@@ -121,8 +155,8 @@ export class ConnectorFsWatcher {
     this.running = false;
     this.ready = false;
     this.stateSyncTimer = null;
-    this.syntheticSuppressionWindowMs = 1500;
-    this.suppressedEventKeys = new Map();
+    this.moveLedger = [];
+    this.listenerChain = Promise.resolve();
 
     this.stateStore = new WatcherStateStore({
       baseDir: this.baseDir,
@@ -155,23 +189,40 @@ export class ConnectorFsWatcher {
       correlationWindowMs,
       changeDebounceMs,
       shouldSuppressModifiedChange: async (ev) => {
-        if (ev.isDirectory) return false;
+        if (ev.isDirectory) return { suppress: false };
+        // Hashed once here and handed back so the caller can stamp the
+        // emitted MODIFIED event with it instead of re-reading the file.
+        const cur = await contentFileHash(ev.absPath);
         const prev = this.stateStore.getSnapshot().files[ev.relKey];
-        if (!prev || prev.isDirectory || !prev.quickHash) return false;
-        const cur = await contentQuickHash(ev.absPath);
-        return cur !== undefined && cur === prev.quickHash;
+        const suppress = Boolean(
+          prev && !prev.isDirectory && prev.sha256 && cur !== undefined && cur === prev.sha256,
+        );
+        return { suppress, sha256: cur };
       },
       getPreviousFileEntry: (relKey: string) => this.stateStore.getSnapshot().files[relKey],
     });
 
+    // Derived rather than fixed: every one of these delays sits between a
+    // directory move and the raw child events it provokes, so a lifetime
+    // shorter than their sum can never see the events it exists to drop.
+    this.moveLedgerTtlMs = AWAIT_WRITE_FINISH_STABILITY_MS
+      + AWAIT_WRITE_FINISH_POLL_MS
+      + this.correlator.correlationWindowMs
+      + this.correlator.unlinkCorrelationWindowMs
+      + MOVE_LEDGER_MARGIN_MS;
+
     this.correlator.setListener((events: WatchEvent[]) => {
-      const filtered = this.dropSuppressedEvents(events);
-      const dispatchable = this.expandForDispatch(filtered);
-      if (dispatchable.length > 0) {
-        this.noteSyntheticFollowupSuppressions(dispatchable);
-        this.applyEventsToState(dispatchable).catch(() => { /* ignore */ });
+      this.listenerChain = this.listenerChain.then(async () => {
+        // Expansion first: the children a DIR_DELETED expands into are created
+        // here, so a filter running before it could never see them.
+        const dispatchable = this.filterAndNote(await this.expandForDispatch(events));
+        if (dispatchable.length === 0) return;
+        // Awaited: the correlator reads this state back to recover a pending
+        // unlink's inode and hash, and racing that read is what made the
+        // duplicate-on-move bug intermittent rather than constant.
+        await this.applyEventsToState(dispatchable);
         this.dispatcher.push(dispatchable);
-      }
+      }).catch(() => { /* a failed emit must not wedge the chain */ });
     });
   }
 
@@ -201,37 +252,134 @@ export class ConnectorFsWatcher {
     }
   }
 
-  private expandForDispatch(events: WatchEvent[], filesSnapshot?: FileSnapshotMap): WatchEvent[] {
+  private async expandForDispatch(events: WatchEvent[], filesSnapshot?: FileSnapshotMap): Promise<WatchEvent[]> {
     if (!events || events.length === 0) return [];
     if (!events.some((event) => event.isDirectory)) return events;
     return expandWatchEventsForReplay(
       events,
       filesSnapshot || this.stateStore.getSnapshot().files,
+      this.rootPath,
     );
+  }
+
+  /**
+   * Drop the events a directory move provokes twice, then record the move so
+   * the *next* wave can be recognised.
+   *
+   * Moving a directory makes us report every child once from the expansion of
+   * the directory event, and makes chokidar report each child's own unlink/add
+   * a second or two later. Without this the backend sees both descriptions of
+   * the same move and ends up with two records per file.
+   *
+   * Order matters: filtering runs before recording, so the first wave (which
+   * establishes the entry) passes through and only repeats are dropped.
+   */
+  private filterAndNote(events: WatchEvent[]): WatchEvent[] {
+    if (!events || events.length === 0) return [];
+    const kept = this.dropSuppressedEvents(events);
+    this.noteDirectoryMoves(kept);
+    return kept;
+  }
+
+  private pruneMoveLedger(now: number): void {
+    this.moveLedger = this.moveLedger.filter((entry) => entry.expiresAt > now);
+    if (this.moveLedger.length > MAX_MOVE_LEDGER_ENTRIES) {
+      this.moveLedger.sort((a, b) => a.expiresAt - b.expiresAt);
+      this.moveLedger = this.moveLedger.slice(-MAX_MOVE_LEDGER_ENTRIES);
+    }
+  }
+
+  /**
+   * True when this event merely restates a move already reported. Sliding the
+   * entry's expiry on each hit matters for big directories, where chokidar's
+   * per-file stability wait spreads the raw events over far longer than any
+   * fixed lifetime.
+   */
+  private isAlreadyReported(event: WatchEvent, now: number): boolean {
+    for (const entry of this.moveLedger) {
+      let matched = false;
+      switch (event.type) {
+        case 'MOVED':
+        case 'RENAMED':
+        case 'DIR_MOVED':
+        case 'DIR_RENAMED': {
+          if (!event.oldPath) break;
+          const oldSuffix = suffixUnder(entry.oldPrefix, event.oldPath);
+          // A pair whose halves map through this move by the same suffix *is*
+          // this move -- no other file can produce it -- so there is no need to
+          // consult the recorded children.
+          matched = oldSuffix !== null && suffixUnder(entry.newPrefix, event.path) === oldSuffix;
+          break;
+        }
+        case 'CREATED':
+        case 'DIR_CREATED': {
+          const suffix = suffixUnder(entry.newPrefix, event.path);
+          // Only children we actually reported: a genuinely new file dropped
+          // into the moved directory must still reach the backend.
+          matched = suffix !== null && entry.suffixes.has(suffix);
+          break;
+        }
+        case 'DELETED':
+        case 'DIR_DELETED': {
+          const suffix = suffixUnder(entry.oldPrefix, event.path);
+          matched = suffix !== null && entry.suffixes.has(suffix);
+          break;
+        }
+        default:
+          // MODIFIED is deliberately absent: suppressing it would discard a
+          // real edit made moments after a move, and letting a redundant one
+          // through costs nothing -- the backend skips same-revision updates.
+          break;
+      }
+      if (matched) {
+        entry.expiresAt = now + this.moveLedgerTtlMs;
+        return true;
+      }
+    }
+    return false;
   }
 
   private dropSuppressedEvents(events: WatchEvent[]): WatchEvent[] {
     if (!events || events.length === 0) return [];
     const now = Date.now();
-    for (const [key, expiresAt] of this.suppressedEventKeys) {
-      if (expiresAt <= now) this.suppressedEventKeys.delete(key);
-    }
-    return events.filter((event) => {
-      const key = `${event.type}:${event.path}`;
-      const expiresAt = this.suppressedEventKeys.get(key);
-      if (!expiresAt || expiresAt <= now) return true;
-      return false;
-    });
+    this.pruneMoveLedger(now);
+    if (this.moveLedger.length === 0) return events;
+    return events.filter((event) => !this.isAlreadyReported(event, now));
   }
 
-  private noteSyntheticFollowupSuppressions(events: WatchEvent[]): void {
+  private noteDirectoryMoves(events: WatchEvent[]): void {
     if (!events || events.length === 0) return;
-    const expiresAt = Date.now() + this.syntheticSuppressionWindowMs;
+    const now = Date.now();
+    const touched: MoveLedgerEntry[] = [];
+
     for (const event of events) {
-      if (!event || (event.type !== 'RENAMED' && event.type !== 'MOVED')) continue;
-      if (event.oldPath) this.suppressedEventKeys.set(`DELETED:${event.oldPath}`, expiresAt);
-      if (event.path) this.suppressedEventKeys.set(`CREATED:${event.path}`, expiresAt);
+      if (event.type !== 'DIR_MOVED' && event.type !== 'DIR_RENAMED') continue;
+      if (!event.oldPath || !event.path) continue;
+      const oldPrefix = event.oldPath;
+      let entry = this.moveLedger.find(
+        (e) => e.oldPrefix === oldPrefix && e.newPrefix === event.path,
+      );
+      if (!entry) {
+        entry = { oldPrefix, newPrefix: event.path, suffixes: new Set<string>(), expiresAt: 0 };
+        this.moveLedger.push(entry);
+      }
+      entry.expiresAt = now + this.moveLedgerTtlMs;
+      touched.push(entry);
     }
+    if (touched.length === 0) return;
+
+    for (const event of events) {
+      if (event.type !== 'MOVED' && event.type !== 'RENAMED') continue;
+      if (!event.oldPath) continue;
+      for (const entry of touched) {
+        const suffix = suffixUnder(entry.oldPrefix, event.oldPath);
+        if (suffix !== null && suffixUnder(entry.newPrefix, event.path) === suffix) {
+          entry.suffixes.add(suffix);
+          break;
+        }
+      }
+    }
+    this.pruneMoveLedger(now);
   }
 
   private async captureRawState(
@@ -248,14 +396,14 @@ export class ConnectorFsWatcher {
     const inode = typeof stats.ino === 'bigint' ? Number(stats.ino) : stats.ino;
     const size = !isDirectory && typeof stats.size === 'number' ? stats.size : 0;
     const mtimeMs = typeof stats.mtimeMs === 'number' ? stats.mtimeMs : Date.now();
-    const quickHash = isDirectory ? undefined : await contentQuickHash(absPath);
+    const sha256 = isDirectory ? undefined : await contentFileHash(absPath);
 
     this.stateStore.getSnapshot().files[relKey] = {
       inode,
       size,
       mtimeMs,
       isDirectory,
-      quickHash,
+      sha256,
     };
     this.stateStore.scheduleSave();
   }
@@ -281,13 +429,15 @@ export class ConnectorFsWatcher {
         const stats = await fs.promises.lstat(absPath);
         if (!stats.isFile()) continue;
         const inode = typeof stats.ino === 'bigint' ? Number(stats.ino) : stats.ino;
-        const quickHash = await contentQuickHash(absPath);
+        // The event already carries a freshly computed hash from the
+        // correlator — reuse it rather than reading the file a second time.
+        const sha256 = event.sha256 !== undefined ? event.sha256 : await contentFileHash(absPath);
         const entry: FileSnapshotEntry = {
           inode,
           size: stats.size,
           mtimeMs: stats.mtimeMs,
           isDirectory: false,
-          quickHash,
+          sha256,
         };
         this.stateStore.getSnapshot().files[nextPath] = entry;
         touched = true;
@@ -322,10 +472,44 @@ export class ConnectorFsWatcher {
       const replayFiles = { ...prevState.files };
       const currentScan = await scanSyncRoot(this.rootPath, this.scanOptions());
       const offlineEvents = this.stateStore.commitReconcile(currentScan);
-      const dispatchable = this.expandForDispatch(offlineEvents, replayFiles);
+      const dispatchable = this.filterAndNote(
+        await this.expandForDispatch(offlineEvents, replayFiles),
+      );
       if (dispatchable.length > 0) {
         this.log(`Found ${dispatchable.length} change(s) since last run.`);
         this.dispatcher.push(dispatchable, { source: 'reconcile' });
+        // Drain synchronously so the caller (LocalSyncManager.start) can rely
+        // on every reconcile event having reached onBatch/the journal before
+        // this returns — it replays right after start() resolves instead of
+        // waiting for the 1s scheduleFlush timer or the next scheduled tick.
+        await this.dispatcher.flush();
+      }
+    } else {
+      // First-ever start for this connector (or watcher_state was lost):
+      // seed the backend from the current disk snapshot as plain CREATED
+      // upserts instead of relying on a destructive REPLACE. The backend
+      // upserts idempotently by deterministic external_record_id, so this is
+      // safe even if some of these paths already exist there.
+      this.log('No previous state found. Seeding from current disk contents...');
+      const currentScan = await scanSyncRoot(this.rootPath, this.scanOptions());
+      const seedEvents: WatchEvent[] = [];
+      for (const [relPath, entry] of currentScan) {
+        if (entry.isDirectory) continue;
+        seedEvents.push({
+          type: 'CREATED',
+          path: relPath,
+          timestamp: Date.now(),
+          size: entry.size,
+          isDirectory: false,
+          sha256: entry.sha256,
+        });
+      }
+      this.stateStore.applyScan(currentScan);
+      this.stateStore.flushSave();
+      if (seedEvents.length > 0) {
+        this.log(`Seeding ${seedEvents.length} file(s) from disk.`);
+        this.dispatcher.push(seedEvents, { source: 'reconcile' });
+        await this.dispatcher.flush();
       }
     }
 
@@ -345,7 +529,10 @@ export class ConnectorFsWatcher {
       // stat-time size disagrees with the bytes we end up uploading.
       // 1500 ms quiet window catches cold-cached writes without making
       // small-file edits feel sluggish.
-      awaitWriteFinish: { stabilityThreshold: 1500, pollInterval: 200 },
+      awaitWriteFinish: {
+        stabilityThreshold: AWAIT_WRITE_FINISH_STABILITY_MS,
+        pollInterval: AWAIT_WRITE_FINISH_POLL_MS,
+      },
       ignorePermissionErrors: true,
       atomic: 200,
     });
@@ -358,21 +545,9 @@ export class ConnectorFsWatcher {
       this.correlator.push(eventName as ChokidarEventName, filePath, stats).catch(() => { /* ignore */ });
     });
 
-    this.watcher.on('ready', async () => {
+    this.watcher.on('ready', () => {
       this.ready = true;
-      if (!hasPreviousState) {
-        this.log('Initial scan complete. Capturing baseline state...');
-        try {
-          const scan = await scanSyncRoot(this.rootPath, this.scanOptions());
-          this.stateStore.applyScan(scan);
-          this.stateStore.flushSave();
-          this.log(`Baseline captured: ${scan.size} entries tracked.`);
-        } catch (err) {
-          this.log(`Baseline scan error: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      } else {
-        this.log('Watcher ready.');
-      }
+      this.log('Watcher ready.');
     });
 
     this.watcher.on('error', (err) => {
@@ -388,7 +563,9 @@ export class ConnectorFsWatcher {
     if (!this.running) return;
     this.log('Stopping file watcher...');
     if (this.stateSyncTimer) { clearTimeout(this.stateSyncTimer); this.stateSyncTimer = null; }
-    await this.correlator.drain();
+    // Forced: syncStateFromDisk() below rewrites state to match disk, so an
+    // unlink left pending here becomes a deletion no event ever reports.
+    await this.correlator.drain(true);
     await this.dispatcher.flush();
     if (this.watcher) {
       try { await this.watcher.close(); } catch { /* ignore */ }
@@ -417,12 +594,13 @@ export class ConnectorFsWatcher {
     const scan = await scanSyncRoot(this.rootPath, this.scanOptions());
     const events = this.stateStore.commitReconcile(scan);
     this.stateStore.flushSave();
-    const dispatchable = this.expandForDispatch(events, replayFiles);
+    const dispatchable = this.filterAndNote(
+      await this.expandForDispatch(events, replayFiles),
+    );
     if (dispatchable.length > 0) this.dispatcher.push(dispatchable, { source: 'reconcile' });
-    // Drain the dispatcher synchronously so callers (e.g. runScheduledTick)
-    // can rely on every reconcile event having reached onBatch/the journal
-    // before this returns. Without this, the 1s scheduleFlush timer would
-    // delay rescan deltas under SCHEDULED until the next tick.
+    // Drain synchronously so callers can rely on every reconcile event having
+    // reached onBatch/the journal before this returns; the 1s scheduleFlush
+    // timer would otherwise hold them back until after the current pull page.
     await this.dispatcher.flush();
     return dispatchable;
   }
@@ -435,9 +613,16 @@ export class ConnectorFsWatcher {
    * this drain, rescan() finds no diff (live events already updated state)
    * and replay() finds nothing in the journal yet, so the change defers to
    * the *next* tick.
+   *
+   * Unlinks still inside the correlation window are deliberately left pending:
+   * forcing them would turn a rename that happens to straddle a pull into
+   * DELETE + CREATE, destroying the record's vertex and its permissions and
+   * indexing history. They correlate normally and land on the next page, which
+   * the pull protocol already tolerates — the server asking for the next page
+   * is what acks this one.
    */
   async drainLiveEvents(): Promise<void> {
-    await this.correlator.drain();
+    await this.correlator.drain(false);
     await this.dispatcher.flush();
   }
 }

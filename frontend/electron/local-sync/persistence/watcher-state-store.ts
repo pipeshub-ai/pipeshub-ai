@@ -4,8 +4,11 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import type { WatchEvent } from '../watcher/replay-event-expander';
 
-const WATCHER_STATE_VERSION = 1;
-const QUICK_HASH_MAX_BYTES = 4096;
+// Bumped past every previously-shipped value (including the tolerated-on-read
+// "2") so upgrading always discards a pre-existing cache: old entries carry a
+// 4KB-prefix quickHash, not the full-content sha256 this version expects.
+const WATCHER_STATE_VERSION = 3;
+const HASH_STREAM_CHUNK_BYTES = 256 * 1024;
 const SAVE_DEBOUNCE_MS = 5000;
 
 export interface FileSnapshotEntry {
@@ -13,7 +16,7 @@ export interface FileSnapshotEntry {
   size: number;
   mtimeMs: number;
   isDirectory: boolean;
-  quickHash?: string;
+  sha256?: string;
 }
 
 export type FileSnapshotMap = Record<string, FileSnapshotEntry>;
@@ -75,33 +78,34 @@ function isValidInode(ino: unknown): boolean {
   return Number.isFinite(n) && n > 0;
 }
 
-async function computeQuickHash(absFilePath: string, size: number): Promise<string | undefined> {
-  try {
-    const fh = await fsp.open(absFilePath, 'r');
-    try {
-      const buf = Buffer.allocUnsafe(Math.min(QUICK_HASH_MAX_BYTES, Math.max(0, size)));
-      let read = 0;
-      if (buf.length > 0) {
-        const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
-        read = bytesRead;
-      }
-      const h = crypto.createHash('sha256');
-      h.update(buf.subarray(0, read));
-      h.update(`|${size}|`);
-      return h.digest('hex');
-    } finally {
-      await fh.close();
-    }
-  } catch {
-    return undefined;
-  }
+/** Streams the whole file so a multi-GB file never has to sit in memory at once. */
+function computeFileHash(absFilePath: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: string | undefined): void => {
+      if (settled) return;
+      settled = true;
+      stream.destroy();
+      resolve(value);
+    };
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(absFilePath, { highWaterMark: HASH_STREAM_CHUNK_BYTES });
+    stream.on('data', (chunk: Buffer) => hash.update(chunk));
+    stream.on('end', () => finish(hash.digest('hex')));
+    stream.on('error', () => finish(undefined));
+  });
 }
 
-export async function contentQuickHash(absPath: string): Promise<string | undefined> {
+/**
+ * Full-content SHA-256, not a prefix heuristic — the value callers attach to
+ * outgoing `WatchEvent.sha256` so the server's rename/move handling can trust
+ * revision equality as real content identity.
+ */
+export async function contentFileHash(absPath: string): Promise<string | undefined> {
   try {
     const st = await fsp.lstat(absPath);
     if (!st.isFile()) return undefined;
-    return computeQuickHash(absPath, st.size);
+    return computeFileHash(absPath);
   } catch {
     return undefined;
   }
@@ -154,16 +158,21 @@ export async function scanSyncRoot(
       const inode = typeof st.ino === 'bigint' ? Number(st.ino) : st.ino;
       const size = st.isFile() ? st.size : 0;
       const mtimeMs = st.mtimeMs;
-      let quickHash: string | undefined;
+      let sha256: string | undefined;
       if (st.isFile()) {
+        // Background bookkeeping only: reuse the last known full hash when
+        // size+mtime haven't moved, so a periodic rescan doesn't re-read
+        // every untouched file in the tree. Live rename/move events still
+        // get a fresh hash of their own (see event-correlator.ts) rather
+        // than reusing this cache.
         const old = previousByRelPath && previousByRelPath.get(relKey);
-        if (old && !old.isDirectory && old.size === size && old.mtimeMs === mtimeMs && old.quickHash) {
-          quickHash = old.quickHash;
+        if (old && !old.isDirectory && old.size === size && old.mtimeMs === mtimeMs && old.sha256) {
+          sha256 = old.sha256;
         } else {
-          quickHash = await computeQuickHash(abs, size);
+          sha256 = await computeFileHash(abs);
         }
       }
-      out.set(relKey, { inode, size, mtimeMs, isDirectory, quickHash });
+      out.set(relKey, { inode, size, mtimeMs, isDirectory, sha256 });
       if (isDirectory && includeSubfolders) {
         await visit(abs);
       }
@@ -192,8 +201,8 @@ function parseFileEntry(raw: unknown): FileSnapshotEntry | null {
   const mtimeMs = Number(r.mtimeMs);
   if (!Number.isFinite(inode) || !Number.isFinite(size) || !Number.isFinite(mtimeMs)) return null;
   const isDirectory = Boolean(r.isDirectory);
-  const quickHash = typeof r.quickHash === 'string' && r.quickHash.length > 0 ? r.quickHash : undefined;
-  return { inode, size, mtimeMs, isDirectory, quickHash };
+  const sha256 = typeof r.sha256 === 'string' && r.sha256.length > 0 ? r.sha256 : undefined;
+  return { inode, size, mtimeMs, isDirectory, sha256 };
 }
 
 export class WatcherStateStore {
@@ -242,7 +251,7 @@ export class WatcherStateStore {
     }
     const raw = parsed as Record<string, unknown>;
     const version = Number(raw.version);
-    if (version !== 1 && version !== 2) {
+    if (version !== WATCHER_STATE_VERSION) {
       this.state = emptyState(this.syncRoot, this.connectorInstanceId);
       return;
     }
@@ -328,6 +337,7 @@ export class WatcherStateStore {
         type, path: newPath, oldPath, timestamp: now,
         size: newEnt.isDirectory ? undefined : newEnt.size,
         isDirectory: newEnt.isDirectory,
+        sha256: newEnt.isDirectory ? undefined : newEnt.sha256,
       });
       handledOld.add(oldPath);
       handledNew.add(newPath);
@@ -340,23 +350,28 @@ export class WatcherStateStore {
       const newEnt = currentScan.get(p)!;
       if (oldEnt.isDirectory !== newEnt.isDirectory) {
         events.push({ type: oldEnt.isDirectory ? 'DIR_DELETED' : 'DELETED', path: p, timestamp: now, isDirectory: oldEnt.isDirectory });
-        events.push({ type: newEnt.isDirectory ? 'DIR_CREATED' : 'CREATED', path: p, timestamp: now, size: newEnt.isDirectory ? undefined : newEnt.size, isDirectory: newEnt.isDirectory });
+        events.push({ type: newEnt.isDirectory ? 'DIR_CREATED' : 'CREATED', path: p, timestamp: now, size: newEnt.isDirectory ? undefined : newEnt.size, isDirectory: newEnt.isDirectory, sha256: newEnt.isDirectory ? undefined : newEnt.sha256 });
         handledOld.add(p); handledNew.add(p);
         continue;
       }
-      const inodeSame = oldEnt.inode === newEnt.inode || (!isValidInode(oldEnt.inode) && !isValidInode(newEnt.inode));
+      // Inode is only meaningful for rename-detection (matching a path to a
+      // *different* path above) — it's not authoritative here. Windows can
+      // report a different (or momentarily invalid) file ID for the same
+      // physical file across process restarts (e.g. cloud-sync placeholder
+      // files), which previously forced every unchanged file into a spurious
+      // MODIFIED event on every startup reconcile.
       let metaSame: boolean;
       if (newEnt.isDirectory) {
         metaSame = oldEnt.mtimeMs === newEnt.mtimeMs;
-      } else if (oldEnt.quickHash && newEnt.quickHash) {
-        metaSame = oldEnt.size === newEnt.size && oldEnt.quickHash === newEnt.quickHash;
-      } else if (!oldEnt.quickHash && newEnt.quickHash) {
+      } else if (oldEnt.sha256 && newEnt.sha256) {
+        metaSame = oldEnt.size === newEnt.size && oldEnt.sha256 === newEnt.sha256;
+      } else if (!oldEnt.sha256 && newEnt.sha256) {
         metaSame = oldEnt.size === newEnt.size && oldEnt.mtimeMs === newEnt.mtimeMs;
       } else {
-        metaSame = oldEnt.size === newEnt.size && oldEnt.mtimeMs === newEnt.mtimeMs && oldEnt.quickHash === newEnt.quickHash;
+        metaSame = oldEnt.size === newEnt.size && oldEnt.mtimeMs === newEnt.mtimeMs && oldEnt.sha256 === newEnt.sha256;
       }
-      if (!inodeSame || !metaSame) {
-        events.push({ type: 'MODIFIED', path: p, timestamp: now, size: newEnt.isDirectory ? undefined : newEnt.size, isDirectory: newEnt.isDirectory });
+      if (!metaSame) {
+        events.push({ type: 'MODIFIED', path: p, timestamp: now, size: newEnt.isDirectory ? undefined : newEnt.size, isDirectory: newEnt.isDirectory, sha256: newEnt.isDirectory ? undefined : newEnt.sha256 });
       }
       handledOld.add(p); handledNew.add(p);
     }
@@ -369,7 +384,7 @@ export class WatcherStateStore {
     for (const p of newPaths) {
       if (handledNew.has(p)) continue;
       const e = currentScan.get(p)!;
-      events.push({ type: e.isDirectory ? 'DIR_CREATED' : 'CREATED', path: p, timestamp: now, size: e.isDirectory ? undefined : e.size, isDirectory: e.isDirectory });
+      events.push({ type: e.isDirectory ? 'DIR_CREATED' : 'CREATED', path: p, timestamp: now, size: e.isDirectory ? undefined : e.size, isDirectory: e.isDirectory, sha256: e.isDirectory ? undefined : e.sha256 });
     }
     return events;
   }

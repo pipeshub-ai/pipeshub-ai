@@ -58,6 +58,8 @@ export interface Connector {
    * Prefer comparing to `CONNECTOR_INSTANCE_STATUS` from `./constants`; other strings may appear before the UI is updated.
    */
   status?: string | null;
+  /** Last sync failure code, e.g. `DESKTOP_OFFLINE`. Cleared on the next successful start. */
+  lastError?: string | null;
 }
 
 /** API list response shape. */
@@ -452,6 +454,8 @@ export interface ConnectorInstance extends Connector {
 export interface LocalSyncStatus {
   connectorId: string;
   watcherState: 'starting' | 'watching' | 'stopped';
+  /** Strategy the mounted watcher is running under — falls back to journal meta when stopped. */
+  syncStrategy: 'MANUAL' | 'SCHEDULED';
   rootPath: string | null;
   lastError: string | null;
   pendingCount: number;

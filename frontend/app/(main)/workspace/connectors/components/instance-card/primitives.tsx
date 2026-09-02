@@ -7,6 +7,10 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 import { useToastStore } from '@/lib/store/toast-store';
 import { runConnectorResync } from '../../utils/connector-sync-actions';
+import {
+  LOCAL_FS_DESKTOP_OFFLINE_TOAST_DURATION_MS,
+  LOCAL_FS_DESKTOP_OFFLINE_TOAST_TITLE,
+} from '../../constants';
 
 // ========================================
 // InfoRow
@@ -81,6 +85,12 @@ export function PillDivider() {
 
 type SyncState = 'idle' | 'syncing' | 'failed';
 
+function syncErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  if (typeof error === 'string' && error.trim()) return error.trim();
+  return fallback;
+}
+
 /** Self-contained button that triggers resync API and manages its own state */
 export function SyncButton({
   connectorId,
@@ -102,17 +112,23 @@ export function SyncButton({
         setState('idle');
         addToast({
           variant: 'info',
-          title: 'Open the Pipeshub desktop app on the machine that owns this folder to resync.',
+          title: LOCAL_FS_DESKTOP_OFFLINE_TOAST_TITLE,
+          duration: LOCAL_FS_DESKTOP_OFFLINE_TOAST_DURATION_MS,
         });
         return;
       }
       addToast({ variant: 'success', title: 'Sync started' });
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('idle');
-    } catch {
+    } catch (error) {
+      console.error('Sync failed', { connectorId, error });
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('failed');
-      addToast({ variant: 'error', title: 'Sync failed' });
+      addToast({
+        variant: 'error',
+        title: 'Sync failed',
+        description: syncErrorMessage(error, 'An unexpected error occurred.'),
+      });
     }
   };
 
@@ -175,17 +191,23 @@ export function FullSyncButton({
         setState('idle');
         addToast({
           variant: 'info',
-          title: 'Open the Pipeshub desktop app on the machine that owns this folder to resync.',
+          title: LOCAL_FS_DESKTOP_OFFLINE_TOAST_TITLE,
+          duration: LOCAL_FS_DESKTOP_OFFLINE_TOAST_DURATION_MS,
         });
         return;
       }
       addToast({ variant: 'success', title: 'Full sync started' });
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('idle');
-    } catch {
+    } catch (error) {
+      console.error('Full sync failed', { connectorId, error });
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('failed');
-      addToast({ variant: 'error', title: 'Full sync failed' });
+      addToast({
+        variant: 'error',
+        title: 'Full sync failed',
+        description: syncErrorMessage(error, 'An unexpected error occurred.'),
+      });
     } finally {
       setConfirmOpen(false);
     }

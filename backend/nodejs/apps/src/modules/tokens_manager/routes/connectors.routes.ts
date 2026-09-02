@@ -48,8 +48,6 @@ import {
   getFilterFieldOptions,
   saveConnectorInstanceFilterOptions,
   toggleConnectorInstance,
-  submitConnectorFileEvents,
-  submitConnectorFileEventUploads,
   getConnectorSchema,
   getActiveAgentInstances,
   getConnectorStats,
@@ -89,8 +87,6 @@ import { ConnectorId, ConnectorIdToNameMap } from '../../../libs/types/connector
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
-import type { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
-import { createLocalFsConnectorFileEventsUploadMiddleware } from '../../../libs/middlewares/local-fs.middleware';
 
 const logger = Logger.getInstance({
   service: 'ConnectorRoutes',
@@ -437,9 +433,6 @@ export function createConnectorRouter(
   const eventService = container.get<EntitiesEventProducer>('EntitiesEventProducer');
   const scheduler = crawlingContainer.get<CrawlingSchedulerService>(
     CrawlingSchedulerService,
-  );
-  const localFsUploadMiddleware = createLocalFsConnectorFileEventsUploadMiddleware(
-    container.get<KeyValueStoreService>('KeyValueStoreService'),
   );
   const recordsEventProducer = container.get<RecordsEventProducer>(
     'RecordsEventProducer',
@@ -838,23 +831,6 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
     ValidationMiddleware.validate(connectorToggleSchema),
     toggleConnectorInstance(config, scheduler)
-  );
-
-  router.post(
-    '/:connectorId/file-events/upload',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
-    ValidationMiddleware.validate(connectorIdParamSchema),
-    localFsUploadMiddleware,
-    submitConnectorFileEventUploads(config),
-  );
-
-  router.post(
-    '/:connectorId/file-events',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
-    ValidationMiddleware.validate(connectorIdParamSchema),
-    submitConnectorFileEvents(config),
   );
 
   // ============================================================================
