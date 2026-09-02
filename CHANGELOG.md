@@ -6,6 +6,7 @@ This file is the release registry: each entry is a condensed summary linking to 
 
 | Version | Date | Channel | Theme |
 |---|---|---|---|
+| [0.7.0](#070--2026-08-26) | Aug 26, 2026 | Stable | PATs, GitHub connector, Bedrock, one-command installer |
 | [0.6.0](#060--2026-08-10) | Aug 10, 2026 | Stable | New agent loop ships stable; query service ~1.8× faster |
 | [0.6.0-beta](#060-beta--2026-08-01) | Aug 1, 2026 | Beta | New agent loop, standalone parsing & extraction, OpenSearch |
 | [0.5.0](#050--2026-07-01) | Jul 1, 2026 | Stable | Atlassian Data Center, agent action tools, open model layer |
@@ -26,13 +27,43 @@ This file is the release registry: each entry is a condensed summary linking to 
 
 ## Unreleased
 
-Changes merged to `main` since the last release: [`v0.6.0...HEAD`](https://github.com/pipeshub-ai/pipeshub-ai/compare/v0.6.0...HEAD).
+Changes merged to `main` since the last release: [`v0.7.0...HEAD`](https://github.com/pipeshub-ai/pipeshub-ai/compare/v0.7.0...HEAD).
 
 ### Breaking changes & upgrade notes
 - **Connector deletion is now "an administrator, or whoever created it", for both team and personal connectors.** Previously a team connector could only be removed by an admin (not its creator) and a personal one only by its creator (not an admin) — so a connector whose creator had left the org could not be deleted by anyone. Reading and updating are unchanged: an admin still cannot open or alter another user's personal connector.
 - **Connector access is now scoped to the caller's organization.** Instances were looked up by id with no org filter, so for a team connector the check reduced to "is an admin" — an admin of one org who learned an id from another would have passed it.
 - **MD5 deduplication is now scoped to a single organization.** It previously matched across every org in the deployment, so two orgs uploading byte-identical content shared one `virtualRecordId`, one `summaryDocumentId`, and a copied set of graph relationships. On upgrade, content that was deduplicated across orgs re-indexes once per org: expect a one-off rise in indexing volume and vector-store size proportional to how much content your orgs genuinely share. Existing records are not rewritten, and no migration is required.
 - **New `VECTOR_COLLECTION_STRATEGY` setting** (default `single`, which is the existing behaviour; `per_connector_type` groups records into one collection per connector type). It is read only on the first startup that finds nothing persisted; after that the stored value wins, and a value that contradicts it fails startup rather than silently resolving to collections that hold no data. Changing it on a live deployment is the embedding-rebuild procedure, not a config edit.
+
+---
+
+## 0.7.0 — 2026-08-26
+
+**Personal access tokens, a GitHub connector, AWS Bedrock, and a one-command installer** · Stable · [`v0.7.0`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.7.0) · [Full changelog](changelog/0.7.0.md)
+
+~100 PRs since 0.6.0. PipesHub opens up to external tooling: scoped personal access tokens for the API and MCP server, an MCP server on the new agent loop, and a one-command Docker installer for self-hosting, alongside a GitHub teams connector, a code parser, multimodal embeddings, and AWS Bedrock.
+
+### Added
+- Personal access tokens: scoped, revocable, `phpat_`-prefixed credentials any member can mint for MCP and API access ([#2933](https://github.com/pipeshub-ai/pipeshub-ai/pull/2933), [#2971](https://github.com/pipeshub-ai/pipeshub-ai/pull/2971)).
+- GitHub teams connector ([#2989](https://github.com/pipeshub-ai/pipeshub-ai/pull/2989)), HackerNews datasource ([#3060](https://github.com/pipeshub-ai/pipeshub-ai/pull/3060)), and a code parser with correct citations into source files ([#3014](https://github.com/pipeshub-ai/pipeshub-ai/pull/3014)).
+- Multimodal embeddings and an EPUB parser ([#2919](https://github.com/pipeshub-ai/pipeshub-ai/pull/2919)), AWS Bedrock as a model provider ([#3062](https://github.com/pipeshub-ai/pipeshub-ai/pull/3062)), and pasted text as a chat attachment ([#2889](https://github.com/pipeshub-ai/pipeshub-ai/pull/2889)).
+- One-command Docker installer (`curl | bash` or `./install.sh`) with image refresh, host checks, and clearer first-run failures ([#2634](https://github.com/pipeshub-ai/pipeshub-ai/pull/2634)).
+
+### Changed
+- MCP server runs on the new agent loop ([#2830](https://github.com/pipeshub-ai/pipeshub-ai/pull/2830)); Docling processing split into stateless services with adaptive parsing ([#2950](https://github.com/pipeshub-ai/pipeshub-ai/pull/2950), [#2980](https://github.com/pipeshub-ai/pipeshub-ai/pull/2980)).
+- Query service throughput phase two: cached accessible-record IDs, batched graph/storage lookups, optional direct provider transports; p50 turn latency 34.4 s → 27.9 s, Node gateway p50 2,738 ms → 573 ms ([#2963](https://github.com/pipeshub-ai/pipeshub-ai/pull/2963)).
+
+### Fixed
+- Vector cleanup no longer lost on record delete when the broker publish fails ([#3013](https://github.com/pipeshub-ai/pipeshub-ai/pull/3013)); Drive/Gmail record streaming covers all permissioned users ([#2965](https://github.com/pipeshub-ai/pipeshub-ai/pull/2965)); Gmail shared-mailbox links point at the right account ([#3011](https://github.com/pipeshub-ai/pipeshub-ai/pull/3011)).
+- Notion reindexing and API resilience, MCP tool-argument schema loss, streamed-table flicker, and a long tail of parsing and UI fixes.
+
+### Security
+- `x-is-admin` header injection closed; admin status derives from the JWT role ([#2985](https://github.com/pipeshub-ai/pipeshub-ai/pull/2985)). Prompt-injection guard on sub-agent execution ([#2987](https://github.com/pipeshub-ai/pipeshub-ai/pull/2987)).
+
+### Breaking changes & upgrade notes
+- Admin privilege migrates from admin user groups to `User.role` on first boot; users without a role in their JWT must re-login ([#2939](https://github.com/pipeshub-ai/pipeshub-ai/pull/2939)). A storage-record `orgId` backfill also runs at startup ([#3059](https://github.com/pipeshub-ai/pipeshub-ai/pull/3059)).
+- Compose containers are recreated and renamed to `{project}-{service}-1`; `docker exec pipeshub-ai` becomes `docker compose -p pipeshub-ai exec -T pipeshub-ai …` ([#2634](https://github.com/pipeshub-ai/pipeshub-ai/pull/2634)).
+- MCP is toggled from Labs only (`PIPESHUB_ENABLE_MCP` removed), code execution is env-only, and Actions sit behind a new `ENABLE_ACTIONS` flag ([#3044](https://github.com/pipeshub-ai/pipeshub-ai/pull/3044), [#3045](https://github.com/pipeshub-ai/pipeshub-ai/pull/3045)). Legacy Docling PDF/block endpoints were removed ([#2950](https://github.com/pipeshub-ai/pipeshub-ai/pull/2950)).
 
 ---
 
