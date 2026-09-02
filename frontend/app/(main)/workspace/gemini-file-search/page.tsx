@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { Box, Flex, Text, Heading, Switch, TextField, Callout } from '@radix-ui/themes';
+import { Box, Button, Flex, Text, Heading, Switch, TextField, Callout } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { ServiceGate } from '@/app/components/ui/service-gate';
@@ -193,6 +193,7 @@ export default function GeminiFileSearchPage() {
 
               <Flex align="center" style={{ flexShrink: 0 }}>
                 <Switch
+                  aria-label="Enable Gemini File Search"
                   color="jade"
                   size="2"
                   checked={draft.enabled}
@@ -286,8 +287,8 @@ export default function GeminiFileSearchPage() {
                 You have unsaved changes
               </Text>
               <Flex gap="2">
-                <button
-                  type="button"
+                <Button
+                  variant="soft"
                   onClick={() => setDraft(config)}
                   disabled={isSaving}
                   style={{
@@ -301,9 +302,8 @@ export default function GeminiFileSearchPage() {
                   }}
                 >
                   Discard
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
                   onClick={handleSave}
                   disabled={isSaving}
                   style={{
@@ -319,7 +319,7 @@ export default function GeminiFileSearchPage() {
                   }}
                 >
                   {isSaving ? 'Saving…' : 'Save changes'}
-                </button>
+                </Button>
               </Flex>
             </Flex>
           )}
@@ -355,6 +355,7 @@ function ConfigField({ label, hint, value, placeholder, disabled, onCommit }: Co
         {label}
       </Text>
       <TextField.Root
+        aria-label={label}
         type="text"
         value={inputValue}
         placeholder={placeholder}
@@ -411,6 +412,7 @@ function NumberField({ label, hint, value, min, max, disabled, onCommit }: Numbe
         {label}
       </Text>
       <TextField.Root
+        aria-label={label}
         type="number"
         min={min}
         max={max}

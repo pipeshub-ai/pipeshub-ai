@@ -151,6 +151,19 @@ class EventProcessor:
         # Pure/synchronous — only used to compare "does this duplicate resolve
         # to the same collection as the record being processed", never for I/O.
         self.collection_strategy = collection_strategy or SingleCollectionStrategy()
+        self._gemini_tasks: set[asyncio.Task[None]] = set()
+
+    def _schedule_gemini_file_search(self, **kwargs: Any) -> None:
+        """Run optional Gemini indexing without delaying the primary pipeline."""
+        task = asyncio.create_task(self._index_gemini_file_search(**kwargs))
+        self._gemini_tasks.add(task)
+        task.add_done_callback(self._finish_gemini_file_search)
+
+    def _finish_gemini_file_search(self, task: asyncio.Task[None]) -> None:
+        """Retain background tasks until completion and consume failures."""
+        self._gemini_tasks.discard(task)
+        if not task.cancelled() and (error := task.exception()) is not None:
+            self.logger.error("Gemini File Search background task failed: %s", error)
 
     async def _update_gemini_file_search_status(
         self, record_id: str, status: dict[str, Any]
@@ -1079,7 +1092,7 @@ class EventProcessor:
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
-            await self._index_gemini_file_search(
+            self._schedule_gemini_file_search(
                 record_id=record_id,
                 org_id=org_id,
                 record_name=record_name,

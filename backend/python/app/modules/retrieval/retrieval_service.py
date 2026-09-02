@@ -847,9 +847,14 @@ class RetrievalService:
         if not stores:
             return None
 
+        metadata_filter = " OR ".join(
+            f'recordId="{GeminiFileSearchService.escape_filter_value(record_id)}"'
+            for record_id in record_ids
+        )
         answer = await service.answer(
             query=query,
             store_names=list(stores)[: service.max_stores_per_query],
+            metadata_filter=metadata_filter,
         )
         if not answer or not answer.text.strip():
             return None
@@ -859,11 +864,6 @@ class RetrievalService:
             str(record.get("_key") or record.get("id")): record
             for record in all_records
             if record.get("_key") or record.get("id")
-        }
-        by_name = {
-            str(record.get("recordName") or "").lower(): record
-            for record in all_records
-            if record.get("recordName")
         }
         citations = []
         for citation in answer.citations:
@@ -877,7 +877,8 @@ class RetrievalService:
             )
             record = by_id.get(str(metadata_record_id)) if metadata_record_id else None
             if record is None:
-                record = by_name.get(str(citation.get("title") or "").lower())
+                self.logger.warning("Discarding unresolved Gemini citation")
+                continue
             media_id = citation.get("mediaId")
             citations.append(
                 {

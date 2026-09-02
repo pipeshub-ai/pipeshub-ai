@@ -66,14 +66,14 @@ Inside the **Connectors & Collections** panel, you can expand a KB row and then 
 
 Gemini File Search supports a wide range of formats including:
 - PDF, DOCX, PPTX, XLSX
-- PNG, JPEG, WebP, BMP, HEIC, HEIF, AVIF
+- PNG and JPEG
 - Plain text, Markdown, HTML
 - And many more (see Google's [Supported file types](https://ai.google.dev/gemini-api/docs/file-search#supported-file-types))
 
 ## Limitations
 
 - **Audio and video** are not supported by Gemini File Search
-- **Free tier quota** — Gemini's free tier has rate limits (e.g. 15 requests/min for `gemini-3.1-flash-lite`). For production use, enable billing on your Google Cloud project.
+- **Rate limits** - quotas vary by model and usage tier. Review Google's [current rate limits](https://ai.google.dev/gemini-api/docs/rate-limits) before production use.
 - **Per-document size** - Gemini File Search only indexes files up to 100 MB. Larger files still upload and use PipesHub's normal RAG pipeline, but the Gemini status chip shows that multimodal indexing was skipped.
 - **Store size** — Gemini recommends keeping individual stores under 20 GB for optimal retrieval latency
 - **One store per KB** — all files in a KB share one Gemini store. The store is NOT per-folder.

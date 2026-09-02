@@ -545,6 +545,7 @@ class Retrieval:
                 virtual_to_record_map,
                 graph_provider=graph_provider,
             )
+            gemini_results = []
             if gemini_result:
                 try:
                     gemini_results, gemini_records, _ = await build_gemini_citable_results(
@@ -554,12 +555,18 @@ class Retrieval:
                         is_multimodal_llm,
                         config_service,
                     )
-                    flattened_results.extend(gemini_results)
                     virtual_record_id_to_result.update(gemini_records)
                 except Exception as exc:
                     logger_instance.warning(
                         "Failed to format Gemini File Search citations: %s", exc
                     )
+            if gemini_results:
+                if per_source_fan_out:
+                    flattened_results.extend(gemini_results)
+                else:
+                    gemini_budget = min(len(gemini_results), max(1, adjusted_limit // 4))
+                    standard_budget = max(0, adjusted_limit - gemini_budget)
+                    flattened_results = flattened_results[:standard_budget] + gemini_results[:gemini_budget]
             logger_instance.info(f"Processed {len(flattened_results)} flattened results")
 
             # === GRAPH CONTEXT ENRICHMENT ===

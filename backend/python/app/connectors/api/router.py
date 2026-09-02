@@ -2113,12 +2113,9 @@ async def get_gemini_file_search_config(
         Provide[ConnectorAppContainer.config_service]
     ),
 ) -> dict:
-    try:
-        stored = await config_service.get_config(
-            _GEMINI_FILE_SEARCH_CONFIG_PATH, use_cache=False
-        )
-    except Exception:
-        stored = None
+    stored = await config_service.get_config(
+        _GEMINI_FILE_SEARCH_CONFIG_PATH, use_cache=False
+    )
     config = {
         **_GEMINI_FILE_SEARCH_DEFAULTS,
         **(stored if isinstance(stored, dict) else {}),
@@ -2171,7 +2168,8 @@ async def update_gemini_file_search_config(
 
     config["maxStoresPerQuery"] = min(max(config["maxStoresPerQuery"], 1), 5)
     config["maxMediaPerQuery"] = min(max(config["maxMediaPerQuery"], 0), 20)
-    await config_service.set_config(_GEMINI_FILE_SEARCH_CONFIG_PATH, config)
+    if not await config_service.set_config(_GEMINI_FILE_SEARCH_CONFIG_PATH, config):
+        raise HTTPException(status_code=503, detail="Failed to persist configuration")
     return {"success": True, "config": config}
 
 
@@ -2183,11 +2181,22 @@ async def update_gemini_file_search_config(
 async def get_gemini_file_search_kb_stats(
     kb_id: str,
     request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(
         Provide[ConnectorAppContainer.config_service]
     ),
 ) -> dict:
     logger = request.app.container.logger()
+    user_id = request.state.user.get("userId")
+    user = await graph_provider.get_user_by_user_id(user_id)
+    user_key = (user or {}).get("id") or (user or {}).get("_key")
+    role = (
+        await graph_provider.get_user_kb_permission(kb_id, user_key)
+        if user_key
+        else None
+    )
+    if not role:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
     cached = await config_service.get_config(
         f"/services/geminiFileStore/{kb_id}", use_cache=False
     )
@@ -2229,6 +2238,10 @@ async def delete_record_gemini_file_search(
     if not record_details:
         raise HTTPException(status_code=404, detail="Record not found")
 
+    permission = next(iter(record_details.get("permissions") or []), {})
+    if permission.get("relationship") not in {"OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER"}:
+        raise HTTPException(status_code=403, detail="You do not have permission to delete this document")
+
     record = record_details.get("record") or record_details
     metadata = GeminiFileSearchService.decode_file_search_status(
         record.get("geminiFileSearch")
@@ -2240,8 +2253,6 @@ async def delete_record_gemini_file_search(
     )
     if document_name:
         await service.delete_document(document_name)
-    elif store_name:
-        await service.delete_store(store_name)
 
     await graph_provider.update_node(
         record_id,

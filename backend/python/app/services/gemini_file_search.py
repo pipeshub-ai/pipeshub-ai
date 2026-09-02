@@ -74,6 +74,8 @@ _DEFAULT_GENERATION_MODEL = "gemini-3.5-flash"
 _DEFAULT_EMBEDDING_MODEL = "models/gemini-embedding-2"
 _DEFAULT_MAX_STORES_PER_QUERY = 5
 _DEFAULT_MAX_MEDIA_PER_QUERY = 5
+_MAX_STORES_PER_QUERY = 5
+_HTTP_TIMEOUT_MS = 120_000
 MAX_FILE_SEARCH_DOCUMENT_BYTES = 100 * 1024 * 1024
 
 
@@ -241,7 +243,7 @@ class GeminiFileSearchService:
                 ),
                 1,
             ),
-            _DEFAULT_MAX_STORES_PER_QUERY,
+            _MAX_STORES_PER_QUERY,
         )
         self.max_media_per_query = int(
             fs_config.get("maxMediaPerQuery")
@@ -335,6 +337,21 @@ class GeminiFileSearchService:
             return False
         return mime_type.lower() in SUPPORTED_MIME_TYPES
 
+    @staticmethod
+    def escape_filter_value(value: str) -> str:
+        """Escape a string literal for Gemini metadata filter syntax."""
+        return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+    def _client(self) -> Any:
+        """Create a Gemini client with a bounded request timeout."""
+        from google import genai
+        from google.genai import types
+
+        return genai.Client(
+            api_key=self._api_key,
+            http_options=types.HttpOptions(timeout=_HTTP_TIMEOUT_MS),
+        )
+
     # ------------------------------------------------------------------
     # Indexing
     # ------------------------------------------------------------------
@@ -352,9 +369,7 @@ class GeminiFileSearchService:
         return await asyncio.to_thread(self._ensure_store_sync, org_id, kb_id)
 
     def _ensure_store_sync(self, org_id: str, kb_id: str) -> str:
-        from google import genai
-
-        client = genai.Client(api_key=self._api_key)
+        client = self._client()
         display_name = f"pipeshub-{org_id}-kb-{kb_id}"
         try:
             for store in client.file_search_stores.list():
@@ -424,9 +439,7 @@ class GeminiFileSearchService:
         custom_metadata: list[dict[str, Any]] | None,
         store_name: str | None,
     ) -> GeminiFileSearchIndexResult:
-        from google import genai
-
-        client = genai.Client(api_key=self._api_key)
+        client = self._client()
 
         # Reuse the per-KB store when provided; otherwise create a per-record
         # store (legacy fallback so the service stays usable standalone).
@@ -458,6 +471,11 @@ class GeminiFileSearchService:
         if custom_metadata:
             upload_config["custom_metadata"] = custom_metadata
 
+        for existing in self._find_documents_by_record_id(client, store_obj_name, record_id):
+            existing_name = getattr(existing, "name", None)
+            if existing_name:
+                self._delete_document_with_client(client, str(existing_name))
+
         with tempfile.NamedTemporaryFile(delete=True, suffix=suffix) as temp_file:
             temp_file.write(content)
             temp_file.flush()
@@ -468,16 +486,13 @@ class GeminiFileSearchService:
             )
             operation_name = getattr(operation, "name", None)
 
-        # NOTE: client.operations.get() only supports video operations in the
-        # current google-genai SDK — it cannot poll File Search operations
-        # (the returned operation never reports done=True, causing an infinite
-        # loop). Instead we poll the store's document list until the uploaded
-        # file reaches the ACTIVE (or FAILED) state. This is the supported
-        # pattern from the File Search docs.
+        # Poll the document resource so the persisted status contains its
+        # deletable resource name and remains compatible across SDK versions.
         document_name = self._poll_document_state(
             client,
             store_obj_name,
             record_name,
+            record_id,
             operation_name,
         )
         return GeminiFileSearchIndexResult(
@@ -491,15 +506,14 @@ class GeminiFileSearchService:
         client: Any,
         store_name: str,
         record_name: str,
+        record_id: str,
         operation_name: str | None,
     ) -> str | None:
         """Poll the store's documents until the uploaded file is ACTIVE.
 
-        Replaces the broken ``client.operations.get()`` call (which only
-        supports video LROs in the current SDK). We list the documents in
-        the store, find ours by ``display_name`` (== ``record_name``), and
-        wait for its ``state`` to leave PROCESSING. Returns the document's
-        resource name, or ``None`` if it can't be located after the timeout.
+        Lists documents in the store, finds the upload by its stable record ID,
+        and waits for its state to leave processing. Returns the document's
+        resource name, or ``None`` if it cannot be located after the timeout.
         """
         start = time.monotonic()
         # Documents appear in the store shortly after the upload operation is
@@ -514,14 +528,14 @@ class GeminiFileSearchService:
                     store_name,
                 )
                 # Best-effort: return whatever document name we last saw.
-                return self._find_document_name(client, store_name, record_name)
+                return self._find_document_name(client, store_name, record_name, record_id)
 
             if not first_poll:
                 time.sleep(self.poll_interval_seconds)
             first_poll = False
 
             try:
-                doc = self._find_document(client, store_name, record_name)
+                doc = self._find_document(client, store_name, record_name, record_id)
             except Exception:
                 self.logger.debug(
                     "Error listing Gemini documents while polling %s",
@@ -560,9 +574,9 @@ class GeminiFileSearchService:
                 )
 
     def _find_document(
-        self, client: Any, store_name: str, record_name: str
+        self, client: Any, store_name: str, record_name: str, record_id: str | None = None
     ) -> Any | None:
-        """Find a document in a store by display_name (case-insensitive)."""
+        """Find a document by record ID, with a legacy display-name fallback."""
         documents = getattr(client.file_search_stores, "documents", None)
         if documents is None:
             return None
@@ -579,7 +593,10 @@ class GeminiFileSearchService:
             display = (getattr(doc, "display_name", None) or "").strip().lower()
             state = self._document_state(doc)
             all_docs.append(f"{display!r}(state={state})")
-            if display and display == target:
+            doc_record_id = self._document_metadata_value(doc, "recordId")
+            if record_id and doc_record_id == record_id:
+                found = doc
+            elif not record_id and display and display == target:
                 found = doc
         if not all_docs:
             self.logger.info(
@@ -605,11 +622,37 @@ class GeminiFileSearchService:
         return found
 
     def _find_document_name(
-        self, client: Any, store_name: str, record_name: str
+        self, client: Any, store_name: str, record_name: str, record_id: str | None = None
     ) -> str | None:
-        doc = self._find_document(client, store_name, record_name)
+        doc = self._find_document(client, store_name, record_name, record_id)
         name = getattr(doc, "name", None) if doc is not None else None
         return str(name) if name else None
+
+    @staticmethod
+    def _document_metadata_value(doc: Any, key: str) -> str | None:
+        for entry in getattr(doc, "custom_metadata", None) or []:
+            entry_key = getattr(entry, "key", None)
+            if entry_key is None and isinstance(entry, dict):
+                entry_key = entry.get("key")
+            if entry_key != key:
+                continue
+            value = getattr(entry, "string_value", None)
+            if value is None and isinstance(entry, dict):
+                value = entry.get("stringValue") or entry.get("string_value")
+            return str(value) if value is not None else None
+        return None
+
+    def _find_documents_by_record_id(
+        self, client: Any, store_name: str, record_id: str
+    ) -> list[Any]:
+        documents = getattr(client.file_search_stores, "documents", None)
+        if documents is None:
+            return []
+        return [
+            doc
+            for doc in documents.list(parent=store_name) or []
+            if self._document_metadata_value(doc, "recordId") == record_id
+        ]
 
     @staticmethod
     def _document_state(doc: Any) -> str:
@@ -653,9 +696,7 @@ class GeminiFileSearchService:
             return None
 
     def _get_store_stats_sync(self, store_name: str) -> dict[str, Any] | None:
-        from google import genai
-
-        client = genai.Client(api_key=self._api_key)
+        client = self._client()
         get_store = getattr(client.file_search_stores, "get")
         try:
             store = get_store(name=store_name)
@@ -685,9 +726,7 @@ class GeminiFileSearchService:
         await asyncio.to_thread(self._delete_store_sync, store_name)
 
     def _delete_store_sync(self, store_name: str) -> None:
-        from google import genai
-
-        client = genai.Client(api_key=self._api_key)
+        client = self._client()
         delete_store = getattr(client.file_search_stores, "delete")
         try:
             delete_store(name=store_name, config={"force": True})
@@ -707,9 +746,10 @@ class GeminiFileSearchService:
         await asyncio.to_thread(self._delete_document_sync, document_name)
 
     def _delete_document_sync(self, document_name: str) -> None:
-        from google import genai
+        client = self._client()
+        self._delete_document_with_client(client, document_name)
 
-        client = genai.Client(api_key=self._api_key)
+    def _delete_document_with_client(self, client: Any, document_name: str) -> None:
         documents = getattr(client.file_search_stores, "documents", None)
         if documents is None:
             self.logger.warning(
@@ -758,10 +798,9 @@ class GeminiFileSearchService:
         store_names: list[str],
         metadata_filter: str | None,
     ) -> GeminiFileSearchAnswer:
-        from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=self._api_key)
+        client = self._client()
         file_search_config: dict[str, Any] = {
             "file_search_store_names": store_names,
         }
@@ -771,11 +810,10 @@ class GeminiFileSearchService:
             file_search = types.FileSearch(**file_search_config)
         except TypeError:
             if metadata_filter:
-                self.logger.warning(
-                    "google-genai FileSearch does not accept metadata_filter; "
-                    "retrying Gemini File Search without it"
+                raise RuntimeError(
+                    "Installed google-genai SDK does not support permission-scoped "
+                    "File Search metadata filters"
                 )
-                file_search_config.pop("metadata_filter", None)
             file_search = types.FileSearch(**file_search_config)
         response = client.models.generate_content(
             model=self.generation_model,
@@ -888,16 +926,17 @@ class GeminiFileSearchService:
         result: dict[str, dict[str, str]] = {}
         for media_id in unique_ids:
             try:
-                blob = download_media(media_id=media_id)
-            except TypeError:
-                blob = download_media(media_id)  # type: ignore[misc]
+                try:
+                    blob = download_media(media_id=media_id)
+                except TypeError:
+                    blob = download_media(media_id)  # type: ignore[misc]
+                mime = self._sniff_blob_mime(blob)
+                b64 = base64.b64encode(self._blob_to_bytes(blob)).decode("ascii")
             except Exception:
                 self.logger.warning(
                     "Failed to download Gemini media %s", media_id, exc_info=True
                 )
                 continue
-            mime = self._sniff_blob_mime(blob)
-            b64 = base64.b64encode(self._blob_to_bytes(blob)).decode("ascii")
             result[media_id] = {
                 "dataUri": f"data:{mime};base64,{b64}",
                 "mimeType": mime,
@@ -975,7 +1014,7 @@ class GeminiFileSearchService:
     def build_custom_metadata(
         record: dict[str, Any], collection: str | None
     ) -> list[dict[str, Any]]:
-        """Build Gemini ``custom_metadata`` from a Pipe record node.
+        """Build Gemini ``custom_metadata`` from a PipesHub record node.
 
         Uses only string values (Gemini metadata_filter works cleanly with
         strings). Numeric values are intentionally avoided to keep filter

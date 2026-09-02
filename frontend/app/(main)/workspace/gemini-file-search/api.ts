@@ -40,15 +40,11 @@ const normalizeConfig = (raw: Record<string, unknown> | undefined | null): Gemin
 export const GeminiFileSearchApi = {
   /** Fetch the global settings (merged with defaults). */
   async getConfig(): Promise<GeminiFileSearchConfig> {
-    try {
-      const { data } = await apiClient.get(`${BASE_URL}/config`);
-      if (data?.success) {
-        return normalizeConfig(data.config);
-      }
-      return { ...DEFAULT_CONFIG };
-    } catch {
-      return { ...DEFAULT_CONFIG };
+    const { data } = await apiClient.get(`${BASE_URL}/config`);
+    if (data?.success) {
+      return normalizeConfig(data.config);
     }
+    throw new Error(data?.message || 'Failed to load Gemini File Search settings');
   },
 
   /** Persist the global settings. Returns the merged config. */
