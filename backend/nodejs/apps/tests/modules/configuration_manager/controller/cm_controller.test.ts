@@ -420,7 +420,7 @@ describe('ConfigurationManager Controller', () => {
         get: sinon.stub().resolves(JSON.stringify({ storageType: 's3', s3: 'encrypted:data' })),
       })
       const handler = getStorageConfig(kvs)
-      const req = createMockRequest()
+      const req = createMockRequest({ user: undefined })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -445,7 +445,7 @@ describe('ConfigurationManager Controller', () => {
         get: sinon.stub().resolves(JSON.stringify({ storageType: 's3', s3: 'encrypted:data' })),
       })
       const handler = getStorageConfig(kvs)
-      const req = createMockRequest()
+      const req = createMockRequest({ user: undefined })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -460,6 +460,23 @@ describe('ConfigurationManager Controller', () => {
         region: 'us-east-1',
         bucketName: 'b',
       })
+    })
+
+    it('should omit storage credentials when the caller is an authenticated user', async () => {
+      const s3Data = JSON.stringify({ accessKeyId: 'AK', secretAccessKey: 'SK', region: 'us-east-1', bucketName: 'b' })
+      mockEncService.decrypt.returns(s3Data)
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(JSON.stringify({ storageType: 's3', s3: 'encrypted:data' })),
+      })
+      const handler = getStorageConfig(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({})
     })
 
     it('should call next with error when storageType is missing', async () => {
@@ -2660,7 +2677,7 @@ describe('ConfigurationManager Controller', () => {
         get: sinon.stub().resolves(JSON.stringify({ storageType: 'azureBlob', azureBlob: 'encrypted:azure' })),
       })
       const handler = getStorageConfig(kvs)
-      const req = createMockRequest()
+      const req = createMockRequest({ user: undefined })
       const res = createMockResponse()
       const next = createMockNext()
 

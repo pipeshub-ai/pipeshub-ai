@@ -371,12 +371,15 @@ export function ModelConfigDialog({
       // JSON.stringify silently drops keys whose value is `undefined`, so an
       // undefined FILE value would disappear from the request body and arrive at
       // the backend as a missing key — producing a cryptic KeyError there.
-      // A stripped credential file (e.g. Vertex AI's service account JSON) is
-      // legitimately blank on edit — the stored one is kept — so it is not
-      // missing unless the user cleared it themselves.
+      // Hidden credentials are exempt unconditionally (touched or not), matching
+      // `allRequiredFieldsValid` above: a stripped credential file (e.g. Vertex
+      // AI's service account JSON) is legitimately blank on edit because GET never
+      // returns it, and if the user touches it and clears it that is an explicit
+      // clear which must reach the backend as "" — not get rejected here before the
+      // update loop below can send it.
       const missingRequiredFiles = fields.filter((f) => {
         const field = f as AIModelProviderField;
-        if (hiddenCredentials.has(field.name) && !touchedFieldsRef.current.has(field.name)) {
+        if (hiddenCredentials.has(field.name)) {
           return false;
         }
         return (
