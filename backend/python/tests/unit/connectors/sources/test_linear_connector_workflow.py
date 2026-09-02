@@ -15,6 +15,7 @@ from uuid import uuid4
 import pytest
 
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus, RecordRelations
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperatorType,
@@ -139,8 +140,8 @@ class TestLinearInit:
         connector, *_ = _make_connector()
         with patch("app.connectors.sources.linear.connector.LinearClient") as mock_client_cls:
             mock_client_cls.build_from_services = AsyncMock(side_effect=Exception("Auth failed"))
-            result = await connector.init()
-            assert result is False
+            with pytest.raises(ConnectorInitError, match="Auth failed"):
+                await connector.init()
 
     @pytest.mark.asyncio
     async def test_init_org_failure(self):
@@ -150,8 +151,8 @@ class TestLinearInit:
             mock_ds = MagicMock()
             mock_ds.organization = AsyncMock(return_value=_mock_response(success=False, message="fail"))
             with patch("app.connectors.sources.linear.connector.LinearDataSource", return_value=mock_ds):
-                result = await connector.init()
-                assert result is False
+                with pytest.raises(ConnectorInitError, match="fail"):
+                    await connector.init()
 
     @pytest.mark.asyncio
     async def test_init_empty_org_data(self):
@@ -161,8 +162,8 @@ class TestLinearInit:
             mock_ds = MagicMock()
             mock_ds.organization = AsyncMock(return_value=_mock_response(data={"organization": {}}))
             with patch("app.connectors.sources.linear.connector.LinearDataSource", return_value=mock_ds):
-                result = await connector.init()
-                assert result is False
+                with pytest.raises(ConnectorInitError, match="No organization data"):
+                    await connector.init()
 
 
 # ---------------------------------------------------------------------------
@@ -522,25 +523,12 @@ class TestLinearRunSync:
             dep.on_new_app_users.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_run_sync_inits_if_no_datasource(self):
+    async def test_run_sync_raises_if_no_datasource(self):
         connector, dep, *_ = _make_connector()
         connector.data_source = None
 
-        with patch("app.connectors.sources.linear.connector.load_connector_filters",
-                    new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection())):
-            connector.init = AsyncMock()
-            connector._fetch_users = AsyncMock(return_value=[])
-            connector._fetch_teams = AsyncMock(return_value=([], []))
-            connector._sync_issues_for_teams = AsyncMock(return_value=(set(), []))
-            connector._sync_attachments = AsyncMock()
-            connector._sync_documents = AsyncMock()
-            connector._sync_projects_for_teams = AsyncMock()
-            connector._sync_deleted_issues = AsyncMock()
-            connector._sync_deleted_projects = AsyncMock()
-            connector._sweep_placeholder_records = AsyncMock(return_value=0)
-
+        with pytest.raises(RuntimeError, match="not initialized"):
             await connector.run_sync()
-            connector.init.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
