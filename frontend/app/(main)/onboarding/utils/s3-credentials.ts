@@ -1,3 +1,5 @@
+'use client';
+
 export type S3CredentialResolution =
   | { kind: 'explicit'; accessKeyId: string; secretAccessKey: string }
   | { kind: 'iamRole' }
