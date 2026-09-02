@@ -3181,8 +3181,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
+        toolset_registry = getattr(request.app.state, "toolset_registry", None)
         if agent_id == "agentIdPlaceholder":
-            toolset_registry = getattr(request.app.state, "toolset_registry", None)
             agent = await get_assistant_agent(user_context["userId"], org_key, config_service, graph_provider, toolset_registry, logger)
             user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
             enriched_user_info = await _enrich_user_info(user_context, user_doc)
@@ -3413,11 +3413,29 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 lookup_key = instance_id
                 display_name = toolset.get("instanceName") or toolset.get("displayName") or toolset_name.replace("_", " ").title()
 
-                if config and config.get("isAuthenticated", False):
+                # A toolset whose ONLY supported auth type is NONE (e.g. a public,
+                # credential-free API) has nothing to configure — no per-agent
+                # credential record will ever exist for it, so it must not be
+                # treated as "missing" or "unauthenticated". toolset_registry is
+                # hoisted above the agentIdPlaceholder if/else earlier in this
+                # handler, so it's always defined here regardless of which
+                # branch ran.
+                toolset_meta = (
+                    toolset_registry.get_toolset_metadata(toolset_name)
+                    if toolset_registry
+                    else None
+                )
+                supported_auth_types = (toolset_meta or {}).get("supported_auth_types") or []
+                requires_no_auth = (
+                    len(supported_auth_types) == 1
+                    and str(supported_auth_types[0]).upper() == "NONE"
+                )
+
+                if requires_no_auth or (config and config.get("isAuthenticated", False)):
                     # Fully configured and authenticated — allow
                     # Use instanceId as the toolset_configs key so downstream code
                     # (_build_tool_to_toolset_map) can look it up correctly.
-                    toolset_configs[lookup_key] = config
+                    toolset_configs[lookup_key] = config or {}
                     configured_toolsets.append(toolset)
                 elif config:
                     # Config saved but authentication not completed (e.g. OAuth flow pending)

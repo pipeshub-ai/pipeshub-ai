@@ -33,7 +33,7 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
 )
-from app.connectors.core.registry.auth_builder import OAuthScopeType
+from app.connectors.core.registry.auth_builder import AuthType, OAuthScopeType
 from app.edition_containers import ConnectorAppContainer
 from app.edition_config import (
     check_user_is_admin,
@@ -240,6 +240,45 @@ def _has_oauth_credentials(auth_config: dict[str, Any]) -> bool:
             return True
 
     return False
+
+
+def _is_toolset_authenticated(
+    auth_type: str | None, auth_record: dict[str, Any] | None
+) -> bool:
+    """
+    Check whether a toolset instance should be treated as authenticated.
+
+    A NONE-auth toolset (e.g. a public, credential-free API) has nothing to
+    store per user, so auth_record is legitimately always empty for it —
+    that must not be read as "user hasn't authenticated yet".
+
+    Only an EXPLICIT "NONE" short-circuits this — a missing/unknown
+    auth_type must fall through to the real credential check below, not be
+    treated as equivalent to NONE. Real instances always have authType
+    validated as a required non-empty field at creation time
+    (see create_toolset_instance), so a missing value here means the data
+    is incomplete/unexpected, not that no auth is needed.
+    """
+    if auth_type is not None and str(auth_type).upper() == "NONE":
+        return True
+    return bool(auth_record and auth_record.get("isAuthenticated", False))
+
+
+_NON_OAUTH_AUTH_TYPES = frozenset(
+    v for k, v in vars(AuthType).items()
+    if not k.startswith("_") and isinstance(v, str) and v not in ("OAUTH", "OAUTH_ADMIN_CONSENT")
+)
+
+
+def _is_known_non_oauth_auth_type(auth_type: str | None) -> bool:
+    """
+    True only for a value that's a KNOWN, non-OAuth AuthType member — not just
+    "not equal to the string OAUTH". A malformed/typo'd value (e.g. "UNKNOWN")
+    must fail closed here too, since this gates whether raw stored credentials
+    (which may hold OAuth tokens for a corrupted OAuth/OAUTH_ADMIN_CONSENT
+    instance) get exposed in the API response.
+    """
+    return auth_type is not None and str(auth_type).upper() in _NON_OAUTH_AUTH_TYPES
 
 
 # ============================================================================
@@ -1881,8 +1920,9 @@ async def get_authenticated_toolsets(
 
     authenticated_toolsets = []
     for inst, user_auth in results:
-        # Only include authenticated toolsets
-        if not user_auth or not user_auth.get("isAuthenticated", False):
+        # Only include authenticated toolsets — a NONE-auth toolset has
+        # nothing to store per user, so it's always considered authenticated.
+        if not _is_toolset_authenticated(inst.get("authType"), user_auth):
             continue
 
         toolset_type = inst.get("toolsetType", "")
@@ -2718,7 +2758,7 @@ async def get_instance_status(
         "toolsetType": instance.get("toolsetType"),
         "authType": instance.get("authType"),
         "isConfigured": True,
-        "isAuthenticated": bool(user_auth and user_auth.get("isAuthenticated", False)),
+        "isAuthenticated": _is_toolset_authenticated(instance.get("authType"), user_auth),
     }
 
 
@@ -2816,9 +2856,9 @@ async def _build_toolsets_list_response(
     for inst, auth_record in results:
         toolset_type = inst.get("toolsetType", "")
         meta = registry.get_toolset_metadata(toolset_type)
-        auth_type = inst.get("authType", "NONE")
-        auth_type_upper = auth_type.upper()
-        is_authenticated = bool(auth_record and auth_record.get("isAuthenticated", False))
+        auth_type = inst.get("authType")
+        is_known_non_oauth = _is_known_non_oauth_auth_type(auth_type)
+        is_authenticated = _is_toolset_authenticated(auth_type, auth_record)
 
         meta_cfg = (meta.get("config") or {}) if meta else {}
         doc_links = meta_cfg.get("documentationLinks", []) if isinstance(meta_cfg, dict) else []
@@ -2856,7 +2896,7 @@ async def _build_toolsets_list_response(
 
         if include_has_credentials:
             toolset_entry["hasCredentials"] = (
-                auth_type_upper != "OAUTH"
+                is_known_non_oauth
                 and auth_record is not None
                 and bool(auth_record.get("auth"))
             )
@@ -2868,7 +2908,7 @@ async def _build_toolsets_list_response(
         if expose_non_oauth_auth:
             toolset_entry["auth"] = (
                 auth_record.get("auth", None)
-                if auth_type_upper != "OAUTH" and auth_record is not None
+                if is_known_non_oauth and auth_record is not None
                 else None
             )
 
