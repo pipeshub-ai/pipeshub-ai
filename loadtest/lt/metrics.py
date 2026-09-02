@@ -252,13 +252,20 @@ def _parse_docker_cpu(value: str | float | int | None) -> float:
         return 0.0
     if isinstance(value, (int, float)):
         return float(value)
-    return float(str(value).strip().rstrip("%") or 0.0)
+    token = str(value).strip().rstrip("%")
+    # docker stats prints "--" while a container is restarting.
+    if not token or set(token) <= {"-"}:
+        return 0.0
+    try:
+        return float(token)
+    except ValueError:
+        return 0.0
 
 
 def _parse_docker_bytes(token: str) -> float:
     """Docker stats sizes: `1.988GiB`, `120.8MiB`, `402kB` → bytes."""
     token = token.strip().replace(",", "")
-    if not token:
+    if not token or set(token) <= {"-"}:
         return 0.0
     units = {
         "b": 1,

@@ -344,7 +344,12 @@ class DataSourceEntitiesProcessor:
                 # and its subtree stay reachable from the record group.
                 record_group_id = await self._handle_record_group(parent_record, tx_store)
                 if record_group_id:
-                    await self._link_record_to_group(parent_record, record_group_id, tx_store)
+                    # parent_record was read from the store, so pass it as the
+                    # existing record: without it the stale inherit-permissions
+                    # edge this branch exists to repair is never deleted.
+                    await self._link_record_to_group(
+                        parent_record, record_group_id, tx_store, parent_record
+                    )
 
             if parent_record and isinstance(parent_record, Record):
                 if (record.record_type == RecordType.FILE and record.parent_external_record_id and
@@ -1000,9 +1005,13 @@ class DataSourceEntitiesProcessor:
 
         if existing_record is None:
             self.logger.debug("New record: %s", record)
-            record.id = deterministic_record_id(
-                record.connector_id, record.external_record_id
-            )
+            # Connector records only: the id exists to make two overlapping syncs
+            # of the same connector converge on one row. An upload has no such
+            # race, and its identity is set by whoever created it.
+            if record.origin != OriginTypes.UPLOAD:
+                record.id = deterministic_record_id(
+                    record.connector_id, record.external_record_id
+                )
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id

@@ -31247,7 +31247,7 @@ paths:
       operationId: stopConnectorSync
       security:
         - bearerAuth: []
-        - oauth2: [connector:write]
+        - oauth2: [connector:sync]
       parameters:
         - name: connectorId
           in: path

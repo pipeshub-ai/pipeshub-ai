@@ -98,6 +98,9 @@ class ConfluenceSource(LoadSource):
         ]
         if missing:
             return [f"missing Confluence settings: {', '.join(missing)} (set them in loadtest/.env)"]
+        if not self.base_url.startswith("https://"):
+            # _api() sends email + api_token as basic auth on the first call.
+            return [f"LT_CONFLUENCE_BASE_URL must be https:// (got {self.base_url})"]
         if not self.spaces and self.layout != "all-spaces":
             return ["no spaces selected: set LT_CONFLUENCE_SPACES (comma-separated space keys)"]
 

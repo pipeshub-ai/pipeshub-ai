@@ -799,11 +799,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     async def _post_startup() -> None:
         # Before anything can spawn a sync, and before the sweep — which needs
         # leases to tell a live sync from a stale status.
-        await initialize_sync_coordinator(app_container, logger)
+        try:
+            await initialize_sync_coordinator(app_container, logger)
+        except Exception as e:
+            # This runs in a background task, so an unhandled error here is
+            # silent and skips every step below it -- consumers included.
+            logger.error(f"❌ Sync coordinator init failed: {e}", exc_info=True)
+            raise
 
         # A resumed sync writes SYNCING as its first act, and this sweep must
         # not clobber that write.
-        await reset_stale_sync_state(graph_provider, logger)
+        try:
+            await reset_stale_sync_state(graph_provider, logger)
+        except Exception as e:
+            logger.error(f"❌ Stale sync-state sweep failed: {e}", exc_info=True)
 
         # Refreshes OAuth tokens, so it has to land before connector init() runs
         # against credentials that expired during downtime.

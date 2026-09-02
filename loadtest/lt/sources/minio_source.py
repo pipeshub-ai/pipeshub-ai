@@ -142,7 +142,10 @@ class MinioSource(LoadSource):
                         # Defaults to True in the connector's auth schema, which
                         # would make it dial https:// against a plain-HTTP MinIO.
                         "useSsl": self.connector_endpoint.startswith("https://"),
-                        "verifySsl": False,
+                        # Off only for a plain-HTTP test endpoint; a real https
+                        # target should still be verified.
+                        "verifySsl": self.connector_endpoint.startswith("https://")
+                        and self.options.get("verify_ssl", True),
                     },
                     # Scoping each connector to its own bucket is what makes the
                     # units disjoint: N connectors sync N non-overlapping corpora.

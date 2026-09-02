@@ -1,5 +1,6 @@
 """Generic Connector Factory for creating and managing connectors"""
 
+import contextlib
 import logging
 
 from app.config.constants.arangodb import AppStatus, CollectionNames
@@ -372,6 +373,10 @@ class ConnectorFactory:
             return connector
 
         if connector:
+            # Bound before the try so the handler below cannot raise
+            # UnboundLocalError over the real failure.
+            coordinator = None
+            lease = None
             try:
                 if sync_strategy == SyncStrategy.MANUAL.value:
                     logger.info(
@@ -464,6 +469,12 @@ class ConnectorFactory:
                         logger.info(f"Started sync for {name} {connector_id} connector")
                 return connector
             except Exception as e:
+                # spawn() assigns lease.task; if it raised before that, nothing
+                # else will ever release the claim and the connector becomes
+                # permanently un-startable.
+                if coordinator is not None and lease is not None and lease.task is None:
+                    with contextlib.suppress(Exception):
+                        await coordinator.end(lease)
                 logger.error(
                     f"❌ Failed to start sync for {name} {connector_id} connector: {str(e)}"
                 )

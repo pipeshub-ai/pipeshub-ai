@@ -100,7 +100,16 @@ class LoadSource:
             "name": self.name,
             "connector_type": self.connector_type,
             "deterministic": self.deterministic,
-            "options": {k: v for k, v in self.options.items() if "secret" not in k.lower() and "key" not in k.lower()},
+            "options": {
+                k: v
+                for k, v in self.options.items()
+                # `api_token` and `email` contain neither "secret" nor "key",
+                # so a narrower filter writes real credentials into result.json.
+                if not any(
+                    m in k.lower()
+                    for m in ("secret", "key", "token", "password", "passwd", "email", "credential")
+                )
+            },
         }
 
 

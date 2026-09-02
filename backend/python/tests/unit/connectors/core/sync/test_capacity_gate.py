@@ -51,26 +51,30 @@ class TestRedisGate:
     async def test_closed_gate_never_asks_for_a_message(self) -> None:
         """The message stays in the stream for a peer with room."""
         c = _redis_consumer(lambda: False)
+        # The consumer nulls self.redis when the loop unwinds, so keep the mock.
+        redis = c.redis
         c.running = True
 
         loop = asyncio.get_running_loop()
         loop.call_later(0.25, lambda: setattr(c, "running", False))
         await c._consume_loop()
 
-        c.redis.xreadgroup.assert_not_awaited()
+        redis.xreadgroup.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_open_gate_reads_normally(self) -> None:
         c = _redis_consumer(lambda: True)
+        redis = c.redis
         await _run_until_first_read(c)
-        assert c.redis.xreadgroup.await_count == 1
+        assert redis.xreadgroup.await_count == 1
 
     @pytest.mark.asyncio
     async def test_no_gate_configured_reads_normally(self) -> None:
         """Absent a gate the consumer must behave exactly as before."""
         c = _redis_consumer(None)
+        redis = c.redis
         await _run_until_first_read(c)
-        assert c.redis.xreadgroup.await_count == 1
+        assert redis.xreadgroup.await_count == 1
 
     @pytest.mark.asyncio
     async def test_closed_gate_yields_instead_of_spinning(self) -> None:

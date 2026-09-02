@@ -1599,6 +1599,39 @@ class TestLinkRecordToGroup:
         tx_store.delete_inherit_permissions_relation_record_group.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_a_pre_existing_placeholder_still_gets_its_stale_edge_removed(self):
+        """The skip above is for *new* records, and must not swallow this one.
+
+        `_handle_parent_record` re-anchors a placeholder that already exists in
+        the store, precisely to repair edges a full sync deleted. It reaches
+        `_link_record_to_group`, whose `existing_record` defaults to None -- so
+        omitting it there made the brand-new-record skip fire for a row that is
+        not new, and the stale inherit-permissions edge survived.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+
+        placeholder = _make_record()
+        placeholder.id = "ph-1"
+        placeholder.is_placeholder = True
+        placeholder.inherit_permissions = False
+
+        # Read back from the store: this is a pre-existing row, not a new one.
+        tx_store.get_record_by_external_id = AsyncMock(return_value=placeholder)
+
+        child = _make_record()
+        child.id = "child-1"
+        child.parent_external_record_id = "ext-1"
+        child.parent_record_type = RecordType.FILE
+
+        with patch.object(
+            proc, "_handle_record_group", new=AsyncMock(return_value="group-1")
+        ):
+            await proc._handle_parent_record(child, tx_store)
+
+        tx_store.delete_inherit_permissions_relation_record_group.assert_awaited()
+
+    @pytest.mark.asyncio
     async def test_no_inherit_delete_for_a_brand_new_record(self):
         """A record created moments ago has no edge to remove.
 
@@ -1614,6 +1647,41 @@ class TestLinkRecordToGroup:
         await proc._link_record_to_group(record, "group-1", tx_store, None)
 
         tx_store.delete_inherit_permissions_relation_record_group.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_upload_keeps_the_id_it_was_created_with(self):
+        """The derived id is a connector-sync guarantee, not a global one.
+
+        It exists so two overlapping syncs of one connector converge on a single
+        row. An upload has no such race and its id is set by whoever created it,
+        so deriving one here would overwrite an identity the caller still holds.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+
+        record = _make_record(origin=OriginTypes.UPLOAD.value)
+        record.id = "given-by-caller"
+
+        await proc._process_record(record, [], tx_store)
+
+        assert record.id == "given-by-caller"
+
+    @pytest.mark.asyncio
+    async def test_a_connector_record_still_gets_a_derived_id(self):
+        """The counterpart: the guarantee must still hold where it applies."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+
+        record = _make_record(origin=OriginTypes.CONNECTOR.value)
+        record.id = "whatever-the-caller-set"
+
+        await proc._process_record(record, [], tx_store)
+
+        assert record.id == deterministic_record_id(
+            record.connector_id, record.external_record_id
+        )
 
     @pytest.mark.asyncio
     async def test_deletes_old_group_edge_when_group_changed(self):

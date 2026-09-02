@@ -76,7 +76,10 @@ def _running_here(connector_id: str) -> bool:
 
 def connector_cache_max() -> int:
     """How many initialised connectors one process may keep. 0 disables the bound."""
-    return int(os.getenv("CONNECTOR_CACHE_MAX", "50"))
+    try:
+        return int(os.getenv("CONNECTOR_CACHE_MAX", "50"))
+    except ValueError:
+        return 50
 
 
 #: Eviction closes the connector's sessions on the loop; hold a reference so the
@@ -552,7 +555,10 @@ class EventService:
                 f"Skipping {connector_name} sync for {connector_id}: connector is "
                 "disabled or requires re-authentication"
             )
-            return False, False
+            # Acked, not retried: this is a deliberate state, so redelivering
+            # would stall the partition behind a connector that will never run.
+            # Re-enabling publishes a fresh event.
+            return True, False
 
         connector = await self._ensure_connector(connector_name, connector_id)
         if not connector:
