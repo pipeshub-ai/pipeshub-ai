@@ -17,7 +17,7 @@ import asyncio
 import os
 import time
 import uuid
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from langchain_core.documents import Document
 
@@ -37,6 +37,7 @@ from app.services.embeddings.multimodal.config import MultimodalProviderConfig
 from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
 from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -53,9 +54,15 @@ from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.services.vector_db.strategy import RecordContext
 from app.utils.aimodels import (
     EmbeddingProvider,
+    embedding_config_hash,
     get_default_embedding_model,
     get_embedding_model,
     is_local_cpu_embedding_provider,
+)
+from app.utils.embedding_retry import (
+    is_retriable_embedding_error,
+    retry_delay_seconds,
+    signal_backpressure_if_rate_limited,
 )
 from app.utils.image_utils import normalize_image_to_base64
 
@@ -84,6 +91,17 @@ def _resolve_batch_concurrency(env_value: str | None, *, default: int = 5) -> in
 _DEFAULT_CONCURRENCY_LIMIT = _resolve_batch_concurrency(os.getenv("EMBEDDING_BATCH_CONCURRENCY"))
 _LOCAL_CPU_DOCUMENT_BATCH_SIZE = 20
 
+# A batch is bounded by characters as well as document count: one Document is
+# anywhere from a single sentence to a whole text block capped only by
+# text_splitting.MAX_TEXT_BLOCK_CHARS (50k), or an uncapped code symbol. Sized
+# by count alone, the same "batch of 50" carries ~2KB on one record and
+# megabytes on the next, and no fixed per-batch timeout can hold for both.
+# The remote budget also keeps a batch under langchain_openai's
+# MAX_TOKENS_PER_REQUEST, above which it silently splits one aembed_documents
+# call into several *sequential* HTTP requests inside that one timeout.
+_DEFAULT_DOCUMENT_BATCH_CHARS = 100_000
+_LOCAL_CPU_DOCUMENT_BATCH_CHARS = 40_000
+
 # Blocks are already capped at this size by the parsers (text_splitting.MAX_TEXT_BLOCK_CHARS),
 # but connector-authored blocks can bypass that path — guard defensively here too.
 _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT = 50_000
@@ -102,6 +120,44 @@ _TEXT_PROCESSING_TIMEOUT_S = 300  # 5 min for sentence-splitting a full record
 # batch than hosted API embedding providers, so they get a much longer allowance.
 _LOCAL_EMBEDDING_BATCH_TIMEOUT_S = 600  # 10 min per embedding batch on local CPU
 _REMOTE_EMBEDDING_BATCH_TIMEOUT_S = 120  # 2 min per embedding batch via hosted API
+
+# Attempts per batch. Bounds the blast radius of a transient provider failure to
+# the batch rather than the record: without this one 429 or dropped connection
+# discards the embeddings of every other batch already upserted for the record,
+# which only a full re-index restores.
+_EMBEDDING_BATCH_MAX_ATTEMPTS = 3
+
+
+def _batch_documents_by_size(
+    documents: List[Document], max_documents: int, max_chars: int
+) -> List[Tuple[int, List[Document]]]:
+    """Pack *documents* into ``(start_index, batch)`` pairs bounded by both limits.
+
+    A single document over *max_chars* gets a batch to itself rather than being
+    split or dropped — the provider's own context handling decides what to do
+    with it, but it must not drag a batch of ordinary documents past the budget.
+    ``start_index`` indexes into *documents* so batch failures stay locatable.
+    """
+    batches: List[Tuple[int, List[Document]]] = []
+    current: List[Document] = []
+    current_start = 0
+    current_chars = 0
+
+    for index, document in enumerate(documents):
+        size = len(document.page_content)
+        if current and (
+            len(current) >= max_documents or current_chars + size > max_chars
+        ):
+            batches.append((current_start, current))
+            current = []
+            current_start = index
+            current_chars = 0
+        current.append(document)
+        current_chars += size
+
+    if current:
+        batches.append((current_start, current))
+    return batches
 
 
 def _detect_record_language(text_blocks: List) -> str:
@@ -320,6 +376,8 @@ class VectorStore(Transformer):
         )
 
         self.dense_embeddings = None
+        self._embedding_config_hash: str | None = None
+        self._embedding_model_lock = asyncio.Lock()
         self.api_key = None
         self.embedding_endpoint = None
         self.model_name = None
@@ -759,6 +817,24 @@ class VectorStore(Transformer):
             config_node_constants.AI_MODELS.value, use_cache=False
         )
         embedding_configs = ai_models["embedding"]
+        config_hash = embedding_config_hash(embedding_configs)
+
+        # The config is re-read every record so an admin-UI change takes effect
+        # immediately, but rebuilding the client is not free: it opens a fresh
+        # HTTP connection pool that the previous one never gets to reuse, and
+        # the dimension probe costs an extra embed round trip per record.
+        if self.dense_embeddings is not None and self._embedding_config_hash == config_hash:
+            return self.is_multimodal_embedding
+
+        async with self._embedding_model_lock:
+            if self.dense_embeddings is not None and self._embedding_config_hash == config_hash:
+                return self.is_multimodal_embedding
+            return await self._build_embedding_model(embedding_configs, config_hash)
+
+    async def _build_embedding_model(
+        self, embedding_configs: List[dict] | None, config_hash: str
+    ) -> bool:
+        """Construct the dense embedding client and publish it on ``self``."""
         is_multimodal = False
         provider = None
         configuration = None
@@ -814,6 +890,7 @@ class VectorStore(Transformer):
             self.aws_access_key_id = configuration.get("awsAccessKeyId")
             self.aws_secret_access_key = configuration.get("awsAccessSecretKey")
         self.is_multimodal_embedding = bool(is_multimodal)
+        self._embedding_config_hash = config_hash
         return self.is_multimodal_embedding
 
     # ------------------------------------------------------------------
@@ -1042,7 +1119,9 @@ class VectorStore(Transformer):
     # ------------------------------------------------------------------
 
     def _is_local_cpu_embedding(self) -> bool:
-        return is_local_cpu_embedding_provider(self.embedding_provider)
+        return is_local_cpu_embedding_provider(
+            self.embedding_provider, self.embedding_endpoint
+        )
 
     async def _compute_sparse_embeddings(
         self, texts: List[str]
@@ -1052,6 +1131,61 @@ class VectorStore(Transformer):
         if embedder is None:
             return [None] * len(texts)
         return await embedder.embed_documents(texts)
+
+    async def _embed_documents_with_retry(
+        self, texts: List[str], record_id: str
+    ) -> List[List[float]]:
+        """Dense-embed one batch, retrying transient provider failures.
+
+        Each attempt is bounded separately rather than the sequence as a whole:
+        the timeout exists to stop one batch blocking the pipeline, and a budget
+        shared across attempts would let a slow first attempt leave the retry no
+        time to run. A 429 also pauses the whole consumer through the shared
+        coordinator, since retrying a saturated provider harder is what made it
+        rate-limit us in the first place.
+        """
+        attempt_timeout = (
+            _LOCAL_EMBEDDING_BATCH_TIMEOUT_S
+            if self._is_local_cpu_embedding()
+            else _REMOTE_EMBEDDING_BATCH_TIMEOUT_S
+        )
+        service_name = self.embedding_provider or EmbeddingProvider.DEFAULT.value
+        total_chars = sum(len(text) for text in texts)
+        last_error: BaseException | None = None
+
+        for attempt in range(1, _EMBEDDING_BATCH_MAX_ATTEMPTS + 1):
+            try:
+                return await asyncio.wait_for(
+                    self.dense_embeddings.aembed_documents(texts),
+                    timeout=attempt_timeout,
+                )
+            except asyncio.TimeoutError as e:
+                last_error = e
+            except Exception as e:
+                signal_backpressure_if_rate_limited(
+                    e,
+                    service_name=service_name,
+                    coordinator=get_default_backpressure_coordinator(),
+                )
+                if not is_retriable_embedding_error(e):
+                    raise
+                last_error = e
+
+            if attempt >= _EMBEDDING_BATCH_MAX_ATTEMPTS:
+                break
+            delay = retry_delay_seconds(attempt)
+            self.logger.warning(
+                f"Dense embedding attempt {attempt}/{_EMBEDDING_BATCH_MAX_ATTEMPTS} "
+                f"failed for batch of {len(texts)} texts / {total_chars} chars "
+                f"(record {record_id}): {last_error}; retrying in {delay:.1f}s"
+            )
+            await asyncio.sleep(delay)
+
+        raise EmbeddingError(
+            f"Dense embedding failed after {_EMBEDDING_BATCH_MAX_ATTEMPTS} attempts "
+            f"({attempt_timeout}s each) for batch of {len(texts)} texts / "
+            f"{total_chars} chars (record {record_id}): {last_error}"
+        ) from last_error
 
     async def _embed_and_upsert_documents(
         self, documents: List[Document], record_id: str, collection_name: str
@@ -1073,21 +1207,7 @@ class VectorStore(Transformer):
 
         texts = [doc.page_content for doc in documents]
 
-        embedding_timeout = (
-            _LOCAL_EMBEDDING_BATCH_TIMEOUT_S
-            if self._is_local_cpu_embedding()
-            else _REMOTE_EMBEDDING_BATCH_TIMEOUT_S
-        )
-        try:
-            dense_embeddings = await asyncio.wait_for(
-                self.dense_embeddings.aembed_documents(texts),
-                timeout=embedding_timeout,
-            )
-        except asyncio.TimeoutError:
-            raise EmbeddingError(
-                f"Dense embedding timed out after {embedding_timeout}s "
-                f"for batch of {len(texts)} texts (record {record_id})"
-            )
+        dense_embeddings = await self._embed_documents_with_retry(texts, record_id)
 
         # Sparse embeddings (provider-dependent)
         sparse_embeddings = await self._compute_sparse_embeddings(texts)
@@ -1115,8 +1235,10 @@ class VectorStore(Transformer):
             f"⏱️ Embedding {len(langchain_document_chunks)} document chunks"
         )
         use_local_sequential = self._is_local_cpu_embedding()
-        batch_size = (
-            _LOCAL_CPU_DOCUMENT_BATCH_SIZE if use_local_sequential else _DEFAULT_DOCUMENT_BATCH_SIZE
+        max_documents, max_chars = (
+            (_LOCAL_CPU_DOCUMENT_BATCH_SIZE, _LOCAL_CPU_DOCUMENT_BATCH_CHARS)
+            if use_local_sequential
+            else (_DEFAULT_DOCUMENT_BATCH_SIZE, _DEFAULT_DOCUMENT_BATCH_CHARS)
         )
 
         async def process_batch(batch_start: int, batch: List[Document]) -> int:
@@ -1127,10 +1249,9 @@ class VectorStore(Transformer):
                 self.logger.warning(f"Batch at {batch_start} failed: {e}")
                 raise
 
-        batches = [
-            (i, langchain_document_chunks[i:i + batch_size])
-            for i in range(0, len(langchain_document_chunks), batch_size)
-        ]
+        batches = _batch_documents_by_size(
+            langchain_document_chunks, max_documents, max_chars
+        )
 
         if use_local_sequential:
             for idx, (start, batch) in enumerate(batches):

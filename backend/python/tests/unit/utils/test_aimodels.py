@@ -639,6 +639,21 @@ class TestGetEmbeddingModel:
         mock_cls.assert_called_once()
         assert result is mock_cls.return_value
 
+    @patch("langchain_openai.embeddings.OpenAIEmbeddings")
+    def test_openai_bounds_attempt_and_disables_sdk_retries(self, mock_cls):
+        """The SDK's own retries at a 600s default timeout would otherwise sit
+        inside the caller's per-batch budget and expire it silently."""
+        from app.config.constants.ai_models import (
+            REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS,
+        )
+
+        mock_cls.return_value = MagicMock()
+        get_embedding_model(EmbeddingProvider.OPENAI.value, self._base_config())
+
+        kwargs = mock_cls.call_args.kwargs
+        assert kwargs["max_retries"] == 0
+        assert kwargs["timeout"] == REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS
+
     @patch("app.utils.aimodels._create_bedrock_client")
     @patch("langchain_aws.BedrockEmbeddings")
     def test_bedrock(self, mock_cls, mock_create_client):

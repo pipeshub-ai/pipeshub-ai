@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import ipaddress
+import json
 import os
 import re
 from enum import Enum
@@ -20,6 +23,7 @@ from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_REASONING_EFFORT,
     OPENROUTER_BASE_URL,
+    REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS,
     AzureOpenAILLM,
 )
 from app.utils.embedding_server_client import get_embedding_server_embeddings
@@ -100,14 +104,66 @@ LOCAL_CPU_EMBEDDING_PROVIDERS = frozenset({
     EmbeddingProvider.SENTENCE_TRANSFOMERS.value,
 })
 
+# These speak a hosted-API protocol but are usually pointed at a server the
+# operator runs themselves. Whether they are as slow as the built-in embedding
+# server depends on where the endpoint points, not on the provider name — so
+# they are resolved per-endpoint by ``is_local_cpu_embedding_provider``.
+SELF_HOSTABLE_EMBEDDING_PROVIDERS = frozenset({
+    EmbeddingProvider.LITELLM_PROXY.value,
+    EmbeddingProvider.LM_STUDIO.value,
+    EmbeddingProvider.OLLAMA.value,
+    EmbeddingProvider.OPENAI_COMPATIBLE.value,
+})
 
-def is_local_cpu_embedding_provider(provider: str | None) -> bool:
-    """Whether *provider* embeds on local CPU via the embedding server.
+_LOCAL_HOSTNAME_SUFFIXES = (".localhost", ".local", ".internal", ".svc")
+
+
+def _is_locally_served_endpoint(endpoint: str | None) -> bool:
+    """Whether *endpoint* points at a host inside this deployment.
+
+    Deliberately does not resolve DNS: this runs on the indexing event loop for
+    every batch, and a lookup here would block it. A name that cannot be judged
+    from its text alone is treated as remote, which only costs the shorter
+    timeout budget the caller already used before endpoints were consulted.
+    """
+    if not endpoint:
+        return False
+    host = urlparse(endpoint if "//" in endpoint else f"//{endpoint}").hostname
+    if not host:
+        return False
+    host = host.lower().removesuffix(".")
+
+    try:
+        return ipaddress.ip_address(host).is_private
+    except ValueError:
+        pass
+
+    if host == "localhost" or host.endswith(_LOCAL_HOSTNAME_SUFFIXES):
+        return True
+    # Single-label names only resolve inside a private network — a Docker
+    # Compose service name or a Kubernetes short name.
+    return "." not in host
+
+
+def is_local_cpu_embedding_provider(
+    provider: str | None, endpoint: str | None = None
+) -> bool:
+    """Whether *provider* embeds on hardware this deployment shares.
+
+    Callers use this to pick batch size, concurrency and timeout budgets, so
+    the question is "is this as slow as a CPU model next door", not "is the
+    vendor named locally". A self-hostable provider pointed at a private
+    address answers yes; the same provider pointed at a vendor's cloud does not.
 
     ``None`` counts as local: an unconfigured deployment falls back to
     ``get_default_embedding_model()``.
     """
-    return provider is None or provider in LOCAL_CPU_EMBEDDING_PROVIDERS
+    if provider is None or provider in LOCAL_CPU_EMBEDDING_PROVIDERS:
+        return True
+    return (
+        provider in SELF_HOSTABLE_EMBEDDING_PROVIDERS
+        and _is_locally_served_endpoint(endpoint)
+    )
 
 
 class LLMProvider(Enum):
@@ -157,6 +213,33 @@ class STTProvider(Enum):
 MAX_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS_CLAUDE_MODERN = 16384
 MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
+
+def embedding_config_hash(embedding_configs: "list[dict[str, Any]] | None") -> str:
+    """Deterministic hash of the embedding config, for cache invalidation.
+
+    Covers every field that changes which client gets built or how it
+    authenticates, so a change made in the admin UI rebuilds the model rather
+    than being served from a stale cache. Shared by the indexing and retrieval
+    paths so both invalidate on the same events.
+    """
+    if not embedding_configs:
+        return "default"
+    serialisable = []
+    for cfg in embedding_configs:
+        configuration = cfg.get("configuration") or {}
+        serialisable.append({
+            "provider": cfg.get("provider"),
+            "isDefault": cfg.get("isDefault"),
+            "isMultimodal": cfg.get("isMultimodal"),
+            "model": configuration.get("model"),
+            "endpoint": configuration.get("endpoint"),
+            "dimensions": configuration.get("dimensions"),
+            "apiKey": configuration.get("apiKey"),
+        })
+    return hashlib.sha256(
+        json.dumps(serialisable, sort_keys=True, default=str).encode()
+    ).hexdigest()[:16]
+
 
 def get_default_embedding_model() -> Embeddings:
     return get_embedding_server_embeddings(DEFAULT_EMBEDDING_MODEL)
@@ -269,6 +352,20 @@ def _set_embedding_dimensions_kwarg(
         kwargs[key] = dimensions
 
 
+def _set_openai_client_limits_kwargs(kwargs: Dict[str, Any]) -> None:
+    """Bound one HTTP attempt and disable the SDK's own retry loop.
+
+    Callers wrap embed calls in their own timeout (the indexing pipeline bounds
+    each batch), and the SDK's silent 2 retries at a 600s default timeout sit
+    entirely inside that budget — so a rate-limited or stalled provider expires
+    the caller's clock instead of surfacing as the 429 or timeout it was.
+    Retries belong to the caller, which can also signal backpressure; see
+    ``app.utils.embedding_retry``.
+    """
+    kwargs["timeout"] = REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS
+    kwargs["max_retries"] = 0
+
+
 # `check_embedding_ctx_length=True` makes langchain-openai tiktoken-encode each
 # text and send `input` as arrays of token IDs. Only OpenAI's own embeddings
 # endpoint accepts that shape; every other server speaking the OpenAI protocol
@@ -323,6 +420,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=check_embedding_ctx_length,
         )
         _set_embedding_dimensions_kwarg(kwargs, dimensions)
+        _set_openai_client_limits_kwargs(kwargs)
         return OpenAIEmbeddings(**kwargs)
 
     elif provider == EmbeddingProvider.AZURE_OPENAI.value:
@@ -335,6 +433,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             azure_endpoint=configuration['endpoint'],
         )
         _set_embedding_dimensions_kwarg(kwargs, dimensions)
+        _set_openai_client_limits_kwargs(kwargs)
         return AzureOpenAIEmbeddings(**kwargs)
 
     elif provider == EmbeddingProvider.COHERE.value:
@@ -412,6 +511,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             organization=configuration.get("organizationId"),
         )
         _set_embedding_dimensions_kwarg(openai_kwargs, dimensions)
+        _set_openai_client_limits_kwargs(openai_kwargs)
         return OpenAIEmbeddings(**openai_kwargs)
 
     elif provider == EmbeddingProvider.AWS_BEDROCK.value:
@@ -441,6 +541,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=_accepts_token_array_embedding_input(base_url),
         )
         _set_embedding_dimensions_kwarg(compat_kwargs, dimensions)
+        _set_openai_client_limits_kwargs(compat_kwargs)
         return OpenAIEmbeddings(**compat_kwargs)
 
     elif provider == EmbeddingProvider.OPENROUTER.value:
@@ -453,6 +554,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=_accepts_token_array_embedding_input(OPENROUTER_BASE_URL),
         )
         _set_embedding_dimensions_kwarg(or_emb_kwargs, dimensions)
+        _set_openai_client_limits_kwargs(or_emb_kwargs)
         return OpenAIEmbeddings(**or_emb_kwargs)
 
     elif provider == EmbeddingProvider.LM_STUDIO.value:
@@ -465,6 +567,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=False,
         )
         _set_embedding_dimensions_kwarg(lms_emb_kwargs, dimensions)
+        _set_openai_client_limits_kwargs(lms_emb_kwargs)
         return OpenAIEmbeddings(**lms_emb_kwargs)
 
     elif provider == EmbeddingProvider.LITELLM_PROXY.value:
@@ -477,6 +580,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=False,
         )
         _set_embedding_dimensions_kwarg(llp_emb_kwargs, dimensions)
+        _set_openai_client_limits_kwargs(llp_emb_kwargs)
         return OpenAIEmbeddings(**llp_emb_kwargs)
 
     elif provider == EmbeddingProvider.TOGETHER.value:
