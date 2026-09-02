@@ -166,6 +166,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self._consecutive_empty_polls = 0
         self._idle_threshold = 3  # Drain pending after N consecutive empty polls
         self._in_flight_message_ids: set[str] = set()
+        # Keyed by recordId, not by entry id. Two entries can carry the same
+        # record -- the original and one the stranded sweep re-published -- and
+        # the message-id set above cannot see that they are the same work.
+        self._in_flight_record_ids: set[str] = set()
         self._in_flight_lock = threading.Lock()
 
         # Absent config disables fair scheduling and keeps this consumer on
@@ -468,6 +472,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self._active_futures.clear()
         with self._in_flight_lock:
             self._in_flight_message_ids.clear()
+            self._in_flight_record_ids.clear()
 
     def _wait_for_active_futures(self) -> None:
         """Wait for all active futures to complete, bounded by ONE shared timeout.
@@ -520,6 +525,27 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
     def _unmark_in_flight(self, message_id: str) -> None:
         with self._in_flight_lock:
             self._in_flight_message_ids.discard(message_id)
+
+    def _claim_record(self, record_id: str) -> bool:
+        """Take this process's claim on a record, or report it already taken.
+
+        The distributed ``record:`` lease is the cross-replica guard, but it is
+        only taken when a concurrency manager is configured. Without one there
+        was nothing keyed by record at all in this consumer -- entries are
+        tracked by stream id -- so two deliveries carrying the same record (the
+        original, and one the stranded sweep re-published) could run at the same
+        time and race each other's status writes. The Kafka consumer already
+        keeps the equivalent set; this is its counterpart.
+        """
+        with self._in_flight_lock:
+            if record_id in self._in_flight_record_ids:
+                return False
+            self._in_flight_record_ids.add(record_id)
+        return True
+
+    def _release_record(self, record_id: str) -> None:
+        with self._in_flight_lock:
+            self._in_flight_record_ids.discard(record_id)
 
     async def _cleanup_empty_consumers(
         self,
@@ -1878,6 +1904,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         - TERMINAL: ACK immediately (parsing errors, validation errors)
         - TRANSIENT: Don't ACK, let PEL retry
         """
+        record_claim_held = False
         parsing_held = False
         indexing_held = False
         indexing_complete = False
@@ -1951,6 +1978,19 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 message_id,
             )
             return False
+
+        # Claimed after the backoff wait and the ownership check, so a message
+        # that is only sleeping or is not ours never holds one.
+        if not self._claim_record(record_lock_id):
+            self.logger.debug(
+                "Skipping %s: another in-flight delivery in this process "
+                "already holds record %s. Left un-acked so it is redelivered "
+                "once that one finishes.",
+                message_id,
+                record_lock_id,
+            )
+            return False
+        record_claim_held = True
 
         # Route the active-pipeline permit by tier, from the record event's own
         # extension/mimeType. The permit is held for the record's whole
@@ -2272,6 +2312,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
             return False
         finally:
+            # First, and deliberately: this is a plain set discard with no
+            # await, so unlike everything below it cannot be skipped by a
+            # cancellation landing inside this block. A stranded claim would
+            # block every later delivery of the record for the life of the
+            # process.
+            if record_claim_held:
+                self._release_record(record_lock_id)
             if renewal_task is not None:
                 renewal_task.cancel()
                 await asyncio.gather(renewal_task, return_exceptions=True)

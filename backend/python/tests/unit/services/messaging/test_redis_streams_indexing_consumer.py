@@ -2887,3 +2887,97 @@ class TestAbandonmentNotifiesTheSink:
         assert result is False
         sink.on_message_abandoned.assert_not_awaited()
         consumer.redis.xack.assert_not_awaited()
+
+
+class TestProcessLocalRecordClaim:
+    """Two entries can carry the same record; the entry-id set cannot see that.
+
+    The stranded sweep re-publishes a record whose event went missing, so the
+    original entry and the new one both name it. The cross-replica guard is the
+    distributed `record:` lease, but that is only taken when a concurrency
+    manager is configured — without one there was nothing keyed by record at
+    all, and the two deliveries could race each other's status writes.
+    """
+
+    def test_a_record_can_only_be_claimed_once(self, consumer):
+        assert consumer._claim_record("rec-1") is True
+        assert consumer._claim_record("rec-1") is False
+
+    def test_releasing_lets_the_next_delivery_through(self, consumer):
+        consumer._claim_record("rec-1")
+        consumer._release_record("rec-1")
+        assert consumer._claim_record("rec-1") is True
+
+    def test_different_records_do_not_block_each_other(self, consumer):
+        assert consumer._claim_record("rec-1") is True
+        assert consumer._claim_record("rec-2") is True
+
+    def test_releasing_an_unheld_record_is_harmless(self, consumer):
+        consumer._release_record("never-claimed")
+
+    @pytest.mark.asyncio
+    async def test_a_duplicate_delivery_is_left_for_redelivery(self, consumer):
+        """The loser is not acked: it comes back once the winner finishes.
+
+        Dropping it instead would discard a genuinely different event for the
+        same record — a create and its update are not interchangeable.
+        """
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.redis = AsyncMock()
+        consumer.main_loop = asyncio.get_running_loop()
+        consumer.message_handler = MagicMock()
+        # Another delivery of this record is already running in this process.
+        consumer._claim_record("r1")
+
+        result = await consumer._process_message_wrapper(
+            "s", "1-0", _valid_fields(payload={"recordId": "r1"})
+        )
+
+        assert result is False
+        consumer.message_handler.assert_not_called()
+        consumer.redis.xack.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_claim_is_released_when_processing_finishes(self, consumer):
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.redis = AsyncMock()
+        consumer.main_loop = asyncio.get_running_loop()
+
+        async def handler(msg):
+            yield PipelineEvent(
+                event=IndexingEvent.PARSING_COMPLETE,
+                data=PipelineEventData(record_id="r1"),
+            )
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id="r1"),
+            )
+
+        consumer.message_handler = handler
+
+        await consumer._process_message_wrapper(
+            "s", "1-0", _valid_fields(payload={"recordId": "r1"})
+        )
+
+        assert consumer._claim_record("r1") is True
+
+    @pytest.mark.asyncio
+    async def test_the_claim_is_released_when_the_handler_raises(self, consumer):
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.redis = AsyncMock()
+        consumer.main_loop = asyncio.get_running_loop()
+
+        async def handler(msg):
+            raise RuntimeError("boom")
+            yield  # pragma: no cover - makes this an async generator
+
+        consumer.message_handler = handler
+
+        await consumer._process_message_wrapper(
+            "s", "1-0", _valid_fields(payload={"recordId": "r1"})
+        )
+
+        assert consumer._claim_record("r1") is True
