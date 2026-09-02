@@ -447,31 +447,27 @@ class AzureFilesDataSource:
 
         Returns:
             AzureFilesResponse with file content as bytes
+
+        Raises:
+            AzureError: SDK errors propagate. This feeds the user-facing streaming
+                fallback, which needs HttpResponseError's status_code to tell a
+                403/401 on the share from a deleted file; flattening it to a message
+                left the caller substring-matching for "not found".
         """
-        try:
-            client = await self._get_async_share_service_client()
-            share_client = client.get_share_client(share_name)
-            file_client = share_client.get_file_client(file_path)
+        client = await self._get_async_share_service_client()
+        share_client = client.get_share_client(share_name)
+        file_client = share_client.get_file_client(file_path)
 
-            download = await file_client.download_file(offset=offset, length=length)
-            content = await download.readall()
+        download = await file_client.download_file(offset=offset, length=length)
+        content = await download.readall()
 
-            return self._handle_response(
-                data={
-                    "content": content,
-                    "size": len(content),
-                    "file_path": file_path,
-                }
-            )
-
-        except ResourceNotFoundError:
-            return self._handle_response(
-                error=f"File not found: {share_name}/{file_path}"
-            )
-        except AzureError as e:
-            return self._handle_response(error=f"Azure Files API error: {str(e)}")
-        except Exception as e:
-            return self._handle_response(error=f"Unexpected error: {str(e)}")
+        return self._handle_response(
+            data={
+                "content": content,
+                "size": len(content),
+                "file_path": file_path,
+            }
+        )
 
     async def check_directory_exists(
         self, share_name: str, directory_path: str

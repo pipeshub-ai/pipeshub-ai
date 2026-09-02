@@ -108,6 +108,9 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_downloadable,
     not_found_at_source,
     to_stream_error,
 )
@@ -3971,7 +3974,7 @@ class SharePointConnector(BaseConnector):
             access_token = await self._get_sharepoint_access_token()
             if not access_token:
                 self.logger.error(f"Failed to obtain SharePoint access token for page {page_id}")
-                return None
+                raise connector_not_ready(self.display_name)
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Accept": "application/json;odata=verbose"
@@ -3995,7 +3998,7 @@ class SharePointConnector(BaseConnector):
 
                 if resp.status_code != HTTPStatus.OK.value:
                     self.logger.error(f"❌ API Error: {resp.status_code} - {resp.text}")
-                    return None
+                    raise map_source_status(resp.status_code, connector=self.display_name)
 
                 data = resp.json()
                 item = data.get('d', {})
@@ -4092,8 +4095,11 @@ class SharePointConnector(BaseConnector):
 
                 return cleaned_html
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"Failed to process SharePoint page {page_id}: {e}", exc_info=True)
+            raise to_stream_error(e, connector=self.display_name) from e
 
     # Utility methods
     async def handle_webhook_notification(self, notification: Dict) -> None:
@@ -4140,15 +4146,25 @@ class SharePointConnector(BaseConnector):
 
             if not drive_id:
                 self.logger.error(f"Missing drive_id for record {record.id}")
-                return None
+                raise not_downloadable(
+                    "This item is missing the document library it belongs to and cannot "
+                    "be downloaded.",
+                    connector=self.display_name,
+                )
 
             # Get download URL
-            signed_url = await self.msgraph_client.get_signed_url(drive_id, record.external_record_id)
+            signed_url = await self.msgraph_client.get_signed_url(
+                drive_id, record.external_record_id, raise_on_error=True
+            )
             return signed_url
 
-        except Exception as e:
-            self.logger.error(f"❌ Error creating signed URL for record {record.id}: {e}")
+        except HTTPException:
             raise
+        except Exception as e:
+            self.logger.error(
+                f"❌ Error creating signed URL for record {record.id}: {e}", exc_info=True
+            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def cleanup(self) -> None:
         """Cleanup resources when shutting down the connector."""

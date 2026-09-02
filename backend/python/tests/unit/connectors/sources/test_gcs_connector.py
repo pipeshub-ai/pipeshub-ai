@@ -116,11 +116,12 @@ def gcs_connector(mock_logger, mock_data_entities_processor,
     return connector
 
 
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.status_code = status_code
     return r
 
 
@@ -468,11 +469,12 @@ class TestGCSAppUsers:
 # Merged from test_gcs_connector_full_coverage.py
 # =============================================================================
 
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.status_code = status_code
     return r
 
 
@@ -1416,7 +1418,7 @@ class TestGetSignedUrl95:
     async def test_access_denied(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.generate_signed_url = AsyncMock(
-            return_value=_make_response(False, error="403 Forbidden")
+            return_value=_make_response(False, error="403 Forbidden", status_code=403)
         )
         record = MagicMock(id="r1", external_record_group_id="bucket",
                            external_record_id="bucket/file.txt", record_name="file.txt")
@@ -1428,13 +1430,49 @@ class TestGetSignedUrl95:
     async def test_not_found(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.generate_signed_url = AsyncMock(
-            return_value=_make_response(False, error="404 NotFound")
+            return_value=_make_response(False, error="404 NotFound", status_code=404)
         )
         record = MagicMock(id="r1", external_record_group_id="bucket",
                            external_record_id="bucket/file.txt", record_name="file.txt")
         with pytest.raises(HTTPException) as exc_info:
             await connector.get_signed_url(record)
         assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_object_key_does_not_pick_the_status(self, connector):
+        """The GCS error text embeds bucket and key, so matching phrases in it
+        let a key like "hr/permissions/2024.xlsx" report a deleted object as 403."""
+        connector.data_source = MagicMock()
+        connector.data_source.generate_signed_url = AsyncMock(
+            return_value=_make_response(
+                False,
+                error="Blob not found: bucket/hr/permissions/2024.xlsx",
+                status_code=404,
+            )
+        )
+        record = MagicMock(id="r1", external_record_group_id="bucket",
+                           external_record_id="bucket/hr/permissions/2024.xlsx",
+                           record_name="2024.xlsx")
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_denial_on_a_key_containing_404_is_still_403(self, connector):
+        connector.data_source = MagicMock()
+        connector.data_source.generate_signed_url = AsyncMock(
+            return_value=_make_response(
+                False,
+                error="GCS API error: reports/404-page-analysis.pdf",
+                status_code=403,
+            )
+        )
+        record = MagicMock(id="r1", external_record_group_id="bucket",
+                           external_record_id="bucket/reports/404-page-analysis.pdf",
+                           record_name="404-page-analysis.pdf")
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_other_failure(self, connector):

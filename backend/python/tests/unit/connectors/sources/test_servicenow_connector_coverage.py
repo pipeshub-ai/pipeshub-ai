@@ -198,15 +198,17 @@ class TestGetFreshDatasource:
     @pytest.mark.asyncio
     async def test_no_client_raises(self, connector):
         connector.servicenow_client = None
-        with pytest.raises(Exception, match="not initialized"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_config_raises(self, connector):
         connector.servicenow_client = MagicMock()
         connector.config_service.get_config = AsyncMock(return_value=None)
-        with pytest.raises(Exception, match="not found"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_token_raises(self, connector):
@@ -214,8 +216,9 @@ class TestGetFreshDatasource:
         connector.config_service.get_config = AsyncMock(return_value={
             "credentials": {}
         })
-        with pytest.raises(Exception, match="No access token"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_updates_token_when_changed(self, connector):

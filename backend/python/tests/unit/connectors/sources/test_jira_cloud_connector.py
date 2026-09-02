@@ -317,16 +317,18 @@ class TestGetFreshDatasource:
     async def test_no_client_raises(self):
         connector = _make_connector()
         connector.external_client = None
-        with pytest.raises(Exception, match="not initialized"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_config_raises(self):
         connector = _make_connector()
         connector.external_client = MagicMock()
         connector.config_service.get_config = AsyncMock(return_value=None)
-        with pytest.raises(Exception, match="not found"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_api_token_returns_datasource(self):
@@ -3788,7 +3790,9 @@ class TestSearchIssuesWithRetryCloud:
         )
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             with patch("asyncio.sleep", new_callable=AsyncMock):
-                with pytest.raises(Exception, match="after 3 attempts"):
+                # Re-raised bare so to_stream_error can still read the
+                # timeout/status off the SDK exception.
+                with pytest.raises(httpx.RemoteProtocolError):
                     await conn._search_issues_with_retry(
                         project_key="PROJ",
                         jql='project = "PROJ"',
@@ -3916,7 +3920,7 @@ class TestGetIssueWithRetryCloud:
         ds.get_issue = AsyncMock(side_effect=httpx.RemoteProtocolError("disconnected"))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             with patch("asyncio.sleep", new_callable=AsyncMock):
-                with pytest.raises(Exception, match="after 3 attempts"):
+                with pytest.raises(httpx.RemoteProtocolError):
                     await conn._get_issue_with_retry("10001", fields=["summary"], max_attempts=3)
         assert ds.get_issue.await_count == 3
 

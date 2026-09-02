@@ -15,7 +15,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import HTTPException
 
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.github_teams.common.utils import epoch_ms_or_now
 from app.connectors.sources.github_teams.issues import IssuesSync
 from app.models.entities import TicketRecord
@@ -754,28 +756,35 @@ class TestBuildTicketBlocks:
 
     async def test_repo_resolve_failure_raises(self) -> None:
         c = make_mock_connector()
-        c.runtime.ds_call.side_effect = _dispatch(c, {"get_repo_by_id": failed_response("404")})
-        record = TicketRecord(
-            id="r1", org_id="org-1", record_name="x", record_type="TICKET",
-            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
-            external_record_id="42/issues/7", external_record_group_id="42-work-items",
-        )
-        with pytest.raises(Exception, match="Failed to resolve repo"):
-            await IssuesSync(c).build_ticket_blocks(record)
-
-    async def test_issue_fetch_failure_raises(self) -> None:
-        c = make_mock_connector()
         c.runtime.ds_call.side_effect = _dispatch(c, {
-            "get_repo_by_id": ok_response(make_repo(repo_id=42)),
-            "get_issue": failed_response("404"),
+            "get_repo_by_id": failed_response("gone", status_code=HttpStatusCode.NOT_FOUND.value),
         })
         record = TicketRecord(
             id="r1", org_id="org-1", record_name="x", record_type="TICKET",
             version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
             external_record_id="42/issues/7", external_record_group_id="42-work-items",
         )
-        with pytest.raises(Exception, match="Failed to fetch issue"):
+        with pytest.raises(HTTPException) as exc:
             await IssuesSync(c).build_ticket_blocks(record)
+        assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
+
+    async def test_issue_fetch_failure_raises(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "get_repo_by_id": ok_response(make_repo(repo_id=42)),
+            "get_issue": failed_response(
+                "forbidden", status_code=HttpStatusCode.FORBIDDEN.value
+            ),
+        })
+        record = TicketRecord(
+            id="r1", org_id="org-1", record_name="x", record_type="TICKET",
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="42/issues/7", external_record_group_id="42-work-items",
+        )
+        # A permission denial must not be reported as a deleted issue.
+        with pytest.raises(HTTPException) as exc:
+            await IssuesSync(c).build_ticket_blocks(record)
+        assert exc.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     async def test_missing_group_id_raises(self) -> None:
         record = TicketRecord(
@@ -783,8 +792,9 @@ class TestBuildTicketBlocks:
             version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
             external_record_id="42/issues/7",
         )
-        with pytest.raises(Exception, match="Repository id not found"):
+        with pytest.raises(HTTPException) as exc:
             await IssuesSync(make_mock_connector()).build_ticket_blocks(record)
+        assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
 
 class TestAppUserEmails:

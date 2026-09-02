@@ -25,6 +25,11 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.error.sql_stream_errors import (
+    to_sql_response_error,
+    to_sql_stream_error,
+)
+from app.connectors.core.base.error.stream_errors import connector_not_ready
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -819,32 +824,49 @@ class PostgreSQLConnector(BaseConnector):
     ) -> StreamingResponse:
         try:
             if not self.data_source:
-                raise HTTPException(status_code=500, detail="PostgreSQL data source not initialized")
+                raise connector_not_ready(self.display_name)
 
             if record.record_type == RecordType.SQL_TABLE:
-                parts = record.external_record_id.split(".")
+                # Matches how the rest of this file splits a schema-qualified
+                # name: everything after the first dot is the table.
+                parts = record.external_record_id.split(".", 1)
                 if len(parts) != 2:
                     raise HTTPException(status_code=500, detail="Invalid table FQN")
                 schema, table = parts[0], parts[1]
 
                 table_info_response = await self.data_source.get_table_info(schema, table)
-                columns: List[ColumnInfo] = []
-                if table_info_response.success:
-                    detail = TableDetail.model_validate(table_info_response.data)
-                    columns = detail.columns
-                    self.logger.info(f"✅ Retrieved {len(columns)} columns for {schema}.{table}")
-                else:
+                if not table_info_response.success:
                     self.logger.error(f"❌ Failed to get table info for {schema}.{table}: {table_info_response.error}")
+                    raise to_sql_response_error(
+                        table_info_response.error, connector=self.display_name
+                    )
+                detail = TableDetail.model_validate(table_info_response.data)
+                columns: List[ColumnInfo] = detail.columns
+                self.logger.info(f"✅ Retrieved {len(columns)} columns for {schema}.{table}")
 
+                # These queries only fail on a driver error — a table with no
+                # constraints succeeds with an empty list — so degrading here
+                # would stream a table whose keys were refused, not absent.
                 fks_response = await self.data_source.get_foreign_keys(schema, table)
-                foreign_keys: List[ForeignKeyInfo] = []
-                if fks_response.success:
-                    foreign_keys = [ForeignKeyInfo.model_validate(fk) for fk in fks_response.data]
-                
+                if not fks_response.success:
+                    self.logger.error(f"❌ Failed to get foreign keys for {schema}.{table}: {fks_response.error}")
+                    raise to_sql_response_error(
+                        fks_response.error, connector=self.display_name
+                    )
+                foreign_keys = [
+                    ForeignKeyInfo.model_validate(fk) for fk in (fks_response.data or [])
+                ]
+
                 pks_response = await self.data_source.get_primary_keys(schema, table)
-                primary_keys: List[str] = []
-                if pks_response.success:
-                    primary_keys = [PrimaryKeyInfo.model_validate(pk).column_name for pk in pks_response.data]
+                if not pks_response.success:
+                    self.logger.error(f"❌ Failed to get primary keys for {schema}.{table}: {pks_response.error}")
+                    raise to_sql_response_error(
+                        pks_response.error, connector=self.display_name
+                    )
+                primary_keys: List[str] = [
+                    PrimaryKeyInfo.model_validate(pk).column_name
+                    for pk in (pks_response.data or [])
+                ]
 
                 sync_filters, _ = await load_connector_filters(
                     self.config_service, "postgresql", self.connector_id, self.logger
@@ -853,13 +875,19 @@ class PostgreSQLConnector(BaseConnector):
                     int(sync_filters.get_value(IndexingFilterKey.MAX_ROWS_PER_TABLE, default=1000)),
                     MAX_ROWS_PER_TABLE_LIMIT,
                 )
-                rows = await self.data_source.fetch_table_rows(schema, table, limit=max_rows)
-                
+                try:
+                    rows = await self.data_source.fetch_table_rows(schema, table, limit=max_rows)
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to read rows for {schema}.{table}: {e}")
+                    raise to_sql_stream_error(e, connector=self.display_name) from e
+
                 ddl_response = await self.data_source.get_table_ddl(schema, table)
-                ddl = ""
-                if ddl_response.success:
-                    ddl_obj = DDLResult.model_validate(ddl_response.data)
-                    ddl = ddl_obj.ddl
+                if not ddl_response.success:
+                    self.logger.error(f"❌ Failed to get DDL for {schema}.{table}: {ddl_response.error}")
+                    raise to_sql_response_error(
+                        ddl_response.error, connector=self.display_name
+                    )
+                ddl = DDLResult.model_validate(ddl_response.data).ddl
 
                 data = {
                     "table_name": table,

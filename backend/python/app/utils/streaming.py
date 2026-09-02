@@ -266,53 +266,57 @@ async def start_streaming_response(response: StreamingResponse) -> StreamingResp
     failure *after* the first chunk still cannot change the status; those
     abort the response instead.
     """
-    iterator = response.body_iterator.__aiter__()
-    try:
-        first_chunk = await iterator.__anext__()
-    except StopAsyncIteration:
-        first_chunk = None
-
-    # Chunks may be str as well as bytes — Starlette encodes either.
-    async def replay() -> AsyncGenerator[bytes | str, None]:
-        if first_chunk is not None:
-            yield first_chunk
-        async for chunk in iterator:
-            yield chunk
-
-    response.body_iterator = replay()
+    response.body_iterator = await stream_with_eager_first_chunk(response.body_iterator)
     return response
 
 
+async def _aclose(source: object) -> None:
+    """Close *source* if it is a generator. Starlette wraps a sync iterable in
+    `iterate_in_threadpool`, which has no `aclose`, so this cannot assume one."""
+    closer = getattr(source, "aclose", None)
+    if closer is None:
+        return
+    try:
+        await closer()
+    except Exception:
+        logger.debug("Failed to close stream source", exc_info=True)
+
+
 async def stream_with_eager_first_chunk(
-    source: AsyncGenerator[bytes, None],
-) -> AsyncGenerator[bytes, None]:
+    source: AsyncGenerator[bytes | str, None],
+) -> AsyncGenerator[bytes | str, None]:
     """Return a streaming generator after eagerly pulling its first chunk.
 
     Reading the first chunk before returning lets upstream auth / 404 / network
-    errors surface here, where they can still be converted to a clean HTTP 5xx,
+    errors surface here, where they can still be converted to a real HTTP status,
     rather than after ``StreamingResponse`` has already committed the status line
     and can only produce a truncated chunked body.
+
+    Chunks may be `str` as well as `bytes` — Starlette encodes either.
     """
     aiter = source.__aiter__()
     try:
         first = await aiter.__anext__()
     except StopAsyncIteration:
-        await source.aclose()
-        async def _empty() -> AsyncGenerator[bytes, None]:
+        await _aclose(source)
+        async def _empty() -> AsyncGenerator[bytes | str, None]:
             return
             yield b""  # noqa: unreachable — marks function as async generator
         return _empty()
     except Exception:
-        await source.aclose()
+        await _aclose(source)
         raise
 
-    async def _gen() -> AsyncGenerator[bytes, None]:
+    async def _gen() -> AsyncGenerator[bytes | str, None]:
+        # `finally` (not just falling off the end) so an abandoned download —
+        # the client disconnecting mid-file — still releases the upstream
+        # session. Starlette never closes `body_iterator` itself.
         try:
             yield first
             async for chunk in aiter:
                 yield chunk
         finally:
-            await source.aclose()
+            await _aclose(source)
 
     return _gen()
 

@@ -22,13 +22,14 @@ class NotionResponse:
     data: Optional[Any] = None
     error: Optional[str] = None
     message: Optional[str] = None
+    status_code: Optional[int] = None
 
     @classmethod
     def from_http(cls, response: HTTPResponse) -> "NotionResponse":
         """Build a response from an HTTPResponse; non-2xx is success=False."""
         status = response.status
         if 200 <= status < 300:
-            return cls(success=True, data=response)
+            return cls(success=True, data=response, status_code=status)
         body = ""
         try:
             body = (response.text() or "")[:200]
@@ -37,7 +38,7 @@ class NotionResponse:
         error = f"HTTP {status}"
         if body:
             error = f"{error}: {body}"
-        return cls(success=False, data=response, error=error)
+        return cls(success=False, data=response, error=error, status_code=status)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""

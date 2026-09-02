@@ -12,6 +12,7 @@ import asyncio
 import base64
 from typing import TYPE_CHECKING, Any
 
+from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
 from app.models.entities import Record
 from app.models.blocks import (
     BlockComment,
@@ -53,7 +54,13 @@ class CommentsHelper:
             project_id=int(project_id), issue_iid=issue_number, get_all=True,
         )
         if not comments_res.success:
-            raise Exception(f"Failed to fetch comments for issue {issue_url}: {comments_res.error}")
+            raise_for_stream_fetch(
+                success=comments_res.success,
+                has_payload=bool(comments_res.data),
+                connector=c.display_name,
+                status=comments_res.status_code,
+                message=comments_res.error,
+            )
 
         block_groups: list[BlockGroup] = []
         list_remaining_records: list[RecordUpdate] = []
@@ -111,7 +118,13 @@ class CommentsHelper:
             project_id=int(project_id), mr_iid=mr_number, get_all=True,
         )
         if not comments_res.success:
-            raise Exception(f"Failed to fetch comments for merge request {mr_url}: {comments_res.error}")
+            raise_for_stream_fetch(
+                success=comments_res.success,
+                has_payload=bool(comments_res.data),
+                connector=c.display_name,
+                status=comments_res.status_code,
+                message=comments_res.error,
+            )
 
         block_groups: list[BlockGroup] = []
         block_group_number = parent_index + 1
@@ -196,7 +209,13 @@ class CommentsHelper:
             project_id=int(project_id), mr_iid=mr_number,
         )
         if not file_changes_res.success:
-            raise Exception(f"Failed to fetch file changes for merge request {mr_url}: {file_changes_res.error}")
+            raise_for_stream_fetch(
+                success=file_changes_res.success,
+                has_payload=bool(file_changes_res.data),
+                connector=c.display_name,
+                status=file_changes_res.status_code,
+                message=file_changes_res.error,
+            )
 
         tmp_mr_res = await c.runtime.ds_call(
             c.data_source.get_merge_request, project_id=int(project_id), mr_iid=mr_number,

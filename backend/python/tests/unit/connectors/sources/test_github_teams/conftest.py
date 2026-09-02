@@ -34,6 +34,7 @@ def make_mock_connector() -> MagicMock:
 
     c.logger = MagicMock()
     c.data_source = MagicMock()
+    c.display_name = "GitHub"
 
     dep = MagicMock()
     dep.org_id = "org-1"

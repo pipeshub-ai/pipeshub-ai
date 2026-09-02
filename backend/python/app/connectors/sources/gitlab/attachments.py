@@ -19,10 +19,13 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
+from fastapi import HTTPException
+
 from app.config.constants.arangodb import (
     MimeTypes,
     OriginTypes,
 )
+from app.config.constants.http_status_code import HttpStatusCode
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.models.blocks import ChildRecord, ChildType, CommentAttachment
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -276,14 +279,18 @@ class AttachmentsHelper:
     async def fetch_attachment_content(self, record: Record) -> AsyncGenerator[bytes, None]:
         """Stream raw attachment bytes from GitLab."""
         c = self.c
-        try:
-            attachment_id = record.external_record_id
-            if not attachment_id:
-                raise Exception(f"No attachment ID available for record {record.id}")
-            record_url = record.weburl
-            if not record_url:
-                raise ValueError(f"No record URL available for record {record.id}")
-            async for chunk in c.data_source.get_attachment_files_content(record_url):
-                yield chunk
-        except Exception as e:
-            raise Exception(f"Error fetching attachment content for record {record.id}: {e}") from e
+        if not record.external_record_id:
+            raise HTTPException(
+                HttpStatusCode.BAD_REQUEST.value,
+                f"No attachment ID available for record {record.id}",
+            )
+        record_url = record.weburl
+        if not record_url:
+            raise HTTPException(
+                HttpStatusCode.BAD_REQUEST.value,
+                f"No record URL available for record {record.id}",
+            )
+        # httpx.HTTPStatusError propagates: its status is what the router maps
+        # to a real response code, and wrapping it here would erase that.
+        async for chunk in c.data_source.get_attachment_files_content(record_url):
+            yield chunk

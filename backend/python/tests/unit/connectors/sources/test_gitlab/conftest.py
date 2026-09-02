@@ -41,6 +41,7 @@ def make_mock_connector() -> MagicMock:
 
     # data_source
     c.data_source = MagicMock()
+    c.display_name = "GitLab"
 
     # data_entities_processor
     dep = MagicMock()
@@ -167,10 +168,13 @@ def paged_res(data: list) -> MagicMock:
     return res
 
 
-def failed_res(error: str = "error") -> MagicMock:
+def failed_res(error: str = "error", status_code: int | None = None) -> MagicMock:
     """Return a failed paged_list / ds_call mock response."""
     res = MagicMock()
     res.success = False
     res.data = None
     res.error = error
+    # Real GitLabResponse carries the source's HTTP status; the streaming paths
+    # map it, so a MagicMock auto-attribute here would silently mean "unknown".
+    res.status_code = status_code
     return res

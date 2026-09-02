@@ -54,6 +54,7 @@ _NON_RETRYABLE_HTTP_STATUSES = frozenset({
 # HTTP status codes that indicate transient errors - worth retrying
 _RETRYABLE_HTTP_STATUSES = frozenset({
     408,  # Request Timeout
+    409,  # Connector unusable (expired/revoked token) - retryable once reconnected
     429,  # Too Many Requests (rate limit)
     500,  # Internal Server Error
     502,  # Bad Gateway

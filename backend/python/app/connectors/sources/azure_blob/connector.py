@@ -76,6 +76,7 @@ from app.sources.client.azure.azure_blob import AzureBlobClient
 from app.sources.external.azure.azure_blob import AzureBlobDataSource
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
+    not_downloadable,
     not_found_at_source,
     to_stream_error,
 )
@@ -1363,12 +1364,19 @@ class AzureBlobConnector(BaseConnector):
             container_name = record.external_record_group_id
             if not container_name:
                 self.logger.warning(f"No container name found for record: {record.id}")
-                return None
+                raise not_downloadable(
+                    "This item is missing the container it belongs to and cannot be "
+                    "downloaded.",
+                    connector=self.display_name,
+                )
 
             external_record_id = record.external_record_id
             if not external_record_id:
                 self.logger.warning(f"No external_record_id found for record: {record.id}")
-                return None
+                raise not_downloadable(
+                    "This item is missing its blob name and cannot be downloaded.",
+                    connector=self.display_name,
+                )
 
             if external_record_id.startswith(f"{container_name}/"):
                 blob_name = external_record_id[len(f"{container_name}/"):]
@@ -1395,13 +1403,14 @@ class AzureBlobConnector(BaseConnector):
             if response.success and response.data:
                 return response.data.get("sas_url")
 
-            # No status on the wrapper; the likely cause is a missing blob.
-            # Auth failures arrive as SDK exceptions and are mapped below.
+            # generate_blob_sas_url signs locally and never contacts Azure, so a
+            # failure here means the credential can't sign (SAS-token or AAD auth,
+            # no account key) — the connector is misconfigured, the blob is fine.
             self.logger.error(
                 f"Failed to generate SAS URL: {response.error} | "
                 f"Container: {container_name} | Blob: {blob_name}"
             )
-            raise not_found_at_source(self.display_name)
+            raise connector_not_ready(self.display_name)
         except HTTPException:
             raise
         except Exception as e:

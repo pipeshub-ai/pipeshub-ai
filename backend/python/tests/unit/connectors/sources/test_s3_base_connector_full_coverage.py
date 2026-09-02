@@ -101,11 +101,12 @@ def connector(mock_logger, mock_dep, mock_dsp, mock_cs):
     return c
 
 
-def _resp(success=True, data=None, error=None):
+def _resp(success=True, data=None, error=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.status_code = status_code
     return r
 
 
@@ -334,7 +335,7 @@ class TestGetSignedUrl:
     async def test_access_denied(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.generate_presigned_url = AsyncMock(
-            return_value=_resp(False, error="AccessDenied: not authorized")
+            return_value=_resp(False, error="AccessDenied: not authorized", status_code=403)
         )
         connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         rec = _record()
@@ -346,7 +347,7 @@ class TestGetSignedUrl:
     async def test_no_such_key(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.generate_presigned_url = AsyncMock(
-            return_value=_resp(False, error="NoSuchKey")
+            return_value=_resp(False, error="NoSuchKey", status_code=404)
         )
         connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         rec = _record()

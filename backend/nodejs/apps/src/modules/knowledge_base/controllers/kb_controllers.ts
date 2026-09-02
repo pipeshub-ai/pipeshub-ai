@@ -1806,7 +1806,10 @@ export const getRecordBuffer =
         res.destroy(error);
       });
     } catch (error: any) {
-      console.error('Error fetching record buffer:', error);
+      logger.error('Error fetching record buffer', {
+        error: error?.message,
+        recordId: req.params.recordId,
+      });
       if (!res.headersSent) {
         if (error.response) {
           let errorMessage = 'Error from AI backend';
@@ -1826,6 +1829,12 @@ export const getRecordBuffer =
             logger.error('Failed to parse error response from AI backend', {
               error: parseError,
             });
+          }
+          // A 429 is only actionable with the source's own backoff hint, which
+          // the connector service put on the response for us to relay.
+          const retryAfter = error.response.headers?.['retry-after'];
+          if (retryAfter) {
+            res.set('Retry-After', String(retryAfter));
           }
           res.status(error.response.status).json({ error: errorMessage });
           return;

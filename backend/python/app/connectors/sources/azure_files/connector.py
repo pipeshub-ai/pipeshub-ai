@@ -87,7 +87,6 @@ from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
     map_source_status,
     not_downloadable,
-    not_found_at_source,
     to_stream_error,
 )
 from app.utils.streaming import create_stream_record_response, stream_content
@@ -1305,8 +1304,10 @@ class AzureFilesConnector(BaseConnector):
                 )
                 return None
         except Exception as e:
+            # Returning None is deliberate: it hands the caller to the direct-download
+            # fallback, which reports the real status. Only the diagnostic must survive.
             self.logger.error(
-                f"Error generating SAS URL for record {record.id}: {e}"
+                f"Error generating SAS URL for record {record.id}: {e}", exc_info=True
             )
             return None
 
@@ -1342,9 +1343,10 @@ class AzureFilesConnector(BaseConnector):
         # Extract file path information
         path_info = self._extract_file_path_info(record)
         if not path_info:
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail="File not found or invalid record",
+            raise not_downloadable(
+                "This item is missing the share and path it belongs to and cannot be "
+                "downloaded.",
+                connector=self.display_name,
             )
 
         share_name, file_path = path_info
@@ -1379,13 +1381,13 @@ class AzureFilesConnector(BaseConnector):
                 file_path=file_path,
             )
 
-            if not download_response.success:
-                error_msg = download_response.error or "Unknown error"
+            # Azure failures now arrive as HttpResponseError and are mapped below; a
+            # falsy response here means the wrapper returned without calling Azure.
+            if not download_response.success or not download_response.data:
                 self.logger.error(
-                    f"Azure Files download failed for {share_name}/{file_path}: {error_msg}"
+                    f"Azure Files download failed for {share_name}/{file_path}: "
+                    f"{download_response.error or 'no data returned'}"
                 )
-                if "not found" in error_msg.lower():
-                    raise not_found_at_source(self.display_name)
                 raise map_source_status(None, connector=self.display_name)
 
             # Get file content from response

@@ -84,7 +84,7 @@ from app.edition_config import (
 from app.edition_services import get_data_entities_processor_cls
 from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
-from app.connectors.core.base.error.stream_errors import to_stream_error
+from app.connectors.core.base.error.stream_errors import to_internal_service_error, to_stream_error
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthToken,
@@ -376,7 +376,7 @@ async def _stream_artifact_from_storage(
             "Failed to fetch artifact buffer for record %s: %s",
             record.id, str(e), exc_info=True,
         )
-        raise to_stream_error(e) from e
+        raise to_internal_service_error(e) from e
 
     if isinstance(response["data"], dict):
         data = response["data"].get("data")
@@ -1104,9 +1104,14 @@ async def stream_record_internal(
                 "scopes": ["storage:token"],
             }
             token = await generate_jwt(config_service, jwt_payload)
-            response = await make_api_call(
-                route=buffer_url, token=token
-            )
+            try:
+                response = await make_api_call(route=buffer_url, token=token)
+            except Exception as e:
+                logger.error(
+                    "Failed to fetch KB buffer for record %s: %s",
+                    record.id, str(e), exc_info=True,
+                )
+                raise to_internal_service_error(e) from e
             if isinstance(response["data"], dict):
                 data = response['data'].get('data')
                 buffer = bytes(data) if isinstance(data, list) else data

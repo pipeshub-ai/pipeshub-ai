@@ -3289,8 +3289,38 @@ class TestGetFileMetadataFromDrive:
         mock_files.get = MagicMock(return_value=mock_get)
         mock_service.files = MagicMock(return_value=mock_files)
 
-        with pytest.raises(HTTPException):
+        with pytest.raises(HTTPException) as exc_info:
             await conn._get_file_metadata_from_drive("f1", mock_service)
+        assert exc_info.value.status_code == HttpStatusCode.BAD_GATEWAY.value
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "drive_status,expected",
+        [
+            (HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.CONFLICT.value),
+            (HttpStatusCode.FORBIDDEN.value, HttpStatusCode.FORBIDDEN.value),
+            (HttpStatusCode.TOO_MANY_REQUESTS.value, HttpStatusCode.TOO_MANY_REQUESTS.value),
+        ],
+    )
+    async def test_drive_status_is_mapped_not_collapsed_to_500(self, drive_status, expected):
+        from fastapi import HTTPException
+        from googleapiclient.errors import HttpError
+
+        conn = _make_connector()
+        mock_resp = MagicMock()
+        mock_resp.status = drive_status
+
+        mock_service = MagicMock()
+        mock_files = MagicMock()
+        mock_get = MagicMock()
+        mock_get.execute = MagicMock(side_effect=HttpError(mock_resp, b"denied"))
+        mock_files.get = MagicMock(return_value=mock_get)
+        mock_service.files = MagicMock(return_value=mock_files)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await conn._get_file_metadata_from_drive("f1", mock_service)
+        assert exc_info.value.status_code == expected
+        assert "http" not in str(exc_info.value.detail).lower()
 
     @pytest.mark.asyncio
     async def test_generic_error(self):

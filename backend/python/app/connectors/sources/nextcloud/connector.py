@@ -23,6 +23,11 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    to_stream_error,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -1567,10 +1572,7 @@ class NextcloudConnector(BaseConnector):
     async def stream_record(self, record: Record) -> StreamingResponse:
         """Stream a file's content for download using authenticated request."""
         if not self.data_source:
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail="Data source not initialized"
-            )
+            raise connector_not_ready(self.display_name)
 
         # Get file record and path (path may be stored or derived from parent-child graph)
         file_record = await self.data_entities_processor.get_file_record_by_id(record.id)
@@ -1620,9 +1622,11 @@ class NextcloudConnector(BaseConnector):
             )
 
             if not is_response_successful(response):
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value,
-                    detail=f"Failed to download file: {get_response_error(response)}"
+                self.logger.error(
+                    f"Failed to download file for record {record.id}: {get_response_error(response)}"
+                )
+                raise map_source_status(
+                    getattr(response, "status", None), connector=self.display_name
                 )
 
             # Get file content from response
@@ -1647,10 +1651,7 @@ class NextcloudConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Error streaming record {record.id}: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error streaming file: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def test_connection_and_access(self) -> bool:
         """Test the connection to Nextcloud and verify access."""
