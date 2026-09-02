@@ -97,7 +97,18 @@ class TestEnsureTopicsExist:
         ):
             await admin.ensure_topics_exist()
 
-        assert mock_redis.exists.call_count == len(REQUIRED_TOPICS)
+        # Each laned topic expands into its lane streams, so the admin
+        # pre-creates every stream the consumer will subscribe to.
+        from app.services.messaging.config import MessageBrokerType
+        from app.services.messaging.messaging_factory import lane_topics_for
+
+        expected = [
+            lane
+            for topic in REQUIRED_TOPICS
+            for lane in lane_topics_for(topic, MessageBrokerType.REDIS)
+        ]
+        assert mock_redis.exists.call_count == len(expected)
+        assert set(REQUIRED_TOPICS).issubset(set(expected))
 
     @pytest.mark.asyncio
     async def test_closes_redis_even_on_per_topic_error(self, logger, config):

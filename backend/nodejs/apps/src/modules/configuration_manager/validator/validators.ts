@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import { googleWorkspaceTypes, storageTypes } from '../constants/constants';
+import {
+  resolveS3Credentials,
+  S3_PARTIAL_CREDENTIALS_MESSAGE,
+} from '../../storage/utils/s3-credentials.util';
 
 export const baseStorageSchema = z.object({
   storageType: z.enum([
@@ -18,13 +22,43 @@ const slackBotConfigBodySchema = z.object({
 
 export const s3ConfigSchema = baseStorageSchema.extend({
   storageType: z.literal(storageTypes.S3),
-  s3AccessKeyId: z.string().min(1, { message: 'S3 access key ID is required' }),
-  s3SecretAccessKey: z.string().min(1, {
-    message: 'S3 secret access key is required',
-  }),
+  // Optional: omit both to use the EC2/ECS IAM role via the AWS default
+  // credential provider chain instead of explicit IAM user credentials.
+  s3AccessKeyId: z.string().optional(),
+  s3SecretAccessKey: z.string().optional(),
   s3Region: z.string().min(1, { message: 'S3 region is required' }),
   s3BucketName: z.string().min(1, { message: 'S3 bucket name is required' }),
 });
+
+// The credential pair is atomic: half a pair would silently authenticate with
+// the IAM role instead of the operator's IAM user.
+const refineS3CredentialPair = (
+  data: { s3AccessKeyId?: string; s3SecretAccessKey?: string },
+  ctx: z.RefinementCtx,
+): void => {
+  const resolved = resolveS3Credentials({
+    accessKeyId: data.s3AccessKeyId,
+    secretAccessKey: data.s3SecretAccessKey,
+  });
+  if (resolved.kind !== 'partial') return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: S3_PARTIAL_CREDENTIALS_MESSAGE,
+    path: [
+      resolved.missingField === 'accessKeyId'
+        ? 's3AccessKeyId'
+        : 's3SecretAccessKey',
+    ],
+  });
+};
+
+export const s3ConfigSchemaRefined =
+  s3ConfigSchema.superRefine(refineS3CredentialPair);
+
+const isS3Config = (data: {
+  storageType: string;
+}): data is z.infer<typeof s3ConfigSchema> =>
+  data.storageType === storageTypes.S3;
 
 export const azureBlobConfigSchema = baseStorageSchema.extend({
   storageType: z.literal(storageTypes.AZURE_BLOB),
@@ -76,11 +110,17 @@ export const localConfigSchema = baseStorageSchema.extend({
 });
 
 export const storageValidationSchema = z.object({
-  body: z.discriminatedUnion('storageType', [
-    s3ConfigSchema,
-    azureBlobConfigSchema,
-    localConfigSchema,
-  ]),
+  body: z
+    .discriminatedUnion('storageType', [
+      s3ConfigSchema,
+      azureBlobConfigSchema,
+      localConfigSchema,
+    ])
+    .superRefine((data, ctx) => {
+      if (isS3Config(data)) {
+        refineS3CredentialPair(data, ctx);
+      }
+    }),
 });
 
 export const smtpConfigSchema = z.object({

@@ -82,65 +82,6 @@ class TestRecordsUserIdArg:
 
 
 # ---------------------------------------------------------------------------
-# resolve_stats_org_id
-# ---------------------------------------------------------------------------
-
-
-class TestResolveStatsOrgId:
-    def test_validates_org_access(self) -> None:
-        from app.connectors.api.connector_resolvers import resolve_stats_org_id
-
-        request = MagicMock()
-        request.state.user = {"userId": "u1", "orgId": "org-1"}
-
-        with patch("app.connectors.api.connector_resolvers.is_request_admin", return_value=False):
-            result = resolve_stats_org_id(request, "org-1")
-        assert result == "org-1"
-
-    def test_raises_on_mismatch(self) -> None:
-        from app.connectors.api.connector_resolvers import resolve_stats_org_id
-
-        request = MagicMock()
-        request.state.user = {"userId": "u1", "orgId": "org-1"}
-
-        with patch("app.connectors.api.connector_resolvers.is_request_admin", return_value=False):
-            with pytest.raises(HTTPException) as exc_info:
-                resolve_stats_org_id(request, "org-other")
-            assert exc_info.value.status_code == 403
-
-    def test_missing_query_org_id_raises(self) -> None:
-        from app.connectors.api.connector_resolvers import resolve_stats_org_id
-
-        request = MagicMock()
-        request.state.user = {"userId": "u1", "orgId": "org-1"}
-
-        with patch("app.connectors.api.connector_resolvers.is_request_admin", return_value=False):
-            with pytest.raises(HTTPException) as exc_info:
-                resolve_stats_org_id(request, None)
-            assert exc_info.value.status_code == 422
-
-    def test_admin_cross_org_allowed(self) -> None:
-        from app.connectors.api.connector_resolvers import resolve_stats_org_id
-
-        request = MagicMock()
-        request.state.user = {"userId": "u1", "orgId": "org-1"}
-
-        with patch("app.connectors.api.connector_resolvers.is_request_admin", return_value=True):
-            result = resolve_stats_org_id(request, "org-other")
-        assert result == "org-other"
-
-    def test_unauthenticated_raises(self) -> None:
-        from app.connectors.api.connector_resolvers import resolve_stats_org_id
-
-        request = MagicMock()
-        request.state.user = {}
-
-        with pytest.raises(HTTPException) as exc_info:
-            resolve_stats_org_id(request, "org-1")
-        assert exc_info.value.status_code == 401
-
-
-# ---------------------------------------------------------------------------
 # authorize_connector_stats
 # ---------------------------------------------------------------------------
 

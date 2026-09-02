@@ -1,7 +1,7 @@
 import asyncio
 import json
 from logging import Logger
-from typing import Optional, override
+from typing import override
 
 from pydantic import JsonValue
 from redis.asyncio import Redis
@@ -18,7 +18,7 @@ class RedisStreamsProducer(IMessagingProducer):
     def __init__(self, logger: Logger, config: RedisStreamsConfig) -> None:
         self.logger = logger
         self.config = config
-        self.redis: Optional[Redis] = None
+        self.redis: Redis | None = None
         self._lock = asyncio.Lock()
 
     @override
@@ -74,7 +74,7 @@ class RedisStreamsProducer(IMessagingProducer):
         self,
         topic: str,
         message: dict[str, JsonValue],
-        key: Optional[str] = None,
+        key: str | None = None,
     ) -> bool:
         try:
             if self.redis is None:
@@ -102,12 +102,80 @@ class RedisStreamsProducer(IMessagingProducer):
             raise
 
     @override
+    async def send_messages(
+        self,
+        topic: str,
+        messages: list[tuple[str | None, dict[str, JsonValue]]],
+    ) -> list[bool]:
+        """Pipeline the XADDs instead of awaiting one round trip per message.
+
+        A connector sync flushes batches of 50-100; the base implementation
+        sends them one at a time, paying a full Redis round trip each. The
+        Kafka producer already overrides this for the same reason.
+        """
+        if not messages:
+            return []
+        try:
+            if self.redis is None:
+                await self.initialize()
+
+            pipeline = self.redis.pipeline(transaction=False)  # type: ignore
+            for key, message in messages:
+                fields: dict[str, str] = {
+                    "value": json.dumps(inject_envelope(dict(message)))
+                }
+                if key:
+                    fields["key"] = key
+                pipeline.xadd(
+                    topic,
+                    fields,
+                    maxlen=self.config.max_len,
+                    approximate=True,
+                )
+            # Per-message results, not one all-or-nothing raise: callers use
+            # them to record exactly which records were accepted.
+            outcomes = await pipeline.execute(raise_on_error=False)
+        except Exception as e:
+            # The batch outcome is genuinely unknown here: the connection can
+            # drop after Redis has already applied some of the XADDs. Report
+            # all of them as unsent anyway, because the two errors are not
+            # symmetric. A record reported unsent that did land is republished
+            # by stale-record recovery and de-duplicated downstream by the
+            # `record:<id>` lease and the COMPLETED short-circuit -- the
+            # pipeline is at-least-once by design. A record reported sent that
+            # did *not* land is marked QUEUED with no event behind it and is
+            # never indexed. Prefer the recoverable error.
+            self.logger.error(
+                "Failed to publish %d message(s) to Redis stream %s; treating "
+                "the whole batch as unsent: %s",
+                len(messages),
+                topic,
+                e,
+            )
+            return [False] * len(messages)
+
+        results = [not isinstance(outcome, Exception) for outcome in outcomes]
+        failed = results.count(False)
+        if failed:
+            first_error = next(
+                (o for o in outcomes if isinstance(o, Exception)), None
+            )
+            self.logger.error(
+                "%d/%d messages failed to publish to %s; first error: %s",
+                failed,
+                len(messages),
+                topic,
+                first_error,
+            )
+        return results
+
+    @override
     async def send_event(
         self,
         topic: str,
         event_type: str,
         payload: dict[str, JsonValue],
-        key: Optional[str] = None,
+        key: str | None = None,
     ) -> bool:
         message: dict[str, JsonValue] = {
             "eventType": event_type,

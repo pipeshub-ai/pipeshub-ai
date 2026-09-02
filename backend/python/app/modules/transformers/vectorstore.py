@@ -917,6 +917,14 @@ class VectorStore(Transformer):
             self.logger.error(f"Error deleting embeddings: {e}")
             raise EmbeddingError(f"Failed to delete embeddings: {e}")
 
+    async def purge_record_vectors(
+        self, org_id: str, virtual_record_id: str, record: Optional["Record"] = None
+    ) -> None:
+        """Delete all vector points for a record, resolving the collection internally."""
+        ctx = self._record_context(org_id, record)
+        collection_name = self.collection_registry.resolve_write_collection(ctx)
+        await self.delete_embeddings(virtual_record_id, collection_name)
+
     # ------------------------------------------------------------------
     # Image embedding (provider dispatch via MultimodalEmbeddingFactory)
     # ------------------------------------------------------------------

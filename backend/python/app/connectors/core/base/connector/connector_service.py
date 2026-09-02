@@ -55,6 +55,7 @@ class BaseConnector(ABC):
     scope: str
     created_by: str
     creator_email: Optional[str]
+    last_synced_by: Optional[str]
     _notification_service: NotificationService | None
     _notification_cache: dict[str, tuple[int, int]] = {}
     # Set by ConnectorFactory after construction, before init(). Connectors built
@@ -81,6 +82,10 @@ class BaseConnector(ABC):
         self.connector_id = connector_id
         self.scope = scope
         self.created_by = created_by
+        # User-given instance name from the connector's apps doc (e.g. "Engineering Jira").
+        # Injected post-construction by ConnectorFactory, same as _notification_service.
+        self.connector_instance_name: Optional[str] = None
+        self.last_synced_by: Optional[str] = None
         self.creator_email = None
         # Cached GROUP permission for the pseudo "ConnectorGroup" (see
         # ensure_connector_group_permission). Populated lazily by personal-scope
@@ -450,7 +455,10 @@ class BaseConnector(ABC):
             redirect_link = DEFAULT_CONNECTOR_NOTIFICATION_LINK + f"{self.scope}/?connectorType={connector_type}"
 
         if not recipient_user_ids and not recipient_roles:
-            recipient_user_ids = [self.created_by]
+            ids = [self.created_by]
+            if self.last_synced_by and self.last_synced_by != self.created_by:
+                ids.append(self.last_synced_by)
+            recipient_user_ids = ids
 
         async def _run() -> None:
             await svc.publish_notification(

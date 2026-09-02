@@ -4,6 +4,10 @@ import { MessageBrokerType } from '../types/messaging.types';
 export const ENV_MESSAGE_BROKER = 'MESSAGE_BROKER';
 export const ENV_REDIS_STREAMS_MAXLEN = 'REDIS_STREAMS_MAXLEN';
 export const ENV_REDIS_STREAMS_PREFIX = 'REDIS_STREAMS_PREFIX';
+/** Partition count for the indexing topic; a Kafka fair-scheduling lane is a partition. */
+export const ENV_KAFKA_TOPIC_PARTITIONS = 'KAFKA_TOPIC_PARTITIONS';
+/** Number of Redis Streams lanes for the indexing topic (1 = laning off). */
+export const ENV_FAIR_SCHEDULING_LANE_COUNT = 'FAIR_SCHEDULING_LANE_COUNT';
 
 export const DEFAULT_MESSAGE_BROKER = MessageBrokerType.REDIS;
 export const DEFAULT_REDIS_STREAMS_MAXLEN = 500000;

@@ -1,6 +1,7 @@
 """Unit tests for RetryManager."""
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from app.services.messaging.redis_client import RedisClientRegistry
 from app.services.messaging.retry_manager import RetryManager

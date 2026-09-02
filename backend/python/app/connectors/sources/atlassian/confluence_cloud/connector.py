@@ -247,6 +247,7 @@ def extract_media_from_adf(adf_content: dict[str, Any]) -> list[dict[str, Any]]:
                     field_type="SELECT",
                     required=True,
                     placeholder="Select...",
+                    default_value="yes",
                     options=["no", "yes"],
                     is_secret=False,
                 ),

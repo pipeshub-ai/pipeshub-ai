@@ -1,0 +1,55 @@
+# Brokers for the messaging integration tests (fair scheduling + lanes).
+#
+#   docker compose -f deployment/docker-compose/docker-compose.integration.messaging.yml up -d
+#   cd backend/python && pytest tests/integration/messaging -m integration
+#
+# Ports are deliberately non-standard so this can run beside a dev stack
+# without clashing with it.
+services:
+  kafka-messaging-it:
+    image: confluentinc/cp-kafka:7.9.0
+    container_name: kafka-messaging-it
+    depends_on:
+      - zookeeper-messaging-it
+    ports:
+      - "29192:29192"
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper-messaging-it:2181
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,HOST:PLAINTEXT
+      - KAFKA_LISTENERS=INTERNAL://0.0.0.0:9092,HOST://0.0.0.0:29192
+      - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka-messaging-it:9092,HOST://localhost:29192
+      - KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      # Tests create and rebalance groups constantly; no point waiting.
+      - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+      # Topics are created per test with an explicit partition count, so the
+      # broker must not pre-create record-events at one partition.
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=false
+      - KAFKA_LOG_RETENTION_HOURS=1
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  zookeeper-messaging-it:
+    image: confluentinc/cp-zookeeper:7.9.0
+    container_name: zookeeper-messaging-it
+    environment:
+      - ZOOKEEPER_CLIENT_PORT=2181
+      - ZOOKEEPER_TICK_TIME=2000
+
+  redis-messaging-it:
+    image: redis:7.2-alpine
+    container_name: redis-messaging-it
+    ports:
+      - "6389:6379"
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20

@@ -164,6 +164,7 @@ app_schema = {
             "vectorMembershipBackfillExhausted": {"type": ["boolean", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
+            "lastSyncedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             "status": {"type": ["string", "null"]},

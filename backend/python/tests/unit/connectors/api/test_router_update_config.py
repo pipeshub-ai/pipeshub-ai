@@ -41,6 +41,7 @@ def _mock_request(
     body: dict | None = None,
     container: Any | None = None,
     connector_registry: Any | None = None,
+    is_admin: bool = False,
 ):
     """Build a minimal mock FastAPI Request for update_connector_instance_config."""
     req = MagicMock()
@@ -48,10 +49,7 @@ def _mock_request(
     _headers = headers or {}
     user_data = dict(user or {"userId": "user-1", "orgId": "org-1"})
     if "role" not in user_data:
-        admin_hdr = str(
-            _headers.get("X-Is-Admin") or _headers.get("x-is-admin") or ""
-        ).lower()
-        user_data["role"] = "admin" if admin_hdr == "true" else "member"
+        user_data["role"] = "admin" if is_admin else "member"
     req.state = MagicMock()
     req.state.user = MagicMock()
     req.state.user.get = lambda k, default=None: user_data.get(k, default)
@@ -234,7 +232,7 @@ class TestUpdateConfigOAuthWithConfigId:
         request = _mock_request(
             container=container,
             connector_registry=registry,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             body={
                 "auth": {"connectorScope": "personal"},
                 "oauthConfigId": "oa1",

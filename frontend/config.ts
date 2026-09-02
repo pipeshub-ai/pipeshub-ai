@@ -28,6 +28,7 @@ export { CreateAgentDialog } from '@/app/(main)/agents/components/create-agent-d
 export { AgentSidebarListRow } from '@/app/(main)/chat/sidebar/agent-sidebar-list-row';
 export { AgentChatHeader } from '@/app/(main)/chat/components/agent-chat-header';
 export { OAuthAppSelector } from '@/app/(main)/workspace/connectors/components/authenticate-tab/oauth-app-selector';
+// Users page header — Requests + Blocked Users (Admin Org) between search and Invite
 export { UsersPageHeaderActions } from '@/app/(main)/workspace/users/components/users-page-header-actions';
 export { isMcpInstanceReadOnly, McpInheritedBadge, McpInheritedCallout } from '@/app/(main)/workspace/mcp-servers/team/components/mcp-inheritance-guards';
 export { useUserPermission } from '@/lib/hooks/use-user-permission';

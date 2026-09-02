@@ -77,7 +77,6 @@ from app.edition_config import (
     resolve_oauth_config,
     resolve_oauth_configs,
     resolve_shared_oauth_config_for_flow,
-    resolve_stats_org_id,
     schedule_token_refresh_kwargs,
     strip_redacted_fields,
     vector_store_rebuild_available,
@@ -2249,17 +2248,13 @@ async def reindex_single_record(
 async def get_connector_stats_endpoint(
     request: Request,
     connector_id: str,
-    org_id: str | None = Query(None, description="Organization ID"),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 )-> dict[str, Any]:
     try:
         logger = request.app.container.logger()
         connector_registry = request.app.state.connector_registry
-        user_id = request.state.user.get("userId")
-        user_org_id = request.state.user.get("orgId")
-        is_admin = is_request_admin(request)
+        org_id = request.state.user.get("orgId")
 
-        org_id = resolve_stats_org_id(request, org_id)
         await authorize_connector_stats(
             request, graph_provider, connector_registry, connector_id, org_id
         )
@@ -6998,6 +6993,7 @@ async def _build_and_store_connector(
         scope = connector_doc.get(ConnectorRequestKeys.SCOPE, ConnectorScope.PERSONAL.value)
         created_by = connector_doc.get("createdBy", "")
         org_id = connector_doc.get("orgId") or org_id
+        connector_instance_name = connector_doc.get("name")
         config_service = resolve_config_service(container, org_id)
         data_store_provider = build_graph_data_store(logger, graph_provider, org_id)
 
@@ -7013,6 +7009,7 @@ async def _build_and_store_connector(
             org_id=org_id,
             data_entities_processor_cls=get_data_entities_processor_cls(),
             notification_service=container.connector_notification_service(),
+            connector_instance_name=connector_instance_name,
         )
 
         if not connector:

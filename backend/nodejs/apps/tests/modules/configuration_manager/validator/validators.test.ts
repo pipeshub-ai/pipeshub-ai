@@ -4,6 +4,8 @@ import sinon from 'sinon'
 import {
   baseStorageSchema,
   s3ConfigSchema,
+  s3ConfigSchemaRefined,
+  storageValidationSchema,
   azureBlobConfigSchema,
   providerType,
   addProviderRequestSchema,
@@ -51,11 +53,71 @@ describe('configuration_manager/validator/validators', () => {
       expect(result.success).to.be.true
     })
 
-    it('should reject missing accessKeyId', () => {
+    it('should reject a config with only s3SecretAccessKey', () => {
       const data = {
         storageType: 's3',
         s3SecretAccessKey: 'secret',
         s3Region: 'us-east-1',
+        s3BucketName: 'my-bucket',
+      }
+      const result = s3ConfigSchemaRefined.safeParse(data)
+      expect(result.success).to.be.false
+      if (!result.success) {
+        expect(result.error.issues[0]?.path).to.deep.equal(['s3AccessKeyId'])
+      }
+    })
+
+    it('should reject a config with only s3AccessKeyId', () => {
+      const data = {
+        storageType: 's3',
+        s3AccessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+        s3SecretAccessKey: '   ',
+        s3Region: 'us-east-1',
+        s3BucketName: 'my-bucket',
+      }
+      const result = s3ConfigSchemaRefined.safeParse(data)
+      expect(result.success).to.be.false
+      if (!result.success) {
+        expect(result.error.issues[0]?.path).to.deep.equal(['s3SecretAccessKey'])
+      }
+    })
+
+    it('should reject partial credentials through the storage route schema', () => {
+      const result = storageValidationSchema.safeParse({
+        body: {
+          storageType: 's3',
+          s3AccessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+          s3Region: 'us-east-1',
+          s3BucketName: 'my-bucket',
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should accept both credentials omitted through the storage route schema', () => {
+      const result = storageValidationSchema.safeParse({
+        body: {
+          storageType: 's3',
+          s3Region: 'us-east-1',
+          s3BucketName: 'my-bucket',
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept S3 config with both credential fields omitted (IAM role mode)', () => {
+      const data = {
+        storageType: 's3',
+        s3Region: 'us-east-1',
+        s3BucketName: 'my-bucket',
+      }
+      const result = s3ConfigSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject missing region even in IAM role mode', () => {
+      const data = {
+        storageType: 's3',
         s3BucketName: 'my-bucket',
       }
       const result = s3ConfigSchema.safeParse(data)

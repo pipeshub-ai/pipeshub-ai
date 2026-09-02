@@ -542,11 +542,35 @@ class TestUnchangedRecordsAreNotRepublished:
         assert record.indexing_status == ProgressStatus.NOT_STARTED.value
 
     @pytest.mark.asyncio
-    async def test_content_change_does_not_override_manual_indexing(self):
-        """AUTO_INDEX_OFF (manual-only) survives a content change on a record
-        that was previously indexed — no auto re-index behind the admin's back."""
+    async def test_content_change_requeues_a_manually_indexed_record(self):
+        """A record the user already indexed is refreshed when its content changes,
+        even though the connector stamps AUTO_INDEX_OFF for a manual-only filter.
+
+        Letting that stamp win downgraded a COMPLETED record to AUTO_INDEX_OFF on every
+        source change: the record lost the fact that it had been indexed, and its now-stale
+        vectors stayed in place with no event to correct them. Manual-only still holds for
+        records the user never indexed — see
+        ``test_never_indexed_record_stays_manual_only``.
+        """
         proc, _ = self._proc_with_existing(
             self._existing("rev-1", ProgressStatus.COMPLETED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-2"
+        record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        assert record.indexing_status == ProgressStatus.NOT_STARTED.value
+
+    @pytest.mark.asyncio
+    async def test_never_indexed_record_stays_manual_only(self):
+        """Manual-only mode is intact for records the user has not indexed: the
+        stored status is not COMPLETED, so nothing re-queues them.
+        """
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.AUTO_INDEX_OFF.value)
         )
         record = _make_record()
         record.external_revision_id = "rev-2"

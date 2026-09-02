@@ -56,6 +56,7 @@ import {
   createWorkspaceAuthRouter,
   createFeatureFlagRouter,
   createOrgConfigRouter,
+  createRequestRouter,
   OAuthAppsContainer,
   createOAuthAppsRouter,
 } from './config';
@@ -466,6 +467,11 @@ export class Application {
     this.app.use(
       '/api/v1/orgConfig',
       createOrgConfigRouter(this.entityManagerContainer),
+    );
+
+    this.app.use(
+      '/api/v1/requests',
+      createRequestRouter(this.entityManagerContainer),
     );
 
     this.app.use(

@@ -220,6 +220,8 @@ class ConnectorFactory:
 
         try:
             notification_service = kwargs.pop("notification_service", None)
+            connector_instance_name = kwargs.pop("connector_instance_name", None)
+            last_synced_by = kwargs.pop("last_synced_by", None)
             from app.connectors.core.base.data_processor.data_source_entities_processor import DataSourceEntitiesProcessor
             processor_cls = data_entities_processor_cls or DataSourceEntitiesProcessor
             data_entities_processor = processor_cls(logger, data_store_provider, config_service)
@@ -248,6 +250,10 @@ class ConnectorFactory:
                 connector._shared_thread_pool = (
                     thread_pool or get_shared_connector_thread_pool()
                 )
+                if connector_instance_name:
+                    connector.connector_instance_name = connector_instance_name
+                if last_synced_by:
+                    connector.last_synced_by = last_synced_by
             logger.info(f"Created {name} {connector_id} connector successfully")
             return connector
         except Exception as e:

@@ -12,7 +12,7 @@ Tests for RedisStreamsConsumer:
 import asyncio
 import json
 import logging
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -1150,7 +1150,6 @@ class TestConsumeLoop:
                 raise Exception("Redis connection lost")
             # Stop loop on next iteration
             consumer.running = False
-            return None
 
         mock_redis.xreadgroup = AsyncMock(side_effect=xreadgroup_side_effect)
         mock_redis.aclose = AsyncMock()
@@ -1194,9 +1193,9 @@ class TestConsumeLoop:
             nonlocal call_count
             call_count += 1
             if call_count <= 3:
-                return None
+                return
             consumer.running = False
-            return None
+            return
 
         mock_redis.xreadgroup = AsyncMock(side_effect=xreadgroup_side_effect)
         mock_redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
@@ -1239,7 +1238,6 @@ class TestConsumeLoop:
 
         async def xreadgroup_side_effect(**kwargs):
             consumer.running = False
-            return None
 
         mock_redis.xreadgroup = AsyncMock(side_effect=xreadgroup_side_effect)
 

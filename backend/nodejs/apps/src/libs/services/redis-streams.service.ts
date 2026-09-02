@@ -10,8 +10,10 @@ import {
   StreamMessage,
   RedisBrokerConfig,
   TopicDefinition,
+  BrokerTopic,
 } from '../types/messaging.types';
 import { REQUIRED_TOPICS } from './kafka-admin.service';
+import { laneCount } from '../utils/lane.utils';
 import {
   injectEnvelope,
   runWithRequestContext,
@@ -66,6 +68,39 @@ function isRedisXReadGroupResult(
         (entry[1] as unknown[]).every((f) => typeof f === 'string')
       );
     });
+  });
+}
+
+/**
+ * Expands a laned topic into its lane streams.
+ *
+ * A Redis Streams lane is a separate stream (`record-events.3`), since
+ * streams have no partitions. Pre-creating them is not required for
+ * correctness -- `XGROUP CREATE ... MKSTREAM` makes one lazily -- but it
+ * means lag dashboards and consumer subscriptions see every lane from
+ * startup instead of only after the first message happens to land on it.
+ *
+ * With laning off (the default) this returns the input unchanged.
+ */
+function expandLaneStreams(topics: TopicDefinition[]): TopicDefinition[] {
+  const lanes = laneCount();
+  if (lanes <= 1) {
+    return topics;
+  }
+
+  return topics.flatMap((topicDef) => {
+    if (topicDef.topic !== BrokerTopic.RECORD_EVENTS) {
+      return [topicDef];
+    }
+    // The base stream stays, so anything written before laning was turned
+    // on still has a stream to be drained from.
+    return [
+      topicDef,
+      ...Array.from({ length: lanes }, (_unused, lane) => ({
+        ...topicDef,
+        topic: `${topicDef.topic}.${lane}`,
+      })),
+    ];
   });
 }
 
@@ -626,7 +661,7 @@ export class RedisStreamsAdminService implements IMessageAdmin {
       this.logger.info('Connected to Redis for stream administration');
 
       const failures: Array<{ topic: string; error: string }> = [];
-      for (const topicDef of topics) {
+      for (const topicDef of expandLaneStreams(topics)) {
         try {
           const exists = await this.redis.exists(topicDef.topic);
           if (exists === 0) {

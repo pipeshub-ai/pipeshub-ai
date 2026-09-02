@@ -18,9 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import AccountType, CollectionNames, Connectors
+from app.config.constants.arangodb import AccountType, CollectionNames
 from app.services.messaging.kafka.handlers.entity import EntityEventService
-
 
 # ---------------------------------------------------------------------------
 # Helpers
