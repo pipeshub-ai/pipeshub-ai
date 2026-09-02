@@ -268,7 +268,7 @@ choose how code execution is isolated, at install time, with the options in
 front of them.
 */}}
 {{- define "pipeshub-ai.validateSandbox" -}}
-{{- if eq .Values.config.sandboxMode "docker" }}
+{{- if eq (include "pipeshub-ai.sandboxMode" .) "docker" }}
   {{- $hasDaemon := or .Values.sandbox.dind.enabled .Values.config.dockerHost }}
   {{- if not $hasDaemon }}
     {{- $socketMounted := false }}
@@ -283,3 +283,22 @@ front of them.
   {{- end }}
 {{- end }}
 {{- end }}
+
+{{/*
+Canonical `config.sandboxMode`, validated against what the service accepts.
+
+The runtime loader upper-cases before matching, so DOCKER/Docker/docker all
+select the Docker backend there. Comparing the raw value in the chart meant
+`sandboxMode: DOCKER` skipped the daemon validation below while the service
+still chose Docker — the install succeeded and run_code failed at provision.
+Emitting the canonical spelling into the env var keeps both layers reading
+the same thing.
+*/}}
+{{- define "pipeshub-ai.sandboxMode" -}}
+{{- $raw := .Values.config.sandboxMode | toString -}}
+{{- $mode := $raw | trim | lower -}}
+{{- if not (has $mode (list "local" "docker" "e2b")) -}}
+  {{- fail (printf "config.sandboxMode=%q is not a supported coding sandbox. Use one of: local, docker, e2b." $raw) -}}
+{{- end -}}
+{{- $mode -}}
+{{- end -}}

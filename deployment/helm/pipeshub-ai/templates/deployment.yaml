@@ -98,7 +98,7 @@ spec:
             # Coding sandbox. Set explicitly: the service's own fallback is
             # "local", which executes generated code on this pod.
             - name: SANDBOX_MODE
-              value: {{ .Values.config.sandboxMode | quote }}
+              value: {{ include "pipeshub-ai.sandboxMode" . | quote }}
             - name: SANDBOX_DOCKER_IMAGE
               value: {{ .Values.config.sandboxDockerImage | quote }}
             {{- $dockerHost := .Values.config.dockerHost }}
@@ -387,14 +387,15 @@ spec:
             runAsNonRoot: false
             runAsUser: 0
           env:
-            # Plain TCP on the pod's own loopback. Setting an empty
-            # DOCKER_TLS_CERTDIR is what switches dockerd off its default TLS
-            # listener; there is no transport to protect here, since the
-            # address is unreachable from outside the pod.
+            # TLS off because the listener is bound to loopback below and
+            # never leaves the pod's network namespace. That binding is what
+            # makes it safe: 0.0.0.0 would also bind the pod IP, publishing
+            # an unauthenticated root-equivalent API to anything on the
+            # cluster network that can route to this pod.
             - name: DOCKER_TLS_CERTDIR
               value: ""
           args:
-            - "--host=tcp://0.0.0.0:{{ .Values.sandbox.dind.port }}"
+            - "--host=tcp://127.0.0.1:{{ .Values.sandbox.dind.port }}"
             - "--host=unix:///var/run/docker.sock"
           resources:
             {{- toYaml .Values.sandbox.dind.resources | nindent 12 }}

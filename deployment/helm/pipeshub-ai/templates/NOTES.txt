@@ -88,7 +88,7 @@ Your application is accessible via the configured ingress:
 
 {{- end }}
 
-{{- if eq .Values.config.sandboxMode "local" }}
+{{- if eq (include "pipeshub-ai.sandboxMode" .) "local" }}
 
 == CODING SANDBOX: NO ISOLATION ==
 
