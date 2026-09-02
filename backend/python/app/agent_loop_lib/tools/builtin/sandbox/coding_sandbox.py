@@ -8,6 +8,7 @@ from typing import Any
 
 from app.agent_loop_lib.sandbox.coding.base import CodeRequest
 from app.agent_loop_lib.sandbox.manager import (
+    SandboxLimitExceeded,
     SandboxManager,
     SandboxType,
     UnknownSandboxError,
@@ -105,6 +106,20 @@ def unknown_sandbox_guidance(error: Exception) -> str:
         "valid. Do not retry with another id: start a fresh sandbox by calling "
         "run_code with no sandbox_id, and re-stage any file you need as an input "
         "artifact rather than reading it out of a previous sandbox."
+    )
+
+
+def sandbox_limit_guidance(error: Exception) -> str:
+    """Turn a capacity denial into a retryable instruction.
+
+    Capacity is transient — another request finishing frees a slot — so the
+    model should reuse a sandbox it already has, or wait, rather than
+    treating this as a permanent failure and abandoning the task.
+    """
+    return (
+        f"{error}. This is a temporary capacity limit, not a problem with your "
+        "code. Reuse an existing sandbox_id from earlier in this turn if you "
+        "have one, or retry this call shortly."
     )
 
 
@@ -433,6 +448,9 @@ class CodingSandboxTool(Tool):
         except UnknownSandboxError as e:
             _logger.error("CodingSandboxTool.execute: unknown sandbox %s: %s", sandbox_id, e)
             return ToolOutput(success=False, error=unknown_sandbox_guidance(e))
+        except SandboxLimitExceeded as e:
+            _logger.warning("CodingSandboxTool.execute: capacity denied: %s", e)
+            return ToolOutput(success=False, error=sandbox_limit_guidance(e))
 
         _logger.info(
             "CodingSandboxTool.execute: resolved sandbox_id=%s backend=%s "
@@ -559,6 +577,8 @@ class InstallPackagesTool(Tool):
             resolved_id, backend = await self._manager.get_or_create(SandboxType.CODING, sandbox_id)
         except UnknownSandboxError as e:
             return ToolOutput(success=False, error=unknown_sandbox_guidance(e))
+        except SandboxLimitExceeded as e:
+            return ToolOutput(success=False, error=sandbox_limit_guidance(e))
 
         # Same staged-input upload `run_code` does on a fresh sandbox —
         # a child that pre-warms its environment with install_packages
@@ -651,6 +671,8 @@ class ReadSandboxFileTool(Tool):
             backend = self._manager.get(SandboxType.CODING, sandbox_id)
         except UnknownSandboxError as e:
             return ToolOutput(success=False, error=unknown_sandbox_guidance(e))
+        except SandboxLimitExceeded as e:
+            return ToolOutput(success=False, error=sandbox_limit_guidance(e))
 
         try:
             content = await backend.download_file(path)

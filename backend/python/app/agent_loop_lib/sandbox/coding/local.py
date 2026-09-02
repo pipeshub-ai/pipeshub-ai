@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 import uuid
 
 from app.agent_loop_lib.sandbox.base import SandboxInfo
@@ -15,6 +16,9 @@ from app.agent_loop_lib.sandbox.coding.base import (
     ErrorAnalysis,
     ErrorCategory,
     InstallResult,
+    IsolationLevel,
+    SandboxCapabilities,
+    SandboxContext,
     normalize_sandbox_path,
 )
 from app.agent_loop_lib.sandbox.coding.cleanup import (
@@ -44,6 +48,8 @@ _LISTING_IGNORED_DIRS = {"node_modules", ".venv", "__pycache__", ".git"}
 
 
 class LocalCodingSandbox(CodingSandboxBackend):
+
+    backend_name = "local"
     def __init__(
         self,
         *,
@@ -53,8 +59,10 @@ class LocalCodingSandbox(CodingSandboxBackend):
         package_allowlist: list[str] | None = None,
         package_denylist: list[str] | None = None,
         limits: ExecutionLimits | None = None,
+        context: SandboxContext | None = None,
     ) -> None:
         self._sandbox_id = str(uuid.uuid4())
+        self._context = context
         # `os.path.realpath` matters here: on macOS `tempfile.gettempdir()`
         # returns a path under the `/var` -> `/private/var` symlink, and
         # Seatbelt's `subpath` matching operates on the resolved path — an
@@ -93,6 +101,32 @@ class LocalCodingSandbox(CodingSandboxBackend):
     def sandbox_id(self) -> str:
         return self._sandbox_id
 
+    @classmethod
+    def describe_capabilities(cls) -> SandboxCapabilities:
+        """Single source of truth for this backend's capabilities.
+
+        The factory has to answer `capabilities()` before any instance
+        exists (to decide middleware, for one), and the instance has to
+        answer the same question at run time. Two literals would drift;
+        this way a contract test can assert they are identical.
+        """
+        return SandboxCapabilities(
+            isolation=IsolationLevel.HOST,
+            # True, and not configurable: this is a host subprocess with
+            # the host's network stack and no namespace to drop. Reporting
+            # False would tell an operator that generated code cannot phone
+            # home, which is the opposite of the truth.
+            supports_network=True,
+            supports_streaming=False,
+            supports_reconnect=False,
+            is_metered=False,
+            persistent_filesystem=True,
+        )
+
+    @property
+    def capabilities(self) -> SandboxCapabilities:
+        return self.describe_capabilities()
+
     @property
     def working_dir(self) -> str:
         return self._working_dir
@@ -106,6 +140,7 @@ class LocalCodingSandbox(CodingSandboxBackend):
         os.makedirs(os.path.join(self._working_dir, "output"), exist_ok=True)
         register_sandbox_dir(self._working_dir)
         self._provisioned = True
+        self._created_at = time.time()
         return SandboxInfo(
             sandbox_id=self._sandbox_id,
             status="ready",

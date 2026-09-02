@@ -429,7 +429,9 @@ class PipesHubAgentFactory:
 
         sandbox_manager = None
         if code_exec_enabled:
-            sandbox_manager = build_coding_sandbox_manager(allow_network=network_enabled)
+            sandbox_manager = await build_coding_sandbox_manager(
+                allow_network=network_enabled, ctx=context,
+            )
             register_coding_sandbox_tools(tool_registry, sandbox_manager, allow_network=network_enabled)
             # Stashed on the context (not returned from create()) so
             # stream_bridge.py's finally block can tear it down without
