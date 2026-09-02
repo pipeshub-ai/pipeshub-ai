@@ -59,6 +59,9 @@ def mock_data_entities_processor():
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.account_name = "teststorage"
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
+    proc.delete_parent_child_edge_to_record = AsyncMock()
     proc.get_app_by_id = AsyncMock(return_value=AppMetadata(
         connector_id="az-files-1",
         name="Azure Files",
@@ -372,6 +375,9 @@ def mock_data_entities_processor():
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.account_name = "teststorage"
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
+    proc.delete_parent_child_edge_to_record = AsyncMock()
     proc.get_user_by_user_id = AsyncMock(
         return_value=User(
             email="user@test.com",
@@ -936,6 +942,9 @@ def proc():
     p.get_all_active_users = AsyncMock(return_value=[])
     p.reindex_existing_records = AsyncMock()
     p.account_name = "teststorage"
+    p.get_record_by_external_id = AsyncMock(return_value=None)
+    p.get_record_by_external_revision_id = AsyncMock(return_value=None)
+    p.delete_parent_child_edge_to_record = AsyncMock()
     p.get_user_by_user_id = AsyncMock(
         return_value=User(
             email="user@test.com",
@@ -1185,22 +1194,6 @@ class TestGetRevisionIdBranches:
 
     def test_no_fields_returns_empty(self, conn):
         assert conn._get_azure_files_revision_id({}) == ""
-
-
-# ===========================================================================
-# _remove_old_parent_relationship
-# ===========================================================================
-class TestRemoveOldParentRelationship:
-    @pytest.mark.asyncio
-    async def test_removes_edges(self, conn, tx):
-        tx.delete_parent_child_edge_to_record = AsyncMock(return_value=2)
-        await conn._remove_old_parent_relationship("rec-1", tx)
-        tx.delete_parent_child_edge_to_record.assert_awaited_once_with("rec-1")
-
-    @pytest.mark.asyncio
-    async def test_handles_exception(self, conn, tx):
-        tx.delete_parent_child_edge_to_record = AsyncMock(side_effect=Exception("DB fail"))
-        await conn._remove_old_parent_relationship("rec-1", tx)
 
 
 # ===========================================================================
@@ -1560,8 +1553,8 @@ class TestProcessAzureFilesItem:
         existing.source_created_at = 5000
         existing.external_record_id = "myshare/file.txt"
 
-        tx = _make_tx(existing_record=existing)
-        provider = _make_provider(tx)
+        proc.get_record_by_external_id = AsyncMock(return_value=existing)
+        provider = _make_provider()
         with patch("app.connectors.sources.azure_files.connector.AzureFilesApp"):
             c = AzureFilesConnector(
                 logger=logger, data_entities_processor=proc,
@@ -1588,8 +1581,10 @@ class TestProcessAzureFilesItem:
         existing.source_created_at = 5000
         existing.external_record_id = "myshare/old/path.txt"
 
-        tx = _make_tx(existing_record=None, revision_record=existing)
-        provider = _make_provider(tx)
+        proc.get_record_by_external_id = AsyncMock(return_value=None)
+        proc.get_record_by_external_revision_id = AsyncMock(return_value=existing)
+        proc.delete_parent_child_edge_to_record = AsyncMock()
+        provider = _make_provider()
         with patch("app.connectors.sources.azure_files.connector.AzureFilesApp"):
             c = AzureFilesConnector(
                 logger=logger, data_entities_processor=proc,
@@ -1606,7 +1601,7 @@ class TestProcessAzureFilesItem:
         assert record is not None
         assert record.id == "moved-1"
         assert record.version == 2
-        tx.delete_parent_child_edge_to_record.assert_awaited()
+        proc.delete_parent_child_edge_to_record.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_process_string_last_modified(self, conn):
@@ -1720,8 +1715,8 @@ class TestProcessAzureFilesItem:
         existing.source_created_at = 1000
         existing.external_record_id = "share/f.txt"
 
-        tx = _make_tx(existing_record=existing)
-        provider = _make_provider(tx)
+        proc.get_record_by_external_id = AsyncMock(return_value=existing)
+        provider = _make_provider()
         with patch("app.connectors.sources.azure_files.connector.AzureFilesApp"):
             c = AzureFilesConnector(
                 logger=logger, data_entities_processor=proc,
@@ -1745,8 +1740,8 @@ class TestProcessAzureFilesItem:
         existing.source_created_at = 1000
         existing.external_record_id = "share/f.txt"
 
-        tx = _make_tx(existing_record=existing)
-        provider = _make_provider(tx)
+        proc.get_record_by_external_id = AsyncMock(return_value=existing)
+        provider = _make_provider()
         with patch("app.connectors.sources.azure_files.connector.AzureFilesApp"):
             c = AzureFilesConnector(
                 logger=logger, data_entities_processor=proc,
@@ -2541,9 +2536,9 @@ class TestRunIncrementalSync:
 # ===========================================================================
 class TestCreateConnector:
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.azure_files.connector.AzureFilesApp")
     @patch("app.connectors.sources.azure_files.connector.AzureFilesDataSourceEntitiesProcessor")
-    async def test_create_connector_with_config(self, mock_proc_cls, mock_app, logger, provider, cfg):
+    @patch("app.connectors.sources.azure_files.connector.AzureFilesApp")
+    async def test_create_connector_with_config(self, mock_app, mock_proc_cls, logger, provider, cfg):
         mock_proc = MagicMock()
         mock_proc.initialize = AsyncMock()
         mock_proc_cls.return_value = mock_proc
@@ -2554,17 +2549,14 @@ class TestCreateConnector:
             connector_id="new-1",
             scope="personal",
             created_by="test-user-id",
+            data_entities_processor=MagicMock(),
         )
         assert isinstance(result, AzureFilesConnector)
-        mock_proc.initialize.assert_awaited_once()
-        mock_proc_cls.assert_called_once()
-        call_kwargs = mock_proc_cls.call_args
-        assert call_kwargs[1]["account_name"] == "teststorage"
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.azure_files.connector.AzureFilesApp")
     @patch("app.connectors.sources.azure_files.connector.AzureFilesDataSourceEntitiesProcessor")
-    async def test_create_connector_no_config(self, mock_proc_cls, mock_app, logger, provider, cfg):
+    @patch("app.connectors.sources.azure_files.connector.AzureFilesApp")
+    async def test_create_connector_no_config(self, mock_app, mock_proc_cls, logger, provider, cfg):
         cfg.get_config = AsyncMock(return_value=None)
         mock_proc = MagicMock()
         mock_proc.initialize = AsyncMock()
@@ -2576,15 +2568,14 @@ class TestCreateConnector:
             connector_id="new-2",
             scope="personal",
             created_by="test-user-id",
+            data_entities_processor=MagicMock(),
         )
         assert isinstance(result, AzureFilesConnector)
-        call_kwargs = mock_proc_cls.call_args
-        assert call_kwargs[1]["account_name"] == ""
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.azure_files.connector.AzureFilesApp")
     @patch("app.connectors.sources.azure_files.connector.AzureFilesDataSourceEntitiesProcessor")
-    async def test_create_connector_no_connection_string(self, mock_proc_cls, mock_app, logger, provider, cfg):
+    @patch("app.connectors.sources.azure_files.connector.AzureFilesApp")
+    async def test_create_connector_no_connection_string(self, mock_app, mock_proc_cls, logger, provider, cfg):
         cfg.get_config = AsyncMock(return_value={"auth": {}})
         mock_proc = MagicMock()
         mock_proc.initialize = AsyncMock()
@@ -2596,7 +2587,6 @@ class TestCreateConnector:
             connector_id="new-3",
             scope="personal",
             created_by="test-user-id",
+            data_entities_processor=MagicMock(),
         )
         assert isinstance(result, AzureFilesConnector)
-        call_kwargs = mock_proc_cls.call_args
-        assert call_kwargs[1]["account_name"] == ""

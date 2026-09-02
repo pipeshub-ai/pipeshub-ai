@@ -254,7 +254,8 @@ class TestInstanceCrud:
 
         with (
             patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)),
-            patch("app.api.routes.mcp_servers._load_org_instances", new=AsyncMock(return_value=instances)),
+            patch("app.api.routes.mcp_servers.resolve_mcp_instances_with_inheritance", new=AsyncMock(return_value=instances)),
+            patch("app.api.routes.mcp_servers.resolve_instance_owner_config_service", new=AsyncMock(return_value=config_service)),
         ):
             result = await list_instances(request)
 
@@ -638,7 +639,7 @@ class TestDiscoveryHandlers:
         instances = [_api_token_instance(authMode=MCPAuthMode.NONE.value)]
 
         with patch(
-            "app.api.routes.mcp_servers._load_org_instances",
+            "app.api.routes.mcp_servers.resolve_mcp_instances_with_inheritance",
             new=AsyncMock(return_value=instances),
         ):
             result = await get_my_mcp_servers(request, include_tools=False)
@@ -655,7 +656,7 @@ class TestDiscoveryHandlers:
 
         with (
             patch(
-                "app.api.routes.mcp_servers._load_org_instances",
+                "app.api.routes.mcp_servers.resolve_mcp_instances_with_inheritance",
                 new=AsyncMock(return_value=[_api_token_instance()]),
             ),
             patch(
@@ -732,7 +733,7 @@ class TestAgentMcpRoutes:
         with (
             patch.dict(sys.modules, {"app.api.routes.toolsets": toolsets_stub}),
             patch(
-                "app.api.routes.mcp_servers._load_org_instances",
+                "app.api.routes.mcp_servers.resolve_mcp_instances_with_inheritance",
                 new=AsyncMock(return_value=[_api_token_instance(authMode=MCPAuthMode.NONE.value)]),
             ),
         ):

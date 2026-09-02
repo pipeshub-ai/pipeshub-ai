@@ -47,6 +47,8 @@ def mock_data_entities_processor():
     proc.on_new_app_roles = AsyncMock()
     proc.on_updated_record_permissions = AsyncMock()
     proc.reindex_existing_records = AsyncMock()
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_group_by_external_id = AsyncMock(return_value=None)
     return proc
 
 

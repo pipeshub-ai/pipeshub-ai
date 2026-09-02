@@ -163,10 +163,18 @@ class TestCreateKey:
         assert (await store.get_key("/a")) == "v2"
 
     @pytest.mark.asyncio
-    async def test_create_with_overwrite_false_raises(self, store):
+    async def test_create_with_overwrite_false_reports_not_created(self, store):
+        """The KeyValueStore contract is a False return, not an exception.
+
+        Callers use the return value to tell "nobody owns this value yet" from
+        "someone already does" — `create_config_if_absent` does not swallow
+        store failures, so raising here turns a legitimate second start into a
+        startup error instead of a read-back of the persisted value.
+        """
         await store.create_key("/a", "v1")
-        with pytest.raises(KeyError, match="already exists"):
-            await store.create_key("/a", "v2", overwrite=False)
+
+        assert await store.create_key("/a", "v2", overwrite=False) is False
+        assert (await store.get_key("/a")) == "v1"
 
     @pytest.mark.asyncio
     async def test_create_with_overwrite_false_allows_expired(self, store):

@@ -26,7 +26,6 @@ from app.services.messaging.kafka.config.kafka_config import (
 )
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -473,7 +472,7 @@ class TestCreateRecordMessageHandler:
 
             async def mock_process(event_type, payload):
                 raise RuntimeError("processing error")
-                yield  # noqa - needed for generator
+                yield
 
             mock_handler.process_event = mock_process
             MockHandler.return_value = mock_handler

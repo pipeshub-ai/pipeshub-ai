@@ -6,15 +6,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.connectors.sources.gitlab.common.utils import (
-    parse_item_id_from_url,
-    wire_block_group_parent_children,
-)
+from app.connectors.sources.gitlab.common.utils import parse_item_id_from_url
 from app.models.blocks import (
     BlockGroup,
     BlockGroupChildren,
     GroupType,
     IndexRange,
+    wire_block_group_parent_children,
 )
 
 

@@ -19,8 +19,7 @@ export const SmtpApi = {
   async getSmtpConfig(): Promise<SmtpConfig | null> {
     try {
       const { data } = await apiClient.get<SmtpConfig>(SMTP_URL);
-      // API returns {} when not configured
-      if (!data || !data.host) return null;
+      if (!data || (!data.host && !data.inherited)) return null;
       return data;
     } catch {
       return null;

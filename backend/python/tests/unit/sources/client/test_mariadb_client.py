@@ -514,7 +514,7 @@ class TestBuildFromToolset:
     @pytest.mark.asyncio
     async def test_success(self, logger, mock_config_service):
         with patch(
-            "app.sources.client.mariadb.mariadb.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"host": "localhost", "port": 3306}},
         ):
@@ -528,7 +528,7 @@ class TestBuildFromToolset:
     @pytest.mark.asyncio
     async def test_missing_host_raises(self, logger, mock_config_service):
         with patch(
-            "app.sources.client.mariadb.mariadb.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {}},
         ):
@@ -542,7 +542,7 @@ class TestBuildFromToolset:
     @pytest.mark.asyncio
     async def test_missing_username_raises(self, logger, mock_config_service):
         with patch(
-            "app.sources.client.mariadb.mariadb.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"host": "localhost"}},
         ):
@@ -556,7 +556,7 @@ class TestBuildFromToolset:
     @pytest.mark.asyncio
     async def test_password_none_defaults_empty(self, logger, mock_config_service):
         with patch(
-            "app.sources.client.mariadb.mariadb.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"host": "localhost"}},
         ):

@@ -76,9 +76,15 @@ def _make_event_processor(
         graph_provider.update_node = AsyncMock(return_value=True)
         graph_provider.find_duplicate_records = AsyncMock(return_value=[])
 
+    processor = processor or MagicMock()
+    # sync_vector_membership awaits the pipeline; a bare MagicMock raises
+    # TypeError, which is now propagated rather than swallowed.
+    if not isinstance(getattr(processor, "indexing_pipeline", None), AsyncMock):
+        processor.indexing_pipeline = AsyncMock()
+
     return EventProcessor(
         logger=logging.getLogger("test"),
-        processor=processor or MagicMock(),
+        processor=processor,
         graph_provider=graph_provider,
         config_service=MagicMock(),
         parsing_client=parsing_client,
@@ -113,6 +119,8 @@ def _make_event_data(record_id: str = "rec-1", org_id: str = "org-1") -> dict[st
 async def test_legacy_path_used_when_service_pipeline_disabled() -> None:
     """When USE_PARSING_SERVICE is not set, legacy processor is used."""
     mock_processor = MagicMock()
+    # Awaited by the membership sync on the duplicate-attach path.
+    mock_processor.indexing_pipeline = AsyncMock()
     mock_processor.process_pdf_with_docling = AsyncMock(return_value=_noop_gen())
 
     ep = _make_event_processor(processor=mock_processor)

@@ -256,10 +256,34 @@ class OpenAITransport(LLMTransport):
     def _format_message(self, msg: Message) -> dict[str, Any]:
         """Convert a framework Message to an OpenAI chat message dict."""
         if msg.role == MessageRole.TOOL:
+            step_footer = getattr(msg, "step_footer", "")
+            content = msg.content
+            if isinstance(content, list):
+                # Chat Completions rejects an image block on any non-`user`
+                # message outright ("Image URLs are only allowed for messages
+                # with role 'user', but this message with role 'tool' contains
+                # an image URL"), so images only survive here on the Responses
+                # API. The agent factory registers
+                # `shape_retrieved_image_injection` for exactly this case (see
+                # `_supports_multipart_tool_result`), which re-delivers the
+                # dropped images in a user message.
+                keep_images = self._wants_responses()
+                blocks = [
+                    self._format_tool_result_part(p)
+                    for p in content
+                    if keep_images or getattr(p, "type", None) != "image"
+                ]
+                if step_footer:
+                    blocks.append({"type": "text", "text": step_footer})
+                # An images-only result leaves nothing to send; the API still
+                # requires the tool message to answer its call.
+                tool_content: Any = blocks or ""
+            else:
+                tool_content = (content or "") + step_footer
             return {
                 "role": "tool",
                 "tool_call_id": msg.tool_call_id,
-                "content": (msg.content or "") + getattr(msg, "step_footer", ""),
+                "content": tool_content,
             }
         if msg.role == MessageRole.ASSISTANT:
             return {
@@ -284,6 +308,16 @@ class OpenAITransport(LLMTransport):
                 return {"role": msg.role.value, "content": blocks}
             content = " ".join(b["text"] for b in blocks)
         return {"role": msg.role.value, "content": content or ""}
+
+    @staticmethod
+    def _format_tool_result_part(part: Any) -> dict[str, Any]:
+        # GPT-5+ tool-result content accepts the same `image_url` block
+        # shape as user-message vision input.
+        from app.agent_loop_lib.core.messages import image_data_url
+
+        if getattr(part, "type", None) == "image" and getattr(part, "source", None):
+            return {"type": "image_url", "image_url": {"url": image_data_url(part.source)}}
+        return {"type": "text", "text": getattr(part, "text", "") or getattr(part, "thinking", "")}
 
     @staticmethod
     def _format_content_blocks(parts: list[Any]) -> list[dict[str, Any]]:

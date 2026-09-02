@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import { injectable, inject } from 'inversify';
 import { RedisService } from '../../../libs/services/redis.service';
 import { RedisServiceNotInitializedError } from '../../../libs/errors/redis.errors';
@@ -24,7 +24,7 @@ export class SessionService {
     if (!this.redisService)
       throw new RedisServiceNotInitializedError('Redis service is not initialized.');
 
-    const token = uuidv4();
+    const token = randomUUID();
     const session: SessionData = { ...sessionData, token };
     await this.redisService.set(`session:${token}`, session, {
       ttl: SESSION_EXPIRY,

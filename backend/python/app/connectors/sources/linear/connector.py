@@ -1303,89 +1303,85 @@ class LinearConnector(BaseConnector):
             # Process batch and transform to records
             batch_records: List[Tuple[Record, List[Permission]]] = []
 
-            # Use transaction context to look up existing records
-            async with self.data_store_provider.transaction() as tx_store:
-                for issue_data in issues_list:
-                    try:
-                        issue_id = issue_data.get("id", "")
+            for issue_data in issues_list:
+                try:
+                    issue_id = issue_data.get("id", "")
 
-                        # Look up existing record to handle versioning
-                        existing_record = await tx_store.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_id=issue_id
+                    # Look up existing record to handle versioning
+                    existing_record = await self.data_entities_processor.get_record_by_external_id(
+                        connector_id=self.connector_id,
+                        external_record_id=issue_id
+                    )
+
+                    # Transform issue to TicketRecord with existing record info
+                    ticket_record = self._transform_issue_to_ticket_record(
+                        issue_data, team_id, existing_record
+                    )
+
+                    # Set indexing status based on filters
+                    if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
+                        ticket_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+                    # Records inherit permissions from RecordGroup (team), so pass empty list
+                    batch_records.append((ticket_record, []))
+
+                    # Note: Comments are handled as blocks during streaming, not as separate records
+
+                    # Extract files from issue description
+                    issue_description = issue_data.get("description", "")
+                    if issue_description:
+                        # Get issue timestamps for file records
+                        issue_created_at = self._parse_linear_datetime(issue_data.get("createdAt", "")) or 0
+                        issue_updated_at = self._parse_linear_datetime(issue_data.get("updatedAt", "")) or 0
+
+                        new_file_records, _ = await self._extract_files_from_markdown(
+                            markdown_text=issue_description,
+                            parent_external_id=issue_id,
+                            parent_node_id=ticket_record.id,
+                            parent_record_type=RecordType.TICKET,
+                            team_id=team_id,
+                            parent_created_at=issue_created_at,
+                            parent_updated_at=issue_updated_at,
+                            parent_weburl=ticket_record.weburl,
+                            exclude_images=True,
+                            is_full_sync=(last_sync_time is None),
                         )
+                        batch_records.extend(new_file_records)
 
-                        # Transform issue to TicketRecord with existing record info
-                        ticket_record = self._transform_issue_to_ticket_record(
-                            issue_data, team_id, existing_record
-                        )
+                    # Extract files from comment bodies and create FileRecords
+                    comments_data = issue_data.get("comments", {}).get("nodes", [])
+                    if comments_data:
+                        for comment_data in comments_data:
+                            comment_id = comment_data.get("id", "")
+                            comment_body = comment_data.get("body", "")
 
-                        # Set indexing status based on filters
-                        if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
-                            ticket_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+                            if not comment_id or not comment_body:
+                                continue
 
-                        # Records inherit permissions from RecordGroup (team), so pass empty list
-                        batch_records.append((ticket_record, []))
+                            # Get comment timestamps for file records
+                            comment_created_at = self._parse_linear_datetime(comment_data.get("createdAt", "")) or 0
+                            comment_updated_at = self._parse_linear_datetime(comment_data.get("updatedAt", "")) or 0
+                            comment_url = comment_data.get("url", ticket_record.weburl)
 
-                        # Note: Comments are handled as blocks during streaming, not as separate records
-
-                        # Extract files from issue description
-                        issue_description = issue_data.get("description", "")
-                        if issue_description:
-                            # Get issue timestamps for file records
-                            issue_created_at = self._parse_linear_datetime(issue_data.get("createdAt", "")) or 0
-                            issue_updated_at = self._parse_linear_datetime(issue_data.get("updatedAt", "")) or 0
-
-                            new_file_records, _ = await self._extract_files_from_markdown(
-                                markdown_text=issue_description,
+                            new_comment_file_records, _ = await self._extract_files_from_markdown(
+                                markdown_text=comment_body,
                                 parent_external_id=issue_id,
                                 parent_node_id=ticket_record.id,
                                 parent_record_type=RecordType.TICKET,
                                 team_id=team_id,
-                                tx_store=tx_store,
-                                parent_created_at=issue_created_at,
-                                parent_updated_at=issue_updated_at,
-                                parent_weburl=ticket_record.weburl,
+                                parent_created_at=comment_created_at,
+                                parent_updated_at=comment_updated_at,
+                                parent_weburl=comment_url,
                                 exclude_images=True,
+                                indexing_filter_key=IndexingFilterKey.FILES,
                                 is_full_sync=(last_sync_time is None),
                             )
-                            batch_records.extend(new_file_records)
+                            batch_records.extend(new_comment_file_records)
 
-                        # Extract files from comment bodies and create FileRecords
-                        comments_data = issue_data.get("comments", {}).get("nodes", [])
-                        if comments_data:
-                            for comment_data in comments_data:
-                                comment_id = comment_data.get("id", "")
-                                comment_body = comment_data.get("body", "")
-
-                                if not comment_id or not comment_body:
-                                    continue
-
-                                # Get comment timestamps for file records
-                                comment_created_at = self._parse_linear_datetime(comment_data.get("createdAt", "")) or 0
-                                comment_updated_at = self._parse_linear_datetime(comment_data.get("updatedAt", "")) or 0
-                                comment_url = comment_data.get("url", ticket_record.weburl)
-
-                                new_comment_file_records, _ = await self._extract_files_from_markdown(
-                                    markdown_text=comment_body,
-                                    parent_external_id=issue_id,
-                                    parent_node_id=ticket_record.id,
-                                    parent_record_type=RecordType.TICKET,
-                                    team_id=team_id,
-                                    tx_store=tx_store,
-                                    parent_created_at=comment_created_at,
-                                    parent_updated_at=comment_updated_at,
-                                    parent_weburl=comment_url,
-                                    exclude_images=True,
-                                    indexing_filter_key=IndexingFilterKey.FILES,
-                                    is_full_sync=(last_sync_time is None),
-                                )
-                                batch_records.extend(new_comment_file_records)
-
-                    except Exception as e:
-                        issue_id = issue_data.get("id", "unknown")
-                        self.logger.error(f"❌ Error processing issue {issue_id}: {e}", exc_info=True)
-                        continue
+                except Exception as e:
+                    issue_id = issue_data.get("id", "unknown")
+                    self.logger.error(f"❌ Error processing issue {issue_id}: {e}", exc_info=True)
+                    continue
 
             # Yield batch if we have records
             if batch_records:
@@ -1457,75 +1453,73 @@ class LinearConnector(BaseConnector):
                 # Process attachments
                 batch_records: List[Tuple[Record, List[Permission]]] = []
 
-                async with self.data_store_provider.transaction() as tx_store:
-                    for attachment_data in attachments_list:
-                        try:
-                            attachment_id = attachment_data.get("id", "")
-                            if not attachment_id:
-                                continue
-
-                            # Get parent issue info
-                            issue_data = attachment_data.get("issue", {})
-                            issue_id = issue_data.get("id", "")
-                            team_data = issue_data.get("team", {})
-                            team_id = team_data.get("id", "")
-
-                            if not team_id or team_id not in team_map:
-                                # Skip attachments from teams not in our sync scope
-                                continue
-
-                            # Get parent issue's internal record ID
-                            parent_record = await tx_store.get_record_by_external_id(
-                                connector_id=self.connector_id,
-                                external_id=issue_id
-                            )
-                            parent_node_id = parent_record.id if parent_record else None
-
-                            if not parent_node_id:
-                                # Parent issue not synced yet, skip this attachment
-                                self.logger.debug(f"⚠️ Skipping attachment {attachment_id}: parent issue {issue_id} not synced")
-                                continue
-
-                            # Check if attachment already exists
-                            existing_attachment = await tx_store.get_record_by_external_id(
-                                connector_id=self.connector_id,
-                                external_id=attachment_id
-                            )
-
-                            # Transform attachment to LinkRecord
-                            link_record = self._transform_attachment_to_link_record(
-                                attachment_data, issue_id, parent_node_id, team_id, existing_attachment
-                            )
-
-                            # Set indexing status based on filters
-                            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS):
-                                link_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-
-                            # Look up related record by weburl
-                            if link_record.weburl:
-                                try:
-                                    related_record = await tx_store.get_record_by_weburl(
-                                        link_record.weburl,
-                                        org_id=self.data_entities_processor.org_id
-                                    )
-                                    if related_record:
-                                        link_record.linked_record_id = related_record.id
-                                        self.logger.info(f"🔗 Found related record {related_record.id} for attachment URL: {link_record.weburl}")
-                                except Exception as e:
-                                    self.logger.debug(f"⚠️ Could not fetch related record for URL {link_record.weburl}: {e}")
-
-                            batch_records.append((link_record, []))
-                            total_attachments += 1
-
-                            # Track max updatedAt
-                            if link_record.source_updated_at:
-                                if max_attachment_updated_at is None or link_record.source_updated_at > max_attachment_updated_at:
-                                    max_attachment_updated_at = link_record.source_updated_at
-
-                        except Exception as e:
-                            attachment_id = attachment_data.get("id", "unknown")
-                            self.logger.error(f"❌ Error processing attachment {attachment_id}: {e}", exc_info=True)
+                for attachment_data in attachments_list:
+                    try:
+                        attachment_id = attachment_data.get("id", "")
+                        if not attachment_id:
                             continue
+
+                        # Get parent issue info
+                        issue_data = attachment_data.get("issue", {})
+                        issue_id = issue_data.get("id", "")
+                        team_data = issue_data.get("team", {})
+                        team_id = team_data.get("id", "")
+
+                        if not team_id or team_id not in team_map:
+                            # Skip attachments from teams not in our sync scope
+                            continue
+
+                        # Get parent issue's internal record ID
+                        parent_record = await self.data_entities_processor.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_record_id=issue_id
+                        )
+                        parent_node_id = parent_record.id if parent_record else None
+
+                        if not parent_node_id:
+                            # Parent issue not synced yet, skip this attachment
+                            self.logger.debug(f"⚠️ Skipping attachment {attachment_id}: parent issue {issue_id} not synced")
+                            continue
+
+                        # Check if attachment already exists
+                        existing_attachment = await self.data_entities_processor.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_record_id=attachment_id
+                        )
+
+                        # Transform attachment to LinkRecord
+                        link_record = self._transform_attachment_to_link_record(
+                            attachment_data, issue_id, parent_node_id, team_id, existing_attachment
+                        )
+
+                        # Set indexing status based on filters
+                        if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS):
+                            link_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+                        # Look up related record by weburl
+                        if link_record.weburl:
+                            try:
+                                related_record = await self.data_entities_processor.get_record_by_weburl(
+                                    link_record.weburl
+                                )
+                                if related_record:
+                                    link_record.linked_record_id = related_record.id
+                                    self.logger.info(f"🔗 Found related record {related_record.id} for attachment URL: {link_record.weburl}")
+                            except Exception as e:
+                                self.logger.debug(f"⚠️ Could not fetch related record for URL {link_record.weburl}: {e}")
+
+                        batch_records.append((link_record, []))
+                        total_attachments += 1
+
+                        # Track max updatedAt
+                        if link_record.source_updated_at:
+                            if max_attachment_updated_at is None or link_record.source_updated_at > max_attachment_updated_at:
+                                max_attachment_updated_at = link_record.source_updated_at
+
+                    except Exception as e:
+                        attachment_id = attachment_data.get("id", "unknown")
+                        self.logger.error(f"❌ Error processing attachment {attachment_id}: {e}", exc_info=True)
+                        continue
 
                 # Process batch
                 if batch_records:
@@ -1607,85 +1601,84 @@ class LinearConnector(BaseConnector):
                 # Process documents
                 batch_records: List[Tuple[Record, List[Permission]]] = []
 
-                async with self.data_store_provider.transaction() as tx_store:
-                    for document_data in documents_list:
-                        try:
-                            document_id = document_data.get("id", "")
-                            if not document_id:
-                                continue
-
-                            # Get parent issue info
-                            issue_data = document_data.get("issue")
-
-                            # Skip documents without an issue (standalone or project-attached documents)
-                            # Track updatedAt to avoid refetching in next sync
-                            if not issue_data:
-                                document_updated_at = self._parse_linear_datetime(document_data.get("updatedAt", "")) or 0
-                                if document_updated_at:
-                                    if max_document_updated_at is None or document_updated_at > max_document_updated_at:
-                                        max_document_updated_at = document_updated_at
-                                # Check if it's a project document or standalone
-                                project_data = document_data.get("project")
-                                if project_data:
-                                    self.logger.debug(f"⚠️ Skipping document {document_id}: project-attached (synced via project sync)")
-                                else:
-                                    self.logger.debug(f"⚠️ Skipping document {document_id}: no parent issue or project (standalone)")
-                                continue
-
-                            issue_id = issue_data.get("id", "")
-                            issue_identifier = issue_data.get("identifier", "")
-                            team_data = issue_data.get("team", {})
-                            team_id = team_data.get("id", "")
-
-                            if not issue_id or not team_id:
-                                self.logger.debug(f"⚠️ Skipping document {document_id}: missing issue or team info")
-                                continue
-
-                            if team_id not in team_map:
-                                # Skip documents from teams not in our sync scope
-                                continue
-
-                            # Get parent issue's internal record ID
-                            parent_record = await tx_store.get_record_by_external_id(
-                                connector_id=self.connector_id,
-                                external_id=issue_id
-                            )
-                            parent_node_id = parent_record.id if parent_record else None
-
-                            if not parent_node_id:
-                                # Parent issue not synced yet, skip this document
-                                self.logger.debug(f"⚠️ Skipping document {document_id}: parent issue {issue_id} not synced")
-                                continue
-
-                            # Check if document already exists
-                            existing_document = await tx_store.get_record_by_external_id(
-                                connector_id=self.connector_id,
-                                external_id=document_id
-                            )
-
-                            # Transform document to WebpageRecord
-                            webpage_record = self._transform_document_to_webpage_record(
-                                document_data, issue_id, parent_node_id, team_id, existing_document
-                            )
-
-                            # Set indexing status based on filters
-                            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS):
-                                webpage_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-
-                            batch_records.append((webpage_record, []))
-                            total_documents += 1
-
-                            self.logger.debug(f"✅ Processed document {document_id[:8]} (issue: {issue_identifier})")
-
-                            # Track max updatedAt
-                            if webpage_record.source_updated_at:
-                                if max_document_updated_at is None or webpage_record.source_updated_at > max_document_updated_at:
-                                    max_document_updated_at = webpage_record.source_updated_at
-
-                        except Exception as e:
-                            document_id = document_data.get("id", "unknown")
-                            self.logger.error(f"❌ Error processing document {document_id}: {e}", exc_info=True)
+                for document_data in documents_list:
+                    try:
+                        document_id = document_data.get("id", "")
+                        if not document_id:
                             continue
+
+                        # Get parent issue info
+                        issue_data = document_data.get("issue")
+
+                        # Skip documents without an issue (standalone or project-attached documents)
+                        # Track updatedAt to avoid refetching in next sync
+                        if not issue_data:
+                            document_updated_at = self._parse_linear_datetime(document_data.get("updatedAt", "")) or 0
+                            if document_updated_at:
+                                if max_document_updated_at is None or document_updated_at > max_document_updated_at:
+                                    max_document_updated_at = document_updated_at
+                            # Check if it's a project document or standalone
+                            project_data = document_data.get("project")
+                            if project_data:
+                                self.logger.debug(f"⚠️ Skipping document {document_id}: project-attached (synced via project sync)")
+                            else:
+                                self.logger.debug(f"⚠️ Skipping document {document_id}: no parent issue or project (standalone)")
+                            continue
+
+                        issue_id = issue_data.get("id", "")
+                        issue_identifier = issue_data.get("identifier", "")
+                        team_data = issue_data.get("team", {})
+                        team_id = team_data.get("id", "")
+
+                        if not issue_id or not team_id:
+                            self.logger.debug(f"⚠️ Skipping document {document_id}: missing issue or team info")
+                            continue
+
+                        if team_id not in team_map:
+                            # Skip documents from teams not in our sync scope
+                            continue
+
+                        # Get parent issue's internal record ID
+                        parent_record = await self.data_entities_processor.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_record_id=issue_id
+                        )
+                        parent_node_id = parent_record.id if parent_record else None
+
+                        if not parent_node_id:
+                            # Parent issue not synced yet, skip this document
+                            self.logger.debug(f"⚠️ Skipping document {document_id}: parent issue {issue_id} not synced")
+                            continue
+
+                        # Check if document already exists
+                        existing_document = await self.data_entities_processor.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_record_id=document_id
+                        )
+
+                        # Transform document to WebpageRecord
+                        webpage_record = self._transform_document_to_webpage_record(
+                            document_data, issue_id, parent_node_id, team_id, existing_document
+                        )
+
+                        # Set indexing status based on filters
+                        if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS):
+                            webpage_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+                        batch_records.append((webpage_record, []))
+                        total_documents += 1
+
+                        self.logger.debug(f"✅ Processed document {document_id[:8]} (issue: {issue_identifier})")
+
+                        # Track max updatedAt
+                        if webpage_record.source_updated_at:
+                            if max_document_updated_at is None or webpage_record.source_updated_at > max_document_updated_at:
+                                max_document_updated_at = webpage_record.source_updated_at
+
+                    except Exception as e:
+                        document_id = document_data.get("id", "unknown")
+                        self.logger.error(f"❌ Error processing document {document_id}: {e}", exc_info=True)
+                        continue
 
                     # Process batch inside transaction
                     if batch_records:
@@ -1853,89 +1846,85 @@ class LinearConnector(BaseConnector):
             # Process batch and transform to records
             batch_records: List[Tuple[Record, List[Permission]]] = []
 
-            # Use transaction context to look up existing records
-            async with self.data_store_provider.transaction() as tx_store:
-                for project_data in projects_list:
-                    try:
-                        project_id = project_data.get("id", "")
+            for project_data in projects_list:
+                try:
+                    project_id = project_data.get("id", "")
 
-                        # Fetch full project details with nested data for blocks
-                        datasource = await self._get_fresh_datasource()
-                        full_project_response = await datasource.project(project_id)
+                    # Fetch full project details with nested data for blocks
+                    datasource = await self._get_fresh_datasource()
+                    full_project_response = await datasource.project(project_id)
 
-                        if not full_project_response.success:
-                            self.logger.warning(f"⚠️ Failed to fetch full project details for {project_id}: {full_project_response.message}")
-                            full_project_data = project_data
-                        else:
-                            full_project_data = full_project_response.data.get("project", {}) if full_project_response.data else project_data
+                    if not full_project_response.success:
+                        self.logger.warning(f"⚠️ Failed to fetch full project details for {project_id}: {full_project_response.message}")
+                        full_project_data = project_data
+                    else:
+                        full_project_data = full_project_response.data.get("project", {}) if full_project_response.data else project_data
 
-                        # Look up existing record to handle versioning
-                        existing_record = await tx_store.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_id=project_id
-                        )
+                    # Look up existing record to handle versioning
+                    existing_record = await self.data_entities_processor.get_record_by_external_id(
+                        connector_id=self.connector_id,
+                        external_record_id=project_id
+                    )
 
-                        # Transform project to ProjectRecord FIRST (without BlocksContainer - created only during streaming)
-                        project_record = self._transform_to_project_record(
-                            full_project_data, team_id, existing_record
-                        )
+                    # Transform project to ProjectRecord FIRST (without BlocksContainer - created only during streaming)
+                    project_record = self._transform_to_project_record(
+                        full_project_data, team_id, existing_record
+                    )
 
-                        # Process related records (links, documents) using project_record.id as parent
-                        project_batch_records = await self._prepare_project_related_records(
-                            full_project_data=full_project_data,
-                            project_id=project_id,
-                            existing_record=project_record,
-                            team_id=team_id,
-                            tx_store=tx_store
-                        )
+                    # Process related records (links, documents) using project_record.id as parent
+                    project_batch_records = await self._prepare_project_related_records(
+                        full_project_data=full_project_data,
+                        project_id=project_id,
+                        existing_record=project_record,
+                        team_id=team_id,
+                    )
 
-                        # Add project-related records to batch
-                        batch_records.extend(project_batch_records)
+                    # Add project-related records to batch
+                    batch_records.extend(project_batch_records)
 
-                        # Set indexing status based on filters
-                        if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
-                            project_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+                    # Set indexing status based on filters
+                    if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
+                        project_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-                        # Extract issues data directly from full_project_data and add to related_external_records
-                        issues_data = full_project_data.get("issues", {}).get("nodes", [])
-                        if issues_data:
-                            from app.models.entities import RelatedExternalRecord
-                            project_record.related_external_records = [
-                                RelatedExternalRecord(
-                                    external_record_id=issue.get("id"),
-                                    record_type=RecordType.TICKET,
-                                    relation_type=RecordRelations.LINKED_TO
-                                )
-                                for issue in issues_data
-                                if issue.get("id")
-                            ]
-
-                        # Extract files (not images) from project description and create FileRecords
-                        project_content = full_project_data.get("content", "")
-                        if project_content:
-                            new_file_records, _ = await self._extract_files_from_markdown(
-                                markdown_text=project_content,
-                                parent_external_id=project_id,
-                                parent_node_id=project_record.id,
-                                parent_record_type=RecordType.PROJECT,
-                                team_id=team_id,
-                                tx_store=tx_store,
-                                parent_created_at=project_record.source_created_at,
-                                parent_updated_at=project_record.source_updated_at,
-                                parent_weburl=project_record.weburl,
-                                exclude_images=True,
-                                indexing_filter_key=IndexingFilterKey.PROJECTS,
-                                is_full_sync=(last_sync_time is None),
+                    # Extract issues data directly from full_project_data and add to related_external_records
+                    issues_data = full_project_data.get("issues", {}).get("nodes", [])
+                    if issues_data:
+                        from app.models.entities import RelatedExternalRecord
+                        project_record.related_external_records = [
+                            RelatedExternalRecord(
+                                external_record_id=issue.get("id"),
+                                record_type=RecordType.TICKET,
+                                relation_type=RecordRelations.LINKED_TO
                             )
-                            batch_records.extend(new_file_records)
+                            for issue in issues_data
+                            if issue.get("id")
+                        ]
 
-                        # Records inherit permissions from RecordGroup (team), so pass empty list
-                        batch_records.append((project_record, []))
+                    # Extract files (not images) from project description and create FileRecords
+                    project_content = full_project_data.get("content", "")
+                    if project_content:
+                        new_file_records, _ = await self._extract_files_from_markdown(
+                            markdown_text=project_content,
+                            parent_external_id=project_id,
+                            parent_node_id=project_record.id,
+                            parent_record_type=RecordType.PROJECT,
+                            team_id=team_id,
+                            parent_created_at=project_record.source_created_at,
+                            parent_updated_at=project_record.source_updated_at,
+                            parent_weburl=project_record.weburl,
+                            exclude_images=True,
+                            indexing_filter_key=IndexingFilterKey.PROJECTS,
+                            is_full_sync=(last_sync_time is None),
+                        )
+                        batch_records.extend(new_file_records)
 
-                    except Exception as e:
-                        project_id = project_data.get("id", "unknown")
-                        self.logger.error(f"❌ Error processing project {project_id}: {e}", exc_info=True)
-                        continue
+                    # Records inherit permissions from RecordGroup (team), so pass empty list
+                    batch_records.append((project_record, []))
+
+                except Exception as e:
+                    project_id = project_data.get("id", "unknown")
+                    self.logger.error(f"❌ Error processing project {project_id}: {e}", exc_info=True)
+                    continue
 
             # Yield batch if we have records
             if batch_records:
@@ -1957,7 +1946,6 @@ class LinearConnector(BaseConnector):
         project_id: str,
         existing_record: Optional[Record],
         team_id: str,
-        tx_store
     ) -> List[Tuple[Record, List[Permission]]]:
         """
         Prepare project-related records (links, documents) for sync.
@@ -1970,7 +1958,6 @@ class LinearConnector(BaseConnector):
             project_id: Project external ID
             existing_record: Existing project record (if any)
             team_id: Team ID for external_record_group_id
-            tx_store: Transaction store for looking up existing records
 
         Returns:
             List of (Record, permissions) tuples
@@ -1989,7 +1976,6 @@ class LinearConnector(BaseConnector):
                 project_id=project_id,
                 project_node_id=project_node_id,
                 team_id=team_id,
-                tx_store=tx_store,
                 create_block_groups=False
             )
             project_batch_records.extend(link_records)
@@ -2003,7 +1989,6 @@ class LinearConnector(BaseConnector):
                 project_id=project_id,
                 project_node_id=project_node_id,
                 team_id=team_id,
-                tx_store=tx_store,
                 create_block_groups=False  # No block groups during sync
             )
             project_batch_records.extend(document_records)
@@ -2016,7 +2001,6 @@ class LinearConnector(BaseConnector):
         project_id: str,
         project_node_id: str,
         team_id: str,
-        tx_store,
         create_block_groups: bool = False
     ) -> Tuple[List[Tuple[Record, List[Permission]]], List[BlockGroup]]:
         """
@@ -2027,7 +2011,6 @@ class LinearConnector(BaseConnector):
             project_id: Project external ID
             project_node_id: Internal record ID of project
             team_id: Team ID for external_record_group_id
-            tx_store: Transaction store for looking up existing records
             create_block_groups: If True, also create BlockGroups (for streaming). Default False (for sync).
 
         Returns:
@@ -2043,9 +2026,9 @@ class LinearConnector(BaseConnector):
                     continue
 
                 # Check if link already exists
-                existing_link = await tx_store.get_record_by_external_id(
+                existing_link = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id,
-                    external_id=link_id
+                    external_record_id=link_id
                 )
 
                 # Transform external link to LinkRecord (reuse attachment transform function)
@@ -2065,9 +2048,8 @@ class LinearConnector(BaseConnector):
                 # Look up related record by weburl
                 if link_record.weburl:
                     try:
-                        related_record = await tx_store.get_record_by_weburl(
-                            link_record.weburl,
-                            org_id=self.data_entities_processor.org_id
+                        related_record = await self.data_entities_processor.get_record_by_weburl(
+                            link_record.weburl
                         )
                         if related_record:
                             link_record.linked_record_id = related_record.id
@@ -2112,7 +2094,6 @@ class LinearConnector(BaseConnector):
         project_id: str,
         project_node_id: str,
         team_id: str,
-        tx_store,
         create_block_groups: bool = False
     ) -> Tuple[List[Tuple[Record, List[Permission]]], List[BlockGroup]]:
         """
@@ -2123,7 +2104,6 @@ class LinearConnector(BaseConnector):
             project_id: Project external ID
             project_node_id: Internal record ID of project
             team_id: Team ID for external_record_group_id
-            tx_store: Transaction store for looking up existing records
             create_block_groups: If True, also create BlockGroups (for streaming). Default False (for sync).
 
         Returns:
@@ -2139,9 +2119,9 @@ class LinearConnector(BaseConnector):
                     continue
 
                 # Check if document already exists
-                existing_document = await tx_store.get_record_by_external_id(
+                existing_document = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id,
-                    external_id=document_id
+                    external_record_id=document_id
                 )
 
                 # Transform document to WebpageRecord (reuse existing transform function)
@@ -2195,7 +2175,6 @@ class LinearConnector(BaseConnector):
         issue_id: str,
         issue_node_id: str,
         team_id: str,
-        tx_store,
     ) -> List[ChildRecord]:
         """
         Process issue attachments and create ChildRecords.
@@ -2206,7 +2185,6 @@ class LinearConnector(BaseConnector):
             issue_id: Issue external ID
             issue_node_id: Internal record ID of issue
             team_id: Team ID for external_record_group_id
-            tx_store: Transaction store for looking up existing records
 
         Returns:
             List of ChildRecord objects for attachments
@@ -2220,9 +2198,9 @@ class LinearConnector(BaseConnector):
                     continue
 
                 # Look up existing attachment record from database
-                existing_record = await tx_store.get_record_by_external_id(
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id,
-                    external_id=attachment_id
+                    external_record_id=attachment_id
                 )
 
                 # Create record if it doesn't exist (like projects do)
@@ -2264,7 +2242,6 @@ class LinearConnector(BaseConnector):
         issue_id: str,
         issue_node_id: str,
         team_id: str,
-        tx_store,
     ) -> List[ChildRecord]:
         """
         Process issue documents and create ChildRecords.
@@ -2275,7 +2252,6 @@ class LinearConnector(BaseConnector):
             issue_id: Issue external ID
             issue_node_id: Internal record ID of issue
             team_id: Team ID for external_record_group_id
-            tx_store: Transaction store for looking up existing records
 
         Returns:
             List of ChildRecord objects for documents
@@ -2289,9 +2265,9 @@ class LinearConnector(BaseConnector):
                     continue
 
                 # Look up existing document record from database
-                existing_record = await tx_store.get_record_by_external_id(
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id,
-                    external_id=document_id
+                    external_record_id=document_id
                 )
 
                 # Create record if it doesn't exist (like projects do)
@@ -2334,7 +2310,6 @@ class LinearConnector(BaseConnector):
         parent_node_id: str,
         parent_record_type: RecordType,
         team_id: str,
-        tx_store,
         parent_created_at: Optional[int] = None,
         parent_updated_at: Optional[int] = None,
         parent_weburl: Optional[str] = None,
@@ -2351,7 +2326,6 @@ class LinearConnector(BaseConnector):
             parent_node_id: Internal ID of parent record
             parent_record_type: Type of parent record (TICKET or PROJECT)
             team_id: Team ID for external_record_group_id
-            tx_store: Transaction store for looking up existing records
             parent_created_at: Source created timestamp of parent (in ms)
             parent_updated_at: Source updated timestamp of parent (in ms)
             parent_weburl: Web URL of parent record (used for file weburl)
@@ -2371,7 +2345,6 @@ class LinearConnector(BaseConnector):
             parent_node_id=parent_node_id,
             parent_record_type=parent_record_type,
             team_id=team_id,
-            tx_store=tx_store,
             parent_created_at=parent_created_at,
             parent_updated_at=parent_updated_at,
             parent_weburl=parent_weburl,
@@ -2403,7 +2376,6 @@ class LinearConnector(BaseConnector):
         issue_node_id: str,
         team_id: str,
         issue_weburl: Optional[str],
-        tx_store,
     ) -> Dict[str, List[ChildRecord]]:
         """
         Process files from comment bodies and return a map of comment_id -> ChildRecords.
@@ -2416,7 +2388,6 @@ class LinearConnector(BaseConnector):
             issue_node_id: Internal record ID of issue
             team_id: Team ID for external_record_group_id
             issue_weburl: Issue web URL (for file weburl)
-            tx_store: Transaction store for looking up existing records
 
         Returns:
             Dictionary mapping comment_id to List[ChildRecord] for files in that comment
@@ -2445,7 +2416,6 @@ class LinearConnector(BaseConnector):
                 parent_node_id=issue_node_id,
                 parent_record_type=RecordType.TICKET,
                 team_id=team_id,
-                tx_store=tx_store,
                 parent_created_at=comment_created_at,
                 parent_updated_at=comment_updated_at,
                 parent_weburl=comment_url,
@@ -2481,7 +2451,6 @@ class LinearConnector(BaseConnector):
         parent_node_id: str,
         parent_record_type: RecordType,
         team_id: str,
-        tx_store,
         parent_created_at: Optional[int] = None,
         parent_updated_at: Optional[int] = None,
         parent_weburl: Optional[str] = None,
@@ -2498,7 +2467,6 @@ class LinearConnector(BaseConnector):
             parent_node_id: Internal ID of parent record
             parent_record_type: Type of parent record (TICKET or COMMENT)
             team_id: Team ID for external_record_group_id
-            tx_store: Transaction store for looking up existing records
             parent_created_at: Source created timestamp of parent (in ms)
             parent_updated_at: Source updated timestamp of parent (in ms)
             parent_weburl: Web URL of parent record (used for file weburl)
@@ -2535,9 +2503,9 @@ class LinearConnector(BaseConnector):
 
                 # Use full file URL as external_record_id (for streaming)
                 # Look up existing file record by full URL
-                existing_file = await tx_store.get_record_by_external_id(
+                existing_file = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id,
-                    external_id=file_url
+                    external_record_id=file_url
                 )
 
                 # If file already exists, add to children_records (for streaming)
@@ -4579,47 +4547,42 @@ class LinearConnector(BaseConnector):
         document_block_groups: List[BlockGroup] = []
         file_children: List[ChildRecord] = []
 
-        # Use data_store_provider to look up existing records
-        async with self.data_store_provider.transaction() as tx_store:
-            if external_links_data:
-                # Process external links and create BlockGroups (with create_block_groups=True)
-                link_records, link_block_groups = await self._process_project_external_links(
-                    external_links_data=external_links_data,
-                    project_id=record_id,
-                    project_node_id=record.id,
-                    team_id=record.external_record_group_id or "",
-                    tx_store=tx_store,
-                    create_block_groups=True
-                )
+        if external_links_data:
+            # Process external links and create BlockGroups (with create_block_groups=True)
+            link_records, link_block_groups = await self._process_project_external_links(
+                external_links_data=external_links_data,
+                project_id=record_id,
+                project_node_id=record.id,
+                team_id=record.external_record_group_id or "",
+                create_block_groups=True
+            )
 
-            if documents_data:
-                # Process documents and create BlockGroups (with create_block_groups=True)
-                document_records, document_block_groups = await self._process_project_documents(
-                    documents_data=documents_data,
-                    project_id=record_id,
-                    project_node_id=record.id,
-                    team_id=record.external_record_group_id or "",
-                    tx_store=tx_store,
-                    create_block_groups=True
-                )
+        if documents_data:
+            # Process documents and create BlockGroups (with create_block_groups=True)
+            document_records, document_block_groups = await self._process_project_documents(
+                documents_data=documents_data,
+                project_id=record_id,
+                project_node_id=record.id,
+                team_id=record.external_record_group_id or "",
+                create_block_groups=True
+            )
 
-            # Extract files from project content and create FileRecords if they don't exist
-            if project_content:
-                # Get project timestamps for file records
-                project_created_at = self._parse_linear_datetime(project_data.get("createdAt", "")) or 0
-                project_updated_at = self._parse_linear_datetime(project_data.get("updatedAt", "")) or 0
+        # Extract files from project content and create FileRecords if they don't exist
+        if project_content:
+            # Get project timestamps for file records
+            project_created_at = self._parse_linear_datetime(project_data.get("createdAt", "")) or 0
+            project_updated_at = self._parse_linear_datetime(project_data.get("updatedAt", "")) or 0
 
-                file_children = await self._process_content_files_for_children(
-                    content=project_content,
-                    parent_external_id=record_id,
-                    parent_node_id=record.id,
-                    parent_record_type=RecordType.PROJECT,
-                    team_id=record.external_record_group_id or "",
-                    tx_store=tx_store,
-                    parent_created_at=project_created_at,
-                    parent_updated_at=project_updated_at,
-                    parent_weburl=project_weburl
-                )
+            file_children = await self._process_content_files_for_children(
+                content=project_content,
+                parent_external_id=record_id,
+                parent_node_id=record.id,
+                parent_record_type=RecordType.PROJECT,
+                team_id=record.external_record_group_id or "",
+                parent_created_at=project_created_at,
+                parent_updated_at=project_updated_at,
+                parent_weburl=project_weburl
+            )
 
         # Add file children to the first BlockGroup's (description) children_records
         if file_children and blocks_container.block_groups:
@@ -4681,59 +4644,54 @@ class LinearConnector(BaseConnector):
         all_children: List[ChildRecord] = []
         comment_file_children_map: Dict[str, List[ChildRecord]] = {}
 
-        async with self.data_store_provider.transaction() as tx_store:
-            # Process attachments
-            if attachments_data:
-                attachment_children = await self._process_issue_attachments(
-                    attachments_data=attachments_data,
-                    issue_id=issue_id,
-                    issue_node_id=record.id,
-                    team_id=record.external_record_group_id or "",
-                    tx_store=tx_store
-                )
-                all_children.extend(attachment_children)
+        # Process attachments
+        if attachments_data:
+            attachment_children = await self._process_issue_attachments(
+                attachments_data=attachments_data,
+                issue_id=issue_id,
+                issue_node_id=record.id,
+                team_id=record.external_record_group_id or "",
+            )
+            all_children.extend(attachment_children)
 
-            # Process documents
-            if documents_data:
-                document_children = await self._process_issue_documents(
-                    documents_data=documents_data,
-                    issue_id=issue_id,
-                    issue_node_id=record.id,
-                    team_id=record.external_record_group_id or "",
-                    tx_store=tx_store
-                )
-                all_children.extend(document_children)
+        # Process documents
+        if documents_data:
+            document_children = await self._process_issue_documents(
+                documents_data=documents_data,
+                issue_id=issue_id,
+                issue_node_id=record.id,
+                team_id=record.external_record_group_id or "",
+            )
+            all_children.extend(document_children)
 
-            # Process files from description (excluding images) and create FileRecords if they don't exist
-            if issue_description:
-                # Get issue timestamps for file records
-                issue_created_at = self._parse_linear_datetime(issue_data.get("createdAt", "")) or 0
-                issue_updated_at = self._parse_linear_datetime(issue_data.get("updatedAt", "")) or 0
+        # Process files from description (excluding images) and create FileRecords if they don't exist
+        if issue_description:
+            # Get issue timestamps for file records
+            issue_created_at = self._parse_linear_datetime(issue_data.get("createdAt", "")) or 0
+            issue_updated_at = self._parse_linear_datetime(issue_data.get("updatedAt", "")) or 0
 
-                file_children = await self._process_content_files_for_children(
-                    content=issue_description,
-                    parent_external_id=issue_id,
-                    parent_node_id=record.id,
-                    parent_record_type=RecordType.TICKET,
-                    team_id=record.external_record_group_id or "",
-                    tx_store=tx_store,
-                    parent_created_at=issue_created_at,
-                    parent_updated_at=issue_updated_at,
-                    parent_weburl=issue_weburl
-                )
-                all_children.extend(file_children)
+            file_children = await self._process_content_files_for_children(
+                content=issue_description,
+                parent_external_id=issue_id,
+                parent_node_id=record.id,
+                parent_record_type=RecordType.TICKET,
+                team_id=record.external_record_group_id or "",
+                parent_created_at=issue_created_at,
+                parent_updated_at=issue_updated_at,
+                parent_weburl=issue_weburl
+            )
+            all_children.extend(file_children)
 
-            # Process files from comment bodies and create FileRecords
-            comments_data = issue_data.get("comments", {}).get("nodes", [])
-            if comments_data:
-                comment_file_children_map = await self._process_comment_files_for_children(
-                    comments_data=comments_data,
-                    issue_id=issue_id,
-                    issue_node_id=record.id,
-                    team_id=record.external_record_group_id or "",
-                    issue_weburl=issue_weburl,
-                    tx_store=tx_store
-                )
+        # Process files from comment bodies and create FileRecords
+        comments_data = issue_data.get("comments", {}).get("nodes", [])
+        if comments_data:
+            comment_file_children_map = await self._process_comment_files_for_children(
+                comments_data=comments_data,
+                issue_id=issue_id,
+                issue_node_id=record.id,
+                team_id=record.external_record_group_id or "",
+                issue_weburl=issue_weburl,
+            )
 
         # Parse issue to BlocksContainer
         blocks_container = await self._parse_issue_to_blocks(
@@ -5075,21 +5033,19 @@ class LinearConnector(BaseConnector):
 
                 # Check if parent is a project by looking up parent record's record_type
                 try:
-                    async with self.data_store_provider.transaction() as tx_store:
-                        parent_record = await tx_store.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_id=parent_external_id
-                        )
-                        if parent_record:
-                            if parent_record.record_type == RecordType.PROJECT:
-                                # Project external link - check parent project
-                                return await self._check_and_fetch_updated_project_link(record, parent_record)
-                            else:
-                                # Issue attachment - check parent issue
-                                return await self._check_and_fetch_updated_issue_link(record, parent_record)
+                    parent_record = await self.data_entities_processor.get_record_by_external_id(
+                        self.connector_id, parent_external_id
+                    )
+                    if parent_record:
+                        if parent_record.record_type == RecordType.PROJECT:
+                            # Project external link - check parent project
+                            return await self._check_and_fetch_updated_project_link(record, parent_record)
                         else:
-                            self.logger.warning(f"LinkRecord {record.external_record_id} parent {parent_external_id} not found")
-                            return None
+                            # Issue attachment - check parent issue
+                            return await self._check_and_fetch_updated_issue_link(record, parent_record)
+                    else:
+                        self.logger.warning(f"LinkRecord {record.external_record_id} parent {parent_external_id} not found")
+                        return None
                 except Exception as e:
                     self.logger.debug(f"Could not determine LinkRecord source: {e}")
                     return None
@@ -5376,14 +5332,12 @@ class LinearConnector(BaseConnector):
             # Look up related record by weburl
             if link_record.weburl:
                 try:
-                    async with self.data_store_provider.transaction() as tx_store:
-                        related_record = await tx_store.get_record_by_weburl(
-                            link_record.weburl,
-                            org_id=self.data_entities_processor.org_id
-                        )
-                        if related_record:
-                            link_record.linked_record_id = related_record.id
-                            self.logger.debug(f"🔗 Found related record {related_record.id} for attachment URL: {link_record.weburl}")
+                    related_record = await self.data_entities_processor.get_record_by_weburl(
+                        link_record.weburl
+                    )
+                    if related_record:
+                        link_record.linked_record_id = related_record.id
+                        self.logger.debug(f"🔗 Found related record {related_record.id} for attachment URL: {link_record.weburl}")
                 except Exception as e:
                     self.logger.debug(f"⚠️ Could not fetch related record for URL {link_record.weburl}: {e}")
 
@@ -5476,14 +5430,12 @@ class LinearConnector(BaseConnector):
             # Look up related record by weburl
             if link_record.weburl:
                 try:
-                    async with self.data_store_provider.transaction() as tx_store:
-                        related_record = await tx_store.get_record_by_weburl(
-                            link_record.weburl,
-                            org_id=self.data_entities_processor.org_id
-                        )
-                        if related_record:
-                            link_record.linked_record_id = related_record.id
-                            self.logger.debug(f"🔗 Found related record {related_record.id} for external link URL: {link_record.weburl}")
+                    related_record = await self.data_entities_processor.get_record_by_weburl(
+                        link_record.weburl
+                    )
+                    if related_record:
+                        link_record.linked_record_id = related_record.id
+                        self.logger.debug(f"🔗 Found related record {related_record.id} for external link URL: {link_record.weburl}")
                 except Exception as e:
                     self.logger.debug(f"⚠️ Could not fetch related record for URL {link_record.weburl}: {e}")
 
@@ -5503,15 +5455,10 @@ class LinearConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "BaseConnector":
         """Factory method to create LinearConnector instance"""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-        await data_entities_processor.initialize()
-
         return LinearConnector(
             logger,
             data_entities_processor,

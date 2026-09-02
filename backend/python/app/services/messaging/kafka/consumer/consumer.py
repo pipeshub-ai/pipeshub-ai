@@ -252,7 +252,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                     for topic_partition, messages in message_batch.items():
                         for message in messages:
                             try:
-                                self.logger.info(
+                                self.logger.debug(
                                     f"Received message: topic={message.topic}, "
                                     f"partition={message.partition}, offset={message.offset}"
                                 )
@@ -263,7 +263,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                                 should_commit = False
                                 if success:
                                     should_commit = True
-                                    self.logger.info(f"Message {message_id} processed successfully")
+                                    self.logger.debug(f"Message {message_id} processed successfully")
                                     # Clear retry tracking on success
                                     if self.retry_manager:
                                         await self.retry_manager.clear(message_id)
@@ -309,7 +309,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                                     await self.consumer.commit(
                                         {topic_partition: message.offset + 1}
                                     )  # type: ignore
-                                    self.logger.info(
+                                    self.logger.debug(
                                         f"Committed offset for {message.topic}-{message.partition} "
                                         f"at offset {message.offset}"
                                     )

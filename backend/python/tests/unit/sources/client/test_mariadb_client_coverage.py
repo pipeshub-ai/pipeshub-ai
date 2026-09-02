@@ -464,7 +464,7 @@ class TestMariaDBBuildFromToolset:
     @pytest.mark.asyncio
     async def test_success(self, log):
         cs = AsyncMock()
-        with patch("app.sources.client.mariadb.mariadb.get_toolset_by_id", return_value={
+        with patch("app.edition_config.get_toolset_by_id", return_value={
             "auth": {"host": "db.com", "port": 3306, "database": "mydb"},
         }):
             config = {
@@ -484,7 +484,7 @@ class TestMariaDBBuildFromToolset:
     @pytest.mark.asyncio
     async def test_no_host(self, log):
         cs = AsyncMock()
-        with patch("app.sources.client.mariadb.mariadb.get_toolset_by_id", return_value={
+        with patch("app.edition_config.get_toolset_by_id", return_value={
             "auth": {"port": 3306},
         }):
             config = {"instanceId": "inst1", "auth": {"username": "user"}}
@@ -494,7 +494,7 @@ class TestMariaDBBuildFromToolset:
     @pytest.mark.asyncio
     async def test_no_username(self, log):
         cs = AsyncMock()
-        with patch("app.sources.client.mariadb.mariadb.get_toolset_by_id", return_value={
+        with patch("app.edition_config.get_toolset_by_id", return_value={
             "auth": {"host": "db.com"},
         }):
             config = {"instanceId": "inst1", "auth": {}}
@@ -504,7 +504,7 @@ class TestMariaDBBuildFromToolset:
     @pytest.mark.asyncio
     async def test_empty_toolset_config(self, log):
         cs = AsyncMock()
-        with patch("app.sources.client.mariadb.mariadb.get_toolset_by_id", return_value={
+        with patch("app.edition_config.get_toolset_by_id", return_value={
             "auth": {"host": "db.com"},
         }):
             # toolset_config is falsy after get_toolset_by_id succeeds but
@@ -516,7 +516,7 @@ class TestMariaDBBuildFromToolset:
     @pytest.mark.asyncio
     async def test_password_none_defaults_empty(self, log):
         cs = AsyncMock()
-        with patch("app.sources.client.mariadb.mariadb.get_toolset_by_id", return_value={
+        with patch("app.edition_config.get_toolset_by_id", return_value={
             "auth": {"host": "db.com", "port": 3306},
         }):
             config = {
@@ -531,7 +531,7 @@ class TestMariaDBBuildFromToolset:
     @pytest.mark.asyncio
     async def test_pick_value_from_top_level(self, log):
         cs = AsyncMock()
-        with patch("app.sources.client.mariadb.mariadb.get_toolset_by_id", return_value={
+        with patch("app.edition_config.get_toolset_by_id", return_value={
             "host": "db.com",  # top-level, not in auth
             "port": 3307,
         }):

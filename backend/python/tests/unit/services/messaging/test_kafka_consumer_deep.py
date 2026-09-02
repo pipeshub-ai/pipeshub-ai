@@ -14,13 +14,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData, StreamMessage, messaging_env
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+    StreamMessage,
+    messaging_env,
+)
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
     FUTURE_CLEANUP_INTERVAL,
     IndexingKafkaConsumer,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -264,59 +269,59 @@ class TestInitialize:
 
 
 class TestParseMessage:
-    def test_bytes_json(self, consumer):
+    async def test_bytes_json(self, consumer):
         """Bytes message is decoded and parsed as JSON."""
         msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "value"}}).encode("utf-8"))
 
-        result = consumer._IndexingKafkaConsumer__parse_message(msg)
+        result = await consumer._IndexingKafkaConsumer__parse_message(msg)
 
         assert isinstance(result, StreamMessage)
         assert result.eventType == "test"
         assert result.payload == {"key": "value"}
 
-    def test_string_json(self, consumer):
+    async def test_string_json(self, consumer):
         """String message is parsed as JSON."""
         msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "value"}}))
 
-        result = consumer._IndexingKafkaConsumer__parse_message(msg)
+        result = await consumer._IndexingKafkaConsumer__parse_message(msg)
 
         assert isinstance(result, StreamMessage)
         assert result.eventType == "test"
 
-    def test_double_encoded_json(self, consumer):
+    async def test_double_encoded_json(self, consumer):
         """Double-encoded JSON is handled correctly."""
         inner = json.dumps({"eventType": "test", "payload": {"key": "value"}})
         msg = _make_message(value=json.dumps(inner).encode("utf-8"))
 
-        result = consumer._IndexingKafkaConsumer__parse_message(msg)
+        result = await consumer._IndexingKafkaConsumer__parse_message(msg)
 
         assert isinstance(result, StreamMessage)
         assert result.payload == {"key": "value"}
 
-    def test_invalid_json_returns_none(self, consumer):
+    async def test_invalid_json_returns_none(self, consumer):
         """Invalid JSON returns None."""
         msg = _make_message(value=b"not json {{{")
 
-        result = consumer._IndexingKafkaConsumer__parse_message(msg)
+        result = await consumer._IndexingKafkaConsumer__parse_message(msg)
 
         assert result is None
 
-    def test_unexpected_type_returns_none(self, consumer):
+    async def test_unexpected_type_returns_none(self, consumer):
         """Non-bytes, non-string value returns None."""
         msg = _make_message(value=12345)
 
-        result = consumer._IndexingKafkaConsumer__parse_message(msg)
+        result = await consumer._IndexingKafkaConsumer__parse_message(msg)
 
         assert result is None
 
-    def test_unicode_decode_error_returns_none(self, consumer):
+    async def test_unicode_decode_error_returns_none(self, consumer):
         """Bytes that fail decoding return None."""
         msg = _make_message(value=b"\xff\xfe")
         # Force decode to fail
         msg.value = MagicMock()
         msg.value.decode = MagicMock(side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "bad"))
 
-        result = consumer._IndexingKafkaConsumer__parse_message(msg)
+        result = await consumer._IndexingKafkaConsumer__parse_message(msg)
 
         assert result is None
 
@@ -547,7 +552,7 @@ class TestProcessMessageWrapper:
 
         async def handler(msg):
             raise RuntimeError("handler error")
-            yield  # noqa - needed for generator
+            yield
 
         consumer.message_handler = handler
 

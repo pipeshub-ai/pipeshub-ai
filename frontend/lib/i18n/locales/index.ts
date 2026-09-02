@@ -14,6 +14,10 @@ import deDE from './de-DE.json';
 import esES from './es-ES.json';
 import enIN from './en-IN.json';
 import hiIN from './hi-IN.json';
+import koKR from './ko-KR.json';
+import zhTW from './zh-TW.json';
+import zhSG from './zh-SG.json';
+import zhCN from './zh-CN.json';
 
 import type { Language } from '../supported-languages';
 
@@ -23,4 +27,8 @@ export const locales: Record<Language, unknown> = {
   'es-ES': esES,
   'en-IN': enIN,
   'hi-IN': hiIN,
+  'ko-KR': koKR,
+  'zh-TW': zhTW,
+  'zh-SG': zhSG,
+  'zh-CN': zhCN,
 };

@@ -16,8 +16,10 @@ section 1 and exercised in isolation by
   ``cpu_quota`` expression, so an idle-CPU host must still ramp concurrency
   up when the real work is I/O-bound.
 
-``Pool.INDEX`` is asserted here too but only to pin the opposite property:
-pipeline width is fixed at its ceiling and never ramps.
+The index pools are asserted here too, but only to pin a different
+property: pipeline width warm-starts at half its ceiling rather than
+ramping from the count-pool floor, so it is never the thing throttling
+the first minute of a sync.
 
 Only the probe and the controller's clock are faked; the 2,000 tasks
 actually acquire/hold/release a real ``AdmissionGate`` and really
@@ -36,6 +38,7 @@ from app.services.resource_governor.models import Pool
 from app.services.resource_governor.policy import (
     LIGHT_GROW_CONFIRM_SAMPLES,
     SAMPLE_INTERVAL_SECONDS,
+    floor_for,
 )
 from tests.integration.resource_governor_helpers import (
     ManualClock,
@@ -51,13 +54,9 @@ REAL_SECONDS_BETWEEN_SAMPLES = 0.1
 # Total simulated work (NUM_RECORDS * RECORD_COST_SECONDS = 40s) comfortably
 # exceeds what even LIGHT_CEILING concurrency could drain within this test's
 # real wall-clock budget (NUM_SAMPLES * REAL_SECONDS_BETWEEN_SAMPLES = 2.5s
-# real time, ceiling * that = 15 CPU-seconds worth) — so the backlog never
-# runs dry mid-test and every sampled interval stays demand-saturated,
-# regardless of how fast the limit ramps. Without this margin, throughput
-# comparisons below flake under CI load once growth drains the backlog
-# faster than real time advances.
-LIGHT_CEILING = 6  # derived from cpu_quota=2.0 → 3 light slots per CPU
-FLOOR_LIMIT = LIGHT_CEILING // 2  # light pools warm-start at half their ceiling
+# real time) — so the backlog never runs dry mid-test and every sampled
+# interval stays demand-saturated, regardless of how fast the limit ramps.
+CPU_QUOTA = 2.0
 
 
 async def _parse_one_record(gate, cost_seconds: float) -> None:
@@ -78,7 +77,7 @@ class TestSmallRecordScaling:
         # a target still derived from cpu_quota (the regression being
         # guarded against) would cap growth at ~2 — proving the pool grows
         # past that is proof the cap is gone, not just that growth happens.
-        probe = ScriptedProbe([make_snapshot(mem_pressure=0.05, cpu_quota=2.0, cpu_utilisation=0.02)])
+        probe = ScriptedProbe([make_snapshot(mem_pressure=0.05, cpu_quota=CPU_QUOTA, cpu_utilisation=0.02)])
         governor = ResourceGovernor(
             logger=logging.getLogger("test.integration.small_record_scaling"),
             probe=probe,
@@ -86,10 +85,22 @@ class TestSmallRecordScaling:
             clock=clock,
         )
         light_gate = governor.gate(Pool.LIGHT_PARSE)
-        assert light_gate.limit == FLOOR_LIMIT  # warm-start floor (derived ceiling)
-        # Pipeline width does not ramp at all — it is at its ceiling from
-        # the first acquire, before any sample has run.
-        assert governor.gate(Pool.INDEX).limit == governor.ceilings.index
+        floor_limit = floor_for(Pool.LIGHT_PARSE, governor.ceilings.light)
+        light_ceiling = governor.ceilings.light
+        assert light_gate.limit == floor_limit  # warm-start floor (derived ceiling)
+        # Pipeline width warm-starts at half its ceiling rather than at the
+        # count-pool floor: an index permit costs almost nothing next to a
+        # parse slot, so the pipeline fills immediately instead of ramping a
+        # permit at a time. (On this fixture's small ceiling the two happen
+        # to coincide; floor_for is what encodes the rule.) The tiers are
+        # asserted separately because the index budget is split per tier --
+        # one shared budget would let a queue of slow records hold every
+        # permit and starve the fast ones.
+        for pool, ceiling in (
+            (Pool.INDEX_HEAVY, governor.ceilings.index_heavy),
+            (Pool.INDEX_LIGHT, governor.ceilings.index_light),
+        ):
+            assert governor.gate(pool).limit == floor_for(pool, ceiling)
 
         records = [
             asyncio.create_task(_parse_one_record(light_gate, RECORD_COST_SECONDS))
@@ -116,20 +127,20 @@ class TestSmallRecordScaling:
 
         # Growth cannot start before LIGHT_GROW_CONFIRM_SAMPLES consecutive
         # healthy+demanding samples (plan section 4), regardless of demand.
-        assert all(limit == FLOOR_LIMIT for limit, _ in history[:LIGHT_GROW_CONFIRM_SAMPLES])
+        assert all(limit == floor_limit for limit, _ in history[:LIGHT_GROW_CONFIRM_SAMPLES])
 
         peak_limit = max(limit for limit, _ in history)
-        assert peak_limit > FLOOR_LIMIT, "the pool must climb from its floor once demand is proven"
+        assert peak_limit > floor_limit, "the pool must climb from its floor once demand is proven"
         assert peak_limit > probe.snapshots[-1].cpu_quota, (
             "growth must pass cpu_quota — the target is the ceiling, not a CPU-derived expression"
         )
-        assert peak_limit <= LIGHT_CEILING, "growth must not pass the derived ceiling"
+        assert peak_limit <= light_ceiling, "growth must not pass the derived ceiling"
 
         # Throughput rose alongside concurrency: mean completions/interval
         # once the limit had grown must exceed the floor-limit baseline,
         # even though every individual record costs the same fixed amount.
-        floor_completions = [c for limit, c in history if limit == FLOOR_LIMIT]
-        grown_completions = [c for limit, c in history if limit > FLOOR_LIMIT]
+        floor_completions = [c for limit, c in history if limit == floor_limit]
+        grown_completions = [c for limit, c in history if limit > floor_limit]
         assert grown_completions, "limit must have grown for at least one sampled interval"
         floor_mean = sum(floor_completions) / len(floor_completions)
         grown_mean = sum(grown_completions) / len(grown_completions)

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useContext, useEffect, useMemo, useRef } from 'react';
+import Link from 'next/link';
 import { Flex, Text, Select, Box, Separator, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SchemaFormField } from '../schema-form-field';
@@ -13,7 +14,7 @@ import {
   snapshotOAuthCredentialFieldValues,
 } from '../../utils/auth-helpers';
 import { DocumentationSection } from './documentation-section';
-import { OAuthAppSelector } from './oauth-app-selector';
+import { OAuthAppSelector } from '@/config';
 import { resolveAuthFields, formatAuthTypeName } from './helpers';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
@@ -26,6 +27,10 @@ import {
   readRegistrationValueForAuthField,
 } from '../../utils/oauth-registration-values';
 import { getConnectorInfoText, getConnectorDocumentationUrl } from '../../utils/connector-metadata';
+import {
+  getPersonalConnectorRedirectType,
+  personalConnectorHref,
+} from '../../utils/admin-access-helpers';
 import { useTranslation } from 'react-i18next';
 
 export function AuthenticateTab() {
@@ -54,6 +59,10 @@ export function AuthenticateTab() {
 
   const { t } = useTranslation();
 
+  const disableCredentialEditWhenLinked = useConnectorsStore(
+    (s) => s.disableCredentialEditWhenLinked
+  );
+
   const isCreateMode = !panelConnectorId;
   const connectorTypeName =
     registryConnectors.find((connector) => connector.type === panelConnector?.type)?.name ??
@@ -67,13 +76,20 @@ export function AuthenticateTab() {
     return getConnectorInfoText(fromRegistry ?? panelConnector);
   }, [registryConnectors, panelConnector]);
 
+  const personalConnectorType = useMemo(() => {
+    const ty = panelConnector?.type;
+    if (!ty) return null;
+    const fromRegistry = registryConnectors.find((c) => c.type === ty);
+    return getPersonalConnectorRedirectType(fromRegistry ?? panelConnector);
+  }, [registryConnectors, panelConnector]);
+
   const currentSchemaFields = useMemo(
     () => resolveAuthFields(connectorSchema?.auth, selectedAuthType),
     [connectorSchema, selectedAuthType]
   );
   const { linkedOAuthAppId, oauthFieldVisibility } = useMemo(
-    () => resolveOAuthFieldVisibility(formData.auth, connectorConfig, isCreateMode, isAdmin),
-    [formData.auth, connectorConfig, isCreateMode, isAdmin]
+    () => resolveOAuthFieldVisibility(formData.auth, connectorConfig, isCreateMode, isAdmin, disableCredentialEditWhenLinked),
+    [formData.auth, connectorConfig, isCreateMode, isAdmin, disableCredentialEditWhenLinked]
   );
 
   const authFieldsForForm = useMemo(() => {
@@ -120,6 +136,12 @@ export function AuthenticateTab() {
       !linkedOAuthAppId ||
       !panelConnectorId
     ) {
+      oauthCredentialHydratedKeyRef.current = null;
+      useConnectorsStore.getState().setOAuthCredentialBaseline(null);
+      return;
+    }
+
+    if (disableCredentialEditWhenLinked) {
       oauthCredentialHydratedKeyRef.current = null;
       useConnectorsStore.getState().setOAuthCredentialBaseline(null);
       return;
@@ -209,6 +231,7 @@ export function AuthenticateTab() {
     panelConnector?.type,
     oauthCredentialFieldNames,
     oauthCredentialBaselineTick,
+    disableCredentialEditWhenLinked,
   ]);
 
   if (!connectorSchema || !panelConnector) {
@@ -443,6 +466,21 @@ export function AuthenticateTab() {
                   >
                     {t('workspace.connectors.authTab.emailVisibilityDocLink')}
                   </a>
+                </>
+              )}
+              {personalConnectorType && (
+                <>
+                  {'\n\n'}
+                  <Link
+                    href={personalConnectorHref(personalConnectorType)}
+                    style={{
+                      color: 'var(--accent-11)',
+                      textDecoration: 'underline',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {t('workspace.connectors.authTab.personalConnectorLink', { name: personalConnectorType })}
+                  </Link>
                 </>
               )}
             </Text>

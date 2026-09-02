@@ -14,6 +14,7 @@ import { useCitationSync } from './use-citation-sync';
 import { usePdfZoom } from './use-pdf-zoom';
 import { downloadPreviewFile, shouldShowPagination, resolvePreviewIconExtension } from './utils';
 import { resolveWebUrl } from './resolve-web-url';
+import { useOrgHref } from '@/lib/navigation';
 import {
   PDF_ZOOM_MAX,
   PDF_ZOOM_MIN,
@@ -39,6 +40,7 @@ export function FilePreviewMobile({
   const canDownload =
     !!showDownload && !isLoading && !hasError && (!!file.blob || !!file.url);
   const externalWebUrl = resolveWebUrl(recordDetails?.record, file.webUrl);
+  const linkedWebUrl = useOrgHref(externalWebUrl ?? undefined);
   const [showFileInfo, setShowFileInfo] = useState(false);
   const [showCitationsSheet, setShowCitationsSheet] = useState(false);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
@@ -305,7 +307,7 @@ export function FilePreviewMobile({
                   fileName={file.name}
                   fileType={file.type}
                   fileBlob={file.blob}
-                  webUrl={externalWebUrl ?? undefined}
+                  webUrl={linkedWebUrl}
                   previewRenderable={file.previewRenderable}
                   pagination={paginationControls}
                   highlightBox={hasCitations ? syncHighlightBox : highlightBox}

@@ -53,10 +53,11 @@ class TestGetUserContext:
         ctx = _get_user_context(request)
         assert ctx == {"user_id": "u1", "org_id": "o1"}
 
-    def test_fallback_to_headers(self) -> None:
+    def test_headers_are_ignored(self) -> None:
         request = _mock_request(headers={"X-User-Id": "u2", "X-Organization-Id": "o2"})
-        ctx = _get_user_context(request)
-        assert ctx == {"user_id": "u2", "org_id": "o2"}
+        with pytest.raises(HTTPException) as exc:
+            _get_user_context(request)
+        assert exc.value.status_code == 401
 
     def test_missing_user_id_raises_401(self) -> None:
         request = _mock_request()

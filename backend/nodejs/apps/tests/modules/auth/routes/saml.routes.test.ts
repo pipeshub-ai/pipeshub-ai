@@ -44,7 +44,7 @@ describe('createSamlRouter', () => {
     const mockIamService = {
       getUserByEmail: sinon.stub().resolves({
         statusCode: 200,
-        data: { _id: 'user123', email: 'test@example.com', orgId: 'org1', hasLoggedIn: true },
+        data: { _id: 'user123', email: 'test@example.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
       }),
       getUserById: sinon.stub(),
       updateUser: sinon.stub(),
@@ -54,7 +54,7 @@ describe('createSamlRouter', () => {
     };
 
     const mockSessionService = {
-      createSession: sinon.stub().resolves({ userId: 'user123', orgId: 'org1' }),
+      createSession: sinon.stub().resolves({ userId: 'user123', orgId: '507f1f77bcf86cd799439011' }),
       getSession: sinon.stub(),
       updateSession: sinon.stub(),
       completeAuthentication: sinon.stub().resolves(),
@@ -65,7 +65,7 @@ describe('createSamlRouter', () => {
       signInViaSAML: sinon.stub(),
       getSamlEmailKeyByOrgId: sinon.stub(),
       updateSAMLStrategy: sinon.stub(),
-      parseRelayState: sinon.stub().returns({ orgId: 'org1', sessionToken: 'token123' }),
+      parseRelayState: sinon.stub().returns({ orgId: '507f1f77bcf86cd799439011', sessionToken: 'token123' }),
       getSamlEmail: sinon.stub().returns('test@example.com'),
     };
 
@@ -104,10 +104,10 @@ describe('createSamlRouter', () => {
 
     // Stub Mongoose model statics used by the handler
     sinon.stub(Org, 'findOne').returns({
-      lean: sinon.stub().returns({ exec: sinon.stub().resolves({ _id: 'org1', shortName: 'TestOrg' }) }),
+      lean: sinon.stub().returns({ exec: sinon.stub().resolves({ _id: '507f1f77bcf86cd799439011', shortName: 'TestOrg' }) }),
     } as any);
     sinon.stub(OrgAuthConfig, 'findOne').resolves({
-      orgId: 'org1',
+      orgId: '507f1f77bcf86cd799439011',
       isDeleted: false,
       authSteps: [{ allowedMethods: [{ type: 'samlSso' }] }],
     } as any);
@@ -432,14 +432,14 @@ describe('createSamlRouter', () => {
 
     it('POST /signIn/callback handler should redirect when no session token in relay state', async () => {
       const mockSamlController = container.get<any>('SamlController');
-      mockSamlController.parseRelayState.returns({ orgId: 'org1' });
+      mockSamlController.parseRelayState.returns({ orgId: '507f1f77bcf86cd799439011' });
 
       const router = createSamlRouter(container);
       const handler = findRouteHandler(router, '/signIn/callback', 'post');
       expect(handler).to.not.be.undefined;
 
       const { mockReq, mockRes, mockNext } = createMockReqRes();
-      mockReq.user = { email: 'test@example.com', orgId: 'org1' };
+      mockReq.user = { email: 'test@example.com', orgId: '507f1f77bcf86cd799439011' };
       await handler(mockReq, mockRes, mockNext);
 
       // With no session token, the handler creates a new session and redirects
@@ -518,14 +518,14 @@ describe('SAML Routes - handler coverage', () => {
     mockSamlController = {
       signInViaSAML: sinon.stub().resolves(),
       getSamlEmailKeyByOrgId: sinon.stub().returns('email'),
-      parseRelayState: sinon.stub().returns({ orgId: 'org1', sessionToken: 'token123' }),
+      parseRelayState: sinon.stub().returns({ orgId: '507f1f77bcf86cd799439011', sessionToken: 'token123' }),
       getSamlEmail: sinon.stub().returns('test@test.com'),
     }
 
     mockSessionService = {
       getSession: sinon.stub().resolves(null),
       completeAuthentication: sinon.stub().resolves(),
-      createSession: sinon.stub().resolves({ userId: 'u1', orgId: 'org1' }),
+      createSession: sinon.stub().resolves({ userId: 'u1', orgId: '507f1f77bcf86cd799439011' }),
     }
 
     mockIamService = {
@@ -553,11 +553,11 @@ describe('SAML Routes - handler coverage', () => {
 
     // Stub Mongoose model statics used by the new handler
     const orgFindOneStub = sinon.stub(Org, 'findOne')
-    const orgLeanExecChain = { lean: sinon.stub().returns({ exec: sinon.stub().resolves({ _id: 'org1', shortName: 'TestOrg' }) }) }
+    const orgLeanExecChain = { lean: sinon.stub().returns({ exec: sinon.stub().resolves({ _id: '507f1f77bcf86cd799439011', shortName: 'TestOrg' }) }) }
     orgFindOneStub.returns(orgLeanExecChain as any)
 
     sinon.stub(OrgAuthConfig, 'findOne').resolves({
-      orgId: 'org1',
+      orgId: '507f1f77bcf86cd799439011',
       isDeleted: false,
       authSteps: [{ allowedMethods: [{ type: 'samlSso' }] }],
     } as any)
@@ -648,15 +648,15 @@ describe('SAML Routes - handler coverage', () => {
     it('should call next when session token missing', async () => {
       const handler = findHandler('/signIn/callback', 'post')
       // Override parseRelayState to return no sessionToken
-      mockSamlController.parseRelayState.returns({ orgId: 'org1' })
+      mockSamlController.parseRelayState.returns({ orgId: '507f1f77bcf86cd799439011' })
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
-        data: { _id: 'u1', email: 'test@test.com', orgId: 'org1', hasLoggedIn: true },
+        data: { _id: 'u1', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
       })
 
       const req = {
-        user: { email: 'test@test.com', orgId: 'org1' },
+        user: { email: 'test@test.com', orgId: '507f1f77bcf86cd799439011' },
         body: {},
         query: {},
         headers: {},
@@ -676,11 +676,11 @@ describe('SAML Routes - handler coverage', () => {
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
-        data: { _id: 'u1', email: 'test@test.com', orgId: 'org1', hasLoggedIn: true },
+        data: { _id: 'u1', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
       })
 
       const req = {
-        user: { email: 'test@test.com', orgId: 'org1' },
+        user: { email: 'test@test.com', orgId: '507f1f77bcf86cd799439011' },
         body: {},
         query: {},
         headers: {},
@@ -698,13 +698,13 @@ describe('SAML Routes - handler coverage', () => {
       const handler = findHandler('/signIn/callback', 'post')
       // Override OrgAuthConfig.findOne to return config without SAML
       ;(OrgAuthConfig.findOne as sinon.SinonStub).resolves({
-        orgId: 'org1',
+        orgId: '507f1f77bcf86cd799439011',
         isDeleted: false,
         authSteps: [{ allowedMethods: [{ type: 'password' }] }],
       } as any)
 
       const req = {
-        user: { email: 'test@test.com', orgId: 'org1' },
+        user: { email: 'test@test.com', orgId: '507f1f77bcf86cd799439011' },
         body: {},
         query: {},
         headers: {},
@@ -752,23 +752,23 @@ describe('SAML Routes - handler coverage', () => {
   describe('POST /signIn/callback - existing user success flow', () => {
     it('should redirect on success for existing user', async () => {
       const handler = findHandler('/signIn/callback', 'post')
-      const relayState = Buffer.from(JSON.stringify({ orgId: 'org1', sessionToken: 'token123' })).toString('base64')
+      const relayState = Buffer.from(JSON.stringify({ orgId: '507f1f77bcf86cd799439011', sessionToken: 'token123' })).toString('base64')
 
       mockSessionService.getSession.resolves({
         currentStep: 0,
         authConfig: [{ allowedMethods: [{ type: 'samlSso' }] }],
         email: 'test@test.com',
-        orgId: 'org1',
+        orgId: '507f1f77bcf86cd799439011',
         userId: 'u1',
       })
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
-        data: { _id: 'u1', email: 'test@test.com', orgId: 'org1', hasLoggedIn: true },
+        data: { _id: 'u1', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
       })
 
       const req = {
-        user: { email: 'test@test.com', orgId: 'org1' },
+        user: { email: 'test@test.com', orgId: '507f1f77bcf86cd799439011' },
         body: { RelayState: relayState },
         query: {},
         headers: {},
@@ -788,23 +788,23 @@ describe('SAML Routes - handler coverage', () => {
 
     it('should redirect for first-time login', async () => {
       const handler = findHandler('/signIn/callback', 'post')
-      const relayState = Buffer.from(JSON.stringify({ orgId: 'org1', sessionToken: 'token123' })).toString('base64')
+      const relayState = Buffer.from(JSON.stringify({ orgId: '507f1f77bcf86cd799439011', sessionToken: 'token123' })).toString('base64')
 
       mockSessionService.getSession.resolves({
         currentStep: 0,
         authConfig: [{ allowedMethods: [{ type: 'samlSso' }] }],
         email: 'test@test.com',
-        orgId: 'org1',
+        orgId: '507f1f77bcf86cd799439011',
         userId: 'u1',
       })
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
-        data: { _id: 'u1', email: 'test@test.com', orgId: 'org1', hasLoggedIn: false },
+        data: { _id: 'u1', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: false },
       })
 
       const req = {
-        user: { email: 'test@test.com', orgId: 'org1' },
+        user: { email: 'test@test.com', orgId: '507f1f77bcf86cd799439011' },
         body: { RelayState: relayState },
         query: {},
         headers: {},
@@ -823,13 +823,13 @@ describe('SAML Routes - handler coverage', () => {
 
     it('should handle JIT provisioning for NOT_FOUND user', async () => {
       const handler = findHandler('/signIn/callback', 'post')
-      const relayState = Buffer.from(JSON.stringify({ orgId: 'org1', sessionToken: 'token123' })).toString('base64')
+      const relayState = Buffer.from(JSON.stringify({ orgId: '507f1f77bcf86cd799439011', sessionToken: 'token123' })).toString('base64')
 
       mockSessionService.getSession.resolves({
         currentStep: 0,
         authConfig: [{ allowedMethods: [{ type: 'samlSso' }] }],
         email: 'new@test.com',
-        orgId: 'org1',
+        orgId: '507f1f77bcf86cd799439011',
         userId: 'NOT_FOUND',
         jitConfig: { saml: true },
       })
@@ -837,7 +837,7 @@ describe('SAML Routes - handler coverage', () => {
       mockSamlController.getSamlEmailKeyByOrgId.returns('email')
       mockJitProvisioningService.extractSamlUserDetails.returns({ fullName: 'New User' })
       mockJitProvisioningService.provisionUser.resolves({
-        _id: 'new-u1', email: 'new@test.com', orgId: 'org1', hasLoggedIn: false,
+        _id: 'new-u1', email: 'new@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: false,
       })
 
       const { UserActivities } = require('../../../../src/modules/auth/schema/userActivities.schema')
@@ -846,7 +846,7 @@ describe('SAML Routes - handler coverage', () => {
       mockIamService.updateUser.resolves({ statusCode: 200 })
 
       const req = {
-        user: { email: 'new@test.com', orgId: 'org1' },
+        user: { email: 'new@test.com', orgId: '507f1f77bcf86cd799439011' },
         body: { RelayState: relayState },
         query: {},
         headers: {},
@@ -866,14 +866,14 @@ describe('SAML Routes - handler coverage', () => {
 
     it('should redirect jit_disabled when session jitConfig has no saml key', async () => {
       const handler = findHandler('/signIn/callback', 'post')
-      const relayState = Buffer.from(JSON.stringify({ orgId: 'org1', sessionToken: 'token123' })).toString('base64')
+      const relayState = Buffer.from(JSON.stringify({ orgId: '507f1f77bcf86cd799439011', sessionToken: 'token123' })).toString('base64')
 
       // Session created by initAuth: Google/Microsoft/OAuth have JIT on, SAML does not
       mockSessionService.getSession.resolves({
         currentStep: 0,
         authConfig: [{ allowedMethods: [{ type: 'samlSso' }] }],
         email: 'new@test.com',
-        orgId: 'org1',
+        orgId: '507f1f77bcf86cd799439011',
         userId: 'NOT_FOUND',
         jitConfig: { google: true, microsoft: true, oauth: true },
       })
@@ -882,7 +882,7 @@ describe('SAML Routes - handler coverage', () => {
       mockIamService.getUserByEmail.resolves({ statusCode: 404, data: null })
 
       const req = {
-        user: { email: 'new@test.com', orgId: 'org1' },
+        user: { email: 'new@test.com', orgId: '507f1f77bcf86cd799439011' },
         body: { RelayState: relayState },
         query: {},
         headers: {},
@@ -906,7 +906,7 @@ describe('SAML Routes - handler coverage', () => {
         currentStep: 0,
         authConfig: [{ allowedMethods: [{ type: 'samlSso' }] }],
         email: 'expected@test.com',
-        orgId: 'org1',
+        orgId: '507f1f77bcf86cd799439011',
         userId: 'u1',
       })
 
@@ -914,11 +914,11 @@ describe('SAML Routes - handler coverage', () => {
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
-        data: { _id: 'u1', email: 'different@test.com', orgId: 'org1', hasLoggedIn: true },
+        data: { _id: 'u1', email: 'different@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
       })
 
       const req = {
-        user: { email: 'different@test.com', orgId: 'org1' },
+        user: { email: 'different@test.com', orgId: '507f1f77bcf86cd799439011' },
         body: {},
         query: {},
         headers: {},
@@ -936,26 +936,26 @@ describe('SAML Routes - handler coverage', () => {
 
     it('should fallback to email key when SAML key returns invalid email', async () => {
       const handler = findHandler('/signIn/callback', 'post')
-      const relayState = Buffer.from(JSON.stringify({ orgId: 'org1', sessionToken: 'token123' })).toString('base64')
+      const relayState = Buffer.from(JSON.stringify({ orgId: '507f1f77bcf86cd799439011', sessionToken: 'token123' })).toString('base64')
 
       mockSessionService.getSession.resolves({
         currentStep: 0,
         authConfig: [{ allowedMethods: [{ type: 'samlSso' }] }],
         email: 'test@test.com',
-        orgId: 'org1',
+        orgId: '507f1f77bcf86cd799439011',
         userId: 'u1',
       })
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
-        data: { _id: 'u1', email: 'test@test.com', orgId: 'org1', hasLoggedIn: true },
+        data: { _id: 'u1', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
       })
 
       const req = {
         user: {
           customKey: 'not-an-email',
           email: 'test@test.com',
-          orgId: 'org1',
+          orgId: '507f1f77bcf86cd799439011',
         },
         body: { RelayState: relayState },
         query: {},
@@ -974,23 +974,23 @@ describe('SAML Routes - handler coverage', () => {
 
     it('should use RelayState from query params if not in body', async () => {
       const handler = findHandler('/signIn/callback', 'post')
-      const relayState = Buffer.from(JSON.stringify({ orgId: 'org1', sessionToken: 'token123' })).toString('base64')
+      const relayState = Buffer.from(JSON.stringify({ orgId: '507f1f77bcf86cd799439011', sessionToken: 'token123' })).toString('base64')
 
       mockSessionService.getSession.resolves({
         currentStep: 0,
         authConfig: [{ allowedMethods: [{ type: 'samlSso' }] }],
         email: 'test@test.com',
-        orgId: 'org1',
+        orgId: '507f1f77bcf86cd799439011',
         userId: 'u1',
       })
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
-        data: { _id: 'u1', email: 'test@test.com', orgId: 'org1', hasLoggedIn: true },
+        data: { _id: 'u1', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
       })
 
       const req = {
-        user: { email: 'test@test.com', orgId: 'org1' },
+        user: { email: 'test@test.com', orgId: '507f1f77bcf86cd799439011' },
         body: {},
         query: { RelayState: relayState },
         headers: {},
@@ -1013,7 +1013,7 @@ describe('SAML Routes - handler coverage', () => {
       mockSamlController.getSamlEmail.returns(null)
 
       const req = {
-        user: { customKey: 'not-an-email', noEmail: 'nope', orgId: 'org1' },
+        user: { customKey: 'not-an-email', noEmail: 'nope', orgId: '507f1f77bcf86cd799439011' },
         body: {},
         query: {},
         headers: {},

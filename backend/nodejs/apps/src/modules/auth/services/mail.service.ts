@@ -55,6 +55,9 @@ export class MailService {
       if (ccEmails) {
         data.sendCcTo = ccEmails;
       }
+      if (initiator.orgId) {
+        data.orgId = initiator.orgId;
+      }
       let mailUrl = `${this.authConfig.communicationBackend}/api/v1/mail/emails/sendEmail`;
       const config = {
         method: 'post' as const,

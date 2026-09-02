@@ -203,10 +203,27 @@ describe('OrgCreationBody Zod Schema', () => {
       expect(result.success).to.be.false
     })
 
-    it('should accept password with exactly 8 characters', () => {
+    it('should reject an 8-character password missing complexity (digits only)', () => {
       const result = OrgCreationBody.safeParse({
         ...validIndividualBody,
         password: '12345678',
+      })
+      expect(result.success).to.be.false
+      if (!result.success) {
+        const fieldError = result.error.issues.find(
+          (i) => i.path.includes('password'),
+        )
+        expect(fieldError).to.exist
+        expect(fieldError!.message).to.include(
+          'at least one uppercase, one lowercase, one number and one special character',
+        )
+      }
+    })
+
+    it('should accept an 8-character password that meets complexity requirements', () => {
+      const result = OrgCreationBody.safeParse({
+        ...validIndividualBody,
+        password: 'Aa1!aaaa',
       })
       expect(result.success).to.be.true
     })

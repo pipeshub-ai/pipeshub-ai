@@ -1,7 +1,7 @@
-import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
-
 import asyncio
 import logging
+import os
+import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -11,28 +11,34 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.middlewares.auth import authMiddleware
+import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 from app.api.middlewares.request_context import RequestContextMiddleware
+from app.edition_config import (
+    agent_router,
+    agent_sharing_router,
+    authMiddleware,
+    chatbot_router,
+    ensure_org_context,
+    search_router,
+)
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
-from app.api.routes.agent import router as agent_router
-from app.api.routes.chatbot import router as chatbot_router
-from app.api.routes.health import router as health_router
-from app.api.routes.search import router as search_router
 from app.api.routes.ai_models_registry import router as ai_models_registry_router
-from app.api.routes.speech import router as speech_router
+from app.api.routes.health import router as health_router
 from app.api.routes.skills import router as skills_router
+from app.api.routes.speech import router as speech_router
 from app.api.routes.toolsets import router as toolsets_router
-from app.containers.query import QueryAppContainer
+from app.edition_containers import QueryAppContainer
 from app.health.health import Health
-from app.services.messaging.config import MessageBrokerType, get_message_broker_type
+from app.services.messaging.config import get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.telemetry.setup import setup_telemetry
 from app.utils.llm_api_mode_store import get_llm_api_mode_store
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.worker_scaling import set_process_worker_count
 
 container = QueryAppContainer.init("query_service")
 
@@ -147,6 +153,9 @@ async def stop_kafka_consumers(container: QueryAppContainer) -> bool|None:
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
 
+    # Before anything builds a pool or semaphore off a per-process budget.
+    set_process_worker_count(configured_worker_count())
+
     # Initialize container
     app_container = await get_initialized_container()
     # Store container in app state for access in dependencies
@@ -222,21 +231,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # or a missing collection (first run, no data yet) simply skips silently.
         async def _warmup_knn_index() -> None:
             try:
-                from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
                 vector_db_svc = await container.vector_db_service()
                 if not hasattr(vector_db_svc, "warmup"):
                     return
-                collection_exists = await vector_db_svc.collection_exists(VECTOR_DB_COLLECTION_NAME)
-                if not collection_exists:
-                    logger.info(
-                        f"k-NN warmup skipped — collection '{VECTOR_DB_COLLECTION_NAME}' "
-                        "does not exist yet"
-                    )
+                managed = await retrieval_service.collection_registry.list_managed_collections()
+                if not managed:
+                    logger.info("k-NN warmup skipped — nothing indexed yet")
                     return
-                logger.info(
-                    f"🔥 Warming up k-NN index for collection '{VECTOR_DB_COLLECTION_NAME}'"
-                )
-                await vector_db_svc.warmup(VECTOR_DB_COLLECTION_NAME)
+                for entry in managed:
+                    if not await vector_db_svc.collection_exists(entry.name):
+                        continue
+                    logger.info(
+                        f"🔥 Warming up k-NN index for collection '{entry.name}'"
+                    )
+                    await vector_db_svc.warmup(entry.name)
                 logger.info("✅ k-NN index warmup complete")
             except Exception as warmup_error:
                 logger.warning(
@@ -327,13 +335,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 # Create FastAPI app with lifespan
+_app_dependencies = [Depends(get_initialized_container)]
+if ensure_org_context is not None:
+    _app_dependencies.append(Depends(ensure_org_context))
+
 app = FastAPI(
     title="Retrieval API",
     description="API for retrieving information from vector store",
     version="1.0.0",
     lifespan=lifespan,
     redirect_slashes=False,
-    dependencies=[Depends(get_initialized_container)],
+    dependencies=_app_dependencies,
 )
 
 EXCLUDE_PATHS = ["/health"]  # Exclude health endpoint from authentication for monitoring purposes
@@ -428,12 +440,96 @@ app.include_router(skills_router, prefix="/api/v1/skills")
 app.include_router(toolsets_router)
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(ai_models_registry_router, prefix="/api/v1")
+if agent_sharing_router is not None:
+    app.include_router(agent_sharing_router, prefix="/api/v1/agent")
+
+_EXEC_SENTINEL = "QUERY_UVICORN_EXECED"
 
 
-def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = True) -> None:
+def configured_worker_count() -> int:
+    """Worker count for this process, tolerant of a malformed value.
+
+    A bad value must not raise: this is read at the top of ``lifespan`` too, so a
+    ``ValueError`` there would crash the service before it serves and leave
+    process_monitor.sh restart-looping it behind an opaque traceback.
+
+    ``WEB_CONCURRENCY`` is honoured as a fallback because uvicorn reads it whenever
+    ``workers`` is left unset, which is what this module used to do.
+    """
+    for var in ("QUERY_UVICORN_WORKERS", "WEB_CONCURRENCY"):
+        raw = (os.getenv(var) or "").strip()
+        if not raw:
+            continue
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            logging.getLogger(__name__).warning(
+                "%s=%r is not an integer; falling back to a single worker", var, raw,
+            )
+            return 1
+    return 1
+
+
+def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, reload: bool = True) -> None:
     """Run the application"""
+    import warnings
+    workers = workers or configured_worker_count()
+    if reload and workers > 1:
+        warnings.warn(
+            "QUERY_UVICORN_WORKERS>1 is not compatible with reload=True; falling back to 1 worker.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        workers = 1
+    # Each worker re-imports this module in its own process and sizes its budgets from
+    # the env var, so publish the count actually used — otherwise run(workers=N), or the
+    # reload downgrade above, leaves the children scaling for a different number.
+    os.environ["QUERY_UVICORN_WORKERS"] = str(workers)
+    if workers > 1 and getattr(sys, "frozen", False):
+        # A PyInstaller build cannot do either half of this: sys.executable is the app
+        # binary and its bootloader ignores "-m uvicorn", and falling through to
+        # uvicorn.run(workers=N) needs multiprocessing.freeze_support(). Refuse rather
+        # than crash-loop. backend/python/Dockerfile produces such a build; no compose
+        # file uses it today.
+        logging.getLogger(__name__).warning(
+            "QUERY_UVICORN_WORKERS=%s ignored: multiple workers are unsupported in a "
+            "frozen build; serving with one worker", workers,
+        )
+        workers = 1
+        os.environ["QUERY_UVICORN_WORKERS"] = "1"
+    if workers > 1 and not os.getenv(_EXEC_SENTINEL):
+        # uvicorn spawns workers, and a spawned child re-imports the parent's __main__.
+        # Reached via `python -m app.query_main`, __main__ IS this module, so every child
+        # imports the whole app twice -- once as __mp_main__, once for the app string --
+        # and dies silently before serving, leaving the supervisor respawning forever.
+        # Hand off to the uvicorn CLI so __main__ is uvicorn's own module. execvp keeps
+        # the PID, so process_monitor.sh's restart-on-death loop still tracks us.
+        # The sentinel makes a second exec impossible: in a frozen build sys.executable
+        # is the app binary itself, which would otherwise re-enter here forever.
+        os.environ[_EXEC_SENTINEL] = "1"
+        argv = [
+            sys.executable, "-m", "uvicorn", "app.query_main:app",
+            "--host", host, "--port", str(port),
+            "--log-level", "info", "--workers", str(workers),
+        ]
+        try:
+            os.execvp(sys.executable, argv)
+            return  # execvp never returns; this only keeps mocked tests honest
+        except OSError:
+            # Falling through serves on a single worker, which beats not serving.
+            logging.getLogger(__name__).exception(
+                "Could not exec the uvicorn CLI (%s); continuing with one worker", argv,
+            )
+            os.environ.pop(_EXEC_SENTINEL, None)
+            workers = 1
+            os.environ["QUERY_UVICORN_WORKERS"] = "1"
     uvicorn.run(
-        "app.query_main:app", host=host, port=port, log_level="info", reload=reload
+        "app.query_main:app",
+        host=host,
+        port=port,
+        log_level="info",
+        reload=reload,
+        workers=workers,
     )
 
 if __name__ == "__main__":

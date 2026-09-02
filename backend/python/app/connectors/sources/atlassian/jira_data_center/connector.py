@@ -2613,11 +2613,10 @@ class JiraDataCenterConnector(BaseConnector):
                     last_issue_updated = self._parse_jira_timestamp(updated_str)
 
             # Build records for this batch
-            async with self.data_store_provider.transaction() as tx_store:
-                records_batch = await self._build_issue_records(
-                    batch_issues, project_id, users, tx_store,
-                    is_new_project=is_new_project,
-                )
+            records_batch = await self._build_issue_records(
+                batch_issues, project_id, users,
+                is_new_project=is_new_project,
+            )
 
             self.logger.debug(
                 f"📦 Fetched batch {page_count}: {len(batch_issues)} issues -> {len(records_batch)} records "
@@ -3371,7 +3370,6 @@ class JiraDataCenterConnector(BaseConnector):
         issues: list[dict[str, Any]],
         project_id: str,
         users: list[AppUser],
-        tx_store,
         is_new_project: bool = False,
     ) -> list[tuple[Record, list[Permission]]]:
         """
@@ -3416,9 +3414,9 @@ class JiraDataCenterConnector(BaseConnector):
             fields = issue.get("fields", {})
 
             # Check for existing record (works for both Epics and regular issues)
-            existing_record = await tx_store.get_record_by_external_id(
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
                 connector_id=self.connector_id,
-                external_id=issue_id
+                external_record_id=issue_id
             )
 
             record_id = existing_record.id if existing_record else str(uuid4())
@@ -3517,7 +3515,6 @@ class JiraDataCenterConnector(BaseConnector):
                     permissions,
                     external_record_group_id,
                     record_group_type,
-                    tx_store,
                     parent_node_id=issue_record.id,
                 )
                 if attachment_records:
@@ -3543,7 +3540,6 @@ class JiraDataCenterConnector(BaseConnector):
         parent_permissions: list[Permission],
         parent_record_group_id: str,
         parent_record_group_type: RecordGroupType,
-        tx_store,
         parent_node_id: Optional[str] = None,
     ) -> list[tuple[FileRecord, list[Permission]]]:
         """
@@ -3570,9 +3566,9 @@ class JiraDataCenterConnector(BaseConnector):
                     continue
 
                 # Check for existing attachment record
-                existing_record = await tx_store.get_record_by_external_id(
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id,
-                    external_id=f"attachment_{attachment_id}"
+                    external_record_id=f"attachment_{attachment_id}"
                 )
 
                 # Get attachment metadata
@@ -3905,7 +3901,6 @@ class JiraDataCenterConnector(BaseConnector):
         issue_node_id: str,
         project_id: str,
         issue_weburl: Optional[str],
-        tx_store,
     ) -> dict[str, ChildRecord]:
         """
         Process issue attachments and create ChildRecords for TableRowMetadata.
@@ -3920,7 +3915,6 @@ class JiraDataCenterConnector(BaseConnector):
             issue_node_id: Internal record ID of issue
             project_id: Project ID for external_record_group_id
             issue_weburl: Issue web URL (used as weburl for FileRecords)
-            tx_store: Transaction store for looking up existing records
 
         Returns:
             Dict mapping attachment_id -> ChildRecord for proper location assignment
@@ -3936,9 +3930,9 @@ class JiraDataCenterConnector(BaseConnector):
 
                 # Look up existing attachment record from database
                 external_id = f"attachment_{attachment_id}"
-                existing_record = await tx_store.get_record_by_external_id(
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id,
-                    external_id=external_id
+                    external_record_id=external_id
                 )
 
                 # Create FileRecord if it doesn't exist (new attachment added after sync)
@@ -4188,17 +4182,15 @@ class JiraDataCenterConnector(BaseConnector):
         # Fetch child records from database - get map of attachment_id -> ChildRecord
         attachment_children_map: dict[str, ChildRecord] = {}
 
-        async with self.data_store_provider.transaction() as tx_store:
-            # Process attachments (including images)
-            if attachments_data:
-                attachment_children_map = await self._process_issue_attachments_for_children(
-                    attachments_data=attachments_data,
-                    issue_id=issue_id,
-                    issue_node_id=record.id,
-                    project_id=project_id,
-                    issue_weburl=issue_weburl,
-                    tx_store=tx_store
-                )
+        # Process attachments (including images)
+        if attachments_data:
+            attachment_children_map = await self._process_issue_attachments_for_children(
+                attachments_data=attachments_data,
+                issue_id=issue_id,
+                issue_node_id=record.id,
+                project_id=project_id,
+                issue_weburl=issue_weburl,
+            )
 
         # Add comments to issue_data for parsing
         issue_data["comments"] = comments_data
@@ -5036,12 +5028,9 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.warning(f"Attachment {attachment_id} missing parent issue ID")
                 return None
 
-            # Get parent ticket's internal record ID
-            async with self.data_store_provider.transaction() as tx_store:
-                parent_ticket_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=issue_id
-                )
+            parent_ticket_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, issue_id
+            )
             parent_node_id = parent_ticket_record.id if parent_ticket_record else None
 
             # Fetch issue to get attachment metadata
@@ -5137,7 +5126,7 @@ class JiraDataCenterConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> BaseConnector:
-        dep = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
-        await dep.initialize()
-        return cls(logger, dep, data_store_provider, config_service, connector_id, scope, created_by)
+        return cls(logger, data_entities_processor, data_store_provider, config_service, connector_id, scope, created_by)

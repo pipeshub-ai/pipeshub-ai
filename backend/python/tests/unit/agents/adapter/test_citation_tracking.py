@@ -292,13 +292,18 @@ class TestFullReadStartsAtTheBeginning:
         ):
             first = await tool.execute(record_ids=["rec-1"], max_blocks=4)
             assert "start_block=4" in first.data
-            assert "rec-1" in context.full_records_fetched
+            # A capped read is not a full read: marking it fetched is what
+            # hides the record from candidate lists, and the model has seen
+            # four of its ten blocks.
+            assert "rec-1" not in context.full_records_fetched
 
             second = await tool.execute(record_ids=["rec-1"], start_block=4)
 
         assert second.success is True
         assert "content of block 4" in second.data
         assert "content of block 0" not in second.data
+        # The continuation read reached the end, so now it counts as fetched.
+        assert "rec-1" in context.full_records_fetched
 
     async def test_oversized_record_is_capped_from_the_start_with_a_hint(self) -> None:
         record = _record_with_blocks("rec-3", 10)

@@ -4,7 +4,8 @@ import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useSta
 import { useSearchParams, useRouter } from 'next/navigation';
 import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
 import { SuggestionChip, MessageList, ChatInputWrapper, SearchResultsView } from './components';
-import { AgentChatHeader } from './components/agent-chat-header';
+import { AgentChatHeader } from '@/config';
+import { getAgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import {
   applyConversationModelInfoToStore,
@@ -392,6 +393,9 @@ function ChatContent() {
           });
           store.setAgentContextDisplayName(agent?.name?.trim() || null);
           store.setAgentContextCreatedBy(agent?.createdBy ?? null);
+          store.setAgentContextAccess(
+            agent ? getAgentSidebarRowMenuAccess(agent) : null,
+          );
 
           // Warn when any tool attached to this agent has been removed from
           // server code since the agent was last saved (deprecated=true is
@@ -447,12 +451,14 @@ function ChatContent() {
             store.hydrateAgentChatResources(null);
             store.setAgentContextDisplayName(null);
             store.setAgentContextCreatedBy(null);
+            store.setAgentContextAccess(null);
           }
         }
       } else {
         store.hydrateAgentChatResources(null);
         store.setAgentContextDisplayName(null);
         store.setAgentContextCreatedBy(null);
+        store.setAgentContextAccess(null);
       }
 
       try {
@@ -493,13 +499,8 @@ function ChatContent() {
     }
 
     if (!conversationId) {
-      // Clear any filters left over from the previous conversation so that
-      // the SelectedCollections pills don't bleed into the new-chat landing.
-      store.setFilters({ apps: [], kb: [] });
-
       const activeSlot = store.activeSlotId ? store.slots[store.activeSlotId] : null;
       if (agentId) {
-        store.setAgentKnowledgeScope(null);
         if (store.activeSlotId) {
           debugLog.flush('chat-switch', { from: store.activeSlotId, to: null, reason: 'agent-new-chat-url' });
           store.clearActiveSlot();
@@ -578,8 +579,22 @@ function ChatContent() {
               store.setFilters({ apps: [], kb: [] });
             }
           }
+        } else {
+          // Slot not yet initialized — history will restore filters when it
+          // loads, but clear stale filters from the previous conversation now
+          // so the badge doesn't flash incorrectly.
+          if (urlAgentId) {
+            store.setAgentKnowledgeScope(null);
+          } else {
+            store.setFilters({ apps: [], kb: [] });
+          }
         }
       } else {
+        if (urlAgentId) {
+          store.setAgentKnowledgeScope(null);
+        } else {
+          store.setFilters({ apps: [], kb: [] });
+        }
         const newSlotId = store.createSlot(conversationId);
         if (urlAgentId) {
           store.updateSlot(newSlotId, {

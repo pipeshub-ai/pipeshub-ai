@@ -41,7 +41,7 @@ def _transport() -> AzureOpenAITransport:
         api_key="k",
         azure_endpoint="https://example.openai.azure.com",
         api_version="2024-10-01-preview",
-        deployment="gpt-5-4-mini",
+        deployment="gpt-5.6-luna",
     )
 
 
@@ -84,19 +84,19 @@ class TestClientConstruction:
 
     def test_model_defaults_to_the_deployment(self) -> None:
         """Azure routes on deployment name, so a public model id would 404."""
-        assert _transport().model_name == "gpt-5-4-mini"
+        assert _transport().model_name == "gpt-5.6-luna"
 
     def test_built_from_the_langchain_model_the_other_transport_uses(self) -> None:
         llm = MagicMock()
         llm.azure_endpoint = "https://example.openai.azure.com"
-        llm.deployment_name = "gpt-5-4-mini"
+        llm.deployment_name = "gpt-5.6-luna"
         llm.openai_api_key = SecretStr("sk-secret")
         llm.openai_api_version = "2024-10-01-preview"
 
-        t = AzureOpenAITransport.from_langchain_model(llm, model_name="gpt-5.4-mini")
+        t = AzureOpenAITransport.from_langchain_model(llm, model_name="gpt-5.6-luna")
 
         assert t.provider == "azure_direct"
-        assert t.model_name == "gpt-5.4-mini"
+        assert t.model_name == "gpt-5.6-luna"
 
     def test_non_azure_model_is_rejected_loudly(self) -> None:
         """Silently falling back would hide a misconfiguration behind LangChain."""
@@ -419,7 +419,7 @@ class TestConfigurationCapture:
         return llm
 
     def test_reasoning_and_endpoint_are_carried(self) -> None:
-        t = AzureOpenAITransport.from_langchain_model(self._llm(), model_name="gpt-5.4-mini")
+        t = AzureOpenAITransport.from_langchain_model(self._llm(), model_name="gpt-5.6-luna")
         assert t._wants_responses() is True
         assert t._default_request_kwargs()["reasoning"] == {"effort": "high"}
 
@@ -431,12 +431,12 @@ class TestConfigurationCapture:
     def test_temperature_dropped_for_gpt5_reasoning_on_responses(self) -> None:
         """langchain_openai strips it before POSTing, so sending it would both
         differ from the LangChain arm and 400 on the deployment."""
-        t = AzureOpenAITransport.from_langchain_model(self._llm(), model_name="gpt-5.4-mini")
+        t = AzureOpenAITransport.from_langchain_model(self._llm(), model_name="gpt-5.6-luna")
         assert "temperature" not in t._default_request_kwargs()
 
     def test_temperature_kept_when_reasoning_is_off(self) -> None:
         t = AzureOpenAITransport.from_langchain_model(
-            self._llm(reasoning={"effort": "none"}), model_name="gpt-5.4-mini",
+            self._llm(reasoning={"effort": "none"}), model_name="gpt-5.6-luna",
         )
         assert t._default_request_kwargs()["temperature"] == 1
 
@@ -457,16 +457,16 @@ class TestConfigurationCapture:
         Completions, so on Responses the deployment must travel in the body --
         sending the model name there is a DeploymentNotFound 404."""
         t = AzureOpenAITransport.from_langchain_model(
-            self._llm(deployment="my-deployment"), model_name="gpt-5.4-mini",
+            self._llm(deployment="my-deployment"), model_name="gpt-5.6-luna",
         )
         assert t._responses_model_id() == "my-deployment"
-        assert t.model_name == "gpt-5.4-mini"
+        assert t.model_name == "gpt-5.6-luna"
 
     @pytest.mark.asyncio
     async def test_a_reasoning_model_actually_reaches_the_responses_endpoint(self) -> None:
         """The whole point: this deployment must not silently run without
         reasoning on Chat Completions."""
-        t = AzureOpenAITransport.from_langchain_model(self._llm(), model_name="gpt-5.4-mini")
+        t = AzureOpenAITransport.from_langchain_model(self._llm(), model_name="gpt-5.6-luna")
         captured: dict = {}
 
         def _resp(**kwargs):
@@ -515,7 +515,7 @@ class _FakeStreamingResponse:
 def _responses_transport(chunks: list[bytes]) -> AzureOpenAITransport:
     t = _transport()
     t._defaults = RequestDefaults(reasoning={"effort": "high"}, use_responses_api=True,
-                                  model="gpt-5.4-mini")
+                                  model="gpt-5.6-luna")
     t._client = MagicMock()
     t._client.responses.with_streaming_response.create = MagicMock(
         return_value=_FakeStreamingResponse(chunks)

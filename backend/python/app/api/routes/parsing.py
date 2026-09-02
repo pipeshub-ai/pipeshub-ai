@@ -146,7 +146,7 @@ async def parse_file(
     message_id = current_display_id()
     tier = classify(extension, mime_type)
     cost = parse_cost(tier, len(content))
-    logger.info(
+    logger.debug(
         "Received parse request: record='%s' format=%s provider=%s size_bytes=%d tier=%s cost=%d",
         record_name, extension or mime_type or "unknown", provider_enum.value, len(content),
         tier.value, cost,
@@ -226,7 +226,7 @@ async def parse_file(
             record_name, provider_enum.value, parse_ms,
         )
     blocks_count = len(result.block_container.blocks) if result.block_container is not None else 0
-    logger.info(
+    logger.debug(
         "Parse completed: record='%s' outcome=success provider_used=%s parse_ms=%.0f blocks=%d raw_document=%s",
         record_name,
         result.provider_used.value if result.provider_used is not None else "default",

@@ -315,6 +315,7 @@ export async function createPlaceholderDocument(
   size: number,
   extension: string,
   originalname?: string,
+  storageVendor?: StorageVendor,
 ): Promise<DocumentInfoResponse | undefined> {
   try {
     const {
@@ -345,7 +346,7 @@ export async function createPlaceholderDocument(
       initiatorUserId: userId ? new mongoose.Types.ObjectId(userId) : null,
       customMetadata,
       sizeInBytes: size,
-      storageVendor: StorageVendor.S3,
+      storageVendor: storageVendor ?? StorageVendor.S3,
       extension: normalizeExtension(extension),
     };
 

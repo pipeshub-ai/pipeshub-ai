@@ -270,12 +270,6 @@ class TestMRIndexingFilters:
         mrs = MergeRequestsSync(c)
         assert mrs._merge_requests_indexing_enabled() is True
 
-    def test_comments_enabled_by_default(self) -> None:
-        c = make_mock_connector()
-        c.indexing_filters = None
-        mrs = MergeRequestsSync(c)
-        assert mrs._comments_indexing_enabled() is True
-
     def test_merge_requests_disabled_by_filter(self) -> None:
         c = make_mock_connector()
         from app.connectors.core.registry.filters import IndexingFilterKey
@@ -285,14 +279,11 @@ class TestMRIndexingFilters:
         mrs = MergeRequestsSync(c)
         assert mrs._merge_requests_indexing_enabled() is False
 
-    def test_comments_disabled_by_filter(self) -> None:
-        c = make_mock_connector()
-        from app.connectors.core.registry.filters import IndexingFilterKey
-        filters = MagicMock()
-        filters.is_enabled = MagicMock(side_effect=lambda k: k != IndexingFilterKey.COMMENTS)
-        c.indexing_filters = filters
-        mrs = MergeRequestsSync(c)
-        assert mrs._comments_indexing_enabled() is False
+    def test_no_comments_indexing_filter_exists(self) -> None:
+        """See the matching note in test_issues.py — comment content is part of
+        the MR record, and the discussions gate also took the file diffs down
+        with it under manual indexing."""
+        assert not hasattr(MergeRequestsSync, "_comments_indexing_enabled")
 
 
 # ===========================================================================

@@ -107,30 +107,30 @@ class TestApplyPolicyToChatState:
 class TestResolveCustomInstructions:
     """`_resolve_custom_instructions` -- the workspace "Custom Instructions"
     settings page (`customSystemPrompt`/`customSystemPromptWebSearch`/
-    `customSystemPromptAgent` on `AIModelsConfig`), mode-resolved so each
+    `customSystemPromptAgent` on `SystemPromptsConfig`), mode-resolved so each
     of the three `/chat/stream` modes picks its own configured prompt."""
 
     def test_internal_search_reads_custom_system_prompt_key(self) -> None:
-        ai_models_config = {"customSystemPrompt": "Always answer in French."}
-        result = _resolve_custom_instructions(ai_models_config, INTERNAL_SEARCH_POLICY)
+        system_prompts_config = {"customSystemPrompt": "Always answer in French."}
+        result = _resolve_custom_instructions(system_prompts_config, INTERNAL_SEARCH_POLICY)
         assert result == "Always answer in French."
 
     def test_web_search_reads_custom_system_prompt_web_search_key(self) -> None:
-        ai_models_config = {"customSystemPromptWebSearch": "Always cite sources."}
-        result = _resolve_custom_instructions(ai_models_config, WEB_SEARCH_POLICY)
+        system_prompts_config = {"customSystemPromptWebSearch": "Always cite sources."}
+        result = _resolve_custom_instructions(system_prompts_config, WEB_SEARCH_POLICY)
         assert result == "Always cite sources."
 
     def test_agent_reads_custom_system_prompt_agent_key(self) -> None:
-        ai_models_config = {"customSystemPromptAgent": "Prefer internal knowledge first."}
-        result = _resolve_custom_instructions(ai_models_config, AGENT_POLICY)
+        system_prompts_config = {"customSystemPromptAgent": "Prefer internal knowledge first."}
+        result = _resolve_custom_instructions(system_prompts_config, AGENT_POLICY)
         assert result == "Prefer internal knowledge first."
 
     def test_modes_do_not_cross_read_each_others_key(self) -> None:
         """Setting only the web-search prompt must not leak into internal_search
         or agent mode -- each mode's admin-configured prompt is independent."""
-        ai_models_config = {"customSystemPromptWebSearch": "Web-only instructions."}
-        assert _resolve_custom_instructions(ai_models_config, INTERNAL_SEARCH_POLICY) is None
-        assert _resolve_custom_instructions(ai_models_config, AGENT_POLICY) is None
+        system_prompts_config = {"customSystemPromptWebSearch": "Web-only instructions."}
+        assert _resolve_custom_instructions(system_prompts_config, INTERNAL_SEARCH_POLICY) is None
+        assert _resolve_custom_instructions(system_prompts_config, AGENT_POLICY) is None
 
     def test_missing_config_returns_none(self) -> None:
         assert _resolve_custom_instructions({}, INTERNAL_SEARCH_POLICY) is None
@@ -139,12 +139,12 @@ class TestResolveCustomInstructions:
         """An org that saved then cleared the field must omit the prompt
         builder section entirely, not render an empty '## Custom
         Instructions' header."""
-        ai_models_config = {"customSystemPrompt": "   "}
-        assert _resolve_custom_instructions(ai_models_config, INTERNAL_SEARCH_POLICY) is None
+        system_prompts_config = {"customSystemPrompt": "   "}
+        assert _resolve_custom_instructions(system_prompts_config, INTERNAL_SEARCH_POLICY) is None
 
     def test_result_is_stripped(self) -> None:
-        ai_models_config = {"customSystemPrompt": "  Be concise.  "}
-        assert _resolve_custom_instructions(ai_models_config, INTERNAL_SEARCH_POLICY) == "Be concise."
+        system_prompts_config = {"customSystemPrompt": "  Be concise.  "}
+        assert _resolve_custom_instructions(system_prompts_config, INTERNAL_SEARCH_POLICY) == "Be concise."
 
 
 class TestResolveWebSearchConfig:
@@ -308,7 +308,7 @@ class TestRunChatStream:
             return {"answer": agent_output}
 
         kwargs = self._base_kwargs(policy=AGENT_POLICY)
-        kwargs["ai_models_config"] = {"customSystemPromptAgent": "Prefer internal knowledge first."}
+        kwargs["system_prompts_config"] = {"customSystemPromptAgent": "Prefer internal knowledge first."}
 
         sql_patch, slack_patch = _patch_connectors()
         with (
@@ -545,6 +545,69 @@ class TestRunChatStream:
         # Coverage is 5% (< low-coverage threshold), so the low-coverage header
         # applies regardless of the whole-document bit being False.
         assert "Coverage is incomplete (as low as 5%)" in constraint_text
+
+    async def test_prefetch_collected_images_extend_attachment_image_blocks(self) -> None:
+        """Prefetch has no tool result to carry a multipart `ToolMessage`, so
+        its `collected_images` must be merged into `context.
+        attachment_image_blocks` for the existing `shape_image_injection`
+        PRE_MODEL hook to deliver -- and the shared per-request `ImageBudget`
+        (from `context.tool_state`) must be the one handed to
+        `prefetch_retrieval`, not a fresh one, so the 50-image cap holds
+        across prefetch + search + fetch + attachments together."""
+        collected_images = [{
+            "ref": "ref1", "block_index": 0,
+            "image_url": {"url": "data:image/png;base64,xx"},
+            "virtual_record_id": "vr1",
+        }]
+        prefetch_result = PrefetchResult(
+            formatted_context="[image block]",
+            final_results=[{"virtual_record_id": "vr1"}],
+            virtual_record_id_to_result={"vr1": {"recordId": "r1"}},
+            tool_records=[{"recordId": "r1"}],
+            citation_ref_mapper=CitationRefMapper(),
+            is_empty=False,
+            collected_images=collected_images,
+        )
+        captured: dict[str, Any] = {}
+        captured_prefetch_kwargs: dict[str, Any] = {}
+
+        async def _fake_prefetch_retrieval(**kwargs):
+            captured_prefetch_kwargs.update(kwargs)
+            return prefetch_result
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+            goal = MagicMock(constraints=[])
+            captured["context"] = context
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), goal, []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None):
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch(
+                "app.agents.chat_modes.bridge.prefetch_retrieval",
+                new=_fake_prefetch_retrieval,
+            ),
+        ):
+            events = [
+                chunk
+                async for chunk in run_chat_stream(**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY))
+            ]
+
+        assert events[-1].startswith("event: complete\n")
+        assert captured["context"].attachment_image_blocks == collected_images
+        assert captured_prefetch_kwargs["image_budget"] is captured["context"].tool_state["image_budget"]
 
     async def test_agent_run_failure_emits_error_event(self) -> None:
         async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):

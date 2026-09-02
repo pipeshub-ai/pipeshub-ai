@@ -19,43 +19,43 @@ class TestResolveBlockCap:
     def test_default_when_env_unset(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PIPESHUB_FULL_RECORD_MAX_BLOCKS", None)
-            assert resolve_block_cap("gpt-4", None) == 200
+            assert resolve_block_cap(None) == 200
 
     def test_env_override(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "50"}):
-            assert resolve_block_cap("gpt-4", None) == 50
+            assert resolve_block_cap(None) == 50
 
     def test_requested_max_lower_than_env(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "100"}):
-            assert resolve_block_cap("gpt-4", 30) == 30
+            assert resolve_block_cap(30) == 30
 
     def test_requested_max_higher_than_env(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "50"}):
-            assert resolve_block_cap("gpt-4", 200) == 50
+            assert resolve_block_cap(200) == 50
 
     def test_zero_env_uses_default(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "0"}):
-            assert resolve_block_cap("gpt-4", None) == 200
+            assert resolve_block_cap(None) == 200
 
     def test_negative_env_uses_default(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "-5"}):
-            assert resolve_block_cap("gpt-4", None) == 200
+            assert resolve_block_cap(None) == 200
 
     def test_invalid_env_uses_default(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "abc"}):
-            assert resolve_block_cap("gpt-4", None) == 200
+            assert resolve_block_cap(None) == 200
 
     def test_whitespace_env_uses_default(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "  "}):
-            assert resolve_block_cap("gpt-4", None) == 200
+            assert resolve_block_cap(None) == 200
 
     def test_requested_max_zero_ignored(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "100"}):
-            assert resolve_block_cap("gpt-4", 0) == 100
+            assert resolve_block_cap(0) == 100
 
     def test_requested_max_negative_ignored(self) -> None:
         with patch.dict(os.environ, {"PIPESHUB_FULL_RECORD_MAX_BLOCKS": "100"}):
-            assert resolve_block_cap("gpt-4", -1) == 100
+            assert resolve_block_cap(-1) == 100
 
 
 def _make_context(**overrides: Any) -> SimpleNamespace:
@@ -66,6 +66,12 @@ def _make_context(**overrides: Any) -> SimpleNamespace:
         "graph_provider": AsyncMock(),
         "full_records_fetched": set(),
         "tool_state": {},
+        "is_multimodal_llm": False,
+        # Sizes the render budget; `None` falls back to the platform default.
+        "context_length": 128_000,
+        # Ranks an over-budget record's blocks — see `record_block_selection`.
+        "query": "",
+        "retrieval_service": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -293,3 +299,212 @@ class TestExecuteFetchRecord:
 class TestFetchRecordToolName:
     def test_constant_value(self) -> None:
         assert FETCH_RECORD_TOOL_NAME == "knowledgegraph__fetch_record"
+
+
+_MIN_PNG_DATA_URI = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+
+def _image_record() -> dict[str, Any]:
+    from app.models.blocks import BlockType
+
+    return {
+        "id": "rec-1",
+        "virtual_record_id": "vr-1",
+        "frontend_url": "https://a.com",
+        "context_metadata": "ctx",
+        "block_containers": {
+            "blocks": [
+                {
+                    "index": 0,
+                    "type": BlockType.IMAGE.value,
+                    "parent_index": None,
+                    "data": {"uri": _MIN_PNG_DATA_URI},
+                },
+            ],
+            "block_groups": [],
+        },
+    }
+
+
+def _fake_tool_returning(records: list[dict[str, Any]]) -> MagicMock:
+    tool = MagicMock()
+    tool.coroutine = AsyncMock(
+        return_value={"ok": True, "records": records, "not_available_ids": []}
+    )
+    return tool
+
+
+class TestExecuteFetchRecordImageDelivery:
+    """Regression: `record_to_message_content` was called without
+    `is_multimodal_llm`, so a record whose only block is an IMAGE rendered to
+    an empty string and the image never reached the model."""
+
+    @pytest.mark.asyncio
+    async def test_multimodal_returns_multipart_with_image_part(self) -> None:
+        from app.agent_loop_lib.core.messages import ImagePart, TextPart
+        from app.utils.chat_helpers import CitationRefMapper
+
+        ctx = _make_context(is_multimodal_llm=True)
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=_fake_tool_returning([_image_record()]),
+        ):
+            output, _ = await execute_fetch_record(
+                context=ctx,
+                virtual_records={"vr-1": _image_record()},
+                citation_ref_mapper=CitationRefMapper(),
+                record_ids=["rec-1"],
+            )
+
+        assert output.success is True
+        assert isinstance(output.data, list)
+        images = [p for p in output.data if isinstance(p, ImagePart)]
+        assert len(images) == 1
+        from app.agent_loop_lib.core.messages import image_data_url
+
+        assert images[0].source.type == "base64"
+        assert image_data_url(images[0].source) == _MIN_PNG_DATA_URI
+        assert any(isinstance(p, TextPart) for p in output.data)
+        # Native multipart support is the default, so no fallback stash.
+        assert "pending_tool_images" not in ctx.tool_state
+
+    @pytest.mark.asyncio
+    async def test_non_multimodal_returns_plain_text(self) -> None:
+        from app.utils.chat_helpers import CitationRefMapper
+
+        ctx = _make_context(is_multimodal_llm=False)
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=_fake_tool_returning([_image_record()]),
+        ):
+            output, _ = await execute_fetch_record(
+                context=ctx,
+                virtual_records={"vr-1": _image_record()},
+                citation_ref_mapper=CitationRefMapper(),
+                record_ids=["rec-1"],
+            )
+
+        assert isinstance(output.data, str)
+
+    @pytest.mark.asyncio
+    async def test_without_native_multipart_support_stashes_fallback(self) -> None:
+        from app.utils.chat_helpers import CitationRefMapper
+
+        ctx = _make_context(is_multimodal_llm=True)
+        ctx.tool_state["supports_multipart_tool_result"] = False
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=_fake_tool_returning([_image_record()]),
+        ):
+            output, _ = await execute_fetch_record(
+                context=ctx,
+                virtual_records={"vr-1": _image_record()},
+                citation_ref_mapper=CitationRefMapper(),
+                record_ids=["rec-1"],
+            )
+
+        assert isinstance(output.data, list)
+        assert len(ctx.tool_state["pending_tool_images"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_shared_image_budget_is_debited(self) -> None:
+        """The fetch must draw on the same conversation-wide budget as
+        retrieval/attachments, not a private one."""
+        from app.utils.chat_helpers import CitationRefMapper, ImageBudget
+
+        budget = ImageBudget(max_images=1)
+        ctx = _make_context(is_multimodal_llm=True)
+        ctx.tool_state["image_budget"] = budget
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=_fake_tool_returning([_image_record()]),
+        ):
+            await execute_fetch_record(
+                context=ctx,
+                virtual_records={"vr-1": _image_record()},
+                citation_ref_mapper=CitationRefMapper(),
+                record_ids=["rec-1"],
+            )
+
+        assert budget.used == 1
+
+
+class TestWholeDocumentRequests:
+    """A summary, an overview, "does it mention X anywhere" — the answer is a
+    property of the whole document, and the parts relevance would drop are the
+    ones whose absence changes it. The router already classifies the request."""
+
+    @staticmethod
+    def _record(blocks: int = 400) -> dict:
+        return {
+            "id": "rec-1",
+            "virtual_record_id": "vr-1",
+            "frontend_url": "",
+            "context_metadata": "Record ID: rec-1",
+            "block_containers": {
+                "blocks": [
+                    {"index": i, "type": "text", "parent_index": None,
+                     "parent_block_index": None, "data": f"section {i} " + "x" * 400}
+                    for i in range(blocks)
+                ],
+                "block_groups": [],
+            },
+        }
+
+    @staticmethod
+    def _retrieval() -> MagicMock:
+        service = MagicMock()
+        service.search_with_filters = AsyncMock(return_value={"searchResults": [
+            {"metadata": {"virtualRecordId": "vr-1", "blockIndex": 200}},
+        ]})
+        return service
+
+    async def _run(self, *, needs_whole_document: bool) -> tuple[str, MagicMock]:
+        retrieval = self._retrieval()
+        context = _make_context(
+            context_length=128_000,
+            query="explain this report",
+            retrieval_service=retrieval,
+            needs_whole_document=needs_whole_document,
+            tool_state={"needs_whole_document": needs_whole_document},
+        )
+        structured = MagicMock()
+        structured.coroutine = AsyncMock(return_value={
+            "ok": True, "records": [self._record()], "not_available_ids": [],
+        })
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=structured,
+        ):
+            output, _ = await execute_fetch_record(
+                context=context, virtual_records={}, citation_ref_mapper=None,
+                record_ids=["rec-1"], reason="the full document is needed to summarize it",
+            )
+        return output.data, retrieval
+
+    @pytest.mark.asyncio
+    async def test_a_summary_request_reads_in_order_without_ranking(self) -> None:
+        text, retrieval = await self._run(needs_whole_document=True)
+
+        retrieval.search_with_filters.assert_not_awaited()
+        assert "section 0 " in text
+        assert "section 1 " in text, "contiguous, not a relevance sample"
+
+    @pytest.mark.asyncio
+    async def test_a_targeted_request_still_ranks(self) -> None:
+        _text, retrieval = await self._run(needs_whole_document=False)
+
+        retrieval.search_with_filters.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_either_way_the_allowance_is_filled(self) -> None:
+        """The complaint that started this: far fewer blocks than the window
+        could hold."""
+        whole, _ = await self._run(needs_whole_document=True)
+        targeted, _ = await self._run(needs_whole_document=False)
+
+        for text in (whole, targeted):
+            assert len(text) > 60_000, "the window was left unused"

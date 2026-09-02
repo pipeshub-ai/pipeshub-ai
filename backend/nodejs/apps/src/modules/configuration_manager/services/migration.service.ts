@@ -7,12 +7,13 @@ import {
 } from '../config/config';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { configPaths } from '../paths/paths';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { ScheduledJobsBackfillMigration } from './migrations/scheduled_jobs_backfill.migration';
 import { ChatKbFiltersMigration } from './migrations/chat_kb_filters.migration';
 import { AdminRoleMigration } from './migrations/admin_role.migration';
+import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_backfill.migration';
 import { Org } from '../../user_management/schema/org.schema';
 
 export interface MigrationDependencies {
@@ -41,6 +42,7 @@ export class MigrationService {
     await this.connectorSyncScheduleMigration(deps.scheduler, deps.appConfig);
     await this.chatKbFiltersMigration();
     await this.adminRoleMigration();
+    await this.documentOrgIdMigration();
     this.logger.info('✅ Migration completed');
   }
 
@@ -87,6 +89,29 @@ export class MigrationService {
       }
     } catch (error) {
       this.logger.error('Chat KB-filters migration failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async documentOrgIdMigration(): Promise<void> {
+    this.logger.info('Migrating document orgId backfill');
+    try {
+      const result = await new DocumentOrgIdBackfillMigration(
+        this.logger,
+        this.keyValueStoreService,
+      ).run();
+
+      if (result.errored > 0) {
+        this.logger.warn(
+          '⚠️  Document orgId migration finished with errors — will retry on next boot',
+          result,
+        );
+      } else {
+        this.logger.info('✅ Document orgId migrated', result);
+      }
+    } catch (error) {
+      this.logger.error('Document orgId migration failed', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }
@@ -163,7 +188,7 @@ export class MigrationService {
     let isDefault = true;
     for (const llmConfig of llmConfigs) {
       if (!llmConfig.modelKey) {
-        const modelKey = uuidv4();
+        const modelKey = randomUUID();
         llmConfig.modelKey = modelKey;
         llmConfig.isDefault = isDefault;
         llmConfig.isMultiModel = false;
@@ -175,7 +200,7 @@ export class MigrationService {
     isDefault = true;
     for (const embeddingConfig of embeddingConfigs) {
       if (!embeddingConfig.modelKey) {
-        const modelKey = uuidv4();
+        const modelKey = randomUUID();
         embeddingConfig.modelKey = modelKey;
         embeddingConfig.isDefault = isDefault;
         embeddingConfig.isMultiModel = false;

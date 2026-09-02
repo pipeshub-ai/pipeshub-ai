@@ -31,6 +31,14 @@ function stubOAuthAppsForDeletedUser(appsLeResult: unknown[] = []) {
   sinon.stub(OAuthApp, 'updateMany').resolves({ modifiedCount: 0 } as any);
 }
 
+/** isUserOrgAdmin uses Users.findOne().select('role').lean() when invite has groupIds or role=admin. */
+function stubActorAsOrgAdmin() {
+  sinon.stub(Users, 'findOne').returns({
+    select: sinon.stub().returnsThis(),
+    lean: sinon.stub().resolves({ role: 'admin' }),
+  } as any);
+}
+
 describe('UserController', () => {
   let controller: UserController;
   let mockConfig: any;
@@ -1425,6 +1433,22 @@ describe('UserController', () => {
       expect(error.message).to.equal('User not found');
     });
 
+    it('should look up the invite target within the requester org', async () => {
+      req.params.id = '507f1f77bcf86cd799439011';
+
+      sinon.stub(Org, 'findOne').resolves({ _id: req.user.orgId, registeredName: 'Test Org' } as any);
+      const findOneStub = sinon.stub(Users, 'findOne').resolves(null);
+
+      await controller.resendInvite(req, res, next);
+
+      expect(findOneStub.calledOnce).to.be.true;
+      expect(findOneStub.firstCall.args[0]).to.deep.equal({
+        _id: '507f1f77bcf86cd799439011',
+        orgId: req.user.orgId,
+        isDeleted: false,
+      });
+    });
+
     it('should call next with BadRequestError when user has already logged in', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
 
@@ -2424,6 +2448,7 @@ describe('UserController', () => {
         emails: ['existing@test.com', 'deleted@test.com', 'new@test.com'],
         groupIds: ['group1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
 
@@ -2470,6 +2495,7 @@ describe('UserController', () => {
         emails: ['existing@test.com'],
         groupIds: ['group1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
       sinon.stub(Users, 'find').resolves([
@@ -2536,6 +2562,7 @@ describe('UserController', () => {
         emails: ['pending@test.com'],
         groupIds: ['group1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
       sinon.stub(Users, 'find').resolves([
@@ -2577,6 +2604,7 @@ describe('UserController', () => {
         emails: ['blocked-pending@test.com'],
         groupIds: ['group1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
       sinon.stub(Users, 'find').resolves([
@@ -2619,6 +2647,10 @@ describe('UserController', () => {
         role: 'admin',
       };
 
+      sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'admin' }),
+      } as any);
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org', shortName: 'TO' } as any);
 
       const deletedUser = {
@@ -2711,6 +2743,43 @@ describe('UserController', () => {
         (call) => call.args[1]?.$set?.role === 'admin',
       );
       expect(promoteCall).to.equal(undefined);
+    });
+
+    it('should reject a member inviting users as admin', async () => {
+      req.body = {
+        emails: ['new@test.com'],
+        role: 'admin',
+      };
+
+      sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'member' }),
+      } as any);
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      const error = next.firstCall.args[0];
+      expect(error.message).to.equal('Members can only invite users as member');
+    });
+
+    it('should reject a member inviting with groupIds', async () => {
+      req.body = {
+        emails: ['new@test.com'],
+        role: 'member',
+        groupIds: ['507f1f77bcf86cd799439013'],
+      };
+
+      sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'member' }),
+      } as any);
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      const error = next.firstCall.args[0];
+      expect(error.message).to.equal('Members cannot assign groups when inviting');
     });
   });
 
@@ -2881,6 +2950,7 @@ describe('UserController', () => {
         emails: ['new1@test.com', 'new2@test.com'],
         groupIds: ['g1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({
         _id: '507f1f77bcf86cd799439012',
@@ -4564,6 +4634,7 @@ describe('UserController', () => {
         emails: ['newuser@test.com'],
         groupIds: ['g1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp', shortName: 'C' } as any);
       sinon.stub(Users, 'find').resolves([]); // No existing users
@@ -4595,6 +4666,7 @@ describe('UserController', () => {
         emails: ['newuser@test.com'],
         groupIds: ['g1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp', shortName: 'C' } as any);
       sinon.stub(Users, 'find').resolves([]); // No existing users
@@ -4631,6 +4703,7 @@ describe('UserController', () => {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp', shortName: '' } as any);
       sinon.stub(Users, 'find')
@@ -4670,6 +4743,7 @@ describe('UserController', () => {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp', shortName: 'C' } as any);
       sinon.stub(Users, 'find')
@@ -4709,6 +4783,7 @@ describe('UserController', () => {
         emails: ['valid@test.com'],
         groupIds: ['g1'],
       };
+      stubActorAsOrgAdmin();
 
       const validId = new mongoose.Types.ObjectId();
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp' } as any);
@@ -4867,6 +4942,7 @@ describe('UserController', () => {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp' } as any);
       sinon.stub(Users, 'find')
@@ -4908,6 +4984,7 @@ describe('UserController', () => {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
       };
+      stubActorAsOrgAdmin();
 
       const userId = new mongoose.Types.ObjectId();
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp' } as any);
@@ -5197,6 +5274,22 @@ describe('UserController', () => {
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.equal(
         'groupIds must contain valid MongoDB ObjectIds',
+      );
+    });
+
+    it('rejects a member attaching groupIds to a file invite', async () => {
+      req.body = {
+        fileBuffer: { buffer: Buffer.from('a@test.com\n') },
+        groupIds: JSON.stringify(['507f1f77bcf86cd799439013']),
+      };
+      sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'member' }),
+      } as any);
+      await controller.addManyUsersFromFile(req, res, next);
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal(
+        'Members cannot assign groups when inviting',
       );
     });
   });

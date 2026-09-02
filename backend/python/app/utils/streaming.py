@@ -14,7 +14,7 @@ import aiohttp
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_anthropic import ChatAnthropic
-from langchain_aws import ChatBedrock
+from langchain_aws import ChatBedrock, ChatBedrockConverse
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -236,6 +236,40 @@ async def stream_content(signed_url: str, record_id: str | None = None, file_nam
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to fetch file content from signed URL {str(e)}"
         )
+
+
+async def stream_with_eager_first_chunk(
+    source: AsyncGenerator[bytes, None],
+) -> AsyncGenerator[bytes, None]:
+    """Return a streaming generator after eagerly pulling its first chunk.
+
+    Reading the first chunk before returning lets upstream auth / 404 / network
+    errors surface here, where they can still be converted to a clean HTTP 5xx,
+    rather than after ``StreamingResponse`` has already committed the status line
+    and can only produce a truncated chunked body.
+    """
+    aiter = source.__aiter__()
+    try:
+        first = await aiter.__anext__()
+    except StopAsyncIteration:
+        await source.aclose()
+        async def _empty() -> AsyncGenerator[bytes, None]:
+            return
+            yield b""  # noqa: unreachable — marks function as async generator
+        return _empty()
+    except Exception:
+        await source.aclose()
+        raise
+
+    async def _gen() -> AsyncGenerator[bytes, None]:
+        try:
+            yield first
+            async for chunk in aiter:
+                yield chunk
+        finally:
+            await source.aclose()
+
+    return _gen()
 
 
 def create_stream_record_response(
@@ -963,7 +997,7 @@ async def call_aiter_llm_stream_simple(
         return
 
 def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
-    if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI,ChatBedrock)):
+    if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI,ChatBedrock,ChatBedrockConverse)):
 
         additional_kwargs = {}
         if isinstance(llm, ChatAnthropic):
@@ -978,7 +1012,7 @@ def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
 
             additional_kwargs["stream"] = True
 
-        if not isinstance(llm, ChatBedrock):
+        if not isinstance(llm, (ChatBedrock, ChatBedrockConverse)):
             additional_kwargs["method"] = "json_schema"
 
         try:
@@ -986,13 +1020,13 @@ def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
                 schema,
                 **additional_kwargs
             )
-            logger.info("Using structured output")
+            logger.debug("Using structured output")
             return model_with_structure
         except Exception as e:
             logger.warning("Failed to apply structured output, falling back to default. Error: %s", str(e))
-            logger.info("Using non-structured LLM")
+            logger.debug("Using non-structured LLM")
 
-    logger.info("Using non-structured LLM")
+    logger.debug("Using non-structured LLM")
     return llm
 
 

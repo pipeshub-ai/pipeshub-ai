@@ -7,6 +7,7 @@ export interface SmtpConfig {
 }
 
 export interface MailBody {
+  orgId?: string;
   productName?: string;
   emailTemplateType: string;
   isAutoEmail?: boolean;
@@ -26,4 +27,6 @@ export enum EmailTemplateType {
   OrgEmailVerification = 'orgEmailVerification',
   AppuserInvite = 'appuserInvite',
   SuspiciousLoginAttempt = 'suspiciousLoginAttempt',
+  DomainLimitReached = 'domainLimitReached',
+
 }

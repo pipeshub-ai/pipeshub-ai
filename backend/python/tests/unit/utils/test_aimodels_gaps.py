@@ -65,6 +65,7 @@ class TestAnthropicSupportsSamplingParams:
             ("claude-haiku-5-1", False),
             ("claude-sonnet-4", True),
             ("claude-opus-4", True),
+            ("anthropic.claude-opus-4-20250514-v1:0", True),
         ],
     )
     def test_sampling_param_support(self, model_name, expected):
@@ -113,7 +114,7 @@ class TestAnthropicNoSamplingTemperature:
             "isDefault": True,
         }
         with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
-            with patch("langchain_aws.ChatBedrock") as mock_cls:
+            with patch("langchain_aws.ChatBedrockConverse") as mock_cls:
                 mock_cls.return_value = MagicMock()
                 get_generator_model(LLMProvider.AWS_BEDROCK.value, config)
                 assert "temperature" not in mock_cls.call_args.kwargs

@@ -19,12 +19,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.messages import SystemMessage as LCSystemMessage
 from langchain_core.messages import ToolMessage as LCToolMessage
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field, create_model
 
 from app.agent_loop_lib.core.messages import (
@@ -148,6 +147,20 @@ def convert_message_from_langchain(message: BaseMessage) -> Message:
 
     if isinstance(message, LCToolMessage):
         content = message.content
+        if isinstance(content, list):
+            parts: list[Part] = []
+            for block in content:
+                if isinstance(block, dict):
+                    part = _langchain_block_to_part(block)
+                    if part is not None:
+                        parts.append(part)
+                elif isinstance(block, str) and block:
+                    parts.append(TextPart(text=block))
+            return ToolMessage(
+                content=parts or "",
+                tool_call_id=message.tool_call_id,
+                is_error=getattr(message, "status", None) == "error",
+            )
         return ToolMessage(
             content=content if isinstance(content, str) else str(content),
             tool_call_id=message.tool_call_id,
@@ -161,8 +174,21 @@ def convert_messages_from_langchain(messages: list[BaseMessage]) -> list[Message
     return [convert_message_from_langchain(m) for m in messages]
 
 
-def convert_message_to_langchain(message: Message) -> BaseMessage:
-    """Convert one agent-loop `Message` to its LangChain equivalent."""
+def convert_message_to_langchain(
+    message: Message, *, strip_tool_images: bool = False,
+) -> BaseMessage:
+    """Convert one agent-loop `Message` to its LangChain equivalent.
+
+    `strip_tool_images`: True for chat models whose provider does not
+    accept image content in a tool-result message (Ollama's `/api/chat`,
+    OpenAI-family models on Chat Completions — see
+    `LangChainTransport._supports_multipart_tool_result`). Providers that
+    do accept multipart tool results (Anthropic, Gemini, Bedrock, ...) keep
+    images inline here; the stripped images are recovered from
+    `context.tool_state["pending_tool_images"]` and re-injected into a
+    `UserMessage` by the `shape_retrieved_image_injection` PRE_MODEL
+    fallback hook (`attachment_resolver.py`).
+    """
     if message.role == MessageRole.SYSTEM:
         return LCSystemMessage(content=message.content)
 
@@ -183,7 +209,24 @@ def convert_message_to_langchain(message: Message) -> BaseMessage:
         return AIMessage(content=message.text, tool_calls=tool_calls)
 
     if message.role == MessageRole.TOOL:
-        serialized_content = message.content + message.step_footer
+        content = message.content
+        if isinstance(content, list):
+            if strip_tool_images:
+                serialized_content = message.text + message.step_footer
+                return LCToolMessage(
+                    content=serialized_content,
+                    tool_call_id=_clamp_tool_call_id(message.tool_call_id or ""),
+                    status="error" if message.is_error else "success",
+                )
+            blocks = [_part_to_block(p) for p in content]
+            if message.step_footer:
+                blocks.append({"type": "text", "text": message.step_footer})
+            return LCToolMessage(
+                content=blocks,
+                tool_call_id=_clamp_tool_call_id(message.tool_call_id or ""),
+                status="error" if message.is_error else "success",
+            )
+        serialized_content = content + message.step_footer
         return LCToolMessage(
             content=serialized_content,
             tool_call_id=_clamp_tool_call_id(message.tool_call_id or ""),
@@ -193,16 +236,64 @@ def convert_message_to_langchain(message: Message) -> BaseMessage:
     raise ValueError(f"Unsupported agent-loop message role: {message.role!r}")
 
 
+# Prefix for the user message `relocate_tool_images` parks tool-sourced images
+# under, so the model can tell them apart from what the user itself attached.
+_RELOCATED_IMAGES_PREFIX = "Images returned by the tool results above:"
+
+
 def convert_messages_to_langchain(
-    messages: list[Message], system: str | None = None
+    messages: list[Message],
+    system: str | None = None,
+    *,
+    strip_tool_images: bool = False,
+    relocate_tool_images: bool = False,
 ) -> list[BaseMessage]:
     """Convert a full agent-loop message list, prepending `system` as a
     LangChain `SystemMessage` when provided (mirrors `LLMTransport.complete`'s
-    contract: `system` arrives as a separate kwarg, not inside `messages`)."""
-    converted = [convert_message_to_langchain(m) for m in messages]
+    contract: `system` arrives as a separate kwarg, not inside `messages`).
+
+    `relocate_tool_images`: strip images out of tool results (as
+    `strip_tool_images` does) but re-attach them to a trailing `HumanMessage`
+    instead of dropping them. Used by `LangChainTransport`'s runtime recovery
+    from a provider that rejects images in a tool-result message
+    (`is_tool_result_image_conflict`) — that path has no
+    `shape_retrieved_image_injection` hook registered to recover the images
+    from `pending_tool_images`, since the factory registers that hook only for
+    providers `_supports_multipart_tool_result` rejects up front, so without
+    re-attaching them here the retry would answer about images it never saw.
+    """
+    converted = [
+        convert_message_to_langchain(
+            m, strip_tool_images=strip_tool_images or relocate_tool_images,
+        )
+        for m in messages
+    ]
+    if relocate_tool_images:
+        blocks = [
+            _image_part_to_block(part)
+            for m in messages
+            if m.role == MessageRole.TOOL and isinstance(m.content, list)
+            for part in m.content
+            if isinstance(part, ImagePart)
+        ]
+        if blocks:
+            converted.append(HumanMessage(
+                content=[{"type": "text", "text": _RELOCATED_IMAGES_PREFIX}, *blocks],
+            ))
     if system:
         return [LCSystemMessage(content=system), *converted]
     return converted
+
+
+def has_tool_result_images(messages: list[Message]) -> bool:
+    """Whether any tool result carries an `ImagePart` — i.e. whether
+    `relocate_tool_images` has anything to move."""
+    return any(
+        m.role == MessageRole.TOOL
+        and isinstance(m.content, list)
+        and any(isinstance(part, ImagePart) for part in m.content)
+        for m in messages
+    )
 
 
 # OpenAI's Chat Completions/Responses APIs hard-reject any tool/function
@@ -398,6 +489,12 @@ _JSON_SCHEMA_TYPE_MAP: dict[str, Any] = {
 }
 
 
+# Values a `Literal[...]` accepts as type arguments. JSON Schema allows an
+# `enum` member to be any value, including an object or array — those fall
+# through to the declared primitive type instead.
+_LITERAL_SAFE_TYPES = (str, int, bool, type(None))
+
+
 def _json_schema_to_python_type(schema: dict[str, Any], model_name: str, field_name: str) -> Any:  # noqa: ANN401
     """Best-effort JSON-schema-fragment -> Python type mapping for the flat,
     hand-authored schemas agent-loop's planner/critic/intent modules pass to
@@ -405,10 +502,24 @@ def _json_schema_to_python_type(schema: dict[str, Any], model_name: str, field_n
     no `$ref`/`$defs`, at most one level of `array`/`object` nesting).
     Anything unrecognized degrades to `Any` rather than raising — a
     too-loose field type is far cheaper than failing to bind tools at all.
+
+    Reached only from `output_schema_to_pydantic_model` — the tool-calling
+    path passes `input_schema` through verbatim (see
+    `convert_tool_schema_to_langchain_dict`) and never builds a model.
     """
     schema_type = schema.get("type")
+    enum_values = schema.get("enum")
 
-    if schema_type in _JSON_SCHEMA_TYPE_MAP:
+    if enum_values and all(isinstance(v, _LITERAL_SAFE_TYPES) for v in enum_values):
+        # `Literal` keeps the declared type AND the allowed values. Mapping
+        # the primitive type alone drops the enum; returning bare `Any` drops
+        # both, letting a provider's structured response put an object in a
+        # field declared `{"type": "string", "enum": [...]}`.
+        return Literal[tuple(enum_values)]
+
+    # `isinstance` guard, not a bare `in`: a list-valued `type` is unhashable
+    # and would raise `TypeError` from the dict lookup.
+    if isinstance(schema_type, str) and schema_type in _JSON_SCHEMA_TYPE_MAP:
         return _JSON_SCHEMA_TYPE_MAP[schema_type]
 
     if schema_type == "array":
@@ -419,12 +530,6 @@ def _json_schema_to_python_type(schema: dict[str, Any], model_name: str, field_n
     if schema_type == "object":
         nested_name = f"{model_name}_{field_name}".title().replace("_", "")
         return _json_schema_to_pydantic_model(nested_name, schema)
-
-    if "enum" in schema:
-        # Plain Python doesn't need a real Enum here — a Literal-free `Any`
-        # keeps this helper simple; the value is still validated downstream
-        # by the calling module's own post-processing, not by this schema.
-        return Any
 
     return Any
 
@@ -455,78 +560,80 @@ def output_schema_to_pydantic_model(output_schema: dict[str, Any]) -> type[BaseM
     return _json_schema_to_pydantic_model("StructuredOutput", output_schema)
 
 
-async def _unbound_tool_coroutine(**_kwargs: Any) -> Any:  # noqa: ANN401
-    raise RuntimeError(
-        "This LangChain tool object exists only to carry a schema for "
-        "LLM function-calling (LangChainTransport.complete/stream). Actual "
-        "execution happens through agent-loop's ToolExecutor calling the "
-        "matching registered Tool adapter, never through this StructuredTool."
-    )
+# Meta-keywords that carry no meaning inside a function-calling `parameters`
+# schema — a `$schema`/`$id` pointing at a draft URL describes the document,
+# not the arguments, so no provider has any use for it.
+_SCHEMA_META_KEYS_TO_STRIP = frozenset({"$schema", "$id"})
 
 
-_TOOL_MODEL_CACHE: dict[str, StructuredTool] = {}
-_TOOL_MODEL_CACHE_MAXSIZE = 512
+def _sanitize_tool_input_schema(schema: Any) -> Any:  # noqa: ANN401
+    """Strips `$schema`/`$id` and any leftover `$ref` from a tool's JSON
+    Schema before it reaches `bind_tools()`.
 
+    `MCPToolAdapter.raw_input_schema` (`mcp_tool_adapter.py`) already inlines
+    every `$ref`/`$defs` up front via `resolve_json_schema_refs`, so a `$ref`
+    surviving to here should not happen — this is a defensive backstop, not
+    the primary mechanism, which is why it drops the key rather than trying
+    to re-resolve it, and why it recurses (a stray `$ref` at any depth is
+    still a dangling pointer once `$defs` is gone).
 
-def _tool_schema_key(schema: ToolSchema) -> str:
-    """Content key for a tool schema.
-
-    `ToolSchema` is frozen but holds a dict, so it is unhashable, and
-    `ToolRegistry.schemas()` rebuilds these objects every turn — identity would
-    never match. Sorted-key JSON makes two equal schemas collide on purpose and
-    two different ones never.
+    Deliberately NOT an allow-list like `transport/gemini.py::sanitize_schema`:
+    every other JSON Schema keyword is kept. OpenAI, Anthropic, and Ollama
+    accept them verbatim, and `langchain_google_genai` filters unknown
+    keywords itself (`_format_json_schema_to_gapic`'s
+    `_ALLOWED_SCHEMA_FIELDS_SET`, which logs and skips), so stripping here
+    would only lose constraints the provider that DOES understand them wants.
+    The one shape Gemini cannot survive is a list-valued `type`, and that is
+    normalized upstream in `resolve_json_schema_refs` so both the native and
+    LangChain Gemini arms benefit.
     """
-    payload = json.dumps(
-        [schema.name, schema.description, schema.input_schema],
-        sort_keys=True,
-        default=str,
-    )
-    return hashlib.sha256(payload.encode()).hexdigest()
+    if isinstance(schema, list):
+        return [_sanitize_tool_input_schema(v) for v in schema]
+    if not isinstance(schema, dict):
+        return schema
+    return {
+        key: (_sanitize_tool_input_schema(value) if isinstance(value, (dict, list)) else value)
+        for key, value in schema.items()
+        if key not in _SCHEMA_META_KEYS_TO_STRIP and key != "$ref"
+    }
 
 
-def convert_tool_schema_to_langchain(schema: ToolSchema) -> StructuredTool:
-    """Build the LangChain tool object for `schema`, reusing a cached one.
+def convert_tool_schema_to_langchain_dict(schema: ToolSchema) -> dict[str, Any]:
+    """`ToolSchema` -> the OpenAI function-calling dict shape, mirroring
+    `OpenAITransport._format_tools` (`transport/openai.py:548`) exactly.
 
-    `create_model()` runs pydantic's full schema generation, and this ran once
-    per tool per LLM call — measured at 8.8% of query-service CPU, rebuilding
-    identical classes (26 tools on 1,820 of 1,842 binds over six hours). The
-    transport's own cache does not cover it: the transport is constructed per
-    request, so it starts empty on every chat.
+    `BaseChatModel.bind_tools()` accepts this shape across every LangChain
+    chat model integration configured in this app — verified: it's called
+    from exactly one place (`LangChainTransport._bind_tools`), and the only
+    non-stock `BaseChatModel` subclass in the repo, `ChatTogether`
+    (`app/utils/custom_chat_model.py`), extends `BaseChatOpenAI` and inherits
+    its dict-handling `bind_tools` rather than overriding it.
 
-    Caching the class also lets pydantic's internal schema cache serve the
-    `model_json_schema()` that `convert_to_openai_tool` calls on every send.
-
-    Safe to share: the object carries only a schema — `_unbound_tool_coroutine`
-    raises if anything tries to execute it — and `bind_tools` reads the tools to
-    build a separate list of dicts rather than mutating them.
+    Replaces the previous round-trip through a dynamically-built Pydantic
+    model (`_json_schema_to_pydantic_model`), which silently dropped `enum`,
+    `default`, `minimum`/`maximum`, `additionalProperties`, and collapsed
+    `anyOf`/`oneOf` unions to their first arm on every MCP tool schema.
+    `_json_schema_to_pydantic_model` itself is kept for
+    `output_schema_to_pydantic_model`, which `complete_structured` genuinely
+    needs a model class for.
     """
-    key = _tool_schema_key(schema)
-    cached = _TOOL_MODEL_CACHE.get(key)
-    if cached is not None:
-        return cached
-
-    args_model = _json_schema_to_pydantic_model(f"{schema.name}_Args", schema.input_schema)
-    tool = StructuredTool.from_function(
-        name=schema.name,
-        description=schema.description,
-        args_schema=args_model,
-        coroutine=_unbound_tool_coroutine,
-    )
-    # Cleared wholesale rather than evicted one at a time: the tool set is
-    # bounded by the registry, so this only fires if schemas are being generated
-    # dynamically, and a rebuild costs the same as the miss it replaces.
-    if len(_TOOL_MODEL_CACHE) >= _TOOL_MODEL_CACHE_MAXSIZE:
-        _TOOL_MODEL_CACHE.clear()
-    _TOOL_MODEL_CACHE[key] = tool
-    return tool
+    parameters = schema.input_schema or {"type": "object", "properties": {}}
+    return {
+        "type": "function",
+        "function": {
+            "name": schema.name,
+            "description": schema.description,
+            "parameters": _sanitize_tool_input_schema(parameters),
+        },
+    }
 
 
 def convert_tool_schemas_to_langchain(
     tools: list[ToolSchema] | None,
-) -> list[StructuredTool]:
+) -> list[dict[str, Any]]:
     if not tools:
         return []
-    return [convert_tool_schema_to_langchain(t) for t in tools]
+    return [convert_tool_schema_to_langchain_dict(t) for t in tools]
 
 
 __all__ = [
@@ -538,6 +645,6 @@ __all__ = [
     "convert_assistant_message_from_langchain",
     "token_usage_from_ai_message",
     "output_schema_to_pydantic_model",
-    "convert_tool_schema_to_langchain",
+    "convert_tool_schema_to_langchain_dict",
     "convert_tool_schemas_to_langchain",
 ]

@@ -43,6 +43,7 @@ class Connectors(Enum):
     MICROSOFT_TEAMS = "MICROSOFT TEAMS"
 
     NOTION = "NOTION"
+    NOTION_PERSONAL = "NOTION PERSONAL"
     SLACK = "SLACK"
     SLACK_WORKSPACE = "SLACK WORKSPACE"
 
@@ -62,6 +63,7 @@ class Connectors(Enum):
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
     GITHUB = "GITHUB"
+    GITHUB_TEAMS = "GITHUB TEAMS"
     SERVICENOW = "SERVICENOW"
     SALESFORCE = "SALESFORCE"
     S3 = "S3"
@@ -299,8 +301,11 @@ class ExtensionTypes(Enum):
     SVG = "svg"
     HEIC = "heic"
     HEIF = "heif"
+    EPUB = "epub"
     SQL_TABLE = "sql_table"  
     SQL_VIEW = "sql_view"
+    # Registry key for the tree-sitter code parser; not a file extension.
+    CODE = "code"
     PY = "py"
     JS = "js"
     JSX = "jsx"
@@ -371,6 +376,7 @@ class MimeTypes(Enum):
     HEIF = "image/heif"
     ZIP = "application/zip"
     GIF = "image/gif"
+    EPUB = "application/epub+zip"
     PYTHON = "text/x-python"
     PYTHON_SCRIPT = "text/x-python-script"
     PYTHON_SCRIPT_X = "text/x-script.python"
@@ -475,6 +481,7 @@ FILE_MIME_TYPES = {
     '.htm': MimeTypes.HTML,
     '.md': MimeTypes.MARKDOWN,
     '.mdx': MimeTypes.MDX,
+    '.epub': MimeTypes.EPUB,
 }
 
 
@@ -639,6 +646,8 @@ class EventTypes(Enum):
     REINDEX_RECORD = "reindexRecord"
     REINDEX_FAILED = "reindexFailed"
     BULK_DELETE_RECORDS = "bulkDeleteRecords"
+    SYNC_VECTOR_MEMBERSHIP = "syncVectorMembership"
+    DELETE_VECTOR_COLLECTION = "deleteVectorCollection"
 
 
 class AccountType(Enum):

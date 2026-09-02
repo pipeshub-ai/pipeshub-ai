@@ -1,18 +1,19 @@
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.exceptions.indexing_exceptions import (
-    EmbeddingError,
     IndexingError,
     VectorStoreError,
 )
-
+from tests.support.vector_db import (
+    make_collection_registry as _make_collection_registry,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 
 def _make_vectorstore():
@@ -37,7 +38,7 @@ def _make_vectorstore():
             logger=MagicMock(),
             config_service=AsyncMock(),
             graph_provider=AsyncMock(),
-            collection_name="test_collection",
+            collection_registry=_make_collection_registry(),
             vector_db_service=vdb,
         )
         return vs
@@ -121,18 +122,11 @@ class TestVectorStoreInit:
 
 
 class TestNormalizeImageExceptionFallthrough:
-    """Cover lines 151-152: generic exception in _normalize_image_to_base64."""
-
-    @pytest.mark.asyncio
-    async def test_exception_during_normalization_returns_none(self):
-        """Any unexpected exception in the try block returns None."""
-        vs = _make_vectorstore()
-        # Passing a non-string that passes the initial check is impossible because
-        # the first check returns None. We need to cause an exception in the
-        # string processing path. Mock re.fullmatch to raise.
-        with patch("app.modules.transformers.vectorstore.re.fullmatch", side_effect=RuntimeError("regex crashed")):
-            result = await vs._normalize_image_to_base64("some_valid_string")
-        assert result is None
+    """VectorStore._normalize_image_to_base64 delegates to
+    app.utils.image_utils.normalize_image_to_base64 — see
+    tests/unit/utils/test_image_utils.py::TestNormalizeImageToBase64 for the
+    exception-fallthrough and non-string-input coverage of that shared helper.
+    """
 
     @pytest.mark.asyncio
     async def test_non_string_returns_none(self):
@@ -177,257 +171,6 @@ class TestSplitIntoSentencesBulletsAndHeadings:
 
 
 # ===================================================================
-# _process_image_embeddings_voyage - exception in gather results
-# ===================================================================
-
-
-class TestVoyageBatchException:
-    """Cover lines 545-546: voyage gather returns an exception."""
-
-    @pytest.mark.asyncio
-    async def test_voyage_gather_with_exception_result(self):
-        """Simulate gather returning an Exception result by patching asyncio.gather."""
-        vs = _make_vectorstore()
-        vs.dense_embeddings = MagicMock()
-        vs.dense_embeddings.batch_size = 2
-
-        image_chunks = [
-            {"metadata": {}, "image_uri": "img1"},
-        ]
-        image_base64s = ["b64_1"]
-
-        # Patch asyncio.gather at the module level used by vectorstore
-        async def fake_gather(*coros, return_exceptions=False):
-            # Cancel the coros to avoid warnings
-            for c in coros:
-                c.close()
-            return [RuntimeError("Simulated Voyage exception")]
-
-        with patch("asyncio.gather", fake_gather):
-            result = await vs._process_image_embeddings_voyage(image_chunks, image_base64s)
-
-        # The patched gather bypasses process_batch, so the Exception in results
-        # is silently filtered by isinstance(r, list). Result is [] with no warning.
-        assert result == []
-
-
-# ===================================================================
-# _process_image_embeddings_bedrock - NoCredentialsError + Exception
-# ===================================================================
-
-
-class TestBedrockBranches:
-    """Cover bedrock exception branches."""
-
-    @pytest.mark.asyncio
-    async def test_bedrock_no_credentials_during_invoke(self):
-        """When invoke_model raises NoCredentialsError, it becomes EmbeddingError in gather results."""
-        vs = _make_vectorstore()
-        vs.model_name = "amazon.titan-embed-image-v1"
-        vs.aws_access_key_id = "fake_key"
-        vs.aws_secret_access_key = "fake_secret"
-        vs.region_name = "us-east-1"
-
-        mock_bedrock = MagicMock()
-        from botocore.exceptions import NoCredentialsError
-
-        mock_bedrock.invoke_model.side_effect = NoCredentialsError()
-
-        with patch("boto3.client", return_value=mock_bedrock):
-            vs._normalize_image_to_base64 = AsyncMock(return_value="base64data")
-
-            # The EmbeddingError is raised inside the async function, and with
-            # return_exceptions=True in gather, it ends up as an Exception in results.
-            # The gather result is [EmbeddingError(...)], which is caught by
-            # isinstance(result, Exception) on line 638-639.
-            result = await vs._process_image_embeddings_bedrock(
-                [{"metadata": {}, "image_uri": "img1"}],
-                ["base64data"],
-            )
-
-        # The EmbeddingError is caught in the gather results loop and logged
-        assert result == []
-        vs.logger.warning.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_bedrock_client_error_returns_none(self):
-        """When invoke_model raises ClientError, the image is skipped."""
-        vs = _make_vectorstore()
-        vs.model_name = "amazon.titan-embed-image-v1"
-        vs.aws_access_key_id = "fake_key"
-        vs.aws_secret_access_key = "fake_secret"
-        vs.region_name = "us-east-1"
-
-        mock_bedrock = MagicMock()
-        from botocore.exceptions import ClientError
-
-        mock_bedrock.invoke_model.side_effect = ClientError(
-            {"Error": {"Code": "ValidationException", "Message": "bad input"}},
-            "InvokeModel",
-        )
-
-        with patch("boto3.client", return_value=mock_bedrock):
-            vs._normalize_image_to_base64 = AsyncMock(return_value="base64data")
-
-            result = await vs._process_image_embeddings_bedrock(
-                [{"metadata": {}, "image_uri": "img1"}],
-                ["base64data"],
-            )
-
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_bedrock_unexpected_error(self):
-        """When invoke_model raises unexpected error, it's logged as warning."""
-        vs = _make_vectorstore()
-        vs.model_name = "amazon.titan-embed-image-v1"
-        vs.aws_access_key_id = "fake_key"
-        vs.aws_secret_access_key = "fake_secret"
-        vs.region_name = "us-east-1"
-
-        mock_bedrock = MagicMock()
-        mock_bedrock.invoke_model.side_effect = ValueError("unexpected")
-
-        with patch("boto3.client", return_value=mock_bedrock):
-            vs._normalize_image_to_base64 = AsyncMock(return_value="base64data")
-
-            result = await vs._process_image_embeddings_bedrock(
-                [{"metadata": {}, "image_uri": "img1"}],
-                ["base64data"],
-            )
-
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_bedrock_normalize_returns_none(self):
-        """When _normalize_image_to_base64 returns None, image is skipped."""
-        vs = _make_vectorstore()
-        vs.model_name = "amazon.titan-embed-image-v1"
-        vs.aws_access_key_id = "fake_key"
-        vs.aws_secret_access_key = "fake_secret"
-        vs.region_name = "us-east-1"
-
-        mock_bedrock = MagicMock()
-
-        with patch("boto3.client", return_value=mock_bedrock):
-            vs._normalize_image_to_base64 = AsyncMock(return_value=None)
-
-            result = await vs._process_image_embeddings_bedrock(
-                [{"metadata": {}, "image_uri": "img1"}],
-                ["invalid_data"],
-            )
-
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_bedrock_no_credentials_during_client_creation(self):
-        """When boto3.client raises NoCredentialsError, it becomes EmbeddingError."""
-        vs = _make_vectorstore()
-        vs.model_name = "amazon.titan-embed-image-v1"
-        vs.aws_access_key_id = None
-        vs.aws_secret_access_key = None
-        vs.region_name = None
-
-        from botocore.exceptions import NoCredentialsError
-
-        with patch("boto3.client", side_effect=NoCredentialsError()):
-            with pytest.raises(EmbeddingError, match="AWS credentials not found"):
-                await vs._process_image_embeddings_bedrock(
-                    [{"metadata": {}, "image_uri": "img1"}],
-                    ["base64data"],
-                )
-
-    @pytest.mark.asyncio
-    async def test_bedrock_gather_exception_logged(self):
-        """When gather result is an Exception (not PointStruct), it's logged."""
-        vs = _make_vectorstore()
-        vs.model_name = "amazon.titan-embed-image-v1"
-        vs.aws_access_key_id = "key"
-        vs.aws_secret_access_key = "secret"
-        vs.region_name = "us-east-1"
-
-        mock_bedrock = MagicMock()
-        # Raise a generic error that propagates through gather
-        mock_bedrock.invoke_model.side_effect = RuntimeError("Bedrock general failure")
-
-        with patch("boto3.client", return_value=mock_bedrock):
-            vs._normalize_image_to_base64 = AsyncMock(return_value="base64data")
-
-            result = await vs._process_image_embeddings_bedrock(
-                [{"metadata": {}, "image_uri": "img1"}],
-                ["base64data"],
-            )
-
-        # The RuntimeError is caught inside embed_single_bedrock_image -> returns None
-        # so the gather result is [None] which is neither PointStruct nor Exception
-        assert result == []
-
-
-# ===================================================================
-# _process_image_embeddings_jina - exception in gather results
-# ===================================================================
-
-
-class TestJinaBatchException:
-    """Cover lines 733-734: jina gather returns an exception."""
-
-    @pytest.mark.asyncio
-    async def test_jina_gather_with_exception_result(self):
-        """Simulate gather returning an Exception result for Jina."""
-        vs = _make_vectorstore()
-        vs.model_name = "jina-clip-v1"
-        vs.api_key = "fake-key"
-
-        image_chunks = [
-            {"metadata": {}, "image_uri": "img1"},
-        ]
-        image_base64s = ["b64_1"]
-
-        mock_client = AsyncMock()
-
-        async def fake_gather(*coros, return_exceptions=False):
-            for c in coros:
-                c.close()
-            return [RuntimeError("Simulated Jina exception")]
-
-        with patch("httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            with patch("asyncio.gather", fake_gather):
-                result = await vs._process_image_embeddings_jina(
-                    image_chunks,
-                    image_base64s,
-                )
-
-        # The patched gather bypasses process_batch, so the Exception is filtered
-        # silently by isinstance(r, list). Result is [] with no warning logged.
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_jina_all_images_fail_normalization(self):
-        """When all images fail normalization in a Jina batch, returns empty."""
-        vs = _make_vectorstore()
-        vs.model_name = "jina-clip-v1"
-        vs.api_key = "fake-key"
-
-        mock_client = AsyncMock()
-
-        with patch("httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            vs._normalize_image_to_base64 = AsyncMock(return_value=None)
-
-            result = await vs._process_image_embeddings_jina(
-                [{"metadata": {}, "image_uri": "img1"}],
-                ["invalid_data"],
-            )
-
-        assert result == []
-
-
-# ===================================================================
 # _create_embeddings - unexpected exception -> IndexingError
 # ===================================================================
 
@@ -446,7 +189,7 @@ class TestCreateEmbeddingsUnexpectedException:
         chunks = [Document(page_content="test", metadata={})]
 
         with pytest.raises(TypeError, match="unexpected type error"):
-            await vs._create_embeddings(chunks, "rec-1", "vr-1")
+            await vs._create_embeddings(chunks, "rec-1", "vr-1", "test_collection")
 
     @pytest.mark.asyncio
     async def test_vectorstore_error_propagated_from_document_chunks(self):
@@ -462,7 +205,7 @@ class TestCreateEmbeddingsUnexpectedException:
         chunks = [Document(page_content="test", metadata={})]
 
         with pytest.raises(VectorStoreError):
-            await vs._create_embeddings(chunks, "rec-1", "vr-1")
+            await vs._create_embeddings(chunks, "rec-1", "vr-1", "test_collection")
 
 
 # ===================================================================
@@ -489,13 +232,8 @@ class TestIndexDocumentsDeeper:
         container.blocks = [block]
         container.block_groups = []
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            with pytest.raises((RuntimeError, IndexingError)):
-                await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+        with pytest.raises((RuntimeError, IndexingError)):
+            await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
     @pytest.mark.asyncio
     async def test_block_group_non_table_type_skipped(self):
@@ -510,14 +248,9 @@ class TestIndexDocumentsDeeper:
         container.blocks = []
         container.block_groups = [bg]
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "text/plain"
-            )
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "text/plain"
+        )
 
         # blocks=[] but block_groups=[bg], so "not blocks and not block_groups" is False
         # But no documents_to_embed -> returns True
@@ -538,14 +271,9 @@ class TestIndexDocumentsDeeper:
         container.blocks = [block]
         container.block_groups = []
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "image/png"
-            )
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "image/png"
+        )
 
         assert result is True
 
@@ -564,14 +292,9 @@ class TestIndexDocumentsDeeper:
         container.blocks = [block]
         container.block_groups = []
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "image/png"
-            )
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "image/png"
+        )
 
         assert result is True
 
@@ -590,14 +313,9 @@ class TestIndexDocumentsDeeper:
         container.blocks = []
         container.block_groups = [bg]
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "text/plain"
-            )
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "text/plain"
+        )
 
         assert result is True
 
@@ -617,14 +335,9 @@ class TestIndexDocumentsDeeper:
         container.blocks = [block]
         container.block_groups = []
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "image/png"
-            )
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "image/png"
+        )
 
         # images_uris would be [None] -> truthy, then proceeds
         assert result is True
@@ -644,15 +357,10 @@ class TestIndexDocumentsDeeper:
         container.blocks = [block]
         container.block_groups = []
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            # Not multimodal LLM either
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "image/png"
-            )
+        # Not multimodal LLM either
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "image/png"
+        )
 
         # images_uris has data but neither multimodal embedding nor multimodal LLM
         # -> no documents_to_embed from images -> returns True
@@ -674,14 +382,9 @@ class TestIndexDocumentsDeeper:
         container.blocks = [block]
         container.block_groups = []
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "image/png"
-            )
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "image/png"
+        )
 
         assert result is True
         vs._create_embeddings.assert_awaited_once()
@@ -702,44 +405,33 @@ class TestIndexDocumentsDeeper:
         container.blocks = [block]
         container.block_groups = []
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "text/plain"
-            )
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "text/plain"
+        )
 
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_image_describe_failure_skipped(self):
-        """When describe_images returns success=False for an image, it's skipped."""
+    async def test_image_without_a_description_is_skipped(self):
+        """An image block carrying no prose has nothing to embed under
+        text-only embeddings."""
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
-        vs.describe_images = AsyncMock(
-            return_value=[{"index": 0, "success": False, "error": "VLM failed"}]
-        )
 
         block = MagicMock()
         block.type = "image"
         block.index = 0
         block.data = {"uri": "base64data"}
+        block.image_metadata = None
 
         container = MagicMock()
         container.blocks = [block]
         container.block_groups = []
 
-        with patch(
-            "app.modules.transformers.vectorstore.get_llm",
-            new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
-            result = await vs.index_documents(
-                container, "org-1", "rec-1", "vr-1", "image/png"
-            )
+        result = await vs.index_documents(
+            container, "org-1", "rec-1", "vr-1", "image/png"
+        )
 
         # No documents_to_embed from failed descriptions -> returns True
         assert result is True
@@ -880,64 +572,6 @@ class TestProcessDocumentChunksRemoteFailure:
         ]
 
         with pytest.raises(VectorStoreError, match="Failed to store batch"):
-            await vs._process_document_chunks(chunks)
+            await vs._process_document_chunks(chunks, "rec-1", "test_collection")
 
 
-# ===================================================================
-# Cohere image embedding edge cases
-# ===================================================================
-
-
-class TestCohereEdgeCases:
-    """Cover Cohere image embedding size limit branch."""
-
-    @pytest.mark.asyncio
-    async def test_cohere_image_size_limit_skip(self):
-        """When Cohere returns 'image size must be at most' error, image is skipped."""
-        vs = _make_vectorstore()
-        vs.api_key = "fake-key"
-        vs.model_name = "embed-english-v3.0"
-
-        mock_co = MagicMock()
-
-        def fake_embed(**kwargs):
-            raise Exception("image size must be at most 5MB")
-
-        mock_co.embed = fake_embed
-
-        mock_cohere_module = MagicMock()
-        mock_cohere_module.ClientV2.return_value = mock_co
-
-        with patch.dict("sys.modules", {"cohere": mock_cohere_module}):
-            result = await vs._process_image_embeddings_cohere(
-                [{"metadata": {}, "image_uri": "img1"}],
-                ["base64data"],
-            )
-
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_cohere_other_exception_in_gather(self):
-        """When Cohere raises a non-size-limit error, it's caught as Exception in gather."""
-        vs = _make_vectorstore()
-        vs.api_key = "fake-key"
-        vs.model_name = "embed-english-v3.0"
-
-        mock_co = MagicMock()
-
-        def fake_embed(**kwargs):
-            raise RuntimeError("API rate limit exceeded")
-
-        mock_co.embed = fake_embed
-
-        mock_cohere_module = MagicMock()
-        mock_cohere_module.ClientV2.return_value = mock_co
-
-        with patch.dict("sys.modules", {"cohere": mock_cohere_module}):
-            result = await vs._process_image_embeddings_cohere(
-                [{"metadata": {}, "image_uri": "img1"}],
-                ["base64data"],
-            )
-
-        # The exception is caught in gather as return_exceptions=True
-        assert result == []

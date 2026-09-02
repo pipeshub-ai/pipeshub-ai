@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import os
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -67,6 +69,12 @@ def _interval_s(raw_value: object) -> float:
     if ms <= 0:
         ms = float(DEFAULT_PUSH_INTERVAL_MS)
     return ms / 1000
+
+
+# Every uvicorn worker runs its own pusher, but `instanceId` is installation-wide and
+# `service` is a constant, so without this the collector receives N conflicting
+# registries under one identity and cannot tell them apart.
+_PROCESS_ID = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
 
 class MetricsPusher:
@@ -161,6 +169,7 @@ class MetricsPusher:
         payload = {
             "metrics": metrics_text,
             "instanceId": cfg["install_id"],
+            "processId": _PROCESS_ID,
             "version": cfg["version"],
             "metricsVersion": METRICS_VERSION,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -169,7 +178,15 @@ class MetricsPusher:
         timeout = aiohttp.ClientTimeout(total=PUSH_TIMEOUT_S)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(cfg["url"], json=payload, headers=headers) as resp:
-                if resp.status >= 400:
+                if resp.status == 413:
+                    # The registry only grows, so a 413 would otherwise recur until restart.
+                    body = await resp.text()
+                    self._logger.warning(
+                        "Collector rejected metrics payload as too large; "
+                        f"resetting metric registry: {body[:200]}"
+                    )
+                    METRICS_BACKEND.reset()
+                elif resp.status >= 400:
                     body = await resp.text()
                     self._logger.warning(
                         f"Metrics push rejected: status={resp.status} body={body[:200]}"
@@ -204,6 +221,7 @@ class MetricsPusher:
             return
         payload = {
             "instanceId": cfg["install_id"],
+            "processId": _PROCESS_ID,
             "service": self._service_name,
             "version": cfg["version"],
             "metricsVersion": METRICS_VERSION,

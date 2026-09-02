@@ -283,7 +283,7 @@ export class StorageController {
       const orgId = extractOrgId(req);
       const doc = await DocumentModel.findOne({
         _id: documentId,
-        orgId: orgId,
+        orgId: new mongoose.Types.ObjectId(orgId),
       });
 
       if (!doc) {
@@ -307,7 +307,7 @@ export class StorageController {
       const { documentId } = req.params;
       const document = await DocumentModel.findOne({
         _id: documentId,
-        orgId,
+        orgId: new mongoose.Types.ObjectId(orgId),
       });
 
       if (!document) {
@@ -849,10 +849,11 @@ export class StorageController {
   ): Promise<void> {
     try {
       const { documentId } = req.params;
+      const orgId = extractOrgId(req);
 
       const document = await DocumentModel.findOne({
         _id: documentId,
-        orgId: req.user?.orgId,
+        orgId: new mongoose.Types.ObjectId(orgId),
       });
 
       if (!document || !document.documentPath) {

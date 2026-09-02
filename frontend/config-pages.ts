@@ -6,7 +6,7 @@ export { default as WorkspaceLayout } from '@/app/(main)/workspace/workspaceLayo
 export { default as OnboardingPage } from '@/app/(main)/onboarding/onboardingPage';
 export { default as AiModelsPage } from '@/app/(main)/workspace/ai-models/aiModelsPage';
 export { default as AuthenticationPage } from '@/app/(main)/workspace/authentication/authenticationPage';
-export { default as GroupsPage } from '@/app/(main)/workspace/groups/groupsPage';
+export { default as GroupsPage } from '@/app/(main)/workspace/groups/groupsEnterprisePlaceholder';
 export { default as ConnectorsTeamPage } from '@/app/(main)/workspace/connectors/team/connectorsTeamPage';
 export { default as ConnectorsPersonalPage } from '@/app/(main)/workspace/connectors/personal/connectorsPersonalPage';
 export { default as ActionsTeamPage } from '@/app/(main)/workspace/actions/team/actionsTeamPage';

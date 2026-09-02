@@ -142,7 +142,7 @@ class TestDropboxInitMethod:
             "credentials": {"access_token": "tok", "refresh_token": "ref", "isTeam": True},
             "auth": {"oauthConfigId": "oauth-1"}
         })
-        with patch("app.connectors.sources.dropbox.connector.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={
+        with patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={
             "config": {"clientId": "cid", "clientSecret": "csecret"}
         }):
             with patch("app.connectors.sources.dropbox.connector.DropboxClient") as MockClient:
@@ -158,7 +158,7 @@ class TestDropboxInitMethod:
             "credentials": {"access_token": "tok", "refresh_token": "ref", "isTeam": True},
             "auth": {"oauthConfigId": "oauth-1"}
         })
-        with patch("app.connectors.sources.dropbox.connector.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={
+        with patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={
             "config": {"clientId": "cid", "clientSecret": "csecret"}
         }):
             with patch("app.connectors.sources.dropbox.connector.DropboxClient") as MockClient:
@@ -258,16 +258,15 @@ class TestDropboxMisc:
 class TestDropboxCreateConnector:
     @pytest.mark.asyncio
     async def test_create_connector(self):
-        with patch("app.connectors.sources.dropbox.connector.DataSourceEntitiesProcessor") as MockDSEP:
-            mock_dep = MagicMock()
-            mock_dep.initialize = AsyncMock()
-            MockDSEP.return_value = mock_dep
-            connector = await DropboxConnector.create_connector(
-                logger=logging.getLogger("test"),
-                data_store_provider=MagicMock(),
-                config_service=AsyncMock(),
-                connector_id="test-dbx",
-                scope="personal",
-                created_by="test-user-id",
-            )
-            assert isinstance(connector, DropboxConnector)
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        connector = await DropboxConnector.create_connector(
+            logger=logging.getLogger("test"),
+            data_store_provider=MagicMock(),
+            config_service=AsyncMock(),
+            connector_id="test-dbx",
+            scope="personal",
+            created_by="test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, DropboxConnector)

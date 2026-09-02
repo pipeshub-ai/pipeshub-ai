@@ -695,6 +695,34 @@ class TestNeo4jProvider(Neo4jProvider):
         )
         return int(result[0]["count"]) if result else 0
 
+    async def get_sync_point(
+        self, connector_id: str, sync_point_key: str
+    ) -> Optional[Dict[str, Any]]:
+        """Load a connector sync checkpoint from ``SyncPoint`` nodes.
+
+        Matches on the suffix of ``syncPointKey`` because the stored key is prefixed with
+        ``{orgId}/{connectorId}/{syncDataPointType}/`` (see backend ``SyncPoint``), and tests
+        only know the unqualified key.
+        """
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (sp:SyncPoint {connectorId: $cid})
+            WHERE sp.syncPointKey IS NOT NULL
+              AND sp.syncPointKey ENDS WITH $suffix
+            RETURN sp
+            LIMIT 1
+            """,
+            {"cid": connector_id, "suffix": sync_point_key},
+        )
+        if not result:
+            return None
+        node = result[0].get("sp")
+        if node is None:
+            return None
+        return dict(node)
+
     async def get_app_metadata_by_connector_id(
         self, connector_id: str
     ) -> Optional[AppMetadata]:
@@ -723,16 +751,25 @@ class TestNeo4jProvider(Neo4jProvider):
         return _app_role_from_arango(doc, connector_id)
 
     async def fetch_records_by_type(
-        self, connector_id: str, record_type: str
+        self, connector_id: str, record_type: str, *, scoped: bool = False
     ) -> List[Dict[str, Any]]:
-        """Fetch records for a connector; ``record_type`` empty string means all types."""
+        """Fetch records for a connector; ``record_type`` empty string means all types.
+
+        With ``scoped=True`` requires a live ``BELONGS_TO`` edge to a RecordGroup, matching
+        :meth:`count_records_by_type`.
+        """
         if not self.client:
             raise RuntimeError("Provider not connected")
+        scope_clause = (
+            "MATCH (r)-[:BELONGS_TO]->(:RecordGroup)"
+            if scoped else ""
+        )
         result = await self.client.execute_query(
-            """
-            MATCH (r:Record {connectorId: $cid})
+            f"""
+            MATCH (r:Record {{connectorId: $cid}})
             WHERE $rtype = '' OR r.recordType = $rtype
-            RETURN r
+            {scope_clause}
+            RETURN DISTINCT r
             LIMIT 10000
             """,
             {"cid": connector_id, "rtype": record_type},
@@ -900,13 +937,17 @@ class TestNeo4jProvider(Neo4jProvider):
     async def get_record_parent_external_id(
         self, connector_id: str, external_record_id: str
     ) -> Optional[str]:
-        """Return the ``parentExternalRecordId`` field of a record, or None if unset."""
+        """Return the record's parent external id, or None if unset.
+
+        Written as ``externalParentId``; the alternate spelling is kept as a fallback for
+        nodes written by older code.
+        """
         if not self.client:
             raise RuntimeError("Provider not connected")
         result = await self.client.execute_query(
             """
             MATCH (r:Record {connectorId: $cid, externalRecordId: $eid})
-            RETURN r.parentExternalRecordId AS pid
+            RETURN coalesce(r.externalParentId, r.parentExternalRecordId) AS pid
             LIMIT 1
             """,
             {"cid": connector_id, "eid": external_record_id},

@@ -18,3 +18,16 @@ HTTP_REQUEST_DURATION = METRICS_BACKEND.histogram(
     ["service", "route", "method"],
     buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
 )
+
+# Unbounded route values grow the push payload until the collector rejects it.
+_MAX_UNIQUE_ROUTES = 300
+_seen_routes: set[str] = set()
+
+
+def bound_route(route: str) -> str:
+    if route in _seen_routes:
+        return route
+    if len(_seen_routes) >= _MAX_UNIQUE_ROUTES:
+        return "other"
+    _seen_routes.add(route)
+    return route

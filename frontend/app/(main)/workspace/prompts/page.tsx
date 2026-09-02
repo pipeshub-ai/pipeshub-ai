@@ -323,50 +323,12 @@ export default function PromptsPage() {
             <MaterialIcon name="info" size={16} color="var(--slate-11)" />
           </IconButton>
           <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', fontWeight: 300 }}>
-            These instructions apply only to the <strong>Chat Assistant</strong> (Internal Search,
-            Web Search, and Agent modes below). Custom agents created in <strong>Agent Builder</strong>{' '}
+            These instructions apply only to the <strong>Chat Assistant</strong> (Agent mode below).
+            Custom agents created in <strong>Agent Builder</strong>{' '}
             are unaffected — each agent uses its own system prompt and instructions configured on
             the agent itself.
           </Text>
         </Flex>
-
-        {/* ── Internal Search Prompt Section ── */}
-        <Box style={{ marginBottom: 20 }}>
-          <PromptSectionCard
-            iconName="edit_note"
-            testId="prompt-section-internal-search"
-            title="Internal Search"
-            description="Applied when a user chats in Internal Search mode — the assistant answers only from your organization's connected knowledge base."
-          >
-            <PromptEditor
-              label=""
-              value={customPrompt}
-              placeholder="e.g. Always respond in French. Use bullet points for lists. Keep answers under 3 sentences unless asked for detail."
-              helperText="This prompt guides the AI when answering from internal documents. Changes take effect immediately for new conversations."
-              onChange={setCustomPrompt}
-              onClear={handleUseDefaultInternal}
-            />
-          </PromptSectionCard>
-        </Box>
-
-        {/* ── Web Search Prompt Section ── */}
-        <Box style={{ marginBottom: 20 }}>
-          <PromptSectionCard
-            iconName="travel_explore"
-            testId="prompt-section-web-search"
-            title="Web Search"
-            description="Applied when a user chats in Web Search mode — the assistant answers using live web search results from public sources."
-          >
-            <PromptEditor
-              label=""
-              value={customPromptWebSearch}
-              placeholder="e.g. Always cite sources with links. Prefer recent articles. Respond in a formal tone."
-              helperText="This prompt guides the AI when answering using web search results. Changes take effect immediately for new conversations."
-              onChange={setCustomPromptWebSearch}
-              onClear={handleUseDefaultWebSearch}
-            />
-          </PromptSectionCard>
-        </Box>
 
         {/* ── Agent Mode Prompt Section ── */}
         <Box style={{ marginBottom: 20 }}>

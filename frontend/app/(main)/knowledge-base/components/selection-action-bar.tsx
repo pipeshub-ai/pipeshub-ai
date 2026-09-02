@@ -2,6 +2,7 @@
 
 import { Flex, Text, Button, Checkbox, Separator } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { PermissionLockIcon } from '@/config';
 import type { PageViewMode } from '../types';
 
 interface SelectionActionBarProps {
@@ -9,7 +10,8 @@ interface SelectionActionBarProps {
   onDeselectAll: () => void;
   onChat: () => void;
   onReindex: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
+  deletePermissionDenied?: boolean;
   pageViewMode?: PageViewMode;
 }
 
@@ -19,6 +21,7 @@ export function SelectionActionBar({
   onChat,
   onReindex,
   onDelete,
+  deletePermissionDenied,
   pageViewMode = 'collections',
 }: SelectionActionBarProps) {
   if (selectedCount === 0) return null;
@@ -102,21 +105,26 @@ export function SelectionActionBar({
         Re-index
       </Button>
 
-      {/* Delete button - Error style (hidden in all-records mode) */}
-      {pageViewMode !== 'all-records' && (
+      {/* Delete button - hidden only in all-records mode */}
+      {pageViewMode !== 'all-records' && onDelete && (
         <Button
           size="1"
           variant="outline"
           color="red"
-          onClick={onDelete}
+          disabled={deletePermissionDenied}
+          onClick={() => {
+            if (deletePermissionDenied) return;
+            onDelete();
+          }}
           style={{
             borderColor: 'var(--red-7)',
             color: 'var(--red-9)',
-            cursor: 'pointer',
+            cursor: deletePermissionDenied ? 'not-allowed' : 'pointer',
           }}
         >
           <MaterialIcon name="delete" size={16} />
           Delete
+          {deletePermissionDenied && <PermissionLockIcon />}
         </Button>
       )}
     </Flex>

@@ -106,16 +106,6 @@ from app.models.permission import Permission
                         field_type="PASSWORD",
                         is_secret=True,
                     ),
-                    AuthField(
-                        name="baseUrl",
-                        display_name="Atlassian site URL",
-                        placeholder="https://yourcompany.atlassian.net",
-                        description="Atlassian site URL to use. Must match the Jira site you want to sync.",
-                        field_type="URL",
-                        required=True,
-                        max_length=2000,
-                        is_secret=False,
-                    ),
                 ],
                 icon_path=IconPaths.connector_icon(Connectors.JIRA_PERSONAL.value),
                 app_group="Atlassian",
@@ -435,13 +425,12 @@ class JiraCloudPersonalConnector(JiraConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
         **kwargs,
     ) -> BaseConnector:
-        dep = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
-        await dep.initialize()
         return cls(
             logger,
-            dep,
+            data_entities_processor,
             data_store_provider,
             config_service,
             connector_id,

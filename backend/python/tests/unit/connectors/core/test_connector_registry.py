@@ -281,7 +281,7 @@ class TestCanAccessConnector:
         registry, _ = _make_registry()
         instance = {"scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
 
-        result = await registry._can_access_connector(instance, "admin-1", is_admin=True)
+        result = await registry._can_access_connector(instance, "admin-1", "org-1", is_admin=True)
 
         assert result is True
 
@@ -291,7 +291,7 @@ class TestCanAccessConnector:
         registry, _ = _make_registry()
         instance = {"scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
 
-        result = await registry._can_access_connector(instance, "user-1", is_admin=False)
+        result = await registry._can_access_connector(instance, "user-1", "org-1", is_admin=False)
 
         assert result is True
 
@@ -301,7 +301,7 @@ class TestCanAccessConnector:
         registry, _ = _make_registry()
         instance = {"scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
 
-        result = await registry._can_access_connector(instance, "user-2", is_admin=False)
+        result = await registry._can_access_connector(instance, "user-2", "org-1", is_admin=False)
 
         assert result is False
 
@@ -311,7 +311,7 @@ class TestCanAccessConnector:
         registry, _ = _make_registry()
         instance = {"scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1"}
 
-        result = await registry._can_access_connector(instance, "user-1", is_admin=False)
+        result = await registry._can_access_connector(instance, "user-1", "org-1", is_admin=False)
 
         assert result is True
 
@@ -321,7 +321,7 @@ class TestCanAccessConnector:
         registry, _ = _make_registry()
         instance = {"scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1"}
 
-        result = await registry._can_access_connector(instance, "user-2", is_admin=False)
+        result = await registry._can_access_connector(instance, "user-2", "org-1", is_admin=False)
 
         assert result is False
 
@@ -331,7 +331,7 @@ class TestCanAccessConnector:
         registry, _ = _make_registry()
         instance = {"scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1"}
 
-        result = await registry._can_access_connector(instance, "admin-1", is_admin=True)
+        result = await registry._can_access_connector(instance, "admin-1", "org-1", is_admin=True)
 
         assert result is False
 
@@ -341,7 +341,7 @@ class TestCanAccessConnector:
         registry, _ = _make_registry()
         instance = {"scope": "unknown", "createdBy": "user-1"}
 
-        result = await registry._can_access_connector(instance, "user-1", is_admin=True)
+        result = await registry._can_access_connector(instance, "user-1", "org-1", is_admin=True)
 
         assert result is False
 
@@ -351,7 +351,7 @@ class TestCanAccessConnector:
         registry, _ = _make_registry()
         instance = {"createdBy": "user-1"}  # No scope key
 
-        result = await registry._can_access_connector(instance, "user-1", is_admin=False)
+        result = await registry._can_access_connector(instance, "user-1", "org-1", is_admin=False)
 
         assert result is True  # Personal scope, creator = user
 
@@ -362,7 +362,7 @@ class TestCanAccessConnector:
         # Pass None to cause an exception
         instance = None
 
-        result = await registry._can_access_connector(instance, "user-1", is_admin=True)
+        result = await registry._can_access_connector(instance, "user-1", "org-1", is_admin=True)
 
         assert result is False
 

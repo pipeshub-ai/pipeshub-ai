@@ -87,6 +87,13 @@ def _make_connector():
     cs.get_config = AsyncMock()
 
     c = DropboxConnector(logger, dep, dsp, cs, "conn-dbx-ext", "team", "test-user-id")
+    c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    c.data_entities_processor.update_user_group_name = AsyncMock(return_value=True)
+    c.data_entities_processor.get_user_by_email = AsyncMock(return_value=None)
+    c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
+    c.data_entities_processor.upsert_permission_edge = AsyncMock()
+    c.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
+    c.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
     c.sync_filters = FilterCollection()
     c.indexing_filters = FilterCollection()
     c.data_source = AsyncMock()
@@ -675,18 +682,13 @@ class TestGetSignedUrl:
     async def test_file_record(self):
         c = _make_connector()
 
-        # Mock the transaction store with required methods
         mock_user = MagicMock()
         mock_user.email = "user@test.com"
         mock_file_record = MagicMock()
         mock_file_record.path = "/test.pdf"
 
-        mock_tx = MagicMock()
-        mock_tx.get_first_user_with_permission_to_node = AsyncMock(return_value=mock_user)
-        mock_tx.get_file_record_by_id = AsyncMock(return_value=mock_file_record)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=mock_user)
+        c.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=mock_file_record)
 
         # Mock team_members_get_info_v2
         team_member_info = MagicMock()
@@ -719,14 +721,6 @@ class TestGetSignedUrl:
         record.path = "/folder"
         record.external_record_group_id = "group-1"
         record.external_record_id = "id:d1"
-
-        # Mock the transaction - no user found with permission
-        mock_tx = MagicMock()
-        mock_tx.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
-        mock_tx.get_file_record_by_id = AsyncMock(return_value=MagicMock())
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
 
         result = await c.get_signed_url(record)
         assert result is None
@@ -801,12 +795,7 @@ class TestProcessDropboxEntry:
     async def test_entry_error(self):
         c = _make_connector()
         entry = _make_file_metadata(name="err.pdf")
-        # Make the data store raise
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(side_effect=Exception("db error"))
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=Exception("db error"))
 
         result = await c._process_dropbox_entry(
             entry, "user-1", "user@test.com", "group-1", False

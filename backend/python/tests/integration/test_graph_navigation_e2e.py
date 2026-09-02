@@ -17,7 +17,7 @@ Exercises:
 - RecordGroup → Records listing (Epic)
 - Epic → Story listing (children)
 - Story → Task listing with breadcrumbs carrying node IDs
-- Pagination (limit=1)
+- Pagination (limit is floored at 50; page 2 omits the path header)
 - lookup_record by URL and by bare issue key
 - Permission boundary: cross-org node produces same output as not-found
 - Record ID round-trip: IDs surfaced by navigate() usable in further navigate()
@@ -659,14 +659,16 @@ class TestNavigateTimeFiltering:
 
 class TestPagination:
     @pytest.mark.asyncio
-    async def test_first_page_limited_to_one(self, state, provider):
+    async def test_sub_floor_limit_still_returns_all_seeded_children(self, state, provider):
+        """navigate() floors `limit` at 50, so a 2-child epic fits on page 1
+        even when the caller asks for limit=1."""
         with _patch_kh_service():
             tool = KnowledgeGraph(state=state)
             success, text = await tool.navigate(node_id="rec-epic", page=1, limit=1)
 
         assert success
-        count = sum(1 for k in ["Implement OAuth", "Add retry logic"] if k in text)
-        assert count == 1, "Only one story should be shown with limit=1"
+        assert "Implement OAuth" in text
+        assert "Add retry logic" in text
 
     @pytest.mark.asyncio
     async def test_second_page_shows_remainder(self, state, provider):

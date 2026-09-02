@@ -15,19 +15,20 @@ Targets specific uncovered lines:
 import asyncio
 import json
 import logging
-import threading
-from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData, StreamMessage, messaging_env
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+    messaging_env,
+)
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
-    FUTURE_CLEANUP_INTERVAL,
     IndexingKafkaConsumer,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -266,7 +267,7 @@ class TestConsumeLoopNotRunningInner:
 
         process_call_count = 0
 
-        async def mock_process(msg):
+        async def mock_process(msg, parsed=None):
             nonlocal process_call_count
             process_call_count += 1
             # Stop running after first message
@@ -312,7 +313,7 @@ class TestConsumeLoopMessageException:
 
         process_call_count = 0
 
-        async def mock_process(msg):
+        async def mock_process(msg, parsed=None):
             nonlocal process_call_count
             process_call_count += 1
             if process_call_count == 1:

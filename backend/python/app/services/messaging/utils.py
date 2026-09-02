@@ -5,6 +5,8 @@ creating appropriate configs for either Kafka or Redis Streams.
 """
 from __future__ import annotations
 
+import os
+import uuid
 from typing import TYPE_CHECKING
 
 from app.config.constants.service import config_node_constants
@@ -30,6 +32,23 @@ if TYPE_CHECKING:
     AppContainer = ConnectorAppContainer | IndexingAppContainer | QueryAppContainer
 
 
+_process_id: str | None = None
+
+
+def _process_identity() -> str:
+    """Identity of THIS process, computed on first use.
+
+    Deliberately not an import-time constant: uvicorn spawns workers today, so each
+    re-imports and gets its own, but under a fork-based supervisor every child would
+    inherit one shared value and the per-process consumer groups would collapse back
+    into one -- reintroducing the stale-LLM bug they exist to prevent.
+    """
+    global _process_id
+    if _process_id is None:
+        _process_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    return _process_id
+
+
 class MessagingUtils:
     """Broker-agnostic messaging utilities that create appropriate configs."""
 
@@ -50,6 +69,8 @@ class MessagingUtils:
         group_id: str,
         topics: list[str],
         batch_size: int | None = None,
+        *,
+        ephemeral_group: bool = False,
     ) -> RedisStreamsConfig:
         """Build RedisStreamsConfig with optional batch_size override.
         
@@ -69,6 +90,7 @@ class MessagingUtils:
             "client_id": client_id,
             "group_id": group_id,
             "topics": topics,
+            "ephemeral_group": ephemeral_group,
         }
         if batch_size is not None:
             config_dict["batch_size"] = batch_size
@@ -80,6 +102,8 @@ class MessagingUtils:
         client_id: str,
         group_id: str,
         topics: list[str],
+        *,
+        ephemeral_group: bool = False,
     ) -> KafkaConsumerConfig:
         config_service = app_container.config_service()
         kafka_config = await config_service.get_config(
@@ -95,7 +119,9 @@ class MessagingUtils:
         return KafkaConsumerConfig(
             client_id=client_id,
             group_id=group_id,
-            auto_offset_reset="earliest",
+            # A disposable group is new on every process start, so "earliest" would
+            # replay the whole retention window each time.
+            auto_offset_reset="latest" if ephemeral_group else "earliest",
             enable_auto_commit=False,
             bootstrap_servers=brokers,
             topics=topics,
@@ -110,6 +136,8 @@ class MessagingUtils:
         group_id: str,
         topics: list[str],
         is_indexing: bool = False,
+        *,
+        ephemeral_group: bool = False,
     ) -> KafkaConsumerConfig | RedisStreamsConfig:
         """Create consumer config based on the configured broker type.
         
@@ -123,7 +151,7 @@ class MessagingUtils:
         broker_type = get_message_broker_type()
         if broker_type == MessageBrokerType.KAFKA:
             return await MessagingUtils._create_kafka_consumer_config(
-                app_container, client_id, group_id, topics
+                app_container, client_id, group_id, topics, ephemeral_group=ephemeral_group
             )
         else:
             redis_config = await MessagingUtils._get_redis_config(app_container)
@@ -133,7 +161,8 @@ class MessagingUtils:
                 else messaging_env.message_batch_size_simple
             )
             return MessagingUtils._build_redis_streams_config(
-                redis_config, client_id, group_id, topics, batch_size=batch_size
+                redis_config, client_id, group_id, topics, batch_size=batch_size,
+                ephemeral_group=ephemeral_group,
             )
 
     @staticmethod
@@ -225,11 +254,24 @@ class MessagingUtils:
     async def create_record_consumer_config(
         app_container: IndexingAppContainer,
     ) -> KafkaConsumerConfig | RedisStreamsConfig:
+        # lane_topics_for returns [record-events] unless laning is on. With
+        # Redis lanes it also keeps the pre-lane stream subscribed, so an
+        # install that enables laning drains whatever was written before the
+        # switch instead of stranding it.
+        from app.services.messaging.messaging_factory import lane_topics_for
+
+        # Resolved here and passed in, rather than letting lane_topics_for
+        # look it up itself: the subscription has to describe the same broker
+        # this config is being built for. A Kafka lane is a partition (one
+        # topic), a Redis lane is its own stream (many), so a disagreement
+        # would either miss every laned stream or subscribe a Kafka consumer
+        # to topics that do not exist.
+        broker_type = get_message_broker_type()
         return await MessagingUtils.create_consumer_config(
             app_container,
             "records_consumer_client",
             "records_consumer_group",
-            [Topic.RECORD_EVENTS.value],
+            lane_topics_for(Topic.RECORD_EVENTS.value, broker_type),
             is_indexing=True,  # Use indexing batch size
         )
 
@@ -237,9 +279,14 @@ class MessagingUtils:
     async def create_aiconfig_consumer_config(
         app_container: QueryAppContainer,
     ) -> KafkaConsumerConfig | RedisStreamsConfig:
+        # An AI-config change must reach EVERY query process, but a consumer group
+        # delivers each message to only one member. So each process joins a group of
+        # its own -- otherwise the workers that miss the event keep serving the
+        # previously cached LLM (see `retrieval_service.llm`) until they restart.
         return await MessagingUtils.create_consumer_config(
             app_container,
             "aiconfig_consumer_client",
-            "aiconfig_consumer_group",
+            f"aiconfig_consumer_group-{_process_identity()}",
             [Topic.AI_CONFIG_EVENTS.value],
+            ephemeral_group=True,
         )

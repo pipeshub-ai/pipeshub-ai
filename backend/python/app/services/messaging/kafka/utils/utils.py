@@ -2,9 +2,12 @@ import ssl
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from app.config.constants.service import KafkaConfig as KafkaConstants
-from app.config.constants.service import config_node_constants
-from app.connectors.services.event_service import EventService
+from app.config.constants.service import KafkaConfig as KafkaConstants, config_node_constants
+from app.edition_services import (
+    EntityEventService,
+    EventService,
+    RecordEventHandler,
+)
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
 from app.containers.query import QueryAppContainer
@@ -21,8 +24,6 @@ from app.services.messaging.kafka.config.kafka_config import (
     KafkaProducerConfig,
 )
 from app.services.messaging.kafka.handlers.ai_config import AiConfigEventService
-from app.services.messaging.kafka.handlers.entity import EntityEventService
-from app.services.messaging.kafka.handlers.record import RecordEventHandler
 
 
 class KafkaUtils:
@@ -103,7 +104,13 @@ class KafkaUtils:
 
     @staticmethod
     async def create_aiconfig_kafka_consumer_config(app_container: QueryAppContainer) -> KafkaConsumerConfig:
-        """Create Kafka configuration for AI config events"""
+        """Create Kafka configuration for AI config events.
+
+        Not used by the query service, which goes through
+        ``MessagingUtils.create_aiconfig_consumer_config``. Prefer that: this one uses a
+        single shared group, so with more than one query process only ONE of them would
+        receive a model change and the rest would serve a stale LLM until restart.
+        """
         return await KafkaUtils._create_base_consumer_config(
             app_container, KafkaConstants.CLIENT_ID_AICONFIG_CONSUMER.value, KafkaConstants.GROUP_ID_AICONFIG.value, [Topic.AI_CONFIG_EVENTS.value]
         )
@@ -216,7 +223,7 @@ class KafkaUtils:
                     payload = payload.copy()  # Don't mutate original
                 payload["is_final_failure"] = message.is_final_failure
 
-                logger.info(f"Processing record event: {event_type}")
+                logger.debug(f"Processing record event: {event_type}")
                 async for event in record_event_service.process_event(event_type, payload):
                     yield event
 
@@ -252,14 +259,13 @@ class KafkaUtils:
                     logger.error("Missing connector in event_type or payload")
                     return False
 
-                logger.info(f"Processing sync event: {event_type} for connector {connector}")
+                logger.debug(f"Processing sync event: {event_type} for connector {connector}")
 
                 event_service = EventService(
                     logger=logger,
                     graph_provider=graph_provider,
                     app_container=app_container,
                 )
-                logger.info(f"Processing sync event: {event_type} for {connector}")
                 return await event_service.process_event(event_type, payload)
 
             except Exception as e:

@@ -8,6 +8,7 @@ import { MailModel } from '../schema/mailInfo.schema';
 import {
   accountCreation,
   appUserInvite,
+  domainLimitReached,
   loginWithOTPRequest,
   orgEmailVerification,
   resetEmail,
@@ -81,6 +82,10 @@ export class MailController {
         emailContent = orgEmailVerification(templateData);
         return emailContent;
 
+      case EmailTemplateType.DomainLimitReached:
+        emailContent = domainLimitReached(templateData);
+        return emailContent;  
+
       default:
         throw 'Unknown Template';
     }
@@ -122,6 +127,7 @@ export class MailController {
       });
 
       const mailEntry = new MailModel({
+        orgId: bodyData.orgId,
         subject: bodyData.subject,
         from: bodyData.fromEmailDomain,
         to: bodyData.sendEmailTo,

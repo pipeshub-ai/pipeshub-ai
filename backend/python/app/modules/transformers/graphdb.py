@@ -44,7 +44,7 @@ class GraphDBTransformer(Transformer):
                         "isDirty": False,
                         "virtualRecordId": virtual_record_id,
                     }
-                    self.logger.info(
+                    self.logger.debug(
                         "🎯 Upserting extraction status for document"
                     )
                     # batch_update_nodes returns bool only (not updated docs): True if all
@@ -141,7 +141,7 @@ class GraphDBTransformer(Transformer):
                     "to_collection": to_collection,
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                 })
-                self.logger.info(f"🔗 Created {label} edge: {record_id} -> {name}")
+                self.logger.debug(f"🔗 Created {label} edge: {record_id} -> {name}")
         if edges_to_create:
             await tx_store.batch_create_edges(
                 edges_to_create, edge_collection
@@ -189,7 +189,7 @@ class GraphDBTransformer(Transformer):
         Uses reconciliation logic: fetch existing edges, compare with new, create new ones, delete stale ones.
         """
 
-        self.logger.info("🚀 Saving metadata to graph database")
+        self.logger.debug("🚀 Saving metadata to graph database")
         async with self.graph_data_store.transaction() as tx_store:
             try:
                 # Retrieve the document content from graph database
@@ -326,7 +326,7 @@ class GraphDBTransformer(Transformer):
                     new_topic_tos, "topic",
                 )
 
-                self.logger.info(
+                self.logger.debug(
                     "🚀 Metadata saved successfully for document"
                 )
 
@@ -344,7 +344,7 @@ class GraphDBTransformer(Transformer):
                 if is_vlm_ocr_processed:
                     status_doc["isVLMOcrProcessed"] = True
 
-                self.logger.info(
+                self.logger.debug(
                     "🎯 Upserting extraction status (COMPLETED) for document"
                 )
                 success = await tx_store.batch_update_nodes(

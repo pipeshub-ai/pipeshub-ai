@@ -5,7 +5,7 @@ Covers:
 - process_new_records: batch persist, checkpoint advancement
 - _process_issue_incident_task_to_ticket: type mapping (issue/incident/task), new vs updated
 - _get_issues_sync_checkpoint / _update_sync_checkpoint: read/write/exception
-- _issues_indexing_enabled / _comments_indexing_enabled: filter flags
+- _issues_indexing_enabled: filter flag; comments have no separate indexing gate
 """
 from __future__ import annotations
 
@@ -124,6 +124,76 @@ class TestFetchIssuesBatched:
         # 5 issues with batch_size=2 → 3 batches
         assert issues_sync.process_new_records.call_count == 3
 
+    async def test_checkpoint_stays_behind_a_failed_batch(self) -> None:
+        """The listing is sorted ``updated asc``: committing a later batch's
+        timestamp after an earlier batch failed would skip those issues
+        forever, so the sweep must stop and write no checkpoint."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        c.batch_size = 2
+        issues_sync = IssuesSync(c)
+
+        issues = [_make_issue(i) for i in range(6)]
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=True, data=issues, error=None))
+        issues_sync._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        issues_sync._build_issue_records = AsyncMock(return_value=[])
+        issues_sync._update_sync_checkpoint = AsyncMock()
+        # batch 1 succeeds, batch 2 fails, batch 3 must never run
+        issues_sync.process_new_records = AsyncMock(side_effect=[True, False, True])
+
+        await issues_sync.fetch_issues_batched(42)
+
+        assert issues_sync.process_new_records.call_count == 2
+        issues_sync._update_sync_checkpoint.assert_not_called()
+
+    async def test_checkpoint_written_once_after_a_clean_sweep(self) -> None:
+        """One checkpoint write per record group per sweep, not one per batch."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        c.batch_size = 2
+        issues_sync = IssuesSync(c)
+
+        issues = [_make_issue(i) for i in range(6)]
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=True, data=issues, error=None))
+        issues_sync._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        issues_sync._build_issue_records = AsyncMock(return_value=[])
+        issues_sync._update_sync_checkpoint = AsyncMock()
+
+        async def _persist(batch, watermarks=None):
+            if watermarks is not None:
+                watermarks["42-work-items"] = 555
+            return True
+
+        issues_sync.process_new_records = AsyncMock(side_effect=_persist)
+
+        await issues_sync.fetch_issues_batched(42)
+
+        assert issues_sync.process_new_records.call_count == 3
+        issues_sync._update_sync_checkpoint.assert_awaited_once_with("42-work-items", 555)
+
+    async def test_persist_failure_returns_false_and_keeps_watermark_clean(self) -> None:
+        """process_new_records reports the failure and leaves no watermark for it."""
+        from app.connectors.sources.gitlab.models import RecordUpdate
+        from unittest.mock import ANY
+
+        c = make_mock_connector()
+        issues_sync = IssuesSync(c)
+        c.data_entities_processor.on_new_records = AsyncMock(side_effect=Exception("db down"))
+
+        record = MagicMock()
+        record.record_type = "TICKET"
+        record.source_updated_at = 999
+        record.external_record_group_id = "42-work-items"
+        ru = MagicMock(spec=RecordUpdate)
+        ru.record = record
+        ru.new_permissions = []
+
+        watermarks: dict[str, int] = {}
+        result = await issues_sync.process_new_records([ru], watermarks)
+
+        assert result is False
+        assert watermarks == {}
+
 
 # ===========================================================================
 # _process_issue_incident_task_to_ticket
@@ -181,9 +251,7 @@ class TestProcessIssueToTicket:
         existing = MagicMock()
         existing.record_name = "Old Title"
         existing.id = "existing-id-1"
-        _, ctx = await self._make_tx_context(existing)
-        c.data_store_provider = MagicMock()
-        c.data_store_provider.transaction = MagicMock(return_value=ctx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         issues_sync = IssuesSync(c)
 
         result = await issues_sync._process_issue_incident_task_to_ticket(_make_issue(title="New Title"))
@@ -193,8 +261,9 @@ class TestProcessIssueToTicket:
 
     async def test_exception_returns_none(self) -> None:
         c = make_mock_connector()
-        c.data_store_provider = MagicMock()
-        c.data_store_provider.transaction = MagicMock(side_effect=Exception("DB error"))
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=Exception("DB error")
+        )
         issues_sync = IssuesSync(c)
 
         result = await issues_sync._process_issue_incident_task_to_ticket(_make_issue())
@@ -253,12 +322,6 @@ class TestIssueIndexingFilters:
         issues_sync = IssuesSync(c)
         assert issues_sync._issues_indexing_enabled() is True
 
-    def test_comments_enabled_by_default_when_no_filters(self) -> None:
-        c = make_mock_connector()
-        c.indexing_filters = None
-        issues_sync = IssuesSync(c)
-        assert issues_sync._comments_indexing_enabled() is True
-
     def test_issues_disabled_by_filter(self) -> None:
         c = make_mock_connector()
         from app.connectors.core.registry.filters import IndexingFilterKey
@@ -268,14 +331,13 @@ class TestIssueIndexingFilters:
         issues_sync = IssuesSync(c)
         assert issues_sync._issues_indexing_enabled() is False
 
-    def test_comments_disabled_by_filter(self) -> None:
-        c = make_mock_connector()
-        from app.connectors.core.registry.filters import IndexingFilterKey
-        filters = MagicMock()
-        filters.is_enabled = MagicMock(side_effect=lambda k: k != IndexingFilterKey.COMMENTS)
-        c.indexing_filters = filters
-        issues_sync = IssuesSync(c)
-        assert issues_sync._comments_indexing_enabled() is False
+    def test_no_comments_indexing_filter_exists(self) -> None:
+        """Comments are part of a ticket's content, not records of their own, so
+        there is nothing separate to index or not index. Gating block
+        composition on an indexing filter also silently stripped every comment
+        once enable_manual_sync was on, because is_enabled answers
+        "auto-index this?" and returns False for every filter in that mode."""
+        assert not hasattr(IssuesSync, "_comments_indexing_enabled")
 
 
 # ===========================================================================
@@ -347,8 +409,6 @@ class TestBuildIssueRecords:
         issues_sync = IssuesSync(c)
         issues_sync._process_issue_incident_task_to_ticket = AsyncMock(return_value=ru)
         issues_sync._issues_indexing_enabled = MagicMock(return_value=True)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
-
         result = await issues_sync._build_issue_records([issue])
         assert len(result) == 2
         c.attachments.make_file_records_from_list.assert_called_once()
@@ -380,8 +440,6 @@ class TestBuildIssueRecords:
         issues_sync = IssuesSync(c)
         issues_sync._process_issue_incident_task_to_ticket = AsyncMock(return_value=ru)
         issues_sync._issues_indexing_enabled = MagicMock(return_value=True)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
-
         result = await issues_sync._build_issue_records([issue])
         assert len(result) == 2
         c.attachments.make_files_records_from_notes.assert_called_once()
@@ -409,8 +467,6 @@ class TestBuildIssueRecords:
         issues_sync = IssuesSync(c)
         issues_sync._process_issue_incident_task_to_ticket = AsyncMock(return_value=ru)
         issues_sync._issues_indexing_enabled = MagicMock(return_value=False)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
-
         await issues_sync._build_issue_records([issue])
         assert ru.record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
@@ -434,8 +490,6 @@ class TestBuildIssueRecords:
 
         issues_sync = IssuesSync(c)
         issues_sync._issues_indexing_enabled = MagicMock(return_value=True)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
-
         result = await issues_sync._build_issue_records([issue])
         assert len(result) == 1
         assert result[0].metadata_changed is False
@@ -523,7 +577,6 @@ class TestBuildTicketBlocks:
         c.comments.build_comment_blocks = AsyncMock(return_value=([], []))
 
         issues_sync = IssuesSync(c)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=False)
         issues_sync.process_new_records = AsyncMock()
 
         result = await issues_sync.build_ticket_blocks(record)
@@ -531,7 +584,7 @@ class TestBuildTicketBlocks:
         assert b"block_groups" in result
 
     async def test_with_comments_appended(self) -> None:
-        """When comments indexing enabled, comment blocks are included."""
+        """Comment blocks are always appended to the ticket container."""
         c = make_mock_connector()
         c._gitlab_base_url = "https://gitlab.com"
 
@@ -564,7 +617,6 @@ class TestBuildTicketBlocks:
         c.comments.build_comment_blocks = AsyncMock(return_value=([comment_bg], []))
 
         issues_sync = IssuesSync(c)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
         issues_sync.process_new_records = AsyncMock()
 
         result = await issues_sync.build_ticket_blocks(record)

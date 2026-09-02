@@ -417,6 +417,40 @@ class _AttachmentSinkNoopVectorStore:
         return True
 
 
+async def _rollback_attachment_records(
+    graph_provider: IGraphDBProvider,
+    record_ids: list[str],
+) -> None:
+    """Undo the graph half of an attachment upload that failed partway through.
+
+    Mirrors `delete_chat_attachment`: dropping the RECORDS node takes its
+    IS_OF_TYPE and PERMISSION edges with it, and the FILES node shares the key.
+    Blobs are not reachable from here -- `BlobStorage` exposes no delete, so the
+    normal delete path leaks them too.
+
+    Each collection is attempted independently so a failure on one still cleans
+    the other. Both go through `delete_nodes_and_edges` rather than the cheaper
+    `delete_nodes` the delete route uses for FILES: that route only reaches FILES
+    once RECORDS cleanup has already taken the isOfType edge, whereas here FILES
+    can be deleted while the edge is still live, and on Arango `delete_nodes`
+    leaves edges behind (on Neo4j both are the same DETACH DELETE).
+
+    Best-effort: a failure here must not replace the error that triggered it.
+    """
+    if not record_ids:
+        return
+    for collection in (CollectionNames.RECORDS.value, CollectionNames.FILES.value):
+        try:
+            await graph_provider.delete_nodes_and_edges(record_ids, collection)
+        except Exception:
+            logger.exception(
+                "Failed to roll back partially uploaded attachments from %s; "
+                "records may be orphaned: %s",
+                collection,
+                record_ids,
+            )
+
+
 @router.post("/chat/attachments/upload", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
 @inject
 async def upload_chat_attachments(
@@ -627,77 +661,87 @@ async def upload_chat_attachments(
             }
         )
 
-    await graph_provider.batch_upsert_nodes(record_docs, CollectionNames.RECORDS.value)
-    await graph_provider.batch_upsert_nodes(file_docs, CollectionNames.FILES.value)
+    # Records, files, edges and the sink's blob write are five separate round
+    # trips with no shared transaction, so a failure partway leaves a record the
+    # user can neither see nor delete. Undo the graph writes before surfacing it.
+    try:
+        await graph_provider.batch_upsert_nodes(record_docs, CollectionNames.RECORDS.value)
+        await graph_provider.batch_upsert_nodes(file_docs, CollectionNames.FILES.value)
 
-    ts = get_epoch_timestamp_in_ms()
-    is_of_type_edges = [
-        {
-            "_from": f"{CollectionNames.RECORDS.value}/{rd['_key']}",
-            "_to": f"{CollectionNames.FILES.value}/{rd['_key']}",
-            "createdAtTimestamp": ts,
-            "updatedAtTimestamp": ts,
-        }
-        for rd in record_docs
-    ]
-    await graph_provider.batch_create_edges(is_of_type_edges, CollectionNames.IS_OF_TYPE.value)
-    if is_service_account:
-        # Service accounts have no user graph node, so no USER -> RECORD edge
-        # can be created. Grant an org-scoped permission edge instead so the
-        # uploaded file is readable org-wide through the standard ACL path
-        # (orgAccessPermissionEdge in check_record_access_with_details).
-        permission_edges = [
+        ts = get_epoch_timestamp_in_ms()
+        is_of_type_edges = [
             {
-                "from_id": org_id,
-                "from_collection": CollectionNames.ORGS.value,
-                "to_id": rd["_key"],
-                "to_collection": CollectionNames.RECORDS.value,
-                "type": "ORGANIZATION",
-                "role": "READER",
+                "_from": f"{CollectionNames.RECORDS.value}/{rd['_key']}",
+                "_to": f"{CollectionNames.FILES.value}/{rd['_key']}",
                 "createdAtTimestamp": ts,
                 "updatedAtTimestamp": ts,
             }
             for rd in record_docs
         ]
-        await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
-    else:
-        permission_edges = [
-            {
-                "from_id": user_key,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": rd["_key"],
-                "to_collection": CollectionNames.RECORDS.value,
-                "type": "USER",
-                "role": "OWNER",
-                "createdAtTimestamp": ts,
-                "updatedAtTimestamp": ts,
-            }
-            for rd in record_docs
-        ]
-        await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
+        await graph_provider.batch_create_edges(is_of_type_edges, CollectionNames.IS_OF_TYPE.value)
+        if is_service_account:
+            # Service accounts have no user graph node, so no USER -> RECORD edge
+            # can be created. Grant an org-scoped permission edge instead so the
+            # uploaded file is readable org-wide through the standard ACL path
+            # (orgAccessPermissionEdge in check_record_access_with_details).
+            permission_edges = [
+                {
+                    "from_id": org_id,
+                    "from_collection": CollectionNames.ORGS.value,
+                    "to_id": rd["_key"],
+                    "to_collection": CollectionNames.RECORDS.value,
+                    "type": "ORGANIZATION",
+                    "role": "READER",
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                for rd in record_docs
+            ]
+            await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
+        else:
+            permission_edges = [
+                {
+                    "from_id": user_key,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": rd["_key"],
+                    "to_collection": CollectionNames.RECORDS.value,
+                    "type": "USER",
+                    "role": "OWNER",
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                for rd in record_docs
+            ]
+            await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
 
-    sink_orchestrator = SinkOrchestrator(
-        graphdb=graphdb,
-        blob_storage=blob_storage,
-        vector_store=_AttachmentSinkNoopVectorStore(),
-        graph_provider=graph_provider,
-        logger=service_logger,
-    )
-
-    for record_doc in record_docs:
-        record_id = record_doc.get("_key") or record_doc.get("id")
-        block_containers = parsed_blocks_by_record.get(record_id)
-        if block_containers is None:
-            continue
-
-        record = convert_record_dict_to_record(record_doc)
-        record.block_containers = block_containers
-        record.virtual_record_id = record_doc.get("virtualRecordId")
-        ctx = TransformContext(
-            record=record,
-            settings={"sink_only": True, "skip_vector_store": True},
+        sink_orchestrator = SinkOrchestrator(
+            graphdb=graphdb,
+            blob_storage=blob_storage,
+            vector_store=_AttachmentSinkNoopVectorStore(),
+            graph_provider=graph_provider,
+            logger=service_logger,
+            config_service=config_service,
         )
-        await sink_orchestrator.index(ctx)
+
+        for record_doc in record_docs:
+            record_id = record_doc.get("_key") or record_doc.get("id")
+            block_containers = parsed_blocks_by_record.get(record_id)
+            if block_containers is None:
+                continue
+
+            record = convert_record_dict_to_record(record_doc)
+            record.block_containers = block_containers
+            record.virtual_record_id = record_doc.get("virtualRecordId")
+            ctx = TransformContext(
+                record=record,
+                settings={"sink_only": True, "skip_vector_store": True},
+            )
+            await sink_orchestrator.index(ctx)
+    except Exception:
+        await _rollback_attachment_records(
+            graph_provider, [rd["_key"] for rd in record_docs]
+        )
+        raise
 
     return {
         "conversationId": payload.conversationId,
@@ -888,12 +932,13 @@ async def _generate_chat_stream_via_agent_loop(
     protocol = resolve_protocol(query_info.protocol, request)
 
     try:
-        llm, model_config, ai_models_config = await get_llm_for_chat(
+        llm_bundle = await get_llm_for_chat(
             config_service, query_info.modelKey, query_info.modelName, query_info.chatMode,
             reasoning_effort=query_info.reasoningEffort,
         )
-        if llm is None:
+        if not llm_bundle or llm_bundle[0] is None:
             raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
+        llm, model_config, ai_models_config = llm_bundle
     except Exception as exc:
         logger_.error(f"Error initializing LLM for chat: {exc}", exc_info=True)
         if protocol == "agui":
@@ -902,6 +947,23 @@ async def _generate_chat_stream_via_agent_loop(
         else:
             yield create_sse_event("error", {"error": str(exc)})
         return
+
+    # Fetch system prompts from dedicated key; fall back to legacy aiModels blob for OSS
+    # deployments that haven't migrated yet.
+    system_prompts_config: dict[str, Any] = {}
+    try:
+        sp_raw = await config_service.get_config(config_node_constants.SYSTEM_PROMPTS.value)
+        if sp_raw:
+            system_prompts_config = sp_raw
+        else:
+            ai_raw = await config_service.get_config(config_node_constants.AI_MODELS.value)
+            if ai_raw:
+                system_prompts_config = {
+                    k: ai_raw[k] for k in ("customSystemPrompt", "customSystemPromptWebSearch", "customSystemPromptAgent")
+                    if k in ai_raw
+                }
+    except Exception:
+        logger_.debug("Could not load system prompts config", exc_info=True)
 
     policy = resolve_chat_mode_policy(query_info.chatMode)
     is_multimodal_llm = bool(model_config.get("isMultimodal"))
@@ -969,7 +1031,8 @@ async def _generate_chat_stream_via_agent_loop(
         org_info=org_info,
         model_name=query_info.modelName, model_key=query_info.modelKey,
         is_multimodal_llm=is_multimodal_llm, context_length=context_length,
-        ai_models_config=ai_models_config, protocol=protocol,
+        llm_provider=model_config.get("provider") or "",
+        system_prompts_config=system_prompts_config, protocol=protocol,
         client_name=client_name,
     ):
         yield event

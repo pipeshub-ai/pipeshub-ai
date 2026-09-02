@@ -1,6 +1,6 @@
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from enum import Enum
-from inspect import isclass
+from inspect import isawaitable, isclass
 from typing import Any
 from uuid import uuid4
 
@@ -48,7 +48,8 @@ def Connector(
     app_categories: list[str] | None = None,
     config: dict[str, Any] | None = None,
     connector_scopes: list[ConnectorScope] | None = None,
-    connector_info: str | None = None
+    connector_info: str | None = None,
+    resilience_config: dict[str, Any] | None = None
 ) -> Callable[[type], type]:
     """
     Decorator to register a connector with metadata and configuration schema.
@@ -63,6 +64,7 @@ def Connector(
         config: Complete configuration schema for the connector
         connector_scopes: List of scopes the connector supports ("personal", "team")
         connector_info: Optional info text to display on the frontend connector page
+        resilience_config: Rate limit and retry budget, from ConnectorBuilder.with_resilience_config
     Returns:
         Decorator function that marks a class as a connector
 
@@ -99,7 +101,8 @@ def Connector(
             "appCategories": app_categories or [],
             "config": config or {},
             "connectorScopes": connector_scopes or [ConnectorScope.PERSONAL],  # Default to personal only
-            "connectorInfo": connector_info
+            "connectorInfo": connector_info,
+            "resilienceConfig": resilience_config or {}
         }
 
         # Mark class as a connector
@@ -264,10 +267,52 @@ class ConnectorRegistry:
             self.logger.debug(f"Could not get beta connector names: {e}")
             return []
 
+    def _belongs_to_org(self, connector_instance: dict[str, Any], org_id: str) -> bool:
+        """Tenant check, applied before any role logic.
+
+        Instances are fetched by id alone, so without this a TEAM connector's
+        gate reduces to `is_admin` — and an administrator of one organization
+        who learns an id belonging to another would pass it.
+        """
+        instance_org_id = connector_instance.get("orgId")
+        if instance_org_id and instance_org_id != org_id:
+            self.logger.warning(
+                "Connector %s belongs to org %s; caller is in org %s",
+                connector_instance.get("_key") or connector_instance.get("id"),
+                instance_org_id,
+                org_id,
+            )
+            return False
+        return True
+
+    def _can_delete_connector(
+        self,
+        connector_instance: dict[str, Any],
+        user_id: str,
+        org_id: str,
+        *,
+        is_admin: bool,
+    ) -> bool:
+        """Whether this caller may *delete* the connector: an administrator, or
+        its creator, in the same organization.
+
+        Deliberately not `_can_access_connector`. Deletion is uniform across
+        scopes where access is not: reading or altering someone's personal
+        connector exposes their data, while removing one that should no longer
+        exist does not, and an admin who can remove the member entirely was
+        otherwise unable to clean up the connector they left behind.
+        Broadening `_can_access_connector` instead would hand admins read and
+        update rights over personal connectors, which is not the intent.
+        """
+        if not self._belongs_to_org(connector_instance, org_id):
+            return False
+        return is_admin or connector_instance.get("createdBy") == user_id
+
     async def _can_access_connector(
         self,
         connector_instance: dict[str, Any],
         user_id: str,
+        org_id: str,
         *,
         is_admin: bool,
     ) -> bool:
@@ -277,12 +322,16 @@ class ConnectorRegistry:
         Args:
             connector_instance: Connector instance document
             user_id: User ID
+            org_id: Organization the caller belongs to
             is_admin: Whether the user is an admin
 
         Returns:
             True if user can access the connector
         """
         try:
+            if not self._belongs_to_org(connector_instance, org_id):
+                return False
+
             connector_scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value)
             created_by = connector_instance.get("createdBy")
 
@@ -496,6 +545,7 @@ class ConnectorRegistry:
                 'isAgentActive': False,
                 'isConfigured': True,
                 'isAuthenticated': False,
+                'vectorMembershipBackfilled': True,
                 'createdBy': created_by,
                 'updatedBy': created_by,
                 'createdAtTimestamp': current_timestamp,
@@ -1224,6 +1274,46 @@ class ConnectorRegistry:
         Returns:
             Connector instance with full metadata and status or None if not found/no access
         """
+        return await self._load_authorized_instance(
+            connector_id,
+            lambda document: self._can_access_connector(
+                document, user_id, org_id, is_admin=is_admin
+            ),
+            user_id=user_id,
+        )
+
+    async def get_connector_instance_for_deletion(
+        self,
+        connector_id: str,
+        user_id: str,
+        org_id: str,
+        *,
+        is_admin: bool,
+    ) -> dict[str, Any] | None:
+        """Fetch an instance for the delete route, under the deletion gate.
+
+        The read gate would 404 an administrator on another user's personal
+        connector, so routing deletion through it made the admin allowance in
+        `_validate_connector_deletion_permissions` unreachable for exactly the
+        orphaned instances it exists to clean up.
+        """
+        return await self._load_authorized_instance(
+            connector_id,
+            lambda document: self._can_delete_connector(
+                document, user_id, org_id, is_admin=is_admin
+            ),
+            user_id=user_id,
+        )
+
+    async def _load_authorized_instance(
+        self,
+        connector_id: str,
+        authorize: Callable[[dict[str, Any]], Awaitable[bool] | bool],
+        *,
+        user_id: str,
+    ) -> dict[str, Any] | None:
+        """Fetch, authorize, then enrich — shared so a second gate cannot drift
+        from the first on anything but the authorization step."""
         try:
             document = await self._get_connector_instance_from_db(connector_id)
 
@@ -1233,10 +1323,11 @@ class ConnectorRegistry:
                 )
                 return None
 
-            # Check access
-            has_access = await self._can_access_connector(document, user_id, is_admin=is_admin)
+            decision = authorize(document)
+            if isawaitable(decision):
+                decision = await decision
 
-            if not has_access:
+            if not decision:
                 self.logger.warning(
                     f"User {user_id} does not have access to connector {connector_id}"
                 )
@@ -1448,6 +1539,7 @@ class ConnectorRegistry:
             has_access = await self._can_access_connector(
                 existing_document,
                 user_id,
+                org_id,
                 is_admin=is_admin,
             )
 
@@ -1506,7 +1598,7 @@ class ConnectorRegistry:
                 )
                 return None
 
-            self.logger.info(f"Updated connector instance {connector_id}")
+            self.logger.debug(f"Updated connector instance {connector_id}")
             return updated_document
 
         except ValueError:

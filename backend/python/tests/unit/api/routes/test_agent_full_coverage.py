@@ -620,7 +620,7 @@ class TestEnrichUserInfoForServiceAccountChat:
         from app.api.routes.agent import _enrich_user_info_for_service_account_agent_chat
         with pytest.raises(HTTPException) as exc_info:
             await _enrich_user_info_for_service_account_agent_chat(
-                {}, AsyncMock(), MagicMock()
+                {}, AsyncMock(), MagicMock(), "o1"
             )
         assert exc_info.value.status_code == 500
         assert "createdBy" in exc_info.value.detail
@@ -632,7 +632,7 @@ class TestEnrichUserInfoForServiceAccountChat:
         gp.get_document = AsyncMock(return_value=None)
         with pytest.raises(HTTPException) as exc_info:
             await _enrich_user_info_for_service_account_agent_chat(
-                {"createdBy": "ck1"}, gp, MagicMock()
+                {"createdBy": "ck1"}, gp, MagicMock(), "o1"
             )
         assert exc_info.value.status_code == 500
         assert "creator" in exc_info.value.detail.lower()
@@ -644,7 +644,7 @@ class TestEnrichUserInfoForServiceAccountChat:
         gp.get_document = AsyncMock(return_value={"email": "a@b.com"})
         with pytest.raises(HTTPException) as exc_info:
             await _enrich_user_info_for_service_account_agent_chat(
-                {"createdBy": "ck1"}, gp, MagicMock()
+                {"createdBy": "ck1"}, gp, MagicMock(), "o1"
             )
         assert exc_info.value.status_code == 500
         assert "userId" in exc_info.value.detail
@@ -659,48 +659,39 @@ class TestEnrichUserInfoForServiceAccountChat:
         with patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock,
                    return_value={"userId": "u1", "email": "creator@co.com"}):
             result = await _enrich_user_info_for_service_account_agent_chat(
-                {"createdBy": "ck1"}, gp, MagicMock()
+                {"createdBy": "ck1"}, gp, MagicMock(), "o1"
             )
         assert result["userId"] == "u1"
 
-
-# ============================================================================
-# _load_service_account_agent_for_chat — lines 809-816
-# ============================================================================
-
-
-class TestLoadServiceAccountAgentForChat:
     @pytest.mark.asyncio
-    async def test_agent_not_found(self):
-        from app.api.routes.agent import _load_service_account_agent_for_chat, AgentNotFoundError
+    async def test_rejects_caller_from_another_org(self):
+        from app.api.routes.agent import (
+            AgentNotFoundError,
+            _enrich_user_info_for_service_account_agent_chat,
+        )
         gp = AsyncMock()
-        gp.get_agent = AsyncMock(return_value=None)
-        with pytest.raises(AgentNotFoundError):
-            await _load_service_account_agent_for_chat("a1", "o1", gp, MagicMock())
-
-    @pytest.mark.asyncio
-    async def test_not_service_account(self):
-        from app.api.routes.agent import _load_service_account_agent_for_chat, AgentNotFoundError
-        gp = AsyncMock()
-        gp.get_agent = AsyncMock(return_value={"isServiceAccount": False})
-        with pytest.raises(AgentNotFoundError):
-            await _load_service_account_agent_for_chat("a1", "o1", gp, MagicMock())
-
-    @pytest.mark.asyncio
-    async def test_success(self):
-        from app.api.routes.agent import _load_service_account_agent_for_chat
-        gp = AsyncMock()
-        gp.get_agent = AsyncMock(return_value={"isServiceAccount": True, "createdBy": "ck1"})
         gp.get_document = AsyncMock(return_value={
-            "userId": "u1", "orgId": "o1", "email": "c@co.com"
+            "userId": "u1", "orgId": "org-a", "email": "creator@co.com"
         })
-        with patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock,
-                   return_value={"userId": "u1"}):
-            agent, user_info, perm = await _load_service_account_agent_for_chat(
-                "a1", "o1", gp, MagicMock()
+        with pytest.raises(AgentNotFoundError):
+            await _enrich_user_info_for_service_account_agent_chat(
+                {"createdBy": "ck1", "_key": "sa-1"}, gp, MagicMock(), "org-b"
             )
-        assert agent["isServiceAccount"] is True
-        assert perm["role"] == "viewer"
+
+    @pytest.mark.asyncio
+    async def test_rejects_creator_missing_org(self):
+        from app.api.routes.agent import (
+            AgentNotFoundError,
+            _enrich_user_info_for_service_account_agent_chat,
+        )
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={
+            "userId": "u1", "email": "creator@co.com"
+        })
+        with pytest.raises(AgentNotFoundError):
+            await _enrich_user_info_for_service_account_agent_chat(
+                {"createdBy": "ck1"}, gp, MagicMock(), "o1"
+            )
 
 
 # ============================================================================
@@ -1229,191 +1220,6 @@ class TestBuildPriorRoutingMessages:
         result = await _build_prior_routing_messages(query_info, blob_store, "o1", True)
         assert len(result) == 1
 
-
-# ============================================================================
-# share_agent/unshare_agent — lines 3133, 3140, 3148-3150, 3169, 3172, 3176, 3182-3186
-# ============================================================================
-
-
-class TestShareAgentEdgeCases:
-    @pytest.mark.asyncio
-    async def test_share_fails(self):
-        """Line 3140 — share_agent returns falsy."""
-        from app.api.routes.agent import share_agent
-        services = {
-            "graph_provider": AsyncMock(),
-            "logger": MagicMock(),
-        }
-        services["graph_provider"].check_agent_permission = AsyncMock(
-            return_value={"can_share": True}
-        )
-        services["graph_provider"].share_agent = AsyncMock(return_value=False)
-        request = MagicMock()
-        request.body = AsyncMock(return_value=b'{"userIds": ["u2"]}')
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
-            with pytest.raises(HTTPException) as exc_info:
-                await share_agent(request, "a1")
-            assert exc_info.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_share_generic_exception(self):
-        """Lines 3148-3150 — generic exception."""
-        from app.api.routes.agent import share_agent
-        services = {
-            "graph_provider": AsyncMock(),
-            "logger": MagicMock(),
-        }
-        services["graph_provider"].check_agent_permission = AsyncMock(
-            return_value={"can_share": True}
-        )
-        services["graph_provider"].share_agent = AsyncMock(side_effect=RuntimeError("fail"))
-        request = MagicMock()
-        request.body = AsyncMock(return_value=b'{"userIds": ["u2"]}')
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
-            with pytest.raises(HTTPException) as exc_info:
-                await share_agent(request, "a1")
-            assert exc_info.value.status_code == 400
-
-
-class TestUnshareAgentEdgeCases:
-    @pytest.mark.asyncio
-    async def test_unshare_not_found(self):
-        """Line 3169 — no permission."""
-        from app.api.routes.agent import unshare_agent, AgentNotFoundError
-        services = {
-            "graph_provider": AsyncMock(),
-            "logger": MagicMock(),
-        }
-        services["graph_provider"].check_agent_permission = AsyncMock(return_value=None)
-        request = MagicMock()
-        request.body = AsyncMock(return_value=b'{"userIds": ["u2"]}')
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
-            with pytest.raises(AgentNotFoundError):
-                await unshare_agent(request, "a1")
-
-    @pytest.mark.asyncio
-    async def test_unshare_no_share_perm(self):
-        """Line 3172 — no can_share."""
-        from app.api.routes.agent import unshare_agent, PermissionDeniedError
-        services = {
-            "graph_provider": AsyncMock(),
-            "logger": MagicMock(),
-        }
-        services["graph_provider"].check_agent_permission = AsyncMock(
-            return_value={"can_share": False}
-        )
-        request = MagicMock()
-        request.body = AsyncMock(return_value=b'{"userIds": ["u2"]}')
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
-            with pytest.raises(PermissionDeniedError):
-                await unshare_agent(request, "a1")
-
-    @pytest.mark.asyncio
-    async def test_unshare_fails(self):
-        """Line 3176 — unshare_agent returns falsy."""
-        from app.api.routes.agent import unshare_agent
-        services = {
-            "graph_provider": AsyncMock(),
-            "logger": MagicMock(),
-        }
-        services["graph_provider"].check_agent_permission = AsyncMock(
-            return_value={"can_share": True}
-        )
-        services["graph_provider"].unshare_agent = AsyncMock(return_value=False)
-        request = MagicMock()
-        request.body = AsyncMock(return_value=b'{"userIds": ["u2"]}')
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
-            with pytest.raises(HTTPException) as exc_info:
-                await unshare_agent(request, "a1")
-            assert exc_info.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_unshare_generic_exception(self):
-        """Lines 3182-3186 — generic exception."""
-        from app.api.routes.agent import unshare_agent
-        services = {
-            "graph_provider": AsyncMock(),
-            "logger": MagicMock(),
-        }
-        services["graph_provider"].check_agent_permission = AsyncMock(
-            return_value={"can_share": True}
-        )
-        services["graph_provider"].unshare_agent = AsyncMock(side_effect=RuntimeError("fail"))
-        request = MagicMock()
-        request.body = AsyncMock(return_value=b'{"userIds": ["u2"]}')
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
-            with pytest.raises(HTTPException) as exc_info:
-                await unshare_agent(request, "a1")
-            assert exc_info.value.status_code == 400
-
-
-# ============================================================================
-# update_agent_permission — lines 3211-3215, 3238, 3246-3248
-# ============================================================================
-
-
-class TestUpdateAgentPermissionEdgeCases:
-    @pytest.mark.asyncio
-    async def test_update_perm_fails(self):
-        """Lines 3211-3215 — update returns false."""
-        from app.api.routes.agent import update_agent_permission
-        services = {
-            "graph_provider": AsyncMock(),
-            "logger": MagicMock(),
-        }
-        services["graph_provider"].check_agent_permission = AsyncMock(
-            return_value={"can_share": True}
-        )
-        services["graph_provider"].update_agent_permission = AsyncMock(return_value=False)
-        request = MagicMock()
-        request.body = AsyncMock(return_value=b'{"userId": "u2", "role": "editor"}')
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
-            with pytest.raises(HTTPException) as exc_info:
-                await update_agent_permission(request, "a1")
-            assert exc_info.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_update_perm_generic_exception(self):
-        """Lines 3246-3248 — generic exception."""
-        from app.api.routes.agent import update_agent_permission
-        services = {
-            "graph_provider": AsyncMock(),
-            "logger": MagicMock(),
-        }
-        services["graph_provider"].check_agent_permission = AsyncMock(
-            return_value={"can_share": True}
-        )
-        services["graph_provider"].update_agent_permission = AsyncMock(side_effect=RuntimeError("fail"))
-        request = MagicMock()
-        request.body = AsyncMock(return_value=b'{"userId": "u2", "role": "editor"}')
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
-            with pytest.raises(HTTPException) as exc_info:
-                await update_agent_permission(request, "a1")
-            assert exc_info.value.status_code == 400
 
 
 # ============================================================================

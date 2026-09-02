@@ -3569,16 +3569,10 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "ConfluenceDataCenterPersonalConnector":
         """Factory method to create a Confluence Data Center Personal connector instance."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-
-        await data_entities_processor.initialize()
-
         return cls(
             logger,
             data_entities_processor,

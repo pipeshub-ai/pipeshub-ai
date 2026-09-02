@@ -126,7 +126,14 @@ from app.schema.arango.edges import (
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.common.utils import build_connector_stats_response, dedupe_agents_by_id
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.interface.graph_db_provider import (
+    IGraphDBProvider,
+    _distinct_connector_types,
+)
+from app.services.graph_db.vector_membership_queries import (
+    build_app_needing_vector_membership_backfill_aql,
+    build_page_records_for_vector_membership_backfill_aql,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Constants for ArangoDB document ID format
@@ -669,6 +676,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["connectorId"],
+        )
+
+        # COMPOUND: the vector-membership backfill keyset walk filters on
+        # connectorId then sorts by _key. Same reasoning as the reindex compound
+        # below — without _key trailing the filter field the SORT is not
+        # index-satisfied and every page re-sorts the connector's whole record set.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["connectorId", "_key"],
         )
 
         # SINGLE: indexingStatus (pipeline queries)
@@ -1582,6 +1598,48 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.debug("✅ Updated %s record(s) indexing status to %s", len(to_upsert), status)
         except Exception as e:
             self.logger.error("❌ Failed to update records to %s: %s", status, str(e))
+
+    async def reset_indexing_status_for_connector(
+        self,
+        connector_id: str,
+        status: str,
+        exclude_statuses: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> None:
+        if not connector_id:
+            return
+        coll = CollectionNames.RECORDS.value
+        excluded = [s for s in (exclude_statuses or []) if isinstance(s, str) and s]
+        try:
+            exclude_clause = (
+                "FILTER doc.indexingStatus NOT IN @exclude_statuses"
+                if excluded
+                else ""
+            )
+            query = f"""
+            FOR doc IN @@collection
+                FILTER doc.connectorId == @connector_id
+                {exclude_clause}
+                UPDATE doc WITH {{ indexingStatus: @status }} IN @@collection
+            """
+            bind_vars: dict = {
+                "@collection": coll,
+                "connector_id": connector_id,
+                "status": status,
+            }
+            if excluded:
+                bind_vars["exclude_statuses"] = excluded
+            await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
+        except Exception as e:
+            # Must not be swallowed: the rebuild drops the vector collection
+            # straight after this, and a connector whose records kept their old
+            # statuses is never re-indexed, so search stays silently empty.
+            self.logger.error(
+                "❌ Failed to reset indexing status for connector %s: %s",
+                connector_id,
+                str(e),
+            )
+            raise
 
     async def compare_and_set_indexing_status(
         self,
@@ -3680,6 +3738,63 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to retrieve records by status for connector {connector_id}: {str(e)}")
             return []
 
+    async def get_app_needing_vector_membership_backfill(
+        self,
+        transaction: str | None = None,
+    ) -> dict | None:
+        results = await self.http_client.execute_aql(
+            build_app_needing_vector_membership_backfill_aql(),
+            bind_vars={},
+            txn_id=transaction,
+        )
+        if not results:
+            return None
+        return results[0]
+
+    async def page_records_for_vector_membership_backfill(
+        self,
+        connector_id: str,
+        after_key: str | None,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        try:
+            has_after_key = bool(after_key)
+            bind_vars: dict = {
+                "connector_id": connector_id,
+                "limit": max(1, int(limit)),
+            }
+            if has_after_key:
+                bind_vars["after_key"] = after_key
+            results = await self.http_client.execute_aql(
+                build_page_records_for_vector_membership_backfill_aql(
+                    has_after_key=has_after_key
+                ),
+                bind_vars=bind_vars,
+                txn_id=transaction,
+            )
+            if not results:
+                return []
+            return [
+                {
+                    "_key": row.get("_key"),
+                    "virtualRecordId": row.get("virtualRecordId"),
+                }
+                for row in results
+            ]
+        except Exception as e:
+            self.logger.error(
+                "Failed to page records for vector membership backfill "
+                "connector %s: %s",
+                connector_id,
+                str(e),
+            )
+            # Must not degrade to []: the backfill scanner reads an empty page as
+            # "this connector is finished" and sets vectorMembershipBackfilled,
+            # so a swallowed error would permanently mark it done having
+            # processed nothing.
+            raise
+
     async def get_records_by_record_group(
         self,
         record_group_id: str,
@@ -4751,8 +4866,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to get user apps: %s", str(e))
             return []
 
-    async def _get_user_app_ids(self, user_id: str) -> list[str]:
-        """Get list of accessible app connector IDs for a user (user_id = external userId)."""
+    async def _get_user_app_ids(self, user_id: str, org_id: str | None = None) -> list[str]:
+        
         try:
             user = await self.get_user_by_user_id(user_id)
             if not user:
@@ -5471,17 +5586,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_org_apps(
         self,
-        org_id: str
+        org_id: str,
+        *,
+        active_only: bool = True,
     ) -> list[dict]:
         """
         Get organization apps.
         """
         try:
+            active_filter = "FILTER app.isActive == true" if active_only else ""
             query = f"""
             FOR app IN OUTBOUND
                 '{CollectionNames.ORGS.value}/{org_id}'
                 {CollectionNames.ORG_APP_RELATION.value}
-            FILTER app.isActive == true
+            {active_filter}
             RETURN app
             """
 
@@ -5565,6 +5683,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "isAgentActive": True,
                 "isConfigured": True,
                 "isAuthenticated": True,
+                "vectorMembershipBackfilled": False,
                 "hideConnector": True,
                 "createdAtTimestamp": created_at,
                 "updatedAtTimestamp": updated_at,
@@ -6012,7 +6131,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             size_in_bytes = ref_record.get("sizeInBytes")
 
             if not md5_checksum:
-                self.logger.warning(f"Record {record_id} missing md5Checksum")
+                # Expected, not a fault: duplicates are matched by md5Checksum
+                # alone, so a record without one (a folder, or anything with no
+                # content) can have none waiting on it. Warning-level here fires
+                # once per such record and drowns real problems.
+                self.logger.debug(f"Record {record_id} missing md5Checksum")
                 return 0
 
             # Find all queued duplicate records directly from RECORDS collection
@@ -8456,7 +8579,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "deleted_edges_count": deleted_edges,
                     "deleted_isoftype_targets_count": deleted_isoftype,
                     "virtual_record_ids": collected["virtual_record_ids"],
-                    "connector_id": connector_id
+                    "connector_id": connector_id,
+                    "connector_name": connector.get("type"),
                 }
 
             except Exception as tx_error:
@@ -11478,6 +11602,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "mimeType": mime_type,
                 "summaryDocumentId": record.get("summaryDocumentId"),
                 "virtualRecordId": record.get("virtualRecordId"),
+                "connectorId": record.get("connectorId"),
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
@@ -12092,6 +12217,107 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return {"success": False, "reason": str(e), "code": 500, "eventData": None}
 
 
+    async def delete_single_record(
+        self,
+        record_id: str,
+        transaction: str | None = None,
+    ) -> dict:
+        """Same cleanup as ``delete_records_recursive`` for one record — no walk."""
+        try:
+            if not record_id:
+                return {
+                    "success": True, "deleted_records": [], "failed_records": [],
+                    "total_requested": 0, "successfully_deleted": 0, "failed_count": 0,
+                    "eventData": None,
+                }
+            edge_collections = await self._get_all_edge_collections()
+            node_collections = [CollectionNames.RECORDS.value] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
+            txn_id = transaction
+            if transaction is None:
+                txn_id = await self.begin_transaction(
+                    read=edge_collections + node_collections,
+                    write=edge_collections + node_collections,
+                )
+            try:
+                inventory_query = """
+                LET rec = DOCUMENT('records', @record_id)
+                FILTER rec != null AND rec.isDeleted != true
+                LET tt = FIRST(
+                    FOR isEdge IN @@is_of_type
+                        FILTER isEdge._from == rec._id
+                        LET t = DOCUMENT(isEdge._to)
+                        FILTER t != null
+                        RETURN { collection: PARSE_IDENTIFIER(isEdge._to).collection, key: PARSE_IDENTIFIER(isEdge._to).key, full_id: isEdge._to, doc: t }
+                )
+                RETURN {
+                    valid_root_keys: [rec._key],
+                    records_with_type: [{ record: rec, type_target: tt }]
+                }
+                """
+                inv_results = await self.execute_query(
+                    inventory_query,
+                    bind_vars={
+                        "record_id": record_id,
+                        "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                    },
+                    transaction=txn_id,
+                )
+                inventory = inv_results[0] if inv_results else {}
+                valid_root_keys = inventory.get("valid_root_keys", [])
+                records_with_type = inventory.get("records_with_type", [])
+                record_keys = [rt["record"]["_key"] for rt in records_with_type]
+                type_targets = [rt["type_target"] for rt in records_with_type if rt.get("type_target")]
+
+                node_ids = [f"records/{k}" for k in record_keys]
+                if node_ids:
+                    await self._delete_edges_by_node_ids(txn_id, node_ids, edge_collections)
+                if type_targets:
+                    await self._delete_isoftype_targets_from_collected(txn_id, type_targets, edge_collections)
+                if record_keys:
+                    await self._delete_nodes_by_keys(txn_id, record_keys, CollectionNames.RECORDS.value)
+                if transaction is None and txn_id:
+                    await self.commit_transaction(txn_id)
+
+                event_payloads = []
+                try:
+                    for rt in records_with_type:
+                        rec = rt["record"]
+                        if not rec.get("virtualRecordId"):
+                            continue
+                        type_doc = (rt.get("type_target") or {}).get("doc") or {}
+                        delete_payload = await self._create_deleted_record_event_payload(rec, type_doc)
+                        if delete_payload:
+                            delete_payload["connectorName"] = rec.get("connectorName")
+                            delete_payload["origin"] = rec.get("origin")
+                            event_payloads.append(delete_payload)
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
+                event_data = {
+                    "eventType": "deleteRecord",
+                    "topic": "record-events",
+                    "payloads": event_payloads,
+                } if event_payloads else None
+
+                deleted_records = [
+                    {"record_id": rt["record"]["_key"], "name": rt["record"].get("recordName", "Unknown")}
+                    for rt in records_with_type
+                ]
+                return {
+                    "success": True,
+                    "deleted_records": deleted_records,
+                    "failed_records": [],
+                    "total_requested": 1,
+                    "successfully_deleted": len(valid_root_keys),
+                    "failed_count": 0,
+                    "eventData": event_data,
+                }
+            except Exception as db_error:
+                if transaction is None and txn_id:
+                    await self.rollback_transaction(txn_id)
+                raise db_error
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete single record: {str(e)}")
+            return {"success": False, "reason": str(e), "code": 500, "eventData": None}
 
 
     async def create_kb_permissions(
@@ -14627,7 +14853,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars["parent_doc_id"] = parent_doc_id
             elif parent_type == "app":
                 bind_vars["parent_id"] = parent_id
-                bind_vars["parent_doc_id"] = parent_id
+                # @parent_doc_id is only referenced when depth >= 2
+                # (_build_children_intersection_aql). Binding it otherwise is
+                # Arango 1552 (undeclared bind parameter).
+                if depth is not None and depth >= 2:
+                    bind_vars["parent_doc_id"] = parent_id
 
         # Merge filter params
         bind_vars.update(filter_params)
@@ -15717,7 +15947,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Get user's accessible apps and extract connector IDs (_key)
             # Note: _get_user_app_ids accepts external userId and converts to user_key internally
-            user_apps_ids = await self._get_user_app_ids(user_id)
+            user_apps_ids = await self._get_user_app_ids(user_id, org_id)
 
             # Build app record filter for connector records
             app_record_filter = 'FILTER record.origin != "CONNECTOR" OR record.connectorId IN @user_apps_ids'
@@ -18059,17 +18289,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_key: str,
         md5_checksum: str,
+        org_id: str,
         record_type: str | None = None,
         size_in_bytes: int | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
     ) -> list[dict]:
         """
-        Find duplicate records based on MD5 checksum.
+        Find duplicate records based on MD5 checksum, scoped to a single org.
         This method queries the RECORDS collection and works for all record types.
+
+        Deliberately not filtered by connector — see interface docstring.
+        Always filtered by org — see interface docstring.
 
         Args:
             record_key (str): The key of the current record to exclude from results
             md5_checksum (str): MD5 checksum of the record content
+            org_id (str): Restrict dedup matching to this org only
             record_type (Optional[str]): Optional record type to filter by
             size_in_bytes (Optional[int]): Optional file size in bytes to filter by
             transaction (Optional[str]): Optional transaction ID
@@ -18087,11 +18322,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record.md5Checksum == @md5_checksum
                 AND record._key != @record_key
+                AND record.orgId == @org_id
             """
 
             bind_vars = {
                 "md5_checksum": md5_checksum,
                 "record_key": record_key,
+                "org_id": org_id,
             }
 
             if record_type:
@@ -18172,9 +18409,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             md5_checksum = ref_record.get("md5Checksum")
             size_in_bytes = ref_record.get("sizeInBytes")
+            org_id = ref_record.get("orgId")
 
             if not md5_checksum:
-                self.logger.warning(f"Record {record_id} missing md5Checksum")
+                # Expected, not a fault: duplicates are matched by md5Checksum
+                # alone, so a record without one (a folder, or anything with no
+                # content) can have none waiting on it. Warning-level here fires
+                # once per such record and drowns real problems.
+                self.logger.debug(f"Record {record_id} missing md5Checksum")
                 return None
 
             # Find the first queued duplicate record directly from RECORDS collection
@@ -18196,6 +18438,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 AND record.sizeInBytes == @size_in_bytes
                 """
                 bind_vars["size_in_bytes"] = size_in_bytes
+
+            # Scoped to the reference record's own org: a queued duplicate in
+            # another org must never be silently indexed from this org's event.
+            if org_id:
+                query += """
+                AND record.orgId == @org_id
+                """
+                bind_vars["org_id"] = org_id
 
             query += """
                 LIMIT 1
@@ -18771,6 +19021,33 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get KB virtual IDs: {e}", exc_info=True)
             return {}
 
+    async def get_accessible_connector_types(
+        self,
+        user_id: str,
+        org_id: str,
+    ) -> list[str]:
+        """See ``IGraphDBProvider.get_accessible_connector_types``.
+
+        Built on ``get_user_apps`` rather than a new AQL query: the app
+        documents already carry ``type``, and reusing the traversal that
+        permission checks depend on keeps one definition of "apps this user can
+        reach" instead of two that can drift apart.
+        """
+        try:
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return []
+            user_key = user.get("_key") or user.get("id")
+            if not user_key:
+                return []
+            apps = await self.get_user_apps(user_key)
+            return _distinct_connector_types(apps)
+        except Exception as e:
+            # Narrowing is an optimization; a failure costs a wider search, not
+            # a wrong one, so it must never fail the query.
+            self.logger.warning("Could not resolve accessible connector types: %s", e)
+            return []
+
     async def get_accessible_virtual_record_ids(
         self,
         user_id: str,
@@ -18811,7 +19088,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         start_time = time.time()
 
         try:
-            user_apps_ids = await self._get_user_app_ids(user_id)
+            user_apps_ids = await self._get_user_app_ids(user_id, org_id)
 
             if not user_apps_ids:
                 self.logger.warning(f"User {user_id} has no accessible apps")
@@ -18999,10 +19276,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "🔍 Finding records with virtualRecordId: %s", virtual_record_id
             )
 
-            # Base query
+            # Base query. Soft-deleted records are excluded: this answers
+            # "does anything still reference this content", and a tombstone
+            # answering yes would keep its vectors alive for ever.
+            # AQL `!= true` is null-safe, so records predating the field pass.
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record.virtualRecordId == @virtual_record_id
+                AND record.isDeleted != true
             """
 
             # Add optional filter for record IDs
@@ -19990,13 +20271,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def check_agent_permission(
         self, agent_id: str, user_id: str, org_id: str
     ) -> dict | None:
-        """
-        Lightweight permission check that returns the caller's access rights on
-        an agent without fetching toolsets or knowledge.
-
-        Returns None if the agent does not exist, is deleted, or the user has
-        no access via individual, org, or team permission edges.
-        """
         try:
             query = f"""
             LET user_key = @user_id
@@ -20006,15 +20280,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             FILTER agent != null
             FILTER agent.isDeleted != true
-
-            // User's team memberships
-            LET user_teams = (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
-                    FILTER perm.type == "USER"
-                    FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
-                    RETURN perm._to
-            )
 
             // Individual access
             LET individual_access = FIRST(
@@ -20048,25 +20313,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }}
             ) : null
 
-            // Team access (only if no individual or org access)
-            LET team_access = individual_access == null && org_access == null ? FIRST(
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from IN user_teams
-                    FILTER perm._to == agent_path
-                    FILTER perm.type == "TEAM"
-                    RETURN {{
-                        access_type: "TEAM",
-                        user_role: perm.role,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
-                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
-                        can_view: true
-                    }}
-            ) : null
-
             LET access = individual_access != null ? individual_access :
-                         (org_access != null ? org_access :
-                         (team_access != null ? team_access : null))
+                         (org_access != null ? org_access : null)
 
             RETURN access
             """
@@ -20215,41 +20463,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         is_deleted: bool = False,
         transaction: str | None = None,
     ) -> list[dict] | dict[str, Any]:
-        """Get agents accessible to a user with optional pagination and search.
-
-        The AQL pipeline guarantees correct search-aware pagination:
-          base     = all deduplicated permission-visible agents
-          filtered = search ? FILTER(base, query) : base
-          sorted   = SORT(filtered, sort_field, direction)
-          totalItems = LENGTH(sorted)            ← count AFTER search, used for
-                                                    totalPages / hasNext on all pages
-          agents   = do_page ? SLICE(sorted, offset, limit) : sorted
-
-        This means requesting 'page 2 while searching for X' correctly returns
-        the second chunk of X-matching agents with totalItems = count(X-matches).
-
-        Returns:
-          - List[dict]       when page / limit are both None  (backward-compat)
-          - Dict[str, Any]   {'agents': [...], 'totalItems': int}  otherwise
-        """
+        """Get agents accessible to a user (individual + org) with optional pagination and search."""
         try:
             query = f"""
             LET user_key = @user_id
             LET org_key = @org_id
 
-            // Get user's teams
-            LET user_teams = (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
-                    FILTER perm.type == "USER"
-                    FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
-                    RETURN perm._to
-            )
-
-            // Get all agents with all permission types in a single optimized query
-            // Collect all permissions first, then deduplicate by agent ID with priority
             LET all_permissions = (
-                // Individual user permissions
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
                     FILTER perm.type == "USER"
@@ -20266,26 +20486,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }}
             )
 
-            LET team_permissions = (
-                // Team permissions
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from IN user_teams
-                    FILTER perm.type == "TEAM"
-                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
-                    LET agent = DOCUMENT(perm._to)
-                    FILTER agent != null
-                    FILTER @is_deleted ? agent.isDeleted == true : agent.isDeleted != true
-                    RETURN {{
-                        agent_id: agent._id,
-                        agent: agent,
-                        role: perm.role,
-                        access_type: "TEAM",
-                        priority: 2
-                    }}
-            )
-
             LET org_permissions = org_key != null ? (
-                // Org permissions
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
                     FILTER perm.type == "ORG"
@@ -20298,11 +20499,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         agent: agent,
                         role: perm.role,
                         access_type: "ORG",
-                        priority: 3
+                        priority: 2
                     }}
             ) : []
 
-            // Pre-compute set of agent paths shared with the org (edge-based, not stored in doc)
             LET org_shared_agent_paths = org_key != null ? (
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
@@ -20311,10 +20511,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN perm._to
             ) : []
 
-            // Combine all permissions and deduplicate by agent_id, keeping highest priority
-            LET combined = APPEND(APPEND(all_permissions, team_permissions), org_permissions)
+            LET combined = APPEND(all_permissions, org_permissions)
 
-            // Deduplicate into a base array
             LET base = (
                 FOR perm_entry IN combined
                     COLLECT agent_id = perm_entry.agent_id INTO groups
@@ -20335,7 +20533,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }})
             )
 
-            // Apply search filter if provided
             LET filtered = (
                 @has_search
                 ? (
@@ -20353,7 +20550,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 : base
             )
 
-            // Sort by requested field or sensible defaults
             LET sorted = (
                 @sort_asc
                 ? (
@@ -20380,13 +20576,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             LET totalItems = LENGTH(sorted)
 
-            // Both the paged and flat-list paths return the same enriched shape so
-            // GET /agents is structurally consistent regardless of pagination. The
-            // page is the SLICE when paging, otherwise the full sorted set.
             LET page = @do_page ? SLICE(sorted, @offset, @limit) : sorted
 
-            // Enrich the returned agents so the list projection matches
-            // GET /agents/{{agentKey}}.
             LET enriched = (
                 FOR a IN page
                     LET agent_path = a._id
@@ -20509,14 +20700,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }}
             """
 
-            # Normalise search term once so every downstream use is consistent.
             q_norm: str = search.strip().lower() if search and search.strip() else ""
             has_search: bool = bool(q_norm)
 
             do_page: bool = page is not None and limit is not None
-            # offset / limit are only referenced by the AQL when do_page=True.
             offset: int = max((page - 1) * limit, 0) if do_page else 0
-            page_limit: int = limit if do_page else 0  # 0 is safe; never used when do_page=False
+            page_limit: int = limit if do_page else 0
 
             bind_vars = {
                 "user_id": user_id,
@@ -20536,18 +20725,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not result:
                 return {"agents": [], "totalItems": 0} if do_page else []
 
-            # The AQL always returns a single envelope object.
             payload = result[0] if isinstance(result, list) else result
 
-            # Parse knowledge filters from JSON strings, mirroring get_agent so the
-            # list projection exposes the same filtersParsed object.
             for agent in payload.get("agents", []):
                 if not isinstance(agent, dict):
                     continue
                 for knowledge in agent.get("knowledge", []) or []:
                     filters_str = knowledge.get("filters")
                     if filters_str is None:
-                        # Graph node stored filters: null (no filter configured).
                         knowledge["filtersParsed"] = {}
                     elif isinstance(filters_str, str):
                         try:
@@ -20560,10 +20745,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if do_page:
                 return {
                     "agents": payload.get("agents", []),
-                    # totalItems = count AFTER search filter (see docstring)
                     "totalItems": payload.get("totalItems", 0),
                 }
-            # Backward-compat: no paging requested → flat list
             return payload.get("agents", [])
 
         except Exception as e:
@@ -21355,113 +21538,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "mcp_servers_deleted": 0,
             }
 
-    async def share_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, transaction: str | None = None) -> bool | None:
-        """Share an agent to users and teams"""
-        try:
-            perm = await self.check_agent_permission(agent_id, user_id, org_id)
-            if not perm:
-                self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
-                return False
-
-            if not perm.get("can_share", False):
-                self.logger.warning(f"User {user_id} does not have share permission on agent {agent_id}")
-                return False
-
-            # Share the agent to users
-            user_agent_edges = []
-            if user_ids:
-                for user_id_to_share in user_ids:
-                    user = await self.get_user_by_user_id(user_id_to_share, transaction=transaction)
-                    if user is None:
-                        self.logger.warning(f"User {user_id_to_share} not found")
-                        continue
-                    edge = {
-                        "_from": f"{CollectionNames.USERS.value}/{user.get('_key')}",
-                        "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}",
-                        "role": "READER",
-                        "type": "USER",
-                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                    }
-                    user_agent_edges.append(edge)
-
-                result = await self.batch_create_edges(user_agent_edges, CollectionNames.PERMISSION.value, transaction=transaction)
-                if not result:
-                    self.logger.error(f"Failed to share agent {agent_id} to users")
-                    return False
-
-            # Share the agent to teams
-            team_agent_edges = []
-            if team_ids:
-                for team_id in team_ids:
-                    team = await self.get_document(team_id, CollectionNames.TEAMS.value, transaction=transaction)
-                    if team is None:
-                        self.logger.warning(f"Team {team_id} not found")
-                        continue
-                    edge = {
-                        "_from": f"{CollectionNames.TEAMS.value}/{team.get('_key')}",
-                        "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}",
-                        "role": "READER",
-                        "type": "TEAM",
-                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                    }
-                    team_agent_edges.append(edge)
-                result = await self.batch_create_edges(team_agent_edges, CollectionNames.PERMISSION.value, transaction=transaction)
-                if not result:
-                    self.logger.error(f"Failed to share agent {agent_id} to teams")
-                    return False
-            return True
-        except Exception as e:
-            self.logger.error("❌ Failed to share agent: %s", str(e), exc_info=True)
-            return False
-
-    async def unshare_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, transaction: str | None = None) -> dict | None:
-        """Unshare an agent from users and teams - direct deletion without validation"""
-        try:
-            perm = await self.check_agent_permission(agent_id, user_id, org_id)
-            if not perm or not perm.get("can_share", False):
-                return {"success": False, "reason": "Insufficient permissions to unshare agent"}
-
-            # Build conditions for batch delete
-            conditions = []
-            bind_vars = {"agent_id": agent_id}
-
-            if user_ids:
-                conditions.append("(perm._from IN @user_froms AND perm.type == 'USER' AND perm.role != 'OWNER')")
-                bind_vars["user_froms"] = [f"{CollectionNames.USERS.value}/{user_id}" for user_id in user_ids]
-
-            if team_ids:
-                conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
-                bind_vars["team_froms"] = [f"{CollectionNames.TEAMS.value}/{team_id}" for team_id in team_ids]
-
-            if not conditions:
-                return {"success": False, "reason": "No users or teams provided"}
-
-            # Single batch delete query
-            batch_delete_query = f"""
-            FOR perm IN {CollectionNames.PERMISSION.value}
-                FILTER perm._to == CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
-                FILTER ({' OR '.join(conditions)})
-                REMOVE perm IN {CollectionNames.PERMISSION.value}
-                RETURN OLD._key
-            """
-
-            deleted_permissions = await self.execute_query(batch_delete_query, bind_vars=bind_vars, transaction=transaction)
-
-            deleted_count = len(deleted_permissions) if deleted_permissions else 0
-            self.logger.debug(f"Unshared agent {agent_id}: removed {deleted_count} permissions")
-
-            return {
-                "success": True,
-                "agent_id": agent_id,
-                "deleted_permissions": deleted_count
-            }
-
-        except Exception as e:
-            self.logger.error("Failed to unshare agent: %s", str(e), exc_info=True)
-            return {"success": False, "reason": f"Internal error: {str(e)}"}
-
     async def update_agent_permission(self, agent_id: str, owner_user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, role: str, transaction: str | None = None) -> dict | None:
         """Update permission role for users and teams on an agent (only OWNER can do this)"""
         try:
@@ -21534,47 +21610,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"Failed to update agent permission: {str(e)}")
             return {"success": False, "reason": f"Internal error: {str(e)}"}
-
-    async def get_agent_permissions(self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None) -> list[dict] | None:
-        """Get all permissions for an agent (only OWNER can view all permissions)"""
-        try:
-            perm = await self.check_agent_permission(agent_id, user_id, org_id)
-            if not perm:
-                self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
-                return None
-
-            if perm.get("user_role") != "OWNER":
-                self.logger.warning(f"User {user_id} is not the OWNER of agent {agent_id}")
-                return None
-
-            # Get all permissions for the agent
-            query = f"""
-            FOR perm IN {CollectionNames.PERMISSION.value}
-                FILTER perm._to == CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
-                LET entity = DOCUMENT(perm._from)
-                FILTER entity != null
-                RETURN {{
-                    id: entity._key,
-                    name: entity.fullName || entity.name || entity.userName,
-                    userId: entity.userId,
-                    email: entity.email,
-                    role: perm.role,
-                    type: perm.type,
-                    createdAtTimestamp: perm.createdAtTimestamp,
-                    updatedAtTimestamp: perm.updatedAtTimestamp
-                }}
-            """
-
-            bind_vars = {
-                "agent_id": agent_id,
-            }
-            result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
-
-            return result if result else []
-
-        except Exception as e:
-            self.logger.error(f"Failed to get agent permissions: {str(e)}")
-            return None
 
     async def get_all_agent_templates(self, user_id: str, transaction: str | None = None) -> list[dict]:
         """Get all agent templates accessible to a user via individual or team access"""
@@ -21748,71 +21783,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to get template access: %s", str(e))
             return None
 
-    async def share_agent_template(self, template_id: str, user_id: str, user_ids: list[str] | None = None, team_ids: list[str] | None = None, transaction: str | None = None) -> bool | None:
-        """Share an agent template with users"""
-        try:
-            self.logger.debug(f"Sharing agent template {template_id} with users {user_ids}")
-
-            user_owner_access_query = f"""
-            FOR perm IN {CollectionNames.PERMISSION.value}
-                FILTER perm._to == CONCAT('{CollectionNames.AGENT_TEMPLATES.value}/', @template_id)
-                FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @user_id)
-                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
-                FILTER DOCUMENT(perm._to).isDeleted == false
-                LIMIT 1
-                RETURN DOCUMENT(perm._to)
-            """
-            bind_vars = {
-                "template_id": template_id,
-                "user_id": user_id,
-            }
-            user_owner_access = await self.execute_query(user_owner_access_query, bind_vars=bind_vars, transaction=transaction)
-            if not user_owner_access or len(user_owner_access) == 0:
-                return False
-            user_owner_access = user_owner_access[0]
-            if user_owner_access.get("role") != "OWNER":
-                return False
-
-            if user_ids is None and team_ids is None:
-                return False
-
-            # users to be given access
-            user_template_accesses = []
-            if user_ids:
-                for user_id_to_share in user_ids:
-                    user = await self.get_user_by_user_id(user_id_to_share, transaction=transaction)
-                    if user is None:
-                        return False
-                    edge = {
-                        "_from": f"{CollectionNames.USERS.value}/{user.get('_key')}",
-                        "_to": f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}",
-                        "type": "USER",
-                        "role": "READER",
-                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                    }
-                    user_template_accesses.append(edge)
-
-            if team_ids:
-                for team_id in team_ids:
-                    edge = {
-                        "_from": f"{CollectionNames.TEAMS.value}/{team_id}",
-                        "_to": f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}",
-                        "type": "TEAM",
-                        "role": "READER",
-                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                    }
-                    user_template_accesses.append(edge)
-
-            result = await self.batch_create_edges(user_template_accesses, CollectionNames.PERMISSION.value, transaction=transaction)
-            if not result:
-                return False
-            return True
-        except Exception as e:
-            self.logger.error("❌ Failed to share agent template: %s", str(e))
-            return False
-
     async def clone_agent_template(self, template_id: str, transaction: str | None = None) -> str | None:
         """Clone an agent template"""
         try:
@@ -21886,8 +21856,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
             # Soft delete the template using update_node
-            template_path = f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}"
-            result = await self.update_node(template_path, update_data, transaction=transaction)
+            result = await self.update_node(
+                template_id,
+                CollectionNames.AGENT_TEMPLATES.value,
+                update_data,
+                transaction=transaction,
+            )
 
             if not result:
                 self.logger.error(f"Failed to delete template {template_id}")

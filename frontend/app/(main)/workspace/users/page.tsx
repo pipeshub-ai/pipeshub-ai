@@ -2,9 +2,9 @@
 
 import React, { useEffect, useMemo, useCallback, useRef, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { Flex, Text, Badge } from '@radix-ui/themes';
+import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore } from '@/config';
+import { useAuthStore, UsersPageHeaderActions } from '@/config';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { formatDate } from '@/lib/utils/formatters';
@@ -29,14 +29,11 @@ import type { FilterChipConfig } from '../components/entity-filter-bar';
 import type { RowAction } from '../components/entity-row-action-menu';
 import { isProcessedError } from '@/lib/api';
 import { USER_ROLES, INVITE_ROLE_OPTIONS } from '../constants';
-import { GroupType, type Group } from '../groups/types';
 import { useUsersStore } from './store';
 import { UsersApi } from './api';
-import { GroupsApi } from '../groups/api';
 import { ProfileApi } from '../profile/api';
 import type { User } from './types';
 import { InviteUsersSidebar, UserProfileSidebar } from './components';
-import { usePaginatedFilterOptions } from '../hooks/use-paginated-filter-options';
 
 // ========================================
 // Constants
@@ -44,7 +41,8 @@ import { usePaginatedFilterOptions } from '../hooks/use-paginated-filter-options
 
 const USERS_FILTER_CHIPS: FilterChipConfig[] = [
   // { key: 'role', label: 'Role', icon: 'person' },
-  { key: 'group', label: 'Group', icon: 'group' },
+  // Groups are an Enterprise Edition feature — hide the filter in OSS.
+  // { key: 'group', label: 'Group', icon: 'group' },
   { key: 'status', label: 'Status', icon: 'radio_button_checked' },
   { key: 'lastActive', label: 'Last Active', icon: 'schedule' },
   { key: 'dateJoined', label: 'Date Joined', icon: 'calendar_today' },
@@ -124,8 +122,11 @@ function UsersPageContent() {
   const [isCancellingInvite, setIsCancellingInvite] = useState(false);
   const [unblockTarget, setUnblockTarget] = useState<User | null>(null);
   const [isUnblocking, setIsUnblocking] = useState(false);
-  // Admin group ref for role changes
-  const adminGroupRef = useRef<Group | null>(null);
+  const [roleChangeTarget, setRoleChangeTarget] = useState<{
+    user: User;
+    newRole: string;
+  } | null>(null);
+  const [isChangingRole, setIsChangingRole] = useState(false);
 
   const {
     users,
@@ -152,37 +153,6 @@ function UsersPageContent() {
     openProfilePanel,
     closeProfilePanel,
   } = useUsersStore();
-
-  // ── Paginated group filter ──
-  const groupsRef = useRef<Group[]>([]);
-  const groupFilter = usePaginatedFilterOptions<Group>({
-    fetcher: async (search, page, limit) => {
-      const { groups, totalCount } = await GroupsApi.listGroups({ page, limit, search });
-      return { items: groups, totalCount };
-    },
-    mapOption: (g) => ({
-      value: g._id,
-      label: g.name.charAt(0).toUpperCase() + g.name.slice(1),
-      icon: 'group',
-    }),
-    onFetched: (groups, page, search) => {
-      // Cache the admin group for role changes (from first page, no search)
-      if (!search && page === 1) {
-        groupsRef.current = groups;
-        adminGroupRef.current = groups.find((g) => g.type === GroupType.ADMIN) ?? null;
-      } else {
-        groupsRef.current = [...groupsRef.current, ...groups];
-      }
-    },
-  });
-  // Filter out system groups from displayed options
-  const groupOptions = useMemo(
-    () => groupFilter.options.filter((o) => {
-      const group = groupsRef.current.find((g) => g._id === o.value);
-      return !group || group.type !== GroupType.EVERYONE;
-    }),
-    [groupFilter.options]
-  );
 
   // Capture userId from initial URL load so we can restore the profile panel
   // after fetchUsers completes (users list is empty on first render).
@@ -354,21 +324,6 @@ function UsersPageContent() {
         //       onSelectionChange={(values) => setFilters({ roles: values })}
         //     />
         //   );
-        case 'group':
-          return (
-            <FilterDropdown
-              label={filter.label}
-              icon={filter.icon}
-              options={groupOptions}
-              selectedValues={filters.groups || []}
-              onSelectionChange={(values) => setFilters({ groups: values })}
-              searchable
-              onSearch={groupFilter.onSearch}
-              onLoadMore={groupFilter.onLoadMore}
-              isLoadingMore={groupFilter.isLoading}
-              hasMore={groupFilter.hasMore}
-            />
-          );
         case 'status':
           return (
             <FilterDropdown
@@ -439,7 +394,7 @@ function UsersPageContent() {
           return null;
       }
     },
-    [filters, setFilters, groupOptions, groupFilter]
+    [filters, setFilters]
   );
 
   // ── Client-side date filters (role/group/status are server-side) ──
@@ -555,7 +510,29 @@ function UsersPageContent() {
     setSelectedUsers(new Set());
   }, [selectedUsersList, addToast, t, setSelectedUsers]);
 
+  const showDemoteAdminBeforeCancelToast = useCallback(() => {
+    addToast({
+      variant: 'info',
+      title: t(
+        'workspace.users.actions.demoteAdminBeforeRemoveTitle',
+        'Cannot remove admin'
+      ),
+      description: t(
+        'workspace.users.actions.demoteAdminBeforeRemove',
+        'Demote the admin to member, then remove them.'
+      ),
+      duration: 5000,
+    });
+  }, [addToast, t]);
+
   const handleBulkCancelInvite = useCallback(async () => {
+    const hasAdminInvite = selectedUsersList.some(
+      (u) => (u.role || USER_ROLES.MEMBER) === USER_ROLES.ADMIN
+    );
+    if (hasAdminInvite) {
+      showDemoteAdminBeforeCancelToast();
+      return;
+    }
     const userIds = selectedUsersList.map((u) => u.userId);
     const { succeeded, failed } = await UsersApi.bulkCancelInvites(userIds);
     if (succeeded > 0) {
@@ -580,7 +557,14 @@ function UsersPageContent() {
     }
     setSelectedUsers(new Set());
     fetchUsers();
-  }, [selectedUsersList, addToast, t, setSelectedUsers, fetchUsers]);
+  }, [
+    selectedUsersList,
+    addToast,
+    t,
+    setSelectedUsers,
+    fetchUsers,
+    showDemoteAdminBeforeCancelToast,
+  ]);
 
   /** Bulk actions shown in the floating bar — varies by selection composition */
   const hasAdminSelected = useMemo(
@@ -590,8 +574,7 @@ function UsersPageContent() {
 
   const bulkActions = useMemo<BulkAction[]>(() => {
     if (allSelectedArePending) {
-      // All selected are invited (pending) users
-      return [
+      const actions: BulkAction[] = [
         {
           key: 'resend-invite',
           label: t('workspace.users.bulk.resendInvite', 'Resend Invite'),
@@ -599,14 +582,27 @@ function UsersPageContent() {
           variant: 'default',
           onClick: handleBulkResendInvite,
         },
-        {
-          key: 'cancel-invite',
-          label: t('workspace.users.bulk.cancelInvite', 'Cancel Invite'),
-          icon: 'cancel_schedule_send',
-          variant: 'danger',
-          onClick: handleBulkCancelInvite,
-        },
       ];
+      if (isAdmin) {
+        actions.push({
+          key: 'cancel-invite',
+          label: hasAdminSelected
+            ? t(
+                'workspace.users.bulk.adminInviteCantBeCancelled',
+                'Admin invites cannot be cancelled'
+              )
+            : t('workspace.users.bulk.cancelInvite', 'Cancel Invite'),
+          icon: hasAdminSelected ? 'block' : 'cancel_schedule_send',
+          variant: 'danger',
+          disabled: hasAdminSelected,
+          onClick: handleBulkCancelInvite,
+        });
+      }
+      return actions;
+    }
+
+    if (!isAdmin) {
+      return [];
     }
 
     // Mixed set or all active users
@@ -622,7 +618,7 @@ function UsersPageContent() {
         onClick: handleBulkRemove,
       },
     ];
-  }, [allSelectedArePending, hasAdminSelected, t, handleBulkResendInvite, handleBulkCancelInvite, handleBulkRemove]);
+  }, [allSelectedArePending, hasAdminSelected, isAdmin, t, handleBulkResendInvite, handleBulkCancelInvite, handleBulkRemove]);
 
   // ── Column definitions ──────────────────
 
@@ -649,16 +645,6 @@ function UsersPageContent() {
           <Text size="2" style={{ color: 'var(--slate-12)' }}>
             {user.role || 'Member'}
           </Text>
-        ),
-      },
-      {
-        key: 'groups',
-        label: t('workspace.users.columns.groups'),
-        width: '100px',
-        render: (user) => (
-          <Badge variant="soft" color="gray" size="1">
-            {user.groupCount ?? 0}
-          </Badge>
         ),
       },
       {
@@ -724,8 +710,26 @@ function UsersPageContent() {
     }
   }, [removeTarget, fetchUsers, addToast, t]);
 
+  const requestCancelInvite = useCallback(
+    (user: User) => {
+      const role = user.role || USER_ROLES.MEMBER;
+      if (role === USER_ROLES.ADMIN) {
+        showDemoteAdminBeforeCancelToast();
+        return;
+      }
+      setCancelInviteTarget(user);
+    },
+    [showDemoteAdminBeforeCancelToast]
+  );
+
   const handleCancelInvite = useCallback(async () => {
     if (!cancelInviteTarget) return;
+    const role = cancelInviteTarget.role || USER_ROLES.MEMBER;
+    if (role === USER_ROLES.ADMIN) {
+      setCancelInviteTarget(null);
+      showDemoteAdminBeforeCancelToast();
+      return;
+    }
     setIsCancellingInvite(true);
     try {
       await UsersApi.deleteUser(cancelInviteTarget.userId);
@@ -748,7 +752,7 @@ function UsersPageContent() {
     } finally {
       setIsCancellingInvite(false);
     }
-  }, [cancelInviteTarget, fetchUsers, addToast, t]);
+  }, [cancelInviteTarget, fetchUsers, addToast, t, showDemoteAdminBeforeCancelToast]);
 
   const handleConfirmUnblock = useCallback(async () => {
     if (!unblockTarget) return;
@@ -821,10 +825,30 @@ function UsersPageContent() {
           ...(description ? { description } : {}),
           duration: 5000,
         });
+        throw err;
       }
     },
     [addToast, t, fetchUsers]
   );
+
+  const requestChangeRole = useCallback((user: User, newRole: string) => {
+    const currentRole = user.role || 'Member';
+    if (newRole === currentRole) return;
+    setRoleChangeTarget({ user, newRole });
+  }, []);
+
+  const handleConfirmChangeRole = useCallback(async () => {
+    if (!roleChangeTarget) return;
+    setIsChangingRole(true);
+    try {
+      await handleChangeRole(roleChangeTarget.user, roleChangeTarget.newRole);
+      setRoleChangeTarget(null);
+    } catch {
+      // Error toast is already shown in handleChangeRole
+    } finally {
+      setIsChangingRole(false);
+    }
+  }, [roleChangeTarget, handleChangeRole]);
 
   // ── Resend Invite handler ──
   const handleResendInvite = useCallback(
@@ -900,95 +924,132 @@ function UsersPageContent() {
             label: t('workspace.users.actions.viewProfile'),
             onClick: () => navigateToProfilePanel(user),
           },
-          {
+          isAdmin && {
             icon: 'lock_open',
             label: t('workspace.users.actions.unblock', 'Unblock'),
             onClick: () => setUnblockTarget(user),
           },
         ];
       } else if (isPending) {
-        // Pending invite — invite management actions
+        // Pending invite — members can resend; edit/cancel stay admin-only
         actions = [
           {
             icon: 'send',
             label: t('workspace.users.actions.resendInvite'),
             onClick: () => handleResendInvite(user),
           },
-          {
+          isAdmin && {
             icon: 'edit',
             label: t('workspace.users.actions.editInvite'),
             onClick: () => handleEditInvite(user),
           },
-          {
+          isAdmin && {
+            icon: 'manage_accounts',
+            label: t('workspace.users.actions.changeRole'),
+            subMenu: {
+              type: 'radio' as const,
+              value: currentRole,
+              onValueChange: (newRole: string) => handleChangeRole(user, newRole),
+              options: ROLE_SUB_MENU_OPTIONS,
+            },
+          },
+          isAdmin && {
             icon: 'cancel_schedule_send',
             label: t('workspace.users.actions.cancelInvite'),
             variant: 'danger' as const,
             separatorBefore: true,
-            onClick: () => setCancelInviteTarget(user),
+            onClick: () => requestCancelInvite(user),
           },
         ];
       } else if (isPendingExpired) {
-        // Expired invite — same as pending: resend or cancel
         actions = [
           {
             icon: 'send',
             label: t('workspace.users.actions.resendInvite'),
             onClick: () => handleResendInvite(user),
           },
-          {
+          isAdmin && {
+            icon: 'manage_accounts',
+            label: t('workspace.users.actions.changeRole'),
+            subMenu: {
+              type: 'radio' as const,
+              value: currentRole,
+              onValueChange: (newRole: string) => handleChangeRole(user, newRole),
+              options: ROLE_SUB_MENU_OPTIONS,
+            },
+          },
+          isAdmin && {
             icon: 'cancel_schedule_send',
             label: t('workspace.users.actions.cancelInvite'),
             variant: 'danger' as const,
             separatorBefore: true,
-            onClick: () => setCancelInviteTarget(user),
+            onClick: () => requestCancelInvite(user),
           },
         ];
       } else if (isDeactivated) {
         // TODO: Handle deactivated user — e.g. Reactivate, Remove from Workspace
         actions = [];
       } else if (isActive && currentRole === 'Admin') {
-        // Active Admin — View Profile + Change Role
         actions = [
           {
             icon: 'visibility',
             label: t('workspace.users.actions.viewProfile'),
             onClick: () => navigateToProfilePanel(user),
           },
-          {
+          isAdmin && {
             icon: 'manage_accounts',
             label: t('workspace.users.actions.changeRole'),
             subMenu: {
               type: 'radio' as const,
               value: currentRole,
-              onValueChange: (newRole: string) => handleChangeRole(user, newRole),
+              onValueChange: (newRole: string) => requestChangeRole(user, newRole),
               options: ROLE_SUB_MENU_OPTIONS,
+            },
+          },
+          isAdmin && {
+            icon: 'person_remove',
+            label: t('workspace.users.actions.removeFromWorkspace'),
+            variant: 'danger' as const,
+            separatorBefore: true,
+            onClick: () => {
+              addToast({
+                variant: 'info',
+                title: t(
+                  'workspace.users.actions.demoteAdminBeforeRemoveTitle',
+                  'Cannot remove admin'
+                ),
+                description: t(
+                  'workspace.users.actions.demoteAdminBeforeRemove',
+                  'Demote the admin to member, then remove them.'
+                ),
+                duration: 5000,
+              });
             },
           },
         ];
       } else if (isActive) {
-        // Active Member/Guest — management actions
         actions = [
           {
             icon: 'visibility',
             label: t('workspace.users.actions.viewProfile'),
             onClick: () => navigateToProfilePanel(user),
           },
-          {
+          isAdmin && {
             icon: 'manage_accounts',
             label: t('workspace.users.actions.changeRole'),
             subMenu: {
               type: 'radio' as const,
               value: currentRole,
-              onValueChange: (newRole: string) => handleChangeRole(user, newRole),
+              onValueChange: (newRole: string) => requestChangeRole(user, newRole),
               options: ROLE_SUB_MENU_OPTIONS,
             },
           },
-          {
+          isAdmin && {
             icon: 'person_off',
             label: t('workspace.users.actions.deactivate'),
             onClick: showComingSoon,
           },
-          {
+          isAdmin && {
             icon: 'person_remove',
             label: t('workspace.users.actions.removeFromWorkspace'),
             variant: 'danger' as const,
@@ -1004,25 +1065,19 @@ function UsersPageContent() {
     },
     [
       t,
+      isAdmin,
+      addToast,
       navigateToProfilePanel,
       showComingSoon,
-      handleChangeRole,
+      requestChangeRole,
       handleResendInvite,
       handleEditInvite,
+      requestCancelInvite,
       ROLE_SUB_MENU_OPTIONS,
     ]
   );
 
-  // ── Redirect non-admin users ──────────────────────────────
-  useEffect(() => {
-    if (isProfileInitialized && isAdmin === false) {
-      router.replace('/workspace/general');
-    }
-  }, [isProfileInitialized, isAdmin, router]);
-
-  // Prevent rendering (and running data-fetching effects) while profile is
-  // unresolved or before the redirect fires for confirmed non-admin users.
-  if (!isProfileInitialized || isAdmin === false) {
+  if (!isProfileInitialized) {
     return null;
   }
 
@@ -1048,6 +1103,7 @@ function UsersPageContent() {
         ctaLabel={t('workspace.users.inviteButton')}
         ctaIcon="person_add_alt"
         onCtaClick={navigateToInvitePanel}
+        additionalActions={<UsersPageHeaderActions />}
       />
 
       {/* Content: filter bar + table + pagination */}
@@ -1117,7 +1173,7 @@ function UsersPageContent() {
             selectedCount={selectedUsers.size}
             itemLabel={t('workspace.users.bulkLabel', 'Users')}
             actions={bulkActions}
-            visible={selectedUsers.size > 0}
+            visible={selectedUsers.size > 0 && bulkActions.length > 0}
           />
         </Flex>
       </Flex>
@@ -1127,6 +1183,27 @@ function UsersPageContent() {
 
       {/* User Profile Sidebar */}
       <UserProfileSidebar />
+
+      {/* Change Role Confirmation Dialog */}
+      <ConfirmationDialog
+        open={!!roleChangeTarget}
+        onOpenChange={(open) => {
+          if (!open && !isChangingRole) setRoleChangeTarget(null);
+        }}
+        title={t('workspace.users.actions.changeRoleConfirmTitle', 'Change role?')}
+        message={t('workspace.users.actions.changeRoleConfirmMessage', {
+          name: roleChangeTarget?.user.name || roleChangeTarget?.user.email || '',
+          currentRole: roleChangeTarget?.user.role || 'Member',
+          newRole: roleChangeTarget?.newRole || '',
+          defaultValue:
+            'Are you sure you want to change {{name}} from {{currentRole}} to {{newRole}}?',
+        })}
+        confirmLabel={t('workspace.users.actions.changeRoleConfirmButton', 'Change Role')}
+        cancelLabel={t('workspace.users.actions.cancelButton')}
+        confirmVariant="primary"
+        isLoading={isChangingRole}
+        onConfirm={() => void handleConfirmChangeRole()}
+      />
 
       {/* Remove User Confirmation Dialog */}
       <ConfirmationDialog

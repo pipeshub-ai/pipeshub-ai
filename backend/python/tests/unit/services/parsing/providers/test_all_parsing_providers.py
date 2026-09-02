@@ -6,12 +6,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.models.blocks import BlocksContainer
-from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult, ParserProvider
+from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.services.parsing.interface import (
+    ParseError,
+    ParseErrorCode,
+    ParseResult,
+    ParserProvider,
+)
 from app.services.parsing.providers.docling_service_parser import DoclingServiceParser
 from app.services.parsing.providers.local_docling_parser import LocalDoclingParser
 from app.services.parsing.providers.ocr_parser import OCRParser
 from app.services.parsing.providers.pdfplumber_parser import PdfPlumberParser
-from app.services.parsing.providers.smart_pdf_parser import SmartPDFParser
+from app.services.parsing.providers.smart_pdf_parser import (
+    SmartPDFParser,
+    _detect_needs_ocr,
+)
 
 
 def _make_block_container() -> BlocksContainer:
@@ -150,6 +159,43 @@ class TestLocalDoclingParser:
 
         assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
 
+    @pytest.mark.asyncio
+    async def test_parse_maps_conversion_error_to_unsupported_format(self):
+        from docling.exceptions import ConversionError
+
+        mock_processor = MagicMock()
+        mock_processor.parse_document = AsyncMock(
+            side_effect=ConversionError(
+                "File format not allowed: ._free-software-support-agreement.docx"
+            )
+        )
+
+        parser = LocalDoclingParser(mock_processor)
+        with pytest.raises(ParseError) as exc_info:
+            await parser.parse(b"content", "._free-software-support-agreement.docx")
+
+        assert exc_info.value.code == ParseErrorCode.UNSUPPORTED_FORMAT
+        assert "File format not allowed" in exc_info.value.message
+        assert exc_info.value.details["record_name"] == "._free-software-support-agreement.docx"
+
+    @pytest.mark.asyncio
+    async def test_parse_maps_generic_conversion_error_to_parse_failed(self):
+        from docling.exceptions import ConversionError
+
+        mock_processor = MagicMock()
+        mock_processor.parse_document = AsyncMock(
+            side_effect=ConversionError("Invalid input: corrupted document stream")
+        )
+
+        parser = LocalDoclingParser(mock_processor)
+        with pytest.raises(ParseError) as exc_info:
+            await parser.parse(b"content", "corrupted.pdf")
+
+        assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
+        assert "Invalid input" in exc_info.value.message
+        assert exc_info.value.details["record_name"] == "corrupted.pdf"
+        assert exc_info.value.__cause__ is not None
+
     def test_supported_formats(self):
         mock_processor = MagicMock()
         parser = LocalDoclingParser(mock_processor)
@@ -285,6 +331,61 @@ class TestPdfPlumberParser:
 
 class TestSmartPDFParser:
     """Tests for SmartPDFParser."""
+
+    def test_single_dominant_image_page_routes_document_to_ocr(self) -> None:
+        """One dominant-image page must not be hidden by an aggregate ratio."""
+        pages = [MagicMock() for _ in range(5)]
+        pdf = MagicMock()
+        pdf.pages = pages
+        pdf_context = MagicMock()
+        pdf_context.__enter__.return_value = pdf
+
+        with (
+            patch(
+                "app.services.parsing.providers.smart_pdf_parser.pdfplumber.open",
+                return_value=pdf_context,
+            ),
+            patch(
+                "app.services.parsing.providers.smart_pdf_parser.random.sample",
+                return_value=pages,
+            ),
+            patch.object(
+                OCRStrategy,
+                "has_dominant_image_with_limited_text",
+                side_effect=[False, False, True, False, False],
+            ),
+        ):
+            assert _detect_needs_ocr(b"pdf content") is True
+
+    def test_single_general_ocr_page_keeps_existing_threshold(self) -> None:
+        """A single non-dominant OCR signal does not route the whole document."""
+        pages = [MagicMock() for _ in range(5)]
+        pdf = MagicMock()
+        pdf.pages = pages
+        pdf_context = MagicMock()
+        pdf_context.__enter__.return_value = pdf
+
+        with (
+            patch(
+                "app.services.parsing.providers.smart_pdf_parser.pdfplumber.open",
+                return_value=pdf_context,
+            ),
+            patch(
+                "app.services.parsing.providers.smart_pdf_parser.random.sample",
+                return_value=pages,
+            ),
+            patch.object(
+                OCRStrategy,
+                "has_dominant_image_with_limited_text",
+                return_value=False,
+            ),
+            patch.object(
+                OCRStrategy,
+                "needs_ocr",
+                side_effect=[False, False, True, False, False],
+            ),
+        ):
+            assert _detect_needs_ocr(b"pdf content") is False
 
     @pytest.mark.asyncio
     async def test_parse_uses_ocr_when_detected(self):

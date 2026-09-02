@@ -37,7 +37,9 @@ from app.models.blocks import (
 )
 from app.utils.time_conversion import parse_timestamp, string_to_datetime
 
-from .common.utils import parse_item_id_from_url, wire_block_group_parent_children
+from app.models.blocks import wire_block_group_parent_children
+
+from .common.utils import parse_item_id_from_url
 from .models import GitlabLiterals, RecordUpdate
 
 if TYPE_CHECKING:
@@ -91,9 +93,20 @@ class MergeRequestsSync:
         all_prs = prs_res.data
         self.logger.info("Fetched %s merge requests for project %s; processing in batches", len(all_prs), project_id)
 
+        # Checkpoint advancement is deferred to the end of the sweep — see
+        # ``IssuesSync.process_new_records``.
+        watermarks: dict[str, int] = {}
         for i in range(0, len(all_prs), c.batch_size):
             batch_records = await self._build_pr_records(all_prs[i : i + c.batch_size])
-            await c.issues.process_new_records(batch_records)
+            if not await c.issues.process_new_records(batch_records, watermarks):
+                self.logger.warning(
+                    "Merge request batch failed for project %s at offset %s; stopping so the "
+                    "checkpoint stays behind the failure instead of skipping past it.",
+                    project_id, i,
+                )
+                return
+        for group_id, last_sync_time in watermarks.items():
+            await c.issues._update_sync_checkpoint(group_id, last_sync_time)
 
     # ------------------------------------------------------------------
     # Record building
@@ -105,7 +118,6 @@ class MergeRequestsSync:
         record_updates_batch: list[RecordUpdate] = []
         attachments_count = 0
         mrs_enabled = self._merge_requests_indexing_enabled()
-        comments_enabled = self._comments_indexing_enabled()
 
         for pr in prs_batch:
             record_update = await self._process_mr_to_pull_request(pr)
@@ -129,12 +141,12 @@ class MergeRequestsSync:
                     record_updates_batch.extend(file_record_updates)
                     attachments_count += len(file_record_updates)
 
-            # Note attachments
+            # Note attachments follow the parent MR's indexing flag
             attachment_records = await c.attachments.make_files_records_from_notes_mr(
                 pr, record_update.record
             )
             if attachment_records:
-                if not mrs_enabled or not comments_enabled:
+                if not mrs_enabled:
                     for ru in attachment_records:
                         ru.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                 record_updates_batch.extend(attachment_records)
@@ -148,10 +160,9 @@ class MergeRequestsSync:
         """Map a single GitLab MR to a PullRequestRecord RecordUpdate."""
         c = self.c
         try:
-            async with c.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=c.connector_id, external_id=str(pr.id)
-                )
+            existing_record = await c.data_entities_processor.get_record_by_external_id(
+                c.connector_id, str(pr.id)
+            )
             is_new = existing_record is None
             is_updated = False
             metadata_changed = False
@@ -264,13 +275,12 @@ class MergeRequestsSync:
         block_groups.append(bg_0)
         block_group_number += 1
 
-        if self._comments_indexing_enabled():
-            comments_bg, remaining_attachments = await c.comments.build_merge_request_comment_blocks(
-                mr_url=record.weburl, parent_index=bg_0.index, record=record
-            )
-            block_groups.extend(comments_bg)
-            block_group_number += len(comments_bg)
-            list_remaining_attachments.extend(remaining_attachments)
+        comments_bg, remaining_attachments = await c.comments.build_merge_request_comment_blocks(
+            mr_url=record.weburl, parent_index=bg_0.index, record=record
+        )
+        block_groups.extend(comments_bg)
+        block_group_number += len(comments_bg)
+        list_remaining_attachments.extend(remaining_attachments)
 
         mr_commits_res = await c.runtime.ds_call(
             c.data_source.list_merge_requests_commits, project_id=project_id, mr_iid=mr_number, get_all=True,
@@ -430,9 +440,3 @@ class MergeRequestsSync:
         from app.connectors.core.registry.filters import IndexingFilterKey
         return c.indexing_filters.is_enabled(IndexingFilterKey.MERGE_REQUESTS)
 
-    def _comments_indexing_enabled(self) -> bool:
-        c = self.c
-        if not c.indexing_filters:
-            return True
-        from app.connectors.core.registry.filters import IndexingFilterKey
-        return c.indexing_filters.is_enabled(IndexingFilterKey.COMMENTS)

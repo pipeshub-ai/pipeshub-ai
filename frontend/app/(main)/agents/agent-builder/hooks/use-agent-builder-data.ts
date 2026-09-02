@@ -16,13 +16,22 @@ import type { AgentToolsListRow, KnowledgeBaseForBuilder, SkillForBuilder } from
 import { SkillsApi } from '../../../workspace/skills/personal/api';
 import { McpServersApi } from '../../../workspace/mcp-servers/api';
 import type { McpMyServerEntry } from '../../../workspace/mcp-servers/types';
-import { useFeatureFlagsStore, selectMcpEnabled } from '@/lib/store/feature-flags-store';
+import {
+  useFeatureFlagsStore,
+  selectMcpEnabled,
+  selectActionsEnabled,
+} from '@/lib/store/feature-flags-store';
 
 const TOOLSETS_PAGE = 20;
 
 /** Non-hook read for use inside plain async functions (not React components). */
 function isMcpEnabledNow(): boolean {
   return selectMcpEnabled(useFeatureFlagsStore.getState());
+}
+
+/** Non-hook read for use inside plain async functions (not React components). */
+function isActionsEnabledNow(): boolean {
+  return selectActionsEnabled(useFeatureFlagsStore.getState());
 }
 
 /**
@@ -88,6 +97,7 @@ async function loadToolsetsForAgentContext(
   agentDetails: AgentDetail | null,
   editingAgentKey: string | null
 ): Promise<BuilderSidebarToolset[]> {
+  if (!isActionsEnabledNow()) return [];
   const isSvc = agentDetails?.isServiceAccount === true;
   const keyForToolsets = agentDetails?._key || editingAgentKey || undefined;
   if (isSvc && keyForToolsets) {
@@ -152,6 +162,10 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
   const refreshToolsets = useCallback(
     async (agentKey?: string | null, isServiceAccount?: boolean, search?: string) => {
       toolsetsSearchRef.current = search ?? '';
+      if (!isActionsEnabledNow()) {
+        setToolsets([]);
+        return;
+      }
       const svc = Boolean(isServiceAccount) && Boolean(agentKey);
       const all = svc
         ? await ToolsetsApi.getAllAgentToolsets(agentKey!, {

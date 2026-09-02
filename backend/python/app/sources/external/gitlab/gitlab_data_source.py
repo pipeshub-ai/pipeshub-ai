@@ -92,8 +92,15 @@ class GitLabDataSource:
     # ------------------------------------------------------------------
 
     def _project(self, project_id: int | str) -> object:
-        """Fetch a project manager object by numeric ID or full path."""
-        return self._sdk.projects.get(project_id)
+        """Return a lazy project handle by numeric ID or full path.
+
+        ``lazy=True`` builds the handle from the id alone. Without it every
+        caller pays a full ``GET /projects/:id`` round trip before the call it
+        actually wants — on the per-file paths (file content, commit history)
+        that doubles the request count. Callers that need the project payload
+        itself (``get_project``, ``update_project``) fetch eagerly inline.
+        """
+        return self._sdk.projects.get(project_id, lazy=True)
 
     @staticmethod
     def _params(**kwargs: object) -> dict[str, object]:
@@ -143,7 +150,9 @@ class GitLabDataSource:
         can handle stale filter entries without aborting the whole sync.
         """
         try:
-            return GitLabResponse(success=True, data=self._project(project_id))
+            # Eager: callers read path_with_namespace / namespace /
+            # default_branch off the result, none of which exist on a lazy handle.
+            return GitLabResponse(success=True, data=self._sdk.projects.get(project_id))
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
 
@@ -290,7 +299,8 @@ class GitLabDataSource:
     ) -> GitLabResponse:
         """Update mutable project fields.  Returns the updated ``Project`` in ``data``."""
         try:
-            p = self._project(project_id)
+            # Eager: mutates fields on the object and returns the project payload.
+            p = self._sdk.projects.get(project_id)
             changed = False
             if name is not None:
                 setattr(p, "name", name)
@@ -762,17 +772,23 @@ class GitLabDataSource:
     # ------------------------------------------------------------------
 
     # Used by:
-    #   gitlab/repos.py - ReposSync._sync_repo_full (folder tree via GraphQL)
-    async def get_repo_tree_g(
-        self, project_id: str, ref: str | None = "HEAD", after_cursor: str = ""
+    #   gitlab/repos.py - ReposSync._fetch_entries_page (full repository walk)
+    async def get_repo_entries_g(
+        self, project_id: int | str, ref: str | None = "HEAD", after_cursor: str = ""
     ) -> GitLabResponse:
-        """Fetch the repository *folder* tree via GraphQL (cursor-paginated).
+        """Fetch one page of the repository tree: folders and files together.
 
-        Returns ``data`` as raw bytes of the JSON response body.  The caller is
-        responsible for parsing: ``json.loads(response.data)['data']['project']...``.
-        GraphQL is used here instead of REST because the REST tree endpoint
-        materialises every file for recursive calls, which is prohibitively slow
-        on large repos; GraphQL's ``paginatedTree`` gives cursor-based progress.
+        Returns ``data`` as raw bytes of the JSON response body; the caller
+        parses ``json.loads(response.data)['data']['project']...``.
+
+        ``paginatedTree`` paginates a *single* entry stream that carries both
+        directories and blobs, so selecting ``trees`` and ``blobs`` in one query
+        costs the same round trip as either alone. Walking the stream twice —
+        once for each — doubled the request count for no extra data.
+
+        GraphQL is used instead of the REST tree endpoint because REST
+        materialises every entry for a recursive call, which is prohibitively
+        slow on large repos; ``paginatedTree`` gives cursor-based progress.
         """
         headers = {
             "Authorization": f"Bearer {self.token}",
@@ -789,49 +805,6 @@ class GitLabDataSource:
                   trees {
                     nodes { name path sha type webPath webUrl }
                   }
-                }
-                pageInfo { endCursor hasNextPage }
-              }
-            }
-          }
-        }
-        """
-        try:
-            resp = await self.http_client.post(
-                f"{self._base_url}/api/graphql",
-                headers=headers,
-                json={"query": query, "variables": {"fullPath": project_id, "branch": ref, "afterCursor": after_cursor}},
-            )
-            resp.raise_for_status()
-            return GitLabResponse(success=True, data=resp.content)
-        except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
-
-    # Used by:
-    #   gitlab/repos.py - ReposSync._fetch_blob_page (file blob tree via GraphQL)
-    async def get_file_tree_g(
-        self,
-        project_id: int | str,
-        ref: str | None = "HEAD",
-        after_cursor: str = "",
-    ) -> GitLabResponse:
-        """Fetch the repository *blob* (file) tree via GraphQL (cursor-paginated).
-
-        Same return shape as ``get_repo_tree_g`` but queries ``blobs`` instead
-        of ``trees``, so only actual files are returned (folders are excluded).
-        """
-        headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json",
-        }
-        query = """
-        query ($fullPath: ID!, $branch: String!, $afterCursor: String!) {
-          project(fullPath: $fullPath) {
-            name
-            repository {
-              rootRef
-              paginatedTree(recursive: true, ref: $branch, after: $afterCursor) {
-                nodes {
                   blobs {
                     nodes { name path sha type webPath webUrl }
                   }
@@ -846,12 +819,19 @@ class GitLabDataSource:
             resp = await self.http_client.post(
                 f"{self._base_url}/api/graphql",
                 headers=headers,
-                json={"query": query, "variables": {"fullPath": project_id, "branch": ref or "HEAD", "afterCursor": after_cursor}},
+                json={
+                    "query": query,
+                    "variables": {
+                        "fullPath": project_id,
+                        "branch": ref or "HEAD",
+                        "afterCursor": after_cursor,
+                    },
+                },
             )
             resp.raise_for_status()
             return GitLabResponse(success=True, data=resp.content)
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=f"{type(e).__name__}: {e}")
 
     # ------------------------------------------------------------------
     # Members

@@ -46,12 +46,13 @@ def _make_mock_deps():
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.get_all_app_users = AsyncMock(return_value=[])
     dep.migrate_group_to_user_by_external_id = AsyncMock()
+    dep.get_user_by_source_id = AsyncMock(return_value=None)
+    dep.get_user_group_by_external_id = AsyncMock(return_value=None)
+    dep.get_all_user_groups = AsyncMock(return_value=[])
 
     dsp = MagicMock()
     mock_tx = MagicMock()
     mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-    mock_tx.get_user_by_source_id = AsyncMock(return_value=None)
-    mock_tx.get_user_group_by_external_id = AsyncMock(return_value=None)
     mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
     mock_tx.__aexit__ = AsyncMock(return_value=None)
     dsp.transaction.return_value = mock_tx
@@ -426,10 +427,8 @@ class TestProcessWebpageWithUpdate:
 class TestCreatePermissionFromPrincipal:
     @pytest.mark.asyncio
     async def test_user_found(self):
-        _, _, dsp, _, mock_tx = _make_mock_deps()
         c = _c()
-        c.data_store_provider = dsp
-        mock_tx.get_user_by_source_id = AsyncMock(return_value=MagicMock(email="u@t.com"))
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=MagicMock(email="u@t.com"))
         perm = await c._create_permission_from_principal("user", "u1", PermissionType.READ)
         assert perm is not None
         assert perm.email == "u@t.com"
@@ -450,10 +449,8 @@ class TestCreatePermissionFromPrincipal:
 
     @pytest.mark.asyncio
     async def test_group_found(self):
-        _, _, dsp, _, mock_tx = _make_mock_deps()
         c = _c()
-        c.data_store_provider = dsp
-        mock_tx.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(source_user_group_id="g1"))
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(source_user_group_id="g1"))
         perm = await c._create_permission_from_principal("group", "g1", PermissionType.READ)
         assert perm is not None
         assert perm.entity_type == EntityType.GROUP

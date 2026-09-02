@@ -139,6 +139,9 @@ def connector():
         conn.indexing_filters = FilterCollection()
         conn.google_client = MagicMock()
         conn.drive_data_source = AsyncMock()
+        async def execute(operation):
+            return operation()
+        conn.drive_data_source.execute = AsyncMock(side_effect=execute)
         conn.config = {"credentials": {"access_token": "t", "refresh_token": "r"}}
         yield conn
 
@@ -149,7 +152,7 @@ def connector():
 
 class TestInitFullPath:
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleDriveDataSource")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_success_full_path(self, MockGClient, MockDS, mock_fetch, connector):
@@ -171,7 +174,7 @@ class TestInitFullPath:
         assert connector.google_client is mock_client_inst
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_no_tokens_warning(self, MockGClient, mock_fetch, connector):
         mock_fetch.return_value = {
@@ -193,7 +196,7 @@ class TestInitFullPath:
         assert result is True
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_client_build_fails(self, MockGClient, mock_fetch, connector):
         mock_fetch.return_value = {
@@ -339,7 +342,10 @@ class TestPerformFullSync:
         page2 = {
             "files": [_make_file_metadata(file_id="f2")],
         }
-        connector.drive_data_source.files_list = AsyncMock(side_effect=[page1, page2])
+        connector.drive_data_source.files_list = AsyncMock(
+            # Trailing empty page is consumed by the shared-with-me seed sweep.
+            side_effect=[page1, page2, {"files": []}]
+        )
 
         async def mock_gen(files, uid, email, did):
             for f in files:
@@ -443,6 +449,8 @@ class TestPerformFullSync:
             side_effect=[
                 {"files": page1_files, "nextPageToken": "page2-token-1234567890123456"},
                 {"files": []},
+                # Consumed by the shared-with-me seed sweep.
+                {"files": []},
             ]
         )
 
@@ -456,7 +464,7 @@ class TestPerformFullSync:
         connector._process_drive_items_generator = mock_gen
         await connector._perform_full_sync("key", "org1", "u1", "u@t.com", "d1")
         calls = connector.drive_data_source.files_list.call_args_list
-        assert len(calls) == 2
+        assert len(calls) == 3
         assert "pageToken" in calls[1].kwargs.get("pageToken", "") or "pageToken" in str(calls[1])
 
 
@@ -1412,28 +1420,27 @@ class TestCheckAndFetchUpdatedRecord:
 
 class TestCreateConnector:
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.DataSourceEntitiesProcessor")
     @patch("app.connectors.sources.google.drive.individual.connector.SyncPoint")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
-    async def test_create_connector(self, MockGClient, MockSP, MockDSEP):
+    async def test_create_connector(self, MockGClient, MockSP):
         from app.connectors.sources.google.drive.individual.connector import (
             GoogleDriveIndividualConnector,
         )
 
         MockSP.return_value = AsyncMock()
-        mock_dep = AsyncMock()
-        mock_dep.org_id = "org-1"
-        MockDSEP.return_value = mock_dep
+
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
         logger = _make_logger()
         ds_provider = MagicMock()
         config_service = AsyncMock()
 
         result = await GoogleDriveIndividualConnector.create_connector(
-            logger, ds_provider, config_service, "conn-1", "team", "test-user-id"
+            logger, ds_provider, config_service, "conn-1", "team", "test-user-id",
+            data_entities_processor=processor,
         )
         assert isinstance(result, GoogleDriveIndividualConnector)
-        mock_dep.initialize.assert_awaited_once()
 
 
 # ===================================================================
@@ -1769,6 +1776,9 @@ def connector():
         conn.indexing_filters = FilterCollection()
         conn.google_client = MagicMock()
         conn.drive_data_source = AsyncMock()
+        async def execute(operation):
+            return operation()
+        conn.drive_data_source.execute = AsyncMock(side_effect=execute)
         conn.config = {"credentials": {"access_token": "t", "refresh_token": "r"}}
         yield conn
 
@@ -1779,7 +1789,7 @@ def connector():
 
 class TestInitFullPathFullCoverage:
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleDriveDataSource")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_success_full_path(self, MockGClient, MockDS, mock_fetch, connector):
@@ -1801,7 +1811,7 @@ class TestInitFullPathFullCoverage:
         assert connector.google_client is mock_client_inst
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_no_tokens_warning(self, MockGClient, mock_fetch, connector):
         mock_fetch.return_value = {
@@ -1823,7 +1833,7 @@ class TestInitFullPathFullCoverage:
         assert result is True
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_client_build_fails(self, MockGClient, mock_fetch, connector):
         mock_fetch.return_value = {
@@ -1969,7 +1979,10 @@ class TestPerformFullSyncFullCoverage:
         page2 = {
             "files": [_make_file_metadata(file_id="f2")],
         }
-        connector.drive_data_source.files_list = AsyncMock(side_effect=[page1, page2])
+        connector.drive_data_source.files_list = AsyncMock(
+            # Trailing empty page is consumed by the shared-with-me seed sweep.
+            side_effect=[page1, page2, {"files": []}]
+        )
 
         async def mock_gen(files, uid, email, did):
             for f in files:
@@ -2073,6 +2086,8 @@ class TestPerformFullSyncFullCoverage:
             side_effect=[
                 {"files": page1_files, "nextPageToken": "page2-token-1234567890123456"},
                 {"files": []},
+                # Consumed by the shared-with-me seed sweep.
+                {"files": []},
             ]
         )
 
@@ -2086,7 +2101,7 @@ class TestPerformFullSyncFullCoverage:
         connector._process_drive_items_generator = mock_gen
         await connector._perform_full_sync("key", "org1", "u1", "u@t.com", "d1")
         calls = connector.drive_data_source.files_list.call_args_list
-        assert len(calls) == 2
+        assert len(calls) == 3
         assert "pageToken" in calls[1].kwargs.get("pageToken", "") or "pageToken" in str(calls[1])
 
 
@@ -3042,28 +3057,27 @@ class TestCheckAndFetchUpdatedRecordFullCoverage:
 
 class TestCreateConnectorFullCoverage:
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.DataSourceEntitiesProcessor")
     @patch("app.connectors.sources.google.drive.individual.connector.SyncPoint")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
-    async def test_create_connector(self, MockGClient, MockSP, MockDSEP):
+    async def test_create_connector(self, MockGClient, MockSP):
         from app.connectors.sources.google.drive.individual.connector import (
             GoogleDriveIndividualConnector,
         )
 
         MockSP.return_value = AsyncMock()
-        mock_dep = AsyncMock()
-        mock_dep.org_id = "org-1"
-        MockDSEP.return_value = mock_dep
+
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
         logger = _make_logger()
         ds_provider = MagicMock()
         config_service = AsyncMock()
 
         result = await GoogleDriveIndividualConnector.create_connector(
-            logger, ds_provider, config_service, "conn-1", "team", "test-user-id"
+            logger, ds_provider, config_service, "conn-1", "team", "test-user-id",
+            data_entities_processor=processor,
         )
         assert isinstance(result, GoogleDriveIndividualConnector)
-        mock_dep.initialize.assert_awaited_once()
 
 
 # ===================================================================

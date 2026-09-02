@@ -14,18 +14,22 @@ Covers:
 import asyncio
 import json
 import logging
-import threading
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
-from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData, StreamMessage, messaging_env
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+    StreamMessage,
+    messaging_env,
+)
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -202,10 +206,10 @@ class TestApplyBackpressure:
 
 class TestParseMessageAdditional:
 
-    def test_bytes_value_isinstance_check(self, consumer):
+    async def test_bytes_value_isinstance_check(self, consumer):
         """Ensure isinstance check works for bytes -> str conversion."""
         msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"x": 1}}).encode("utf-8"))
-        result = consumer._IndexingKafkaConsumer__parse_message(msg)
+        result = await consumer._IndexingKafkaConsumer__parse_message(msg)
         assert isinstance(result, StreamMessage)
         assert result.eventType == "test"
         assert result.payload == {"x": 1}

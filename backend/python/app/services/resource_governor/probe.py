@@ -134,7 +134,8 @@ def _resolve_cgroup_path(v1_controller: str, v1_filename: str, v2_filename: str 
 # ---------------------------------------------------------------------------
 
 
-def _memory_stat_inactive_file(stat_text: str | None, key: str) -> int:
+def _memory_stat_value(stat_text: str | None, key: str) -> int:
+    """One counter out of ``memory.stat``, or 0 when it cannot be read."""
     if not stat_text:
         return 0
     for line in stat_text.splitlines():
@@ -167,9 +168,22 @@ def _cgroup_v2_memory() -> tuple[int | None, int | None]:
     current = _read_int(current_path) if current_path else None
 
     stat_path = _resolve_cgroup_path("memory", "memory.stat")
-    inactive_file = _memory_stat_inactive_file(_read_text(stat_path) if stat_path else None, "inactive_file")
+    # All page cache, not just the inactive half. The k8s "working set"
+    # convention subtracts only ``inactive_file`` because it is predicting
+    # OOM-kill risk and wants to be conservative. This governor is answering a
+    # different question — may another document be admitted — and braking on
+    # memory the kernel frees on demand is what pins every pool at its floor
+    # on a container whose cache is naturally hot (document blobs in, vectors
+    # out). Observed on a 10 GiB container: 7.8 GiB unreclaimable read as
+    # 9.4 GiB, tripping MEM_HARD with 2 GiB genuinely free, while
+    # ``memory.events`` recorded 1431 successful reclaims and zero OOM kills.
+    # ``_proc_meminfo_memory`` below already discounts reclaimable cache via
+    # MemAvailable; this makes the cgroup paths agree with it.
+    file_cache = _memory_stat_value(
+        _read_text(stat_path) if stat_path else None, "file"
+    )
 
-    working_set = None if current is None else max(0, current - inactive_file)
+    working_set = None if current is None else max(0, current - file_cache)
     return limit, working_set
 
 
@@ -185,11 +199,13 @@ def _cgroup_v1_memory() -> tuple[int | None, int | None]:
     usage = _read_int(usage_path) if usage_path else None
 
     stat_path = _resolve_cgroup_path("memory", "memory.stat")
-    inactive_file = _memory_stat_inactive_file(
-        _read_text(stat_path) if stat_path else None, "total_inactive_file",
+    # ``total_cache`` is v1's spelling of all reclaimable page cache — see the
+    # v2 path for why the whole of it is discounted, not just its inactive half.
+    file_cache = _memory_stat_value(
+        _read_text(stat_path) if stat_path else None, "total_cache",
     )
 
-    working_set = None if usage is None else max(0, usage - inactive_file)
+    working_set = None if usage is None else max(0, usage - file_cache)
     return limit, working_set
 
 

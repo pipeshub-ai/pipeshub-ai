@@ -19,6 +19,7 @@ import logging
 
 import pytest
 
+from app.services.resource_governor import policy
 from app.services.resource_governor.controller import ResourceGovernor
 from app.services.resource_governor.models import Pool, ResourceSnapshot
 from app.services.resource_governor.policy import (
@@ -138,10 +139,17 @@ class TestAdaptiveConcurrencyPressure:
         # LIGHT_PARSE, because it is the widest *adapted* pool: the index
         # pools hold their ceiling for the life of the process, and heavy's
         # target is additionally clamped by heavy_memory_cap, which would cap
-        # this at ~20 permits on any believable mem_limit. A 334-CPU host is
-        # what a 1000-permit light ceiling (3/CPU, capped by
-        # MAX_CONCURRENT_PARSING) implies — the cap can lower that
-        # derivation, never raise it.
+        # this at ~20 permits on any believable mem_limit.
+        #
+        # The light ceiling is min(cpus * LIGHT_PARSE_SLOTS_PER_CPU,
+        # LIGHT_PARSE_MAX, env_parse), so LIGHT_PARSE_MAX is what decides it
+        # here: a generous CPU quota and env_parse leave the cap as the
+        # binding constraint. The gap that opens below is therefore half the
+        # cap, which is still large enough for the point of this test --
+        # closing it by doubling takes ~7 steps where a fixed +1 step would
+        # take ~128.
+        light_ceiling = policy.LIGHT_PARSE_MAX
+
         def snapshot(mem_pressure: float) -> ResourceSnapshot:
             return make_snapshot(mem_pressure, cpu_quota=334.0)
 
@@ -153,18 +161,18 @@ class TestAdaptiveConcurrencyPressure:
             sample_interval=SAMPLE_INTERVAL_SECONDS,
             clock=clock,
         )
-        assert governor.ceilings.light == 1000
+        assert governor.ceilings.light == light_ceiling
         light_gate = governor.gate(Pool.LIGHT_PARSE)
         # Warm start is the floor (half the ceiling for light), so put the
         # pool where a finished ramp would have left it — the halve below
-        # needs a large limit to open the 500-permit gap this test measures.
-        governor._registry.set(Pool.LIGHT_PARSE, 1000)
-        assert light_gate.limit == 1000
+        # needs a large limit to open the gap this test measures.
+        governor._registry.set(Pool.LIGHT_PARSE, light_ceiling)
+        assert light_gate.limit == light_ceiling
 
         probe.snapshots = [snapshot(0.9)]  # >= MEM_HARD
         clock.now += SAMPLE_INTERVAL_SECONDS
         await governor._sample_once()
-        assert light_gate.limit == 500
+        assert light_gate.limit == light_ceiling // 2
 
         probe.snapshots = [snapshot(0.1)]
         clock.now += INCIDENT_COOLDOWN_SECONDS + SAMPLE_INTERVAL_SECONDS  # clear the incident cooldown
@@ -174,13 +182,15 @@ class TestAdaptiveConcurrencyPressure:
         # docstring) — a single SAMPLE_INTERVAL_SECONDS jump would blow
         # past any finite deadline immediately and the holder would give up
         # for good instead of staying queued for the next growth step.
-        holders = [asyncio.create_task(_hold_gate(light_gate, cost=1, timeout=None)) for _ in range(1000)]
+        holders = [
+            asyncio.create_task(_hold_gate(light_gate, cost=1, timeout=None))
+            for _ in range(light_ceiling)
+        ]
         try:
             # 12 intervals (60s simulated) is 3 to confirm-healthy plus 9
-            # doubling grows (+1,+2,+4,...,+256, clamped at the 1000
-            # ceiling) — comfortably enough to fully recover. The old fixed
-            # +1/interval step would need ~500 intervals (~42 minutes) to
-            # close the same gap.
+            # doubling grows (+1,+2,+4,... clamped at the ceiling) —
+            # comfortably enough to fully recover. A fixed +1/interval step
+            # would need one interval per permit of the gap.
             for _ in range(12):
                 await asyncio.sleep(0)  # let newly-freed room admit more holders
                 clock.now += SAMPLE_INTERVAL_SECONDS
@@ -188,9 +198,10 @@ class TestAdaptiveConcurrencyPressure:
         finally:
             await cancel_all(holders)
 
-        assert light_gate.limit == 1000, (
-            f"exponential recovery should fully close a 500-permit gap within "
-            f"12 intervals (60s), got {light_gate.limit}"
+        assert light_gate.limit == light_ceiling, (
+            f"exponential recovery should fully close a "
+            f"{light_ceiling // 2}-permit gap within 12 intervals (60s), got "
+            f"{light_gate.limit}"
         )
 
     async def test_limits_never_go_below_floor_under_repeated_hard_pressure(self) -> None:

@@ -90,6 +90,12 @@ def mock_data_entities_processor():
     proc.get_all_active_users = AsyncMock(return_value=[MagicMock(email="user@test.com")])
     proc.get_all_app_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_group_by_external_id = AsyncMock(return_value=None)
+    proc.get_app_user_by_email = AsyncMock(return_value=None)
+    proc.get_all_user_groups = AsyncMock(return_value=[])
+    proc.get_records_by_parent = AsyncMock(return_value=[])
+    proc.remove_user_access_to_record = AsyncMock()
     return proc
 
 
@@ -299,14 +305,7 @@ class TestBoxProcessEventBatch:
 
         existing_record = MagicMock()
         existing_record.mime_type = "application/pdf"
-        tx = _make_mock_tx_store(existing_record=existing_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _transaction
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing_record)
 
         await box_connector._process_event_batch(events)
 
@@ -361,14 +360,7 @@ class TestBoxProcessEventBatch:
 
         folder_record = MagicMock()
         folder_record.mime_type = MimeTypes.FOLDER.value
-        tx = _make_mock_tx_store(existing_record=folder_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _transaction
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=folder_record)
         box_connector._remove_user_access_from_folder_recursively = AsyncMock()
 
         await box_connector._process_event_batch(events)
@@ -617,27 +609,13 @@ class TestBoxSyncFolderContentsRecursively:
 class TestBoxEnsureParentFoldersExist:
     async def test_folder_already_exists(self, box_connector):
         existing = MagicMock()
-        tx = _make_mock_tx_store(existing_record=existing)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _transaction
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         await box_connector._ensure_parent_folders_exist("owner1", ["f1"])
         box_connector.data_entities_processor.on_new_records.assert_not_awaited()
 
     async def test_folder_not_exists_creates(self, box_connector):
-        tx = _make_mock_tx_store(existing_record=None)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _transaction
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         box_connector.data_source.folders_get_folder_by_id = AsyncMock(
             return_value=MagicMock(success=True, data={})
@@ -1015,10 +993,6 @@ class TestBoxProcessBoxEntryFileExtensionFilter:
         assert result is None
 
     async def test_shared_with_me_group_link(self, box_connector):
-        shared_group = MagicMock()
-        shared_group.id = "sg1"
-        provider = _make_mock_data_store_provider(record_group=shared_group)
-        box_connector.data_store_provider = provider
         box_connector.data_source.collaborations_get_file_collaborations = AsyncMock(
             return_value=MagicMock(success=False, error="None")
         )

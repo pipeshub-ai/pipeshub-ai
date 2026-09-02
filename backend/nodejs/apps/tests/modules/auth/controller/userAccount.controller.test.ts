@@ -1165,6 +1165,75 @@ describe('UserAccountController', () => {
     });
   });
 
+  describe('initAuth - OAuth credentials are never returned', () => {
+    const oauthConfig = (enableJit: boolean) => ({
+      providerName: 'Okta',
+      clientId: 'public-client-id',
+      clientSecret: 'SUPER-SECRET',
+      authorizationUrl: 'https://idp.example.com/authorize',
+      tokenEndpoint: 'https://idp.example.com/token',
+      userInfoEndpoint: 'https://idp.example.com/userinfo',
+      enableJit,
+    });
+
+    const arrange = (enableJit: boolean) => {
+      sinon.stub(Org, 'findOne').resolves({ _id: 'o1', isDeleted: false } as any);
+      sinon.stub(OrgAuthConfig, 'findOne').resolves({
+        orgId: 'o1',
+        authSteps: [{ order: 1, allowedMethods: [{ type: 'oauth' }] }],
+      } as any);
+      mockConfigService.getConfig.resolves({ data: oauthConfig(enableJit) });
+      mockSessionService.createSession.resolves({
+        token: 'session-oauth-123',
+        userId: 'u1',
+        email: 'user@example.com',
+        authConfig: [{ order: 1, allowedMethods: [{ type: 'oauth' }] }],
+        currentStep: 0,
+      });
+    };
+
+    // initAuth is unauthenticated. The server-side credentials must not appear
+    // in its response whether or not JIT provisioning happens to be enabled.
+    [true, false].forEach((enableJit) => {
+      it(`should not return clientSecret, tokenEndpoint or userInfoEndpoint when enableJit is ${enableJit}`, async () => {
+        const req: any = { body: { email: 'user@example.com' } };
+        arrange(enableJit);
+
+        await controller.initAuth(req, res, next);
+
+        expect(next.called, 'initAuth should not error').to.be.false;
+        const oauth = res.json.firstCall.args[0].authProviders.oauth;
+
+        expect(oauth).to.not.have.property('clientSecret');
+        expect(oauth).to.not.have.property('tokenEndpoint');
+        expect(oauth).to.not.have.property('userInfoEndpoint');
+
+        // the values the sign-in page legitimately needs are still there
+        expect(oauth.clientId).to.equal('public-client-id');
+        expect(oauth.providerName).to.equal('Okta');
+        expect(oauth.authorizationUrl).to.equal('https://idp.example.com/authorize');
+      });
+    });
+
+    it('should still report JIT as enabled when the config enables it', async () => {
+      const req: any = { body: { email: 'user@example.com' } };
+      arrange(true);
+
+      await controller.initAuth(req, res, next);
+
+      expect(res.json.firstCall.args[0].jitEnabled).to.be.true;
+    });
+
+    it('should report JIT as disabled when the config disables it', async () => {
+      const req: any = { body: { email: 'user@example.com' } };
+      arrange(false);
+
+      await controller.initAuth(req, res, next);
+
+      expect(res.json.firstCall.args[0].jitEnabled).to.be.false;
+    });
+  });
+
   describe('exchangeOAuthToken', () => {
     it('should call next(BadRequestError) when required params are missing', async () => {
       const req: any = {
@@ -3682,5 +3751,71 @@ describe('UserAccountController', () => {
         global.fetch = originalFetch;
       }
     });
+  });
+
+  describe('validateEmailChange', () => {
+    it('should update email successfully when new email is not in use', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves({} as any)
+      sinon.stub(UserActivities, 'create').resolves({} as any)
+
+      const req: any = {
+        tokenPayload: { userId: 'u1', newEmail: 'New@Example.com', orgId: 'org1' },
+        ip: '127.0.0.1',
+      }
+
+      await controller.validateEmailChange(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].message).to.equal('Email updated successfully')
+      expect((Users.findByIdAndUpdate as any).calledWith('u1', sinon.match({ email: 'new@example.com' }))).to.be.true
+    })
+
+    it('should throw BadRequestError when email is already in use', async () => {
+      sinon.stub(Users, 'findOne').resolves({ _id: 'existing' } as any)
+
+      const req: any = {
+        tokenPayload: { userId: 'u1', newEmail: 'taken@example.com', orgId: 'org1' },
+        ip: '127.0.0.1',
+      }
+
+      await controller.validateEmailChange(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.include('already in use')
+    })
+
+    it('should call next on unexpected error', async () => {
+      sinon.stub(Users, 'findOne').rejects(new Error('DB error'))
+
+      const req: any = {
+        tokenPayload: { userId: 'u1', newEmail: 'test@example.com', orgId: 'org1' },
+        ip: '127.0.0.1',
+      }
+
+      await controller.validateEmailChange(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should log activity with PASSWORD_CHANGED type', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves({} as any)
+      const createStub = sinon.stub(UserActivities, 'create').resolves({} as any)
+
+      const req: any = {
+        tokenPayload: { userId: 'u1', newEmail: 'new@example.com', orgId: 'org1' },
+        ip: '10.0.0.1',
+      }
+
+      await controller.validateEmailChange(req, res, next)
+
+      expect(createStub.calledOnce).to.be.true
+      const activityArg = createStub.firstCall.args[0]
+      expect(activityArg.orgId).to.equal('org1')
+      expect(activityArg.userId).to.equal('u1')
+      expect(activityArg.ipAddress).to.equal('10.0.0.1')
+    })
   });
 });

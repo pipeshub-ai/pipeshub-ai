@@ -39,9 +39,9 @@ class TestLoadOrgInstances:
     @pytest.mark.asyncio
     async def test_returns_parsed_dicts(self) -> None:
         cfg = MagicMock()
-        cfg.list_keys_in_directory = AsyncMock(return_value=["/services/mcp/instances/org-1/inst-1"])
+        cfg.list_keys_in_directory = AsyncMock(return_value=["/services/mcp/instances/inst-1"])
         cfg.get_config = AsyncMock(return_value=_instance())
-        result = await load_org_instances("org-1", cfg)
+        result = await load_org_instances(cfg)
         assert len(result) == 1
         assert result[0]["_id"] == "inst-1"
 
@@ -50,14 +50,14 @@ class TestLoadOrgInstances:
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(return_value=["/a", "/b"])
         cfg.get_config = AsyncMock(side_effect=[None, _instance()])
-        result = await load_org_instances("org-1", cfg)
+        result = await load_org_instances(cfg)
         assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_list_failure_returns_empty(self) -> None:
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(side_effect=RuntimeError("etcd down"))
-        result = await load_org_instances("org-1", cfg)
+        result = await load_org_instances(cfg)
         assert result == []
 
     @pytest.mark.asyncio
@@ -65,7 +65,7 @@ class TestLoadOrgInstances:
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(return_value=["/a", "/b"])
         cfg.get_config = AsyncMock(side_effect=[RuntimeError("corrupt key"), _instance()])
-        result = await load_org_instances("org-1", cfg)
+        result = await load_org_instances(cfg)
         assert len(result) == 1
         assert result[0]["_id"] == "inst-1"
 
@@ -75,14 +75,14 @@ class TestGetInstance:
     async def test_returns_dict(self) -> None:
         cfg = MagicMock()
         cfg.get_config = AsyncMock(return_value=_instance())
-        result = await get_instance("org-1", "inst-1", cfg)
+        result = await get_instance("inst-1", cfg)
         assert result["_id"] == "inst-1"
 
     @pytest.mark.asyncio
     async def test_missing_returns_none(self) -> None:
         cfg = MagicMock()
         cfg.get_config = AsyncMock(return_value=None)
-        assert await get_instance("org-1", "inst-1", cfg) is None
+        assert await get_instance("inst-1", cfg) is None
 
 
 class TestResolveEffectiveUserAuth:
@@ -159,7 +159,7 @@ class TestGetAuthenticatedMcpServers:
         unauthenticated = _instance(_id="inst-2", typeId="exa", name="Exa")
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(
-            return_value=["/services/mcp/instances/org-1/inst-1", "/services/mcp/instances/org-1/inst-2"]
+            return_value=["/services/mcp/instances/inst-1", "/services/mcp/instances/inst-2"]
         )
 
         async def _get_config_side_effect(path, default=None, use_cache=False):
@@ -174,7 +174,7 @@ class TestGetAuthenticatedMcpServers:
             return None
 
         cfg.get_config = AsyncMock(side_effect=_get_config_side_effect)
-        result = await get_authenticated_mcp_servers("user-1", "org-1", cfg)
+        result = await get_authenticated_mcp_servers("user-1", cfg)
         assert [r["instanceId"] for r in result] == ["inst-1"]
 
     @pytest.mark.asyncio
@@ -183,7 +183,7 @@ class TestGetAuthenticatedMcpServers:
         second = _instance(_id="inst-2", typeId="brave_search", name="Brave B")
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(
-            return_value=["/services/mcp/instances/org-1/inst-1", "/services/mcp/instances/org-1/inst-2"]
+            return_value=["/services/mcp/instances/inst-1", "/services/mcp/instances/inst-2"]
         )
 
         async def _get_config_side_effect(path, default=None, use_cache=False):
@@ -196,7 +196,7 @@ class TestGetAuthenticatedMcpServers:
             return None
 
         cfg.get_config = AsyncMock(side_effect=_get_config_side_effect)
-        result = await get_authenticated_mcp_servers("user-1", "org-1", cfg)
+        result = await get_authenticated_mcp_servers("user-1", cfg)
         assert len(result) == 1
         assert result[0]["instanceId"] == "inst-1"
 
@@ -204,14 +204,14 @@ class TestGetAuthenticatedMcpServers:
     async def test_no_instances_returns_empty(self) -> None:
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(return_value=[])
-        result = await get_authenticated_mcp_servers("user-1", "org-1", cfg)
+        result = await get_authenticated_mcp_servers("user-1", cfg)
         assert result == []
 
     @pytest.mark.asyncio
     async def test_load_failure_returns_empty(self) -> None:
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(side_effect=RuntimeError("boom"))
-        result = await get_authenticated_mcp_servers("user-1", "org-1", cfg)
+        result = await get_authenticated_mcp_servers("user-1", cfg)
         assert result == []
 
     @pytest.mark.asyncio
@@ -221,7 +221,7 @@ class TestGetAuthenticatedMcpServers:
             raise RuntimeError("unexpected")
 
         monkeypatch.setattr("app.agents.mcp.service.load_org_instances", _raise)
-        result = await get_authenticated_mcp_servers("user-1", "org-1", MagicMock())
+        result = await get_authenticated_mcp_servers("user-1", MagicMock())
         assert result == []
 
     @pytest.mark.asyncio
@@ -230,7 +230,7 @@ class TestGetAuthenticatedMcpServers:
         bad = _instance(_id="inst-2", typeId="exa", name="Exa")
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(
-            return_value=["/services/mcp/instances/org-1/inst-1", "/services/mcp/instances/org-1/inst-2"]
+            return_value=["/services/mcp/instances/inst-1", "/services/mcp/instances/inst-2"]
         )
 
         async def _get_config_side_effect(path, default=None, use_cache=False):
@@ -245,7 +245,7 @@ class TestGetAuthenticatedMcpServers:
             return None
 
         cfg.get_config = AsyncMock(side_effect=_get_config_side_effect)
-        result = await get_authenticated_mcp_servers("user-1", "org-1", cfg)
+        result = await get_authenticated_mcp_servers("user-1", cfg)
         assert [r["instanceId"] for r in result] == ["inst-1"]
 
 
@@ -289,26 +289,12 @@ class TestMatchEnabledToolsForMcpServer:
 
 
 class TestIsMcpEnabled:
-    @pytest.mark.asyncio
-    async def test_env_true_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("PIPESHUB_ENABLE_MCP", "true")
-        assert await is_mcp_enabled(MagicMock()) is True
+    """No env override exists anymore — resolution is `config_service` (via
+    the shared `read_platform_feature_flag` helper) -> `FeatureFlagService`
+    fallback -> default False."""
 
     @pytest.mark.asyncio
-    async def test_env_false_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("PIPESHUB_ENABLE_MCP", "0")
-        cfg = MagicMock()
-        cfg.get_config = AsyncMock(
-            return_value={"featureFlags": {"ENABLE_MCP": True}}
-        )
-        assert await is_mcp_enabled(cfg) is False
-        cfg.get_config.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_reads_platform_settings_flag(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.delenv("PIPESHUB_ENABLE_MCP", raising=False)
+    async def test_reads_platform_settings_flag(self) -> None:
         cfg = MagicMock()
         cfg.get_config = AsyncMock(
             return_value={"featureFlags": {"enable_mcp": True}}
@@ -316,19 +302,19 @@ class TestIsMcpEnabled:
         assert await is_mcp_enabled(cfg) is True
 
     @pytest.mark.asyncio
-    async def test_platform_settings_read_failure_disables(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.delenv("PIPESHUB_ENABLE_MCP", raising=False)
+    async def test_platform_settings_flag_absent_defaults_false(self) -> None:
+        cfg = MagicMock()
+        cfg.get_config = AsyncMock(return_value={"featureFlags": {}})
+        assert await is_mcp_enabled(cfg) is False
+
+    @pytest.mark.asyncio
+    async def test_platform_settings_read_failure_disables(self) -> None:
         cfg = MagicMock()
         cfg.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
         assert await is_mcp_enabled(cfg) is False
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_feature_flag_service(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.delenv("PIPESHUB_ENABLE_MCP", raising=False)
+    async def test_falls_back_to_feature_flag_service(self) -> None:
         mock_ffs = MagicMock()
         mock_ffs.is_feature_enabled.return_value = True
         with patch(
@@ -338,10 +324,7 @@ class TestIsMcpEnabled:
             assert await is_mcp_enabled(None) is True
 
     @pytest.mark.asyncio
-    async def test_feature_flag_service_unavailable_defaults_false(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.delenv("PIPESHUB_ENABLE_MCP", raising=False)
+    async def test_feature_flag_service_unavailable_defaults_false(self) -> None:
         with patch(
             "app.services.featureflag.featureflag.FeatureFlagService.get_service",
             side_effect=RuntimeError("unwired"),

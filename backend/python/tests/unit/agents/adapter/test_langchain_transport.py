@@ -10,12 +10,15 @@ import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 from app.agent_loop_lib.core.exceptions import TransportError
-from app.agent_loop_lib.core.messages import UserMessage
+from app.agent_loop_lib.core.messages import ImagePart, ImageSource, TextPart, ToolMessage, UserMessage
 from app.agent_loop_lib.core.responses import StopReason
 from app.agent_loop_lib.core.streaming import StreamCompleteEvent, TextDeltaEvent
 from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agents.agent_loop import langchain_transport as transport_module
-from app.agents.agent_loop.langchain_transport import LangChainTransport
+from app.agents.agent_loop.langchain_transport import (
+    LangChainTransport,
+    _supports_multipart_tool_result,
+)
 from app.utils.llm_api_mode_store import REASONING_MANDATORY_FALLBACK_EFFORT, LLMApiMode
 
 if TYPE_CHECKING:
@@ -886,6 +889,120 @@ class TestReasoningMandatoryFallbackStream:
 
         assert transport._llm is model
         assert store.recorded == []
+
+
+class TestSupportsMultipartToolResult:
+    """`_supports_multipart_tool_result` detects Ollama by walking the
+    model's MRO for a class named `ChatOllama` so `LangChainTransport`
+    knows to route multipart `ToolMessage` content through the text-only
+    fallback instead of sending it straight to a provider that rejects it
+    (Ollama's `/api/chat` only accepts `content: str` for `role: "tool"`)."""
+
+    def test_ollama_model_class_name_returns_false(self) -> None:
+        class ChatOllama(_FakeModel):
+            pass
+
+        assert _supports_multipart_tool_result(ChatOllama()) is False
+
+    def test_non_ollama_model_returns_true(self) -> None:
+        assert _supports_multipart_tool_result(_FakeModel()) is True
+
+    def test_ollama_subclass_with_different_name_still_returns_false(self) -> None:
+        """A wrapper/subclass of `ChatOllama` under a different class name
+        must still be detected — a bare `type(x).__name__ != "ChatOllama"`
+        compare would miss this and incorrectly report multipart support,
+        silently dropping images sent to a still-text-only provider."""
+        class ChatOllama(_FakeModel):
+            pass
+
+        class CustomOllamaWrapper(ChatOllama):
+            pass
+
+        assert _supports_multipart_tool_result(CustomOllamaWrapper()) is False
+
+    def test_transport_computes_flag_once_at_construction(self) -> None:
+        class ChatOllama(_FakeModel):
+            pass
+
+        ollama_transport = LangChainTransport(ChatOllama())
+        assert ollama_transport._supports_multipart_tool_result is False
+
+        other_transport = LangChainTransport(_FakeModel())
+        assert other_transport._supports_multipart_tool_result is True
+
+    async def test_complete_strips_images_from_tool_message_for_ollama(self) -> None:
+        """End-to-end: a multipart `ToolMessage` sent through `complete()`
+        on an Ollama-shaped transport must reach the underlying model as
+        plain text — never a list-of-blocks `content` the provider would
+        reject."""
+        class ChatOllama(_FakeModel):
+            def __init__(self, *a, **kw) -> None:
+                super().__init__(*a, **kw)
+                self.received_messages: list = []
+
+            async def ainvoke(self, messages: list, config: Any = None) -> AIMessage:
+                self.received_messages = messages
+                return await super().ainvoke(messages, config)
+
+        model = ChatOllama(AIMessage(content="done"))
+        transport = LangChainTransport(model)
+
+        tool_msg = ToolMessage(
+            content=[
+                TextPart(text="[ref1] (image)"),
+                ImagePart(source=ImageSource(type="base64", media_type="image/png", data="abc")),
+            ],
+            tool_call_id="tc1",
+        )
+        await transport.complete([UserMessage(content="hi"), tool_msg])
+
+        tool_lc_messages = [m for m in model.received_messages if type(m).__name__ == "ToolMessage"]
+        assert len(tool_lc_messages) == 1
+        assert isinstance(tool_lc_messages[0].content, str)
+
+    def test_openai_family_on_chat_completions_returns_false(self) -> None:
+        """OpenAI/Azure/OpenRouter (all `ChatOpenAI` under the hood) reject an
+        image block on any non-`user` message on Chat Completions, so images
+        must take the user-message fallback instead of a multipart tool
+        result."""
+        class BaseChatOpenAI(_FakeModel):
+            use_responses_api = False
+
+        class ChatOpenAI(BaseChatOpenAI):
+            pass
+
+        assert _supports_multipart_tool_result(ChatOpenAI()) is False
+
+    def test_openai_family_on_responses_api_returns_true(self) -> None:
+        class BaseChatOpenAI(_FakeModel):
+            use_responses_api = True
+
+        class AzureChatOpenAI(BaseChatOpenAI):
+            pass
+
+        assert _supports_multipart_tool_result(AzureChatOpenAI()) is True
+
+    async def test_complete_keeps_multipart_content_for_non_ollama(self) -> None:
+        class ChatCapture(_FakeModel):
+            def __init__(self, *a, **kw) -> None:
+                super().__init__(*a, **kw)
+                self.received_messages: list = []
+
+            async def ainvoke(self, messages: list, config: Any = None) -> AIMessage:
+                self.received_messages = messages
+                return await super().ainvoke(messages, config)
+
+        model = ChatCapture(AIMessage(content="done"))
+        transport = LangChainTransport(model)
+
+        tool_msg = ToolMessage(
+            content=[TextPart(text="[ref1] (image)")],
+            tool_call_id="tc1",
+        )
+        await transport.complete([UserMessage(content="hi"), tool_msg])
+
+        tool_lc_messages = [m for m in model.received_messages if type(m).__name__ == "ToolMessage"]
+        assert isinstance(tool_lc_messages[0].content, list)
 class TestBindToolsCaching:
     """Binding re-derives a JSON schema per tool through pydantic — 5.5% of
     query-service CPU under load — for output that is identical whenever the
@@ -930,7 +1047,7 @@ class TestBindToolsCaching:
         )
 
         assert model.bind_calls == 2
-        assert [t.name for t in model.bind_tools_called_with] == ["a", "b"]
+        assert [t["function"]["name"] for t in model.bind_tools_called_with] == ["a", "b"]
 
     async def test_cache_is_per_transport_instance(self) -> None:
         model_a, model_b = self._CountingModel(), self._CountingModel()
@@ -940,3 +1057,355 @@ class TestBindToolsCaching:
         await LangChainTransport(model_b).complete([UserMessage(content="hi")], tools=tools)
 
         assert model_a.bind_calls == 1 and model_b.bind_calls == 1
+
+
+def _tool_image_rejected_error() -> RuntimeError:
+    """The exact wording from the bug this fallback fixes: OpenAI/Azure (here
+    behind OpenRouter) rejecting a fetched record's image inside the tool
+    result that carried it."""
+    exc = RuntimeError(
+        "Error code: 400 - Invalid 'messages[5]'. Image URLs are only allowed "
+        "for messages with role 'user', but this message with role 'tool' "
+        "contains an image URL."
+    )
+    exc.status_code = 400
+    return exc
+
+
+def _tool_message_with_image() -> ToolMessage:
+    return ToolMessage(
+        content=[
+            TextPart(text="[ref1] (image)"),
+            ImagePart(source=ImageSource(type="base64", media_type="image/png", data="abc")),
+        ],
+        tool_call_id="tc1",
+    )
+
+
+class TestToolResultImageFallback:
+    """A gateway whose backing provider rejects images inside a tool result
+    (`is_tool_result_image_conflict`) is recovered from at runtime by moving
+    those images into a user message — the static
+    `_supports_multipart_tool_result` guess can't cover every gateway."""
+
+    class _RejectsToolImages(_FakeModel):
+        """Fails any call whose ToolMessages carry list content, succeeds once
+        the images have been relocated into a user message."""
+
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            super().__init__(*a, **kw)
+            self.received_messages: list = []
+            self.calls = 0
+
+        def _check(self, messages: list) -> None:
+            self.calls += 1
+            self.received_messages = messages
+            if any(
+                type(m).__name__ == "ToolMessage" and isinstance(m.content, list)
+                for m in messages
+            ):
+                raise _tool_image_rejected_error()
+
+        async def ainvoke(self, messages: list, config: Any = None) -> AIMessage:
+            self._check(messages)
+            return AIMessage(content="saw the image")
+
+        async def astream(self, messages: list, config: Any = None) -> "AsyncIterator[AIMessageChunk]":
+            self._check(messages)
+            yield AIMessageChunk(content="saw the image")
+
+    async def test_complete_retries_with_images_moved_to_a_user_message(self) -> None:
+        model = self._RejectsToolImages()
+        transport = LangChainTransport(model, model_name="openai/gpt-4o")
+
+        response = await transport.complete([UserMessage(content="hi"), _tool_message_with_image()])
+
+        assert response.message.text == "saw the image"
+        assert model.calls == 2
+        tool_messages = [m for m in model.received_messages if type(m).__name__ == "ToolMessage"]
+        assert isinstance(tool_messages[0].content, str)
+        # The image survives the retry rather than being silently dropped.
+        last = model.received_messages[-1]
+        assert type(last).__name__ == "HumanMessage"
+        assert any(
+            block.get("type") == "image_url" for block in last.content if isinstance(block, dict)
+        )
+
+    async def test_complete_pins_the_relocation_for_later_calls(self) -> None:
+        model = self._RejectsToolImages()
+        transport = LangChainTransport(model, model_name="openai/gpt-4o")
+        messages = [UserMessage(content="hi"), _tool_message_with_image()]
+
+        await transport.complete(messages)
+        assert transport._tool_images_relocated is True
+
+        await transport.complete(messages)
+        # No second failure: the follow-up call built the working shape first try.
+        assert model.calls == 3
+
+    async def test_stream_retries_with_images_moved_to_a_user_message(self) -> None:
+        model = self._RejectsToolImages()
+        transport = LangChainTransport(model, model_name="openai/gpt-4o")
+
+        events = []
+        async for event in transport.stream([UserMessage(content="hi"), _tool_message_with_image()]):
+            events.append(event)
+
+        assert events[-1].response.message.text == "saw the image"
+        assert transport._tool_images_relocated is True
+        assert type(model.received_messages[-1]).__name__ == "HumanMessage"
+
+    async def test_no_retry_when_the_error_is_unrelated(self) -> None:
+        model = _FakeModel(raise_on_invoke=RuntimeError("rate limited"))
+        transport = LangChainTransport(model, model_name="openai/gpt-4o")
+
+        with pytest.raises(TransportError):
+            await transport.complete([UserMessage(content="hi"), _tool_message_with_image()])
+        assert transport._tool_images_relocated is False
+
+    async def test_no_retry_when_no_tool_result_carries_an_image(self) -> None:
+        """The marker matching with nothing to relocate means the 400 has some
+        other cause — retrying an identical request would just burn a call."""
+        model = _FakeModel(raise_on_invoke=_tool_image_rejected_error())
+        transport = LangChainTransport(model, model_name="openai/gpt-4o")
+
+        with pytest.raises(TransportError):
+            await transport.complete([UserMessage(content="hi")])
+        assert transport._tool_images_relocated is False
+
+    async def test_failing_retry_raises_the_original_error(self) -> None:
+        class _AlwaysFails(_FakeModel):
+            async def ainvoke(self, messages: list, config: Any = None) -> AIMessage:
+                raise _tool_image_rejected_error()
+
+        transport = LangChainTransport(_AlwaysFails(), model_name="openai/gpt-4o")
+
+        with pytest.raises(TransportError) as exc_info:
+            await transport.complete([UserMessage(content="hi"), _tool_message_with_image()])
+        assert "Image URLs are only allowed" in str(exc_info.value)
+
+class TestImageCapGuard:
+    """The transport is the last place a model's own image limit is known --
+    see `image_guard`. It matters because tool state (and the admission that
+    lives on it) belongs to whichever model owned the request, while a
+    sub-agent can run a smaller one."""
+
+    @staticmethod
+    def _image_part(tag: str = "abc") -> ImagePart:
+        """Distinct `tag` means a distinct picture. The cap counts distinct
+        images, so a test that wants N of them has to vary this — reusing one
+        payload N times exercises the duplicate path instead."""
+        return ImagePart(source=ImageSource(type="base64", media_type="image/png", data=tag))
+
+    class _Capture(_FakeModel):
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            super().__init__(*a, **kw)
+            self.received_messages: list = []
+
+        async def ainvoke(self, messages: list, config: Any = None) -> AIMessage:
+            self.received_messages = messages
+            return await super().ainvoke(messages, config)
+
+    @staticmethod
+    def _count_images(messages: list) -> int:
+        total = 0
+        for message in messages:
+            content = getattr(message, "content", None)
+            if isinstance(content, list):
+                total += sum(
+                    1 for block in content
+                    if isinstance(block, dict) and block.get("type") == "image_url"
+                )
+        return total
+
+    async def test_images_beyond_the_cap_become_text(self) -> None:
+        model = self._Capture(AIMessage(content="ok"))
+        transport = LangChainTransport(model, max_images_per_request=2)
+        message = UserMessage(content=[TextPart(text="look"), *[self._image_part(f"img{i}") for i in range(5)]])
+
+        await transport.complete([message])
+
+        assert self._count_images(model.received_messages) == 2
+
+    async def test_a_capped_request_keeps_its_text(self) -> None:
+        model = self._Capture(AIMessage(content="ok"))
+        transport = LangChainTransport(model, max_images_per_request=1)
+        message = UserMessage(content=[TextPart(text="the question"), self._image_part("a"), self._image_part("b")])
+
+        await transport.complete([message])
+
+        text = " ".join(
+            block.get("text", "")
+            for m in model.received_messages if isinstance(getattr(m, "content", None), list)
+            for block in m.content if isinstance(block, dict) and block.get("type") == "text"
+        )
+        assert "the question" in text
+        assert "image not shown" in text
+
+    async def test_a_request_within_the_cap_is_untouched(self) -> None:
+        model = self._Capture(AIMessage(content="ok"))
+        transport = LangChainTransport(model, max_images_per_request=8)
+        message = UserMessage(content=[TextPart(text="look"), self._image_part()])
+
+        await transport.complete([message])
+
+        assert self._count_images(model.received_messages) == 1
+
+    async def test_repeats_of_one_image_do_not_spend_slots(self) -> None:
+        """Regression: one request materializes the same picture more than
+        once — a figure returned as a search hit and again when the model
+        fetches the record it lives in, or a record fetched twice to read past
+        a truncation point. Admission charges the first copy a slot and hands
+        back the rest free, so the wire count outran the cap and the guard
+        cut distinct images to make room for duplicates of one."""
+        model = self._Capture(AIMessage(content="ok"))
+        transport = LangChainTransport(model, max_images_per_request=3)
+        repeated = [self._image_part("chart") for _ in range(6)]
+        distinct = [self._image_part(f"fig{i}") for i in range(3)]
+        message = UserMessage(content=[TextPart(text="look"), *repeated, *distinct])
+
+        await transport.complete([message])
+
+        # 4 distinct images, cap 3: the 5 extra copies of "chart" must not
+        # evict a distinct figure, so 3 different pictures reach the wire.
+        sent = [
+            block["image_url"]["url"]
+            for m in model.received_messages if isinstance(getattr(m, "content", None), list)
+            for block in m.content
+            if isinstance(block, dict) and block.get("type") == "image_url"
+        ]
+        assert len(sent) == 3
+        assert len(set(sent)) == 3
+
+    async def test_a_repeat_is_not_labelled_as_missing(self) -> None:
+        """A copy whose pixels appear later in the request must not say the
+        image is unavailable — the model is about to see it."""
+        model = self._Capture(AIMessage(content="ok"))
+        transport = LangChainTransport(model, max_images_per_request=1)
+        message = UserMessage(
+            content=[TextPart(text="q"), self._image_part("same"), self._image_part("same")],
+        )
+
+        await transport.complete([message])
+
+        text = " ".join(
+            block.get("text", "")
+            for m in model.received_messages if isinstance(getattr(m, "content", None), list)
+            for block in m.content if isinstance(block, dict) and block.get("type") == "text"
+        )
+        assert "image not shown" not in text
+        assert "same image" in text
+        assert self._count_images(model.received_messages) == 1
+
+    async def test_no_cap_configured_leaves_messages_alone(self) -> None:
+        """Callers that have not wired a policy must behave exactly as before."""
+        model = self._Capture(AIMessage(content="ok"))
+        transport = LangChainTransport(model)
+        message = UserMessage(content=[*[self._image_part(f"img{i}") for i in range(20)]])
+
+        await transport.complete([message])
+
+        assert self._count_images(model.received_messages) == 20
+
+
+
+class TestToolImageRelocationRespectsTheCap:
+    """The relocation retry has to send the same image set the first attempt
+    did. It builds its own message list, and while it did so directly it
+    skipped `cap_images` — so a provider that rejected images in a tool result
+    was retried with every image in history, which is a second rejection on any
+    model whose cap is lower than that.
+    """
+
+    CONFLICT = (
+        "Invalid 'messages[5]'. Image URLs are only allowed for messages with role "
+        "'user', but this message with role 'tool' contains an image URL"
+    )
+
+    @staticmethod
+    def _messages(tool_images: int = 5) -> list:
+        messages = [UserMessage(content="what is in these?")]
+        for i in range(tool_images):
+            messages.append(ToolMessage(
+                content=[
+                    TextPart(text=f"[ref{i}] result {i}"),
+                    ImagePart(source=ImageSource(type="url", data=f"https://x/{i}.png")),
+                ],
+                tool_call_id=f"tc{i}",
+            ))
+        return messages
+
+    @staticmethod
+    def _image_count(lc_messages) -> int:
+        return sum(
+            sum(1 for p in m.content if isinstance(p, dict) and p.get("type") == "image_url")
+            for m in lc_messages
+            if isinstance(m.content, list)
+        )
+
+    def _transport(self, cap):
+        return LangChainTransport(_FakeModel(), model_name="m", max_images_per_request=cap)
+
+    @pytest.mark.parametrize("cap", [1, 2, 5, 10, None])
+    def test_the_retry_carries_what_the_first_attempt_carried(self, cap) -> None:
+        t = self._transport(cap)
+        messages = self._messages()
+
+        first = t._to_langchain(messages, None)
+        retry = t._tool_image_fallback(RuntimeError(self.CONFLICT), messages, None)
+
+        assert retry is not None
+        assert self._image_count(retry) == self._image_count(first)
+
+    def test_history_beyond_the_cap_is_not_relocated(self) -> None:
+        """The concrete regression: five tool images, a model that takes two."""
+        t = self._transport(2)
+
+        retry = t._tool_image_fallback(RuntimeError(self.CONFLICT), self._messages(), None)
+
+        assert self._image_count(retry) == 2
+
+    def test_the_images_still_land_on_a_user_message(self) -> None:
+        """Capping must not cost the relocation its point."""
+        from langchain_core.messages import HumanMessage
+        from langchain_core.messages import ToolMessage as LCToolMessage
+
+        from app.agents.agent_loop.converters import _RELOCATED_IMAGES_PREFIX
+
+        retry = self._transport(2)._tool_image_fallback(
+            RuntimeError(self.CONFLICT), self._messages(), None
+        )
+
+        assert isinstance(retry[-1], HumanMessage)
+        assert retry[-1].content[0] == {"type": "text", "text": _RELOCATED_IMAGES_PREFIX}
+        assert all(isinstance(m.content, str) for m in retry if isinstance(m, LCToolMessage))
+
+    def test_no_retry_when_the_cap_already_removed_every_tool_image(self) -> None:
+        """`cap_images` keeps the newest, so a user attachment can displace all
+        of them. Relocating nothing would resend the request that just failed."""
+        messages = [
+            *self._messages(),
+            UserMessage(content=[
+                TextPart(text="and this one"),
+                ImagePart(source=ImageSource(type="url", data="https://x/newest.png")),
+            ]),
+        ]
+
+        retry = self._transport(1)._tool_image_fallback(
+            RuntimeError(self.CONFLICT), messages, None
+        )
+
+        assert retry is None
+
+    def test_an_unrelated_error_is_not_a_relocation(self) -> None:
+        assert self._transport(2)._tool_image_fallback(
+            RuntimeError("429 rate limit exceeded"), self._messages(), None
+        ) is None
+
+    def test_once_pinned_the_shape_is_not_rediscovered(self) -> None:
+        """`_to_langchain` relocates on its own from then on — and caps."""
+        t = self._transport(2)
+        t._tool_images_relocated = True
+
+        assert t._tool_image_fallback(RuntimeError(self.CONFLICT), self._messages(), None) is None
+        assert self._image_count(t._to_langchain(self._messages(), None)) == 2

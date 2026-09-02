@@ -7,6 +7,7 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import type { Toast as ToastType, ToastVariant } from '@/lib/store/toast-store';
 import { getToastRenderDescription } from '@/lib/store/toast-store';
+import { Link } from '@/lib/navigation';
 
 // ========================================
 // Toast Icon Configuration
@@ -196,7 +197,7 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
                     />
                   )}
                   <Text size="1" weight="medium" asChild>
-                    <a
+                    <Link
                       href={toast.action.href}
                       target={toast.action.openInNewTab ? '_blank' : undefined}
                       rel={toast.action.openInNewTab ? 'noopener noreferrer' : undefined}
@@ -208,7 +209,7 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
                       }}
                     >
                       {toast.action.label}
-                    </a>
+                    </Link>
                   </Text>
                   {toast.action.openInNewTab && (
                     <MaterialIcon

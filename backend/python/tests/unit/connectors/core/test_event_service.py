@@ -232,13 +232,13 @@ class TestProcessEvent:
         """process_event logs the event type."""
         svc = _make_event_service()
         await svc.process_event("sync_start", {})
-        svc.logger.info.assert_called()
+        svc.logger.debug.assert_called()
 
     @pytest.mark.asyncio
     async def test_process_exception_returns_false(self):
         """Exception during process_event returns False (lines 61-63)."""
         svc = _make_event_service()
-        svc.logger.info.side_effect = RuntimeError("log error")
+        svc.logger.debug.side_effect = RuntimeError("log error")
         result = await svc.process_event("sync_start", {})
         assert result is False
         svc.logger.error.assert_called()

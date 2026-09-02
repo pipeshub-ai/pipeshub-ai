@@ -252,6 +252,7 @@ class TestDatasourceRefresh:
         mock_google_client = MagicMock()
         mock_google_client.get_client.return_value = mock_client
         mock_data_source = MagicMock()
+        mock_data_source.execute = AsyncMock(side_effect=lambda operation: operation())
         mock_logger = MagicMock()
 
         with patch("app.connectors.sources.google.common.datasource_refresh.Credentials") as MockCreds:
@@ -275,6 +276,7 @@ class TestDatasourceRefresh:
 
             # Verify credentials were replaced on the client
             assert mock_client._http.credentials == mock_new_creds
+            mock_data_source.execute.assert_awaited_once()
 
     async def test_no_update_when_credentials_unchanged(self):
         from app.connectors.sources.google.common.datasource_refresh import (
@@ -409,6 +411,7 @@ class TestDatasourceRefresh:
         mock_google_client = MagicMock()
         mock_google_client.get_client.return_value = mock_client
         mock_data_source = MagicMock()
+        mock_data_source.execute = AsyncMock(side_effect=lambda operation: operation())
         mock_logger = MagicMock()
 
         with patch("app.connectors.sources.google.common.datasource_refresh.Credentials") as MockCreds:
@@ -466,6 +469,7 @@ class TestDatasourceRefresh:
         mock_google_client = MagicMock()
         mock_google_client.get_client.return_value = mock_client
         mock_data_source = MagicMock()
+        mock_data_source.execute = AsyncMock(side_effect=lambda operation: operation())
         mock_logger = MagicMock()
 
         with patch("app.connectors.sources.google.common.datasource_refresh.Credentials") as MockCreds:

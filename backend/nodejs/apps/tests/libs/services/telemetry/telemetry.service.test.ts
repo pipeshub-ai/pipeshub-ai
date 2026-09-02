@@ -9,6 +9,7 @@ import * as installMetricsModule from '../../../../src/libs/services/telemetry/m
 import * as cmConfigModule from '../../../../src/modules/configuration_manager/config/config';
 import { configPaths } from '../../../../src/modules/configuration_manager/paths/paths';
 import { recordEvent, eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer';
+import { metricsBackend } from '../../../../src/libs/services/telemetry/metrics-backend';
 import { StoreType } from '../../../../src/libs/keyValueStore/constants/KeyValueStoreType';
 
 const VALID_URL = 'http://localhost:3031/collect-metrics';
@@ -316,6 +317,40 @@ describe('TelemetryService', () => {
 
       recordEvent('login');
       await svc.flush(); // must not throw
+    });
+  });
+
+  describe('pushMetricsToServer', () => {
+    it('should reset the metric registry when the collector responds 413', async () => {
+      sandbox.stub(metricsBackend, 'serialize').resolves('x{a="b"} 1\n');
+      const resetStub = sandbox.stub(metricsBackend, 'reset');
+      const err = Object.assign(new Error('Request failed with status code 413'), {
+        isAxiosError: true,
+        response: { status: 413 },
+      });
+      sandbox.stub(axios, 'post').rejects(err);
+      const svc = new TelemetryService(mockKvStore() as any);
+      await flushAsync();
+
+      await (svc as any).pushMetricsToServer();
+
+      expect(resetStub.calledOnce).to.be.true;
+    });
+
+    it('should not reset the registry on other collector errors', async () => {
+      sandbox.stub(metricsBackend, 'serialize').resolves('x{a="b"} 1\n');
+      const resetStub = sandbox.stub(metricsBackend, 'reset');
+      const err = Object.assign(new Error('Request failed with status code 500'), {
+        isAxiosError: true,
+        response: { status: 500 },
+      });
+      sandbox.stub(axios, 'post').rejects(err);
+      const svc = new TelemetryService(mockKvStore() as any);
+      await flushAsync();
+
+      await (svc as any).pushMetricsToServer();
+
+      expect(resetStub.called).to.be.false;
     });
   });
 

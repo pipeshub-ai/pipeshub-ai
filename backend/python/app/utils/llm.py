@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Tuple
+from typing import Any, Tuple
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
@@ -15,16 +15,27 @@ from app.utils.aimodels import (
     is_local_cpu_embedding_provider,
 )
 
-async def get_llm(
-    config_service: ConfigurationService,
-    llm_configs = None,
+
+async def _load_ai_models(config_service: ConfigurationService) -> dict:
+    """Load the AI models config blob (OSS: org-scoped get_config)."""
+    return await config_service.get_config(
+        config_node_constants.AI_MODELS.value, use_cache=False
+    ) or {}
+
+
+def _select_default_config(configs: list) -> dict | None:
+    """Prefer isDefault entry; else first entry; else None."""
+    if not configs:
+        return None
+    return next((c for c in configs if c.get("isDefault")), configs[0])
+
+
+async def _instantiate_llm_from_configs(
+    llm_configs: list | None,
     *,
     reasoning_effort: str | None = None,
 ) -> Tuple[BaseChatModel, dict]:
-    if not llm_configs:
-        ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value,use_cache=False)
-        llm_configs = ai_models["llm"]
-
+    """Pick and instantiate an LLM from a config list (default first, then any)."""
     if not llm_configs:
         raise ValueError("No LLM configurations found")
 
@@ -43,8 +54,49 @@ async def get_llm(
         if llm:
             return llm, config
 
-
     raise ValueError("No LLM found")
+
+
+async def _try_resolve_role_llm(
+    ai_models: dict | None,
+    role: str,
+    *,
+    reasoning_effort: str | None = None,
+) -> Tuple[BaseChatModel, dict] | None:
+    """Resolve modelRoles assignment to an instantiated LLM, or None."""
+    model_roles: dict = (ai_models or {}).get("modelRoles") or {}
+    assignment = model_roles.get(role)
+    if not assignment:
+        return None
+
+    model_type: str = assignment.get("modelType", "")
+    model_key: str = assignment.get("modelKey", "")
+    bucket: list = (ai_models or {}).get(model_type, []) or []
+    matched = next(
+        (cfg for cfg in bucket if cfg.get("modelKey") == model_key), None
+    )
+    if not matched:
+        return None
+
+    llm = await asyncio.to_thread(
+        get_generator_model, matched["provider"], matched, None, reasoning_effort,
+    )
+    if llm:
+        return llm, matched
+    return None
+
+
+async def get_llm(
+    config_service: ConfigurationService,
+    llm_configs: Any = None,
+    *,
+    reasoning_effort: str | None = None,
+) -> Tuple[BaseChatModel, dict]:
+    if not llm_configs:
+        ai_models = await _load_ai_models(config_service)
+        llm_configs = ai_models["llm"]
+    return await _instantiate_llm_from_configs(llm_configs, reasoning_effort=reasoning_effort)
+
 
 async def get_llm_for_role(
     config_service: ConfigurationService,
@@ -66,43 +118,27 @@ async def get_llm_for_role(
     ``modelRoles`` in their config are unaffected.
     """
     try:
-        ai_models = await config_service.get_config(
-            config_node_constants.AI_MODELS.value, use_cache=False
+        ai_models = await _load_ai_models(config_service)
+        resolved = await _try_resolve_role_llm(
+            ai_models, role, reasoning_effort=reasoning_effort
         )
-        model_roles: dict = (ai_models or {}).get("modelRoles") or {}
-        assignment = model_roles.get(role)
-
-        if assignment:
-            model_type: str = assignment.get("modelType", "")
-            model_key: str = assignment.get("modelKey", "")
-            bucket: list = (ai_models or {}).get(model_type, []) or []
-            matched = next(
-                (cfg for cfg in bucket if cfg.get("modelKey") == model_key), None
-            )
-            if matched:
-                llm = await asyncio.to_thread(
-                    get_generator_model, matched["provider"], matched, None, reasoning_effort,
-                )
-                if llm:
-                    return llm, matched
+        if resolved:
+            return resolved
     except Exception:
         pass
 
     return await get_llm(config_service, reasoning_effort=reasoning_effort or "low")
 
-async def get_embedding_model_config(config_service: ConfigurationService) -> dict|None:
-        try:
-            ai_models = await config_service.get_config(
-                config_node_constants.AI_MODELS.value,use_cache=False
-            )
-            embedding_configs = ai_models["embedding"]
-            if not embedding_configs:
-                return None
-            else:
-                config = embedding_configs[0]
-                return config
-        except Exception as e:
-            raise e
+
+async def get_embedding_model_config(config_service: ConfigurationService) -> dict | None:
+    try:
+        ai_models = await _load_ai_models(config_service)
+        embedding_configs = ai_models["embedding"]
+        if not embedding_configs:
+            return None
+        return embedding_configs[0]
+    except Exception as e:
+        raise e
 
 
 async def is_local_cpu_embedding_configured(
@@ -149,13 +185,8 @@ async def get_image_generation_config(config_service: ConfigurationService) -> d
     Mirrors the shape returned for other model types under the ``aiModels``
     namespace.
     """
-    ai_models = await config_service.get_config(
-        config_node_constants.AI_MODELS.value, use_cache=False,
-    )
-    configs = ai_models.get("imageGeneration") or []
-    if not configs:
-        return None
-    return next((c for c in configs if c.get("isDefault")), configs[0])
+    ai_models = await _load_ai_models(config_service)
+    return _select_default_config(ai_models.get("imageGeneration") or [])
 
 
 async def _get_speech_config(
@@ -168,15 +199,10 @@ async def _get_speech_config(
     (e.g. on a brand-new install) so callers — and the chat UI fallback —
     can treat TTS/STT as simply unconfigured instead of erroring.
     """
-    ai_models = await config_service.get_config(
-        config_node_constants.AI_MODELS.value, use_cache=False,
-    )
+    ai_models = await _load_ai_models(config_service)
     if not ai_models:
         return None
-    configs = ai_models.get(bucket) or []
-    if not configs:
-        return None
-    return next((c for c in configs if c.get("isDefault")), configs[0])
+    return _select_default_config(ai_models.get(bucket) or [])
 
 
 async def get_tts_config(config_service: ConfigurationService) -> dict | None:
@@ -205,4 +231,3 @@ async def get_stt_model_instance(
     if not config:
         return None
     return get_stt_model(config["provider"], config), config
-

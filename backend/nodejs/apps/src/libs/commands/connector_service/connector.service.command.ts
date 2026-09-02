@@ -49,7 +49,7 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
         300,
       );
 
-      logger.info('Connector service command success', {
+      logger.debug('Connector service command success', {
         url: url,
         statusCode: response.status,
         statusText: response.statusText,

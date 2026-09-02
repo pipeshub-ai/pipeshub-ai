@@ -2,6 +2,8 @@
 
 import asyncio
 import base64
+import io
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,9 +19,12 @@ from app.models.entities import (
     RecordType,
 )
 from app.utils.chat_helpers import (
+    MAX_IMAGES_IN_CONVERSATION,
     CitationRefMapper,
+    ImageBudget,
     RecordIdShortener,
     _find_first_block_index_recursive,
+    _render_blocks_with_images,
     build_message_content_array,
     build_multimodal_user_content,
     create_block_from_metadata,
@@ -31,10 +36,13 @@ from app.utils.chat_helpers import (
     get_message_content,
     get_record,
     get_record_id_shortener_if_enabled,
+    image_block_text,
+    image_dict_to_part,
     is_base64_image,
     record_to_message_content,
 )
-
+from app.utils.image_admission import ImageAdmission
+from app.utils.image_policy import resolve_image_policy
 from tests.unit.utils.test_chat_helpers import _make_record_blob, _make_text_block
 
 _MIN_PNG_DATA_URI = (
@@ -534,6 +542,121 @@ async def test_get_record_uses_deal_async_context(monkeypatch):
     assert vr_map["vr-deal"]["context_metadata"] == "deal-context-async"
 
 
+class TestImageBudget:
+    def test_default_max_is_50(self):
+        budget = ImageBudget()
+        assert budget.max_images == MAX_IMAGES_IN_CONVERSATION == 50
+        assert budget.remaining == 50
+        assert budget.can_add()
+
+    def test_try_consume_decrements_remaining(self):
+        budget = ImageBudget(max_images=5)
+        assert budget.try_consume(3) == 3
+        assert budget.remaining == 2
+        assert budget.can_add()
+
+    def test_try_consume_caps_at_remaining_when_overflowing(self):
+        budget = ImageBudget(max_images=5)
+        assert budget.try_consume(3) == 3
+        # Only 2 remain -- requesting 10 more only actually consumes 2.
+        assert budget.try_consume(10) == 2
+        assert budget.remaining == 0
+        assert not budget.can_add()
+
+    def test_try_consume_after_exhaustion_returns_zero(self):
+        budget = ImageBudget(max_images=1)
+        assert budget.try_consume(1) == 1
+        assert budget.try_consume(1) == 0
+        assert budget.remaining == 0
+
+
+class TestRenderBlocksWithImagesGroupedImage:
+    """`_render_blocks_with_images` renders table/group entries that mix
+    text and IMAGE block_type items -- these are the "collected_images"
+    counterparts to `record_to_message_content`'s standalone-image path,
+    and must stay consistent with it: a `[ref] (image)` text anchor when
+    collecting, and a citation-marked fallback when the budget is spent."""
+
+    def _group(self, ref: str = "ref1", block_index: int = 3) -> list[dict]:
+        return [
+            {
+                "content": "Row header",
+                "block_type": BlockType.TEXT.value,
+                "block_index": block_index,
+                "citation_ref": ref,
+            },
+            {
+                "content": _MIN_PNG_DATA_URI,
+                "block_type": BlockType.IMAGE.value,
+                "block_index": block_index,
+                "citation_ref": ref,
+                "virtual_record_id": "vr-1",
+            },
+        ]
+
+    def test_collected_images_gets_text_anchor_alongside_side_channel_entry(self):
+        """The bug fix: collecting into `collected_images` must NOT leave
+        `content` with zero trace of the image -- otherwise the text a
+        multipart ToolMessage carries has no `[ref]` a model can cite back
+        to for a table/group image."""
+        collected: list[dict] = []
+        content = _render_blocks_with_images(
+            self._group(ref="ref7"), is_multimodal_llm=True,
+            image_budget=ImageBudget(), collected_images=collected,
+        )
+
+        assert len(collected) == 1
+        assert collected[0]["ref"] == "ref7"
+        assert collected[0]["image_url"]["url"] == _MIN_PNG_DATA_URI
+        text = "".join(c["text"] for c in content if c["type"] == "text")
+        assert "[ref7] (image)" in text
+        assert not any(c["type"] == "image_url" for c in content)
+
+    def test_exhausted_budget_emits_citation_marked_fallback_text(self):
+        """The second bug: an exhausted budget must degrade to a
+        citation-marked placeholder (matching the standalone-image path in
+        `record_to_message_content`), not silently drop the image with no
+        trace at all."""
+        exhausted = ImageBudget(max_images=1)
+        exhausted.try_consume(1)
+        collected: list[dict] = []
+
+        content = _render_blocks_with_images(
+            self._group(ref="ref9"), is_multimodal_llm=True,
+            image_budget=exhausted, collected_images=collected,
+        )
+
+        assert collected == []
+        text = "".join(c["text"] for c in content if c["type"] == "text")
+        assert "[ref9]" in text
+        assert "conversation image limit" in text
+        assert not any(c["type"] == "image_url" for c in content)
+
+
+class TestImageDictToPart:
+    def test_valid_image_dict_returns_image_part(self):
+        from app.agent_loop_lib.core.messages import ImagePart
+
+        part = image_dict_to_part({"image_url": {"url": _MIN_PNG_DATA_URI}})
+        assert isinstance(part, ImagePart)
+        from app.agent_loop_lib.core.messages import image_data_url
+
+        assert part.source.type == "base64"
+        assert image_data_url(part.source) == _MIN_PNG_DATA_URI
+
+    def test_missing_url_returns_none(self):
+        assert image_dict_to_part({"image_url": {}}) is None
+        assert image_dict_to_part({}) is None
+
+    def test_string_image_url_value_is_used_directly(self):
+        part = image_dict_to_part({"image_url": _MIN_PNG_DATA_URI})
+        assert part is not None
+        from app.agent_loop_lib.core.messages import image_data_url
+
+        assert part.source.type == "base64"
+        assert image_data_url(part.source) == _MIN_PNG_DATA_URI
+
+
 class TestBuildMessageContentArrayBranches:
     def test_none_record_skips_header(self):
         flat = [{
@@ -600,8 +723,13 @@ class TestBuildMessageContentArrayBranches:
         text_joined = " ".join(m["text"] for m in merged if m.get("type") == "text")
         assert "bullet A" in text_joined
 
-    def test_base64_png_skipped_when_from_tool_multimodal(self):
-        """Line ~2032: multimodal LLM still skips raw base64 image rows in tool transcripts."""
+    def test_base64_png_without_collected_images_sink_falls_back_to_text(self):
+        """A from_tool=True caller that doesn't pass `collected_images` has
+        no way to carry an image through its tool result, so the image
+        must degrade to a text placeholder rather than being inlined as an
+        orphaned `image_url` block or silently dropped (the historical
+        bug: standalone IMAGE blocks vanished entirely for every
+        production search path, all of which pass from_tool=True)."""
         flat = [{
             "virtual_record_id": "vr1",
             "block_index": 0,
@@ -620,6 +748,69 @@ class TestBuildMessageContentArrayBranches:
         )
         merged = [x for sub in parts for x in sub]
         assert not any(it.get("type") == "image_url" for it in merged)
+        text_joined = " ".join(m["text"] for m in merged if m.get("type") == "text")
+        assert "(image)" in text_joined
+
+    def test_base64_png_with_collected_images_sink_routes_to_side_channel(self):
+        """The fix: when the caller DOES pass `collected_images` (the new
+        side-channel a tool wrapper reads to build a multipart
+        ToolOutput), the standalone IMAGE block is captured there instead
+        of being dropped, and a text reference is still emitted."""
+        flat = [{
+            "virtual_record_id": "vr1",
+            "block_index": 0,
+            "block_type": BlockType.IMAGE.value,
+            "content": _MIN_PNG_DATA_URI,
+        }]
+        vr = {
+            "vr1": {
+                "frontend_url": "https://app.example.com",
+                "id": "rec-1",
+                "context_metadata": "ctx",
+            },
+        }
+        collected_images: list = []
+        parts, _ = build_message_content_array(
+            flat, vr, is_multimodal_llm=True, from_tool=True,
+            collected_images=collected_images,
+        )
+        merged = [x for sub in parts for x in sub]
+        assert not any(it.get("type") == "image_url" for it in merged)
+        assert len(collected_images) == 1
+        assert collected_images[0]["image_url"] == {"url": _MIN_PNG_DATA_URI}
+        text_joined = " ".join(m["text"] for m in merged if m.get("type") == "text")
+        assert "(image)" in text_joined
+
+    def test_exhausted_budget_falls_back_to_text_and_skips_collection(self):
+        """Once the shared `ImageBudget` is exhausted (e.g. by 50 prior
+        images from other tool calls/attachments in the same turn), a new
+        IMAGE block must degrade to a text description instead of being
+        collected -- this is the 50-image-conversation-cap contract."""
+        flat = [{
+            "virtual_record_id": "vr1",
+            "block_index": 0,
+            "block_type": BlockType.IMAGE.value,
+            "content": _MIN_PNG_DATA_URI,
+        }]
+        vr = {
+            "vr1": {
+                "frontend_url": "https://app.example.com",
+                "id": "rec-1",
+                "context_metadata": "ctx",
+            },
+        }
+        exhausted_budget = ImageBudget(max_images=1)
+        exhausted_budget.try_consume(1)
+        collected_images: list = []
+        parts, _ = build_message_content_array(
+            flat, vr, is_multimodal_llm=True, from_tool=True,
+            collected_images=collected_images, image_budget=exhausted_budget,
+        )
+        merged = [x for sub in parts for x in sub]
+        assert not collected_images
+        assert not any(it.get("type") == "image_url" for it in merged)
+        text_joined = " ".join(m["text"] for m in merged if m.get("type") == "text")
+        assert "conversation image limit" in text_joined
 
 
 class TestRecordToMessageContentMultimodalAndFk:
@@ -644,6 +835,146 @@ class TestRecordToMessageContentMultimodalAndFk:
         blocks, mapper = record_to_message_content(record, ref_mapper=CitationRefMapper(), is_multimodal_llm=True)
         types = [b.get("type") for b in blocks]
         assert "image_url" in types
+
+    def _image_record(self) -> dict:
+        return {
+            "virtual_record_id": "vr1",
+            "frontend_url": "https://a.com",
+            "id": "rec-1",
+            "context_metadata": "ctx",
+            "block_containers": {
+                "blocks": [
+                    {
+                        "index": 0,
+                        "type": BlockType.IMAGE.value,
+                        "parent_index": None,
+                        "data": {"uri": _MIN_PNG_DATA_URI},
+                    },
+                ],
+                "block_groups": [],
+            },
+        }
+
+    def test_collected_images_populated_when_multimodal_true(self):
+        """The full-fetch-record path (`_FetchFullRecordTool`) passes
+        `collected_images` so the image reaches the LLM via a multipart
+        `ToolMessage` instead of vanishing from the text-typed content
+        list — this is the fix for 'full fetch of an image record sends
+        no image'."""
+        collected_images: list = []
+        blocks, _ = record_to_message_content(
+            self._image_record(), ref_mapper=CitationRefMapper(),
+            is_multimodal_llm=True, collected_images=collected_images,
+        )
+        assert not any(b.get("type") == "image_url" for b in blocks)
+        assert len(collected_images) == 1
+        assert collected_images[0]["image_url"] == {"url": _MIN_PNG_DATA_URI}
+        text_joined = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        assert "(image)" in text_joined
+
+    def test_collected_images_not_populated_when_multimodal_false(self):
+        """A text-only LLM never receives image_url/collected_images
+        entries -- the image-to-text (VLM description) retrieval path is
+        unaffected by the multipart plumbing."""
+        collected_images: list = []
+        blocks, _ = record_to_message_content(
+            self._image_record(), ref_mapper=CitationRefMapper(),
+            is_multimodal_llm=False, collected_images=collected_images,
+        )
+        assert not collected_images
+        assert not any(b.get("type") == "image_url" for b in blocks)
+
+    def _image_record_with_text(self, uri: str | None, **image_metadata) -> dict:
+        return {
+            "virtual_record_id": "vr1",
+            "frontend_url": "https://a.com",
+            "id": "rec-1",
+            "context_metadata": "ctx",
+            "block_containers": {
+                "blocks": [
+                    {
+                        "index": 0,
+                        "type": BlockType.IMAGE.value,
+                        "parent_index": None,
+                        "data": {"uri": uri},
+                        "image_metadata": image_metadata or None,
+                    },
+                ],
+                "block_groups": [],
+            },
+        }
+
+    def test_the_indexed_description_is_what_a_text_only_llm_reads(self):
+        """The two halves meet here: `ImageDescriber` writes prose onto
+        `image_metadata.description` at indexing time, and it is the richest
+        text this path can send when the pixels cannot go."""
+        record = self._image_record_with_text(
+            _MIN_PNG_DATA_URI, captions=["Figure 3"],
+        )
+        record["block_containers"]["blocks"][0]["image_metadata"]["description"] = (
+            "Bar chart: Q3 revenue by region, EMEA highest at 4.2M"
+        )
+        blocks, _ = record_to_message_content(
+            record, ref_mapper=CitationRefMapper(), is_multimodal_llm=False,
+        )
+        text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        assert "EMEA highest at 4.2M" in text
+        assert "Figure 3" in text, "the caption still rides along"
+
+    def test_text_only_llm_still_gets_the_image_blocks_caption(self):
+        """A non-multimodal LLM used to get NOTHING for an image block — not
+        even the caption the parser captured. The pixels can't go, the text
+        must."""
+        blocks, _ = record_to_message_content(
+            self._image_record_with_text(_MIN_PNG_DATA_URI, captions=["Q3 revenue by region"]),
+            ref_mapper=CitationRefMapper(), is_multimodal_llm=False,
+        )
+        text_joined = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        assert "Q3 revenue by region" in text_joined
+
+    def test_image_without_usable_uri_still_sends_its_description(self):
+        """A block the vector store only ever held a description for (text-only
+        embedding pipeline) has no URI to send — the description still goes."""
+        record = self._image_record_with_text(None)
+        record["block_containers"]["blocks"][0]["data"] = {
+            "uri": None, "description": "a bar chart of Q3 revenue",
+        }
+        blocks, _ = record_to_message_content(
+            record, ref_mapper=CitationRefMapper(), is_multimodal_llm=True,
+        )
+        text_joined = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        assert "a bar chart of Q3 revenue" in text_joined
+
+    def test_collected_image_carries_its_caption_alongside(self):
+        """The tool path routes the pixels to `collected_images`; the caption
+        rides along in the text so it survives however the image is delivered
+        (or dropped) downstream."""
+        collected_images: list = []
+        blocks, _ = record_to_message_content(
+            self._image_record_with_text(_MIN_PNG_DATA_URI, captions=["Q3 revenue by region"]),
+            ref_mapper=CitationRefMapper(), is_multimodal_llm=True,
+            collected_images=collected_images,
+        )
+        assert len(collected_images) == 1
+        text_joined = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        assert "(image) Q3 revenue by region" in text_joined
+
+    def test_image_with_no_text_at_all_is_unchanged_for_a_text_only_llm(self):
+        blocks, _ = record_to_message_content(
+            self._image_record_with_text(_MIN_PNG_DATA_URI),
+            ref_mapper=CitationRefMapper(), is_multimodal_llm=False,
+        )
+        text_joined = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        assert "(image)" not in text_joined
+
+    def test_over_budget_image_keeps_the_existing_limit_note(self):
+        blocks, _ = record_to_message_content(
+            self._image_record_with_text(_MIN_PNG_DATA_URI),
+            ref_mapper=CitationRefMapper(), is_multimodal_llm=True,
+            image_budget=ImageBudget(0),
+        )
+        text_joined = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        assert "conversation image limit" in text_joined
 
     def test_fk_parent_and_child_sections(self):
         record = {
@@ -1161,3 +1492,172 @@ class TestStreamingFragmentMapHandling:
 
         # Should process image fragments in multimodal mode
         assert isinstance(content, list)
+
+
+
+class TestImageBlockText:
+    """`image_block_text` is the single answer to "what text does this image
+    block carry" — used wherever the pixels cannot be sent."""
+
+    def test_description_from_data(self):
+        assert image_block_text({"data": {"description": " a chart "}}) == "a chart"
+
+    def test_captions_footnotes_and_annotations(self):
+        block = {
+            "data": {"uri": _MIN_PNG_DATA_URI},
+            "image_metadata": {
+                "captions": ["Figure 3"], "footnotes": ["source: 10-K"], "annotations": ["red = loss"],
+            },
+        }
+        assert image_block_text(block) == "Figure 3 source: 10-K red = loss"
+
+    def test_alt_text_from_media_metadata(self):
+        assert image_block_text({"media_metadata": {"alt_text": "logo"}}) == "logo"
+
+    def test_repeated_text_is_not_duplicated(self):
+        block = {
+            "data": {"description": "Figure 3"},
+            "image_metadata": {"captions": ["Figure 3"]},
+        }
+        assert image_block_text(block) == "Figure 3"
+
+    def test_base64_string_data_is_not_text(self):
+        assert image_block_text({"data": _MIN_PNG_DATA_URI}) == ""
+
+    def test_no_text_returns_empty(self):
+        assert image_block_text({"data": {"uri": _MIN_PNG_DATA_URI}}) == ""
+
+def _distinct_png(seed: int, size: tuple[int, int] = (600, 400)) -> str:
+    """A real, distinctly-coloured PNG data URI — dedup keys on content, so
+    test fixtures must differ in their bytes the way real figures do."""
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", size, (seed * 7 % 256, seed * 13 % 256, seed * 29 % 256)).save(
+        buffer, format="PNG",
+    )
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
+
+
+class TestRecordImageAdmission:
+    """`record_to_message_content` under a real per-model policy: the pixels
+    are capped, the text never is."""
+
+    @staticmethod
+    def _record(count: int) -> dict:
+        return {
+            "virtual_record_id": "vr1",
+            "frontend_url": "https://a.com",
+            "id": "rec-1",
+            "context_metadata": "ctx",
+            "block_containers": {
+                "blocks": [
+                    {
+                        "index": i,
+                        "type": BlockType.IMAGE.value,
+                        "parent_index": None,
+                        # Distinct bytes per block, or dedup would collapse
+                        # them into one image (which it should).
+                        "data": {"uri": _distinct_png(i)},
+                        "image_metadata": {"captions": [f"figure {i}"]},
+                    }
+                    for i in range(count)
+                ],
+                "block_groups": [],
+            },
+        }
+
+    @staticmethod
+    def _admission(provider: str) -> ImageAdmission:
+        return ImageAdmission(resolve_image_policy(provider=provider, is_multimodal=True))
+
+    def _render(self, count: int, provider: str) -> tuple[list, list]:
+        collected: list = []
+        blocks, _ = record_to_message_content(
+            self._record(count), ref_mapper=CitationRefMapper(), is_multimodal_llm=True,
+            collected_images=collected, image_admission=self._admission(provider),
+        )
+        return blocks, collected
+
+    @pytest.mark.parametrize(
+        ("provider", "expected_images"),
+        [("azureOpenAI", 8), ("ollama", 1), ("anthropic", 12), ("some-gateway", 2)],
+    )
+    def test_pixels_are_capped_at_what_the_model_accepts(
+        self, provider: str, expected_images: int,
+    ) -> None:
+        blocks, collected = self._render(30, provider)
+        assert len(collected) == expected_images
+
+    @pytest.mark.parametrize("count", [1, 5, 30])
+    @pytest.mark.parametrize("provider", ["azureOpenAI", "ollama", "unknown-thing"])
+    def test_every_image_block_still_contributes_text(self, count: int, provider: str) -> None:
+        """The invariant the whole design rests on: whatever the policy, each
+        image block leaves a citable marker and its caption behind."""
+        blocks, _ = self._render(count, provider)
+        text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        for i in range(count):
+            assert f"figure {i}" in text, f"caption for block {i} was dropped"
+
+    def test_withheld_images_say_so(self) -> None:
+        blocks, collected = self._render(30, "ollama")
+        text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        assert "not shown" in text
+        assert len(collected) == 1
+
+    def test_a_text_only_model_gets_captions_and_no_pixels(self) -> None:
+        collected: list = []
+        blocks, _ = record_to_message_content(
+            self._record(4), ref_mapper=CitationRefMapper(), is_multimodal_llm=False,
+            collected_images=collected,
+            image_admission=ImageAdmission(
+                resolve_image_policy(provider="openAI", is_multimodal=False),
+            ),
+        )
+        text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        assert not collected
+        assert all(f"figure {i}" in text for i in range(4))
+
+    def test_refs_of_withheld_images_still_resolve(self) -> None:
+        """A model citing an image it only read about must produce a citation
+        that maps back to the block."""
+        mapper = CitationRefMapper()
+        collected: list = []
+        blocks, mapper = record_to_message_content(
+            self._record(12), ref_mapper=mapper, is_multimodal_llm=True,
+            collected_images=collected, image_admission=self._admission("ollama"),
+        )
+        text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        refs = set(re.findall(r"\[(ref\d+)\]", text))
+        assert len(refs) == 12
+        assert len(collected) == 1
+
+    def test_the_same_record_fetched_twice_sends_its_images_once(self) -> None:
+        """The model re-reads a record it already fetched -- to continue past
+        a truncation point, or because the first result was cleared. Each
+        fetch builds its own tool result, so a second batch of `collected`
+        images is a second copy of the same pictures on the wire, counted once
+        by the cap and cut by the transport guard at the expense of images the
+        model had not seen."""
+        admission = self._admission("anthropic")
+
+        first: list = []
+        record_to_message_content(
+            self._record(5), ref_mapper=CitationRefMapper(), is_multimodal_llm=True,
+            collected_images=first, image_admission=admission,
+        )
+        second: list = []
+        blocks, _ = record_to_message_content(
+            self._record(5), ref_mapper=CitationRefMapper(), is_multimodal_llm=True,
+            collected_images=second, image_admission=admission,
+        )
+
+        assert len(first) == 5
+        assert second == []
+        assert admission.budget.used == 5
+        # The re-read still renders every block's text, and says where the
+        # pixels went rather than claiming they were dropped.
+        text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        assert "shown above" in text
+        assert "not shown" not in text
+

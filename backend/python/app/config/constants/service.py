@@ -13,6 +13,7 @@ class config_node_constants(Enum):
     OPENSEARCH = "/services/opensearch"
     AI_MODELS = "/services/aiModels"
     AI_MODELS_EMBEDDING = "/services/aiModels/embedding"
+    SYSTEM_PROMPTS = "/services/systemPrompts"
     # Learned per-model LLM API-mode facts (Responses vs. Chat Completions,
     # see `app/utils/llm_api_mode_store.py`). Deliberately a *separate* key
     # from AI_MODELS: that blob is owned by the Node.js admin API and has no

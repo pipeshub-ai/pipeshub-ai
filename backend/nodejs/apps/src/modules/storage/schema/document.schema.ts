@@ -59,6 +59,10 @@ const DocumentVersionSchema = new Schema<DocumentVersion>(
 // Main Document Schema
 const DocumentSchema = new Schema(
   {
+    orgId: {
+      type: mongoose.Types.ObjectId,
+      required: true,
+    },
     documentName: {
       type: String,
       required: true,
@@ -147,6 +151,8 @@ const DocumentSchema = new Schema(
     },
   },
 );
+
+DocumentSchema.index({ orgId: 1, _id: 1 });
 
 // Create and export the model
 export const DocumentModel = mongoose.model<DocumentModel>('Document', DocumentSchema);

@@ -147,10 +147,9 @@ describe('LocalStorageAdapter', () => {
   // sanitizePath (private)
   // -------------------------------------------------------------------------
   describe('sanitizePath (private)', () => {
-    it('should remove parent directory references', () => {
+    it('should reject leading parent-directory segments', () => {
       const adapter = createAdapter()
-      const result = (adapter as any).sanitizePath('../../etc/passwd')
-      expect(result).to.not.include('..')
+      expect(() => (adapter as any).sanitizePath('../../etc/passwd')).to.throw(StorageValidationError)
     })
 
     it('should normalize path', () => {
@@ -166,10 +165,23 @@ describe('LocalStorageAdapter', () => {
       expect(result.replace(/\\/g, '/')).to.equal('folder/file.txt')
     })
 
-    it('should handle path with backslash-dot sequences', () => {
+    it('should reject interior parent-directory segments', () => {
       const adapter = createAdapter()
-      const result = (adapter as any).sanitizePath('folder/../other/file.txt')
-      expect(result).to.include('other')
+      expect(() => (adapter as any).sanitizePath('folder/../other/file.txt')).to.throw(StorageValidationError)
+    })
+
+    it('should reject sibling-org traversal that stays inside the mount', () => {
+      const adapter = createAdapter()
+      expect(() =>
+        (adapter as any).sanitizePath('orgA/PipesHub/../../orgB/PipesHub/secret.pdf'),
+      ).to.throw(StorageValidationError)
+    })
+
+    it('should reject current-directory and empty paths', () => {
+      const adapter = createAdapter()
+      expect(() => (adapter as any).sanitizePath('.')).to.throw(StorageValidationError)
+      expect(() => (adapter as any).sanitizePath('./')).to.throw(StorageValidationError)
+      expect(() => (adapter as any).sanitizePath('')).to.throw(StorageValidationError)
     })
   })
 
@@ -318,6 +330,19 @@ describe('LocalStorageAdapter', () => {
         expect(error).to.be.instanceOf(StorageNotFoundError)
       }
     })
+
+    it('should reject a stored URL that resolves outside the mount', async () => {
+      const adapter = createAdapter()
+      sinon.stub(adapter as any, 'getLocalPathFromUrl').returns('../../etc/passwd')
+      try {
+        await adapter.updateBuffer(Buffer.from('test'), {
+          local: { url: 'file:///outside/passwd' },
+        } as any)
+        expect.fail('expected path traversal to be rejected')
+      } catch (error) {
+        expect(error).to.be.instanceOf(StorageValidationError)
+      }
+    })
   })
 
   // -------------------------------------------------------------------------
@@ -356,6 +381,19 @@ describe('LocalStorageAdapter', () => {
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(StorageNotFoundError)
+      }
+    })
+
+    it('should reject a stored URL that resolves outside the mount', async () => {
+      const adapter = createAdapter()
+      sinon.stub(adapter as any, 'getLocalPathFromUrl').returns('../../etc/passwd')
+      try {
+        await adapter.getBufferFromStorageService({
+          local: { url: 'file:///outside/passwd' },
+        } as any)
+        expect.fail('expected path traversal to be rejected')
+      } catch (error) {
+        expect(error).to.be.instanceOf(StorageValidationError)
       }
     })
   })
@@ -425,11 +463,14 @@ describe('LocalStorageAdapter', () => {
       expect(result.data.url).to.include('file://')
     })
 
-    it('should sanitize path to prevent directory traversal', async () => {
+    it('should reject directory traversal when generating a direct-upload URL', async () => {
       const adapter = createAdapter()
-      const result = await adapter.generatePresignedUrlForDirectUpload('../../etc/passwd')
-      expect(result.statusCode).to.equal(200)
-      expect(result.data.url).to.not.include('..')
+      try {
+        await adapter.generatePresignedUrlForDirectUpload('../../etc/passwd')
+        expect.fail('expected path traversal to be rejected')
+      } catch (error) {
+        expect(error).to.be.instanceOf(StorageValidationError)
+      }
     })
   })
 })
@@ -590,7 +631,7 @@ describe('LocalStorageAdapter - branch coverage', () => {
 
     it('should wrap non-StorageError in StorageUploadError', async () => {
       const adapter = createAdapter()
-      // Provide a valid file URL so getLocalPathFromUrl succeeds, then fs.writeFile fails
+      sinon.stub(adapter as any, 'getLocalPathFromUrl').returns('org/file.pdf')
       sinon.stub(fs, 'writeFile').rejects(new Error('write failed'))
 
       try {
@@ -675,6 +716,7 @@ describe('LocalStorageAdapter - branch coverage', () => {
 
     it('should wrap non-StorageError in StorageDownloadError', async () => {
       const adapter = createAdapter()
+      sinon.stub(adapter as any, 'getLocalPathFromUrl').returns('org/file.pdf')
       sinon.stub(fs, 'readFile').rejects(new Error('file not found'))
 
       try {
@@ -682,8 +724,7 @@ describe('LocalStorageAdapter - branch coverage', () => {
           local: { localPath: 'file:///some/mount/current/org/file.pdf' },
         } as any)
       } catch (error) {
-        // Should be either StorageNotFoundError or StorageDownloadError
-        expect(error).to.be.instanceOf(StorageError)
+        expect(error).to.be.instanceOf(StorageDownloadError)
       }
     })
 

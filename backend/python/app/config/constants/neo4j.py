@@ -93,6 +93,7 @@ class Neo4jRelationshipType(Enum):
     IS_OF_TYPE = "IS_OF_TYPE"
     PERMISSION = "PERMISSION"
     INHERIT_PERMISSIONS = "INHERIT_PERMISSIONS"
+    ENTITY_RELATIONS = "ENTITYRELATIONS"
     USER_APP_RELATION = "USER_APP_RELATION"
     ORG_APP_RELATION = "ORG_APP_RELATION"
     USER_DRIVE_RELATION = "USER_DRIVE_RELATION"
@@ -185,6 +186,7 @@ EDGE_COLLECTION_TO_RELATIONSHIP: dict[str, str] = {
     CollectionNames.IS_OF_TYPE.value: Neo4jRelationshipType.IS_OF_TYPE.value,
     CollectionNames.PERMISSION.value: Neo4jRelationshipType.PERMISSION.value,
     CollectionNames.INHERIT_PERMISSIONS.value: Neo4jRelationshipType.INHERIT_PERMISSIONS.value,
+    CollectionNames.ENTITY_RELATIONS.value: Neo4jRelationshipType.ENTITY_RELATIONS.value,
     CollectionNames.USER_APP_RELATION.value: Neo4jRelationshipType.USER_APP_RELATION.value,
     CollectionNames.ORG_APP_RELATION.value: Neo4jRelationshipType.ORG_APP_RELATION.value,
     CollectionNames.USER_DRIVE_RELATION.value: Neo4jRelationshipType.USER_DRIVE_RELATION.value,

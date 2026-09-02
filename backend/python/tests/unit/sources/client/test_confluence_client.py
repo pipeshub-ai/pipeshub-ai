@@ -850,7 +850,7 @@ class TestBuildFromToolsetCoverage:
     @pytest.mark.asyncio
     async def test_api_token(self, log):
         config_service = AsyncMock()
-        with patch("app.sources.client.confluence.confluence.get_toolset_by_id", return_value={
+        with patch("app.edition_config.get_toolset_by_id", return_value={
             "auth": {"baseUrl": "https://mysite.atlassian.net"},
         }):
             config = {
@@ -876,7 +876,7 @@ class TestBuildFromToolsetCoverage:
     @pytest.mark.asyncio
     async def test_api_token_instance_not_found(self, log):
         config_service = AsyncMock()
-        with patch("app.sources.client.confluence.confluence.get_toolset_by_id", return_value=None):
+        with patch("app.edition_config.get_toolset_by_id", return_value=None):
             config = {"authType": "API_TOKEN", "instanceId": "inst1"}
             with pytest.raises(ValueError, match="not found"):
                 await ConfluenceClient.build_from_toolset(config, log, config_service)

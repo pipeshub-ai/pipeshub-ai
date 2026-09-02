@@ -10,6 +10,9 @@ from urllib.parse import quote
 import pytest
 
 from app.config.constants.arangodb import Connectors, OriginTypes, RecordRelations
+from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import (
+    is_jira_ticket_record,
+)
 from app.models.blocks import BlockType, GroupType
 from app.models.entities import (
     FileRecord,
@@ -22,35 +25,43 @@ from app.models.entities import (
     RecordType,
     TicketRecord,
 )
-from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import is_jira_ticket_record
+from app.services.vector_db.models import ScrollResult
 from app.utils.chat_helpers import (
     TEXT_FRAGMENT_DIRECTIVE_PREFIX,
     _extract_text_content_recursive,
     _find_first_block_index_recursive,
     build_block_web_url,
     build_message_content_array,
-    flattened_result_sort_key,
-    build_group_blocks as _build_group_blocks,
-    get_group_label_n_first_child as _get_group_label_n_first_child,
+    build_parent_info,
+    build_record_relations_info,
+    context_includes_jira_tickets,
     count_tokens,
     count_tokens_in_messages,
     count_tokens_text,
     create_block_from_metadata,
     create_record_instance_from_dict,
-    context_includes_jira_tickets,
     enrich_records_with_graph_context,
     enrich_virtual_record_id_to_result_with_fk_children,
-    build_parent_info,
-    build_record_relations_info,
     extract_bounding_boxes,
     extract_start_end_text,
+    flattened_result_sort_key,
     generate_text_fragment_url,
     get_enhanced_metadata,
     get_flattened_results,
-    get_message_content as _get_message_content,
     get_record,
-    record_to_message_content as _record_to_message_content,
     record_to_text,
+)
+from app.utils.chat_helpers import (
+    build_group_blocks as _build_group_blocks,
+)
+from app.utils.chat_helpers import (
+    get_group_label_n_first_child as _get_group_label_n_first_child,
+)
+from app.utils.chat_helpers import (
+    get_message_content as _get_message_content,
+)
+from app.utils.chat_helpers import (
+    record_to_message_content as _record_to_message_content,
 )
 
 # ---------------------------------------------------------------------------
@@ -196,6 +207,35 @@ class TestBuildBlockWebUrl:
     def test_record_id_embedded_in_path(self):
         result = build_block_web_url("https://app.example.com", "my-uuid-abc", 1)
         assert "/record/my-uuid-abc/preview" in result
+
+
+
+def _make_config_service() -> AsyncMock:
+    """A key-aware ConfigurationService double.
+
+    Returning one canned payload for every key made the collection-strategy
+    lookup resolve to the endpoints blob — which the resolver now rejects, as
+    it should. Keys it does not know about fall through to the caller's default.
+    """
+    endpoints = {"frontend": {"publicEndpoint": "https://app.example.com"}}
+    known = {"/services/endpoint": endpoints}
+
+    async def get_config(key, default=None, **kwargs):
+        if key in known:
+            return known[key]
+        if "endpoint" in key:
+            return endpoints
+        return default
+
+    async def create_config_if_absent(key, value):
+        known.setdefault(key, value)
+        return True
+
+    svc = AsyncMock()
+    svc.get_config = AsyncMock(side_effect=get_config)
+    svc.set_config = AsyncMock(return_value=True)
+    svc.create_config_if_absent = AsyncMock(side_effect=create_config_if_absent)
+    return svc
 
 
 class TestFlattenedResultSortKey:
@@ -954,6 +994,64 @@ class TestGetEnhancedMetadata:
         meta = {}
         result = get_enhanced_metadata(record, block, meta)
         assert result["blockText"] == "row string data"
+
+    def test_code_block_extracts_text_from_data(self):
+        """CODE blocks store source code in data['text']."""
+        record = _make_record_blob()
+        block = {
+            "type": BlockType.CODE.value,
+            "data": {
+                "text": "def hello():\n    print('world')",
+                "kind": "function",
+                "start_line": 1,
+                "end_line": 2,
+            },
+            "citation_metadata": {"line_number": 1},
+            "index": 0,
+        }
+        meta = {}
+        result = get_enhanced_metadata(record, block, meta)
+        assert result["blockText"] == "def hello():\n    print('world')"
+        assert result["blockType"] == BlockType.CODE.value
+
+    def test_code_block_with_string_data(self):
+        """When CODE block data is a plain string, convert to str."""
+        record = _make_record_blob()
+        block = {
+            "type": BlockType.CODE.value,
+            "data": "some code as string",
+            "citation_metadata": None,
+            "index": 0,
+        }
+        meta = {}
+        result = get_enhanced_metadata(record, block, meta)
+        assert result["blockText"] == "some code as string"
+
+    def test_code_block_with_empty_text(self):
+        """CODE block with empty text in data dict."""
+        record = _make_record_blob()
+        block = {
+            "type": BlockType.CODE.value,
+            "data": {"text": "", "kind": "imports"},
+            "citation_metadata": None,
+            "index": 0,
+        }
+        meta = {}
+        result = get_enhanced_metadata(record, block, meta)
+        assert result["blockText"] == ""
+
+    def test_code_block_with_none_text_returns_string(self):
+        """CODE block with text=None in data dict returns a valid string blockText."""
+        record = _make_record_blob()
+        block = {
+            "type": BlockType.CODE.value,
+            "data": {"text": None, "kind": "function"},
+            "citation_metadata": None,
+            "index": 0,
+        }
+        meta = {}
+        result = get_enhanced_metadata(record, block, meta)
+        assert isinstance(result["blockText"], str)
 
     def test_no_data_returns_empty_blocktext(self):
         record = _make_record_blob()
@@ -2192,6 +2290,28 @@ class TestCreateBlockFromMetadata:
         assert block["format"] == "txt"
         assert "data" in block
 
+    def test_image_block_wraps_data_as_dict_without_uri(self):
+        """Image points never carry the raw base64 URI in page_content (only a
+        text description or empty string), so there is no URI to recover here.
+        ``data`` must still be a dict (not a bare string) so downstream image
+        handling in _process_flattened_results can safely call .get("uri")
+        instead of raising AttributeError on a str."""
+        meta = {"blockType": "image", "blockNum": [1]}
+        block = create_block_from_metadata(meta, "A network diagram")
+
+        assert block["type"] == "image"
+        assert isinstance(block["data"], dict)
+        assert block["data"].get("uri") is None
+        assert block["data"].get("description") == "A network diagram"
+
+    def test_image_block_with_docx_extension_still_wraps_as_dict(self):
+        """The docx-specific page_content branch must not override image handling."""
+        meta = {"blockType": "image", "blockNum": [0], "extension": "docx"}
+        block = create_block_from_metadata(meta, "")
+
+        assert isinstance(block["data"], dict)
+        assert block["data"].get("uri") is None
+
 
 # ===================================================================
 # get_record (async)
@@ -2529,10 +2649,7 @@ class TestGetFlattenedResults:
     def _make_blob_store(self, record_blob=None):
         blob_store = AsyncMock()
         blob_store.get_record_from_storage = AsyncMock(return_value=record_blob or _make_record_blob())
-        blob_store.config_service = AsyncMock()
-        blob_store.config_service.get_config = AsyncMock(return_value={
-            "frontend": {"publicEndpoint": "https://app.example.com"}
-        })
+        blob_store.config_service = _make_config_service()
         return blob_store
 
     @pytest.mark.asyncio
@@ -3019,11 +3136,14 @@ class TestGetFlattenedResults:
         assert len(results) >= 1
 
     @pytest.mark.asyncio
-    async def test_image_multimodal_no_uri_skipped(self):
-        """Image block with multimodal LLM but no URI should be skipped."""
+    async def test_image_multimodal_no_uri_keeps_its_description(self):
+        """An image point carries only a text description when embeddings are
+        text-only (`VectorStore.describe_images`). Dropping the hit because it
+        has no URI loses a block that matched the query — the description is
+        the only representation of that image the index holds."""
         img_block = {
             "type": BlockType.IMAGE.value,
-            "data": {"description": "no uri here"},
+            "data": {"description": "a bar chart of Q3 revenue"},
             "citation_metadata": None,
             "parent_index": None,
             "index": 0,
@@ -3045,7 +3165,36 @@ class TestGetFlattenedResults:
             result_set, blob_store, "org-1", True, vr_map
         )
         image_results = [r for r in results if r.get("block_type") == BlockType.IMAGE.value]
-        assert len(image_results) == 0
+        assert len(image_results) == 1
+        assert image_results[0]["content"] == "a bar chart of Q3 revenue"
+
+    @pytest.mark.asyncio
+    async def test_image_multimodal_no_uri_and_no_text_is_skipped(self):
+        """Nothing to send at all — neither pixels nor text — stays dropped."""
+        img_block = {
+            "type": BlockType.IMAGE.value,
+            "data": {"uri": None},
+            "citation_metadata": None,
+            "parent_index": None,
+            "index": 0,
+        }
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [img_block]
+
+        blob_store = self._make_blob_store(record)
+        vr_map = {"vr-1": record}
+
+        result_set = [
+            {
+                "content": "",
+                "score": 0.8,
+                "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": False},
+            },
+        ]
+        results = await get_flattened_results(
+            result_set, blob_store, "org-1", True, vr_map
+        )
+        assert [r for r in results if r.get("block_type") == BlockType.IMAGE.value] == []
 
     @pytest.mark.asyncio
     async def test_image_non_multimodal_no_data_uri_passthrough(self):
@@ -3502,10 +3651,7 @@ class TestGetFlattenedResultsBranches:
     def _make_blob_store(self, record_blob=None):
         blob_store = AsyncMock()
         blob_store.get_record_from_storage = AsyncMock(return_value=record_blob or _make_record_blob())
-        blob_store.config_service = AsyncMock()
-        blob_store.config_service.get_config = AsyncMock(return_value={
-            "frontend": {"publicEndpoint": "https://app.example.com"}
-        })
+        blob_store.config_service = _make_config_service()
         return blob_store
 
     @pytest.mark.asyncio
@@ -3944,21 +4090,55 @@ class TestRecordToMessageContentDeeper:
         result = record_to_message_content(record)
         assert isinstance(result, list)
 
-    def test_other_block_type(self):
-        """Standalone non-handled block types are skipped (not emitted as text)."""
+    def test_top_level_code_block_is_rendered_with_its_symbol(self):
+        """A code block belongs to no group, so before it had its own branch it
+        fell to `else: continue` and a file with no classes reached the model
+        empty."""
+        record = {
+            "virtual_record_id": "vr-1",
+            "context_metadata": "Test",
+            "file_path": "src/app.py",
+            "block_containers": {
+                "blocks": [
+                    {"index": 0, "type": "code", "data": {"text": "print('hello')"},
+                     "parent_index": None,
+                     "code_metadata": {"qualified_name": "statements:L1"}},
+                ],
+                "block_groups": [],
+            },
+        }
+        text = _all_text(record_to_message_content(record))
+        assert "print('hello')" in text
+        assert "src/app.py#statements:L1" in text
+
+    def test_rendered_code_block_omits_the_bm25_subtokens(self):
         record = {
             "virtual_record_id": "vr-1",
             "context_metadata": "Test",
             "block_containers": {
                 "blocks": [
-                    {"index": 0, "type": "code", "data": "print('hello')", "parent_index": None},
+                    {"index": 0, "type": "code", "parent_index": None,
+                     "data": {"text": "def go(): pass", "subtokens": "go pass padding"}},
                 ],
                 "block_groups": [],
             },
         }
-        result = record_to_message_content(record)
-        text = _all_text(result)
-        assert "print('hello')" not in text
+        text = _all_text(record_to_message_content(record))
+        assert "def go(): pass" in text
+        assert "padding" not in text
+
+    def test_unhandled_block_type_is_still_skipped(self):
+        record = {
+            "virtual_record_id": "vr-1",
+            "context_metadata": "Test",
+            "block_containers": {
+                "blocks": [
+                    {"index": 0, "type": "divider", "data": "---", "parent_index": None},
+                ],
+                "block_groups": [],
+            },
+        }
+        assert "---" not in _all_text(record_to_message_content(record))
 
 
 # ===================================================================
@@ -4303,10 +4483,7 @@ class TestGetFlattenedResultsOldType:
     def _make_blob_store(self, record_blob=None):
         blob_store = AsyncMock()
         blob_store.get_record_from_storage = AsyncMock(return_value=record_blob or _make_record_blob())
-        blob_store.config_service = AsyncMock()
-        blob_store.config_service.get_config = AsyncMock(return_value={
-            "frontend": {"publicEndpoint": "https://app.example.com"}
-        })
+        blob_store.config_service = _make_config_service()
         return blob_store
 
     @pytest.mark.asyncio
@@ -4509,10 +4686,7 @@ class TestGetFlattenedResultsNullRecordInTableProcessing:
     def _make_blob_store(self, record_blob=None):
         blob_store = AsyncMock()
         blob_store.get_record_from_storage = AsyncMock(return_value=record_blob)
-        blob_store.config_service = AsyncMock()
-        blob_store.config_service.get_config = AsyncMock(return_value={
-            "frontend": {"publicEndpoint": "https://app.example.com"}
-        })
+        blob_store.config_service = _make_config_service()
         return blob_store
 
     @pytest.mark.asyncio
@@ -4641,7 +4815,9 @@ class TestCreateRecordFromVectorMetadata:
         # Mock ContainerUtils and vector_db_service
         mock_vector_service = AsyncMock()
         mock_vector_service.filter_collection = AsyncMock(return_value="mock_filter")
-        mock_vector_service.scroll = AsyncMock(return_value=([mock_point], None))
+        mock_vector_service.scroll = AsyncMock(
+            return_value=ScrollResult(points=[mock_point], next_offset=None)
+        )
 
         real_utils_mod = sys.modules.pop("app.containers.utils.utils", None)
         fake_utils = ModuleType("app.containers.utils.utils")
@@ -4651,6 +4827,9 @@ class TestCreateRecordFromVectorMetadata:
         try:
             mock_container = mock_cls_container.return_value
             mock_container.get_vector_db_service = AsyncMock(return_value=mock_vector_service)
+            mock_registry = AsyncMock()
+            mock_registry.resolve_for_query = AsyncMock(return_value=["records"])
+            mock_container.create_collection_registry = AsyncMock(return_value=mock_registry)
 
             record, point_id_map = await create_record_from_vector_metadata(
                 metadata, "org-1", "vr-1", blob_store
@@ -4711,7 +4890,9 @@ class TestCreateRecordFromVectorMetadata:
 
         mock_vector_service = AsyncMock()
         mock_vector_service.filter_collection = AsyncMock(return_value="mock_filter")
-        mock_vector_service.scroll = AsyncMock(return_value=([mock_point], None))
+        mock_vector_service.scroll = AsyncMock(
+            return_value=ScrollResult(points=[mock_point], next_offset=None)
+        )
 
         real_utils_mod = sys.modules.pop("app.containers.utils.utils", None)
         fake_utils = ModuleType("app.containers.utils.utils")
@@ -4721,6 +4902,9 @@ class TestCreateRecordFromVectorMetadata:
         try:
             mock_container = mock_cls_container.return_value
             mock_container.get_vector_db_service = AsyncMock(return_value=mock_vector_service)
+            mock_registry = AsyncMock()
+            mock_registry.resolve_for_query = AsyncMock(return_value=["records"])
+            mock_container.create_collection_registry = AsyncMock(return_value=mock_registry)
 
             record, point_id_map = await create_record_from_vector_metadata(
                 {"mimeType": "text/plain"}, "org-1", "vr-1", blob_store
@@ -4746,10 +4930,7 @@ class TestEnrichVirtualRecordIdFKChildren:
         blob_store.get_record_from_storage = AsyncMock(
             return_value=record_blob or _make_record_blob()
         )
-        blob_store.config_service = AsyncMock()
-        blob_store.config_service.get_config = AsyncMock(return_value={
-            "frontend": {"publicEndpoint": "https://app.example.com"}
-        })
+        blob_store.config_service = _make_config_service()
         return blob_store
 
     def _make_graph_provider(
@@ -6446,10 +6627,15 @@ class TestCreateRecordFromVectorMetadataConnectorId:
 
         mock_vector_service = AsyncMock()
         mock_vector_service.filter_collection = AsyncMock(return_value="f")
-        mock_vector_service.scroll = AsyncMock(return_value=([mock_point], None))
+        mock_vector_service.scroll = AsyncMock(
+            return_value=ScrollResult(points=[mock_point], next_offset=None)
+        )
 
         mock_container = MagicMock()
         mock_container.get_vector_db_service = AsyncMock(return_value=mock_vector_service)
+        mock_registry = AsyncMock()
+        mock_registry.resolve_for_query = AsyncMock(return_value=["records"])
+        mock_container.create_collection_registry = AsyncMock(return_value=mock_registry)
 
         with patch.dict("sys.modules", {"app.containers.utils.utils": MagicMock(ContainerUtils=lambda: mock_container)}):
             record, _ = await create_record_from_vector_metadata(
@@ -6463,8 +6649,6 @@ class TestCreateRecordFromVectorMetadataConnectorId:
 # MessageRecord support in chat_helpers (slack diff additions)
 # ============================================================================
 
-import json as _json_ch
-from app.config.constants.arangodb import OriginTypes as _CH_OriginTypes
 
 
 def _ch_record_dict(**overrides):
@@ -6512,8 +6696,8 @@ class TestCollectionMapMessage:
 
 class TestValidGroupLabelsConversation:
     def test_conversation_in_valid_labels(self):
-        from app.utils.chat_helpers import valid_group_labels
         from app.models.blocks import GroupType
+        from app.utils.chat_helpers import valid_group_labels
         assert GroupType.CONVERSATION.value in valid_group_labels
 
 
@@ -6571,3 +6755,77 @@ class TestRecordIdShortenerShortenIfKnown:
         s.shorten_if_known("rec-unknown")
         # Counter should still be 0 — no label minted
         assert s.get_or_create_short_id("rec-first") == "R1"
+
+
+class TestRenderBlocksWithImagesBudgetAccounting:
+    """Regression: an image the caller can deliver neither way (a tool result
+    with no `collected_images` sink joins text only) still consumed a slot of
+    the shared conversation-wide ImageBudget, starving a later image that
+    could have been delivered."""
+
+    _PNG = (
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+        "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+
+    def _image_item(self) -> dict:
+        return {
+            "block_index": 0,
+            "block_type": BlockType.IMAGE.value,
+            "content": self._PNG,
+            "citation_ref": "ref1",
+            "virtual_record_id": "vr-1",
+        }
+
+    def test_undeliverable_image_does_not_spend_budget(self):
+        from app.utils.chat_helpers import ImageBudget, _render_blocks_with_images
+
+        budget = ImageBudget(max_images=1)
+        content = _render_blocks_with_images(
+            [self._image_item()], True, budget,
+            collected_images=None, allow_inline_images=False,
+        )
+
+        assert budget.used == 0
+        assert all(item["type"] == "text" for item in content)
+        assert any("ref1" in item["text"] for item in content)
+
+    def test_sink_delivery_spends_budget_and_collects(self):
+        from app.utils.chat_helpers import ImageBudget, _render_blocks_with_images
+
+        budget = ImageBudget(max_images=1)
+        collected: list[dict[str, Any]] = []
+        content = _render_blocks_with_images(
+            [self._image_item()], True, budget,
+            collected_images=collected, allow_inline_images=False,
+        )
+
+        assert budget.used == 1
+        assert len(collected) == 1
+        assert collected[0]["image_url"]["url"] == self._PNG
+        assert all(item["type"] == "text" for item in content)
+
+    def test_inline_delivery_spends_budget_and_embeds(self):
+        from app.utils.chat_helpers import ImageBudget, _render_blocks_with_images
+
+        budget = ImageBudget(max_images=1)
+        content = _render_blocks_with_images(
+            [self._image_item()], True, budget,
+            collected_images=None, allow_inline_images=True,
+        )
+
+        assert budget.used == 1
+        assert any(item["type"] == "image_url" for item in content)
+
+    def test_exhausted_budget_says_so(self):
+        from app.utils.chat_helpers import ImageBudget, _render_blocks_with_images
+
+        budget = ImageBudget(max_images=1)
+        budget.try_consume(1)
+        content = _render_blocks_with_images(
+            [self._image_item()], True, budget,
+            collected_images=[], allow_inline_images=True,
+        )
+
+        assert budget.used == 1
+        assert any("conversation image limit" in item["text"] for item in content)

@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import { Response, NextFunction } from 'express';
 import {
   AuthenticatedServiceRequest,
@@ -32,7 +32,7 @@ import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/mod
 import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
 import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
 import { loadConfigurationManagerConfig } from '../config/config';
-import { Org } from '../../user_management/schema/org.schema';
+import { findActiveOrgById } from '../../user_management/utils/org.utils';
 
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -60,7 +60,7 @@ import {
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { PLATFORM_FEATURE_FLAGS } from '../constants/constants';
 import { getPlatformSettingsFromStore } from '../utils/util';
-import { AIModelConfiguration, AIModelsConfig } from '../types/ai-models.types';
+import { AIModelConfiguration, AIModelsConfig, SystemPromptsConfig } from '../types/ai-models.types';
 import { WebSearchConfig } from '../types/web-search.types';
 import { WebSearchProviderConfiguration } from '../types/web-search.types';
 import {
@@ -70,6 +70,8 @@ import {
   mergeSmtpConfigPlaceholders,
   maskAiModelsStoredConfig,
   maskAiModelEntry,
+  maskWebSearchProvider,
+  mergeWebSearchProviderPlaceholders,
 } from '../utils/maskConfigSecrets';
 import {
   buildS3HealthCheckErrorMessage,
@@ -636,7 +638,7 @@ export const createSlackBotConfig =
 
           const timestamp = new Date().toISOString();
           const createdConfig: SlackBotConfigEntry = {
-            id: uuidv4(),
+            id: randomUUID(),
             name,
             botToken,
             signingSecret,
@@ -1296,7 +1298,7 @@ export const createGoogleWorkspaceCredentials =
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const org = await Org.findOne({ orgId, isDeleted: false });
+      const org = await findActiveOrgById(orgId);
       if (!org) {
         throw new BadRequestError('Organisaton not found');
       }
@@ -1565,7 +1567,7 @@ export const getGoogleWorkspaceCredentials =
   (keyValueStoreService: KeyValueStoreService, userId: string, orgId: string) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const org = await Org.findOne({ orgId, isDeleted: false });
+      const org = await findActiveOrgById(orgId);
       if (!org) {
         throw new BadRequestError('Organisaton not found');
       }
@@ -1675,7 +1677,7 @@ export const deleteGoogleWorkspaceCredentials =
   (keyValueStoreService: KeyValueStoreService, orgId: string) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const org = await Org.findOne({ orgId, isDeleted: false });
+      const org = await findActiveOrgById(orgId);
       if (!org) {
         throw new BadRequestError('Organisaton not found');
       }
@@ -2583,19 +2585,23 @@ export const createAIModelsConfig =
 
       if (aiConfig.llm.length > 0) {
         aiConfig.llm.forEach((llm: any, index: number) => {
-          const modelKey = uuidv4();
+          const modelKey = randomUUID();
           llm.modelKey = modelKey;
-          llm.isMultimodal = false;
-          llm.isReasoning = false;
+          // Keep what the caller declared and the health check just verified.
+          // These used to be forced to false here, so a vision model onboarded
+          // through this route was registered text-only and never sent an
+          // image, whatever the health check had proved.
+          llm.isMultimodal = llm.isMultimodal ?? false;
+          llm.isReasoning = llm.isReasoning ?? false;
           llm.isDefault = index === 0;
         });
       }
 
       if (aiConfig.embedding.length > 0) {
         aiConfig.embedding.forEach((embedding: any, index: number) => {
-          const modelKey = uuidv4();
+          const modelKey = randomUUID();
           embedding.modelKey = modelKey;
-          embedding.isMultimodal = false;
+          embedding.isMultimodal = embedding.isMultimodal ?? false;
           embedding.isDefault = index === 0;
         });
       }
@@ -3188,7 +3194,7 @@ export const addAIModelProvider =
       let modelKey: string;
       let existingKeys: string[];
       do {
-        modelKey = uuidv4();
+        modelKey = randomUUID();
         existingKeys = aiModels[modelType].map(
           (config: any) => config.modelKey,
         );
@@ -3591,7 +3597,7 @@ export const deleteAIModelProvider =
           .map((a: { name?: string }) => a?.name)
           .filter((n: unknown): n is string => typeof n === 'string' && n.length > 0);
         // Prefer the user-defined friendly name (what the UI card shows, e.g. "gpt").
-        // Fall back through the technical model id (e.g. "gpt-5.4-mini") and finally
+        // Fall back through the technical model id (e.g. "gpt-5.6-luna") and finally
         // the opaque modelKey so the message is never empty.
         const modelDisplayName: string =
           (deletedModel?.modelFriendlyName as string | undefined) ||
@@ -3931,35 +3937,45 @@ export const getCustomSystemPrompt =
   ) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
+      const decrypt = (enc: string): string =>
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(enc);
 
-      if (!encryptedAIConfig) {
+      // 1. Try the new dedicated key first
+      const encryptedPrompts = await keyValueStoreService.get<string>(configPaths.systemPrompts);
+      if (encryptedPrompts) {
+        const p = JSON.parse(decrypt(encryptedPrompts)) as SystemPromptsConfig;
         res
           .status(200)
           .json({
-            customSystemPrompt: '',
-            customSystemPromptWebSearch: '',
-            customSystemPromptAgent: '',
+            customSystemPrompt:          p.customSystemPrompt          || '',
+            customSystemPromptWebSearch: p.customSystemPromptWebSearch || '',
+            customSystemPromptAgent:     p.customSystemPromptAgent     || '',
           })
           .end();
         return;
       }
 
-      const aiModels: AIModelsConfig = JSON.parse(
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(encryptedAIConfig),
-      );
+      // 2. OSS backward compat: prompts were previously stored inside the aiModels blob
+      const encryptedAIConfig = await keyValueStoreService.get<string>(configPaths.aiModels);
+      if (encryptedAIConfig) {
+        const aiModels = JSON.parse(decrypt(encryptedAIConfig)) as AIModelsConfig;
+        res
+          .status(200)
+          .json({
+            customSystemPrompt:          aiModels.customSystemPrompt          || '',
+            customSystemPromptWebSearch: aiModels.customSystemPromptWebSearch || '',
+            customSystemPromptAgent:     aiModels.customSystemPromptAgent     || '',
+          })
+          .end();
+        return;
+      }
 
-      const customSystemPrompt = aiModels.customSystemPrompt || '';
-      const customSystemPromptWebSearch = aiModels.customSystemPromptWebSearch || '';
-      const customSystemPromptAgent = aiModels.customSystemPromptAgent || '';
       res
         .status(200)
-        .json({ customSystemPrompt, customSystemPromptWebSearch, customSystemPromptAgent })
+        .json({ customSystemPrompt: '', customSystemPromptWebSearch: '', customSystemPromptAgent: '' })
         .end();
     } catch (error: any) {
       logger.error('Error getting custom system prompt', { error });
@@ -3991,42 +4007,28 @@ export const setCustomSystemPrompt =
       }
 
       const configManagerConfig = loadConfigurationManagerConfig();
+      const encrypt = (val: string): string =>
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).encrypt(val);
 
-      // Use Compare-and-Set (CAS) pattern with retries to prevent race conditions
       const MAX_RETRIES = 5;
       let success = false;
 
       for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-        const encryptedAIConfig = await keyValueStoreService.get<string>(
-          configPaths.aiModels,
-        );
+        const existing = await keyValueStoreService.get<string>(configPaths.systemPrompts);
+        const promptsConfig: SystemPromptsConfig = {
+          customSystemPrompt,
+          customSystemPromptWebSearch,
+          customSystemPromptAgent,
+        };
+        const encrypted = encrypt(JSON.stringify(promptsConfig));
 
-        let aiModels: AIModelsConfig = {};
-        if (encryptedAIConfig) {
-          aiModels = JSON.parse(
-            EncryptionService.getInstance(
-              configManagerConfig.algorithm,
-              configManagerConfig.secretKey,
-            ).decrypt(encryptedAIConfig),
-          );
-        }
-
-        // Update only the custom prompt fields, keeping everything else intact
-        aiModels.customSystemPrompt = customSystemPrompt;
-        aiModels.customSystemPromptWebSearch = customSystemPromptWebSearch;
-        aiModels.customSystemPromptAgent = customSystemPromptAgent;
-
-        // Encrypt the updated configuration
-        const encryptedUpdatedConfig = EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).encrypt(JSON.stringify(aiModels));
-
-        // Attempt atomic compare-and-set operation
         const casSuccess = await keyValueStoreService.compareAndSet<string>(
-          configPaths.aiModels,
-          encryptedAIConfig,
-          encryptedUpdatedConfig,
+          configPaths.systemPrompts,
+          existing,
+          encrypted,
         );
 
         if (casSuccess) {
@@ -4037,14 +4039,11 @@ export const setCustomSystemPrompt =
             'Failed to update custom system prompts due to persistent concurrent modification. Please try again.',
           );
         }
-        // If CAS failed, retry with exponential backoff
         await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
       }
 
       if (!success) {
-        throw new Error(
-          'Failed to update custom system prompts after maximum retries.',
-        );
+        throw new Error('Failed to update custom system prompts after maximum retries.');
       }
 
       res.status(200).json({
@@ -4179,12 +4178,17 @@ export const getWebSearchProviders =
       const storedProviders = Array.isArray(webSearchConfig.providers)
         ? webSearchConfig.providers
         : [];
+      const hideSecrets = shouldHideSecrets();
       const providers = [
         {
           ...DUCKDUCKGO_WEB_SEARCH_PROVIDER,
           isDefault: !storedProviders.some((p) => p.isDefault),
         },
-        ...storedProviders,
+        ...storedProviders.map((p) =>
+          hideSecrets && p.configuration
+            ? { ...p, configuration: maskWebSearchProvider(p.configuration) }
+            : p,
+        ),
       ];
       const settings = normalizeWebSearchSettings(webSearchConfig.settings);
 
@@ -4344,7 +4348,7 @@ export const addWebSearchProvider =
       }
 
       // Generate a unique providerKey
-      const providerKey = uuidv4();
+      const providerKey = randomUUID();
 
       // If this is set as default, remove default flag from other providers
       if (isDefault) {
@@ -4408,29 +4412,6 @@ export const updateWebSearchProvider =
         return;
       }
 
-      // Health check: verify provider credentials before updating
-      const webSearchHealthCheckOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/web-search-health-check`,
-        method: HttpMethod.POST,
-        headers: req.headers as Record<string, string>,
-        body: { provider, configuration },
-      };
-
-      logger.debug('Health check for web search provider before updating');
-
-      const webSearchHealthCheckCommand = new AIServiceCommand(webSearchHealthCheckOptions);
-      const webSearchHealthCheckResponse = (await webSearchHealthCheckCommand.execute()) as AIServiceResponse;
-
-      if (!webSearchHealthCheckResponse?.data || webSearchHealthCheckResponse.statusCode !== 200) {
-        const errData: any = webSearchHealthCheckResponse?.data ?? {};
-        res.status(webSearchHealthCheckResponse?.statusCode ?? 500).json({
-          status: 'error',
-          message: errData.error ?? 'Failed to validate web search provider configuration',
-          details: errData,
-        });
-        return;
-      }
-
       const configManagerConfig = loadConfigurationManagerConfig();
       const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
         configPaths.webSearch,
@@ -4464,9 +4445,39 @@ export const updateWebSearchProvider =
         return;
       }
 
+      // Restore any resubmitted "****************" placeholder from the
+      // provider's own stored config before it reaches the health check.
+      const effectiveConfiguration = mergeWebSearchProviderPlaceholders(
+        configuration,
+        targetProvider.configuration,
+      );
+
+      // Health check: verify provider credentials before updating
+      const webSearchHealthCheckOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/web-search-health-check`,
+        method: HttpMethod.POST,
+        headers: req.headers as Record<string, string>,
+        body: { provider, configuration: effectiveConfiguration },
+      };
+
+      logger.debug('Health check for web search provider before updating');
+
+      const webSearchHealthCheckCommand = new AIServiceCommand(webSearchHealthCheckOptions);
+      const webSearchHealthCheckResponse = (await webSearchHealthCheckCommand.execute()) as AIServiceResponse;
+
+      if (!webSearchHealthCheckResponse?.data || webSearchHealthCheckResponse.statusCode !== 200) {
+        const errData: any = webSearchHealthCheckResponse?.data ?? {};
+        res.status(webSearchHealthCheckResponse?.statusCode ?? 500).json({
+          status: 'error',
+          message: errData.error ?? 'Failed to validate web search provider configuration',
+          details: errData,
+        });
+        return;
+      }
+
       // Update the provider configuration
       targetProvider.provider = provider;
-      targetProvider.configuration = configuration;
+      targetProvider.configuration = effectiveConfiguration;
       targetProvider.isDefault = isDefault;
 
       // If this is set as default, remove default flag from other providers
@@ -4484,10 +4495,19 @@ export const updateWebSearchProvider =
         configManagerConfig.secretKey,
       ).encrypt(JSON.stringify(webSearchConfig));
 
-      await keyValueStoreService.set<string>(
+      const casSuccess = await keyValueStoreService.compareAndSet<string>(
         configPaths.webSearch,
+        encryptedWebSearchConfig,
         encryptedUpdatedConfig,
       );
+      
+      if (!casSuccess) {
+        res.status(409).json({
+          status: 'error',
+          message: 'Unable to save changes. Please retry.',
+        });
+        return;
+      }
 
       res.status(200).json({
         status: 'success',

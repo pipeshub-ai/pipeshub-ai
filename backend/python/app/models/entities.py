@@ -463,7 +463,12 @@ class FileRecord(Record):
         """
 
         try:
-            from app.utils.chat_helpers import valid_group_labels, build_group_blocks
+            from app.utils.chat_helpers import (
+                _safe_stringify_content,
+                build_group_blocks,
+                format_code_locator,
+                valid_group_labels,
+            )
 
             content: list[LlmTextContent] = []
             context_metadata = f"record/{self.id}"
@@ -493,6 +498,19 @@ class FileRecord(Record):
                     content.append(LlmTextContent(
                         type="text",
                         text=f"* Block Type: {block_type}\n* Block Content: {data}\n\n",
+                    ))
+                elif block_type == BlockType.CODE.value and block.parent_index is None:
+                    # Top-level code belongs to no group, so without this branch a
+                    # file with no classes renders as an empty record.
+                    qname = block.code_metadata.qualified_name if block.code_metadata else None
+                    locator = format_code_locator(getattr(self, "file_path", "") or "", qname or "")
+                    header = f"* Symbol: {locator}\n" if locator else ""
+                    content.append(LlmTextContent(
+                        type="text",
+                        text=(
+                            f"* Block Type: {block_type}\n{header}"
+                            f"* Block Content: {_safe_stringify_content(data)}\n\n"
+                        ),
                     ))
                 elif block_type == BlockType.TABLE_ROW.value:
                     block_group_index = block.parent_index
@@ -561,6 +579,7 @@ class FileRecord(Record):
                         block_group_index=parent_index,
                         label=block_group_type,
                         blocks=group_blocks,
+                        file_path=getattr(self, "file_path", "") or "",
                     )
                     content.append(LlmTextContent(
                         type="text",
@@ -2531,6 +2550,11 @@ class CodeFileRecord(Record):
     file_path: str | None = None
     file_hash: str | None = None
     extension: str | None = None
+    language: str | None = None
+    # source | test | config | build | migration | script | type_definition |
+    # generated. Classified by the connector from the path alone; the resolver
+    # reads it instead of re-deriving "is this a test?" from the path.
+    file_role: str | None = None
 
     def to_kafka_record(self) -> dict:
         return {
@@ -2550,6 +2574,8 @@ class CodeFileRecord(Record):
             "sourceLastModifiedTimestamp": self.source_updated_at,
             "filePath": self.file_path,
             "fileHash": self.file_hash,
+            "language": self.language,
+            "fileRole": self.file_role,
         }
 
     def to_arango_record(self) -> dict:
@@ -2560,6 +2586,8 @@ class CodeFileRecord(Record):
             "filePath": self.file_path,
             "fileHash": self.file_hash,
             "extension": self.extension,
+            "language": self.language,
+            "fileRole": self.file_role,
         }
 
     @staticmethod
@@ -2619,6 +2647,8 @@ class CodeFileRecord(Record):
             file_path=arango_base_code_file_record.get("filePath"),
             file_hash=arango_base_code_file_record.get("fileHash"),
             extension=extension,
+            language=arango_base_code_file_record.get("language"),
+            file_role=arango_base_code_file_record.get("fileRole"),
         )
 
 
@@ -2988,6 +3018,14 @@ class AppMetadata(BaseModel):
     status: str | None = Field(default=None, description="Current sync status")
     is_locked: bool | None = Field(default=None, description="Whether the app is locked")
     permission_model: str | None = Field(default=None, description="How the connector's records derive per-user visibility (PermissionModel: APP_LEVEL or RECORD_LEVEL)")
+    vector_membership_backfilled: bool = Field(
+        default=False,
+        description="Whether indexed vectors for this connector have connectorIds/recordGroupIds",
+    )
+    vector_membership_backfill_after_key: str | None = Field(
+        default=None,
+        description="Keyset cursor for an in-progress vector membership backfill",
+    )
 
     @staticmethod
     def from_db_document(doc: dict[str, Any]) -> "AppMetadata":
@@ -3010,6 +3048,12 @@ class AppMetadata(BaseModel):
             status=doc.get("status"),
             is_locked=doc.get("isLocked"),
             permission_model=doc.get("permissionModel"),
+            vector_membership_backfilled=bool(
+                doc.get("vectorMembershipBackfilled", False)
+            ),
+            vector_membership_backfill_after_key=doc.get(
+                "vectorMembershipBackfillAfterKey"
+            ),
         )
 
 class MeetingRecord(Record):

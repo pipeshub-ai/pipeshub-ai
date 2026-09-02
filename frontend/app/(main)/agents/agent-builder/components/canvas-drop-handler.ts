@@ -713,9 +713,9 @@ export function handleFlowCanvasDrop(
     data: {
       id: fallbackId,
       type: template.type,
-      // Model names (e.g. "gpt-5.4-mini") already have their own official
+      // Model names (e.g. "gpt-5.6-luna") already have their own official
       // casing — normalizeDisplayName's snake_case title-casing would mangle
-      // them (-> "Gpt-5.4-mini"), so only apply it to identifier-style labels.
+      // them (-> "gpt-5.6-luna"), so only apply it to identifier-style labels.
       label: NODE_TYPES_WITHOUT_INPUT_HANDLES.LLM_MODELS(template.type)
         ? template.label
         : normalizeDisplayName(template.label),

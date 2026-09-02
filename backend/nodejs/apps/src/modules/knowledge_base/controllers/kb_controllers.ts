@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import * as crypto from 'crypto';
 import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
 import { NextFunction, Response } from 'express';
@@ -64,7 +64,7 @@ export const getKnowledgeHubNodes =
         throw new UnauthorizedError('User not authenticated');
       }
 
-      logger.info('Getting knowledge hub nodes', {
+      logger.debug('Getting knowledge hub nodes', {
         userId,
         orgId,
         query: req.query,
@@ -807,7 +807,7 @@ const streamKbUpload = async (opts: {
           : filePath;
         const extension = getFileExtension(fileName);
         const correctMimeType = (extension && getMimeType(extension)) || mimetype;
-        const key: string = uuidv4();
+        const key: string = randomUUID();
         const webUrl = `/record/${key}`;
         const validLastModified =
           lastModified && !isNaN(lastModified) && lastModified > 0
@@ -1327,7 +1327,7 @@ export const getRecordById =
       );
 
       // Log successful retrieval
-      logger.info('Record retrieved successfully');
+      logger.debug('Record retrieved successfully');
     } catch (error: any) {
       logger.error('Error getting record by id', {
         recordId: req.params.recordId,
