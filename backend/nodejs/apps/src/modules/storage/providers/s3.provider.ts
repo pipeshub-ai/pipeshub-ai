@@ -17,6 +17,10 @@ import {
 } from '../../../libs/errors/storage.errors';
 import { Logger } from '../../../libs/services/logger.service';
 import { encodeRFC5987 } from '../utils/utils';
+import {
+  resolveS3Credentials,
+  S3_PARTIAL_CREDENTIALS_MESSAGE,
+} from '../utils/s3-credentials.util';
 
 /**
  * Implementation of StorageServiceInterface for Amazon S3
@@ -26,47 +30,64 @@ class AmazonS3Adapter implements StorageServiceInterface {
   private readonly s3: S3;
   private readonly bucketName: string;
   private readonly region: string;
+  private readonly usingIamRole: boolean;
   private readonly logger = Logger.getInstance({ service: 'AmazonS3Adapter' });
 
   constructor(credentials: {
-    accessKeyId: string;
-    secretAccessKey: string;
+    accessKeyId?: string;
+    secretAccessKey?: string;
     region: string;
     bucket: string;
   }) {
     try {
-      const { accessKeyId, secretAccessKey, region, bucket } = credentials;
+      const { region, bucket } = credentials;
 
-      // Validate required credentials
-      if (!accessKeyId || !secretAccessKey || !region || !bucket) {
-        throw new StorageConfigurationError('Missing required S3 credentials', {
-          missingFields: {
-            accessKeyId: !accessKeyId,
-            secretAccessKey: !secretAccessKey,
-            region: !region,
-            bucket: !bucket,
+      // accessKeyId/secretAccessKey are optional: when omitted, the AWS SDK
+      // falls back to its default credential provider chain (env vars,
+      // shared config, ECS task role, EC2 instance metadata/IAM role).
+      // region and bucket are always required to target the right resource.
+      if (!region || !bucket) {
+        throw new StorageConfigurationError(
+          'Missing required S3 configuration',
+          {
+            missingFields: {
+              region: !region,
+              bucket: !bucket,
+            },
           },
-        });
+        );
       }
 
       // Validate and sanitize region input (defense-in-depth for AWS SDK v2 region validation advisory)
       const sanitizedRegion = this.validateAndSanitizeRegion(region);
 
+      const resolvedCredentials = resolveS3Credentials(credentials);
+      if (resolvedCredentials.kind === 'partial') {
+        throw new StorageConfigurationError(S3_PARTIAL_CREDENTIALS_MESSAGE, {
+          missingFields: { [resolvedCredentials.missingField]: true },
+        });
+      }
+      this.usingIamRole = resolvedCredentials.kind === 'iamRole';
+
       // Initialize AWS S3 client
-      this.s3 = new S3({
-        accessKeyId,
-        secretAccessKey,
-        region: sanitizedRegion,
-      });
+      this.s3 =
+        resolvedCredentials.kind === 'explicit'
+          ? new S3({
+              accessKeyId: resolvedCredentials.accessKeyId,
+              secretAccessKey: resolvedCredentials.secretAccessKey,
+              region: sanitizedRegion,
+            })
+          : new S3({ region: sanitizedRegion });
 
       this.bucketName = bucket;
       this.region = sanitizedRegion;
-      if (process.env.NODE_ENV == 'development') {
-        this.logger.info('S3 adapter initialized', {
-          bucket: this.bucketName,
-          region: this.region,
-        });
-      }
+
+      this.logger.info(
+        this.usingIamRole
+          ? 'S3 adapter initialized using default AWS credential chain (IAM role)'
+          : 'S3 adapter initialized using explicit AWS credentials',
+        { bucket: this.bucketName, region: this.region },
+      );
     } catch (error) {
       if (error instanceof StorageError) {
         throw error;
@@ -501,7 +522,6 @@ class AmazonS3Adapter implements StorageServiceInterface {
    */
   private extractKeyFromUrl(url: string): string {
     try {
-
       const urlPattern = new RegExp(
         `https?://${this.bucketName}\\.s3\\.(?:${this.region}\\.)?amazonaws\\.com/(.+)`,
       );

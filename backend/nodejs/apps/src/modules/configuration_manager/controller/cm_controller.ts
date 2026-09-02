@@ -77,6 +77,10 @@ import {
   buildS3HealthCheckErrorMessage,
   validateS3Capabilities,
 } from '../../storage/utils/s3-health-check.util';
+import {
+  resolveS3Credentials,
+  S3_PARTIAL_CREDENTIALS_MESSAGE,
+} from '../../storage/utils/s3-credentials.util';
 
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
@@ -213,11 +217,36 @@ export const createStorageConfig =
       // Process configuration based on storage type
       switch (storageType.toLowerCase()) {
         case storageTypes.S3.toLowerCase(): {
-          const s3Config = {
+          // accessKeyId/secretAccessKey are optional: omitting both tells S3
+          // (and the AWS SDK) to use the EC2/ECS IAM role via the default
+          // credential provider chain instead of explicit IAM user credentials.
+          // Supplying only one is rejected rather than silently downgraded to
+          // the IAM role, which would run as a different AWS principal.
+          const resolvedCredentials = resolveS3Credentials({
             accessKeyId: config.s3AccessKeyId,
             secretAccessKey: config.s3SecretAccessKey,
+          });
+          if (resolvedCredentials.kind === 'partial') {
+            throw new BadRequestError(S3_PARTIAL_CREDENTIALS_MESSAGE, {
+              missingFields: { [resolvedCredentials.missingField]: true },
+            });
+          }
+          const usingIamRole = resolvedCredentials.kind === 'iamRole';
+
+          const s3Config: {
+            accessKeyId?: string;
+            secretAccessKey?: string;
+            region: string;
+            bucketName: string;
+          } = {
             region: config.s3Region,
             bucketName: config.s3BucketName,
+            ...(resolvedCredentials.kind === 'explicit'
+              ? {
+                  accessKeyId: resolvedCredentials.accessKeyId,
+                  secretAccessKey: resolvedCredentials.secretAccessKey,
+                }
+              : {}),
           };
 
           const s3HealthCheck = await validateS3Capabilities({
@@ -247,7 +276,9 @@ export const createStorageConfig =
             }),
           );
 
-          logger.info('S3 storage configuration saved successfully');
+          logger.info('S3 storage configuration saved successfully', {
+            authMode: usingIamRole ? 'iamRole' : 'explicitCredentials',
+          });
           break;
         }
 
@@ -359,6 +390,9 @@ export const getStorageConfig =
               storageType,
               accessKeyId,
               secretAccessKey,
+              useIamRole:
+                resolveS3Credentials({ accessKeyId, secretAccessKey }).kind !==
+                'explicit',
               region,
               bucketName,
             })

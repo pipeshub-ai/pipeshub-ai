@@ -132,15 +132,15 @@ describe('s3-health-check.util', () => {
   })
 
   // -------------------------------------------------------------------------
-  // validateS3Capabilities — adapter init fails (invalid credentials)
+  // validateS3Capabilities — adapter init fails (invalid configuration)
   // -------------------------------------------------------------------------
   describe('validateS3Capabilities — adapter init fails', () => {
-    it('should return bucketAccess failure when accessKeyId is empty', async () => {
+    it('should return bucketAccess failure when bucketName is empty', async () => {
       const result = await validateS3Capabilities({
-        accessKeyId: '',
+        accessKeyId: 'key',
         secretAccessKey: 'secret',
         region: 'us-east-1',
-        bucketName: 'my-bucket',
+        bucketName: '',
       })
 
       expect(result.success).to.be.false
@@ -186,6 +186,107 @@ describe('s3-health-check.util', () => {
         'signedUrlPut',
       ])
       expect(result.checks.every((c) => c.passed)).to.be.true
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // validateS3Capabilities — IAM role mode (no explicit credentials)
+  // -------------------------------------------------------------------------
+  describe('validateS3Capabilities — IAM role mode (no explicit credentials)', () => {
+    const IAM_ROLE_CREDS = {
+      region: 'us-east-1',
+      bucketName: 'my-bucket',
+    }
+
+    it('should pass every check when accessKeyId/secretAccessKey are omitted', async () => {
+      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubAllAdapterMethodsPassing()
+      stubFetchSuccess()
+
+      const result = await validateS3Capabilities(IAM_ROLE_CREDS)
+
+      expect(result.success).to.be.true
+      expect(result.checks).to.have.lengthOf(6)
+      expect(result.checks.every((c) => c.passed)).to.be.true
+    })
+
+    it('should return success with empty-string credential fields (treated as IAM role mode)', async () => {
+      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubAllAdapterMethodsPassing()
+      stubFetchSuccess()
+
+      const result = await validateS3Capabilities({
+        ...IAM_ROLE_CREDS,
+        accessKeyId: '',
+        secretAccessKey: '',
+      })
+
+      expect(result.success).to.be.true
+      expect(result.checks.every((c) => c.passed)).to.be.true
+    })
+
+    it('should classify upload permission failures the same way as explicit-credential mode', async () => {
+      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      sinon
+        .stub(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService')
+        .rejects(
+          new StorageUploadError('Failed to upload document to S3', {
+            originalError: 'AccessDenied: IAM role missing s3:PutObject',
+          }),
+        )
+      sinon.stub(AmazonS3Adapter.prototype, 'generatePresignedUrlForDirectUpload').resolves({
+        statusCode: 200,
+        data: { url: 'https://signed-put-url' },
+      })
+
+      const result = await validateS3Capabilities(IAM_ROLE_CREDS)
+
+      expect(result.success).to.be.false
+      const bucketCheck = result.checks.find((c) => c.capability === 'bucketAccess')
+      const uploadCheck = result.checks.find((c) => c.capability === 'upload')
+      expect(bucketCheck?.passed).to.be.true
+      expect(uploadCheck?.passed).to.be.false
+      expect(uploadCheck?.error).to.include('IAM role missing s3:PutObject')
+    })
+
+    it('should still clean up the probe object via the delete-only S3 client', async () => {
+      const deleteFn = sinon.stub().resolves()
+      restoreS3 = replaceSdkS3({ deleteObject: () => ({ promise: deleteFn }) })
+      sinon.stub(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService').resolves({
+        statusCode: 200,
+        data: FAKE_URL,
+      })
+      sinon.stub(AmazonS3Adapter.prototype, 'getBufferFromStorageService').resolves({
+        statusCode: 200,
+        data: Buffer.from('ok'),
+      })
+      sinon.stub(AmazonS3Adapter.prototype, 'getSignedUrl').resolves({
+        statusCode: 200,
+        data: 'https://signed-get-url',
+      })
+      sinon.stub(AmazonS3Adapter.prototype, 'generatePresignedUrlForDirectUpload').resolves({
+        statusCode: 200,
+        data: { url: 'https://signed-put-url' },
+      })
+      stubFetchSuccess()
+
+      await validateS3Capabilities(IAM_ROLE_CREDS)
+
+      expect(deleteFn.calledOnce).to.be.true
+    })
+
+    it('should fail without contacting S3 when only one credential is provided', async () => {
+      const adapterInit = sinon.spy(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService')
+
+      const result = await validateS3Capabilities({
+        ...VALID_CREDS,
+        secretAccessKey: '   ',
+      })
+
+      expect(result.success).to.be.false
+      expect(result.checks).to.have.lengthOf(1)
+      expect(result.checks[0]?.error).to.include('must be provided together')
+      expect(adapterInit.called).to.be.false
     })
   })
 

@@ -33948,10 +33948,18 @@ paths:
                     description: Base URL for files (Local)
                   accessKeyId:
                     type: string
-                    description: AWS access key ID (S3)
+                    description: >-
+                      AWS access key ID (S3). Omitted when useIamRole is true.
                   secretAccessKey:
                     type: string
-                    description: AWS secret access key (S3)
+                    description: >-
+                      AWS secret access key (S3). Omitted when useIamRole is true.
+                  useIamRole:
+                    type: boolean
+                    description: >-
+                      True when S3 is configured to use the EC2/ECS IAM role
+                      (via the AWS default credential chain) instead of
+                      explicit IAM user credentials.
                   region:
                     type: string
                     description: AWS region (S3)
@@ -34001,17 +34009,25 @@ paths:
             schema:
               oneOf:
                 - type: object
-                  required: [storageType, s3AccessKeyId, s3SecretAccessKey, s3Region, s3BucketName]
+                  required: [storageType, s3Region, s3BucketName]
                   properties:
                     storageType:
                       type: string
                       enum: [s3]
                     s3AccessKeyId:
                       type: string
-                      description: AWS access key ID
+                      description: >-
+                        AWS access key ID. Optional - omit both this and
+                        s3SecretAccessKey to use the EC2/ECS IAM role
+                        credentials via the AWS default credential chain.
+                        Supplying only one of the pair is rejected.
                     s3SecretAccessKey:
                       type: string
-                      description: AWS secret access key
+                      description: >-
+                        AWS secret access key. Optional - omit both this and
+                        s3AccessKeyId to use the EC2/ECS IAM role credentials
+                        via the AWS default credential chain. Supplying only
+                        one of the pair is rejected.
                     s3Region:
                       type: string
                       description: AWS region (e.g. us-east-1)
@@ -34053,11 +34069,17 @@ paths:
                       format: uri
             examples:
               s3:
-                summary: Amazon S3
+                summary: Amazon S3 (explicit IAM user credentials)
                 value:
                   storageType: s3
                   s3AccessKeyId: AKIAIOSFODNN7EXAMPLE
                   s3SecretAccessKey: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                  s3Region: us-east-1
+                  s3BucketName: my-pipeshub-bucket
+              s3IamRole:
+                summary: Amazon S3 (EC2/ECS IAM role, no explicit credentials)
+                value:
+                  storageType: s3
                   s3Region: us-east-1
                   s3BucketName: my-pipeshub-bucket
               azureBlob:

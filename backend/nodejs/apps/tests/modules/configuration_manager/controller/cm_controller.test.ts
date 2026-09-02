@@ -286,6 +286,81 @@ describe('ConfigurationManager Controller', () => {
       expect(res.status.calledWith(200)).to.be.true
     })
 
+    it('should save S3 storage config in IAM role mode (no credentials provided)', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = createStorageConfig(kvs, { endpoint: 'http://localhost:3003' } as any)
+      const req = createMockRequest({
+        body: {
+          storageType: 's3',
+          s3Region: 'us-east-1',
+          s3BucketName: 'my-bucket',
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(validateS3Stub.calledOnce).to.be.true
+      expect(validateS3Stub.firstCall.args[0]).to.deep.include({
+        accessKeyId: undefined,
+        secretAccessKey: undefined,
+        region: 'us-east-1',
+        bucketName: 'my-bucket',
+      })
+      expect(kvs.set.calledOnce).to.be.true
+      const savedConfig = JSON.parse(mockEncService.encrypt.firstCall.args[0])
+      expect(savedConfig).to.not.have.property('accessKeyId')
+      expect(savedConfig).to.not.have.property('secretAccessKey')
+      expect(res.status.calledWith(200)).to.be.true
+      expect(next.called).to.be.false
+    })
+
+    it('should treat whitespace-only S3 credentials as IAM role mode', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = createStorageConfig(kvs, { endpoint: 'http://localhost:3003' } as any)
+      const req = createMockRequest({
+        body: {
+          storageType: 's3',
+          s3AccessKeyId: '   ',
+          s3SecretAccessKey: '   ',
+          s3Region: 'us-east-1',
+          s3BucketName: 'my-bucket',
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(validateS3Stub.firstCall.args[0].accessKeyId).to.be.undefined
+      expect(validateS3Stub.firstCall.args[0].secretAccessKey).to.be.undefined
+      expect(kvs.set.calledOnce).to.be.true
+    })
+
+    it('should reject S3 config with only one credential instead of falling back to the IAM role', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = createStorageConfig(kvs, { endpoint: 'http://localhost:3003' } as any)
+      const req = createMockRequest({
+        body: {
+          storageType: 's3',
+          s3AccessKeyId: 'AKIA...',
+          s3SecretAccessKey: '   ',
+          s3Region: 'us-east-1',
+          s3BucketName: 'my-bucket',
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(validateS3Stub.called).to.be.false
+      expect(kvs.set.called).to.be.false
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.include('must be provided together')
+    })
+
     it('should reject S3 config when health check fails', async () => {
       validateS3Stub.resolves({
         success: false,
@@ -357,6 +432,31 @@ describe('ConfigurationManager Controller', () => {
         storageType: 's3',
         accessKeyId: 'AK',
         secretAccessKey: 'SK',
+        useIamRole: false,
+        region: 'us-east-1',
+        bucketName: 'b',
+      })
+    })
+
+    it('should return S3 config with useIamRole true when no credentials were stored', async () => {
+      const s3Data = JSON.stringify({ region: 'us-east-1', bucketName: 'b' })
+      mockEncService.decrypt.returns(s3Data)
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(JSON.stringify({ storageType: 's3', s3: 'encrypted:data' })),
+      })
+      const handler = getStorageConfig(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        storageType: 's3',
+        accessKeyId: undefined,
+        secretAccessKey: undefined,
+        useIamRole: true,
         region: 'us-east-1',
         bucketName: 'b',
       })
