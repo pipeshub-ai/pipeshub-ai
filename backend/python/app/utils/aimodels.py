@@ -19,6 +19,7 @@ from app.config.constants.ai_models import (
     AZURE_EMBEDDING_API_VERSION,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_REASONING_EFFORT,
+    ORCAROUTER_BASE_URL,
     OPENROUTER_BASE_URL,
     AzureOpenAILLM,
 )
@@ -127,6 +128,7 @@ class LLMProvider(Enum):
     OPENAI = "openAI"
     OPENAI_COMPATIBLE = "openAICompatible"
     OPENROUTER = "openRouter"
+    ORCAROUTER = "orcarouter"
     TOGETHER = "together"
     VERTEX_AI = "vertexAI"
     XAI = "xai"
@@ -727,6 +729,7 @@ _OPENAI_FAMILY = frozenset({
     LLMProvider.OPENAI_COMPATIBLE.value,
     LLMProvider.LITELLM_PROXY.value,
     LLMProvider.OPENROUTER.value,
+    LLMProvider.ORCAROUTER.value,
 })
 
 _GEMINI_FAMILY = frozenset({
@@ -1754,6 +1757,24 @@ def get_generator_model(
             base_url=OPENROUTER_BASE_URL, model_name=model_name, api_mode=api_mode,
         ))
         return ChatOpenAI(**openrouter_kwargs)
+
+    elif provider == LLMProvider.ORCAROUTER.value:
+        from langchain_openai import ChatOpenAI
+
+        temperature = _default_temperature(configuration, config, model_name, provider=provider)
+        orcarouter_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,
+            api_key=configuration["apiKey"],
+            base_url=ORCAROUTER_BASE_URL,
+            stream_usage=True,
+        )
+        orcarouter_kwargs.update(_reasoning_effort_kwargs(
+            reasoning_effort, config, provider=provider,
+            base_url=ORCAROUTER_BASE_URL, model_name=model_name, api_mode=api_mode,
+        ))
+        return ChatOpenAI(**orcarouter_kwargs)
 
     elif provider == LLMProvider.VERTEX_AI.value:
         from langchain_google_genai import ChatGoogleGenerativeAI
