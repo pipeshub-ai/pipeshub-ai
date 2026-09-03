@@ -46,8 +46,6 @@ from .ops import (
 )
 from .query import (
     DEFAULT_QUERY_LIMIT,
-    GROUP_BY_CHOICES,
-    MAX_QUERY_DEPTH,
     query_code_graph_impl,
 )
 
@@ -148,46 +146,31 @@ class CodeGraph:
     @tool(
         path="/tools/codegraph/query_code_graph",
         short_description=(
-            "Explore the code graph: find symbols, their relationships, and module structure"
+            "List what a directory contains, or the symbols a file defines"
         ),
         description=(
-            "Explore the code graph: find symbols, their relationships, and module structure.\n\n"
-            "Search the knowledge base FIRST — this needs a `connector_id`, and the "
-            "only place to get one is the `Connector ID` shown on a record in your "
-            "search results. Several repositories can be indexed at once and their "
-            "file paths are repo-relative, so without it `src/main.py` is ambiguous.\n\n"
-            "Then call this repeatedly, narrowing or widening as you go — one call "
-            "rarely answers a broad question.\n\n"
-            "`select` picks by shape:\n"
-            "  - free text ('payment webhook') — ranked symbol names. Use this first "
-            "when you do not yet know any file or symbol.\n"
-            "  - a directory ('backend/python/app/agents/') — what is in it.\n"
-            "  - a path or glob ('backend/python/app/**') — everything under it.\n"
-            "  - 'path/to/file.py#function:main' — that one symbol. This is the form "
-            "results print, and the one to copy back in.\n\n"
-            "`depth` walks relationships outward; `relations` and `direction` narrow "
-            "which. `group_by='directory'` instead rolls every dependency under the "
-            "selected path up into modules with weighted edges between them — that is "
-            "how you get an architecture-level view, since a raw expansion returns "
-            "thousands of symbols.\n\n"
-            "Every result is ranked by `degree` — how many edges touch a symbol or a "
-            "module. That is what separates an entry point from a helper, so read the "
-            "top of the list rather than sampling it, and quote the number when you "
-            "say something is central.\n\n"
-            "Grouping is measured from the path you give, so it drills down: "
-            "select='**' returns top-level directories, 'backend/**' the layers inside "
-            "backend, 'backend/python/app/**' the modules inside app. For a high-level "
-            "design, start broad with group_by='directory' and re-ask with a longer "
-            "path for each module worth opening. Use read_code to read anything "
-            "it names.\n\n"
-            "When the question asks HOW or WHY something works, a rollup alone "
-            "is not enough — after identifying relevant modules, use read_code "
-            "on the highest-degree symbols to understand the design.\n\n"
-            "This tool finds symbols by location. It does not follow what they "
-            "connect to: once you hold a symbol, get_neighbour resolves what it "
-            "reaches and what reaches it. Do not chase a flow by guessing which "
-            "file a call lands in and selecting that path — the graph already "
-            "stores the answer, and inbound edges cannot be guessed at all."
+            "List what a directory contains, or the symbols a file defines.\n\n"
+            "Search the knowledge base FIRST — this needs a `connector_id` and a "
+            "path, and the only place to get either is your search results: the "
+            "`Connector ID` shown on a record, and that record's own path. Several "
+            "repositories can be indexed at once and their paths are repo-relative, "
+            "so without the connector `src/main.py` is ambiguous.\n\n"
+            "`select` takes exactly two shapes:\n"
+            "  - a directory ('backend/python/app/agents/') — its files and "
+            "subdirectories, each with a `select` value to drill into.\n"
+            "  - a file or glob ('.../router.py', 'backend/python/app/**') — every "
+            "symbol defined under it, addressed as 'path#qualified_name'.\n\n"
+            "It does NOT take a symbol. Naming one has only two possible answers and "
+            "neither is this tool's: `read_code` reads a symbol, and `get_neighbour` "
+            "walks what it reaches or what reaches it. Free text is not accepted "
+            "either — search the knowledge base to turn a description into a path.\n\n"
+            "Symbols come back ranked by `degree`, how many code edges touch them. A "
+            "path carries no name to match on, so degree is the only thing separating "
+            "an entry point from a helper: read the top of the list rather than "
+            "sampling it, and quote the number when you call something central.\n\n"
+            "Widen or narrow across calls — 'backend/**' for the layers inside "
+            "backend, 'backend/python/app/**' for the modules inside app — then use "
+            "read_code on the highest-degree symbols to understand the design."
         ),
         parameters=[
             ToolParameter(
@@ -197,42 +180,13 @@ class CodeGraph:
             ToolParameter(
                 name="select", type=ParameterType.STRING,
                 description=(
-                    "What to start from, resolved by shape: a directory "
-                    "('backend/python/app/agents/') lists its files and subdirectories; "
-                    "a file ('.../router.py') lists the symbols it defines; a glob "
-                    "('backend/python/app/**') spans a subtree; 'path/to/file.py#"
-                    "function:main' is that one symbol — the form every result prints, "
-                    "and the only unambiguous way to name a symbol, since a qualified "
-                    "name alone is unique only within its file; anything else is free "
-                    "text matched against symbol names."
-                ),
-            ),
-            ToolParameter(
-                name="relations", type=ParameterType.ARRAY, required=False, default=None,
-                description=(
-                    "Relationship types to follow, e.g. ['CALLS'], ['IMPORTS_FROM'], "
-                    "['INHERITS','EXTENDS']. Omit for all."
-                ),
-                items={"type": "string"},
-            ),
-            ToolParameter(
-                name="direction", type=ParameterType.STRING, required=False, default="any",
-                description="'outbound' (what it uses), 'inbound' (what uses it), or 'any'",
-            ),
-            ToolParameter(
-                name="depth", type=ParameterType.INTEGER, required=False, default=0,
-                description=(
-                    f"Hops to expand: 0 = just the matches, up to {MAX_QUERY_DEPTH}. "
-                    "Dropped when group_by is set, which always rolls up direct "
-                    "dependencies."
-                ),
-            ),
-            ToolParameter(
-                name="group_by", type=ParameterType.STRING, required=False, default="none",
-                description=(
-                    "Roll results up: 'directory' for module-level architecture (grouped "
-                    f"one level below the path you select), 'file', or 'none'. "
-                    f"One of: {', '.join(GROUP_BY_CHOICES)}"
+                    "A directory or a file path, nothing else. A directory "
+                    "('backend/python/app/agents/') lists its files and "
+                    "subdirectories; a file ('.../router.py') lists the symbols it "
+                    "defines; a glob ('backend/python/app/**') spans a subtree. "
+                    "A symbol ('.../router.py#function:main') is rejected — read_code "
+                    "reads it and get_neighbour walks its edges. So is free text: "
+                    "search the knowledge base to turn a description into a path."
                 ),
             ),
             ToolParameter(
@@ -260,10 +214,6 @@ class CodeGraph:
         self,
         connector_id: str,
         select: str,
-        relations: list[str] | None = None,
-        direction: str = "any",
-        depth: int = 0,
-        group_by: str = "none",
         kinds: list[str] | None = None,
         limit: int = DEFAULT_QUERY_LIMIT,
         include_tests: bool = False,
@@ -274,9 +224,7 @@ class CodeGraph:
             lambda: query_code_graph_impl(
                 graph_provider=self._graph_provider, org_id=self._org_id,
                 user_id=self._user_id, connector_id=connector_id, select=select,
-                relations=relations, direction=direction, depth=depth,
-                group_by=group_by, kinds=kinds, limit=limit,
-                include_tests=include_tests,
+                kinds=kinds, limit=limit, include_tests=include_tests,
             ),
             "Failed to query the code graph",
         )
