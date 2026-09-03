@@ -64,6 +64,10 @@ def _expected_payload(connector: OneDriveConnector) -> dict:
     }
 
 
+def _notify_calls_by_title(connector: OneDriveConnector) -> dict:
+    return {call.kwargs["title"]: call.kwargs for call in connector.notify.await_args_list}
+
+
 def _assert_notify(
     connector: OneDriveConnector,
     *,
@@ -72,12 +76,19 @@ def _assert_notify(
     title: str,
     message: str | None = None,
     message_contains: str | None = None,
+    total_calls: int = 1,
 ) -> None:
-    connector.notify.assert_awaited_once()
-    kwargs = connector.notify.await_args.kwargs
+    assert connector.notify.await_count == total_calls, (
+        f"Expected {total_calls} notify call(s), got {connector.notify.await_count}: "
+        f"{[c.kwargs.get('title') for c in connector.notify.await_args_list]}"
+    )
+    kwargs = _notify_calls_by_title(connector).get(title)
+    assert kwargs is not None, (
+        f"No notify call with title {title!r}; "
+        f"got titles={[c.kwargs.get('title') for c in connector.notify.await_args_list]}"
+    )
     assert kwargs["type"] is notification_type
     assert kwargs["severity"] is severity
-    assert kwargs["title"] == title
     if message is not None:
         assert kwargs["message"] == message
     if message_contains is not None:
@@ -239,13 +250,19 @@ class TestProcessUsersInBatchesNotifications:
         await connector._process_users_in_batches([user])
 
         connector.msgraph_client.get_user_drive.assert_awaited_once_with("su-1")
+        # Zero users ended up syncable, so both the per-user failure notice and
+        # the generic "no users synced" fallback fire.
         _assert_notify(
             connector,
             notification_type=NotificationType.CONNECTOR_WARNING,
             severity=NotificationSeverity.WARNING,
-            title="Some OneDrive users could not be checked",
+            title="Some OneDrive users could not be synced",
             message_contains="active@test.com",
+            total_calls=2,
         )
+        fallback = _notify_calls_by_title(connector)["No OneDrive users synced"]
+        assert fallback["type"] is NotificationType.CONNECTOR_RECORD_SYNC_ERROR
+        assert fallback["severity"] is NotificationSeverity.WARNING
 
     @pytest.mark.asyncio
     async def test_user_drive_transient_error_sends_warning(self):
@@ -269,9 +286,13 @@ class TestProcessUsersInBatchesNotifications:
             connector,
             notification_type=NotificationType.CONNECTOR_WARNING,
             severity=NotificationSeverity.WARNING,
-            title="Some OneDrive users could not be checked",
+            title="Some OneDrive users could not be synced",
             message_contains="picked up by a later sync",
+            total_calls=2,
         )
+        fallback = _notify_calls_by_title(connector)["No OneDrive users synced"]
+        assert fallback["type"] is NotificationType.CONNECTOR_RECORD_SYNC_ERROR
+        assert fallback["severity"] is NotificationSeverity.WARNING
 
     @pytest.mark.asyncio
     async def test_user_without_provisioned_onedrive_warns(self):
@@ -299,7 +320,11 @@ class TestProcessUsersInBatchesNotifications:
             severity=NotificationSeverity.WARNING,
             title="OneDrive not provisioned for some users",
             message_contains="active@test.com",
+            total_calls=2,
         )
+        fallback = _notify_calls_by_title(connector)["No OneDrive users synced"]
+        assert fallback["type"] is NotificationType.CONNECTOR_RECORD_SYNC_ERROR
+        assert fallback["severity"] is NotificationSeverity.WARNING
 
     @pytest.mark.asyncio
     async def test_users_with_onedrive_does_not_warn(self):
@@ -350,9 +375,9 @@ class TestProcessUsersInBatchesNotifications:
         assert "missing-4@test.com" in not_provisioned_message
         assert "missing-5@test.com" not in not_provisioned_message
         assert "and 1 more" in not_provisioned_message
-        assert "locked@test.com" in notifications["OneDrive locked for some users"]
+        assert "locked@test.com" in notifications["OneDrive blocked for some users"]
         assert "unknown@test.com" in notifications[
-            "Some OneDrive users could not be checked"
+            "Some OneDrive users could not be synced"
         ]
 
 
