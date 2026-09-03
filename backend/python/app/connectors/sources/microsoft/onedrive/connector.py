@@ -1288,7 +1288,15 @@ class OneDriveConnector(BaseConnector):
             # Further filter to only users with OneDrive provisioned
             users_to_sync = []
             for user in active_users:
-                if await self._user_has_onedrive(user.source_user_id):
+                try:
+                    has_onedrive = await self._user_has_onedrive(user.source_user_id)
+                except Exception as e:
+                    # An unexpected error for one user (auth, network, etc.) should not
+                    # abort the drive-provisioning check for the remaining users.
+                    self.logger.error(f"❌ Error checking OneDrive for user {user.email}, skipping: {e}", exc_info=True)
+                    continue
+
+                if has_onedrive:
                     users_to_sync.append(user)
                 else:
                     self.logger.info(f"Skipping user {user.email}: No OneDrive license or drive not provisioned")
@@ -1355,6 +1363,18 @@ class OneDriveConnector(BaseConnector):
                 }
                 or "404" in error_message
             ):
+                return False
+
+            # 423 Locked / resourceLocked: the user's OneDrive site is locked or
+            # blocked by an admin (e.g. archived, offboarded, or compliance hold).
+            # Treat like a missing drive so one locked user doesn't abort the whole sync.
+            if (
+                e.response_status_code == 423
+                or "resourcelocked" in error_message
+            ):
+                self.logger.warning(
+                    f"⚠️ OneDrive for user {user_id} is locked or blocked (423 resourceLocked), skipping: {e}"
+                )
                 return False
             raise
         except Exception as e:
