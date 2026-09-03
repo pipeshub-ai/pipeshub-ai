@@ -377,6 +377,7 @@
       "subtitleExisting": "確認或更新您的 PipesHub 伺服器 URL。",
       "label": "伺服器 URL",
       "submit": "連線",
+      "changeServer": "變更伺服器",
       "errors": {
         "empty": "請輸入伺服器 URL。",
         "invalid": "請輸入有效的 URL（例如 http://localhost:3000）。",

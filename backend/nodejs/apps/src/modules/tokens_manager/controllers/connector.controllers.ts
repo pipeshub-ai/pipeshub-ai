@@ -13,7 +13,6 @@ import {
   BadRequestError,
   ConflictError,
   InternalServerError,
-  NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
