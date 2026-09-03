@@ -1,4 +1,3 @@
-import { createHash } from 'crypto';
 import { injectable } from 'inversify';
 import type { RedisClient } from './redis/connectionProvider.interface';
 import { Logger } from './logger.service';
@@ -82,6 +81,19 @@ export class RedisService implements ICacheService {
   }
   isConnected(): boolean {
     return this.connected;
+  }
+
+  /**
+   * Whether `other` describes the same connection this instance was built
+   * for. Kept as a method rather than exposing the credentials so nothing
+   * has to read them back out to make the comparison.
+   */
+  matchesConnection(other: RedisConfig): boolean {
+    return (
+      this.config.username === other.username &&
+      this.config.password === other.password &&
+      (this.config.tls ?? false) === (other.tls ?? false)
+    );
   }
 
   private buildKey(key: string, namespace?: string): string {
@@ -169,22 +181,21 @@ export class RedisService implements ICacheService {
 
 const cacheServices = new Map<string, RedisService>();
 
-function cacheKey(config: RedisConfig): string {
-  // The full connection identity, not just the endpoint: two configs that
-  // differ only in credentials or TLS are different connections, and keying
-  // on host/port alone would hand the second caller the first one's client.
-  // Credentials are hashed rather than embedded so a password never sits in
-  // a long-lived map key (heap dumps, debugger inspection).
-  const credentials = createHash('sha256')
-    .update(`${config.username ?? ''}\u0000${config.password ?? ''}`)
-    .digest('hex');
+/**
+ * Endpoint identity only. Credentials are deliberately NOT part of the key:
+ * hashing them here protected nothing (the cached `RedisService` retains the
+ * cleartext config for its lifetime, so an attacker who can read this map can
+ * already read the password through its value), while a plain SHA-256 over a
+ * password is what `js/insufficient-password-hash` flags. A KDF would be
+ * absurd on a cache lookup. Credential differences are caught by comparing
+ * against the cached instance instead — see `getSharedRedisService`.
+ */
+function endpointKey(config: RedisConfig): string {
   return JSON.stringify([
     config.host,
     config.port,
     config.db ?? 0,
     config.keyPrefix ?? 'app:',
-    config.tls ?? false,
-    credentials,
   ]);
 }
 
@@ -192,9 +203,13 @@ export function getSharedRedisService(
   config: RedisConfig,
   logger: Logger,
 ): RedisService {
-  const key = cacheKey(config);
+  const key = endpointKey(config);
   const existing = cacheServices.get(key);
-  if (existing) {
+  // Same endpoint is not the same connection: a cached instance built with
+  // different credentials or TLS must not be handed out, or the second caller
+  // silently inherits the first one's authenticated client. The comparison
+  // lives on the instance so its credentials are never copied back out.
+  if (existing?.matchesConnection(config)) {
     return existing;
   }
   const service = new RedisService(config, logger);

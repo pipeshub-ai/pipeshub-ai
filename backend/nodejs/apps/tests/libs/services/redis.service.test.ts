@@ -378,6 +378,28 @@ describe('getSharedRedisService cache key', () => {
     expect(a).to.not.equal(b);
   });
 
+  it('rebinds the endpoint to the newer credentials rather than reusing', () => {
+    // The key is the endpoint alone, so a credential change replaces the
+    // cached entry. The first caller keeps its own working instance; the
+    // next lookup gets one built with the current credentials, never the
+    // stale authenticated client.
+    const first = getSharedRedisService(
+      { ...base, password: 'old' } as any,
+      createMockLogger() as any,
+    );
+    const second = getSharedRedisService(
+      { ...base, password: 'new' } as any,
+      createMockLogger() as any,
+    );
+    const third = getSharedRedisService(
+      { ...base, password: 'new' } as any,
+      createMockLogger() as any,
+    );
+
+    expect(second).to.not.equal(first);
+    expect(third).to.equal(second);
+  });
+
   it('does not share a TLS connection with a plaintext one', () => {
     const a = getSharedRedisService(
       { ...base, tls: true } as any,
