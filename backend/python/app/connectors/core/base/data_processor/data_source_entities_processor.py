@@ -1302,6 +1302,7 @@ class DataSourceEntitiesProcessor:
         records_to_reindex: list[Record] = []
         new_records_to_publish: list[Record] = []
         membership_vrids: list[str] = []
+        duplicate_delete_payloads: list[dict] = []
 
         try:
             async with self.data_store_provider.transaction() as tx_store:
@@ -1315,7 +1316,7 @@ class DataSourceEntitiesProcessor:
                     )
 
                     if old_record is None:
-                        # Old record was never stored (dotfile, skipped, etc.) — treat as add.
+                        # Old record was never stored (skipped) — treat as add.
                         processed = await self._process_record(new_record, permissions, tx_store)
                         if processed:
                             new_records_to_publish.append(processed)
@@ -1339,6 +1340,19 @@ class DataSourceEntitiesProcessor:
                             new_record.external_record_id,
                             old_record.id,
                         )
+                        # Capture the cleanup payload before the vertex is gone —
+                        # once deleted it can no longer be looked up by id, and an
+                        # indexed duplicate would otherwise leave an orphaned,
+                        # unreachable vector behind (see _publish_delete_events).
+                        duplicate_vrid = getattr(duplicate, "virtual_record_id", None)
+                        if isinstance(duplicate_vrid, str) and duplicate_vrid:
+                            duplicate_delete_payloads.append({
+                                "orgId": getattr(duplicate, "org_id", self.org_id),
+                                "recordId": duplicate.id,
+                                "version": getattr(duplicate, "version", 1),
+                                "virtualRecordId": duplicate_vrid,
+                                "connectorId": getattr(duplicate, "connector_id", None),
+                            })
                         await tx_store.delete_parent_child_edge_to_record(duplicate.id)
                         await tx_store.delete_record_by_key(duplicate.id)
 
@@ -1496,6 +1510,11 @@ class DataSourceEntitiesProcessor:
                         )
                         for vrid in unique_membership_vrids
                     ],
+                )
+
+            if duplicate_delete_payloads:
+                await self._publish_delete_events(
+                    {"payloads": duplicate_delete_payloads}
                 )
 
         except Exception as e:

@@ -43,15 +43,22 @@ export function ElectronLocalSyncBootstrap() {
     setElectronDesktopCredentials()
       .catch((error) => {
         console.warn('[local-sync] could not hand credentials to the desktop:', error);
-      })
-      .then(() => startLocalWatchers())
-      .catch((error) => {
-        console.warn('[local-sync] watcher bootstrap failed, falling back to journal:', error);
-        return bootstrapElectronLocalSyncFromJournal();
-      })
-      .catch((error) => {
-        console.warn('[local-sync] bootstrap from journal failed:', error);
         hasRunRef.current = false;
+        // Rethrow so the chain below never reaches `startLocalWatchers`.
+        throw error;
+      })
+      .then(() =>
+        startLocalWatchers().catch((error) => {
+          console.warn('[local-sync] watcher bootstrap failed, falling back to journal:', error);
+          return bootstrapElectronLocalSyncFromJournal().catch((fallbackError) => {
+            console.warn('[local-sync] bootstrap from journal failed:', fallbackError);
+            hasRunRef.current = false;
+          });
+        })
+      )
+      .catch(() => {
+        // Credential handoff already logged + reset hasRunRef above; swallow
+        // here so this doesn't surface as an unhandled rejection.
       });
   }, [isHydrated, isAuthenticated, refreshToken]);
 

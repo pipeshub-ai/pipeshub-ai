@@ -2,6 +2,12 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 
+/**
+ * Node has no O_NOFOLLOW on Windows, where it is undefined; the `?? 0`
+ * degrades that platform to a plain read-only open instead of throwing.
+ */
+const NO_FOLLOW_READ_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0);
+
 /** Kept under socket.io's 1MB default maxHttpBufferSize on both ends. */
 const DEFAULT_CHUNK_BYTES = 256 * 1024;
 const MAX_CHUNK_BYTES = 512 * 1024;
@@ -192,7 +198,7 @@ export class ContentStreamer {
 
     // Streaming starts after the ack returns so the frames cannot outrun it.
     setImmediate(() => {
-      void this.streamFile(absPath, stats.size, chunkBytes, emitChunk, abort);
+      void this.streamFile(absPath, stats, chunkBytes, emitChunk, abort);
     });
 
     return {
@@ -205,7 +211,7 @@ export class ContentStreamer {
 
   private async streamFile(
     absPath: string,
-    expectedSize: number,
+    expectedStat: fs.Stats,
     chunkBytes: number,
     emitChunk: ChunkEmitter,
     abort: AbortEmitter,
@@ -213,8 +219,22 @@ export class ContentStreamer {
     let handle: fsp.FileHandle | null = null;
     let seq = 0;
     let sent = 0;
+    const expectedSize = expectedStat.size;
     try {
-      handle = await fsp.open(absPath, 'r');
+      // Re-opening `absPath` by string here is itself a second, separate
+      // filesystem lookup — a symlink swapped in after resolveInsideRoot's
+      // check (and before this deferred open runs) would otherwise be
+      // followed straight out of the sync root. O_NOFOLLOW refuses that if
+      // the final path segment is now a symlink; the inode check below
+      // binds every subsequent read to the exact file identity that was
+      // validated, catching a same-named regular-file swap too.
+      // (`dev` is left out of the comparison: Node reports it inconsistently
+      // between a path-based stat and an fstat on the same file on Windows.)
+      handle = await fsp.open(absPath, NO_FOLLOW_READ_FLAGS);
+      const openedStat = await handle.stat();
+      if (!openedStat.isFile() || openedStat.ino !== expectedStat.ino) {
+        throw new Error(`${absPath} changed identity between validation and open`);
+      }
       const buffer = Buffer.allocUnsafe(chunkBytes);
       for (;;) {
         const { bytesRead } = await handle.read(buffer, 0, chunkBytes, sent);

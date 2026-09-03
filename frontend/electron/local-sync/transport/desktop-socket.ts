@@ -1,5 +1,5 @@
 import { io, type Socket } from 'socket.io-client';
-import type { DesktopCredentialsStore } from '../persistence/credentials';
+import { isValidApiBaseUrl, type DesktopCredentialsStore } from '../persistence/credentials';
 import type { ServePullRequest, ServePullResponse } from '../pull-responder-types';
 import type { ContentFetchRequest, ContentStreamAck } from './content-streamer';
 
@@ -68,6 +68,13 @@ export class DesktopSocketClient {
     }
     const baseUrl = credentials.apiBaseUrl;
     if (!baseUrl) return;
+    // setCredentials already validates on write; re-check here too since
+    // this value can also come back from a credentials file loaded straight
+    // off disk, and it is about to receive the access token over the wire.
+    if (!isValidApiBaseUrl(baseUrl)) {
+      this.log(`refusing to connect: apiBaseUrl is not an approved origin: ${baseUrl}`);
+      return;
+    }
 
     this.authFailures = 0;
     this.socket = io(`${baseUrl}${NAMESPACE}`, {

@@ -28,6 +28,7 @@ shortcuts.
 
 from __future__ import annotations
 
+import copy
 import sys
 import types
 from contextlib import asynccontextmanager
@@ -511,7 +512,7 @@ class TestRunSync:
         # A second machine claiming the socket must not be able to make a full
         # run prune everything the owning machine synced.
         await _seed_files(connector, "kept.txt")
-        before = dict(_records_snapshot(graph_store))
+        before = copy.deepcopy(_records_snapshot(graph_store))
 
         await self._run(
             connector,
@@ -529,7 +530,7 @@ class TestRunSync:
         # The prune must never run on a skipped sync, or one closed laptop
         # would empty the user's index.
         await _seed_files(connector, "kept.txt")
-        before = dict(_records_snapshot(graph_store))
+        before = copy.deepcopy(_records_snapshot(graph_store))
 
         connector._pull_with_retry = AsyncMock(
             side_effect=LocalFsDesktopOfflineError("asleep")

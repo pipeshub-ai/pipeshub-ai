@@ -101,10 +101,6 @@ export function InstanceManagementPanel() {
     setDeleteBusy(true);
     try {
       await ConnectorsApi.deleteConnectorInstance(id);
-      // Purge the desktop's journal for this connector too. Unmounting alone
-      // leaves its meta on disk, and the next launch remounts a watcher that
-      // holds the sync root against any new connector on the same folder.
-      await removeElectronLocalSync(id);
       setDeleteOpen(false);
       setPendingDeleteId(null);
       closeInstancePanel();
@@ -113,6 +109,15 @@ export function InstanceManagementPanel() {
         variant: 'success',
         title: t('workspace.connectors.removeInstanceDialog.successTitle'),
         duration: 3000,
+      });
+      // Purge the desktop's journal for this connector too. Unmounting alone
+      // leaves its meta on disk, and the next launch remounts a watcher that
+      // holds the sync root against any new connector on the same folder.
+      // Best-effort: the backend delete (and local store update above) already
+      // succeeded, so a failure here must not surface as a deletion error or
+      // undo the removal.
+      void removeElectronLocalSync(id).catch((error) => {
+        console.warn('[local-sync] failed to purge journal for removed connector:', error);
       });
     } catch (error: unknown) {
       let description: string | undefined;
