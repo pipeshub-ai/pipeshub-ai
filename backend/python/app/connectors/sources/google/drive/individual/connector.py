@@ -1606,6 +1606,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             metadata_request = drive_service.files().get(
                 fileId=file_id,
                 fields=DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
+                supportsAllDrives=True,
             )
             return await self.drive_data_source.execute(metadata_request.execute)
         except HttpError as http_error:
@@ -1716,7 +1717,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     # Download file to temp directory
                     try:
                         with open(temp_file_path, "wb") as f:
-                            request = drive_service.files().get_media(fileId=file_id)
+                            request = drive_service.files().get_media(
+                                fileId=file_id,
+                                supportsAllDrives=True,
+                            )
                             downloader = MediaIoBaseDownload(f, request, chunksize=_DRIVE_DOWNLOAD_CHUNK_SIZE)
 
                             done = False
@@ -1766,7 +1770,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             # Regular file download without conversion
             # StreamingResponse will handle chunking automatically
-            request = drive_service.files().get_media(fileId=file_id)
+            request = drive_service.files().get_media(
+                fileId=file_id,
+                supportsAllDrives=True,
+            )
             return create_stream_record_response(
                 self._stream_google_api_request(request, error_context="file download"),
                 filename=file_name,
