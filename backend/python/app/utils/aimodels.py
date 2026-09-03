@@ -22,6 +22,7 @@ from app.config.constants.ai_models import (
     AZURE_EMBEDDING_API_VERSION,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_REASONING_EFFORT,
+    EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS,
     OPENROUTER_BASE_URL,
     REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS,
     AzureOpenAILLM,
@@ -360,7 +361,11 @@ def _set_embedding_dimensions_kwarg(
         kwargs[key] = dimensions
 
 
-def _set_openai_client_limits_kwargs(kwargs: Dict[str, Any]) -> None:
+def _set_openai_client_limits_kwargs(
+    kwargs: Dict[str, Any],
+    provider: str | None = None,
+    endpoint: str | None = None,
+) -> None:
     """Bound one HTTP attempt and disable the SDK's own retry loop.
 
     Callers wrap embed calls in their own timeout (the indexing pipeline bounds
@@ -369,8 +374,15 @@ def _set_openai_client_limits_kwargs(kwargs: Dict[str, Any]) -> None:
     the caller's clock instead of surfacing as the 429 or timeout it was.
     Retries belong to the caller, which can also signal backpressure; see
     ``app.utils.embedding_retry``.
+
+    Locally served models (LM Studio, self-hosted LiteLLM, etc.) are much
+    slower per request than hosted APIs, so they get the same generous timeout
+    the local embedding server uses.
     """
-    kwargs["timeout"] = REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS
+    if is_local_cpu_embedding_provider(provider, endpoint):
+        kwargs["timeout"] = EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS
+    else:
+        kwargs["timeout"] = REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS
     kwargs["max_retries"] = 0
 
 
@@ -428,7 +440,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=check_embedding_ctx_length,
         )
         _set_embedding_dimensions_kwarg(kwargs, dimensions)
-        _set_openai_client_limits_kwargs(kwargs)
+        _set_openai_client_limits_kwargs(kwargs, provider, configuration.get('endpoint'))
         return OpenAIEmbeddings(**kwargs)
 
     elif provider == EmbeddingProvider.AZURE_OPENAI.value:
@@ -441,7 +453,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             azure_endpoint=configuration['endpoint'],
         )
         _set_embedding_dimensions_kwarg(kwargs, dimensions)
-        _set_openai_client_limits_kwargs(kwargs)
+        _set_openai_client_limits_kwargs(kwargs, provider, configuration.get('endpoint'))
         return AzureOpenAIEmbeddings(**kwargs)
 
     elif provider == EmbeddingProvider.COHERE.value:
@@ -519,7 +531,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             organization=configuration.get("organizationId"),
         )
         _set_embedding_dimensions_kwarg(openai_kwargs, dimensions)
-        _set_openai_client_limits_kwargs(openai_kwargs)
+        _set_openai_client_limits_kwargs(openai_kwargs, provider, configuration.get('endpoint'))
         return OpenAIEmbeddings(**openai_kwargs)
 
     elif provider == EmbeddingProvider.AWS_BEDROCK.value:
@@ -549,7 +561,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=_accepts_token_array_embedding_input(base_url),
         )
         _set_embedding_dimensions_kwarg(compat_kwargs, dimensions)
-        _set_openai_client_limits_kwargs(compat_kwargs)
+        _set_openai_client_limits_kwargs(compat_kwargs, provider, base_url)
         return OpenAIEmbeddings(**compat_kwargs)
 
     elif provider == EmbeddingProvider.OPENROUTER.value:
@@ -562,7 +574,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=_accepts_token_array_embedding_input(OPENROUTER_BASE_URL),
         )
         _set_embedding_dimensions_kwarg(or_emb_kwargs, dimensions)
-        _set_openai_client_limits_kwargs(or_emb_kwargs)
+        _set_openai_client_limits_kwargs(or_emb_kwargs, provider, OPENROUTER_BASE_URL)
         return OpenAIEmbeddings(**or_emb_kwargs)
 
     elif provider == EmbeddingProvider.LM_STUDIO.value:
@@ -575,7 +587,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=False,
         )
         _set_embedding_dimensions_kwarg(lms_emb_kwargs, dimensions)
-        _set_openai_client_limits_kwargs(lms_emb_kwargs)
+        _set_openai_client_limits_kwargs(lms_emb_kwargs, provider, configuration["endpoint"])
         return OpenAIEmbeddings(**lms_emb_kwargs)
 
     elif provider == EmbeddingProvider.LITELLM_PROXY.value:
@@ -588,7 +600,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=False,
         )
         _set_embedding_dimensions_kwarg(llp_emb_kwargs, dimensions)
-        _set_openai_client_limits_kwargs(llp_emb_kwargs)
+        _set_openai_client_limits_kwargs(llp_emb_kwargs, provider, configuration["endpoint"])
         return OpenAIEmbeddings(**llp_emb_kwargs)
 
     elif provider == EmbeddingProvider.TOGETHER.value:
