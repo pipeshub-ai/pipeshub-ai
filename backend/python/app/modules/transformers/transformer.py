@@ -15,6 +15,10 @@ class TransformContext(BaseModel):
     event_type: Optional[str] = None
     reconciliation_context: Optional[ReconciliationContext] = None
     prev_virtual_record_id: Optional[str] = None
+    # Decided once per record from mime/extension by `events._is_code_file`, not
+    # from recordType — connectors type every repo blob CODE_FILE, including
+    # README and asset files that must not get the code prompt.
+    is_code: bool = False
 
 class Transformer(ABC):
     @abstractmethod

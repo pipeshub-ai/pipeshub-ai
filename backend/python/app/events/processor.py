@@ -149,12 +149,14 @@ class Processor:
         record,
         event_type: Optional[str] = None,
         prev_virtual_record_id: Optional[str] = None,
+        is_code: bool = False,
     ) -> TransformContext:
         """Create TransformContext with per-invocation reconciliation context."""
         return TransformContext(
             record=record,
             event_type=event_type,
             prev_virtual_record_id=prev_virtual_record_id,
+            is_code=is_code,
         )
 
     async def process_image(self, record_id, content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
@@ -1568,17 +1570,24 @@ class Processor:
             modified_html, images = html_parser.extract_and_replace_images(html_content)
 
             if images:
-                image_parser = self.parsers[ExtensionTypes.PNG.value]
-                urls_to_convert = [image["url"] for image in images]
-                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+                for image in images:
+                    if image.get("inline"):
+                        caption_map[image["new_alt_text"]] = image["url"]
 
-                for i, image in enumerate(images):
-                    if base64_urls[i]:
-                        caption_map[image["new_alt_text"]] = base64_urls[i]
+                url_images = [img for img in images if not img.get("inline")]
+                if url_images:
+                    image_parser = self.parsers[ExtensionTypes.PNG.value]
+                    urls_to_convert = [image["url"] for image in url_images]
+                    base64_urls = await image_parser.urls_to_base64(urls_to_convert)
 
+                    for i, image in enumerate(url_images):
+                        if base64_urls[i]:
+                            caption_map[image["new_alt_text"]] = base64_urls[i]
+
+                inline_count = len(images) - len(url_images)
                 self.logger.debug(
-                    f"📷 Extracted {len(images)} images from HTML, "
-                    f"converted {len([u for u in base64_urls if u])} to base64"
+                    f"📷 Extracted {len(images)} images from HTML "
+                    f"({inline_count} inline, {len(url_images)} from URLs)"
                 )
 
             block_containers = await html_parser.parse_to_blocks(
@@ -1883,7 +1892,9 @@ class Processor:
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
-            ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
+            ctx = self._create_transform_context(
+                record, event_type, prev_virtual_record_id, is_code=True
+            )
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
 

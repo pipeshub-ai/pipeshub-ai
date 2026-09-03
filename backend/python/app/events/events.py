@@ -440,6 +440,7 @@ class EventProcessor:
             record=record,
             event_type=event_type,
             prev_virtual_record_id=prev_virtual_record_id,
+            is_code=is_code,
         )
 
         ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
@@ -488,17 +489,10 @@ class EventProcessor:
                     block_container=block_container,
                     org_id=org_id,
                     departments=departments or [],
+                    is_code=is_code,
                 )
 
                 record.semantic_metadata = semantic_metadata
-
-                try:
-                    with open("test.txt", "a") as f:
-                        f.write(f"record_id={record_id} record_name={getattr(record, 'record_name', 'N/A')}\n")
-                        f.write(json.dumps(semantic_metadata.model_dump() if semantic_metadata else None, indent=2, default=str))
-                        f.write("\n---\n")
-                except Exception:
-                    self.logger.debug("Failed to write semantic metadata to test.txt", exc_info=True)
 
                 if semantic_metadata and (semantic_metadata.summary or "").strip():
                     await self.sink_orchestrator.vector_store.index_record_summary(

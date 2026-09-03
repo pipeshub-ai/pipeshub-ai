@@ -229,33 +229,36 @@ class TestToSemanticMetadata:
 # apply
 # =========================================================================
 class TestApplyRouting:
-    """apply picks the branch from the blocks, not from record_type."""
+    """apply picks the branch from ctx.is_code, not from the blocks alone."""
+
+    @staticmethod
+    def _code_classification():
+        from app.modules.transformers.document_extraction import (
+            CodeClassification,
+            SubCategories,
+        )
+
+        return CodeClassification(
+            architecture_role="Service",
+            category="Indexing",
+            subcategories=SubCategories(level1="a", level2="", level3=""),
+            topics=["t"],
+            summary="S",
+        )
 
     @pytest.mark.asyncio
     async def test_code_file_takes_the_code_branch(self):
         ext = _build_extractor()
         container = _parse()
 
-        from app.modules.transformers.document_extraction import (
-            CodeClassification,
-            SubCategories,
-        )
-
-        ext.process_code_document = AsyncMock(
-            return_value=CodeClassification(
-                architecture_role="Service",
-                category="Indexing",
-                subcategories=SubCategories(level1="a", level2="", level3=""),
-                topics=["t"],
-                summary="S",
-            )
-        )
+        ext.process_code_document = AsyncMock(return_value=self._code_classification())
         ext.process_document = AsyncMock()
 
         record = MagicMock()
         record.block_containers = container
         ctx = MagicMock()
         ctx.record = record
+        ctx.is_code = True
 
         await ext.apply(ctx)
 
@@ -274,12 +277,53 @@ class TestApplyRouting:
         record.org_id = "org-1"
         ctx = MagicMock()
         ctx.record = record
+        ctx.is_code = False
 
         await ext.apply(ctx)
 
         ext.process_code_document.assert_not_awaited()
         ext.process_document.assert_awaited_once()
         assert record.semantic_metadata is None
+
+    @pytest.mark.asyncio
+    async def test_unflagged_record_never_reaches_the_code_prompt(self):
+        """A repo blob typed CODE_FILE by the connector but not flagged as code
+        (README, asset, config) must not be described as an architecture."""
+        ext = _build_extractor()
+        ext.process_code_document = AsyncMock(return_value=self._code_classification())
+        ext.process_document = AsyncMock(return_value=None)
+
+        record = MagicMock()
+        record.block_containers = _parse()
+        record.org_id = "org-1"
+        ctx = MagicMock()
+        ctx.record = record
+        ctx.is_code = False
+
+        await ext.apply(ctx)
+
+        ext.process_code_document.assert_not_awaited()
+        ext.process_document.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_flagged_code_without_summary_block_falls_back(self):
+        """Languages with no tree-sitter grammar are flagged as code but parsed
+        as prose, so there is no summary block for the code prompt to use."""
+        ext = _build_extractor()
+        ext.process_code_document = AsyncMock()
+        ext.process_document = AsyncMock(return_value=None)
+
+        record = MagicMock()
+        record.block_containers.blocks = [_make_text_block("#!/bin/sh\necho hi")]
+        record.org_id = "org-1"
+        ctx = MagicMock()
+        ctx.record = record
+        ctx.is_code = True
+
+        await ext.apply(ctx)
+
+        ext.process_code_document.assert_not_awaited()
+        ext.process_document.assert_awaited_once()
 
 
 # =========================================================================

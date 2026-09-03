@@ -61,10 +61,6 @@ from app.utils.image_utils import normalize_image_to_base64
 
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 
-# `FileRole.TEST`, inlined rather than imported: this module indexes every
-# record type and must not take a dependency on the code parser to do it.
-_TEST_FILE_ROLE = "test"
-
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
 
 
@@ -466,20 +462,7 @@ class VectorStore(Transformer):
         virtual_record_id: str,
         org_id: str,
         semantic_metadata: "SemanticMetadata",
-        record: "Record | None" = None,
     ) -> Document | None:
-        """The record-level summary vector, or None when it would mislead.
-
-        A test file's extracted summary describes the thing it tests, in that
-        thing's own vocabulary — a Jira connector test summarises as
-        "synchronization workflow, users, groups, projects, permissions", which
-        is indistinguishable from the connector. Giving every test a second
-        vector that reads like an implementation is why a search for one
-        returned six of them ahead of the file that defines it. Tests stay
-        reachable through their own content blocks.
-        """
-        if (getattr(record, "file_role", None) or "").strip().lower() == _TEST_FILE_ROLE:
-            return None
         summary = (semantic_metadata.summary or "").strip()
         if not summary:
             return None
@@ -506,7 +489,7 @@ class VectorStore(Transformer):
         if semantic_metadata is None:
             return
         summary_doc = self._build_record_summary_document(
-            record_id, virtual_record_id, org_id, semantic_metadata, record
+            record_id, virtual_record_id, org_id, semantic_metadata
         )
         if summary_doc:
             documents_to_embed.append(summary_doc)
@@ -562,7 +545,7 @@ class VectorStore(Transformer):
     ) -> None:
         """Embed the record-level summary after extraction completes."""
         summary_doc = self._build_record_summary_document(
-            record_id, virtual_record_id, org_id, semantic_metadata, record
+            record_id, virtual_record_id, org_id, semantic_metadata
         )
         if summary_doc is None:
             return
@@ -1302,7 +1285,7 @@ class VectorStore(Transformer):
                     semantic_metadata = getattr(record, "semantic_metadata", None)
                     if semantic_metadata:
                         summary_doc = self._build_record_summary_document(
-                            record_id, virtual_record_id, org_id, semantic_metadata, record
+                            record_id, virtual_record_id, org_id, semantic_metadata
                         )
                         if summary_doc:
                             await self._process_document_chunks([summary_doc], record_id, collection_name)

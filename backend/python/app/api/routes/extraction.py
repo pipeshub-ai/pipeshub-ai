@@ -32,6 +32,7 @@ class ClassifyRequest(BaseModel):
     block_container: BlocksContainer
     org_id: str
     departments: list[str] = []
+    is_code: bool = False
 
 
 class ClassifyResponse(BaseModel):
@@ -53,9 +54,9 @@ class ClassifyResponse(BaseModel):
 async def classify(request: Request, body: ClassifyRequest) -> JSONResponse:
     """Classify a document (departments, topics, summary, sentiment).
 
-    Source files are detected from the blocks themselves and classified with
-    the code prompt instead, which returns a different field set -- hence the
-    shared mapper rather than an inline SemanticMetadata construction here.
+    ``is_code`` comes from the caller's record-level decision and selects the
+    code prompt, which returns a different field set -- hence the shared mapper
+    rather than an inline SemanticMetadata construction here.
 
     ``departments`` should be pre-fetched by the caller (e.g. from the graph
     DB) to avoid introducing a graph connection dependency here.
@@ -68,6 +69,7 @@ async def classify(request: Request, body: ClassifyRequest) -> JSONResponse:
             org_id=body.org_id,
             departments=body.departments or None,
             block_groups=body.block_container.block_groups,
+            is_code=body.is_code,
         )
         if classification is None:
             metadata = None
