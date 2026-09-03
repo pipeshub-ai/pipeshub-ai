@@ -232,7 +232,22 @@ class TestCredentialsOverUnverifiedTls:
         assert RedisConnectionProviderFactory.create(config, mode="standalone")
 
     def test_the_default_install_is_untouched(self) -> None:
-        """Compose and Helm both ship a password with TLS off on a private
-        network; this guard must not break that."""
+        """Deliberate, and repeatedly re-raised in review -- reasoning here
+        rather than in a PR thread.
+
+        Requiring TLS whenever a password is set would break every default
+        install: Compose and Helm both ship ``REDIS_PASSWORD`` with TLS off.
+        That posture is not Redis-specific -- in the same compose file MongoDB
+        (``mongodb://user:pass@mongodb:27017``), Neo4j (``bolt://``, not
+        ``bolt+s://``) and Qdrant (plain gRPC + API key) all send credentials
+        the same way, and none of the four publishes a port to the host: they
+        are reachable only on the Docker bridge / cluster network. Singling
+        Redis out would be inconsistent without improving anything, and
+        applying it to all four would require every user to provision a PKI
+        before ``docker compose up`` -- a product decision, not a review fix.
+
+        What IS enforced, because it has no legitimate reading: TLS on +
+        verification off + credentials is rejected.
+        """
         config = self._config(tls=False, password="secret")
         assert RedisConnectionProviderFactory.create(config, mode="standalone")

@@ -236,9 +236,24 @@ describe('credentials over unverified TLS', () => {
     ).to.not.throw();
   });
 
+  // Deliberate, and repeatedly re-raised in review -- so the reasoning lives
+  // here rather than in a PR thread.
+  //
+  // Requiring TLS whenever a password is set would break every default
+  // install: Compose and Helm both ship `REDIS_PASSWORD` with TLS off. That
+  // posture is not Redis-specific -- in the same compose file MongoDB
+  // (`mongodb://user:pass@mongodb:27017`), Neo4j (`bolt://`, not `bolt+s://`)
+  // and Qdrant (plain gRPC + API key) all send credentials the same way, and
+  // none of the four publishes a port to the host: they are reachable only on
+  // the Docker bridge / cluster network. Singling Redis out would be
+  // inconsistent without improving anything (an attacker who can read that
+  // network reads the Mongo and Neo4j passwords too), and applying it to all
+  // four would require every user to provision a PKI before `docker compose
+  // up`. That is a product decision, not a review fix.
+  //
+  // What IS enforced, because it has no legitimate reading:
+  // TLS on + verification off + credentials -> rejected (see above).
   it('leaves the default install (no TLS, password set) alone', () => {
-    // Compose and Helm both ship a password with TLS off on a private
-    // network; this guard must not break that.
     expect(() =>
       RedisConnectionProviderFactory.create(
         withTls({ tls: false, password: 'secret' }),
