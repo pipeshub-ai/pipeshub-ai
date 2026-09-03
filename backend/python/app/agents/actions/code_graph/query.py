@@ -365,7 +365,7 @@ async def query_code_graph_impl(
     if not matched:
         return {
             "select": select, "resolved_as": how, "connector_id": connector_id,
-            "matches": 0, "nodes": [], "edges": [], "truncated": False,
+            "matches": 0, "nodes": [], "truncated": False,
             # A dead end is where the model most needs a next step. Without one
             # it guesses another name -- three wasted calls in the trace this
             # was written from.
