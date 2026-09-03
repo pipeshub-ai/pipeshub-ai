@@ -14,6 +14,8 @@ import {
   resetEmail,
   resetPassword,
   suspiciousLoginAttempt,
+  joinRequestNotify,
+  joinRequestDecision,
 } from '../utils/emailTemplates';
 import nodemailer from 'nodemailer';
 import { inject, injectable } from 'inversify';
@@ -84,7 +86,15 @@ export class MailController {
 
       case EmailTemplateType.DomainLimitReached:
         emailContent = domainLimitReached(templateData);
-        return emailContent;  
+        return emailContent;
+
+      case EmailTemplateType.JoinRequestNotify:
+        emailContent = joinRequestNotify(templateData);
+        return emailContent;
+
+      case EmailTemplateType.JoinRequestDecision:
+        emailContent = joinRequestDecision(templateData);
+        return emailContent;
 
       default:
         throw 'Unknown Template';
