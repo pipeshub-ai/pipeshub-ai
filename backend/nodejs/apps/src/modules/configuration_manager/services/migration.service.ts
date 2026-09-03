@@ -101,11 +101,14 @@ export class MigrationService {
   async chatSessionsMigration(): Promise<void> {
     this.logger.info('Migrating legacy conversations into chatSessions');
     try {
-      const batchSize = parseInt(
-        process.env.CHAT_SESSIONS_MIGRATION_BATCH_SIZE ||
-          String(DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE),
+      const configuredBatchSize = Number.parseInt(
+        process.env.CHAT_SESSIONS_MIGRATION_BATCH_SIZE ?? '',
         10,
       );
+      const batchSize =
+        Number.isInteger(configuredBatchSize) && configuredBatchSize > 0
+          ? configuredBatchSize
+          : DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE;
       const result = await new ChatSessionsMigration(
         this.logger,
         this.keyValueStoreService,

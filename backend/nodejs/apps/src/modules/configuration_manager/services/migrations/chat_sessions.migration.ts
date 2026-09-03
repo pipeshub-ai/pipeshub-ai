@@ -176,11 +176,18 @@ export class ChatSessionsMigration {
     let messagesMigrated = 0;
     let errored = 0;
 
-    // No `skip` — a successfully migrated document is flagged and drops out
-    // of this same filter, so the next iteration naturally advances.
+    // Advance by `_id` rather than relying on the `isMigrated` flag alone to
+    // drop rows out of the filter: a document that fails is deliberately left
+    // unflagged, so without a cursor it sorts back to the front of the very
+    // next scan and this loop spins on it forever. Failures are retried on the
+    // next boot instead, when the cursor restarts from the beginning.
+    let lastId: unknown = null;
     for (;;) {
       const batch = await spec.legacyModel
-        .find({ isMigrated: { $ne: true } })
+        .find({
+          isMigrated: { $ne: true },
+          ...(lastId ? { _id: { $gt: lastId } } : {}),
+        })
         .sort({ _id: 1 })
         .limit(this.batchSize)
         .lean();
@@ -188,6 +195,16 @@ export class ChatSessionsMigration {
       if (batch.length === 0) {
         break;
       }
+
+      const batchLastId = batch[batch.length - 1]?._id;
+      if (!batchLastId) {
+        this.logger.error(
+          `Chat sessions migration for ${spec.legacyLabel} stopped: scanned a document without an _id, cannot advance the cursor safely`,
+        );
+        errored += 1;
+        break;
+      }
+      lastId = batchLastId;
 
       for (const doc of batch) {
         try {
@@ -258,6 +275,25 @@ export class ChatSessionsMigration {
     const messages: any[] = Array.isArray(doc.messages) ? doc.messages : [];
 
     if (messages.length > 0) {
+      // Both checks below have to happen before the bulkWrite: an `_id`-keyed
+      // upsert per message silently collapses duplicates (and, with a missing
+      // `_id`, collapses every message onto one `{_id: undefined}` filter),
+      // which is unrecoverable data loss once written.
+      const messageIds = messages.map((message) => message._id);
+      if (messageIds.some((id) => id === undefined || id === null)) {
+        throw new Error(
+          `Session ${String(doc._id)} has message(s) without an _id; refusing to copy (an _id-keyed upsert would collapse them)`,
+        );
+      }
+      const distinctMessageIdCount = new Set(
+        messageIds.map((id) => String(id)),
+      ).size;
+      if (distinctMessageIdCount !== messages.length) {
+        throw new Error(
+          `Session ${String(doc._id)} has duplicate message _id(s): ${messages.length} messages but only ${distinctMessageIdCount} distinct ids`,
+        );
+      }
+
       const messageOps = messages.map((message, index) => {
         const { _id, ...rest } = message;
         return {
@@ -281,18 +317,23 @@ export class ChatSessionsMigration {
         ordered: true,
       });
 
-      // Verify by counting actual stored documents for this session, not the
-      // bulkWrite result's matched/upserted counters: a duplicate message
-      // `_id` within one legacy array would still report as "written" via
-      // those counters (insert + a no-op matched upsert) while silently
-      // collapsing two messages into one stored row. Counting real rows for
-      // this sessionId catches that.
+      // Verify against actually stored rows rather than the bulkWrite
+      // result's matched/upserted counters, which report a no-op matched
+      // upsert as "written".
+      //
+      // Scoped to the ids just copied rather than every row for this
+      // sessionId: if an earlier attempt crashed after the ChatSession upsert
+      // but before the `isMigrated` write, that session is already live and
+      // may have accumulated newer messages. An unscoped count would then
+      // exceed messages.length on every retry and strand the document
+      // permanently unmigrated.
       const storedCount = await ChatSessionMessage.countDocuments({
         sessionId: doc._id,
+        _id: { $in: messageIds },
       });
       if (storedCount !== messages.length) {
         throw new Error(
-          `Message count mismatch for session ${doc._id}: expected ${messages.length}, found ${storedCount} (likely duplicate message _id in the legacy array)`,
+          `Message count mismatch for session ${String(doc._id)}: expected ${messages.length}, found ${storedCount}`,
         );
       }
     }

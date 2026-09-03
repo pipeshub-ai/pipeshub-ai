@@ -271,6 +271,24 @@ describe('MigrationService', () => {
       expect(capturedBatchSize).to.equal(10)
     })
 
+    it('should fall back to the default batch size when the env var is not a positive integer', async () => {
+      let capturedBatchSize: number | undefined
+      chatSessionsMigrationStub.callsFake(function (this: any) {
+        capturedBatchSize = this.batchSize
+        return Promise.resolve({ sessionsMigrated: 0, messagesMigrated: 0, errored: 0 })
+      })
+
+      for (const value of ['not-a-number', '0', '-5', '']) {
+        capturedBatchSize = undefined
+        process.env.CHAT_SESSIONS_MIGRATION_BATCH_SIZE = value
+
+        const service = new MigrationService(mockLogger, mockKeyValueStore)
+        await service.chatSessionsMigration()
+
+        expect(capturedBatchSize, `env value ${JSON.stringify(value)}`).to.equal(10)
+      }
+    })
+
     it('should warn when migration finishes with errors', async () => {
       chatSessionsMigrationStub.resolves({
         sessionsMigrated: 3,

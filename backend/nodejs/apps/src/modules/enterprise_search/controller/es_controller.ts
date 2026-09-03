@@ -5979,6 +5979,9 @@ export const deleteAgent =
         agentKey,
         modelInfo,
         sessionType: 'agent',
+        // Set explicitly: the legacy agentConversations schema defaulted this,
+        // the unified chatSessions schema can't (it also backs plain chats).
+        conversationSource: 'agent_chat',
       };
 
       // Start transaction if replica set is available
@@ -6561,6 +6564,9 @@ export const createAgentConversation =
         agentKey,
         modelInfo,
         sessionType: 'agent',
+        // Set explicitly: the legacy agentConversations schema defaulted this,
+        // the unified chatSessions schema can't (it also backs plain chats).
+        conversationSource: 'agent_chat',
       };
 
       const conversation = new ChatSession(userConversationData);
@@ -7392,13 +7398,18 @@ export const addMessageStreamToAgentConversation =
                 const errorMessage = errorData.message || 'Unknown error occurred';
                 upstreamAiErrorEventForwarded = true;
                 if (existingConversation) {
-                  markAgentConversationFailed(
+                  void markAgentConversationFailed(
                     existingConversation,
                     errorMessage,
                     session,
                     'streaming_error',
                     errorData.stack,
-                  );
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark agent conversation from AI RUN_ERROR SSE', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
                 }
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
@@ -7472,7 +7483,7 @@ export const addMessageStreamToAgentConversation =
                   'Unknown error occurred';
                 upstreamAiErrorEventForwarded = true;
                 if (existingConversation) {
-                  markAgentConversationFailed(
+                  void markAgentConversationFailed(
                     existingConversation,
                     errorMessage,
                     session,
@@ -7481,7 +7492,12 @@ export const addMessageStreamToAgentConversation =
                     errorData.metadata
                       ? new Map(Object.entries(errorData.metadata))
                       : undefined,
-                  );
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark agent conversation from AI error SSE', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
                 }
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
@@ -7492,13 +7508,18 @@ export const addMessageStreamToAgentConversation =
                 });
                 upstreamAiErrorEventForwarded = true;
                 if (existingConversation) {
-                  markAgentConversationFailed(
+                  void markAgentConversationFailed(
                     existingConversation,
                     `Failed to parse error event: ${parseError.message}`,
                     session,
                     'parse_error',
                     parseError.stack,
-                  );
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark agent conversation after error-event parse failure', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
                 }
                 filteredChunk += event + '\n\n';
               }
@@ -7738,7 +7759,8 @@ export const addMessageStreamToAgentConversation =
         logger.error('Stream error', { requestId, error: error.message });
         try {
           if (existingConversation) {
-            markAgentConversationFailed(
+            // Awaited so the catch below actually observes a rejection.
+            await markAgentConversationFailed(
               existingConversation,
               error.message,
               session,

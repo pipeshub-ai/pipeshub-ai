@@ -74,13 +74,22 @@ function stubChatSession() {
 }
 
 function stubChatSessionMessage(
-  opts: { perDocCount?: (sessionId: any) => number } = {},
+  opts: {
+    perDocCount?: (sessionId: any) => number;
+    /** Full-filter variant, for asserting the `_id: {$in: [...]}` scoping. */
+    countByFilter?: (filter: any) => number;
+  } = {},
 ) {
   const countDocuments = sinon
     .stub(ChatSessionMessage, 'countDocuments')
-    .callsFake((filter: any) =>
-      Promise.resolve(opts.perDocCount ? opts.perDocCount(filter.sessionId) : 0),
-    );
+    .callsFake((filter: any) => {
+      if (opts.countByFilter) {
+        return Promise.resolve(opts.countByFilter(filter)) as any;
+      }
+      return Promise.resolve(
+        opts.perDocCount ? opts.perDocCount(filter.sessionId) : 0,
+      ) as any;
+    });
   const bulkWrite = sinon.stub(ChatSessionMessage.collection, 'bulkWrite').resolves({});
   return { countDocuments, bulkWrite };
 }
@@ -314,7 +323,7 @@ describe('ChatSessionsMigration', () => {
       batches: [[legacyDoc]],
     });
     const sessionStubs = stubChatSession();
-    // Simulate a duplicate message _id collapsing 2 messages into 1 stored row.
+    // Simulate one of the two copied rows failing to land.
     stubChatSessionMessage({ perDocCount: () => 1 });
 
     const result = await new ChatSessionsMigration(logger as any, kv as any).run();
@@ -327,6 +336,168 @@ describe('ChatSessionsMigration', () => {
     // At least one document still errored this boot -> completion flag withheld
     // even though the batch loop itself terminated (no unmigrated docs left to scan).
     expect(kv.set.called).to.equal(false);
+  });
+
+  it('terminates instead of rescanning a permanently-failing document forever', async () => {
+    // Regression: the scan filter is {isMigrated: {$ne: true}} and a failed
+    // document is deliberately left unflagged, so without an _id cursor it
+    // sorts back to the front of the very next scan and the loop spins on it
+    // for the rest of the boot. This stub models the real collection
+    // (honouring _id: {$gt: cursor}) so an unbounded loop would hang here.
+    const logger = makeLogger();
+    const kv = makeKvStore({
+      [configPaths.chatKbFiltersMigration]: 'true',
+      [configPaths.chatSessionsMigration]: JSON.stringify({
+        agentConversationsMigrated: true,
+      }),
+    });
+
+    const failing = makeLegacyDoc({ messages: [makeMessage(), makeMessage()] });
+    const healthy = makeLegacyDoc({ messages: [makeMessage()] });
+    // _id order drives the cursor; make the failing document sort first.
+    const docs = [failing, healthy].sort((a, b) =>
+      a._id.toString() < b._id.toString() ? -1 : 1,
+    );
+
+    sinon.stub(Conversation, 'countDocuments').resolves(0 as any);
+    const find = sinon.stub(Conversation, 'find').callsFake((filter: any) => {
+      if (!filter?.isMigrated) {
+        return chain([]) as any;
+      }
+      const after = filter._id?.$gt;
+      const remaining = docs.filter(
+        (d) => !d.isMigrated && (!after || d._id.toString() > after.toString()),
+      );
+      return chain(remaining.slice(0, 1)) as any;
+    });
+    // Only successfully migrated documents get flagged, mirroring production.
+    sinon.stub(Conversation.collection, 'updateOne').callsFake((filter: any) => {
+      const target = docs.find((d) => d._id.toString() === filter._id.toString());
+      if (target) {
+        target.isMigrated = true;
+      }
+      return Promise.resolve({}) as any;
+    });
+    stubChatSession();
+    // One row lands per session: a match for the 1-message healthy document,
+    // one short for the 2-message failing one.
+    stubChatSessionMessage({ countByFilter: () => 1 });
+
+    const result = await new ChatSessionsMigration(
+      logger as any,
+      kv as any,
+      1,
+    ).run();
+
+    expect(result.errored).to.equal(1);
+    expect(result.sessionsMigrated).to.equal(1);
+    // Scans: failing doc, healthy doc, then the empty scan that ends the loop.
+    const scanCalls = find.getCalls().filter((c) => c.args[0]?.isMigrated);
+    expect(scanCalls).to.have.length(3);
+    // Errored document -> completion flag withheld, retried on the next boot.
+    expect(kv.set.called).to.equal(false);
+  });
+
+  it('still migrates a document whose session already accumulated newer live messages', async () => {
+    // Crash-recovery case: a previous attempt wrote the messages and the
+    // ChatSession but died before the isMigrated flag, so the session went
+    // live and users appended to it. Counting every row for the sessionId
+    // would now exceed messages.length on every retry and strand the
+    // document; the count must be scoped to the ids being copied.
+    const logger = makeLogger();
+    const kv = makeKvStore({
+      [configPaths.chatKbFiltersMigration]: 'true',
+      [configPaths.chatSessionsMigration]: JSON.stringify({
+        agentConversationsMigrated: true,
+      }),
+    });
+    const legacyDoc = makeLegacyDoc({ messages: [makeMessage(), makeMessage()] });
+    const legacyIds = legacyDoc.messages.map((m: any) => m._id.toString());
+
+    const conversationStubs = stubLegacyModel(Conversation, {
+      batches: [[legacyDoc]],
+    });
+    stubChatSession();
+    const messageStubs = stubChatSessionMessage({
+      countByFilter: (filter: any) => {
+        // 5 rows exist for this session, only 2 of them are the copied ids.
+        const requested = filter._id?.$in;
+        if (!requested) {
+          return 5;
+        }
+        return requested.filter((id: any) =>
+          legacyIds.includes(id.toString()),
+        ).length;
+      },
+    });
+
+    const result = await new ChatSessionsMigration(logger as any, kv as any).run();
+
+    expect(result).to.deep.equal({
+      sessionsMigrated: 1,
+      messagesMigrated: 2,
+      errored: 0,
+    });
+    // The verification query must be scoped by the copied message ids.
+    const countFilter = messageStubs.countDocuments.firstCall.args[0] as any;
+    expect(countFilter._id?.$in).to.have.length(2);
+    expect(conversationStubs.collectionUpdateOne.calledOnce).to.equal(true);
+  });
+
+  it('refuses to copy a document with duplicate message _ids before any write happens', async () => {
+    const logger = makeLogger();
+    const kv = makeKvStore({
+      [configPaths.chatKbFiltersMigration]: 'true',
+      [configPaths.chatSessionsMigration]: JSON.stringify({
+        agentConversationsMigrated: true,
+      }),
+    });
+    const duplicated = makeMessage();
+    const legacyDoc = makeLegacyDoc({
+      messages: [duplicated, { ...duplicated, content: 'same _id' }],
+    });
+
+    const conversationStubs = stubLegacyModel(Conversation, {
+      batches: [[legacyDoc]],
+    });
+    const sessionStubs = stubChatSession();
+    const messageStubs = stubChatSessionMessage();
+
+    const result = await new ChatSessionsMigration(logger as any, kv as any).run();
+
+    expect(result.errored).to.equal(1);
+    expect(result.sessionsMigrated).to.equal(0);
+    // An _id-keyed upsert would silently collapse the two rows, so nothing
+    // may be written at all.
+    expect(messageStubs.bulkWrite.called).to.equal(false);
+    expect(sessionStubs.collectionUpdateOne.called).to.equal(false);
+    expect(conversationStubs.collectionUpdateOne.called).to.equal(false);
+    expect(
+      logger.error.calledWith(sinon.match(/Failed to migrate a conversations document/)),
+    ).to.equal(true);
+  });
+
+  it('refuses to copy a document whose message is missing an _id', async () => {
+    const logger = makeLogger();
+    const kv = makeKvStore({
+      [configPaths.chatKbFiltersMigration]: 'true',
+      [configPaths.chatSessionsMigration]: JSON.stringify({
+        agentConversationsMigrated: true,
+      }),
+    });
+    const legacyDoc = makeLegacyDoc({
+      messages: [makeMessage(), { messageType: 'bot_response', content: 'no id' }],
+    });
+
+    stubLegacyModel(Conversation, { batches: [[legacyDoc]] });
+    const sessionStubs = stubChatSession();
+    const messageStubs = stubChatSessionMessage();
+
+    const result = await new ChatSessionsMigration(logger as any, kv as any).run();
+
+    expect(result.errored).to.equal(1);
+    expect(messageStubs.bulkWrite.called).to.equal(false);
+    expect(sessionStubs.collectionUpdateOne.called).to.equal(false);
   });
 
   it('does not treat ordinary live traffic on chatSessions/chatSessionMessages as a migration failure', async () => {
