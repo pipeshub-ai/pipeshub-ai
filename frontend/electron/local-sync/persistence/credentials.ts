@@ -11,6 +11,35 @@ const TOKEN_FALLBACK_TTL_MS = 10 * 60_000;
 const MINT_TIMEOUT_MS = 20_000;
 const REFRESH_TOKEN_ROUTE = '/api/v1/userAccount/refresh/token';
 
+/**
+ * `apiBaseUrl` is concatenated into the token-mint `fetch()` here and into
+ * the socket.io handshake URL in `desktop-socket.ts`, so an unparseable or
+ * dangerous scheme (`javascript:`, `data:`, `file:`, ...) must never be
+ * used — whether it just arrived from the renderer or was loaded back from
+ * a possibly-tampered credentials file. Self-hosted PipesHub servers are
+ * commonly reached over plain `http:` (see `env.template`'s defaults and
+ * `server-url-setup.tsx`, which accepts any http(s) origin), so this only
+ * restricts the scheme, matching that same policy rather than requiring
+ * https or a loopback host. Exported so call sites that read `apiBaseUrl`
+ * back out of this store (e.g. before opening the socket) can re-check it
+ * with the same rule instead of duplicating it.
+ */
+export function isValidApiBaseUrl(rawUrl: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+}
+
+function assertValidApiBaseUrl(rawUrl: string): void {
+  if (!isValidApiBaseUrl(rawUrl)) {
+    throw new Error('apiBaseUrl must be an http(s) URL');
+  }
+}
+
 /** The slice of Electron's `safeStorage` this store needs, injected for testability. */
 export interface SafeStorageLike {
   isEncryptionAvailable(): boolean;
@@ -153,6 +182,7 @@ export class DesktopCredentialsStore {
     if (!token || !baseUrl) {
       throw new Error('refreshToken and apiBaseUrl are both required');
     }
+    assertValidApiBaseUrl(baseUrl);
     // A different server means the stored token is for a different account.
     if (this.stored.apiBaseUrl && this.stored.apiBaseUrl !== baseUrl) {
       this.invalidateAccessToken();

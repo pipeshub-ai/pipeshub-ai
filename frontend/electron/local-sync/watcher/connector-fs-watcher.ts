@@ -498,7 +498,7 @@ export class ConnectorFsWatcher {
         seedEvents.push({
           type: 'CREATED',
           path: relPath,
-          timestamp: Date.now(),
+          timestamp: Math.round(entry.mtimeMs),
           size: entry.size,
           isDirectory: false,
           sha256: entry.sha256,

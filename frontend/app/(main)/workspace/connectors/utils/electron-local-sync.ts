@@ -3,7 +3,7 @@ import { isElectron } from '@/lib/electron';
 import { useAuthStore } from '@/config';
 import { ConnectorsApi } from '../api';
 import { isLocalFsConnectorType } from './local-fs-helpers';
-import type { ConnectorConfig, LocalSyncStatus } from '../types';
+import type { Connector, ConnectorConfig, LocalSyncStatus } from '../types';
 
 interface LocalSyncStartPayload {
   connectorId: string;
@@ -210,6 +210,32 @@ export async function removeElectronLocalSync(connectorId: string): Promise<void
   await api.remove(connectorId);
 }
 
+const ACTIVE_CONNECTORS_PAGE_LIMIT = 100;
+
+/**
+ * `getActiveConnectors` is capped at `ACTIVE_CONNECTORS_PAGE_LIMIT` per page
+ * with no total/hasMore in the response, so page through until a page comes
+ * back short. Personal scope only — Local FS is registered
+ * `.with_scopes([ConnectorScope.PERSONAL])` in the backend connector
+ * definition, so there is nothing to enumerate under team scope today.
+ */
+async function fetchAllPersonalConnectors(): Promise<Connector[]> {
+  const all: Connector[] = [];
+  let page = 1;
+  for (;;) {
+    const { connectors } = await ConnectorsApi.getActiveConnectors(
+      'personal',
+      page,
+      ACTIVE_CONNECTORS_PAGE_LIMIT
+    );
+    const batch = connectors || [];
+    all.push(...batch);
+    if (batch.length < ACTIVE_CONNECTORS_PAGE_LIMIT) break;
+    page += 1;
+  }
+  return all;
+}
+
 /**
  * Boot-time mount for **every** active Local FS connector, not just scheduled
  * ones. The server drives all sync now, and a pull that lands on a machine
@@ -227,8 +253,8 @@ export async function startLocalWatchers(): Promise<void> {
   const api = getElectronLocalSyncApi();
   if (!api) return;
 
-  const { connectors } = await ConnectorsApi.getActiveConnectors('personal');
-  const localFsConnectors = (connectors || []).filter(
+  const connectors = await fetchAllPersonalConnectors();
+  const localFsConnectors = connectors.filter(
     (connector) => Boolean(connector._key) && isLocalFsConnectorType(connector.type)
   );
 

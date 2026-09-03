@@ -142,6 +142,19 @@ function isThisRunOffline(
 }
 
 /**
+ * True once the row carries a newer `updatedAtTimestamp` than the pre-action
+ * baseline — i.e. this action's run has landed, even if the pull finished
+ * between two polls and we never observed SYNCING/FULL_SYNCING for it.
+ */
+function hasNewerRunTimestamp(
+  instance: ConnectorInstance,
+  updatedAtBefore?: number | null
+): boolean {
+  const updatedAt = instance.updatedAtTimestamp ?? 0;
+  return updatedAt > (updatedAtBefore ?? 0);
+}
+
+/**
  * Resync/toggle return before the pull. Poll status + lastError only — do
  * not refresh config or upsert the store on every tick (that remounts the
  * instance list). Write the store once when the outcome is known.
@@ -178,7 +191,7 @@ export async function waitForLocalFsPullOutcome(
     ) {
       useConnectorsStore.getState().upsertConnectorInstance(latest);
       return { kind: 'requires-desktop' };
-    } else if (sawThisRun && !offline) {
+    } else if (!offline && (sawThisRun || hasNewerRunTimestamp(latest, updatedAtBefore))) {
       useConnectorsStore.getState().upsertConnectorInstance(latest);
       return { kind: 'backend' };
     }

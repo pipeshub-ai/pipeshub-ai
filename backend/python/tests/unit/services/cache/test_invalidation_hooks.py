@@ -121,7 +121,7 @@ class TestSyncCompletionSite:
         connector.data_entities_processor = MagicMock(org_id="org-1")
         invalidator = _register()
 
-        await ConnectorFactory._run_sync_and_invalidate(connector, "conn-1")
+        await ConnectorFactory._run_sync_and_invalidate(connector, "conn-1", MagicMock())
 
         connector.run_sync.assert_awaited_once()
         invalidator.on_connector_sync_completed.assert_awaited_once_with("conn-1", "org-1")

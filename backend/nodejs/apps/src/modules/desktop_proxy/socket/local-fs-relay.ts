@@ -53,8 +53,8 @@ interface PendingContent {
   settled: boolean;
 }
 
-function claimKey(orgId: string, connectorId: string): string {
-  return `${orgId}:${connectorId}`;
+function claimKey(orgId: string, userId: string, connectorId: string): string {
+  return `${orgId}:${userId}:${connectorId}`;
 }
 
 function toBuffer(data: LocalFsContentChunkPayload['data']): Buffer | null {
@@ -94,12 +94,13 @@ export class LocalFsRelay {
   ): DesktopRegisterAck {
     const ack: DesktopRegisterAck = { accepted: [], rejected: [] };
     const orgId = socket.data.orgId;
+    const userId = socket.data.userId;
     if (deviceId) socket.data.deviceId = String(deviceId);
 
     for (const raw of connectorIds || []) {
       const connectorId = String(raw || '').trim();
       if (!connectorId) continue;
-      const key = claimKey(orgId, connectorId);
+      const key = claimKey(orgId, userId, connectorId);
       const holder = this.claims.get(key);
       if (holder && holder !== socket && holder.connected) {
         ack.rejected.push({ connectorId, reason: 'ALREADY_REGISTERED' });
@@ -119,8 +120,9 @@ export class LocalFsRelay {
 
   unregister(socket: RelaySocket, connectorIds: string[]): void {
     const orgId = socket.data.orgId;
+    const userId = socket.data.userId;
     for (const raw of connectorIds || []) {
-      const key = claimKey(orgId, String(raw || '').trim());
+      const key = claimKey(orgId, userId, String(raw || '').trim());
       if (this.claims.get(key) === socket) this.claims.delete(key);
     }
   }
@@ -270,19 +272,31 @@ export class LocalFsRelay {
       return transfer;
     }
 
-    if (Number(ack.size) > MAX_CONTENT_BYTES) {
+    const size = Number(ack.size);
+    if (!Number.isFinite(size) || size < 0) {
+      this.failContent(
+        requestId,
+        new DesktopRemoteError(
+          'INVALID_CONTENT_SIZE',
+          `${payload.relPath} ack reported an invalid size (${ack.size})`,
+          false,
+        ),
+      );
+      return transfer;
+    }
+    if (size > MAX_CONTENT_BYTES) {
       this.failContent(
         requestId,
         new DesktopRemoteError(
           'CONTENT_TOO_LARGE',
-          `${payload.relPath} is ${ack.size} bytes, over the ${MAX_CONTENT_BYTES} limit`,
+          `${payload.relPath} is ${size} bytes, over the ${MAX_CONTENT_BYTES} limit`,
           false,
         ),
       );
       return transfer;
     }
     const pending = this.pendingContent.get(requestId);
-    if (pending) pending.expectedSize = Number(ack.size);
+    if (pending) pending.expectedSize = size;
     return transfer;
   }
 
@@ -383,7 +397,7 @@ export class LocalFsRelay {
     userId: string,
     connectorId: string,
   ): RelaySocket {
-    const socket = this.claims.get(claimKey(orgId, connectorId));
+    const socket = this.claims.get(claimKey(orgId, userId, connectorId));
     // No fallback to "some socket this user has open": the connector is bound
     // to one folder on one machine, and picking another would sync the wrong
     // disk into it.

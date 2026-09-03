@@ -92,13 +92,14 @@ export function deriveSyncStatusState(
   if (instance.status === CONNECTOR_INSTANCE_STATUS.SYNCING) {
     return { status: 'syncing', oauthAuthIncompleteForSync };
   }
-  if (instance.lastError === LOCAL_FS_DESKTOP_OFFLINE) {
-    return { status: 'sync_failed', oauthAuthIncompleteForSync };
-  }
 
   // 2. Instance-level boolean state
   if (!instance.isActive) {
     return { status: 'sync_disabled', oauthAuthIncompleteForSync };
+  }
+
+  if (instance.lastError === LOCAL_FS_DESKTOP_OFFLINE) {
+    return { status: 'sync_failed', oauthAuthIncompleteForSync };
   }
 
   if (oauthAuthIncompleteForSync) {

@@ -365,10 +365,8 @@ export class WatcherStateStore {
         metaSame = oldEnt.mtimeMs === newEnt.mtimeMs;
       } else if (oldEnt.sha256 && newEnt.sha256) {
         metaSame = oldEnt.size === newEnt.size && oldEnt.sha256 === newEnt.sha256;
-      } else if (!oldEnt.sha256 && newEnt.sha256) {
-        metaSame = oldEnt.size === newEnt.size && oldEnt.mtimeMs === newEnt.mtimeMs;
       } else {
-        metaSame = oldEnt.size === newEnt.size && oldEnt.mtimeMs === newEnt.mtimeMs && oldEnt.sha256 === newEnt.sha256;
+        metaSame = oldEnt.size === newEnt.size && oldEnt.mtimeMs === newEnt.mtimeMs;
       }
       if (!metaSame) {
         events.push({ type: 'MODIFIED', path: p, timestamp: now, size: newEnt.isDirectory ? undefined : newEnt.size, isDirectory: newEnt.isDirectory, sha256: newEnt.isDirectory ? undefined : newEnt.sha256 });
