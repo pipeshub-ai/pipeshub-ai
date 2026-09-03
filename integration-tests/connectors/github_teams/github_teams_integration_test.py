@@ -1427,7 +1427,7 @@ class TestGitHubTeamsIncremental:
                 if comment_id:
                     await delete_issue_comment(github_rest, org, repo_name, comment_id)
 
-
+    @pytest.mark.order(17)
     async def test_tc_incr_code_001_all_deltas(
         self,
         github_connector: dict[str, Any],

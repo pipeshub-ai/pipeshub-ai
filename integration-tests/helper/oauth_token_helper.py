@@ -385,6 +385,11 @@ def inject_access_token(connector_id: str, access_token: str) -> None:
     of the background refresh scan entirely. A placeholder non-empty value would be
     picked up, fail to refresh, and eventually flip ``isAuthenticated`` to False.
     """
+    if not access_token or not access_token.strip():
+        # Writing an empty token would replace a working credentials block with one
+        # the connector cannot authenticate with, and the failure would surface later
+        # as a confusing 401 during sync rather than here.
+        raise ValueError("access_token is empty; refusing to overwrite stored credentials.")
     secret_key = os.getenv("SECRET_KEY")
     if not secret_key:
         raise ValueError(

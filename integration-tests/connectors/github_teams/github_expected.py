@@ -181,7 +181,11 @@ class GitHubExpected:
         # GitHub allows 10 assignees but TicketRecord.assignee_email is single-valued
         # and feeds a user lookup for the ASSIGNED_TO edge. Name and email must
         # describe the SAME person, so the email is the primary's or nothing.
-        primary_email = emails.get(str(primary["id"])) if primary else None
+        primary_email = (
+            emails.get(str(primary["id"]))
+            if primary is not None and primary.get("id") is not None
+            else None
+        )
 
         creator = issue.get("user") or {}
         creator_id = str(creator["id"]) if creator.get("id") is not None else None
