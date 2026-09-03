@@ -124,5 +124,12 @@ GH_BLOCKS_ISSUE_NUMBER = int(os.getenv("GH_TEAMS_BLOCKS_ISSUE_NUMBER", "1"))
 # least one changed file, one inline review comment and one conversation comment.
 GH_BLOCKS_PR_NUMBER = int(os.getenv("GH_TEAMS_BLOCKS_PR_NUMBER", "2"))
 
+# The long-lived PR that TC-INCR-PR-001 *updates* every run, in the MUTATION repo.
+# It is never created or closed by the suite: GitHub has no API to delete a pull
+# request, so a per-run PR made the repo's PR list grow forever. Its title sits
+# outside GH_IT_ARTIFACT_RE and its branch outside the ``it/`` prefix, so neither
+# sweep can reclaim it.
+GH_INCR_PR_NUMBER = int(os.getenv("GH_TEAMS_INCR_PR_NUMBER", "28"))
+
 # Set to "1" to regenerate both snapshots in place, then hand-review and commit.
 ENV_BLOCKS_BOOTSTRAP = "GH_TEAMS_BLOCKS_BOOTSTRAP"
