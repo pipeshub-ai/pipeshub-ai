@@ -86,6 +86,7 @@ from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_cypher,
     build_page_records_for_vector_membership_backfill_cypher,
+    can_use_membership_cleanup,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -6851,29 +6852,59 @@ class Neo4jProvider(IGraphDBProvider):
 
     # ==================== Connector Deletion Helper Methods ====================
 
-    async def _collect_connector_entities(self, connector_id: str, transaction: str | None = None) -> dict:
-        """Collect all entity IDs for a connector."""
+    async def _collect_connector_entities(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+        *,
+        include_virtual_record_ids: bool = False,
+    ) -> dict:
+        """Collect all entity IDs for a connector.
+
+        ``include_virtual_record_ids`` is off by default: the VRID list is only
+        consumed by the legacy id-shipping cleanup path, and materialising one
+        entry per distinct VRID is wasted memory and payload on a connector with
+        millions of records when nothing will read it.
+        """
         if not self.client:
             raise RuntimeError("Neo4j client not connected")
 
+        # The first WITH must contain *only* aggregates. Any non-aggregate
+        # expression there — a bare `[]` included — becomes a grouping key, and a
+        # grouped aggregation over zero matched records yields zero rows instead
+        # of one row of empty collections. That would make a connector with
+        # record groups but no records look entirely empty, and its groups,
+        # roles and edges would survive the delete. So the projection is either
+        # bound as an aggregate or left out of the pipeline altogether.
+        if include_virtual_record_ids:
+            vrid_bind = (
+                ",\n             [vid IN collect(DISTINCT r.virtualRecordId) "
+                "WHERE vid IS NOT NULL] AS virtual_record_ids"
+            )
+            vrid_carry = "virtual_record_ids, "
+            vrid_result = "virtual_record_ids"
+        else:
+            vrid_bind = ""
+            vrid_carry = ""
+            vrid_result = "[]"
+
         query = """
         MATCH (r:Record {connectorId: $connector_id})
-        WITH collect(r.id) AS record_ids,
-             [vid IN collect(r.virtualRecordId) WHERE vid IS NOT NULL] AS virtual_record_ids
+        WITH collect(r.id) AS record_ids__VRID_BIND__
 
         OPTIONAL MATCH (rg:RecordGroup {connectorId: $connector_id})
-        WITH record_ids, virtual_record_ids, collect(rg.id) AS record_group_ids
+        WITH record_ids, __VRID_CARRY__collect(rg.id) AS record_group_ids
 
         OPTIONAL MATCH (role:Role {connectorId: $connector_id})
-        WITH record_ids, virtual_record_ids, record_group_ids, collect(role.id) AS role_ids
+        WITH record_ids, __VRID_CARRY__record_group_ids, collect(role.id) AS role_ids
 
         OPTIONAL MATCH (grp:Group {connectorId: $connector_id})
-        WITH record_ids, virtual_record_ids, record_group_ids, role_ids, collect(grp.id) AS group_ids
+        WITH record_ids, __VRID_CARRY__record_group_ids, role_ids, collect(grp.id) AS group_ids
 
         RETURN {
           record_keys: record_ids,
           record_ids: record_ids,
-          virtual_record_ids: virtual_record_ids,
+          virtual_record_ids: __VRID_RESULT__,
           record_group_keys: record_group_ids,
           role_keys: role_ids,
           group_keys: group_ids,
@@ -6885,6 +6916,11 @@ class Neo4jProvider(IGraphDBProvider):
             ['apps/' + $connector_id]
         } AS result
         """
+        query = (
+            query.replace("__VRID_BIND__", vrid_bind)
+            .replace("__VRID_CARRY__", vrid_carry)
+            .replace("__VRID_RESULT__", vrid_result)
+        )
 
         results = await self.client.execute_query(
             query,
@@ -7237,8 +7273,18 @@ class Neo4jProvider(IGraphDBProvider):
                     "error": f"Connector instance {connector_id} not found"
                 }
 
+            # Whether the vector cleanup will need an explicit VRID list at all.
+            # Membership-based cleanup finds the points itself, so on that path
+            # the list is never read and collecting it is pure cost — which is
+            # the whole point on a connector with millions of records.
+            needs_virtual_record_ids = not can_use_membership_cleanup(connector)
+
             # Phase 1: Collect data needed for return values (outside transaction)
-            collected = await self._collect_connector_entities(connector_id, transaction)
+            collected = await self._collect_connector_entities(
+                connector_id,
+                transaction,
+                include_virtual_record_ids=needs_virtual_record_ids,
+            )
             edge_collections = await self._get_all_edge_collections()
 
             # Collect isOfType targets before opening write transaction
@@ -7357,6 +7403,16 @@ class Neo4jProvider(IGraphDBProvider):
                     "deleted_roles_count": deleted_roles,
                     "deleted_groups_count": deleted_groups,
                     "virtual_record_ids": collected["virtual_record_ids"],
+                    # The connector's own record groups went with it. A point
+                    # shared with a live connector survives the purge, so the
+                    # cleanup needs these to strip them from recordGroupIds.
+                    "record_group_ids": collected["record_group_keys"],
+                    "vector_membership_backfilled": bool(
+                        connector.get("vectorMembershipBackfilled", False)
+                    ),
+                    "vector_membership_backfill_exhausted": bool(
+                        connector.get("vectorMembershipBackfillExhausted", False)
+                    ),
                     "connector_id": connector_id,
                     "connector_name": connector.get("type"),
                 }

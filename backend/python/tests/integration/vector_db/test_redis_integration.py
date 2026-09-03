@@ -1,7 +1,7 @@
 """
 Integration tests for the Redis vector DB provider.
 
-Requires: docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml up -d
+Requires: docker compose -f tests/integration/compose/vector-db.yml up -d
 Run: pytest tests/integration/vector_db/test_redis_integration.py -m integration --timeout=120
 """
 
@@ -24,7 +24,10 @@ from tests.integration.vector_db.helpers import (
 )
 from tests.integration.vector_db.conftest import make_collection
 
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+# loop_scope matches the module-scoped provider fixtures in conftest.
+# Without it each test gets its own loop and the shared client raises
+# "Event loop is closed" on first use.
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 
 # ---------------------------------------------------------------------------

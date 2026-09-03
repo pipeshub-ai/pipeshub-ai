@@ -583,6 +583,7 @@ class OpenSearchService(IVectorDBService):
         should: Optional[Dict[str, FilterValue]] = None,
         must_not: Optional[Dict[str, FilterValue]] = None,
         min_should_match: Optional[int] = None,
+        max_values: Optional[Dict[str, int]] = None,
         **kwargs: FilterValue,
     ) -> FilterExpression:
         from app.services.vector_db.filters import build_filter_expression
@@ -593,6 +594,7 @@ class OpenSearchService(IVectorDBService):
             should=should,
             must_not=must_not,
             min_should_match=min_should_match,
+            max_values=max_values,
             extra_kwargs=kwargs or None,
             build_conditions=OpenSearchUtils.build_conditions,
         )
@@ -607,19 +609,28 @@ class OpenSearchService(IVectorDBService):
         scroll_filter: FilterExpression,
         limit: int,
         offset: Optional[str] = None,
+        with_payload: Optional[List[str]] = None,
     ) -> ScrollResult:
         """Scroll a page of points.
 
         ``offset`` is the opaque cursor returned in ``ScrollResult.next_offset``
         from the previous call.  It is the OpenSearch ``search_after`` value
         serialised as a JSON string.  Pass ``None`` for the first page.
+
+        ``with_payload`` maps to ``_source`` includes, so a caller that needs
+        two fields does not transfer every chunk's text.
         """
         await self._assert_connected()
         bool_query = OpenSearchUtils.filter_expression_to_bool_query(scroll_filter)
+        source: Dict[str, Any] = (
+            {"includes": list(with_payload)}
+            if with_payload
+            else {"exclude": ["dense_embedding"]}
+        )
         body: Dict[str, Any] = {
             "query": bool_query,
             "size": min(limit, 10000),
-            "_source": {"exclude": ["dense_embedding"]},
+            "_source": source,
             "sort": [{"point_id": "asc"}],
         }
 
@@ -777,20 +788,32 @@ class OpenSearchService(IVectorDBService):
         self,
         collection_name: str,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         if filter.is_empty():
             raise ValueError(
                 "delete_points called with an empty filter — this would wipe the entire "
                 "index. Populate at least one filter condition (e.g. virtualRecordId)."
             )
+        if not filter.has_positive_match():
+            raise ValueError(
+                "delete_points called with only array-length conditions — a point "
+                "whose field is absent satisfies those too, so this would delete "
+                "most of the index. Pair it with a value match (e.g. connectorIds)."
+            )
         await self._assert_connected()
         bool_query = OpenSearchUtils.filter_expression_to_bool_query(filter)
+        # Opt-in only: the index runs a 30s refresh_interval on purpose, and
+        # forcing a refresh per call creates a Lucene segment per call. The
+        # connector cleanup asks for it because it re-reads the matched set to
+        # decide when it is done; per-record deletes must not.
         await self.client.delete_by_query(  # type: ignore
             index=collection_name,
             body={"query": bool_query},
             conflicts="proceed",
             slices="auto",
             wait_for_completion=True,
+            refresh=refresh,
         )
         logger.info(f"Deleted points from OpenSearch index '{collection_name}'")
 
@@ -799,6 +822,7 @@ class OpenSearchService(IVectorDBService):
         collection_name: str,
         payload: dict,
         points: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         """Update fields in matched documents via a Painless script.
 
@@ -837,6 +861,8 @@ class OpenSearchService(IVectorDBService):
             # current arrays. Default "abort" would fail the whole update for the
             # rest of the matched documents over a doc that is already correct.
             conflicts="proceed",
+            # Opt-in, same reason as delete_points.
+            refresh=refresh,
             body={
                 "query": bool_query,
                 "script": {
@@ -852,13 +878,14 @@ class OpenSearchService(IVectorDBService):
         collection_name: str,
         payload: dict,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         if filter.is_empty():
             raise ValueError(
                 "set_payload called with an empty filter — this would update the entire "
                 "index. Populate at least one filter condition (e.g. virtualRecordId)."
             )
-        await self.overwrite_payload(collection_name, payload, filter)
+        await self.overwrite_payload(collection_name, payload, filter, refresh=refresh)
 
     # ------------------------------------------------------------------
     # Performance utilities

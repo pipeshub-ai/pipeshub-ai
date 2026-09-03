@@ -1,0 +1,37 @@
+# Graph stores for the graph-DB provider integration suite.
+#
+#   docker compose -f tests/integration/compose/graph-db.yml up -d
+#   pytest tests/integration/graph_db/ -m integration
+#
+# Ports are off the main compose file's so this can run beside a development
+# stack; the tests read NEO4J_TEST_URI / ARANGO_TEST_URL and default to these.
+
+services:
+  neo4j-test:
+    image: neo4j:5.26.0
+    environment:
+      - NEO4J_AUTH=neo4j/testpassword
+      - NEO4J_server_memory_heap_max__size=512m
+      - NEO4J_server_memory_pagecache_size=256m
+    ports:
+      - "${NEO4J_TEST_BOLT_PORT:-7699}:7687"
+      - "${NEO4J_TEST_HTTP_PORT:-7484}:7474"
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p testpassword 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  arango-test:
+    image: arangodb:3.12.4
+    environment:
+      - ARANGO_ROOT_PASSWORD=testpassword
+    ports:
+      - "${ARANGO_TEST_PORT:-8539}:8529"
+    healthcheck:
+      test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password testpassword --javascript.execute-string 'db._version()' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s

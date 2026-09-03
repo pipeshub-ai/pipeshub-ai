@@ -373,6 +373,7 @@ class VectorStore(Transformer):
             strategy=collection_registry.strategy,
             manifest_store=collection_registry.manifest_store,
             logger=logger,
+            list_managed=collection_registry.list_managed_collections,
         )
 
         self.dense_embeddings = None

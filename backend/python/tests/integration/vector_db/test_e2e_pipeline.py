@@ -7,7 +7,7 @@ These tests exercise the full path:
 A deterministic FakeEmbedder produces reproducible dense vectors so the tests
 are not dependent on a real embedding model.
 
-Requires: docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml up -d
+Requires: docker compose -f tests/integration/compose/vector-db.yml up -d
 Run: pytest tests/integration/vector_db/test_e2e_pipeline.py -m integration --timeout=120
 
 Note: these tests skip automatically when optional packages (langchain_core, etc.)
@@ -21,7 +21,10 @@ import pytest
 from tests.integration.vector_db.helpers import DIM
 from tests.integration.vector_db.conftest import make_collection
 
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+# loop_scope matches the module-scoped provider fixtures in conftest.
+# Without it each test gets its own loop and the shared client raises
+# "Event loop is closed" on first use.
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 langchain_core = pytest.importorskip("langchain_core", reason="langchain_core not installed")
 
