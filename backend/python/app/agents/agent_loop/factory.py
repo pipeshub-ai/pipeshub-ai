@@ -202,6 +202,21 @@ _DOMAIN_SHARED_NAV_TOOL_NAMES: frozenset[str] = frozenset({
     "knowledgegraph__lookup_record",
 })
 
+# Code structure is cross-cutting: the exploring agent is where code questions
+# land, and routing them back through the parent costs a turn and loses the
+# child's context. `read_code` ships alongside the query tool so the child can
+# read what it finds instead of returning bare symbol names.
+#
+# SHARED, never claimed. `plan_domain_agents` claiming is exclusive, so listing
+# these on a definition would take them OFF the parent -- flipping
+# `surfaces.code_graph` to False and deleting the tool's own entry from the
+# parent's source list. Shared names never enter `claimed`, which is the same
+# mechanism `_DOMAIN_SHARED_NAV_TOOL_NAMES` relies on.
+_DOMAIN_SHARED_CODE_TOOL_NAMES: frozenset[str] = frozenset({
+    "codegraph__query_code_graph",
+    "codegraph__read_code",
+})
+
 # Matches nodes.py's ReAct/planner loop cap (`MAX_ITERATIONS` — see
 # tool_system.py / react_agent_node's `recursion_limit`); kept as one named
 # constant here rather than a magic number in `create()`.
@@ -669,6 +684,7 @@ class PipesHubAgentFactory:
                 shared_tool_names=(
                     (DOMAIN_SHARED_SKILL_TOOL_NAMES if skill_manager is not None else frozenset())
                     | _DOMAIN_SHARED_NAV_TOOL_NAMES
+                    | _DOMAIN_SHARED_CODE_TOOL_NAMES
                 ),
             )
             run_code_delegated_to_coding_agent = "coding_agent" in composed_names

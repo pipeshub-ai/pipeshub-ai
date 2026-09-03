@@ -57,6 +57,18 @@ _user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
 USER_CACHE_TTL = 300  # 5 minutes
 MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
 
+# `FileRole.TEST`. Inlined rather than imported: retrieval serves every record
+# type and should not depend on the code parser to do it.
+_TEST_FILE_ROLE = "test"
+
+# Test files are 22% of the blocks semantic search returns, and 68-77% on a
+# query that names an exact identifier -- a test contains the name it exercises
+# more often, and more densely, than the one file that defines it. Their record
+# ids are stable once parsed, so the set is cached per org rather than rebuilt
+# on every search.
+_test_record_cache: dict[str, tuple[set[str], float]] = {}  # {org_id: (record_ids, ts)}
+TEST_RECORD_CACHE_TTL = 300  # 5 minutes
+
 # Applied when a caller passes no limit at all. Matches `search_with_filters`'s
 # own default so the None path and the omitted path retrieve the same amount.
 DEFAULT_SEARCH_LIMIT = 20
@@ -424,12 +436,18 @@ class RetrievalService:
             user_key = (user.get("_key") or user.get("id")) if user else None
 
             if virtual_record_ids_from_tool:
+                # The caller named these records — usually straight from a
+                # citation or a fetch. Hiding one it asked for by id would be a
+                # bug, so the test filter deliberately does not apply here.
                 filter  = await self.vector_db_service.filter_collection(
                         must={"orgId": org_id,"virtualRecordId": virtual_record_ids_from_tool},
                     )
             else:
+                searchable_virtual_ids = await self._searchable_virtual_ids(
+                    accessible_virtual_id_to_record_id, org_id
+                )
                 filter = await self.vector_db_service.filter_collection(
-                        must={"orgId": org_id, "virtualRecordId": list(accessible_virtual_id_to_record_id.keys())}
+                        must={"orgId": org_id, "virtualRecordId": searchable_virtual_ids}
                     )
             search_results = await self._execute_parallel_searches(
                 queries, filter, limit, org_id, user_id
@@ -804,6 +822,64 @@ class RetrievalService:
         return await graph_provider.get_accessible_virtual_record_ids(
             user_id=user_id, org_id=org_id, filters=filters, time_range=time_range
         )
+
+    async def _test_record_ids(self, org_id: str) -> set[str]:
+        """Record ids of this org's code files whose ``fileRole`` is ``test``.
+
+        Only records present in ``codeFiles`` can be returned, so a PDF, an
+        email or a KB upload is never a candidate — "code files only" falls out
+        of the lookup rather than needing its own check.
+        """
+        global _test_record_cache
+
+        cached = _test_record_cache.get(org_id)
+        if cached and time.time() - cached[1] < TEST_RECORD_CACHE_TTL:
+            return cached[0]
+
+        # Both filters on the DB side: scoping by org alone would pull every
+        # code file in the repo back to filter three fields down in Python, and
+        # scoping by role alone would cross org boundaries.
+        rows = await self.graph_provider.get_nodes_by_filters(
+            collection=CollectionNames.CODE_FILES.value,
+            filters={"orgId": org_id, "fileRole": _TEST_FILE_ROLE},
+            return_fields=["_key"],
+        )
+        record_ids = {row["_key"] for row in (rows or []) if row.get("_key")}
+        _test_record_cache[org_id] = (record_ids, time.time())
+        return record_ids
+
+    async def _searchable_virtual_ids(
+        self, accessible_virtual_id_to_record_id: dict[str, str], org_id: str
+    ) -> list[str]:
+        """The accessible virtual ids minus the ones backing a test file.
+
+        Returned as a separate list rather than by pruning the caller's map:
+        that map is the permission boundary and is reused to resolve the record
+        ids actually fetched, so a fault in this relevance filter must not be
+        able to present itself as "you cannot see that record".
+
+        A failure here returns everything. Degrading to today's behaviour beats
+        silently hiding a fifth of the corpus because one graph call timed out.
+        """
+        all_ids = list(accessible_virtual_id_to_record_id.keys())
+        try:
+            test_record_ids = await self._test_record_ids(org_id)
+        except Exception as exc:
+            self.logger.warning("Test-file filter unavailable, searching all records: %s", exc)
+            return all_ids
+        if not test_record_ids:
+            return all_ids
+
+        searchable = [
+            vid
+            for vid, record_id in accessible_virtual_id_to_record_id.items()
+            if record_id not in test_record_ids
+        ]
+        self.logger.debug(
+            "Excluded %d test-file virtual ids from %d accessible",
+            len(all_ids) - len(searchable), len(all_ids),
+        )
+        return searchable
 
     async def _get_user_cached(self, user_id: str) -> dict[str, Any] | None:
         """

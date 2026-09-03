@@ -89,20 +89,25 @@ class ConcurrencyHost(Protocol):
     _futures_lock: Any
 
 
-async def bridge_to_main_loop(
-    host: ConcurrencyHost, coro: Any, timeout: float = _MAIN_LOOP_OP_TIMEOUT
+async def bridge_to_loop(
+    coro: Any,
+    loop: asyncio.AbstractEventLoop | None,
+    timeout: float = _MAIN_LOOP_OP_TIMEOUT,
 ) -> Any:
-    """Run ``coro`` on ``host.main_loop`` (safe when called from a worker loop)."""
+    """Run ``coro`` on ``loop`` (safe when called from a different loop).
+
+    Awaited directly when already on ``loop`` (or when it is None), so callers
+    that never cross a loop boundary pay nothing.
+    """
     current_loop = asyncio.get_running_loop()
-    main_loop = host.main_loop
-    if main_loop is not None and current_loop is not main_loop:
-        if not main_loop.is_running():
+    if loop is not None and current_loop is not loop:
+        if not loop.is_running():
             close = getattr(coro, "close", None)
             if close is not None:
                 close()
-            raise RuntimeError("Main event loop is not running")
+            raise RuntimeError("Target event loop is not running")
         try:
-            future = asyncio.run_coroutine_threadsafe(coro, main_loop)
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
         except BaseException:
             close = getattr(coro, "close", None)
             if close is not None:
@@ -117,6 +122,36 @@ async def bridge_to_main_loop(
             raise
     return await coro
 
+
+async def bridge_to_main_loop(
+    host: ConcurrencyHost, coro: Any, timeout: float = _MAIN_LOOP_OP_TIMEOUT
+) -> Any:
+    """Run ``coro`` on ``host.main_loop`` (safe when called from a worker loop)."""
+    return await bridge_to_loop(coro, host.main_loop, timeout)
+
+
+def schedule_on_main_loop(
+    host: ConcurrencyHost, coro: Any
+) -> "asyncio.Future[None]":
+    """Bridge a long-lived coroutine (e.g. the renewal loop) onto the main loop.
+
+    Unlike ``bridge_to_main_loop``, the caller does not want to block until
+    the coroutine finishes — it returns a future/task the caller can await
+    or cancel independently.
+    """
+    current_loop = asyncio.get_running_loop()
+    main_loop = host.main_loop
+    if main_loop is not None and current_loop is not main_loop:
+        if not main_loop.is_running():
+            coro.close()
+            raise RuntimeError("Main event loop is not running")
+        try:
+            thread_future = asyncio.run_coroutine_threadsafe(coro, main_loop)
+        except BaseException:
+            coro.close()
+            raise
+        return asyncio.wrap_future(thread_future)
+    return asyncio.create_task(coro)
 
 def _normalize_operation(operation: str) -> str:
     """Collapse ``<op>:record:<record_id>`` to ``<op>:record``.

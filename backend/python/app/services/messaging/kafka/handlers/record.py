@@ -1,7 +1,9 @@
 import asyncio
+import time
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
+from uuid import uuid4
 
 import aiohttp  # type: ignore
 
@@ -22,6 +24,8 @@ from app.events.events import EventProcessor
 from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.modules.code_graph.auto_edge_build import EdgeBuildScheduler
+from app.modules.code_graph.edge_builder import build_code_graph_edges
 from app.modules.transformers.transformer import TransformContext
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.messaging.config import (
@@ -31,6 +35,7 @@ from app.services.messaging.config import (
     StreamMessage,
     Topic,
 )
+from app.services.messaging.consumer_concurrency import bridge_to_loop
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
@@ -41,12 +46,28 @@ from app.services.vector_db.rebuild_state import (
     PHASE_FAILED,
     PHASE_READY,
     mark_cleanup_phase,
+    redis_from_config_service,
 )
 from app.services.vector_db.strategy import DeleteContext, RecordContext
 from app.services.vector_db.strategy_resolver import reset_strategy_cache
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
+
+_CODE_EDGE_BUILD_LOCK_PREFIX = "pipeshub:code-edge-build:"
+_CODE_EDGE_BUILD_LOCK_TTL_SECONDS = 600
+_CODE_EDGE_BUILD_SYNC_POINT_SUFFIX = "code-edge-build"
+_CODE_EDGE_BUILD_BLOCKING_STATUSES = (
+    ProgressStatus.NOT_STARTED.value,
+    ProgressStatus.QUEUED.value,
+    ProgressStatus.IN_PROGRESS.value,
+)
+_RELEASE_CODE_EDGE_LOCK_IF_OWNER_LUA = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('del', KEYS[1])
+end
+return 0
+"""
 
 
 class RecordEventHandler(BaseEventService):
@@ -61,6 +82,158 @@ class RecordEventHandler(BaseEventService):
 
         self.event_processor : EventProcessor = event_processor
         self.producer = producer
+        # The producer's client is bound to the loop that created it — the main
+        # loop this handler is constructed on (indexing_main.start_kafka_consumers).
+        # process_event runs on the indexing consumer's worker-thread loop, so
+        # every publish below is bridged back, the same way the consumer bridges
+        # its own xack/re-queue (see indexing_consumer._run_on_main_loop).
+        try:
+            self._producer_loop: asyncio.AbstractEventLoop | None = (
+                asyncio.get_running_loop()
+            )
+        except RuntimeError:
+            self._producer_loop = None
+        self._edge_builds = EdgeBuildScheduler(self._build_code_edges, logger)
+
+    async def _build_code_edges(
+        self,
+        *,
+        org_id: str,
+        connector_id: str,
+        record_group_id: str,
+    ) -> None:
+        redis = await redis_from_config_service(self.config_service)
+        lock_key = f"{_CODE_EDGE_BUILD_LOCK_PREFIX}{org_id}:{record_group_id}"
+        lock_token = str(uuid4())
+        lock_acquired = False
+        try:
+            lock_acquired = bool(
+                await redis.set(
+                    lock_key,
+                    lock_token,
+                    nx=True,
+                    ex=_CODE_EDGE_BUILD_LOCK_TTL_SECONDS,
+                )
+            )
+            if not lock_acquired:
+                return
+
+            has_unfinished = await self.event_processor.graph_provider.has_nodes_by_filters(
+                collection=CollectionNames.RECORDS.value,
+                filters={"orgId": org_id, "recordGroupId": record_group_id},
+                in_filters={
+                    "indexingStatus": list(_CODE_EDGE_BUILD_BLOCKING_STATUSES)
+                },
+            )
+            if has_unfinished:
+                return
+
+            sync_point_key = (
+                f"{record_group_id}/{_CODE_EDGE_BUILD_SYNC_POINT_SUFFIX}"
+            )
+            sync_points = (
+                await self.event_processor.graph_provider.get_nodes_by_filters(
+                    collection=CollectionNames.SYNC_POINTS.value,
+                    filters={
+                        "orgId": org_id,
+                        "syncPointKey": sync_point_key,
+                    },
+                    return_fields=["lastEdgeBuildAt"],
+                )
+            )
+            last_build = None
+            if sync_points:
+                value = sync_points[0].get("lastEdgeBuildAt")
+                if isinstance(value, (int, float)):
+                    last_build = int(value)
+
+            touched_record_ids = None
+            if last_build is not None:
+                rows = (
+                    await self.event_processor.graph_provider.get_nodes_updated_since(
+                        collection=CollectionNames.RECORDS.value,
+                        timestamp_field="updatedAtTimestamp",
+                        since=last_build,
+                        filters={
+                            "orgId": org_id,
+                            "recordGroupId": record_group_id,
+                        },
+                        return_fields=["_key"],
+                    )
+                )
+                touched_record_ids = {
+                    row["_key"]
+                    for row in rows
+                    if isinstance(row.get("_key"), str)
+                }
+                if not touched_record_ids:
+                    return
+
+            started_at_ms = int(time.time() * 1000)
+            self.logger.info(
+                "Automatic code edge build starting for org=%s record_group=%s "
+                "mode=%s touched_records=%s",
+                org_id,
+                record_group_id,
+                "incremental" if touched_record_ids is not None else "full",
+                (
+                    len(touched_record_ids)
+                    if touched_record_ids is not None
+                    else "all"
+                ),
+            )
+            result = await build_code_graph_edges(
+                graph_provider=self.event_processor.graph_provider,
+                org_id=org_id,
+                record_group_id=record_group_id,
+                touched_record_ids=touched_record_ids,
+                log=self.logger,
+            )
+            await self.event_processor.graph_provider.upsert_sync_point(
+                sync_point_key=sync_point_key,
+                sync_point_data={
+                    "orgId": org_id,
+                    "connectorId": connector_id,
+                    "syncDataPointType": "codeEdgeBuild",
+                    "lastEdgeBuildAt": started_at_ms,
+                },
+                collection=CollectionNames.SYNC_POINTS.value,
+            )
+            self.logger.info(
+                "Automatic code edge build complete: %s", result.as_log_fields()
+            )
+        except Exception:
+            self.logger.exception(
+                "Automatic code edge build failed for org=%s record_group=%s",
+                org_id,
+                record_group_id,
+            )
+            raise
+        finally:
+            if lock_acquired:
+                try:
+                    await redis.eval(
+                        _RELEASE_CODE_EDGE_LOCK_IF_OWNER_LUA,
+                        1,
+                        lock_key,
+                        lock_token,
+                    )
+                except Exception:
+                    self.logger.exception(
+                        "Failed to release code edge build lock for org=%s "
+                        "record_group=%s",
+                        org_id,
+                        record_group_id,
+                    )
+            try:
+                await redis.aclose()
+            except Exception:
+                self.logger.exception(
+                    "Failed to close code edge build Redis client for org=%s "
+                    "record_group=%s",
+                    org_id,
+                    record_group_id,
+                )
 
     # Statuses that already describe a finished record. Abandoning a duplicate
     # delivery of one of these must not rewrite it as a failure. FAILED is
@@ -244,11 +417,14 @@ class RecordEventHandler(BaseEventService):
     async def _publish_reindex_event(self, record_id: str, payload: dict) -> None:
         if not self.producer:
             raise IndexingError("No messaging producer configured; cannot publish newRecord event")
-        await self.producer.send_event(
-            topic=Topic.RECORD_EVENTS.value,
-            event_type="newRecord",
-            payload=payload,
-            key=str(record_id),
+        await bridge_to_loop(
+            self.producer.send_event(
+                topic=Topic.RECORD_EVENTS.value,
+                event_type="newRecord",
+                payload=payload,
+                key=str(record_id),
+            ),
+            self._producer_loop,
         )
 
     async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id) -> None:
@@ -1246,6 +1422,7 @@ class RecordEventHandler(BaseEventService):
                                 external_record_group_id=record.get("externalGroupId"),
                                 org_id=record.get("orgId"),
                             )
+                            self._edge_builds.schedule(record)
                     elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
                         # Find and trigger indexing for the next queued duplicate
                         self.logger.info(f"🔄 Current record {record_id} has status {indexing_status}, triggering next queued duplicate")

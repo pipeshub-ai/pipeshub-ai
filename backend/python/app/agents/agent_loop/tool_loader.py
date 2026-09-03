@@ -55,6 +55,11 @@ logger = logging.getLogger(__name__)
 # below, so they need their own gate on `context.has_knowledge` instead.
 _KNOWLEDGE_TOOLSETS = frozenset({"knowledgegraph", "retrieval", "knowledgehub"})
 
+# Code graph is a view over files a repo connector ingested. Without both
+# a configured code connector (org-wide) and attached code knowledge
+# (agent-scoped), the tools serve no purpose.
+_CODE_GRAPH_TOOLSETS = frozenset({"codegraph"})
+
 # Same substring heuristic `ToolInstanceCreator._create_with_factory` uses to
 # decide whether to re-raise a `ValueError` as an auth-flavored message
 # (`instance_creator.py`) — duplicated here (not imported) because that
@@ -115,15 +120,22 @@ def _infer_path_prefix(cls: type, *, fallback_name: str) -> str:
     return f"/tools/{fallback_name}"
 
 
-def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
+def _build_dynamic_tools(
+    context: "AgentContext",
+) -> tuple[list["Tool"], list[tuple[str, str, list[str]]]]:
     """Build per-request dynamic tools and wrap them as ``Tool`` instances.
 
     Dynamic tools are LangChain ``StructuredTool`` objects created by
     factory functions, wrapped with ``PipesHubStructuredToolAdapter``.
+
+    Returns ``(tools, pending_groups)`` where each pending group is a
+    ``(name, description, tool_names)`` triple to register as a toolset
+    AFTER the individual tools are on the registry.
     """
     state = context.tool_state
     state_logger = state.get("logger")
     tools: list[Tool] = []
+    _pending_toolset_groups: list[tuple[str, str, list[str]]] = []
 
     config_service = state.get("config_service")
 
@@ -200,7 +212,7 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
             if state_logger:
                 state_logger.warning("Failed to create fetch_url tool: %s", e)
 
-    return tools
+    return tools, _pending_toolset_groups
 
 
 class PipesHubToolLoader:
@@ -268,6 +280,13 @@ class PipesHubToolLoader:
                     state_logger.debug("Skipping knowledge toolset with no knowledge configured: %s", ts_name)
                 continue
 
+            if ts_name in _CODE_GRAPH_TOOLSETS and not (
+                context.has_code_connector and context.has_code_knowledge
+            ):
+                if state_logger:
+                    state_logger.debug("Skipping code graph toolset: no code connector/knowledge: %s", ts_name)
+                continue
+
             try:
                 instance = await instance_creator.create_instance_async(ts_class, ts_name)
 
@@ -317,7 +336,7 @@ class PipesHubToolLoader:
                 continue
 
         # ── Dynamic tools ─────────────────────────────────────────────────
-        dynamic_tools = _build_dynamic_tools(context)
+        dynamic_tools, pending_groups = _build_dynamic_tools(context)
         dynamic_count = 0
         for dt in dynamic_tools:
             try:
@@ -326,6 +345,14 @@ class PipesHubToolLoader:
             except (DuplicateToolPathError, DuplicateToolNameError):
                 if state_logger:
                     state_logger.warning("Skipping duplicate dynamic tool: %s", dt.name)
+
+        # Register toolset groups AFTER the individual tools are on the
+        # registry, so `group_connector_toolsets` can sweep them under
+        # `connectors` when lazy disclosure activates.
+        for group_name, group_desc, group_tool_names in pending_groups:
+            registered = [n for n in group_tool_names if registry.has(n)]
+            if registered:
+                registry.register_toolset(group_name, group_desc, registered)
 
         logger.info(
             "PipesHubToolLoader: %d connector tool(s) from %d toolset(s) + "

@@ -758,6 +758,72 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_neighbors_by_relationship_types(
+        self,
+        node_key: str,
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 25,
+        transaction: str | None = None
+    ) -> list[dict[str, Any]]:
+        """
+        Walk one hop from a node along edges of the given relationship types.
+
+        Endpoints may live in a different collection than the anchor -- a code
+        symbol can call a whole file -- so each result names its own collection
+        rather than assuming the anchor's.
+
+        Args:
+            node_key (str): Anchor node key
+            node_collection (str): Anchor node collection name
+            relationship_types (List[str]): Relationship type values to follow
+            direction (str): "outbound" (anchor is _from) or "inbound" (anchor is _to)
+            limit (int): Maximum neighbours to return
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict]: One dict per neighbour with keys ``collection``, ``key``,
+                ``relationshipType``, ``sourceLineNumber``, ``sourceColumnNumber``
+                and ``provenance``.
+        """
+        pass
+
+    @abstractmethod
+    async def get_neighbors_for_nodes_by_relationship_types(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 5000,
+        transaction: str | None = None
+    ) -> list[dict[str, Any]]:
+        """
+        Walk one hop from many nodes at once along the given relationship types.
+
+        The batched sibling of ``get_neighbors_by_relationship_types``, for
+        breadth-first search: one query per frontier level instead of one per
+        node. Each row names the anchor it came from and the direction it was
+        traversed, which a caller reconstructing a path needs.
+
+        Args:
+            node_keys (List[str]): Anchor node keys (one frontier)
+            node_collection (str): Collection the anchors live in
+            relationship_types (List[str]): Relationship type values to follow
+            direction (str): "outbound", "inbound", or "any"
+            limit (int): Maximum rows to return across the whole frontier
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict]: One dict per edge with keys ``anchorKey``, ``collection``,
+                ``key``, ``direction`` ("outbound" / "inbound", relative to the
+                anchor), ``relationshipType``, ``sourceLineNumber``,
+                ``sourceColumnNumber`` and ``provenance``.
+        """
+        pass
+
+    @abstractmethod
     async def get_related_nodes(
         self,
         node_id: str,
@@ -881,6 +947,130 @@ class IGraphDBProvider(ABC):
         Returns:
             List[Dict]: List of matching node documents
         """
+        pass
+
+    @abstractmethod
+    async def get_nodes_by_field_prefix(
+        self,
+        collection: str,
+        field_name: str,
+        prefix: str,
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """Get nodes whose field starts with a prefix."""
+        pass
+
+    @abstractmethod
+    async def search_nodes_by_field_terms(
+        self,
+        collection: str,
+        field_name: str,
+        terms: list[str],
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """Get nodes whose field contains any search term."""
+        pass
+
+    @abstractmethod
+    async def delete_edges_touching_nodes(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        edge_collection: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete edges whose source or target is one of the given nodes."""
+        pass
+
+    @abstractmethod
+    async def get_edge_rollup_by_file_prefix(
+        self,
+        org_id: str,
+        file_path_prefix: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 100000,
+        transaction: str | None = None,
+        connector_id: str | None = None,
+    ) -> list[dict]:
+        """Aggregate code-graph edges between files under a path prefix.
+
+        ``connector_id`` restricts the source side to one repo connector. File
+        paths are repo-relative, so without it two repos that both have
+        ``backend/`` roll up into a single, meaningless bucket.
+        """
+        pass
+
+    @abstractmethod
+    async def get_file_paths_for_records(
+        self,
+        org_id: str,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> dict[str, str]:
+        """Return one code-file path for each requested record."""
+        pass
+
+    @abstractmethod
+    async def get_edges_by_target_keys(
+        self,
+        target_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        return_field: str = "_from",
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return distinct edge fields for edges targeting the given nodes."""
+        pass
+
+    @abstractmethod
+    async def delete_edges_by_source_keys(
+        self,
+        source_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete filtered edges originating from any requested node."""
+        pass
+
+    @abstractmethod
+    async def count_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        """Count nodes matching equality and membership filters."""
+        pass
+
+    @abstractmethod
+    async def has_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        """Return whether any node matches equality and membership filters."""
+        pass
+
+    @abstractmethod
+    async def get_nodes_updated_since(
+        self,
+        collection: str,
+        timestamp_field: str,
+        since: int,
+        filters: dict[str, Any] | None = None,
+        return_fields: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """Get nodes whose timestamp field is greater than the given value."""
         pass
 
 

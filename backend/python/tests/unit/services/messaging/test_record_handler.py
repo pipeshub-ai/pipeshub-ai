@@ -309,6 +309,140 @@ class TestSyncVectorMembershipEvent:
         pipeline.bulk_delete_embeddings.assert_not_awaited()
 
 
+class TestBuildCodeEdges:
+    @staticmethod
+    def _payload() -> dict[str, str]:
+        return {
+            "org_id": "org-1",
+            "connector_id": "connector-1",
+            "record_group_id": "repo-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_builds_edges_stamps_sync_point_and_releases_lock(self) -> None:
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=False)
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+        graph_provider.upsert_sync_point = AsyncMock()
+
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=True)
+        redis.eval = AsyncMock()
+        redis.aclose = AsyncMock()
+
+        result = MagicMock()
+        result.as_log_fields.return_value = {"edges_written": 3}
+        with (
+            patch(
+                "app.services.messaging.kafka.handlers.record.redis_from_config_service",
+                AsyncMock(return_value=redis),
+            ),
+            patch(
+                "app.services.messaging.kafka.handlers.record.build_code_graph_edges",
+                AsyncMock(return_value=result),
+            ) as build,
+        ):
+            await handler._build_code_edges(**self._payload())
+
+        build.assert_awaited_once_with(
+            graph_provider=graph_provider,
+            org_id="org-1",
+            record_group_id="repo-1",
+            touched_record_ids=None,
+            log=handler.logger,
+        )
+        graph_provider.upsert_sync_point.assert_awaited_once()
+        sync_call = graph_provider.upsert_sync_point.await_args
+        assert sync_call.kwargs["sync_point_key"] == "repo-1/code-edge-build"
+        assert sync_call.kwargs["sync_point_data"]["connectorId"] == "connector-1"
+        redis.eval.assert_awaited_once()
+        redis.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_build_failure_is_retried_and_releases_lock(self) -> None:
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=False)
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+        graph_provider.upsert_sync_point = AsyncMock()
+
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=True)
+        redis.eval = AsyncMock()
+        redis.aclose = AsyncMock()
+
+        with (
+            patch(
+                "app.services.messaging.kafka.handlers.record.redis_from_config_service",
+                AsyncMock(return_value=redis),
+            ),
+            patch(
+                "app.services.messaging.kafka.handlers.record.build_code_graph_edges",
+                AsyncMock(side_effect=RuntimeError("build failed")),
+            ),
+            pytest.raises(RuntimeError, match="build failed"),
+        ):
+            await handler._build_code_edges(**self._payload())
+
+        graph_provider.upsert_sync_point.assert_not_awaited()
+        redis.eval.assert_awaited_once()
+        redis.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_lock_contention_acknowledges_duplicate_without_building(
+        self,
+    ) -> None:
+        handler = _make_handler()
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=False)
+        redis.eval = AsyncMock()
+        redis.aclose = AsyncMock()
+
+        with (
+            patch(
+                "app.services.messaging.kafka.handlers.record.redis_from_config_service",
+                AsyncMock(return_value=redis),
+            ),
+            patch(
+                "app.services.messaging.kafka.handlers.record.build_code_graph_edges",
+                new_callable=AsyncMock,
+            ) as build,
+        ):
+            await handler._build_code_edges(**self._payload())
+
+        build.assert_not_awaited()
+        redis.eval.assert_not_awaited()
+        redis.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_unfinished_records_skip_build_and_release_lock(self) -> None:
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=True)
+
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=True)
+        redis.eval = AsyncMock()
+        redis.aclose = AsyncMock()
+
+        with (
+            patch(
+                "app.services.messaging.kafka.handlers.record.redis_from_config_service",
+                AsyncMock(return_value=redis),
+            ),
+            patch(
+                "app.services.messaging.kafka.handlers.record.build_code_graph_edges",
+                new_callable=AsyncMock,
+            ) as build,
+        ):
+            await handler._build_code_edges(**self._payload())
+
+        build.assert_not_awaited()
+        redis.eval.assert_awaited_once()
+        redis.aclose.assert_awaited_once()
+
+
 def _vector_only_graph_doc(**overrides):
     doc = {
         "_key": "rec-1",

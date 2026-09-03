@@ -24,16 +24,11 @@ Tests cover:
 
 import asyncio
 import logging
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+import uuid
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
-from app.services.graph_db.arango.arango_http_provider import (
-    ARANGO_ID_PARTS_COUNT,
-    ArangoHTTPProvider,
-)
-import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
 from app.services.graph_db.arango.arango_http_provider import (
     ARANGO_ID_PARTS_COUNT,
     MAX_REINDEX_DEPTH,
@@ -5363,7 +5358,40 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 21
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 27
+
+    @pytest.mark.asyncio
+    async def test_block_indexes_cover_every_query_shape(self, connected_provider):
+        """Each of these backs a query that is otherwise a full collection scan.
+
+        The bare count above fails on any index change without saying which one;
+        this names them, so removing one is distinguishable from adding one.
+        """
+        from app.config.constants.arangodb import CollectionNames
+
+        connected_provider.http_client.ensure_persistent_index = AsyncMock()
+        await connected_provider._ensure_indexes()
+        blocks = {
+            tuple(call.args[1])
+            for call in connected_provider.http_client.ensure_persistent_index.await_args_list
+            if call.args[0] == CollectionNames.BLOCKS.value
+        }
+        assert blocks == {
+            ("orgId", "recordGroupId", "name"),           # edge-resolution symbol sweep
+            ("orgId", "recordGroupId", "qualifiedName"),  # resolution target lookup
+            ("recordId", "source"),                       # per-file reconciliation
+            ("orgId", "recordId", "qualifiedName"),       # the agent tools' addressing
+            ("orgId", "name"),                            # free-text select, repo-agnostic
+        }
+
+        code_files = {
+            tuple(call.args[1])
+            for call in connected_provider.http_client.ensure_persistent_index.await_args_list
+            if call.args[0] == CollectionNames.CODE_FILES.value
+        }
+        # A file's path lives here, not on its blocks, so this backs every
+        # path-prefix query the code tools make.
+        assert code_files == {("orgId", "filePath")}
 
 
 # ---------------------------------------------------------------------------
@@ -7940,7 +7968,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 21
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 27
 
 
 # ---------------------------------------------------------------------------

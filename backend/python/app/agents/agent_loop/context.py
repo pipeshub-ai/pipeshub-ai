@@ -84,6 +84,8 @@ class AgentContext(BaseModel):
     has_sql_knowledge: bool = False
     has_slack_connector: bool = False
     has_slack_knowledge: bool = False
+    has_code_connector: bool = False
+    has_code_knowledge: bool = False
     is_multimodal_llm: bool = False
     # The user's question for this turn. Reaches tools that need to know what
     # is being asked -- `fetch_record` ranks an over-budget record's blocks
@@ -370,6 +372,8 @@ class AgentContext(BaseModel):
             has_sql_knowledge=bool(state.get("has_sql_knowledge", False)),
             has_slack_connector=bool(state.get("has_slack_connector", False)),
             has_slack_knowledge=bool(state.get("has_slack_knowledge", False)),
+            has_code_connector=bool(state.get("has_code_connector", False)),
+            has_code_knowledge=bool(state.get("has_code_knowledge", False)),
             is_multimodal_llm=bool(state.get("is_multimodal_llm", False)),
             query=str(state.get("query") or ""),
             enable_record_id_shortening=bool(state.get("enable_record_id_shortening", False)),
@@ -463,6 +467,8 @@ class AgentContext(BaseModel):
             "has_sql_knowledge": self.has_sql_knowledge,
             "has_slack_connector": self.has_slack_connector,
             "has_slack_knowledge": self.has_slack_knowledge,
+            "has_code_connector": self.has_code_connector,
+            "has_code_knowledge": self.has_code_knowledge,
             "is_multimodal_llm": self.is_multimodal_llm,
             "query": self.query,
             "enable_record_id_shortening": self.enable_record_id_shortening,

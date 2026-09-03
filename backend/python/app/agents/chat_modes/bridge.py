@@ -192,6 +192,7 @@ def _apply_policy_to_chat_state(
     chat_state["has_knowledge"] = policy.has_knowledge
     chat_state["has_sql_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_sql_connector"))
     chat_state["has_slack_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_slack_connector"))
+    chat_state["has_code_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_code_connector"))
     chat_state["web_search_config"] = web_search_config if policy.include_web_search else None
     chat_state["chat_mode"] = policy.name
 
@@ -311,6 +312,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     """Entry point `chatbot.py::askAIStream()` calls for every `/chat/stream`
     request, regardless of mode. See module docstring."""
     from app.modules.agents.qna.chat_state import build_initial_state
+    from app.modules.code_graph.connectors import has_code_connector_configured
     from app.utils.execute_query import has_sql_connector_configured
     from app.utils.fetch_slack_thread import has_slack_connector_configured
     from app.modules.transformers.blob_storage import BlobStorage
@@ -333,6 +335,9 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             graph_provider, user_info["userId"], user_info["orgId"]
         )
         has_slack_connector = await has_slack_connector_configured(
+            graph_provider, user_info["userId"], user_info["orgId"]
+        )
+        has_code_connector = await has_code_connector_configured(
             graph_provider, user_info["userId"], user_info["orgId"]
         )
         web_search_config = (
@@ -358,7 +363,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             query_info, user_info, llm, log, retrieval_service, graph_provider,
             reranker_service, config_service, model_name or "", model_key or "", org_info,
             "react", has_sql_connector=has_sql_connector, is_multimodal_llm=is_multimodal_llm,
-            has_slack_connector=has_slack_connector, client_name=client_name,
+            has_slack_connector=has_slack_connector,
+            has_code_connector=has_code_connector, client_name=client_name,
         )
         _apply_policy_to_chat_state(chat_state, policy, web_search_config)
         chat_state["instructions"] = _with_mode_instructions(chat_state.get("instructions"), policy)

@@ -46,6 +46,7 @@ from app.config.constants.neo4j import (
     build_node_id,
     collection_to_label,
     edge_collection_to_relationship,
+    label_to_collection,
     parse_node_id,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
@@ -524,7 +525,58 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Record) ON (n.recordType, n.externalGroupId)"
         )
 
+        # ==================== BLOCK INDEXES (code knowledge graph) ====================
+        # Blocks are the largest label by far (100k+ on a mid-size repo) and only
+        # carried the id uniqueness constraint, so every code-graph query was a
+        # full label scan.
+
+        # COMPOSITE: orgId + recordId + qualifiedName — the code tools address a
+        # symbol by (file, name); the file resolves to a record on Codefiles
+        # first, so blocks are reached by record.
+        indexes.append(
+            "CREATE INDEX block_org_record_qualified_name IF NOT EXISTS "
+            "FOR (n:Block) ON (n.orgId, n.recordId, n.qualifiedName)"
+        )
+
+        # COMPOSITE: orgId + filePath on Codefiles — the single home of a code
+        # file's path, and what every path-prefix query now drives from.
+        indexes.append(
+            "CREATE INDEX code_file_org_path IF NOT EXISTS "
+            "FOR (n:Codefiles) ON (n.orgId, n.filePath)"
+        )
+
+        # COMPOSITE: orgId + qualifiedName — symbol lookup by identity.
+        indexes.append(
+            "CREATE INDEX block_org_qualified_name IF NOT EXISTS "
+            "FOR (n:Block) ON (n.orgId, n.qualifiedName)"
+        )
+
+        # COMPOSITE: orgId + recordGroupId + name — the symbol index the edge
+        # resolution pass sweeps per repo.
+        indexes.append(
+            "CREATE INDEX block_org_group_name IF NOT EXISTS "
+            "FOR (n:Block) ON (n.orgId, n.recordGroupId, n.name)"
+        )
+
+        # COMPOSITE: recordId + source — per-file reconciliation on re-index.
+        indexes.append(
+            "CREATE INDEX block_record_source IF NOT EXISTS "
+            "FOR (n:Block) ON (n.recordId, n.source)"
+        )
+
         return indexes
+
+    def _generate_fulltext_indexes(self) -> list[str]:
+        """Full-text indexes, which use a different DDL form to range indexes.
+
+        Free-text symbol lookup is what lets an agent start from a question rather
+        than from a symbol id it already holds. Without this it means scanning and
+        scoring every Block on each call.
+        """
+        return [
+            "CREATE FULLTEXT INDEX block_text IF NOT EXISTS "
+            "FOR (n:Block) ON EACH [n.name, n.qualifiedName]"
+        ]
 
     def _generate_required_field_constraints(self) -> list[str]:
         """
@@ -609,6 +661,15 @@ class Neo4jProvider(IGraphDBProvider):
                     self.logger.debug(f"Index creation (may already exist): {str(e)}")
 
             self.logger.info(f"✅ Created {len(indexes)} performance indexes")
+
+            fulltext_indexes = self._generate_fulltext_indexes()
+            for index_query in fulltext_indexes:
+                try:
+                    await self.client.execute_query(index_query)
+                except Exception as e:
+                    self.logger.debug(f"Full-text index creation (may already exist): {str(e)}")
+
+            self.logger.info(f"✅ Created {len(fulltext_indexes)} full-text indexes")
             self.logger.info("✅ Neo4j schema initialized (constraints and indexes)")
 
             # Seed departments collection with predefined department types
@@ -643,6 +704,16 @@ class Neo4jProvider(IGraphDBProvider):
 
         # Remove _id if present (we'll reconstruct it if needed)
         neo4j_node.pop("_id", None)
+
+        # Neo4j properties must be primitives or arrays of primitives.
+        # JSON-serialize any dict or list-of-dict values, and drop None.
+        for key, value in list(neo4j_node.items()):
+            if value is None:
+                del neo4j_node[key]
+            elif isinstance(value, dict):
+                neo4j_node[key] = json.dumps(value, default=str)
+            elif isinstance(value, list) and value and isinstance(value[0], dict):
+                neo4j_node[key] = json.dumps(value, default=str)
 
         return neo4j_node
 
@@ -880,18 +951,18 @@ class Neo4jProvider(IGraphDBProvider):
 
             label = collection_to_label(collection)
 
-            # Convert nodes to Neo4j format
+            # Validate against the schema before Neo4j-specific conversion,
+            # which JSON-serializes nested dicts that the schema expects as
+            # objects/arrays but Neo4j cannot store natively.
             neo4j_nodes = []
             for node in nodes:
+                self.validator.validate_node_update(collection, node)
                 neo4j_node = self._arango_to_neo4j_node(node, collection)
-                # Ensure id exists
                 if "id" not in neo4j_node:
                     if "_key" in neo4j_node:
                         neo4j_node["id"] = neo4j_node.pop("_key")
                     else:
                         neo4j_node["id"] = str(uuid.uuid4())
-                # Validate nodes before writing
-                self.validator.validate_node_update(collection, neo4j_node)
                 neo4j_nodes.append(neo4j_node)
 
             # Use UNWIND for batch upsert
@@ -979,10 +1050,8 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             label = collection_to_label(collection)
 
-            # Convert updates to Neo4j format
+            self.validator.validate_node_update(collection, node_updates)
             updates = self._arango_to_neo4j_node(node_updates, collection)
-            # Validate updates before writing
-            self.validator.validate_node_update(collection, updates)
 
             query = f"""
             MATCH (n:{label} {{id: $key}})
@@ -1028,11 +1097,10 @@ class Neo4jProvider(IGraphDBProvider):
 
             label = collection_to_label(collection)
             
-            # Convert nodes to Neo4j format and validate
             neo4j_nodes = []
             for node in nodes:
+                self.validator.validate_node_update(collection, node)
                 neo4j_node = self._arango_to_neo4j_node(node, collection)
-                self.validator.validate_node_update(collection, neo4j_node)
                 neo4j_nodes.append(neo4j_node)
 
             # Use UNWIND to batch update multiple nodes
@@ -1685,9 +1753,14 @@ class Neo4jProvider(IGraphDBProvider):
                 where_clause = ""
                 parameters = {}
 
-            # Build return clause
+            # Build return clause. `_key` is stored as `id` on Neo4j nodes, so
+            # projecting it verbatim returns null for every row and silently
+            # empties any caller that reads keys back.
             if return_fields:
-                return_expr = ", ".join([f"n.{field} AS {field}" for field in return_fields])
+                return_expr = ", ".join(
+                    f"n.{'id' if field == '_key' else field} AS {field}"
+                    for field in return_fields
+                )
             else:
                 return_expr = "n"
 
@@ -1779,15 +1852,19 @@ class Neo4jProvider(IGraphDBProvider):
         """Get nodes where field value is in list"""
         try:
             label = collection_to_label(collection)
+            neo4j_field = "id" if field_name == "_key" else field_name
 
             if return_fields:
-                return_expr = ", ".join([f"n.{field} AS {field}" for field in return_fields])
+                return_expr = ", ".join(
+                    f"n.{'id' if field == '_key' else field} AS {field}"
+                    for field in return_fields
+                )
             else:
                 return_expr = "n"
 
             query = f"""
             MATCH (n:{label})
-            WHERE n.{field_name} IN $values
+            WHERE n.{neo4j_field} IN $values
             RETURN {return_expr}
             """
 
@@ -1809,6 +1886,439 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get nodes by field in failed: {str(e)}")
+            return []
+
+    async def get_nodes_by_field_prefix(
+        self,
+        collection: str,
+        field_name: str,
+        prefix: str,
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        try:
+            label = collection_to_label(collection)
+            neo4j_field = "id" if field_name == "_key" else field_name
+            conditions = [f"n.{neo4j_field} STARTS WITH $prefix"]
+            parameters: dict[str, Any] = {"prefix": prefix, "limit": limit}
+            for field, value in (filters or {}).items():
+                parameter = f"filter_{field}"
+                conditions.append(f"n.{field} = ${parameter}")
+                parameters[parameter] = value
+            query = f"""
+            MATCH (n:{label})
+            WHERE {" AND ".join(conditions)}
+            RETURN n
+            LIMIT $limit
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return [
+                self._neo4j_to_arango_node(dict(row.get("n", {})), collection)
+                for row in rows or []
+            ]
+        except Exception as e:
+            self.logger.error(f"❌ Get nodes by field prefix failed: {str(e)}")
+            return []
+
+    async def search_nodes_by_field_terms(
+        self,
+        collection: str,
+        field_name: str,
+        terms: list[str],
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        if not terms:
+            return []
+        filters = filters or {}
+        parameters: dict[str, Any] = {
+            "terms": [term.lower() for term in terms],
+            "query": " OR ".join(terms),
+            "limit": limit,
+        }
+        for field, value in filters.items():
+            parameters[f"filter_{field}"] = value
+        try:
+            label = collection_to_label(collection)
+            if (
+                collection == CollectionNames.BLOCKS.value
+                and field_name == "name"
+            ):
+                filter_clause = " AND ".join(
+                    f"node.{field} = $filter_{field}" for field in filters
+                )
+                where_clause = f"WHERE {filter_clause}" if filter_clause else ""
+                fulltext_query = f"""
+                CALL db.index.fulltext.queryNodes('block_text', $query)
+                YIELD node, score
+                {where_clause}
+                RETURN node AS n, score
+                ORDER BY score DESC
+                LIMIT $limit
+                """
+                try:
+                    rows = await self.client.execute_query(
+                        fulltext_query,
+                        parameters=parameters,
+                        txn_id=transaction,
+                    )
+                    if rows:
+                        return [
+                            self._neo4j_to_arango_node(
+                                dict(row.get("n", {})), collection
+                            )
+                            for row in rows
+                        ]
+                except Exception as e:
+                    self.logger.debug(
+                        f"Full-text node search unavailable, using scan: {str(e)}"
+                    )
+
+            conditions = [
+                f"n.{field_name} IS NOT NULL",
+                f"any(term IN $terms WHERE toLower(n.{field_name}) CONTAINS term)",
+            ]
+            conditions.extend(
+                f"n.{field} = $filter_{field}" for field in filters
+            )
+            query = f"""
+            MATCH (n:{label})
+            WHERE {" AND ".join(conditions)}
+            RETURN n
+            LIMIT $limit
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return [
+                self._neo4j_to_arango_node(dict(row.get("n", {})), collection)
+                for row in rows or []
+            ]
+        except Exception as e:
+            self.logger.error(f"❌ Search nodes by field terms failed: {str(e)}")
+            return []
+
+    async def delete_edges_touching_nodes(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        edge_collection: str,
+        transaction: str | None = None,
+    ) -> int:
+        if not node_keys:
+            return 0
+        try:
+            label = collection_to_label(node_collection)
+            relationship = edge_collection_to_relationship(edge_collection)
+            query = f"""
+            MATCH (node:{label})-[rel:{relationship}]-()
+            WHERE node.id IN $node_keys
+            WITH DISTINCT rel
+            DELETE rel
+            RETURN count(rel) AS deleted
+            """
+            rows = await self.client.execute_query(
+                query,
+                parameters={"node_keys": node_keys},
+                txn_id=transaction,
+            )
+            return int(rows[0].get("deleted", 0)) if rows else 0
+        except Exception as e:
+            self.logger.error(f"❌ Delete edges touching nodes failed: {str(e)}")
+            raise
+
+    async def get_edge_rollup_by_file_prefix(
+        self,
+        org_id: str,
+        file_path_prefix: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 100000,
+        transaction: str | None = None,
+        connector_id: str | None = None,
+    ) -> list[dict]:
+        if direction not in ("outbound", "inbound", "any"):
+            raise ValueError("direction must be 'outbound', 'inbound', or 'any'")
+        try:
+            block_label = collection_to_label(CollectionNames.BLOCKS.value)
+            relationship = edge_collection_to_relationship(
+                CollectionNames.RECORD_RELATIONS.value
+            )
+            pattern = {
+                "outbound": f"(block:{block_label})-[rel:{relationship}]->(target)",
+                "inbound": f"(block:{block_label})<-[rel:{relationship}]-(target)",
+                "any": f"(block:{block_label})-[rel:{relationship}]-(target)",
+            }[direction]
+            record_label = collection_to_label(CollectionNames.RECORDS.value)
+            code_file_label = collection_to_label(CollectionNames.CODE_FILES.value)
+            # The prefix is matched on codeFiles -- one node per file rather than
+            # ~30 per file on blocks -- and the connector scope is re-applied per
+            # record, since codeFiles carries no connectorId. Grouped by record,
+            # not by path: the caller resolves ids to paths in one batch, so a
+            # moved file needs no rewrite here.
+            query = f"""
+            MATCH (codeFile:{code_file_label})
+            WHERE codeFile.orgId = $orgId
+              AND codeFile.filePath STARTS WITH $prefix
+            MATCH (record:{record_label} {{id: codeFile.id}})
+            WHERE $connectorId IS NULL OR record.connectorId = $connectorId
+            WITH collect(record.id) AS scopedRecords
+            MATCH {pattern}
+            WHERE block.recordId IN scopedRecords
+              AND rel.relationshipType IN $relations
+            WITH block, target, rel,
+                 CASE WHEN startNode(rel).id = block.id
+                      THEN 'outbound' ELSE 'inbound' END AS dir
+            RETURN block.recordId AS srcRecord,
+                   rel.relationshipType AS rel,
+                   dir,
+                   coalesce(target.recordId, target.id) AS dstRecord,
+                   count(*) AS n
+            LIMIT $limit
+            """
+            return await self.client.execute_query(
+                query,
+                parameters={
+                    "orgId": org_id,
+                    "prefix": file_path_prefix,
+                    "relations": relationship_types,
+                    "limit": limit,
+                    "connectorId": connector_id,
+                },
+                txn_id=transaction,
+            ) or []
+        except Exception as e:
+            self.logger.error(f"❌ Get edge rollup by file prefix failed: {str(e)}")
+            return []
+
+    async def get_file_paths_for_records(
+        self,
+        org_id: str,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> dict[str, str]:
+        if not record_ids:
+            return {}
+        try:
+            record_label = collection_to_label(CollectionNames.RECORDS.value)
+            code_file_label = collection_to_label(CollectionNames.CODE_FILES.value)
+            # codeFiles is keyed by record id. recordName is the fallback for a
+            # source file that arrived without a codeFiles node -- a .py uploaded
+            # to a KB is a plain FILE record, and dispatch is by extension, so it
+            # still gets parsed and projected.
+            query = f"""
+            MATCH (record:{record_label})
+            WHERE record.orgId = $orgId
+              AND record.id IN $record_ids
+            OPTIONAL MATCH (codeFile:{code_file_label} {{id: record.id}})
+            WITH record, coalesce(codeFile.filePath, record.recordName) AS path
+            WHERE path IS NOT NULL
+            RETURN record.id AS recordId, path AS filePath
+            """
+            rows = await self.client.execute_query(
+                query,
+                parameters={"orgId": org_id, "record_ids": record_ids},
+                txn_id=transaction,
+            )
+            return {
+                row["recordId"]: row["filePath"]
+                for row in rows or []
+                if row.get("recordId") and row.get("filePath")
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Get file paths for records failed: {str(e)}")
+            return {}
+
+    async def get_edges_by_target_keys(
+        self,
+        target_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        return_field: str = "_from",
+        transaction: str | None = None,
+    ) -> list[str]:
+        if not target_keys:
+            return []
+        if return_field not in ("_from", "_to"):
+            raise ValueError("return_field must be '_from' or '_to'")
+        try:
+            relationship = edge_collection_to_relationship(edge_collection)
+            target_ids = [key.split("/", 1)[-1] for key in target_keys]
+            conditions = ["target.id IN $target_ids"]
+            parameters: dict[str, Any] = {"target_ids": target_ids}
+            for field, value in (filters or {}).items():
+                parameter = f"filter_{field}"
+                conditions.append(f"rel.{field} = ${parameter}")
+                parameters[parameter] = value
+            endpoint = "source" if return_field == "_from" else "target"
+            query = f"""
+            MATCH (source)-[rel:{relationship}]->(target)
+            WHERE {" AND ".join(conditions)}
+            RETURN DISTINCT labels({endpoint}) AS labels,
+                            {endpoint}.id AS key
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            result: list[str] = []
+            for row in rows or []:
+                labels = row.get("labels") or []
+                key = row.get("key")
+                if labels and key:
+                    result.append(f"{label_to_collection(labels[0])}/{key}")
+            return result
+        except Exception as e:
+            self.logger.error(f"❌ Get edges by target keys failed: {str(e)}")
+            return []
+
+    async def delete_edges_by_source_keys(
+        self,
+        source_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        if not source_keys:
+            return 0
+        try:
+            relationship = edge_collection_to_relationship(edge_collection)
+            source_ids = [key.split("/", 1)[-1] for key in source_keys]
+            conditions = ["source.id IN $source_ids"]
+            parameters: dict[str, Any] = {"source_ids": source_ids}
+            for field, value in (filters or {}).items():
+                parameter = f"filter_{field}"
+                conditions.append(f"rel.{field} = ${parameter}")
+                parameters[parameter] = value
+            query = f"""
+            MATCH (source)-[rel:{relationship}]->()
+            WHERE {" AND ".join(conditions)}
+            DELETE rel
+            RETURN count(rel) AS deleted
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return int(rows[0].get("deleted", 0)) if rows else 0
+        except Exception as e:
+            self.logger.error(f"❌ Delete edges by source keys failed: {str(e)}")
+            raise
+
+    async def count_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        try:
+            label = collection_to_label(collection)
+            conditions: list[str] = []
+            parameters: dict[str, Any] = {}
+            for field, value in (filters or {}).items():
+                parameter = f"filter_{field}"
+                conditions.append(f"node.{field} = ${parameter}")
+                parameters[parameter] = value
+            for field, values in (in_filters or {}).items():
+                parameter = f"in_filter_{field}"
+                conditions.append(f"node.{field} IN ${parameter}")
+                parameters[parameter] = values
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            query = f"""
+            MATCH (node:{label})
+            {where_clause}
+            RETURN count(node) AS count
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return int(rows[0].get("count", 0)) if rows else 0
+        except Exception as e:
+            self.logger.error(f"❌ Count nodes by filters failed: {str(e)}")
+            return 0
+
+    async def has_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        try:
+            label = collection_to_label(collection)
+            conditions: list[str] = []
+            parameters: dict[str, Any] = {}
+            for field, value in (filters or {}).items():
+                parameter = f"filter_{field}"
+                conditions.append(f"node.{field} = ${parameter}")
+                parameters[parameter] = value
+            for field, values in (in_filters or {}).items():
+                parameter = f"in_filter_{field}"
+                conditions.append(f"node.{field} IN ${parameter}")
+                parameters[parameter] = values
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            query = f"""
+            MATCH (node:{label})
+            {where_clause}
+            RETURN 1 AS matched
+            LIMIT 1
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return bool(rows)
+        except Exception as e:
+            self.logger.error(f"❌ Node existence check failed: {str(e)}")
+            raise
+
+    async def get_nodes_updated_since(
+        self,
+        collection: str,
+        timestamp_field: str,
+        since: int,
+        filters: dict[str, Any] | None = None,
+        return_fields: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        try:
+            label = collection_to_label(collection)
+            conditions = [f"node.{timestamp_field} > $since"]
+            parameters: dict[str, Any] = {"since": since}
+            for field, value in (filters or {}).items():
+                parameter = f"filter_{field}"
+                conditions.append(f"node.{field} = ${parameter}")
+                parameters[parameter] = value
+            if return_fields:
+                return_expr = ", ".join(
+                    f"node.{'id' if field == '_key' else field} AS {field}"
+                    for field in return_fields
+                )
+            else:
+                return_expr = "node"
+            query = f"""
+            MATCH (node:{label})
+            WHERE {" AND ".join(conditions)}
+            RETURN {return_expr}
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            if return_fields:
+                return [
+                    {field: row.get(field) for field in return_fields}
+                    for row in rows or []
+                ]
+            return [
+                self._neo4j_to_arango_node(
+                    dict(row.get("node", {})), collection
+                )
+                for row in rows or []
+            ]
+        except Exception as e:
+            self.logger.error(f"❌ Get nodes updated since failed: {str(e)}")
             return []
 
     async def remove_nodes_by_field(
@@ -1904,6 +2414,158 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get edges to node failed: {str(e)}")
+            return []
+
+    async def get_neighbors_by_relationship_types(
+        self,
+        node_key: str,
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 25,
+        transaction: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Walk one hop from a node along the given relationship types.
+
+        See IGraphDBProvider.get_neighbors_by_relationship_types.
+        """
+        if not relationship_types:
+            return []
+        if direction not in ("outbound", "inbound"):
+            raise ValueError(
+                f"direction must be 'outbound' or 'inbound', got {direction!r}"
+            )
+
+        try:
+            rel_type = edge_collection_to_relationship(
+                CollectionNames.RECORD_RELATIONS.value
+            )
+            anchor_label = collection_to_label(node_collection)
+            # The neighbour is deliberately unlabelled: a code symbol can point
+            # at a whole file, so Block and Record both turn up here.
+            pattern = (
+                f"(n:{anchor_label} {{id: $node_key}})-[rel:{rel_type}]->(m)"
+                if direction == "outbound"
+                else f"(n:{anchor_label} {{id: $node_key}})<-[rel:{rel_type}]-(m)"
+            )
+            query = f"""
+            MATCH {pattern}
+            WHERE rel.relationshipType IN $relationship_types
+            RETURN labels(m) AS labels,
+                   m.id AS key,
+                   rel.relationshipType AS relationshipType,
+                   rel.sourceLineNumber AS sourceLineNumber,
+                   rel.sourceColumnNumber AS sourceColumnNumber,
+                   rel.provenance AS provenance,
+                   rel.line AS line,
+                   rel.confidence AS confidence
+            LIMIT $limit
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "node_key": node_key,
+                    "relationship_types": relationship_types,
+                    "limit": limit,
+                },
+                txn_id=transaction
+            )
+            neighbours: list[dict[str, Any]] = []
+            for row in results or []:
+                labels = row.get("labels") or []
+                neighbours.append({
+                    "collection": label_to_collection(labels[0]) if labels else "",
+                    "key": row.get("key"),
+                    "relationshipType": row.get("relationshipType"),
+                    "sourceLineNumber": row.get("sourceLineNumber"),
+                    "sourceColumnNumber": row.get("sourceColumnNumber"),
+                    "provenance": row.get("provenance"),
+                    "line": row.get("line"),
+                    "confidence": row.get("confidence"),
+                })
+            return neighbours
+        except Exception as e:
+            self.logger.error(f"❌ Get neighbors by relationship types failed: {str(e)}")
+            return []
+
+    async def get_neighbors_for_nodes_by_relationship_types(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 5000,
+        transaction: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Walk one hop from many nodes at once.
+
+        See IGraphDBProvider.get_neighbors_for_nodes_by_relationship_types.
+        """
+        if not node_keys or not relationship_types:
+            return []
+        if direction not in ("outbound", "inbound", "any"):
+            raise ValueError(
+                f"direction must be 'outbound', 'inbound' or 'any', got {direction!r}"
+            )
+
+        try:
+            rel_type = edge_collection_to_relationship(
+                CollectionNames.RECORD_RELATIONS.value
+            )
+            anchor_label = collection_to_label(node_collection)
+            # The neighbour stays unlabelled: a code symbol can point at a whole
+            # file, so Block and Record both turn up here.
+            pattern = {
+                "outbound": f"(n:{anchor_label})-[rel:{rel_type}]->(m)",
+                "inbound": f"(n:{anchor_label})<-[rel:{rel_type}]-(m)",
+                "any": f"(n:{anchor_label})-[rel:{rel_type}]-(m)",
+            }[direction]
+            query = f"""
+            MATCH {pattern}
+            WHERE n.id IN $node_keys
+              AND rel.relationshipType IN $relationship_types
+            RETURN n.id AS anchorKey,
+                   labels(m) AS labels,
+                   m.id AS key,
+                   CASE WHEN startNode(rel).id = n.id
+                        THEN 'outbound' ELSE 'inbound' END AS direction,
+                   rel.relationshipType AS relationshipType,
+                   rel.sourceLineNumber AS sourceLineNumber,
+                   rel.sourceColumnNumber AS sourceColumnNumber,
+                   rel.provenance AS provenance,
+                   rel.line AS line,
+                   rel.confidence AS confidence
+            LIMIT $limit
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "node_keys": node_keys,
+                    "relationship_types": relationship_types,
+                    "limit": limit,
+                },
+                txn_id=transaction
+            )
+            neighbours: list[dict[str, Any]] = []
+            for row in results or []:
+                labels = row.get("labels") or []
+                neighbours.append({
+                    "anchorKey": row.get("anchorKey"),
+                    "collection": label_to_collection(labels[0]) if labels else "",
+                    "key": row.get("key"),
+                    "direction": row.get("direction"),
+                    "relationshipType": row.get("relationshipType"),
+                    "sourceLineNumber": row.get("sourceLineNumber"),
+                    "sourceColumnNumber": row.get("sourceColumnNumber"),
+                    "provenance": row.get("provenance"),
+                    "line": row.get("line"),
+                    "confidence": row.get("confidence"),
+                })
+            return neighbours
+        except Exception as e:
+            self.logger.error(
+                f"❌ Get neighbors for nodes by relationship types failed: {str(e)}"
+            )
             return []
 
     async def get_related_nodes(
@@ -5365,8 +6027,10 @@ class Neo4jProvider(IGraphDBProvider):
 
             query = """
             UNWIND $edges AS edge
-            MATCH (from:Record {id: edge.from_key})
-            MATCH (to:Record {id: edge.to_key})
+            MATCH (from)
+            WHERE from.id = edge.from_key AND (from:Record OR from:Block)
+            MATCH (to)
+            WHERE to.id = edge.to_key AND (to:Record OR to:Block)
             MERGE (from)-[r:RECORD_RELATION {relationshipType: edge.relationshipType, constraintName: edge.constraintName}]->(to)
             SET r += edge.props
             RETURN count(r) AS upserted

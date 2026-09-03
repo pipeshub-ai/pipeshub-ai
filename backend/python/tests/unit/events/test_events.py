@@ -2186,3 +2186,89 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
 
         assert result.skip_indexing is True
         assert doc["indexingStatus"] == ProgressStatus.QUEUED.value
+
+# ===========================================================================
+# Code-graph projection on the duplicate path
+# ===========================================================================
+
+
+class TestDuplicateCodeFileProjection:
+    """A deduped code file must still get its own block nodes.
+
+    The blob and the vectors are shared through the duplicate's
+    virtualRecordId, but block nodes are keyed by record -- so without this the
+    file is searchable and yet completely absent from the code graph.
+    """
+
+    @staticmethod
+    def _setup(record_type: str = "CODE_FILE") -> tuple:
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "orgId": "org-1",
+            "recordType": record_type,
+            "recordGroupId": "repo-1",
+            "connectorId": "conn-1",
+            "virtualRecordId": "vr-original",
+        }
+        processor.project_code_blocks_to_graph = AsyncMock()
+        return ep, processor
+
+    @pytest.mark.asyncio
+    async def test_duplicate_code_file_projects_under_the_new_record(self) -> None:
+        ep, processor = self._setup()
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=True):
+            event_data = _make_event_payload(
+                extension="py", mime_type="text/plain", record_name="client.py",
+                buffer=b"def helper():\n    return 1\n",
+            )
+            event_data["payload"]["filePath"] = "src/client.py"
+            await _drain(ep.on_event(event_data))
+
+        processor.project_code_blocks_to_graph.assert_awaited_once()
+        kwargs = processor.project_code_blocks_to_graph.await_args.kwargs
+        assert kwargs["record_id"] == "rec-1"
+        assert kwargs["org_id"] == "org-1"
+        assert kwargs["record_group_id"] == "repo-1"
+        assert kwargs["connector_id"] == "conn-1"
+        assert kwargs["file_path"] == "src/client.py"
+        assert kwargs["content"] == b"def helper():\n    return 1\n"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_code_file_still_completes(self) -> None:
+        """Projection is additive: the two terminal events are unchanged."""
+        ep, processor = self._setup()
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=True):
+            event_data = _make_event_payload(extension="py", mime_type="text/plain")
+            events = await _drain(ep.on_event(event_data))
+
+        assert [e.event for e in events] == [
+            IndexingEvent.PARSING_COMPLETE,
+            IndexingEvent.INDEXING_COMPLETE,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_duplicate_non_code_file_is_not_projected(self) -> None:
+        ep, processor = self._setup(record_type="FILE")
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=True):
+            event_data = _make_event_payload(extension=ExtensionTypes.DOCX.value)
+            await _drain(ep.on_event(event_data))
+
+        processor.project_code_blocks_to_graph.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_code_detected_from_record_name_when_extension_unknown(self) -> None:
+        """Connectors walking a git tree often send text/plain and no extension."""
+        ep, processor = self._setup()
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=True):
+            event_data = _make_event_payload(
+                extension="unknown", mime_type="text/plain", record_name="main.ts",
+            )
+            await _drain(ep.on_event(event_data))
+
+        processor.project_code_blocks_to_graph.assert_awaited_once()
+
