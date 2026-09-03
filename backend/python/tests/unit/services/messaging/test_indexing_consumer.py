@@ -925,8 +925,10 @@ class TestProcessMessageWrapper:
         indexing_gate = asyncio.Event()
         four_started = asyncio.Event()
         two_parsing = asyncio.Event()
+        all_past_parsing = asyncio.Event()
         started: list[int] = []
         parsing: list[int] = []
+        past_parsing: list[int] = []
 
         async def handler(parsed):
             record_id = int(parsed.payload["id"])
@@ -945,6 +947,9 @@ class TestProcessMessageWrapper:
                 event=IndexingEvent.PARSING_COMPLETE,
                 data=PipelineEventData(record_id=str(record_id)),
             )
+            past_parsing.append(record_id)
+            if len(past_parsing) == 4:
+                all_past_parsing.set()
             await indexing_gate.wait()
             yield PipelineEvent(
                 event=IndexingEvent.INDEXING_COMPLETE,
@@ -966,24 +971,32 @@ class TestProcessMessageWrapper:
             for i in range(4)
         ]
 
-        await asyncio.wait_for(four_started.wait(), timeout=1)
-        await asyncio.wait_for(two_parsing.wait(), timeout=1)
-        await asyncio.sleep(0.05)
+        try:
+            await asyncio.wait_for(four_started.wait(), timeout=5)
+            await asyncio.wait_for(two_parsing.wait(), timeout=5)
+            # Yield so any extra waiter cannot sneak a third parse slot.
+            await asyncio.sleep(0)
+            assert len(started) == 4
+            assert len(parsing) == 2
+            assert consumer.indexing_semaphore._value == 0
+            assert consumer.parsing_semaphore._value == 0
 
-        assert len(started) == 4
-        assert len(parsing) == 2
-        assert consumer.indexing_semaphore._value == 0
-        assert consumer.parsing_semaphore._value == 0
+            parsing_gate.set()
+            await asyncio.wait_for(all_past_parsing.wait(), timeout=5)
+            assert consumer.parsing_semaphore._value == 2
+            assert consumer.indexing_semaphore._value == 0
 
-        parsing_gate.set()
-        await asyncio.sleep(0.05)
-        assert consumer.parsing_semaphore._value == 2
-        assert consumer.indexing_semaphore._value == 0
-
-        indexing_gate.set()
-        assert all(await asyncio.gather(*tasks))
-        assert consumer.indexing_semaphore._value == 4
-        assert consumer.parsing_semaphore._value == 2
+            indexing_gate.set()
+            assert all(await asyncio.gather(*tasks))
+            assert consumer.indexing_semaphore._value == 4
+            assert consumer.parsing_semaphore._value == 2
+        finally:
+            parsing_gate.set()
+            indexing_gate.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     @pytest.mark.asyncio
     async def test_indexing_limit_is_shared_across_consumer_instances(
