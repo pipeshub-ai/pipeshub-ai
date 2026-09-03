@@ -176,10 +176,7 @@ class TestInitialize:
             c.worker_loop = MagicMock()
             c.worker_loop.is_running.return_value = True
 
-            with patch(
-                "app.services.messaging.redis_streams.indexing_consumer.Redis",
-                return_value=mock_redis,
-            ):
+            with patch.object(c._provider, "create_client", return_value=mock_redis):
                 await c.initialize()
 
         mock_redis.ping.assert_awaited_once()
@@ -204,10 +201,7 @@ class TestInitialize:
             c.worker_loop = MagicMock()
             c.worker_loop.is_running.return_value = True
 
-            with patch(
-                "app.services.messaging.redis_streams.indexing_consumer.Redis",
-                return_value=mock_redis,
-            ):
+            with patch.object(c._provider, "create_client", return_value=mock_redis):
                 await c.initialize()
 
         assert c.redis is mock_redis
@@ -228,10 +222,7 @@ class TestInitialize:
             c.worker_loop = MagicMock()
             c.worker_loop.is_running.return_value = True
 
-            with patch(
-                "app.services.messaging.redis_streams.indexing_consumer.Redis",
-                return_value=mock_redis,
-            ):
+            with patch.object(c._provider, "create_client", return_value=mock_redis):
                 with patch.object(c, "stop", new_callable=AsyncMock) as mock_stop:
                     with pytest.raises(Exception, match="Connection lost"):
                         await c.initialize()
@@ -297,10 +288,7 @@ class TestInitialize:
             c.worker_loop = MagicMock()
             c.worker_loop.is_running.return_value = True
 
-            with patch(
-                "app.services.messaging.redis_streams.indexing_consumer.Redis",
-                return_value=mock_redis,
-            ):
+            with patch.object(c._provider, "create_client", return_value=mock_redis):
                 await c.initialize()  # should not raise
 
         assert c.redis is mock_redis
@@ -2762,10 +2750,7 @@ class TestFullLifecycle:
             c.worker_loop = MagicMock()
             c.worker_loop.is_running.return_value = True
 
-            with patch(
-                "app.services.messaging.redis_streams.indexing_consumer.Redis",
-                return_value=mock_redis,
-            ):
+            with patch.object(c._provider, "create_client", return_value=mock_redis):
                 await c.start(handler)
 
         assert c.running is True

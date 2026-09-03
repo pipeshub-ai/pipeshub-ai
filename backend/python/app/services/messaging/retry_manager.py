@@ -7,18 +7,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
+from app.services.distributed.interface import IRetryTracker
 from app.services.messaging.config import messaging_env
 from app.services.messaging.redis_client import RedisClientRegistry
 
 if TYPE_CHECKING:
     from logging import Logger
 
-    from redis.asyncio import Redis
-
     from app.services.messaging.config import RedisConfig
+    from app.services.redis.connection_provider import RedisClient as Redis
 
 
-class RetryManager:
+class RetryManager(IRetryTracker):
     """Redis-based retry tracking for message consumers.
 
     Stores retry counts in Redis with auto-expiring TTL to handle abandoned
@@ -57,6 +57,10 @@ class RetryManager:
         self._redis_config = redis_config
         self._owns_client = redis_client is None
         self.ttl_seconds = ttl_seconds
+        # REDIS_KEY_NAMESPACE (R9): resolved once the provider is known
+        # (`initialize()`); stays empty when a raw `redis_client` is
+        # injected directly (mostly tests), same as an unset namespace.
+        self._key_namespace = ""
 
         if redis_client is None and redis_config is None:
             raise ValueError("Either redis_client or redis_config must be provided")
@@ -82,6 +86,7 @@ class RetryManager:
             socket_timeout_seconds=messaging_env.concurrency_redis_timeout_seconds,
         )
         await self._registry.client().ping()
+        self._key_namespace = self._registry.provider.key_namespace
         self.logger.info("RetryManager: Redis connection initialized")
 
     async def cleanup(self) -> None:
@@ -91,6 +96,7 @@ class RetryManager:
         if self._registry is not None:
             registry = self._registry
             self._registry = None
+            self._key_namespace = ""
             await registry.aclose()
             self.logger.info("RetryManager: Redis connection closed")
         elif self._redis is not None:
@@ -113,9 +119,10 @@ class RetryManager:
             message_id: Unique message identifier (e.g., "topic-partition-offset")
 
         Returns:
-            Redis key in format: messaging:retry:{message_id}
+            Redis key in format: [{namespace}:]messaging:retry:{message_id}
         """
-        return f"{self.KEY_PREFIX}:{message_id}"
+        namespace = f"{self._key_namespace}:" if self._key_namespace else ""
+        return f"{namespace}{self.KEY_PREFIX}:{message_id}"
 
     async def increment_and_check(
         self, message_id: str, max_attempts: int
@@ -226,8 +233,17 @@ class RetryManager:
         if not message_ids:
             return 0
 
+        # Pipelined per-key DELETE, not one multi-key DEL (R5): message ids
+        # for the same batch routinely land in different Redis Cluster hash
+        # slots, and a single `DEL k1 k2 ...` raises CROSSSLOT there.
+        # redis-py's ClusterPipeline routes each command to its own node; on
+        # standalone this is still one round trip.
         keys = [self._build_key(msg_id) for msg_id in message_ids]
-        deleted = await self._client().delete(*keys)
+        async with self._client().pipeline(transaction=False) as pipe:
+            for key in keys:
+                pipe.delete(key)
+            results = await pipe.execute()
+        deleted = sum(1 for r in results if r)
 
         self.logger.debug(
             "RetryManager: Cleared retry tracking for %d/%d messages",
@@ -254,7 +270,15 @@ class RetryManager:
         if not message_ids:
             return False
 
+        # Pipelined per-key GET, not MGET (R5): redis-py's cluster `mget` is
+        # atomic and raises CROSSSLOT across slots (unlike `delete`, which it
+        # happens to split per slot); `mget_nonatomic` would dodge that but
+        # a pipeline gets the same one-round-trip behaviour uniformly across
+        # both cluster and standalone.
         keys = [self._build_key(msg_id) for msg_id in message_ids]
-        values = await self._client().mget(keys)
+        async with self._client().pipeline(transaction=False) as pipe:
+            for key in keys:
+                pipe.get(key)
+            values = await pipe.execute()
 
         return any(v is not None and int(v) > 0 for v in values)

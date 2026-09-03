@@ -1,14 +1,13 @@
 """Unit tests for app.config.configuration_service.ConfigurationService."""
 
-import logging
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
 import asyncio
+import contextlib
+import logging
 import threading
 import time
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+
+import pytest
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -337,23 +336,23 @@ class TestSetConfig:
     async def test_set_publishes_invalidation_for_redis(self):
         store = AsyncMock()
         store.create_key = AsyncMock(return_value=True)
-        store.publish_cache_invalidation = AsyncMock()
         svc = _build_service(store, kv_store_type="redis")
 
         await svc.set_config("/my/key", "val")
 
-        store.publish_cache_invalidation.assert_awaited_once_with("/my/key")
+        store.publish_change.assert_awaited_once_with("/my/key")
 
     @pytest.mark.asyncio
-    async def test_set_skips_invalidation_for_etcd(self):
+    async def test_set_publishes_invalidation_for_etcd_too(self):
+        """R15: publish_change is called unconditionally; etcd's own store
+        implementation is the one that no-ops, not ConfigurationService."""
         store = AsyncMock()
         store.create_key = AsyncMock(return_value=True)
-        store.publish_cache_invalidation = AsyncMock()
         svc = _build_service(store, kv_store_type="etcd")
 
         await svc.set_config("/k", "v")
 
-        store.publish_cache_invalidation.assert_not_awaited()
+        store.publish_change.assert_awaited_once_with("/k")
 
     @pytest.mark.asyncio
     async def test_set_store_failure_returns_false(self):
@@ -424,12 +423,11 @@ class TestUpdateConfig:
         store = AsyncMock()
         store.get_key = AsyncMock(return_value="old")
         store.update_value = AsyncMock()
-        store.publish_cache_invalidation = AsyncMock()
         svc = _build_service(store, kv_store_type="redis")
 
         await svc.update_config("/k", "new")
 
-        store.publish_cache_invalidation.assert_awaited_once_with("/k")
+        store.publish_change.assert_awaited_once_with("/k")
 
 
 # =========================================================================
@@ -475,12 +473,11 @@ class TestDeleteConfig:
     async def test_delete_publishes_invalidation_for_redis(self):
         store = AsyncMock()
         store.delete_key = AsyncMock(return_value=True)
-        store.publish_cache_invalidation = AsyncMock()
         svc = _build_service(store, kv_store_type="redis")
 
         await svc.delete_config("/k")
 
-        store.publish_cache_invalidation.assert_awaited_once_with("/k")
+        store.publish_change.assert_awaited_once_with("/k")
 
 
 # =========================================================================
@@ -506,17 +503,20 @@ class TestClearCache:
 
 
 # =========================================================================
-# _redis_invalidation_callback
+# _invalidation_callback (R15: single backend-agnostic callback; etcd's own
+# prefix-watch adapter and Redis's Pub/Sub subscriber both decode down to a
+# plain key string before calling this, so there is nothing per-backend left
+# to test here.)
 # =========================================================================
-class TestRedisInvalidationCallback:
-    """Tests for ConfigurationService._redis_invalidation_callback."""
+class TestInvalidationCallback:
+    """Tests for ConfigurationService._invalidation_callback."""
 
     def test_clear_all_clears_entire_cache(self):
         svc = _build_service()
         svc.cache["/a"] = 1
         svc.cache["/b"] = 2
 
-        svc._redis_invalidation_callback("__CLEAR_ALL__")
+        svc._invalidation_callback("__CLEAR_ALL__")
 
         assert len(svc.cache) == 0
 
@@ -525,7 +525,7 @@ class TestRedisInvalidationCallback:
         svc.cache["/a"] = 1
         svc.cache["/b"] = 2
 
-        svc._redis_invalidation_callback("/a")
+        svc._invalidation_callback("/a")
 
         assert "/a" not in svc.cache
         assert svc.cache["/b"] == 2
@@ -534,72 +534,15 @@ class TestRedisInvalidationCallback:
         svc = _build_service()
 
         # Should not raise even if key is absent
-        svc._redis_invalidation_callback("/nonexistent")
+        svc._invalidation_callback("/nonexistent")
 
-
-# =========================================================================
-# _etcd_watch_callback
-# =========================================================================
-class TestEtcdWatchCallback:
-    """Tests for ConfigurationService._etcd_watch_callback."""
-
-    def test_clear_all_via_etcd_watch(self):
+    def test_exception_does_not_raise(self):
         svc = _build_service()
-        svc.cache["/a"] = 1
-        svc.cache["/b"] = 2
-
-        # Simulate etcd watch event with __CLEAR_ALL__
-        event = MagicMock()
-        evt = MagicMock()
-        evt.key = b"__CLEAR_ALL__"
-        event.events = [evt]
-
-        svc._etcd_watch_callback(event)
-
-        assert len(svc.cache) == 0
-
-    def test_specific_key_via_etcd_watch(self):
-        svc = _build_service()
-        svc.cache["/a"] = 1
-        svc.cache["/b"] = 2
-
-        event = MagicMock()
-        evt = MagicMock()
-        evt.key = b"/a"
-        event.events = [evt]
-
-        svc._etcd_watch_callback(event)
-
-        assert "/a" not in svc.cache
-        assert svc.cache["/b"] == 2
-
-    def test_multiple_events_in_one_callback(self):
-        svc = _build_service()
-        svc.cache["/x"] = 10
-        svc.cache["/y"] = 20
-        svc.cache["/z"] = 30
-
-        event = MagicMock()
-        evt1 = MagicMock()
-        evt1.key = b"/x"
-        evt2 = MagicMock()
-        evt2.key = b"/y"
-        event.events = [evt1, evt2]
-
-        svc._etcd_watch_callback(event)
-
-        assert "/x" not in svc.cache
-        assert "/y" not in svc.cache
-        assert svc.cache["/z"] == 30
-
-    def test_exception_in_etcd_watch_does_not_raise(self):
-        svc = _build_service()
-
-        event = MagicMock()
-        event.events = MagicMock(side_effect=Exception("boom"))
+        svc.cache = MagicMock()
+        svc.cache.pop.side_effect = Exception("boom")
 
         # Should not raise
-        svc._etcd_watch_callback(event)
+        svc._invalidation_callback("/a")
 
 
 # =========================================================================
@@ -635,31 +578,50 @@ class TestClose:
         await svc.close()
 
     @pytest.mark.asyncio
-    async def test_close_cancels_already_established_pubsub_task(self):
-        """Once the watch thread has registered _pubsub_task, close() must
-        still cancel it via call_soon_threadsafe under the new pubsub-state
-        lock (regression for the lock-based rewrite guarding the shutdown
-        race in test_close_during_pubsub_setup_prevents_late_subscribe)."""
+    async def test_close_cancels_already_established_task_subscription(self):
+        """Once the watch thread has registered an asyncio.Task subscription
+        handle, close() must cancel it via call_soon_threadsafe under the
+        pubsub-state lock (regression for the lock-based rewrite guarding the
+        shutdown race in test_close_during_watch_setup_prevents_late_subscribe)."""
         store = AsyncMock()
         svc = _build_service(store, kv_store_type="redis")
 
-        fake_task = MagicMock()
+        async def _never_completes() -> None:
+            await asyncio.sleep(3600)
+
+        fake_task = asyncio.ensure_future(_never_completes())
         fake_loop = MagicMock()
-        svc._pubsub_task = fake_task
+        svc._change_subscription = fake_task
         svc._pubsub_loop = fake_loop
 
         await svc.close()
 
         fake_loop.call_soon_threadsafe.assert_called_once_with(fake_task.cancel)
 
+        fake_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await fake_task
+
     @pytest.mark.asyncio
-    async def test_close_during_pubsub_setup_prevents_late_subscribe(self):
+    async def test_close_cancels_non_task_subscription_via_store(self):
+        """A non-Task handle (e.g. etcd's watch id) is cancelled through
+        store.unsubscribe_changes() rather than the event loop."""
+        store = AsyncMock()
+        svc = _build_service(store, kv_store_type="etcd")
+        svc._change_subscription = "etcd-watch-id-42"
+
+        await svc.close()
+
+        store.unsubscribe_changes.assert_awaited_once_with("etcd-watch-id-42")
+
+    @pytest.mark.asyncio
+    async def test_close_during_watch_setup_prevents_late_subscribe(self):
         """Regression: if close() runs while the watch thread is still
-        inside pubsub setup (e.g. the migration-flag check) — before
-        _pubsub_task has been assigned — the watch thread must observe
-        _stopping once it reaches the subscribe step and bail out, rather
-        than subscribing on a store that close() is about to (or already
-        did) close."""
+        inside watch setup (e.g. the migration-flag check) — before
+        _change_subscription has been assigned — the watch thread must
+        observe _stopping once it reaches the subscribe step and bail out,
+        rather than subscribing on a store that close() is about to (or
+        already did) close."""
         paused = threading.Event()
         resume = threading.Event()
 
@@ -676,13 +638,12 @@ class TestClose:
         underlying_store.key_prefix = "pipeshub:kv:"
 
         store = MagicMock()
-        store.client = MagicMock()
         store.store = underlying_store
-        store.subscribe_cache_invalidation = AsyncMock()
+        store.subscribe_changes = AsyncMock()
         store.close = AsyncMock()
 
         svc = _build_service(store, kv_store_type="redis")
-        svc._start_redis_pubsub()
+        svc._start_watch()
 
         assert paused.wait(timeout=2.0), "watch thread never reached the migration check"
 
@@ -692,7 +653,7 @@ class TestClose:
         resume.set()
         svc.watch_thread.join(timeout=2.0)
 
-        store.subscribe_cache_invalidation.assert_not_called()
+        store.subscribe_changes.assert_not_called()
 
 
 # =========================================================================
@@ -702,24 +663,24 @@ class TestPublishCacheInvalidation:
     """Tests for ConfigurationService._publish_cache_invalidation."""
 
     @pytest.mark.asyncio
-    async def test_publish_skipped_for_etcd(self):
+    async def test_publish_called_for_etcd_too(self):
+        """R15: no branching on KV store type -- etcd's own store
+        implementation is the no-op, not ConfigurationService."""
         store = AsyncMock()
-        store.publish_cache_invalidation = AsyncMock()
         svc = _build_service(store, kv_store_type="etcd")
 
         await svc._publish_cache_invalidation("/key")
 
-        store.publish_cache_invalidation.assert_not_awaited()
+        store.publish_change.assert_awaited_once_with("/key")
 
     @pytest.mark.asyncio
     async def test_publish_called_for_redis(self):
         store = AsyncMock()
-        store.publish_cache_invalidation = AsyncMock()
         svc = _build_service(store, kv_store_type="redis")
 
         await svc._publish_cache_invalidation("/key")
 
-        store.publish_cache_invalidation.assert_awaited_once_with("/key")
+        store.publish_change.assert_awaited_once_with("/key")
 
     @pytest.mark.asyncio
     async def test_publish_warns_when_store_lacks_method(self):
@@ -732,7 +693,7 @@ class TestPublishCacheInvalidation:
     @pytest.mark.asyncio
     async def test_publish_exception_does_not_raise(self):
         store = AsyncMock()
-        store.publish_cache_invalidation = AsyncMock(side_effect=RuntimeError("pub fail"))
+        store.publish_change = AsyncMock(side_effect=RuntimeError("pub fail"))
         svc = _build_service(store, kv_store_type="redis")
 
         # Should not raise
@@ -815,50 +776,17 @@ class TestSetConfigEdgeCases:
         assert svc.cache["/complex"] == value
 
 # =============================================================================
-# Merged from test_configuration_service_coverage.py
+
+
 # =============================================================================
-
-_TEST_SECRET_KEY = "test-secret-key-for-unit-tests"
-
-
-def _build_service_cov(store=None, kv_store_type="redis"):
-    """Construct a ConfigurationService with mocked internals."""
-    if store is None:
-        store = AsyncMock()
-
-    with (
-        patch("app.config.configuration_service.os.getenv") as mock_getenv,
-        patch("app.config.configuration_service.EncryptionService.get_instance") as mock_enc,
-    ):
-        mock_getenv.side_effect = lambda key, default=None: {
-            "SECRET_KEY": _TEST_SECRET_KEY,
-            "KV_STORE_TYPE": kv_store_type,
-        }.get(key, default)
-        mock_enc.return_value = MagicMock()
-
-        from app.config.configuration_service import ConfigurationService
-
-        with patch.object(ConfigurationService, "_start_watch"):
-            svc = ConfigurationService(
-                logger=logging.getLogger("test-config-coverage"),
-                key_value_store=store,
-            )
-
-    return svc
-
-
-# ============================================================================
-# set_config paths (lines 302-316)
-# ============================================================================
-
-
+# set_config: additional store-error/exception paths
+# =============================================================================
 class TestSetConfigPaths:
     """Test set_config success, failure, and exception paths."""
 
     @pytest.mark.asyncio
     async def test_set_config_store_error_returns_false(self):
-        """Inner store exception caught, success=False (lines 298-300)."""
-        svc = _build_service_cov()
+        svc = _build_service()
         svc.store.create_key = AsyncMock(side_effect=RuntimeError("store exploded"))
 
         result = await svc.set_config("/test/key", "value")
@@ -866,8 +794,7 @@ class TestSetConfigPaths:
 
     @pytest.mark.asyncio
     async def test_set_config_store_returns_false(self):
-        """store.create_key returns False (lines 309-310)."""
-        svc = _build_service_cov()
+        svc = _build_service()
         svc.store.create_key = AsyncMock(return_value=False)
 
         result = await svc.set_config("/test/key", "value")
@@ -875,8 +802,7 @@ class TestSetConfigPaths:
 
     @pytest.mark.asyncio
     async def test_set_config_success_publishes_invalidation(self):
-        """Successful set updates cache and publishes (lines 302-308)."""
-        svc = _build_service_cov()
+        svc = _build_service()
         svc.store.create_key = AsyncMock(return_value=True)
         svc._publish_cache_invalidation = AsyncMock()
 
@@ -887,8 +813,7 @@ class TestSetConfigPaths:
 
     @pytest.mark.asyncio
     async def test_set_config_outer_exception_returns_false(self):
-        """Outer exception in set_config returns False (lines 314-316)."""
-        svc = _build_service_cov()
+        svc = _build_service()
         svc.store.create_key = AsyncMock(return_value=True)
         svc._publish_cache_invalidation = AsyncMock(side_effect=RuntimeError("pubsub down"))
 
@@ -896,512 +821,295 @@ class TestSetConfigPaths:
         assert result is False
 
 
-# ============================================================================
-# _start_etcd_watch (lines 163-177)
-# ============================================================================
+# =============================================================================
+# __init__ edge cases
+# =============================================================================
+class TestConfigServiceInit:
+    """Tests for ConfigurationService.__init__."""
 
+    def test_missing_secret_key_raises(self):
+        with (
+            patch("app.config.configuration_service.os.getenv", return_value=None),
+            patch("app.config.configuration_service.EncryptionService.get_instance"),
+        ):
+            from app.config.configuration_service import ConfigurationService
 
-class TestStartEtcdWatch:
-    """Test _start_etcd_watch: store with client and store without client."""
+            with pytest.raises(ValueError, match="SECRET_KEY"):
+                ConfigurationService(
+                    logger=logging.getLogger("test"),
+                    key_value_store=AsyncMock(),
+                )
 
-    def test_store_without_client_logs_debug(self):
-        """Store without 'client' attr logs debug, skips watch (line 177)."""
-        store = MagicMock(spec=["get_key", "create_key"])  # No 'client' attr
-        svc = _build_service_cov(store=store, kv_store_type="etcd")
-        svc._start_etcd_watch()
-        time.sleep(0.1)
-
-    def test_store_with_client_registers_callback(self):
-        """Store with client registers watch callback (lines 165-173)."""
-        mock_client = MagicMock()
-        mock_client.add_watch_prefix_callback = MagicMock()
-
-        store = MagicMock()
-        store.client = mock_client
-
-        svc = _build_service_cov(store=store, kv_store_type="etcd")
-        svc._start_etcd_watch()
-        time.sleep(0.2)
-        mock_client.add_watch_prefix_callback.assert_called_once()
-
-    def test_store_with_client_exception_logged(self):
-        """Exception in watch registration is logged (lines 174-175)."""
-        mock_client = MagicMock()
-        mock_client.add_watch_prefix_callback = MagicMock(side_effect=RuntimeError("watch failed"))
-
-        store = MagicMock()
-        store.client = mock_client
-
-        svc = _build_service_cov(store=store, kv_store_type="etcd")
-        svc._start_etcd_watch()
-        time.sleep(0.2)
-
-    def test_store_client_initially_none_then_available(self):
-        """Client starts None, waits, then becomes available (line 167-170)."""
-        call_count = [0]
-        mock_client = MagicMock()
-        mock_client.add_watch_prefix_callback = MagicMock()
-
-        store = MagicMock()
-        # First call returns None, second returns the client
-        type(store).client = PropertyMock(side_effect=lambda: (
-            None if (call_count.__setitem__(0, call_count[0] + 1) or call_count[0]) < 2
-            else mock_client
-        ))
-
-        svc = _build_service_cov(store=store, kv_store_type="etcd")
-        # Patch time.sleep to avoid real delays
-        with patch("app.config.configuration_service.time.sleep"):
-            svc._start_etcd_watch()
-            time.sleep(0.3)
-
-
-# ============================================================================
-# _start_redis_pubsub (lines 195-253)
-# We test by extracting and running the inner start_subscription directly
-# with a real event loop, avoiding the thread-creation issues.
-# ============================================================================
-
-
-class TestStartRedisPubsub:
-    """Test _start_redis_pubsub logic by running its inner function directly."""
-
-    def _run_pubsub_sync(self, svc):
-        """Run _start_redis_pubsub's inner start_subscription logic synchronously."""
-        # The method spawns a daemon thread. We call it and give the thread time.
-        # Patch time.sleep to speed up the wait loop and asyncio to avoid event loop issues.
-        with patch("app.config.configuration_service.time.sleep"):
-            svc._start_redis_pubsub()
-            time.sleep(0.5)
-
-    def test_redis_pubsub_subscription_cancelled_error(self):
-        """CancelledError in subscription is handled (line 252-253)."""
-        store = MagicMock()
-        store.client = MagicMock()
-        store.store = None
-        # Make subscribe_cache_invalidation a regular function that raises
-        store.subscribe_cache_invalidation = MagicMock(side_effect=asyncio.CancelledError())
-
-        svc = _build_service_cov(store=store, kv_store_type="redis")
-        svc._kv_store_type = "redis"
-        self._run_pubsub_sync(svc)
-
-    def test_redis_pubsub_general_exception(self):
-        """General exception in pubsub setup is logged (lines 254-255)."""
-        store = MagicMock()
-        store.client = MagicMock()
-        store.store = None
-        store.subscribe_cache_invalidation = MagicMock(side_effect=RuntimeError("redis down"))
-
-        svc = _build_service_cov(store=store, kv_store_type="redis")
-        svc._kv_store_type = "redis"
-        self._run_pubsub_sync(svc)
-
-    def test_redis_pubsub_no_underlying_store(self):
-        """When store.store is None, migration check is skipped (lines 223-224)."""
-        store = MagicMock()
-        store.client = MagicMock()
-        store.store = None
-
-        async def fake_subscribe(cb):
-            return asyncio.Future()
-
-        store.subscribe_cache_invalidation = fake_subscribe
-
-        svc = _build_service_cov(store=store, kv_store_type="redis")
-        svc._kv_store_type = "redis"
-        svc.clear_cache = MagicMock()
-        self._run_pubsub_sync(svc)
-
-    def test_check_migration_flag_direct_true(self):
-        """Test check_migration_flag_direct returns True for bytes 'true' (lines 195-206)."""
-        # Test the logic of check_migration_flag_direct directly
-        import asyncio
-
-        async def check_migration_flag_direct(redis_client, key_prefix):
-            migration_flag_key = "/migrations/etcd_to_redis"
-            try:
-                full_key = f"{key_prefix}{migration_flag_key}"
-                value = await redis_client.get(full_key)
-                if value is not None:
-                    if isinstance(value, bytes):
-                        value = value.decode("utf-8")
-                    return value == "true"
-                return False
-            except Exception:
-                return False
-
-        loop = asyncio.new_event_loop()
-        try:
-            mock_client = AsyncMock()
-            mock_client.get = AsyncMock(return_value=b"true")
-            result = loop.run_until_complete(check_migration_flag_direct(mock_client, "pipeshub:kv:"))
-            assert result is True
-
-            mock_client.get = AsyncMock(return_value=b"false")
-            result = loop.run_until_complete(check_migration_flag_direct(mock_client, "pipeshub:kv:"))
-            assert result is False
-
-            mock_client.get = AsyncMock(return_value="true")
-            result = loop.run_until_complete(check_migration_flag_direct(mock_client, "pipeshub:kv:"))
-            assert result is True
-
-            mock_client.get = AsyncMock(return_value=None)
-            result = loop.run_until_complete(check_migration_flag_direct(mock_client, "pipeshub:kv:"))
-            assert result is False
-
-            mock_client.get = AsyncMock(side_effect=RuntimeError("connection refused"))
-            result = loop.run_until_complete(check_migration_flag_direct(mock_client, "pipeshub:kv:"))
-            assert result is False
-        finally:
-            loop.close()
 
 # =============================================================================
-# Merged from test_configuration_service_coverage2.py
+# _start_watch (R15: single backend-agnostic watch thread; every backend's
+# KeyValueStore.subscribe_changes() is awaited the same way, so there is no
+# per-backend dispatch left to test.)
 # =============================================================================
+class TestStartWatch:
+    """Tests for ConfigurationService._start_watch."""
 
-_TEST_SECRET_KEY = "test-secret-key-for-unit-tests"
+    def _run_watch_sync(self, svc, timeout: float = 1.0) -> None:
+        svc._start_watch()
+        svc.watch_thread.join(timeout=timeout)
 
-
-def _build_service_cov2(store=None, kv_store_type="etcd"):
-    """Construct a ConfigurationService with mocked internals."""
-    if store is None:
+    def test_subscribes_and_clears_cache(self):
+        """The watch thread registers the subscription and clears the cache
+        once it is active, regardless of backend."""
         store = AsyncMock()
-
-    with (
-        patch("app.config.configuration_service.os.getenv") as mock_getenv,
-        patch("app.config.configuration_service.EncryptionService.get_instance") as mock_enc,
-    ):
-        mock_getenv.side_effect = lambda key, default=None: {
-            "SECRET_KEY": _TEST_SECRET_KEY,
-            "KV_STORE_TYPE": kv_store_type,
-        }.get(key, default)
-        mock_enc.return_value = MagicMock()
-
-        from app.config.configuration_service import ConfigurationService
-
-        with patch.object(ConfigurationService, "_start_watch"):
-            svc = ConfigurationService(
-                logger=logging.getLogger("test-config-cov2"),
-                key_value_store=store,
-            )
-
-    return svc
-
-
-# ============================================================================
-# _start_etcd_watch: client initially None then becomes available (line 170)
-# ============================================================================
-
-
-class TestStartEtcdWatchClientPolling:
-    """Test _start_etcd_watch when client starts as None and needs polling."""
-
-    def test_client_none_then_available_with_watch(self):
-        """Client is None on first check, available on second check (line 167-170)."""
-        mock_client = MagicMock()
-        mock_client.add_watch_prefix_callback = MagicMock()
-
-        store = MagicMock()
-        # client starts as None, then becomes available
-        call_count = [0]
-
-        def get_client():
-            call_count[0] += 1
-            if call_count[0] <= 1:
-                return None
-            return mock_client
-
-        type(store).client = PropertyMock(side_effect=get_client)
-
-        svc = _build_service_cov2(store=store, kv_store_type="etcd")
-
-        # Patch time.sleep to avoid actual delays
-        with patch("app.config.configuration_service.time.sleep"):
-            svc._start_etcd_watch()
-            # Wait for the thread to complete
-            time.sleep(0.3)
-            if hasattr(svc, 'watch_thread'):
-                svc.watch_thread.join(timeout=3)
-
-        # Verify the callback was registered once client became available
-        mock_client.add_watch_prefix_callback.assert_called_once()
-
-
-# ============================================================================
-# _start_redis_pubsub: migration flag check (lines 195-206, 225-237)
-# ============================================================================
-
-
-class TestStartRedisPubsubMigration:
-    """Test _start_redis_pubsub migration flag checking logic."""
-
-    def test_migration_flag_true_clears_cache(self):
-        """When migration flag is True, cache is cleared (lines 225-237)."""
-        # Create a store mock that simulates Redis with migration completed
-        mock_redis_client = AsyncMock()
-        mock_redis_client.get = AsyncMock(return_value=b"true")
-
-        mock_underlying_store = MagicMock()
-        mock_underlying_store.client = mock_redis_client
-        mock_underlying_store.key_prefix = "pipeshub:kv:"
-
-        store = MagicMock()
-        store.client = MagicMock()
-        store.store = mock_underlying_store
-
-        # Make subscribe return a completed future
-        async def fake_subscribe(cb):
-            f = asyncio.Future()
-            f.set_result(None)
-            return f
-
-        store.subscribe_cache_invalidation = fake_subscribe
-
-        svc = _build_service_cov2(store=store, kv_store_type="redis")
-        svc._kv_store_type = "redis"
+        store.store = None  # no nested Redis client -> migration check skipped
+        store.subscribe_changes = AsyncMock(return_value="handle-1")
+        svc = _build_service(store, kv_store_type="etcd")
         svc.clear_cache = MagicMock()
 
-        with patch("app.config.configuration_service.time.sleep"):
-            svc._start_redis_pubsub()
-            time.sleep(0.5)
-            if hasattr(svc, 'watch_thread'):
-                svc.watch_thread.join(timeout=3)
+        self._run_watch_sync(svc)
 
-        # Cache should have been cleared (at least once for migration, once after subscribe)
-        assert svc.clear_cache.call_count >= 1
+        store.subscribe_changes.assert_awaited_once_with(svc._invalidation_callback)
+        assert svc._change_subscription == "handle-1"
+        svc.clear_cache.assert_called_once()
 
-    def test_migration_flag_false_no_extra_clear(self):
-        """When migration flag is False, no extra cache clear for migration."""
-        mock_redis_client = AsyncMock()
-        mock_redis_client.get = AsyncMock(return_value=b"false")
+    def test_migration_flag_true_clears_cache_before_subscribe(self):
+        """When the etcd->Redis migration flag is set, the cache is cleared
+        an extra time before the subscription is even registered."""
+        redis_client = AsyncMock()
+        redis_client.get = AsyncMock(return_value=b"true")
 
-        mock_underlying_store = MagicMock()
-        mock_underlying_store.client = mock_redis_client
-        mock_underlying_store.key_prefix = "pipeshub:kv:"
+        underlying_store = MagicMock()
+        underlying_store.client = redis_client
+        underlying_store.key_prefix = "pipeshub:kv:"
 
-        store = MagicMock()
-        store.client = MagicMock()
-        store.store = mock_underlying_store
-
-        async def fake_subscribe(cb):
-            f = asyncio.Future()
-            f.set_result(None)
-            return f
-
-        store.subscribe_cache_invalidation = fake_subscribe
-
-        svc = _build_service_cov2(store=store, kv_store_type="redis")
-        svc._kv_store_type = "redis"
+        store = AsyncMock()
+        store.store = underlying_store
+        store.subscribe_changes = AsyncMock(return_value="handle-1")
+        svc = _build_service(store, kv_store_type="redis")
         svc.clear_cache = MagicMock()
 
-        with patch("app.config.configuration_service.time.sleep"):
-            svc._start_redis_pubsub()
-            time.sleep(0.5)
-            if hasattr(svc, 'watch_thread'):
-                svc.watch_thread.join(timeout=3)
+        self._run_watch_sync(svc)
 
-        # clear_cache is called once after subscribe, but NOT for migration
-        # (migration flag was false)
-        # It's hard to distinguish, just verify it was called at least once
-        # (the post-subscribe clear)
-        assert svc.clear_cache.called
+        assert svc.clear_cache.call_count >= 2
 
-    def test_migration_flag_string_true_not_bytes(self):
-        """Migration flag as string 'true' (not bytes) is handled."""
-        mock_redis_client = AsyncMock()
-        mock_redis_client.get = AsyncMock(return_value="true")  # string, not bytes
+    def test_migration_flag_false_clears_cache_once(self):
+        redis_client = AsyncMock()
+        redis_client.get = AsyncMock(return_value=b"false")
 
-        mock_underlying_store = MagicMock()
-        mock_underlying_store.client = mock_redis_client
-        mock_underlying_store.key_prefix = "pipeshub:kv:"
+        underlying_store = MagicMock()
+        underlying_store.client = redis_client
+        underlying_store.key_prefix = "pipeshub:kv:"
 
-        store = MagicMock()
-        store.client = MagicMock()
-        store.store = mock_underlying_store
-
-        async def fake_subscribe(cb):
-            f = asyncio.Future()
-            f.set_result(None)
-            return f
-
-        store.subscribe_cache_invalidation = fake_subscribe
-
-        svc = _build_service_cov2(store=store, kv_store_type="redis")
-        svc._kv_store_type = "redis"
+        store = AsyncMock()
+        store.store = underlying_store
+        store.subscribe_changes = AsyncMock(return_value="handle-1")
+        svc = _build_service(store, kv_store_type="redis")
         svc.clear_cache = MagicMock()
 
-        with patch("app.config.configuration_service.time.sleep"):
-            svc._start_redis_pubsub()
-            time.sleep(0.5)
-            if hasattr(svc, 'watch_thread'):
-                svc.watch_thread.join(timeout=3)
+        self._run_watch_sync(svc)
 
-        assert svc.clear_cache.called
+        assert svc.clear_cache.call_count == 1
 
-    def test_migration_flag_none(self):
-        """Migration flag returns None (key doesn't exist)."""
-        mock_redis_client = AsyncMock()
-        mock_redis_client.get = AsyncMock(return_value=None)
+    def test_migration_check_exception_does_not_block_subscribe(self):
+        redis_client = AsyncMock()
+        redis_client.get = AsyncMock(side_effect=RuntimeError("redis down"))
 
-        mock_underlying_store = MagicMock()
-        mock_underlying_store.client = mock_redis_client
-        mock_underlying_store.key_prefix = "pipeshub:kv:"
+        underlying_store = MagicMock()
+        underlying_store.client = redis_client
+        underlying_store.key_prefix = "pipeshub:kv:"
 
-        store = MagicMock()
-        store.client = MagicMock()
-        store.store = mock_underlying_store
+        store = AsyncMock()
+        store.store = underlying_store
+        store.subscribe_changes = AsyncMock(return_value="handle-1")
+        svc = _build_service(store, kv_store_type="redis")
 
-        async def fake_subscribe(cb):
-            f = asyncio.Future()
-            f.set_result(None)
-            return f
+        self._run_watch_sync(svc)
 
-        store.subscribe_cache_invalidation = fake_subscribe
+        store.subscribe_changes.assert_awaited_once()
 
-        svc = _build_service_cov2(store=store, kv_store_type="redis")
-        svc._kv_store_type = "redis"
-        svc.clear_cache = MagicMock()
-
-        with patch("app.config.configuration_service.time.sleep"):
-            svc._start_redis_pubsub()
-            time.sleep(0.5)
-            if hasattr(svc, 'watch_thread'):
-                svc.watch_thread.join(timeout=3)
-
-    def test_migration_check_exception_handled(self):
-        """Exception during migration check is handled gracefully."""
-        mock_redis_client = AsyncMock()
-        mock_redis_client.get = AsyncMock(side_effect=RuntimeError("redis down"))
-
-        mock_underlying_store = MagicMock()
-        mock_underlying_store.client = mock_redis_client
-        mock_underlying_store.key_prefix = "pipeshub:kv:"
-
-        store = MagicMock()
-        store.client = MagicMock()
-        store.store = mock_underlying_store
-
-        async def fake_subscribe(cb):
-            f = asyncio.Future()
-            f.set_result(None)
-            return f
-
-        store.subscribe_cache_invalidation = fake_subscribe
-
-        svc = _build_service_cov2(store=store, kv_store_type="redis")
-        svc._kv_store_type = "redis"
-
-        with patch("app.config.configuration_service.time.sleep"):
-            svc._start_redis_pubsub()
-            time.sleep(0.5)
-            if hasattr(svc, 'watch_thread'):
-                svc.watch_thread.join(timeout=3)
-
-    def test_no_underlying_store(self):
-        """When store.store is None, migration check is skipped."""
-        store = MagicMock()
-        store.client = MagicMock()
+    def test_cancelled_error_during_subscribe_is_handled(self):
+        store = AsyncMock()
         store.store = None
+        store.subscribe_changes = AsyncMock(side_effect=asyncio.CancelledError())
+        svc = _build_service(store, kv_store_type="etcd")
 
-        async def fake_subscribe(cb):
-            f = asyncio.Future()
-            f.set_result(None)
-            return f
+        # Should not raise, and the thread should exit cleanly.
+        self._run_watch_sync(svc)
+        assert svc.watch_thread.is_alive() is False
 
-        store.subscribe_cache_invalidation = fake_subscribe
-
-        svc = _build_service_cov2(store=store, kv_store_type="redis")
-        svc._kv_store_type = "redis"
-
-        with patch("app.config.configuration_service.time.sleep"):
-            svc._start_redis_pubsub()
-            time.sleep(0.5)
-            if hasattr(svc, 'watch_thread'):
-                svc.watch_thread.join(timeout=3)
-
-    def test_client_initially_none_waits(self):
-        """When client starts as None, start_subscription waits (line 210-211)."""
-        store = MagicMock()
-
-        call_count = [0]
-        mock_client = MagicMock()
-
-        def get_client():
-            call_count[0] += 1
-            if call_count[0] <= 1:
-                return None
-            return mock_client
-
-        type(store).client = PropertyMock(side_effect=get_client)
+    def test_general_exception_during_subscribe_is_logged_not_raised(self):
+        store = AsyncMock()
         store.store = None
+        store.subscribe_changes = AsyncMock(side_effect=RuntimeError("boom"))
+        svc = _build_service(store, kv_store_type="etcd")
 
-        async def fake_subscribe(cb):
-            f = asyncio.Future()
-            f.set_result(None)
-            return f
-
-        store.subscribe_cache_invalidation = fake_subscribe
-
-        svc = _build_service_cov2(store=store, kv_store_type="redis")
-        svc._kv_store_type = "redis"
-
-        with patch("app.config.configuration_service.time.sleep") as mock_sleep:
-            svc._start_redis_pubsub()
-            time.sleep(0.5)
-            if hasattr(svc, 'watch_thread'):
-                svc.watch_thread.join(timeout=3)
-
-        # time.sleep should have been called at least once while waiting for client
-        assert mock_sleep.called
-
-    def test_underlying_store_no_client(self):
-        """When underlying store has no client attribute, migration check skips."""
-        mock_underlying_store = MagicMock(spec=[])  # No client attr
-        store = MagicMock()
-        store.client = MagicMock()
-        store.store = mock_underlying_store
-
-        async def fake_subscribe(cb):
-            f = asyncio.Future()
-            f.set_result(None)
-            return f
-
-        store.subscribe_cache_invalidation = fake_subscribe
-
-        svc = _build_service_cov2(store=store, kv_store_type="redis")
-        svc._kv_store_type = "redis"
-
-        with patch("app.config.configuration_service.time.sleep"):
-            svc._start_redis_pubsub()
-            time.sleep(0.5)
-            if hasattr(svc, 'watch_thread'):
-                svc.watch_thread.join(timeout=3)
+        # Should not raise, and the thread should exit cleanly.
+        self._run_watch_sync(svc)
+        assert svc.watch_thread.is_alive() is False
 
 
-# ============================================================================
-# _start_redis_pubsub: cancelled error (line 252-253)
-# ============================================================================
+class TestCloseSubscriptionHandles:
+    """Coverage for the shutdown paths the R15 rewrite reshaped.
+
+    `close()` used to know, statically, that Redis gave it an asyncio.Task
+    and etcd gave it a watch id. Now it gets one opaque handle from
+    `store.subscribe_changes()` and has to dispatch on its type, so both
+    arms — and the lock-timeout arm above them — need pinning.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_non_task_handle_is_cancelled_through_the_store(self):
+        """etcd's watch id is an int, not a Task: it must go back to the
+        store's own `unsubscribe_changes`, not to `loop.call_soon_threadsafe`."""
+        store = AsyncMock()
+        svc = _build_service(store, kv_store_type="etcd")
+        svc._change_subscription = 4242
+        svc._pubsub_loop = MagicMock()
+
+        await svc.close()
+
+        store.unsubscribe_changes.assert_awaited_once_with(4242)
+        svc._pubsub_loop.call_soon_threadsafe.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_unsubscribe_does_not_abort_shutdown(self):
+        store = AsyncMock()
+        store.unsubscribe_changes.side_effect = RuntimeError("etcd gone")
+        svc = _build_service(store, kv_store_type="etcd")
+        svc._change_subscription = 4242
+
+        await svc.close()
+
+        # The store is still closed even though cancelling the watch failed.
+        store.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_handle_is_cleared_so_a_second_close_is_a_no_op(self):
+        store = AsyncMock()
+        svc = _build_service(store, kv_store_type="etcd")
+        svc._change_subscription = 7
+
+        await svc.close()
+        await svc.close()
+
+        assert svc._change_subscription is None
+        store.unsubscribe_changes.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_close_proceeds_when_the_state_lock_is_held(self, caplog):
+        """A watch thread wedged inside `subscribe_changes` holds the lock
+        forever; shutdown must time out and continue rather than hang."""
+        store = AsyncMock()
+        svc = _build_service(store, kv_store_type="redis")
+        svc._pubsub_state_lock.acquire()
+        try:
+            with (
+                caplog.at_level(logging.WARNING),
+                patch(
+                    "app.config.configuration_service._PUBSUB_LOCK_TIMEOUT_SECONDS",
+                    0.05,
+                ),
+            ):
+                await svc.close()
+            assert "Timed out waiting for the change-subscription state lock" in caplog.text
+        finally:
+            svc._pubsub_state_lock.release()
+
+        store.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_dead_pubsub_loop_does_not_break_shutdown(self):
+        """`call_soon_threadsafe` raises RuntimeError once the watch thread's
+        loop has closed; that must not stop the store from being closed."""
+        store = AsyncMock()
+        svc = _build_service(store, kv_store_type="redis")
+
+        async def _never_completes() -> None:
+            await asyncio.sleep(3600)
+
+        task = asyncio.ensure_future(_never_completes())
+        loop = MagicMock()
+        loop.call_soon_threadsafe.side_effect = RuntimeError("Event loop is closed")
+        svc._change_subscription = task
+        svc._pubsub_loop = loop
+
+        await svc.close()
+
+        store.close.assert_awaited_once()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
-class TestStartRedisPubsubCancelled:
-    """Test CancelledError handling in _start_redis_pubsub."""
+class TestWatchWorkerMigrationFlag:
+    """The Redis-only migration-flag probe inside the watch worker."""
 
-    def test_cancelled_error_handled(self):
-        """asyncio.CancelledError is caught without crashing."""
-        store = MagicMock()
-        store.client = MagicMock()
-        store.store = None
+    def _run_watch_sync(self, svc, timeout: float = 1.0) -> None:
+        svc._start_watch()
+        svc.watch_thread.join(timeout=timeout)
 
-        store.subscribe_cache_invalidation = MagicMock(
-            side_effect=asyncio.CancelledError()
-        )
+    def test_a_completed_migration_flag_clears_the_cache_on_startup(self):
+        """Handles the race where the etcd->Redis migration finishes before
+        this process subscribes, so it never sees the invalidation publish."""
+        redis_client = AsyncMock()
+        redis_client.get = AsyncMock(return_value=b"true")
+        underlying = MagicMock()
+        underlying.client = redis_client
+        underlying.key_prefix = "pipeshub:kv:"
 
-        svc = _build_service_cov2(store=store, kv_store_type="redis")
-        svc._kv_store_type = "redis"
+        store = AsyncMock()
+        store.store = underlying
+        store.subscribe_changes = AsyncMock(return_value="handle-1")
+        svc = _build_service(store, kv_store_type="redis")
+        svc.clear_cache = MagicMock()
 
-        with patch("app.config.configuration_service.time.sleep"):
-            svc._start_redis_pubsub()
-            time.sleep(0.3)
-            if hasattr(svc, 'watch_thread'):
-                svc.watch_thread.join(timeout=3)
+        self._run_watch_sync(svc)
+
+        redis_client.get.assert_awaited_with("pipeshub:kv:/migrations/etcd_to_redis")
+        # Once for the migration flag, once after the subscription is live.
+        assert svc.clear_cache.call_count == 2
+
+    def test_an_unset_migration_flag_only_clears_after_subscribing(self):
+        redis_client = AsyncMock()
+        redis_client.get = AsyncMock(return_value=None)
+        underlying = MagicMock()
+        underlying.client = redis_client
+        underlying.key_prefix = "pipeshub:kv:"
+
+        store = AsyncMock()
+        store.store = underlying
+        store.subscribe_changes = AsyncMock(return_value="handle-1")
+        svc = _build_service(store, kv_store_type="redis")
+        svc.clear_cache = MagicMock()
+
+        self._run_watch_sync(svc)
+
+        assert svc.clear_cache.call_count == 1
+
+    def test_a_failing_migration_probe_does_not_stop_the_subscription(self):
+        redis_client = AsyncMock()
+        redis_client.get = AsyncMock(side_effect=RuntimeError("redis down"))
+        underlying = MagicMock()
+        underlying.client = redis_client
+        underlying.key_prefix = "pipeshub:kv:"
+
+        store = AsyncMock()
+        store.store = underlying
+        store.subscribe_changes = AsyncMock(return_value="handle-1")
+        svc = _build_service(store, kv_store_type="redis")
+
+        self._run_watch_sync(svc)
+
+        store.subscribe_changes.assert_awaited_once()
+
+    def test_etcd_skips_the_migration_probe_entirely(self):
+        """The flag is written by the Node.js etcd->Redis migration; an etcd
+        deployment never ran it, so the probe must not fire."""
+        redis_client = AsyncMock()
+        underlying = MagicMock()
+        underlying.client = redis_client
+
+        store = AsyncMock()
+        store.store = underlying
+        store.subscribe_changes = AsyncMock(return_value=99)
+        svc = _build_service(store, kv_store_type="etcd")
+
+        self._run_watch_sync(svc)
+
+        redis_client.get.assert_not_awaited()

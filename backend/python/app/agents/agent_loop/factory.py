@@ -294,6 +294,12 @@ class PipesHubAgentFactory:
         # `OPIK_PROJECT_NAME` is optional; Opik falls back to its default
         # project when unset, same as the legacy `OpikTracer()` call site
         # (`utils/streaming.py`).
+        _timer = context.tool_state.get("_stage_timer")
+
+        def _mark(stage: str) -> None:
+            if _timer is not None:
+                _timer.mark(stage)
+
         opik_active = resolve_opik_gate(True)
         opik_project_name = os.getenv("OPIK_PROJECT_NAME")
         # Enforced again at the wire because the count admitted at the source
@@ -388,9 +394,11 @@ class PipesHubAgentFactory:
         skip_apps: set[str] = {"coding_sandbox", "database_sandbox"}
         if context.has_knowledge:
             skip_apps |= {"retrieval", "knowledgehub"}
+        _mark("f:transports")
         tool_registry = await PipesHubToolLoader().load(
             context, skip_apps=skip_apps,
         )
+        _mark("f:tool_load")
         # MCP servers attached to this agent (or, for the assistant/placeholder
         # agent, every MCP instance the executing user has authenticated — see
         # `get_authenticated_mcp_servers`) — loaded right after connector
@@ -417,6 +425,7 @@ class PipesHubAgentFactory:
         # != "lazy"` prune near `top_level_lazy_tools`) — under eager
         # disclosure every schema is already bound, so they have nothing to
         # reveal and are not worth two extra bound schemas every turn.
+        _mark("f:mcp_load")
         register_lazy_tool_meta_tools(tool_registry, context)
 
         # Resolved ONCE per request and threaded into every surface the
@@ -429,6 +438,7 @@ class PipesHubAgentFactory:
 
         sandbox_manager = None
         if code_exec_enabled:
+            _mark("f:pre_sandbox")
             sandbox_manager = await build_coding_sandbox_manager(
                 allow_network=network_enabled, ctx=context,
             )
@@ -456,6 +466,7 @@ class PipesHubAgentFactory:
         # domain-claimed) top-level grant.
         skill_manager = None
         if skills_enabled():
+            _mark("f:sandbox")
             skill_manager = await build_skill_manager(context, transport_registry)
             if skill_manager is not None:
                 register_skill_tools(tool_registry, skill_manager)
@@ -464,6 +475,7 @@ class PipesHubAgentFactory:
                     "(org_id=%s)", len(skill_manager.catalog_snapshot()), context.org_id,
                 )
 
+        _mark("f:sandbox+skills")
         artifact_store = build_artifact_store(context)
         hooks = self._build_hooks(
             context, sandbox_manager, allow_network=network_enabled,
@@ -497,7 +509,9 @@ class PipesHubAgentFactory:
         # needed steering separately (see `loops/plan_execute.py`). Still
         # computed unconditionally here since every `loop_kind` shares this
         # one call site.
+        _mark("f:hooks")
         composition_plan = plan_domain_agents(tool_registry) if _composed_agents_enabled() else None
+        _mark("f:compose_plan")
         composed_tool_names = (
             composition_plan.top_level_names if composition_plan is not None else tool_registry.names()
         )
@@ -514,6 +528,7 @@ class PipesHubAgentFactory:
             transport_registry=transport_registry,
         )
 
+        _mark("f:select_loop_and_goal")
         # Stash model_name on context so ensure_fetch_full_record_available()
         # (called from attachment_resolver outside _build_hooks) and the
         # fetch-tool block cap can both reach it without the TransportRegistry.
@@ -601,6 +616,7 @@ class PipesHubAgentFactory:
             len(tool_names), "run_code" in tool_registry.names(),
         )
 
+        _mark("f:attachments")
         runtime = AgentRuntime(
             transport_registry=transport_registry,
             tool_registry=tool_registry,
@@ -814,7 +830,9 @@ class PipesHubAgentFactory:
         context.run_id = agent.run_ctx.run_id
 
         if context.previous_conversations:
+            _mark("f:runtime+compose")
             await self._seed_conversation_history(agent, context.previous_conversations, context)
+            _mark("f:seed_history")
 
         return agent, runtime, goal, clarifying_questions
 

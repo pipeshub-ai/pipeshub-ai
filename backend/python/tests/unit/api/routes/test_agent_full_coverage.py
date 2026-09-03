@@ -829,7 +829,7 @@ class TestGetAssistantAgent:
         from app.api.routes.agent import get_assistant_agent
         gp = AsyncMock()
         gp.get_user_by_user_id = AsyncMock(return_value=None)
-        result = await get_assistant_agent("u1", "o1", AsyncMock(), gp, None, MagicMock())
+        result, _tsauth = await get_assistant_agent("u1", "o1", AsyncMock(), gp, None, MagicMock())
         assert result == {}
 
     @pytest.mark.asyncio
@@ -844,8 +844,8 @@ class TestGetAssistantAgent:
         cs = AsyncMock()
 
         with patch("app.api.routes.toolsets.get_authenticated_toolsets",
-                   new_callable=AsyncMock, return_value=[]):
-            result = await get_assistant_agent("u1", "o1", cs, gp, None, MagicMock())
+                   new_callable=AsyncMock, return_value=([], {})):
+            result, _tsauth = await get_assistant_agent("u1", "o1", cs, gp, None, MagicMock())
 
         assert len(result.get("knowledge", [])) == 2
 
@@ -859,8 +859,8 @@ class TestGetAssistantAgent:
         gp.get_user_apps = AsyncMock(return_value=[])
 
         with patch("app.api.routes.toolsets.get_authenticated_toolsets",
-                   new_callable=AsyncMock, return_value=[]):
-            result = await get_assistant_agent("u1", "o1", AsyncMock(), gp, None, MagicMock())
+                   new_callable=AsyncMock, return_value=([], {})):
+            result, _tsauth = await get_assistant_agent("u1", "o1", AsyncMock(), gp, None, MagicMock())
 
         kb_entries = [k for k in result.get("knowledge", []) if "knowledgeBase" in k.get("connectorId", "")]
         assert len(kb_entries) == 0
@@ -879,8 +879,8 @@ class TestGetAssistantAgent:
         ])
 
         with patch("app.api.routes.toolsets.get_authenticated_toolsets",
-                   new_callable=AsyncMock, return_value=[]):
-            result = await get_assistant_agent("u1", "o1", AsyncMock(), gp, None, MagicMock())
+                   new_callable=AsyncMock, return_value=([], {})):
+            result, _tsauth = await get_assistant_agent("u1", "o1", AsyncMock(), gp, None, MagicMock())
 
         names = [k["name"] for k in result.get("knowledge", [])]
         assert "Slack" in names
@@ -894,8 +894,8 @@ class TestGetAssistantAgent:
         gp.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("fail"))
 
         with patch("app.api.routes.toolsets.get_authenticated_toolsets",
-                   new_callable=AsyncMock, return_value=[]):
-            result = await get_assistant_agent("u1", "o1", AsyncMock(), gp, None, MagicMock())
+                   new_callable=AsyncMock, return_value=([], {})):
+            result, _tsauth = await get_assistant_agent("u1", "o1", AsyncMock(), gp, None, MagicMock())
 
         assert result.get("knowledge", []) == [] or result == {}
 

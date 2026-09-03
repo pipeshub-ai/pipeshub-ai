@@ -3,6 +3,7 @@ Agent API Routes
 Handles agent instances, templates, chat, and permissions using graph-based architecture
 """
 
+import asyncio
 import json
 import os
 import uuid
@@ -16,11 +17,12 @@ from pydantic import BaseModel, field_validator
 
 from app.agents.agent_loop.protocol import resolve_protocol
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
+from app.utils.stage_timer import StageTimer
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import authMiddleware, require_scopes
-from app.api.routes.chatbot import get_llm_for_chat
+from app.api.routes.chatbot import get_llm_for_chat, load_system_prompts
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import REASONING_EFFORT_VALUES, validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
@@ -3133,11 +3135,13 @@ async def chat(request: Request, agent_id: str) -> JSONResponse:
 @router.post("/{agent_id}/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
 async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
     """Chat with an agent using streaming response"""
+    timer = StageTimer()
     try:
-        from app.agents.constants.toolset_constants import get_toolset_config_path
-
         services = await get_services(request)
         logger = services["logger"]
+
+        from app.agents.constants.toolset_constants import get_toolset_config_path
+
         config_service = services["config_service"]
         graph_provider = services["graph_provider"]
         retrieval_service = services["retrieval_service"]
@@ -3147,6 +3151,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
 
+        timer.mark("services")
         body = _parse_request_body(await request.body())
         chat_query = ChatQuery(**body)
         protocol = _resolve_protocol(chat_query, request)
@@ -3179,18 +3184,39 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 detail=f"Too many actions: maximum {_MAX_TOOLS} actions are allowed per request.",
             )
 
-        org_info = await _get_org_info(user_context, services["graph_provider"], logger)
-
         if agent_id == "agentIdPlaceholder":
+            # Lazy: `app.api.routes.toolsets` imports back into this module.
+            from app.agents.mcp.service import is_mcp_enabled
+            from app.services.featureflag.platform_settings import is_actions_enabled
+
             toolset_registry = getattr(request.app.state, "toolset_registry", None)
-            agent = await get_assistant_agent(user_context["userId"], org_key, config_service, graph_provider, toolset_registry, logger)
-            user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
+            # One wave: org lookup, the user document, and both platform flags
+            # are mutually independent. The flags are resolved here and threaded
+            # through because they are deliberately uncached live reads (see
+            # `is_actions_enabled`) that `get_assistant_agent` and the toolset/
+            # MCP blocks below each used to read again.
+            org_info, actions_enabled, mcp_enabled, user_doc = await asyncio.gather(
+                _get_org_info(user_context, graph_provider, logger),
+                is_actions_enabled(config_service),
+                is_mcp_enabled(config_service),
+                _get_user_document(user_context["userId"], graph_provider, logger),
+            )
+            # Built inside the stream below: this is the expensive half of the
+            # request (toolset + MCP + knowledge fan-out) and nothing above it
+            # needs the result, so it must not delay the response headers.
+            agent = None
+            prefetched_toolset_auth: dict[str, dict[str, Any]] = {}
             enriched_user_info = await _enrich_user_info(user_context, user_doc)
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
             is_service_account = False
 
         else:
-            agent = await services["graph_provider"].get_agent(agent_id, org_key)
+            actions_enabled = mcp_enabled = None
+            prefetched_toolset_auth: dict[str, dict[str, Any]] = {}
+            org_info, agent = await asyncio.gather(
+                _get_org_info(user_context, graph_provider, logger),
+                services["graph_provider"].get_agent(agent_id, org_key),
+            )
             if not agent:
                 raise AgentNotFoundError(agent_id)
             is_service_account = agent.get("isServiceAccount", False)
@@ -3212,527 +3238,538 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 if not perm:
                     raise AgentNotFoundError(agent_id)
 
-        agent.update(perm)
+        async def _run() -> AsyncGenerator[str, None]:
+            """Everything below the authorization checks. Runs after the
+            response headers are already on the wire, so the client sees the
+            stream open immediately instead of waiting out the config fan-out.
 
-        # Determine model key/name: prefer explicit query params, then agent's first model.
-        # If neither is available, model_key/model_name stay None and
-        # get_llm_for_chat() below resolves the organization's default LLM.
-        model_key = chat_query.modelKey
-        model_name = chat_query.modelName
-        if not model_key and not model_name:
-            agent_models = agent.get("models", [])
-            if agent_models:
-                first_model = agent_models[0]
-                if isinstance(first_model, str) and "_" in first_model:
-                    parts = first_model.split("_", 1)
-                    model_key = parts[0]
-                    model_name = parts[1] if len(parts) > 1 else None
-                elif isinstance(first_model, str):
-                    model_key = first_model
-                elif isinstance(first_model, dict):
-                    model_key = first_model.get("modelKey")
-                    model_name = first_model.get("modelName")
-            if model_key:
-                logger.info(f"Using agent's first model for LLM: modelKey={model_key}, modelName={model_name}")
-            else:
-                logger.info(
-                    f"Agent {agent_id} has no configured models; falling back to organization default LLM"
-                )
-
-        # Get LLM for chat. Explicit per-request effort wins; otherwise fall back
-        # to the agent's configured default (if any).
-        effective_reasoning_effort = chat_query.reasoningEffort or agent.get("defaultReasoningEffort")
-        llm_result = (await get_llm_for_chat(
-            services["config_service"],
-            model_key,
-            model_name,
-            chat_query.chatMode,
-            reasoning_effort=effective_reasoning_effort,
-        ))
-
-        if not llm_result:
-            raise LLMInitializationError()
-
-        llm = llm_result[0]
-        llm_config = llm_result[1]
-        is_multimodal_llm = llm_config.get("isMultimodal", False)
-
-        # Get and filter toolsets — gated on the `ENABLE_ACTIONS` platform flag:
-        # when disabled, this is forced empty so `PipesHubToolLoader` (which only
-        # loads an external toolset when it appears in `context.agent_toolsets`)
-        # loads none of them, regardless of what's attached.
-        from app.api.routes.toolsets import is_actions_enabled
-
-        agent_toolsets = (
-            agent.get("toolsets", [])
-            if await is_actions_enabled(config_service)
-            else []
-        )
-        # Fetch system prompts from dedicated key; fall back to legacy aiModels blob for OSS
-        # deployments that haven't migrated yet.
-        system_prompts_config: dict = {}
-        try:
-            sp_raw = await services["config_service"].get_config(
-                config_node_constants.SYSTEM_PROMPTS.value
-            )
-            if sp_raw:
-                system_prompts_config = sp_raw
-            else:
-                ai_raw = await services["config_service"].get_config(
-                    config_node_constants.AI_MODELS.value
-                )
-                if ai_raw:
-                    system_prompts_config = {
-                        k: ai_raw[k]
-                        for k in ("customSystemPrompt", "customSystemPromptWebSearch", "customSystemPromptAgent")
-                        if k in ai_raw
-                    }
-        except Exception:
-            pass
-
-        # Get and filter toolsets
-        agent_toolsets = agent.get("toolsets", [])
-        if chat_query.tools is not None:
-            enabled_tools_set = set(chat_query.tools)
-            filtered_toolsets = []
-            for toolset in agent_toolsets:
-                toolset_copy = dict(toolset)
-                filtered_tools = [
-                    tool for tool in toolset.get("tools", [])
-                    if tool.get("fullName") in enabled_tools_set
-                ]
-                if filtered_tools:
-                    toolset_copy["tools"] = filtered_tools
-                    filtered_toolsets.append(toolset_copy)
-            agent_toolsets = filtered_toolsets
-
-        # Get and filter attached MCP servers — same `chat_query.tools` filter,
-        # applied to MCP tool `fullName`s (mirrors the toolset filter above).
-        # Runs for BOTH custom agents (`agent.mcpServers` from the graph) and the
-        # assistant/placeholder agent (`agent.mcpServers` from
-        # `get_authenticated_mcp_servers`, populated in `get_assistant_agent`).
-        # Gated on the `ENABLE_MCP` platform flag: when disabled, this is forced
-        # empty so the "LOAD MCP SERVER CONFIGS" block below becomes a no-op and
-        # no MCP tool ever reaches the agent loop, regardless of what's attached.
-        from app.agents.mcp.service import is_mcp_enabled
-
-        agent_mcp_servers = (
-            agent.get("mcpServers", [])
-            if await is_mcp_enabled(config_service)
-            else []
-        )
-        if chat_query.tools is not None:
-            from app.agents.mcp.service import match_enabled_tools_for_mcp_server
-
-            enabled_tools_set = set(chat_query.tools)
-            filtered_mcp_servers = []
-            for mcp_server in agent_mcp_servers:
-                server_tools = mcp_server.get("tools")
-                if server_tools is None:
-                    # Assistant/placeholder path (`get_authenticated_mcp_servers`) never
-                    # populates "tools" — match selected `mcp_{type}_*` names by type
-                    # prefix instead of keeping every authenticated server (which would
-                    # let live discovery expose tools the chat filter excluded).
-                    matched_tools = match_enabled_tools_for_mcp_server(
-                        mcp_server, enabled_tools_set,
+            Failures in here surface as a terminal SSE error frame rather than
+            an HTTP status — the status line is long gone by then. Genuine
+            auth/not-found errors are raised before this, in `chat_stream`."""
+            nonlocal agent, prefetched_toolset_auth, actions_enabled, mcp_enabled, is_service_account
+            try:
+                if agent is None:
+                    agent, prefetched_toolset_auth = await get_assistant_agent(
+                        user_context["userId"], org_key, config_service, graph_provider,
+                        toolset_registry, logger,
+                        actions_enabled=actions_enabled, mcp_enabled=mcp_enabled, user_doc=user_doc,
                     )
-                    if matched_tools:
+                agent.update(perm)
+                timer.mark("authz+agent")
+
+                # Determine model key/name: prefer explicit query params, then agent's first model.
+                # If neither is available, model_key/model_name stay None and
+                # get_llm_for_chat() below resolves the organization's default LLM.
+                model_key = chat_query.modelKey
+                model_name = chat_query.modelName
+                if not model_key and not model_name:
+                    agent_models = agent.get("models", [])
+                    if agent_models:
+                        first_model = agent_models[0]
+                        if isinstance(first_model, str) and "_" in first_model:
+                            parts = first_model.split("_", 1)
+                            model_key = parts[0]
+                            model_name = parts[1] if len(parts) > 1 else None
+                        elif isinstance(first_model, str):
+                            model_key = first_model
+                        elif isinstance(first_model, dict):
+                            model_key = first_model.get("modelKey")
+                            model_name = first_model.get("modelName")
+                    if model_key:
+                        logger.info(f"Using agent's first model for LLM: modelKey={model_key}, modelName={model_name}")
+                    else:
+                        logger.info(
+                            f"Agent {agent_id} has no configured models; falling back to organization default LLM"
+                        )
+
+                # Get LLM for chat. Explicit per-request effort wins; otherwise fall back
+                # to the agent's configured default (if any).
+                effective_reasoning_effort = chat_query.reasoningEffort or agent.get("defaultReasoningEffort")
+                # Independent of each other, and both sit before the first streamed byte.
+                llm_result, system_prompts_config = await asyncio.gather(
+                    get_llm_for_chat(
+                        services["config_service"],
+                        model_key,
+                        model_name,
+                        chat_query.chatMode,
+                        reasoning_effort=effective_reasoning_effort,
+                    ),
+                    load_system_prompts(services["config_service"], logger),
+                )
+                timer.mark("llm_init")
+
+                if not llm_result:
+                    raise LLMInitializationError()
+
+                llm = llm_result[0]
+                llm_config = llm_result[1]
+                is_multimodal_llm = llm_config.get("isMultimodal", False)
+
+                # Get and filter toolsets — gated on the `ENABLE_ACTIONS` platform flag:
+                # when disabled, this is forced empty so `PipesHubToolLoader` (which only
+                # loads an external toolset when it appears in `context.agent_toolsets`)
+                # loads none of them, regardless of what's attached.
+                if actions_enabled is None:
+                    from app.services.featureflag.platform_settings import is_actions_enabled
+
+                    actions_enabled = await is_actions_enabled(config_service)
+                agent_toolsets = agent.get("toolsets", []) if actions_enabled else []
+
+                # `agent_toolsets` was already resolved above behind the ENABLE_ACTIONS
+                # gate — do not re-read it from the agent here, or the gate is lost.
+                if chat_query.tools is not None:
+                    enabled_tools_set = set(chat_query.tools)
+                    filtered_toolsets = []
+                    for toolset in agent_toolsets:
+                        toolset_copy = dict(toolset)
+                        filtered_tools = [
+                            tool for tool in toolset.get("tools", [])
+                            if tool.get("fullName") in enabled_tools_set
+                        ]
+                        if filtered_tools:
+                            toolset_copy["tools"] = filtered_tools
+                            filtered_toolsets.append(toolset_copy)
+                    agent_toolsets = filtered_toolsets
+
+                # Get and filter attached MCP servers — same `chat_query.tools` filter,
+                # applied to MCP tool `fullName`s (mirrors the toolset filter above).
+                # Runs for BOTH custom agents (`agent.mcpServers` from the graph) and the
+                # assistant/placeholder agent (`agent.mcpServers` from
+                # `get_authenticated_mcp_servers`, populated in `get_assistant_agent`).
+                # Gated on the `ENABLE_MCP` platform flag: when disabled, this is forced
+                # empty so the "LOAD MCP SERVER CONFIGS" block below becomes a no-op and
+                # no MCP tool ever reaches the agent loop, regardless of what's attached.
+                if mcp_enabled is None:
+                    from app.agents.mcp.service import is_mcp_enabled
+
+                    mcp_enabled = await is_mcp_enabled(config_service)
+                agent_mcp_servers = agent.get("mcpServers", []) if mcp_enabled else []
+                if chat_query.tools is not None:
+                    from app.agents.mcp.service import match_enabled_tools_for_mcp_server
+
+                    enabled_tools_set = set(chat_query.tools)
+                    filtered_mcp_servers = []
+                    for mcp_server in agent_mcp_servers:
+                        server_tools = mcp_server.get("tools")
+                        if server_tools is None:
+                            # Assistant/placeholder path (`get_authenticated_mcp_servers`) never
+                            # populates "tools" — match selected `mcp_{type}_*` names by type
+                            # prefix instead of keeping every authenticated server (which would
+                            # let live discovery expose tools the chat filter excluded).
+                            matched_tools = match_enabled_tools_for_mcp_server(
+                                mcp_server, enabled_tools_set,
+                            )
+                            if matched_tools:
+                                mcp_server_copy = dict(mcp_server)
+                                mcp_server_copy["tools"] = matched_tools
+                                filtered_mcp_servers.append(mcp_server_copy)
+                            continue
                         mcp_server_copy = dict(mcp_server)
-                        mcp_server_copy["tools"] = matched_tools
-                        filtered_mcp_servers.append(mcp_server_copy)
-                    continue
-                mcp_server_copy = dict(mcp_server)
-                filtered_tools = [
-                    tool for tool in server_tools
-                    if tool.get("fullName") in enabled_tools_set
-                ]
-                if filtered_tools:
-                    mcp_server_copy["tools"] = filtered_tools
-                    filtered_mcp_servers.append(mcp_server_copy)
-            agent_mcp_servers = filtered_mcp_servers
+                        filtered_tools = [
+                            tool for tool in server_tools
+                            if tool.get("fullName") in enabled_tools_set
+                        ]
+                        if filtered_tools:
+                            mcp_server_copy["tools"] = filtered_tools
+                            filtered_mcp_servers.append(mcp_server_copy)
+                    agent_mcp_servers = filtered_mcp_servers
 
-        # ============================================================================
-        # LOAD TOOLSET CONFIGS (SECURITY-CRITICAL)
-        # ============================================================================
-        # For normal agents: load toolset configs using the EXECUTING user's ID.
-        # This ensures that when a shared agent is executed, the credentials of the
-        # user making the request are used — not the agent creator's credentials.
-        #
-        # For service account agents: load toolset configs using the AGENT KEY.
-        # The agent has its own credentials stored at /services/toolsets/{instanceId}/{agentKey}
-        # These credentials are shared across all users who use this agent.
-        #
-        # SECURITY MODEL:
-        # 1. Toolset nodes in graph DB contain ONLY: instanceId, name, displayName, tools
-        # 2. NO userId is stored in toolset nodes (prevents credential leakage)
-        # 3. User credentials: /services/toolsets/{instanceId}/{userId}
-        # 4. Agent credentials: /services/toolsets/{instanceId}/{agentKey}
-        # 5. The lookup key comes from authenticated request context (user) or agent key
-        # ============================================================================
+                # ============================================================================
+                # LOAD TOOLSET CONFIGS (SECURITY-CRITICAL)
+                # ============================================================================
+                # For normal agents: load toolset configs using the EXECUTING user's ID.
+                # This ensures that when a shared agent is executed, the credentials of the
+                # user making the request are used — not the agent creator's credentials.
+                #
+                # For service account agents: load toolset configs using the AGENT KEY.
+                # The agent has its own credentials stored at /services/toolsets/{instanceId}/{agentKey}
+                # These credentials are shared across all users who use this agent.
+                #
+                # SECURITY MODEL:
+                # 1. Toolset nodes in graph DB contain ONLY: instanceId, name, displayName, tools
+                # 2. NO userId is stored in toolset nodes (prevents credential leakage)
+                # 3. User credentials: /services/toolsets/{instanceId}/{userId}
+                # 4. Agent credentials: /services/toolsets/{instanceId}/{agentKey}
+                # 5. The lookup key comes from authenticated request context (user) or agent key
+                # ============================================================================
 
-        is_service_account = bool(agent.get("isServiceAccount", False))
-        executing_user_id = user_context["userId"]
-        # For service account agents, credentials are keyed by agentKey not userId
-        credential_lookup_id = agent_id if is_service_account else executing_user_id
-        toolset_configs: dict = {}  # SENSITIVE: Contains user/agent credentials
+                is_service_account = bool(agent.get("isServiceAccount", False))
+                executing_user_id = user_context["userId"]
+                # For service account agents, credentials are keyed by agentKey not userId
+                credential_lookup_id = agent_id if is_service_account else executing_user_id
+                toolset_configs: dict = {}  # SENSITIVE: Contains user/agent credentials
 
-        # Filter to toolsets that actually have a name or instanceId before the concurrent fetch
-        named_toolsets = [t for t in agent_toolsets if t.get("instanceId") or t.get("name")]
+                # Filter to toolsets that actually have a name or instanceId before the concurrent fetch
+                named_toolsets = [t for t in agent_toolsets if t.get("instanceId") or t.get("name")]
 
-        if named_toolsets:
-            import asyncio as _asyncio
+                if named_toolsets:
+                    import asyncio as _asyncio
 
-            async def _fetch_toolset_config(toolset: dict) -> tuple[dict, Any]:
-                """Return (toolset, config_or_None) without raising.
+                    async def _fetch_toolset_config(toolset: dict) -> tuple[dict, Any]:
+                        """Return (toolset, config_or_None) without raising.
 
-                Uses instanceId (admin-created instance) if available, otherwise falls
-                back to the legacy toolset name for backward compatibility.
-                For service account agents, uses agentKey as the credential owner.
-                """
-                instance_id = toolset.get("instanceId")
-                toolset_name = toolset.get("name", "")
-                lookup_key = instance_id
-                try:
-                    etcd_path = get_toolset_config_path(lookup_key, credential_lookup_id)
-                    config = await services["config_service"].get_config(etcd_path)
-                    return toolset, config
-                except Exception as exc:
-                    logger.warning(f"Failed to load config for toolset '{toolset_name}' (lookup_key='{lookup_key}'): {exc}")
-                    return toolset, None
+                        Uses instanceId (admin-created instance) if available, otherwise falls
+                        back to the legacy toolset name for backward compatibility.
+                        For service account agents, uses agentKey as the credential owner.
+                        """
+                        instance_id = toolset.get("instanceId")
+                        toolset_name = toolset.get("name", "")
+                        lookup_key = instance_id
+                        # `get_assistant_agent` already read this exact etcd path
+                        # (`/services/toolsets/{instanceId}/{userId}`) for the assistant
+                        # agent — reuse it rather than issuing the same read per toolset.
+                        prefetched = (
+                            prefetched_toolset_auth.get(lookup_key)
+                            if credential_lookup_id == executing_user_id
+                            else None
+                        )
+                        if prefetched is not None:
+                            return toolset, prefetched
+                        try:
+                            etcd_path = get_toolset_config_path(lookup_key, credential_lookup_id)
+                            config = await services["config_service"].get_config(etcd_path)
+                            return toolset, config
+                        except Exception as exc:
+                            logger.warning(f"Failed to load config for toolset '{toolset_name}' (lookup_key='{lookup_key}'): {exc}")
+                            return toolset, None
 
-            # Fetch ALL toolset configs in parallel
-            fetch_results = await _asyncio.gather(*[_fetch_toolset_config(t) for t in named_toolsets])
+                    # Fetch ALL toolset configs in parallel
+                    fetch_results = await _asyncio.gather(*[_fetch_toolset_config(t) for t in named_toolsets])
 
-            configured_toolsets = []
-            missing_toolset_display_names: list[str] = []        # no config found at all
-            unauthenticated_toolset_display_names: list[str] = []  # config exists but OAuth not completed
+                    configured_toolsets = []
+                    missing_toolset_display_names: list[str] = []        # no config found at all
+                    unauthenticated_toolset_display_names: list[str] = []  # config exists but OAuth not completed
 
-            for toolset, config in fetch_results:
-                instance_id = toolset.get("instanceId")
-                toolset_name = toolset.get("name", "")
-                lookup_key = instance_id
-                display_name = toolset.get("instanceName") or toolset.get("displayName") or toolset_name.replace("_", " ").title()
+                    for toolset, config in fetch_results:
+                        instance_id = toolset.get("instanceId")
+                        toolset_name = toolset.get("name", "")
+                        lookup_key = instance_id
+                        display_name = toolset.get("instanceName") or toolset.get("displayName") or toolset_name.replace("_", " ").title()
 
-                if config and config.get("isAuthenticated", False):
-                    # Fully configured and authenticated — allow
-                    # Use instanceId as the toolset_configs key so downstream code
-                    # (_build_tool_to_toolset_map) can look it up correctly.
-                    toolset_configs[lookup_key] = config
-                    configured_toolsets.append(toolset)
-                elif config:
-                    # Config saved but authentication not completed (e.g. OAuth flow pending)
-                    unauthenticated_toolset_display_names.append(display_name)
-                    cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
-                    logger.warning(
-                        f"Toolset '{toolset_name}' (instance='{instance_id}') is configured but not "
-                        f"authenticated for {cred_owner}. Auth flow needs to be completed."
-                    )
-                else:
-                    # No config found at all
-                    missing_toolset_display_names.append(display_name)
-                    cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
-                    logger.warning(
-                        f"Toolset config not found for {cred_owner} / "
-                        f"toolset '{toolset_name}' (instance='{instance_id}'). "
-                        "Credentials need to be configured."
-                    )
+                        if config and config.get("isAuthenticated", False):
+                            # Fully configured and authenticated — allow
+                            # Use instanceId as the toolset_configs key so downstream code
+                            # (_build_tool_to_toolset_map) can look it up correctly.
+                            toolset_configs[lookup_key] = config
+                            configured_toolsets.append(toolset)
+                        elif config:
+                            # Config saved but authentication not completed (e.g. OAuth flow pending)
+                            unauthenticated_toolset_display_names.append(display_name)
+                            cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
+                            logger.warning(
+                                f"Toolset '{toolset_name}' (instance='{instance_id}') is configured but not "
+                                f"authenticated for {cred_owner}. Auth flow needs to be completed."
+                            )
+                        else:
+                            # No config found at all
+                            missing_toolset_display_names.append(display_name)
+                            cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
+                            logger.warning(
+                                f"Toolset config not found for {cred_owner} / "
+                                f"toolset '{toolset_name}' (instance='{instance_id}'). "
+                                "Credentials need to be configured."
+                            )
 
-            # Hard-block if ANY toolset is either unconfigured or unauthenticated
-            if missing_toolset_display_names or unauthenticated_toolset_display_names:
-                problem_parts = []
-                if missing_toolset_display_names:
-                    missing_list = ", ".join(f"'{n}'" for n in missing_toolset_display_names)
-                    problem_parts.append(f"not configured: {missing_list}")
-                if unauthenticated_toolset_display_names:
-                    unauth_list = ", ".join(f"'{n}'" for n in unauthenticated_toolset_display_names)
-                    problem_parts.append(f"not authenticated: {unauth_list}")
+                    # Hard-block if ANY toolset is either unconfigured or unauthenticated
+                    if missing_toolset_display_names or unauthenticated_toolset_display_names:
+                        problem_parts = []
+                        if missing_toolset_display_names:
+                            missing_list = ", ".join(f"'{n}'" for n in missing_toolset_display_names)
+                            problem_parts.append(f"not configured: {missing_list}")
+                        if unauthenticated_toolset_display_names:
+                            unauth_list = ", ".join(f"'{n}'" for n in unauthenticated_toolset_display_names)
+                            problem_parts.append(f"not authenticated: {unauth_list}")
 
-                if is_service_account:
-                    error_message = (
-                        f"This service account agent requires the following actions to be configured — "
-                        f"{'; '.join(problem_parts)}. "
-                        "Please configure the agent's action credentials in Agent Builder (key icon next to each action)."
-                    )
-                else:
-                    error_message = (
-                        f"This agent requires the following actions to be set up — "
-                        f"{'; '.join(problem_parts)}. "
-                        "Please connect your actions in Workspace → Actions before using this agent."
-                    )
-                logger.info(
-                    f"Blocking agent {agent_id} execution "
-                    f"({'service account' if is_service_account else f'user {executing_user_id!r}'}): "
-                    f"action issue(s) — {'; '.join(problem_parts)}"
-                )
+                        if is_service_account:
+                            error_message = (
+                                f"This service account agent requires the following actions to be configured — "
+                                f"{'; '.join(problem_parts)}. "
+                                "Please configure the agent's action credentials in Agent Builder (key icon next to each action)."
+                            )
+                        else:
+                            error_message = (
+                                f"This agent requires the following actions to be set up — "
+                                f"{'; '.join(problem_parts)}. "
+                                "Please connect your actions in Workspace → Actions before using this agent."
+                            )
+                        logger.info(
+                            f"Blocking agent {agent_id} execution "
+                            f"({'service account' if is_service_account else f'user {executing_user_id!r}'}): "
+                            f"action issue(s) — {'; '.join(problem_parts)}"
+                        )
 
-                async def _toolset_config_error_stream() -> AsyncGenerator[str, None]:
-                    if protocol == "agui":
-                        from app.agents.agent_loop.protocol.agui import AGUIEventType, frame
+                        yield _stream_error_frame(protocol, error_message, code="toolset_config_missing")
+                        return
 
-                        evt = frame(AGUIEventType.RUN_ERROR, message=error_message, code="toolset_config_missing")
-                        yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
-                    else:
-                        yield f"event: error\ndata: {json.dumps({'message': error_message, 'type': 'toolset_config_missing'})}\n\n"
+                    agent_toolsets = configured_toolsets
 
-                return StreamingResponse(_toolset_config_error_stream(), media_type="text/event-stream")
+                timer.mark("toolset_cfg")
 
-            agent_toolsets = configured_toolsets
+                # ============================================================================
+                # LOAD MCP SERVER CONFIGS (SECURITY-CRITICAL)
+                # ============================================================================
+                # Mirrors the toolset config loading immediately above: same
+                # `credential_lookup_id` (agentKey for service accounts, executing user
+                # otherwise), same hard-block-on-unauthenticated policy. Unlike toolset
+                # configs, an MCP server also needs its org-level instance definition
+                # (transport/url/authMode) — never stored on the graph node
+                # (`_create_mcp_server_edges` avoids secrets there) — so each fetch is a
+                # two-step: `get_instance` then `resolve_effective_user_auth`.
+                # ============================================================================
+                mcp_server_configs: dict[str, dict[str, Any]] = {}  # SENSITIVE: contains credentials
 
-        # ============================================================================
-        # LOAD MCP SERVER CONFIGS (SECURITY-CRITICAL)
-        # ============================================================================
-        # Mirrors the toolset config loading immediately above: same
-        # `credential_lookup_id` (agentKey for service accounts, executing user
-        # otherwise), same hard-block-on-unauthenticated policy. Unlike toolset
-        # configs, an MCP server also needs its org-level instance definition
-        # (transport/url/authMode) — never stored on the graph node
-        # (`_create_mcp_server_edges` avoids secrets there) — so each fetch is a
-        # two-step: `get_instance` then `resolve_effective_user_auth`.
-        # ============================================================================
-        mcp_server_configs: dict[str, dict[str, Any]] = {}  # SENSITIVE: contains credentials
+                named_mcp_servers = [m for m in agent_mcp_servers if m.get("instanceId")]
+                if named_mcp_servers:
+                    import asyncio as _asyncio  # noqa: F401 — may not have run yet if named_toolsets was empty above
 
-        named_mcp_servers = [m for m in agent_mcp_servers if m.get("instanceId")]
-        if named_mcp_servers:
-            import asyncio as _asyncio  # noqa: F401 — may not have run yet if named_toolsets was empty above
+                    from app.agents.mcp import service as mcp_service
+                    from app.edition_config import build_mcp_fallback_config_services, get_mcp_instance_resolved
 
-            from app.agents.mcp import service as mcp_service
-            from app.edition_config import build_mcp_fallback_config_services, get_mcp_instance_resolved
+                    async def _fetch_mcp_server_config(
+                        mcp_server: dict,
+                    ) -> tuple[dict, dict[str, Any] | None, dict[str, Any] | None, list | None]:
+                        """Return (mcp_server, instance_or_None, effective_auth, fallback_config_services) without raising."""
+                        instance_id = mcp_server["instanceId"]
+                        try:
+                            instance = await get_mcp_instance_resolved(instance_id, services["config_service"])
+                            if not instance:
+                                return mcp_server, None, None, None
+                            effective_auth = await mcp_service.resolve_effective_user_auth(
+                                instance, credential_lookup_id, services["config_service"],
+                            )
+                            fallbacks = await build_mcp_fallback_config_services(instance, services["config_service"])
+                            return mcp_server, instance, effective_auth, fallbacks
+                        except Exception as exc:
+                            logger.warning(f"Failed to load MCP server config for instance '{instance_id}': {exc}")
+                            return mcp_server, None, None, None
 
-            async def _fetch_mcp_server_config(
-                mcp_server: dict,
-            ) -> tuple[dict, dict[str, Any] | None, dict[str, Any] | None, list | None]:
-                """Return (mcp_server, instance_or_None, effective_auth, fallback_config_services) without raising."""
-                instance_id = mcp_server["instanceId"]
-                try:
-                    instance = await get_mcp_instance_resolved(instance_id, services["config_service"])
-                    if not instance:
-                        return mcp_server, None, None, None
-                    effective_auth = await mcp_service.resolve_effective_user_auth(
-                        instance, credential_lookup_id, services["config_service"],
-                    )
-                    fallbacks = await build_mcp_fallback_config_services(instance, services["config_service"])
-                    return mcp_server, instance, effective_auth, fallbacks
-                except Exception as exc:
-                    logger.warning(f"Failed to load MCP server config for instance '{instance_id}': {exc}")
-                    return mcp_server, None, None, None
+                    mcp_fetch_results = await _asyncio.gather(*[_fetch_mcp_server_config(m) for m in named_mcp_servers])
 
-            mcp_fetch_results = await _asyncio.gather(*[_fetch_mcp_server_config(m) for m in named_mcp_servers])
+                    configured_mcp_servers = []
+                    missing_mcp_server_display_names: list[str] = []          # instance no longer exists
+                    unauthenticated_mcp_server_display_names: list[str] = []  # instance exists, auth incomplete
 
-            configured_mcp_servers = []
-            missing_mcp_server_display_names: list[str] = []          # instance no longer exists
-            unauthenticated_mcp_server_display_names: list[str] = []  # instance exists, auth incomplete
+                    for mcp_server, instance, effective_auth, fallbacks in mcp_fetch_results:
+                        instance_id = mcp_server["instanceId"]
+                        display_name = mcp_server.get("displayName") or mcp_server.get("name") or instance_id
 
-            for mcp_server, instance, effective_auth, fallbacks in mcp_fetch_results:
-                instance_id = mcp_server["instanceId"]
-                display_name = mcp_server.get("displayName") or mcp_server.get("name") or instance_id
+                        if instance is None:
+                            missing_mcp_server_display_names.append(display_name)
+                            logger.warning(f"MCP server instance '{instance_id}' not found for agent {agent_id}.")
+                            continue
 
-                if instance is None:
-                    missing_mcp_server_display_names.append(display_name)
-                    logger.warning(f"MCP server instance '{instance_id}' not found for agent {agent_id}.")
-                    continue
+                        if mcp_service.is_effective_auth_authenticated(effective_auth):
+                            mcp_server_configs[instance_id] = {
+                                "instance": instance, "auth": effective_auth or {}, "ownerId": credential_lookup_id,
+                                "fallbackConfigServices": fallbacks,
+                            }
+                            configured_mcp_servers.append(mcp_server)
+                        else:
+                            unauthenticated_mcp_server_display_names.append(display_name)
+                            cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
+                            logger.warning(
+                                f"MCP server '{display_name}' (instance='{instance_id}') is not authenticated "
+                                f"for {cred_owner}."
+                            )
 
-                if mcp_service.is_effective_auth_authenticated(effective_auth):
-                    mcp_server_configs[instance_id] = {
-                        "instance": instance, "auth": effective_auth or {}, "ownerId": credential_lookup_id,
-                        "fallbackConfigServices": fallbacks,
+                    if missing_mcp_server_display_names or unauthenticated_mcp_server_display_names:
+                        problem_parts = []
+                        if missing_mcp_server_display_names:
+                            missing_list = ", ".join(f"'{n}'" for n in missing_mcp_server_display_names)
+                            problem_parts.append(f"not found: {missing_list}")
+                        if unauthenticated_mcp_server_display_names:
+                            unauth_list = ", ".join(f"'{n}'" for n in unauthenticated_mcp_server_display_names)
+                            problem_parts.append(f"not authenticated: {unauth_list}")
+
+                        if is_service_account:
+                            error_message = (
+                                f"This service account agent requires the following MCP servers to be configured — "
+                                f"{'; '.join(problem_parts)}. "
+                                "Please configure the agent's MCP server credentials in Agent Builder."
+                            )
+                        else:
+                            error_message = (
+                                f"This agent requires the following MCP servers to be set up — "
+                                f"{'; '.join(problem_parts)}. "
+                                "Please connect them in Workspace → MCP Servers before using this agent."
+                            )
+                        logger.info(
+                            f"Blocking agent {agent_id} execution "
+                            f"({'service account' if is_service_account else f'user {executing_user_id!r}'}): "
+                            f"MCP server issue(s) — {'; '.join(problem_parts)}"
+                        )
+
+                        yield _stream_error_frame(protocol, error_message, code="mcp_server_config_missing")
+                        return
+
+                    agent_mcp_servers = configured_mcp_servers
+
+                timer.mark("mcp_cfg")
+
+                # Build filters and knowledge from agent's knowledge sources
+                agent_knowledge = agent.get("knowledge", [])
+                filters = chat_query.filters.copy() if chat_query.filters else {}
+
+                if not chat_query.filters:
+                    # No explicit filters supplied — derive everything from the agent's knowledge config.
+                    # Exclude KB-typed entries from apps: they go into filters["kb"] exclusively.
+                    knowledge_connector_ids = [
+                        k.get("connectorId") for k in agent_knowledge
+                        if isinstance(k, dict)
+                        and k.get("connectorId")
+                        and (k.get("type") or "").strip().upper() != "KB"
+                    ]
+                    kb_ids = _extract_kb_app_ids(agent_knowledge)
+
+                    filters = {
+                        "apps": knowledge_connector_ids,
+                        "kb": kb_ids,
                     }
-                    configured_mcp_servers.append(mcp_server)
+                    logger.info(f"Filters: {filters}")
                 else:
-                    unauthenticated_mcp_server_display_names.append(display_name)
-                    cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
-                    logger.warning(
-                        f"MCP server '{display_name}' (instance='{instance_id}') is not authenticated "
-                        f"for {cred_owner}."
+                    # Explicit filters supplied — override individual keys where provided,
+                    # but fall back to agent's knowledge for keys that are absent.
+                    if "apps" not in chat_query.filters or chat_query.filters["apps"] is None:
+                        # Exclude KB-typed entries from apps — they belong in filters["kb"] only.
+                        knowledge_connector_ids = [
+                            k.get("connectorId") for k in agent_knowledge
+                            if isinstance(k, dict)
+                            and k.get("connectorId")
+                            and (k.get("type") or "").strip().upper() != "KB"
+                        ]
+                        filters["apps"] = knowledge_connector_ids
+
+                    if "kb" not in chat_query.filters or chat_query.filters["kb"] is None:
+                        filters["kb"] = _extract_kb_app_ids(agent_knowledge)
+                    logger.info(f"Filters: {filters}")
+
+                # Apply NO_KB sentinel BEFORE filtering agent_knowledge. When kb is
+                # explicitly [] (user deselected all KB sources at runtime), the sentinel
+                # ensures filters["kb"] is non-empty so downstream code can distinguish
+                # "nothing selected" from "key absent" without needing this function's
+                # "keys present but empty → return []" semantics to propagate further.
+                if not filters.get("kb") and agent_id != "agentIdPlaceholder":
+                    filters["kb"] = [NO_KB_SELECTED_FILTER]
+
+                agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
+
+                logger.info(f"Filters: {filters}")
+
+                _stream_conn_ids = [
+                    k["connectorId"] for k in agent_knowledge
+                    if isinstance(k, dict) and k.get("connectorId")
+                ]
+                web_search_provider = _parse_web_search(agent.get("webSearch"))
+                if web_search_provider:
+                    web_search_coro = _resolve_web_search_tool_config(
+                        web_search_provider,
+                        config_service,
+                        logger,
                     )
-
-            if missing_mcp_server_display_names or unauthenticated_mcp_server_display_names:
-                problem_parts = []
-                if missing_mcp_server_display_names:
-                    missing_list = ", ".join(f"'{n}'" for n in missing_mcp_server_display_names)
-                    problem_parts.append(f"not found: {missing_list}")
-                if unauthenticated_mcp_server_display_names:
-                    unauth_list = ", ".join(f"'{n}'" for n in unauthenticated_mcp_server_display_names)
-                    problem_parts.append(f"not authenticated: {unauth_list}")
-
-                if is_service_account:
-                    error_message = (
-                        f"This service account agent requires the following MCP servers to be configured — "
-                        f"{'; '.join(problem_parts)}. "
-                        "Please configure the agent's MCP server credentials in Agent Builder."
+                elif agent_id == "agentIdPlaceholder":
+                    web_search_coro = _resolve_default_web_search_config(
+                        config_service,
+                        logger,
                     )
                 else:
-                    error_message = (
-                        f"This agent requires the following MCP servers to be set up — "
-                        f"{'; '.join(problem_parts)}. "
-                        "Please connect them in Workspace → MCP Servers before using this agent."
-                    )
-                logger.info(
-                    f"Blocking agent {agent_id} execution "
-                    f"({'service account' if is_service_account else f'user {executing_user_id!r}'}): "
-                    f"MCP server issue(s) — {'; '.join(problem_parts)}"
+                    web_search_coro = None
+
+                # Overlapped: the connector-config fan-out and the web-search lookup
+                # touch different keys and neither feeds the other.
+                connector_task = asyncio.ensure_future(
+                    fetch_connector_configs(config_service, _stream_conn_ids)
+                )
+                web_search_tool_config = await web_search_coro if web_search_coro is not None else None
+                connector_configs = await connector_task
+                timer.mark("connector_cfg")
+                if not _is_web_search_enabled(chat_query.tools):
+                    web_search_provider = None
+                    web_search_tool_config = None
+
+                # Apply user-requested capability overrides (capabilities can only narrow,
+                # never expand beyond what the agent is configured with).
+                caps = _parse_agent_capabilities(chat_query.agentCapabilities)
+                if not caps.web_search:
+                    web_search_provider = None
+                    web_search_tool_config = None
+                if not caps.internal_search:
+                    filters = {"apps": [], "kb": [NO_KB_SELECTED_FILTER]}
+                    agent_knowledge = []
+
+                # Universal Agent Mode (agentIdPlaceholder) is still Chat Assistant —
+                # Node routes chatMode=agent here, not through /chat/stream. Inject the
+                # org-level Agent custom instructions; real Agent Builder IDs skip this.
+                is_placeholder = agent_id == "agentIdPlaceholder"
+                custom_instructions = (
+                    resolve_custom_instructions(system_prompts_config, resolve_agent_policy(caps))
+                    if is_placeholder
+                    else None
                 )
 
-                async def _mcp_server_config_error_stream() -> AsyncGenerator[str, None]:
-                    if protocol == "agui":
-                        from app.agents.agent_loop.protocol.agui import AGUIEventType, frame
+                # Build query info
+                query_info = {
+                    "query": chat_query.query,
+                    "limit": chat_query.limit,
+                    "messages": [],
+                    "previous_conversations": chat_query.previousConversations,
+                    "quickMode": chat_query.quickMode,
+                    "chatMode": chat_query.chatMode,
+                    "retrievalMode": chat_query.retrievalMode,
+                    "filters": filters,
+                    "systemPrompt": agent.get("systemPrompt"),
+                    "instructions": agent.get("instructions"),
+                    "custom_instructions": custom_instructions,
+                    "timezone": chat_query.timezone,
+                    "currentTime": chat_query.currentTime,
+                    "toolsets": agent_toolsets,
+                    "mcpServers": agent_mcp_servers,
+                    "mcpServerConfigs": mcp_server_configs,
+                    "knowledge": agent_knowledge,
+                    "skills": [s["name"] for s in agent.get("skills", []) if isinstance(s, dict) and s.get("name")] or None,
+                    "connector_configs": connector_configs,
+                    "toolsetConfigs": toolset_configs,
+                    "conversationId": chat_query.conversationId,
+                    "is_service_account": is_service_account,
+                    "isPlaceholderAgent": is_placeholder,
+                    "modelName": model_name,
+                    "modelKey": model_key,
+                    "webSearch": web_search_provider,
+                    "webSearchConfig": web_search_tool_config,
+                    "attachments": chat_query.attachments,
+                    "enableRecordIdShortening": chat_query.enableRecordIdShortening,
+                }
 
-                        evt = frame(AGUIEventType.RUN_ERROR, message=error_message, code="mcp_server_config_missing")
-                        yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
-                    else:
-                        yield f"event: error\ndata: {json.dumps({'message': error_message, 'type': 'mcp_server_config_missing'})}\n\n"
+                client_name = request.headers.get("client-name")
 
-                return StreamingResponse(_mcp_server_config_error_stream(), media_type="text/event-stream")
+                generator = run_agent_loop_stream(
+                    query_info,
+                    enriched_user_info,
+                    llm,
+                    logger,
+                    retrieval_service,
+                    graph_provider,
+                    reranker_service,
+                    config_service,
+                    org_info,
+                    model_name=model_name,
+                    model_key=model_key,
+                    is_multimodal_llm=is_multimodal_llm,
+                    client_name=client_name,
+                    protocol=protocol,
+                    llm_provider=llm_config.get("provider", ""),
+                    context_length=llm_config.get("contextLength"),
+                    is_reasoning_model=bool(llm_config.get("isReasoning", False)),
+                    stage_timer=timer,
+                )
 
-            agent_mcp_servers = configured_mcp_servers
-
-        # Build filters and knowledge from agent's knowledge sources
-        agent_knowledge = agent.get("knowledge", [])
-        filters = chat_query.filters.copy() if chat_query.filters else {}
-
-        if not chat_query.filters:
-            # No explicit filters supplied — derive everything from the agent's knowledge config.
-            # Exclude KB-typed entries from apps: they go into filters["kb"] exclusively.
-            knowledge_connector_ids = [
-                k.get("connectorId") for k in agent_knowledge
-                if isinstance(k, dict)
-                and k.get("connectorId")
-                and (k.get("type") or "").strip().upper() != "KB"
-            ]
-            kb_ids = _extract_kb_app_ids(agent_knowledge)
-
-            filters = {
-                "apps": knowledge_connector_ids,
-                "kb": kb_ids,
-            }
-            logger.info(f"Filters: {filters}")
-        else:
-            # Explicit filters supplied — override individual keys where provided,
-            # but fall back to agent's knowledge for keys that are absent.
-            if "apps" not in chat_query.filters or chat_query.filters["apps"] is None:
-                # Exclude KB-typed entries from apps — they belong in filters["kb"] only.
-                knowledge_connector_ids = [
-                    k.get("connectorId") for k in agent_knowledge
-                    if isinstance(k, dict)
-                    and k.get("connectorId")
-                    and (k.get("type") or "").strip().upper() != "KB"
-                ]
-                filters["apps"] = knowledge_connector_ids
-
-            if "kb" not in chat_query.filters or chat_query.filters["kb"] is None:
-                filters["kb"] = _extract_kb_app_ids(agent_knowledge)
-            logger.info(f"Filters: {filters}")
-
-        # Apply NO_KB sentinel BEFORE filtering agent_knowledge. When kb is
-        # explicitly [] (user deselected all KB sources at runtime), the sentinel
-        # ensures filters["kb"] is non-empty so downstream code can distinguish
-        # "nothing selected" from "key absent" without needing this function's
-        # "keys present but empty → return []" semantics to propagate further.
-        if not filters.get("kb") and agent_id != "agentIdPlaceholder":
-            filters["kb"] = [NO_KB_SELECTED_FILTER]
-
-        agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
-
-        logger.info(f"Filters: {filters}")
-
-        _stream_conn_ids = [
-            k["connectorId"] for k in agent_knowledge
-            if isinstance(k, dict) and k.get("connectorId")
-        ]
-        connector_configs = await fetch_connector_configs(config_service, _stream_conn_ids)
-        web_search_provider = _parse_web_search(agent.get("webSearch"))
-        web_search_tool_config = None
-        if web_search_provider:
-            web_search_tool_config = await _resolve_web_search_tool_config(
-                web_search_provider,
-                config_service,
-                logger,
-            )
-        elif agent_id == "agentIdPlaceholder":
-            web_search_tool_config = await _resolve_default_web_search_config(
-                config_service,
-                logger,
-            )
-        if not _is_web_search_enabled(chat_query.tools):
-            web_search_provider = None
-            web_search_tool_config = None
-
-        # Apply user-requested capability overrides (capabilities can only narrow,
-        # never expand beyond what the agent is configured with).
-        caps = _parse_agent_capabilities(chat_query.agentCapabilities)
-        if not caps.web_search:
-            web_search_provider = None
-            web_search_tool_config = None
-        if not caps.internal_search:
-            filters = {"apps": [], "kb": [NO_KB_SELECTED_FILTER]}
-            agent_knowledge = []
-
-        # Universal Agent Mode (agentIdPlaceholder) is still Chat Assistant —
-        # Node routes chatMode=agent here, not through /chat/stream. Inject the
-        # org-level Agent custom instructions; real Agent Builder IDs skip this.
-        is_placeholder = agent_id == "agentIdPlaceholder"
-        custom_instructions = (
-            resolve_custom_instructions(system_prompts_config, resolve_agent_policy(caps))
-            if is_placeholder
-            else None
-        )
-
-        # Build query info
-        query_info = {
-            "query": chat_query.query,
-            "limit": chat_query.limit,
-            "messages": [],
-            "previous_conversations": chat_query.previousConversations,
-            "quickMode": chat_query.quickMode,
-            "chatMode": chat_query.chatMode,
-            "retrievalMode": chat_query.retrievalMode,
-            "filters": filters,
-            "systemPrompt": agent.get("systemPrompt"),
-            "instructions": agent.get("instructions"),
-            "custom_instructions": custom_instructions,
-            "timezone": chat_query.timezone,
-            "currentTime": chat_query.currentTime,
-            "toolsets": agent_toolsets,
-            "mcpServers": agent_mcp_servers,
-            "mcpServerConfigs": mcp_server_configs,
-            "knowledge": agent_knowledge,
-            "skills": [s["name"] for s in agent.get("skills", []) if isinstance(s, dict) and s.get("name")] or None,
-            "connector_configs": connector_configs,
-            "toolsetConfigs": toolset_configs,
-            "conversationId": chat_query.conversationId,
-            "is_service_account": is_service_account,
-            "isPlaceholderAgent": is_placeholder,
-            "modelName": model_name,
-            "modelKey": model_key,
-            "webSearch": web_search_provider,
-            "webSearchConfig": web_search_tool_config,
-            "attachments": chat_query.attachments,
-            "enableRecordIdShortening": chat_query.enableRecordIdShortening,
-        }
-
-        client_name = request.headers.get("client-name")
-
-        generator = run_agent_loop_stream(
-            query_info,
-            enriched_user_info,
-            llm,
-            logger,
-            retrieval_service,
-            graph_provider,
-            reranker_service,
-            config_service,
-            org_info,
-            model_name=model_name,
-            model_key=model_key,
-            is_multimodal_llm=is_multimodal_llm,
-            client_name=client_name,
-            protocol=protocol,
-            llm_provider=llm_config.get("provider", ""),
-            context_length=llm_config.get("contextLength"),
-            is_reasoning_model=bool(llm_config.get("isReasoning", False)),
-        )
+                async for _evt in generator:
+                    yield _evt
+            except Exception as exc:
+                logger.error(f"Error in chat_stream body: {exc}", exc_info=True)
+                yield _stream_error_frame(protocol, str(exc))
 
         return StreamingResponse(
-            generator,
+            _run(),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -3746,6 +3783,20 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         logger.error(f"Error in chat_stream: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e)) from e
 
+def _stream_error_frame(protocol: str, message: str, code: str = "stream_error") -> str:
+    """Terminal SSE error frame, in whichever protocol the client asked for.
+
+    Used once the response headers are already sent, where an HTTP status is no
+    longer available to carry the failure.
+    """
+    if protocol == "agui":
+        from app.agents.agent_loop.protocol.agui import AGUIEventType, frame
+
+        evt = frame(AGUIEventType.RUN_ERROR, message=message, code=code)
+        return f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
+    return f"event: error\ndata: {json.dumps({'message': message, 'type': code})}\n\n"
+
+
 async def get_assistant_agent(
     user_id: str,
     org_id: str,
@@ -3753,7 +3804,11 @@ async def get_assistant_agent(
     graph_provider: IGraphDBProvider,
     toolset_registry: ToolsetRegistry,
     logger: Logger,
-) -> dict:
+    *,
+    actions_enabled: bool | None = None,
+    mcp_enabled: bool | None = None,
+    user_doc: dict[str, Any] | None = None,
+) -> tuple[dict, dict[str, dict[str, Any]]]:
     """
     Get the assistant agent with all authenticated toolsets and accessible connectors.
 
@@ -3764,21 +3819,33 @@ async def get_assistant_agent(
         graph_provider: Graph provider instance
         toolset_registry: Toolset registry instance
         logger: Logger instance
+        actions_enabled / mcp_enabled: pre-resolved platform flags. These are
+            deliberately uncached reads (see `is_actions_enabled`), so a caller
+            that already resolved one passes it in rather than paying for a
+            second live read of the same flag in the same request.
+        user_doc: the caller's already-fetched user document, if any — avoids
+            repeating `get_user_by_user_id` for the same user in one request.
 
     Returns:
-        Dictionary containing assistant agent configuration with toolsets and knowledge sources
+        ``(agent, toolset_auth_by_instance_id)``. The second element is the
+        credential blob per authenticated toolset instance, handed back so the
+        chat handler can skip re-reading the identical etcd paths.
     """
     from app.agents.mcp.service import get_authenticated_mcp_servers, is_mcp_enabled
     from app.edition_config import resolve_mcp_instances_with_inheritance
     from app.api.routes.toolsets import get_authenticated_toolsets, is_actions_enabled
 
+    toolset_auth_by_instance: dict[str, dict[str, Any]] = {}
+
     # Get authenticated toolsets using the helper method — skipped entirely when
     # Actions is disabled (mirrors the MCP gate below): the chat handler forces
     # `agent_toolsets` empty regardless, so this would just be a wasted etcd/graph
     # round-trip on every assistant chat.
-    if await is_actions_enabled(config_service):
+    if actions_enabled is None:
+        actions_enabled = await is_actions_enabled(config_service)
+    if actions_enabled:
         try:
-            authenticated_toolsets_list = await get_authenticated_toolsets(
+            authenticated_toolsets_list, toolset_auth_by_instance = await get_authenticated_toolsets(
                 user_id=user_id,
                 org_id=org_id,
                 config_service=config_service,
@@ -3795,7 +3862,9 @@ async def get_assistant_agent(
     # Skipped entirely when MCP is disabled — the chat handler forces
     # `agent_mcp_servers` empty regardless, so this would just be a wasted
     # etcd/graph round-trip on every assistant chat.
-    if await is_mcp_enabled(config_service):
+    if mcp_enabled is None:
+        mcp_enabled = await is_mcp_enabled(config_service)
+    if mcp_enabled:
         try:
             mcp_instances = await resolve_mcp_instances_with_inheritance(config_service)
             authenticated_mcp_servers_list = await get_authenticated_mcp_servers(
@@ -3814,10 +3883,10 @@ async def get_assistant_agent(
 
     try:
         # Get active connector instances accessible to the user
-        user = await graph_provider.get_user_by_user_id(user_id=user_id)
+        user = user_doc or await graph_provider.get_user_by_user_id(user_id=user_id)
         if not user:
             logger.error(f"User not found: {user_id}")
-            return {}
+            return {}, toolset_auth_by_instance
         # Same `user_id` the graph expects as in kb_service (User id / document key).
         user_key = user.get("id") or user.get("_key")
 
@@ -3893,4 +3962,4 @@ async def get_assistant_agent(
         "toolsets": authenticated_toolsets_list,
         "mcpServers": authenticated_mcp_servers_list,
         "knowledge": knowledge_sources,
-    }
+    }, toolset_auth_by_instance

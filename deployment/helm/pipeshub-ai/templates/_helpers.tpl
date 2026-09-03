@@ -302,3 +302,40 @@ the same thing.
 {{- end -}}
 {{- $mode -}}
 {{- end -}}
+
+{{/*
+Effective DOCKER_HOST, or "" when no daemon is configured.
+
+Single source for the precedence so the deployment's env var and the NOTES
+description cannot disagree: an explicitly configured daemon wins, otherwise
+the DinD sidecar's loopback address if one is being deployed.
+*/}}
+{{- define "pipeshub-ai.dockerHost" -}}
+{{- if .Values.config.dockerHost -}}
+{{- .Values.config.dockerHost -}}
+{{- else if .Values.sandbox.dind.enabled -}}
+{{- printf "tcp://localhost:%v" .Values.sandbox.dind.port -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+How run_code actually executes: local | e2b | dind | external | socket.
+
+Deploying the sidecar and USING it are independent — `sandbox.dind.enabled`
+creates a privileged container whatever the backend is, while
+`config.sandboxMode` and `config.dockerHost` decide what run_code talks to.
+Describing one in terms of the other is how the notes came to claim
+Docker-in-Docker for an e2b deployment.
+*/}}
+{{- define "pipeshub-ai.sandboxPath" -}}
+{{- $mode := include "pipeshub-ai.sandboxMode" . -}}
+{{- if ne $mode "docker" -}}
+{{- $mode -}}
+{{- else if .Values.config.dockerHost -}}
+external
+{{- else if .Values.sandbox.dind.enabled -}}
+dind
+{{- else -}}
+socket
+{{- end -}}
+{{- end -}}

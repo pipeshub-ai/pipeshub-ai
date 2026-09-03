@@ -40,8 +40,13 @@ export const configPaths = {
   aiModels: '/services/aiModels',
   aiModelsEmbedding: '/services/aiModels/embedding',
   systemPrompts: '/services/systemPrompts',
-  connectorSyncScheduledJobsMigration:
-    '/migrations/connector_sync_scheduled_jobs',
+  // v2 re-runs the same backfill after the BullMQ queue prefix moved from the
+  // default `bull` to the hash-tagged `{crawling}` (needed so BullMQ's
+  // multi-key Lua scripts stay in one Redis Cluster slot). Jobs written under
+  // the old prefix are invisible to both the queue and the worker, so the
+  // backfill has to re-create every schedule from its persisted `sync` block.
+  connectorSyncScheduledJobsMigrationV2:
+    '/migrations/connector_sync_scheduled_jobs_v2',
   chatKbFiltersMigration: '/migrations/chat_kb_filters_v1',
   adminRoleMigration: '/migrations/admin_role_v1',
   documentOrgIdMigration: '/migrations/document_orgid_v1',

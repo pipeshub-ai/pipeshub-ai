@@ -211,26 +211,24 @@ class TestHealthCheckRedisKvStore:
     @pytest.mark.asyncio
     async def test_success_on_first_attempt(self):
         container = _make_container()
-        mock_redis = AsyncMock()
-        mock_redis.ping = AsyncMock(return_value=True)
-        mock_redis.close = AsyncMock()
+        mock_provider = MagicMock()
+        mock_provider.get_client.return_value.ping = AsyncMock(return_value=True)
 
         with (
-            patch("app.health.health.Redis", return_value=mock_redis),
+            patch("app.health.health.get_redis_provider", return_value=mock_provider),
             patch("app.health.health.HealthCheckConfig", _SmallRetry),
         ):
             await Health._health_check_redis_kv_store(container)
-            mock_redis.ping.assert_awaited_once()
+            mock_provider.get_client.return_value.ping.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_raises_after_retries_exhausted(self):
         container = _make_container()
-        mock_redis = AsyncMock()
-        mock_redis.ping = AsyncMock(side_effect=Exception("connection refused"))
-        mock_redis.close = AsyncMock()
+        mock_provider = MagicMock()
+        mock_provider.get_client.return_value.ping = AsyncMock(side_effect=Exception("connection refused"))
 
         with (
-            patch("app.health.health.Redis", return_value=mock_redis),
+            patch("app.health.health.get_redis_provider", return_value=mock_provider),
             patch("app.health.health.asyncio.sleep", new_callable=AsyncMock),
             patch("app.health.health.HealthCheckConfig", _SmallRetry),
         ):
@@ -238,20 +236,21 @@ class TestHealthCheckRedisKvStore:
                 await Health._health_check_redis_kv_store(container)
 
     @pytest.mark.asyncio
-    async def test_closes_client_on_failure(self):
+    async def test_retries_ping_up_to_max_attempts(self):
+        """The provider is shared (R11), not opened/closed per attempt; the
+        retry loop is bounded by HealthCheckConfig, not by the client."""
         container = _make_container()
-        mock_redis = AsyncMock()
-        mock_redis.ping = AsyncMock(side_effect=Exception("refused"))
-        mock_redis.close = AsyncMock()
+        mock_provider = MagicMock()
+        mock_provider.get_client.return_value.ping = AsyncMock(side_effect=Exception("refused"))
 
         with (
-            patch("app.health.health.Redis", return_value=mock_redis),
+            patch("app.health.health.get_redis_provider", return_value=mock_provider),
             patch("app.health.health.asyncio.sleep", new_callable=AsyncMock),
             patch("app.health.health.HealthCheckConfig", _OneRetry),
         ):
             with pytest.raises(Exception):
                 await Health._health_check_redis_kv_store(container)
-            mock_redis.close.assert_awaited()
+            assert mock_provider.get_client.return_value.ping.await_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -547,94 +546,81 @@ class TestHealthCheckKafka:
 class TestHealthCheckRedis:
     """Tests for Health.health_check_redis()."""
 
+    @staticmethod
+    def _redis_config():
+        from app.services.messaging.config import RedisConfig
+
+        return RedisConfig(host="localhost", port=6379, password=None, db=0)
+
     @pytest.mark.asyncio
     async def test_success(self):
         container = _make_container()
         mock_config_service = container.config_service()
-        mock_config_service.get_config = AsyncMock(
-            return_value={"host": "localhost", "port": 6379}
-        )
+        mock_config_service.get_redis_config = AsyncMock(return_value=self._redis_config())
 
-        mock_redis = AsyncMock()
-        mock_redis.ping = AsyncMock(return_value=True)
-        mock_redis.close = AsyncMock()
+        mock_provider = MagicMock()
+        mock_provider.get_client.return_value.ping = AsyncMock(return_value=True)
 
         with (
-            patch("app.health.health.build_redis_url", return_value="redis://localhost:6379/0"),
-            patch("app.health.health.Redis") as mock_redis_cls,
+            patch("app.health.health.get_redis_provider", return_value=mock_provider),
             patch("app.health.health.HealthCheckConfig", _SmallRetry),
         ):
-            mock_redis_cls.from_url.return_value = mock_redis
             await Health.health_check_redis(container)
-            mock_redis.ping.assert_awaited_once()
+            mock_provider.get_client.return_value.ping.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_raises_after_retries(self):
         container = _make_container()
         mock_config_service = container.config_service()
-        mock_config_service.get_config = AsyncMock(
-            return_value={"host": "localhost", "port": 6379}
-        )
+        mock_config_service.get_redis_config = AsyncMock(return_value=self._redis_config())
 
-        mock_redis = AsyncMock()
-        mock_redis.ping = AsyncMock(side_effect=Exception("refused"))
-        mock_redis.close = AsyncMock()
+        mock_provider = MagicMock()
+        mock_provider.get_client.return_value.ping = AsyncMock(side_effect=Exception("refused"))
 
         with (
-            patch("app.health.health.build_redis_url", return_value="redis://localhost:6379/0"),
-            patch("app.health.health.Redis") as mock_redis_cls,
+            patch("app.health.health.get_redis_provider", return_value=mock_provider),
             patch("app.health.health.asyncio.sleep", new_callable=AsyncMock),
             patch("app.health.health.HealthCheckConfig", _SmallRetry),
         ):
-            mock_redis_cls.from_url.return_value = mock_redis
             with pytest.raises(Exception, match="refused"):
                 await Health.health_check_redis(container)
 
     @pytest.mark.asyncio
-    async def test_closes_redis_client_on_failure(self):
+    async def test_retries_ping_up_to_max_attempts(self):
+        """The provider is shared (R11), not opened/closed per attempt."""
         container = _make_container()
         mock_config_service = container.config_service()
-        mock_config_service.get_config = AsyncMock(
-            return_value={"host": "localhost", "port": 6379}
-        )
+        mock_config_service.get_redis_config = AsyncMock(return_value=self._redis_config())
 
-        mock_redis = AsyncMock()
-        mock_redis.ping = AsyncMock(side_effect=Exception("refused"))
-        mock_redis.close = AsyncMock()
+        mock_provider = MagicMock()
+        mock_provider.get_client.return_value.ping = AsyncMock(side_effect=Exception("refused"))
 
         with (
-            patch("app.health.health.build_redis_url", return_value="redis://localhost:6379/0"),
-            patch("app.health.health.Redis") as mock_redis_cls,
+            patch("app.health.health.get_redis_provider", return_value=mock_provider),
             patch("app.health.health.asyncio.sleep", new_callable=AsyncMock),
             patch("app.health.health.HealthCheckConfig", _OneRetry),
         ):
-            mock_redis_cls.from_url.return_value = mock_redis
             with pytest.raises(Exception):
                 await Health.health_check_redis(container)
-            mock_redis.close.assert_awaited()
+            assert mock_provider.get_client.return_value.ping.await_count == 1
 
     @pytest.mark.asyncio
     async def test_redis_error_type(self):
         """RedisError should be caught and retried."""
-        from redis.asyncio import RedisError
+        from redis.exceptions import RedisError
 
         container = _make_container()
         mock_config_service = container.config_service()
-        mock_config_service.get_config = AsyncMock(
-            return_value={"host": "localhost", "port": 6379}
-        )
+        mock_config_service.get_redis_config = AsyncMock(return_value=self._redis_config())
 
-        mock_redis = AsyncMock()
-        mock_redis.ping = AsyncMock(side_effect=RedisError("redis error"))
-        mock_redis.close = AsyncMock()
+        mock_provider = MagicMock()
+        mock_provider.get_client.return_value.ping = AsyncMock(side_effect=RedisError("redis error"))
 
         with (
-            patch("app.health.health.build_redis_url", return_value="redis://localhost:6379/0"),
-            patch("app.health.health.Redis") as mock_redis_cls,
+            patch("app.health.health.get_redis_provider", return_value=mock_provider),
             patch("app.health.health.asyncio.sleep", new_callable=AsyncMock),
             patch("app.health.health.HealthCheckConfig", _OneRetry),
         ):
-            mock_redis_cls.from_url.return_value = mock_redis
             with pytest.raises(Exception, match="Failed to connect to Redis"):
                 await Health.health_check_redis(container)
 
@@ -780,15 +766,14 @@ class TestHealthCheckRedisKvStoreAdditional:
     @pytest.mark.asyncio
     async def test_redis_error_caught(self):
         """RedisError is caught and retried (lines 152-154)."""
-        from redis.asyncio import RedisError
+        from redis.exceptions import RedisError
 
         container = _make_container()
-        mock_redis = AsyncMock()
-        mock_redis.ping = AsyncMock(side_effect=RedisError("connection lost"))
-        mock_redis.close = AsyncMock()
+        mock_provider = MagicMock()
+        mock_provider.get_client.return_value.ping = AsyncMock(side_effect=RedisError("connection lost"))
 
         with (
-            patch("app.health.health.Redis", return_value=mock_redis),
+            patch("app.health.health.get_redis_provider", return_value=mock_provider),
             patch("app.health.health.asyncio.sleep", new_callable=AsyncMock),
             patch("app.health.health.HealthCheckConfig", _OneRetry),
         ):
@@ -796,29 +781,32 @@ class TestHealthCheckRedisKvStoreAdditional:
                 await Health._health_check_redis_kv_store(container)
 
     @pytest.mark.asyncio
-    async def test_close_exception_suppressed(self):
-        """Exception during redis_client.close() is suppressed (line 162)."""
+    async def test_falsy_ping_is_treated_as_a_failure(self):
+        """``ping()`` returning ``False`` (not raising) must still fail the
+        check, not be silently treated as healthy."""
         container = _make_container()
-        mock_redis = AsyncMock()
-        mock_redis.ping = AsyncMock(side_effect=Exception("ping fail"))
-        mock_redis.close = AsyncMock(side_effect=RuntimeError("close fail"))
+        mock_provider = MagicMock()
+        mock_provider.get_client.return_value.ping = AsyncMock(return_value=False)
 
         with (
-            patch("app.health.health.Redis", return_value=mock_redis),
+            patch("app.health.health.get_redis_provider", return_value=mock_provider),
             patch("app.health.health.asyncio.sleep", new_callable=AsyncMock),
             patch("app.health.health.HealthCheckConfig", _OneRetry),
         ):
-            with pytest.raises(Exception, match="ping fail"):
+            with pytest.raises(Exception, match="Failed to connect to Redis KV store"):
                 await Health._health_check_redis_kv_store(container)
-            # The test passes without RuntimeError("close fail") propagating
 
     @pytest.mark.asyncio
-    async def test_redis_client_none_skips_close(self):
-        """When Redis() constructor raises, redis_client is None; close is skipped (line 159->166)."""
+    async def test_provider_construction_failure_is_retried_not_fatal(self):
+        """``get_redis_provider`` raising (e.g. a rejected cluster+db combo)
+        must be caught by the same retry loop as a ping failure."""
         container = _make_container()
 
         with (
-            patch("app.health.health.Redis", side_effect=Exception("constructor fail")),
+            patch(
+                "app.health.health.get_redis_provider",
+                side_effect=Exception("constructor fail"),
+            ),
             patch("app.health.health.asyncio.sleep", new_callable=AsyncMock),
             patch("app.health.health.HealthCheckConfig", _OneRetry),
         ):
@@ -920,47 +908,45 @@ class TestHealthCheckKafkaAdditional:
 
 
 class TestHealthCheckRedisAdditional:
-    """Additional tests for redis health check missing branches (lines 375-378)."""
+    """Additional tests for redis health check missing branches."""
+
+    @staticmethod
+    def _redis_config():
+        from app.services.messaging.config import RedisConfig
+
+        return RedisConfig(host="localhost", port=6379, password=None, db=0)
 
     @pytest.mark.asyncio
-    async def test_redis_close_exception_suppressed(self):
-        """Exception during redis_client.close() in finally is suppressed (line 378)."""
+    async def test_falsy_ping_is_treated_as_a_failure(self):
         container = _make_container()
         mock_config_service = container.config_service()
-        mock_config_service.get_config = AsyncMock(
-            return_value={"host": "localhost", "port": 6379}
-        )
+        mock_config_service.get_redis_config = AsyncMock(return_value=self._redis_config())
 
-        mock_redis = AsyncMock()
-        mock_redis.ping = AsyncMock(side_effect=Exception("refused"))
-        mock_redis.close = AsyncMock(side_effect=RuntimeError("close error"))
+        mock_provider = MagicMock()
+        mock_provider.get_client.return_value.ping = AsyncMock(return_value=False)
 
         with (
-            patch("app.health.health.build_redis_url", return_value="redis://localhost:6379/0"),
-            patch("app.health.health.Redis") as mock_redis_cls,
+            patch("app.health.health.get_redis_provider", return_value=mock_provider),
             patch("app.health.health.asyncio.sleep", new_callable=AsyncMock),
             patch("app.health.health.HealthCheckConfig", _OneRetry),
         ):
-            mock_redis_cls.from_url.return_value = mock_redis
-            with pytest.raises(Exception, match="refused"):
+            with pytest.raises(Exception, match="Failed to connect to Redis"):
                 await Health.health_check_redis(container)
-            # close was called and its RuntimeError was suppressed
 
     @pytest.mark.asyncio
-    async def test_redis_client_none_skips_close(self):
-        """When Redis.from_url raises, redis_client is None; close is skipped (line 375->382)."""
+    async def test_get_redis_config_failure_is_retried_not_fatal(self):
+        """A config-service failure (e.g. transient KV outage) must be
+        caught by the same retry loop as a ping failure, not propagate
+        immediately."""
         container = _make_container()
         mock_config_service = container.config_service()
-        mock_config_service.get_config = AsyncMock(
-            return_value={"host": "localhost", "port": 6379}
+        mock_config_service.get_redis_config = AsyncMock(
+            side_effect=Exception("config unavailable")
         )
 
         with (
-            patch("app.health.health.build_redis_url", return_value="redis://localhost:6379/0"),
-            patch("app.health.health.Redis") as mock_redis_cls,
             patch("app.health.health.asyncio.sleep", new_callable=AsyncMock),
             patch("app.health.health.HealthCheckConfig", _OneRetry),
         ):
-            mock_redis_cls.from_url.side_effect = Exception("from_url fail")
-            with pytest.raises(Exception, match="from_url fail"):
+            with pytest.raises(Exception, match="config unavailable"):
                 await Health.health_check_redis(container)

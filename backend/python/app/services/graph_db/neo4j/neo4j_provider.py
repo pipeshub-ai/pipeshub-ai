@@ -38,7 +38,7 @@ from app.config.constants.arangodb import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable
 
-    from app.services.cache.accessible_records_cache import AccessibleRecordsCache
+    from app.services.cache.interface import IAccessibleRecordsCache
 from app.config.constants.neo4j import (
     COLLECTION_TO_LABEL,
     EDGE_COLLECTION_TO_RELATIONSHIP,
@@ -108,7 +108,7 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         logger: Logger,
         config_service: ConfigurationService,
-        accessible_records_cache: "AccessibleRecordsCache | None" = None,
+        accessible_records_cache: "IAccessibleRecordsCache | None" = None,
     ) -> None:
         """
         Initialize Neo4j provider.

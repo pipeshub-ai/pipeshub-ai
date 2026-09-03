@@ -444,6 +444,12 @@ mongodb:
       - ALL
 
 redis:
+  # Set to false (with redis.external.enabled=true) to skip deploying the
+  # bundled Bitnami subchart entirely, e.g. when pointing at AWS MemoryDB or a
+  # self-hosted Redis Cluster. Wired via `condition: redis.enabled` in
+  # Chart.yaml, so this must stay a plain boolean the chart can read before
+  # dependency resolution.
+  enabled: true
   architecture: replication  # 1 master + 1 replica for minimal read failover
   master:
     count: 1
@@ -461,6 +467,38 @@ redis:
   persistence:
     enabled: true
     storageClass: "" # Fill
+
+  # --- Connection provider (R21/R22) ---------------------------------------
+  # "standalone" (default): use the Bitnami subchart above via
+  # <release>-redis-master, exactly as today.
+  # "cluster": talk Redis Cluster wire protocol -- either a self-hosted
+  # Redis Cluster or AWS MemoryDB -- instead of the bundled subchart. Set
+  # external.enabled=true (below) to skip deploying the Bitnami subchart
+  # when pointing at an external endpoint.
+  mode: standalone
+  # Any other mode (e.g. "memorydb") must be registered by providerModule,
+  # or the app fails fast at startup naming the unregistered mode.
+  providerModule: ""
+  external:
+    enabled: false     # true: do not deploy the Bitnami subchart; use clusterEndpoints/host below
+    clusterEndpoints: "" # comma-separated host:port list, REDIS_MODE=cluster only
+  # Applied inside key builders (never a client-level prefix); required to
+  # safely share one Redis/MemoryDB across multiple releases/tenants.
+  # Applied by the explicit key builders (config KV + invalidation channel,
+  # caches, retry counters, leases, BullMQ prefix). Redis Streams topic names
+  # are NOT namespaced yet -- see README.
+  keyNamespace: ""
+  # NOTE: named clientTls (not `tls`) because `redis.tls` is already a
+  # reserved key consumed by the Bitnami subchart itself (in-cluster
+  # server-side TLS, requiring mounted certs). This block configures the
+  # app's client connection to redis.external.clusterEndpoints instead and
+  # must not collide with the subchart's own schema.
+  clientTls:
+    enabled: false
+    rejectUnauthorized: true
+    caPath: ""
+  # cluster-only: master | slave | all
+  clusterScaleReads: master
 
 arango:
   enabled: false
@@ -532,6 +570,13 @@ etcd:
 messageBroker:
   type: redis
   redisStreamsMaxLen: "500000"
+
+# Celery (backend/python/app/core/celery_app.py) has no Redis Cluster
+# transport. Required when redis.mode is not "standalone" -- the app fails
+# fast at startup naming CELERY_BROKER_URL otherwise.
+celery:
+  brokerUrl: ""
+  resultBackend: ""
 
 # Vector DB collection layout.
 #   single             (default) every record in one collection, isolated by

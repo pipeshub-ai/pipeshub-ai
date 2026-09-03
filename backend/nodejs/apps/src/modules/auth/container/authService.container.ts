@@ -1,6 +1,12 @@
 import { Container } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
-import { RedisService } from '../../../libs/services/redis.service';
+import {
+  RedisService,
+  getSharedRedisService,
+} from '../../../libs/services/redis.service';
+import { IRedisConnectionProvider } from '../../../libs/services/redis/connectionProvider.interface';
+import { getRedisProvider } from '../../../libs/services/redis/connectionProviderFactory';
+import { redisConnectionConfigFromHostPort } from '../../../libs/services/redis/connectionConfig';
 import { IamService } from '../services/iam.service';
 import { MailService } from '../services/mail.service';
 import { SessionService } from '../services/session.service';
@@ -51,13 +57,35 @@ export class AuthServiceContainer {
   ): Promise<void> {
     try {
       const logger = container.get<Logger>('Logger');
-      const redisService = new RedisService(
+      // Shared across containers (R11): the auth and token-manager containers
+      // both need cache access, and two instances means two connections --
+      // two full cluster topologies on MemoryDB.
+      const redisService = getSharedRedisService(
         appConfig.redis,
         container.get('Logger'),
       );
       container
         .bind<RedisService>('RedisService')
         .toConstantValue(redisService);
+
+      // Same fingerprint `RedisService` just resolved internally (Phase 5,
+      // R11), so this returns the already-cached singleton -- not a second
+      // connection. Bound so any service in this container can depend on
+      // `IRedisConnectionProvider` directly instead of importing the
+      // factory module itself.
+      container
+        .bind<IRedisConnectionProvider>('RedisConnectionProvider')
+        .toConstantValue(
+          getRedisProvider(
+            redisConnectionConfigFromHostPort({
+              host: appConfig.redis.host,
+              port: appConfig.redis.port,
+              username: appConfig.redis.username,
+              password: appConfig.redis.password,
+              db: appConfig.redis.db,
+            }),
+          ),
+        );
       const keyValueStoreService = KeyValueStoreService.getInstance(
         container.get<ConfigurationManagerConfig>('ConfigurationManagerConfig'),
       );

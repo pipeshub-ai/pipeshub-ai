@@ -45,7 +45,10 @@ from app.edition_config import (
     resolve_inherited_from_org_id,
 )
 from app.services.featureflag.config.config import CONFIG
-from app.services.featureflag.platform_settings import read_platform_feature_flag
+from app.services.featureflag.platform_settings import (
+    is_actions_enabled,
+    read_platform_feature_flag,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.notification.types import (
     NotificationOrigin,
@@ -1797,49 +1800,12 @@ async def get_my_toolsets(
         toolset_type_filter=toolset_type,
     )
 
-async def is_actions_enabled(config_service: Optional[ConfigurationService] = None) -> bool:
-    """Deployment-level gate for Actions: agents may only load/use toolset
-    (connector) tools when this is true. Source of truth is the
-    ``ENABLE_ACTIONS`` platform feature flag. Defaults to ENABLED — unlike
-    ``ENABLE_MCP``, toolsets/actions are pre-existing functionality; admins
-    may opt out from Labs.
-
-    Resolution order (first hit wins), mirroring ``is_mcp_enabled``:
-    1. ``config_service`` — live read of the platform settings the Labs UI writes,
-       via the shared ``read_platform_feature_flag`` helper
-    2. ``FeatureFlagService`` — only reachable in services that wire an
-       ``EtcdProvider`` (the connectors service); the query service does not, which
-       is why the ``config_service`` read above is the primary path
-    3. Default: ``True``
-
-    Reads with ``use_cache=False`` (via ``read_platform_feature_flag``) so
-    flipping the flag in Labs takes effect on the next chat instead of after
-    a service restart.
-    """
-    if config_service is not None:
-        return await read_platform_feature_flag(
-            CONFIG.ENABLE_ACTIONS, config_service, default=True,
-        )
-
-    try:
-        from app.services.featureflag.featureflag import FeatureFlagService
-
-        return bool(
-            FeatureFlagService.get_service().is_feature_enabled(
-                CONFIG.ENABLE_ACTIONS, default=True
-            )
-        )
-    except Exception as e:
-        logger.warning(f"FeatureFlagService unavailable for ENABLE_ACTIONS, treating Actions as enabled: {e}")
-        return True
-
-
 async def get_authenticated_toolsets(
     user_id: str,
     org_id: str,
     config_service: ConfigurationService,
     registry: ToolsetRegistry,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     """
     Helper method to get all authenticated toolsets for a user.
     Returns only toolsets where the user has completed authentication.
@@ -1851,7 +1817,10 @@ async def get_authenticated_toolsets(
         registry: Toolset registry instance
 
     Returns:
-        List of authenticated toolsets with full tool metadata
+        ``(toolsets, auth_by_instance_id)`` — the auth blobs are returned
+        rather than discarded because the agent chat handler needs the very
+        same ``/services/toolsets/{instanceId}/{userId}`` values it would
+        otherwise re-read once per toolset on every request.
     """
 
     # Load admin-created instances
@@ -1859,13 +1828,13 @@ async def get_authenticated_toolsets(
         instances = await _load_toolset_instances(org_id, config_service)
     except Exception as e:
         logger.error(f"Failed to load toolset instances from etcd: {e}")
-        return []
+        return [], {}
 
     # Filter by org (safety check)
     instances = [i for i in instances if i.get("orgId") == org_id]
 
     if not instances:
-        return []
+        return [], {}
 
     # Fetch user auth for all instances in parallel
     async def _fetch_user_auth(inst: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -1880,10 +1849,12 @@ async def get_authenticated_toolsets(
     results = await asyncio.gather(*[_fetch_user_auth(i) for i in instances])
 
     authenticated_toolsets = []
+    auth_by_instance: dict[str, dict[str, Any]] = {}
     for inst, user_auth in results:
         # Only include authenticated toolsets
         if not user_auth or not user_auth.get("isAuthenticated", False):
             continue
+        auth_by_instance[inst.get("_id", "")] = user_auth
 
         toolset_type = inst.get("toolsetType", "")
         meta = registry.get_toolset_metadata(toolset_type)
@@ -1916,7 +1887,7 @@ async def get_authenticated_toolsets(
             "updatedAtTimestamp": inst.get("updatedAtTimestamp"),
         })
 
-    return authenticated_toolsets
+    return authenticated_toolsets, auth_by_instance
 
 # ============================================================================
 # User Authentication Against Instances

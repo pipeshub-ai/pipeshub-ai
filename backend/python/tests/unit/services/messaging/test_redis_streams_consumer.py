@@ -53,10 +53,7 @@ class TestInitialize:
         mock_redis.ping = AsyncMock()
         mock_redis.xgroup_create = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             await c.initialize()
 
         mock_redis.ping.assert_awaited_once()
@@ -76,10 +73,7 @@ class TestInitialize:
         mock_redis.ping = AsyncMock()
         mock_redis.xgroup_create = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             await c.initialize()
 
         assert mock_redis.xgroup_create.call_count == 2
@@ -93,10 +87,7 @@ class TestInitialize:
             side_effect=Exception("BUSYGROUP Consumer Group name already exists")
         )
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             await c.initialize()
 
         assert c.redis is mock_redis
@@ -110,10 +101,7 @@ class TestInitialize:
             side_effect=Exception("Connection lost")
         )
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             with pytest.raises(Exception, match="Connection lost"):
                 await c.initialize()
 
@@ -128,10 +116,7 @@ class TestEphemeralGroupCreation:
         c = RedisStreamsConsumer(logger, config)
         mock_redis = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             await c.initialize()
 
         assert mock_redis.xgroup_create.call_args.kwargs["id"] == "$"
@@ -142,10 +127,7 @@ class TestEphemeralGroupCreation:
         c = RedisStreamsConsumer(logger, config)
         mock_redis = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             await c.initialize()
 
         assert mock_redis.xgroup_create.call_args.kwargs["id"] == "0"
@@ -187,10 +169,7 @@ class TestStartStop:
         mock_redis.xreadgroup = AsyncMock(return_value=None)
         mock_redis.close = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             await c.start(handler)
 
         assert c.running is True
@@ -346,10 +325,7 @@ class TestInitializeStaleConsumerCleanup:
         mock_redis.ping = AsyncMock()
         mock_redis.xgroup_create = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             await c.initialize()
 
         assert mock_redis.xgroup_create.call_count == 2
@@ -365,10 +341,7 @@ class TestInitializeStaleConsumerCleanup:
             side_effect=Exception("BUSYGROUP Consumer Group name already exists")
         )
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             # Should not raise
             await c.initialize()
 
@@ -393,10 +366,7 @@ class TestStartErrorPath:
 
         assert c.redis is None
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             await c.start(handler)
 
         assert c.redis is mock_redis
@@ -424,9 +394,7 @@ class TestStartErrorPath:
         mock_redis.close = AsyncMock()
         c.redis = mock_redis
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-        ) as mock_cls:
+        with patch.object(c._provider, "create_client") as mock_cls:
             await c.start(handler)
             mock_cls.assert_not_called()
 
@@ -447,10 +415,7 @@ class TestStartErrorPath:
         c = RedisStreamsConsumer(logger, config)
         handler = AsyncMock(return_value=True)
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            side_effect=Exception("Connection refused"),
-        ):
+        with patch.object(c._provider, "create_client", side_effect=Exception("Connection refused")):
             with pytest.raises(Exception, match="Connection refused"):
                 await c.start(handler)
 

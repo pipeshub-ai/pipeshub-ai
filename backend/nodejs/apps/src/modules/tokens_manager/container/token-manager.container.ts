@@ -1,7 +1,13 @@
 import { Container } from 'inversify';
 import { AppConfig, loadAppConfig } from '../config/config';
 import { MongoService } from '../../../libs/services/mongo.service';
-import { RedisService } from '../../../libs/services/redis.service';
+import {
+  RedisService,
+  getSharedRedisService,
+} from '../../../libs/services/redis.service';
+import { IRedisConnectionProvider } from '../../../libs/services/redis/connectionProvider.interface';
+import { getRedisProvider } from '../../../libs/services/redis/connectionProviderFactory';
+import { redisConnectionConfigFromHostPort } from '../../../libs/services/redis/connectionConfig';
 import { Logger } from '../../../libs/services/logger.service';
 import { TokenEventProducer } from '../services/token-event.producer';
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config';
@@ -59,13 +65,35 @@ export class TokenManagerContainer {
         .bind<MongoService>('MongoService')
         .toConstantValue(mongoService);
 
-      const redisService = new RedisService(
+      // Shared across containers (R11): the auth and token-manager containers
+      // both need cache access, and two instances means two connections --
+      // two full cluster topologies on MemoryDB.
+      const redisService = getSharedRedisService(
         config.redis,
         container.get('Logger'),
       );
       container
         .bind<RedisService>('RedisService')
         .toConstantValue(redisService);
+
+      // Same fingerprint `RedisService` just resolved internally (Phase 5,
+      // R11), so this returns the already-cached singleton -- not a second
+      // connection. Bound so any service in this container can depend on
+      // `IRedisConnectionProvider` directly instead of importing the
+      // factory module itself.
+      container
+        .bind<IRedisConnectionProvider>('RedisConnectionProvider')
+        .toConstantValue(
+          getRedisProvider(
+            redisConnectionConfigFromHostPort({
+              host: config.redis.host,
+              port: config.redis.port,
+              username: config.redis.username,
+              password: config.redis.password,
+              db: config.redis.db,
+            }),
+          ),
+        );
 
       // Initialize KeyValueStoreService for PrometheusService dependency
       const configurationManagerConfig =

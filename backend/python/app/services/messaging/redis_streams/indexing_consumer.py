@@ -13,7 +13,6 @@ from logging import Logger
 from typing import TYPE_CHECKING, Any, Optional, override
 
 from pydantic import ValidationError
-from redis.asyncio import Redis
 
 from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
@@ -37,7 +36,9 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
+from app.services.distributed.interface import IDistributedLeaseManager, IRetryTracker
 from app.services.messaging.lease import LeaseRenewer
+from app.services.messaging.redis_streams.stream_read_planner import StreamReadPlanner
 from app.services.messaging.retry_manager import RetryManager
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
 from app.services.messaging.scheduling.interface import (
@@ -48,6 +49,8 @@ from app.services.messaging.scheduling.interface import (
     WeightProvider,
 )
 from app.services.messaging.scheduling.key_extractors import CompositeKeyExtractor
+from app.services.redis.config import ClientOptions, RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
 from app.services.resource_governor import ParseTier, Pool, classify
 from app.telemetry.modules import scheduling_metrics as metrics
 from app.utils.cpu_offload import offload_if_large
@@ -62,6 +65,7 @@ if TYPE_CHECKING:
     from app.services.messaging.distributed_concurrency import (
         DistributedConcurrencyManager,
     )
+    from app.services.redis.connection_provider import IRedisConnectionProvider, RedisClient as Redis
     from app.services.resource_governor import ResourceGovernor
 
 _BUSYGROUP_ERROR = "BUSYGROUP"
@@ -112,18 +116,25 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self,
         logger: Logger,
         config: RedisStreamsConfig,
-        retry_manager: RetryManager | None = None,
+        retry_manager: IRetryTracker | None = None,
         producer: IMessagingProducer | None = None,
-        concurrency_manager: Optional["DistributedConcurrencyManager"] = None,
+        concurrency_manager: IDistributedLeaseManager | None = None,
         governor: Optional["ResourceGovernor"] = None,
         backpressure_coordinator: Optional["BackpressureCoordinator"] = None,
         fair_scheduler_config: FairSchedulerConfig | None = None,
         key_extractor: FairnessKeyExtractor | None = None,
         weight_provider: WeightProvider | None = None,
         disposition_sink: Optional[AbandonedMessageSink] = None,
+        provider: "IRedisConnectionProvider | None" = None,
     ) -> None:
         self.logger = logger
         self.config = config
+        self._provider: "IRedisConnectionProvider" = provider or get_redis_provider(
+            RedisConnectionConfig.from_host_port(
+                host=config.host, port=config.port, password=config.password, db=config.db
+            )
+        )
+        self._planner = StreamReadPlanner(self._provider)
         # PEL ownership is keyed by consumer name; sharing one across replicas
         # lets one process re-read another process's still-active messages.
         self.consumer_name = f"{config.client_id}-{uuid.uuid4().hex}"
@@ -221,12 +232,17 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if not self.worker_loop or not self.worker_loop.is_running():
                 raise RuntimeError("Worker thread event loop failed to start")
 
-            self.redis = Redis(
-                host=self.config.host,
-                port=self.config.port,
-                password=self.config.password,
-                db=self.config.db,
-                decode_responses=True,
+            self.redis = self._provider.create_client(
+                ClientOptions(
+                    decode_responses=True,
+                    blocking=True,
+                    # One connection is parked in XREADGROUP BLOCK for up to
+                    # `block_ms` at a time; XACK/XAUTOCLAIM run on the same
+                    # client and must not queue behind it. Sized off the same
+                    # knob the lease/retry pools use rather than ClientOptions'
+                    # conservative default.
+                    max_connections=messaging_env.concurrency_redis_max_connections,
+                )
             )
             await self.redis.ping()
 
@@ -1293,6 +1309,75 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return True
         return False
 
+    async def _xreadgroup_grouped(
+        self, streams: dict[str, str], count: int, block_ms: int
+    ) -> list:
+        """One ``XREADGROUP`` per hash-slot group of ``streams`` (R1).
+
+        On standalone every stream is in one group, so this is exactly the
+        single call this replaced, with the full ``block_ms`` budget and the
+        per-stream ``count`` unaffected (COUNT applies per-stream, not per
+        call). On Redis Cluster / MemoryDB, lane streams especially can span
+        slots, so each group gets its own call with a fair share of the
+        overall block budget -- an empty poll still costs at most
+        ``block_ms`` total, not once per group.
+
+        Each group's call is isolated with :func:`asyncio.wait_for` and its
+        own try/except: while one slot's node is mid-failover/reconnect, a
+        ``ClusterDownError`` (or a client that hangs retrying past its
+        stated ``BLOCK`` budget) must not stop *other*, perfectly healthy
+        groups from being polled -- seen live on a 3-master cluster where a
+        restarted node's group blocked for tens of seconds while the other
+        groups' streams sat fully caught-up and unread. A group that fails
+        alongside others that succeed does not lose those successful reads:
+        once ``XREADGROUP >`` claims a message it will never be handed out
+        again by ``>``, only by an own-PEL read, so silently discarding a
+        mixed batch here would strand the successful groups' messages until
+        the next idle-triggered pending-drain pass (or forever, if new
+        messages keep arriving often enough that the idle threshold is never
+        reached). The error from the failing group is only re-raised -- so
+        the caller's existing backoff kicks in -- when no group produced
+        anything at all.
+        """
+        groups = self._planner.group(list(streams.keys()))
+        if not groups:
+            return []
+
+        per_group_block_ms = (
+            block_ms if len(groups) == 1 else max(1, block_ms // len(groups))
+        )
+        per_group_timeout_seconds = (per_group_block_ms / 1000.0) + 5.0
+
+        combined: list = []
+        first_error: Optional[Exception] = None
+        for group in groups:
+            group_streams = {name: streams[name] for name in group}
+            try:
+                results = await asyncio.wait_for(
+                    self.redis.xreadgroup(  # type: ignore
+                        groupname=self.config.group_id,
+                        consumername=self.consumer_name,
+                        streams=group_streams,
+                        count=count,
+                        block=per_group_block_ms,
+                    ),
+                    timeout=per_group_timeout_seconds,
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "XREADGROUP failed for slot group %s (%d streams): %s",
+                    group[0],
+                    len(group),
+                    e,
+                )
+                first_error = first_error or e
+                continue
+            if results:
+                combined.extend(results)
+        if first_error is not None and not combined:
+            raise first_error
+        return combined
+
     async def __read_phase(self) -> None:
         """Read a batch and enqueue each entry into the DRR scheduler."""
         waiter_count = self._get_gate_waiter_count()
@@ -1374,15 +1459,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # times_delivered incremented and then be neither buffered nor
         # parked -- burning delivery attempts on work it cannot hold.
         per_stream = max(1, buffer_room // max(1, len(streams)))
-        results = await self.redis.xreadgroup(  # type: ignore
-            groupname=self.config.group_id,
-            consumername=self.consumer_name,
-            streams=streams,
+        results = await self._xreadgroup_grouped(
+            streams,
             count=min(max(1, self.config.batch_size), per_stream),
             # Short block while work is already buffered: read and dispatch
             # alternate, so blocking the full timeout here delays dispatch of
             # everything already read.
-            block=(
+            block_ms=(
                 _BUSY_BLOCK_MS if scheduler.pending_count else self.config.block_ms
             ),
         )
@@ -1514,15 +1597,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
                     streams = dict.fromkeys(self.config.topics, ">")
                     available_capacity = pending_ceiling - waiter_count
-                    results = await self.redis.xreadgroup(  # type: ignore
-                        groupname=self.config.group_id,
-                        consumername=self.consumer_name,
-                        streams=streams,
+                    results = await self._xreadgroup_grouped(
+                        streams,
                         count=min(
                             max(1, self.config.batch_size),
                             available_capacity,
                         ),
-                        block=self.config.block_ms,
+                        block_ms=self.config.block_ms,
                     )
 
                     if not results:

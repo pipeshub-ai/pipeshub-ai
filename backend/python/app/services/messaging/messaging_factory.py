@@ -31,6 +31,10 @@ from app.services.messaging.redis_streams.indexing_consumer import (
     IndexingRedisStreamsConsumer,
 )
 from app.services.messaging.redis_streams.producer import RedisStreamsProducer
+from app.services.distributed.interface import (
+    IDistributedLeaseManager,
+    IRetryTracker,
+)
 from app.services.messaging.retry_manager import RetryManager
 from app.services.messaging.scheduling.interface import (
     FairnessKeyExtractor,
@@ -101,7 +105,7 @@ class MessagingFactory:
         logger: Logger,
         redis_config: RedisConfig,
         ttl_seconds: int = RetryManager.DEFAULT_TTL_SECONDS,
-    ) -> RetryManager:
+    ) -> IRetryTracker:
         """Create a RetryManager for persistent failure retry tracking.
 
         This RetryManager stores retry counts in Redis and can be used by both Kafka
@@ -175,9 +179,9 @@ class MessagingFactory:
         config: KafkaConsumerConfig | RedisStreamsConfig | None = None,
         broker_type: MessageBrokerType | None = None,
         consumer_type: ConsumerType = ConsumerType.SIMPLE,
-        retry_manager: RetryManager | None = None,
+        retry_manager: IRetryTracker | None = None,
         producer: IMessagingProducer | None = None,
-        concurrency_manager: DistributedConcurrencyManager | None = None,
+        concurrency_manager: IDistributedLeaseManager | None = None,
         governor: "ResourceGovernor | None" = None,
         backpressure_coordinator: "BackpressureCoordinator | None" = None,
         fair_scheduler_config: FairSchedulerConfig | None = None,

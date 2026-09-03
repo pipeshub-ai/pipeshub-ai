@@ -43,10 +43,7 @@ class TestEnsureTopicsExist:
         mock_redis.xgroup_destroy = AsyncMock()
         mock_redis.close = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(admin._provider, "create_client", return_value=mock_redis):
             await admin.ensure_topics_exist(["stream-a", "stream-b"])
 
         assert mock_redis.xgroup_create.call_count == 2
@@ -59,10 +56,7 @@ class TestEnsureTopicsExist:
         mock_redis.exists = AsyncMock(return_value=1)
         mock_redis.close = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(admin._provider, "create_client", return_value=mock_redis):
             await admin.ensure_topics_exist(["existing-stream"])
 
         mock_redis.xgroup_create.assert_not_called()
@@ -75,10 +69,7 @@ class TestEnsureTopicsExist:
         mock_redis.exists = AsyncMock(side_effect=Exception("Redis error"))
         mock_redis.close = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(admin._provider, "create_client", return_value=mock_redis):
             with pytest.raises(RuntimeError, match="Failed to ensure 1 Redis stream"):
                 await admin.ensure_topics_exist(["bad-stream"])
 
@@ -91,10 +82,7 @@ class TestEnsureTopicsExist:
         mock_redis.xgroup_destroy = AsyncMock()
         mock_redis.close = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(admin._provider, "create_client", return_value=mock_redis):
             await admin.ensure_topics_exist()
 
         # Each laned topic expands into its lane streams, so the admin
@@ -119,10 +107,7 @@ class TestEnsureTopicsExist:
         mock_redis.exists = AsyncMock(side_effect=Exception("Redis down"))
         mock_redis.close = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(admin._provider, "create_client", return_value=mock_redis):
             with pytest.raises(RuntimeError, match="Failed to ensure 1 Redis stream"):
                 await admin.ensure_topics_exist(["stream-a"])
 
@@ -135,10 +120,7 @@ class TestEnsureTopicsExist:
         mock_redis.exists = AsyncMock(return_value=1)
         mock_redis.close = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(admin._provider, "create_client", return_value=mock_redis):
             await admin.ensure_topics_exist(["s"])
 
         mock_redis.close.assert_awaited_once()
@@ -149,20 +131,17 @@ class TestListTopics:
     async def test_returns_only_stream_keys(self, logger, config):
         admin = RedisStreamsAdmin(logger, config)
         mock_redis = AsyncMock()
-        mock_redis.close = AsyncMock()
 
-        async def mock_scan_iter():
+        async def mock_scan_keys(pattern, count=100):
             for key in ["stream-1", "hash-key", "stream-2"]:
                 yield key
-
-        mock_redis.scan_iter = mock_scan_iter
 
         type_results = {"stream-1": "stream", "hash-key": "hash", "stream-2": "stream"}
         mock_redis.type = AsyncMock(side_effect=lambda k: type_results.get(k, "string"))
 
-        with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
-            return_value=mock_redis,
+        with (
+            patch.object(admin._provider, "get_client", return_value=mock_redis),
+            patch.object(admin._provider, "scan_keys", mock_scan_keys),
         ):
             result = await admin.list_topics()
 
@@ -172,38 +151,15 @@ class TestListTopics:
     async def test_returns_empty_when_no_streams(self, logger, config):
         admin = RedisStreamsAdmin(logger, config)
         mock_redis = AsyncMock()
-        mock_redis.close = AsyncMock()
 
-        async def mock_scan_iter():
+        async def mock_scan_keys(pattern, count=100):
             return
             yield
 
-        mock_redis.scan_iter = mock_scan_iter
-
-        with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
-            return_value=mock_redis,
+        with (
+            patch.object(admin._provider, "get_client", return_value=mock_redis),
+            patch.object(admin._provider, "scan_keys", mock_scan_keys),
         ):
             result = await admin.list_topics()
 
         assert result == []
-
-    @pytest.mark.asyncio
-    async def test_closes_redis_after_listing(self, logger, config):
-        admin = RedisStreamsAdmin(logger, config)
-        mock_redis = AsyncMock()
-        mock_redis.close = AsyncMock()
-
-        async def mock_scan_iter():
-            return
-            yield
-
-        mock_redis.scan_iter = mock_scan_iter
-
-        with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
-            return_value=mock_redis,
-        ):
-            await admin.list_topics()
-
-        mock_redis.close.assert_awaited_once()

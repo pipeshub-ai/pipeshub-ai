@@ -81,7 +81,7 @@ describe('ScheduledJobsBackfillMigration', () => {
       );
       await m.run();
 
-      expect(kv.get.calledOnceWith(configPaths.connectorSyncScheduledJobsMigration)).to.equal(true);
+      expect(kv.get.calledOnceWith(configPaths.connectorSyncScheduledJobsMigrationV2)).to.equal(true);
       expect(executeStub.called).to.equal(false);
       expect(scheduler.scheduleJob.called).to.equal(false);
       expect(kv.set.called).to.equal(false);
@@ -161,7 +161,7 @@ describe('ScheduledJobsBackfillMigration', () => {
       // Flag set after success
       expect(
         kv.set.calledOnceWith(
-          configPaths.connectorSyncScheduledJobsMigration,
+          configPaths.connectorSyncScheduledJobsMigrationV2,
           'true',
         ),
       ).to.equal(true);

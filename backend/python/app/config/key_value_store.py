@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Callable, Generic, List, Optional, TypeVar
+from typing import Any, Callable, Generic, List, Optional, TypeVar
 
 T = TypeVar("T")
 
@@ -165,3 +165,33 @@ class KeyValueStore(ABC, Generic[T]):
         This method should be called when the store is no longer needed.
         """
         pass
+
+    # -------------------------------------------------------------------
+    # Cross-process change notification (R15). Concrete with a no-op
+    # default rather than abstract: single-process stores (in-memory) have
+    # nothing to notify, and every existing implementation predates this
+    # method. Backends that DO support cross-process notification (Redis
+    # via Pub/Sub, etcd via its native watch) override all three so
+    # ``ConfigurationService`` never branches on store type or reaches for
+    # a ``client`` property to get there.
+    # -------------------------------------------------------------------
+
+    async def subscribe_changes(self, callback: Callable[[str], None]) -> Optional[Any]:
+        """Subscribe to notifications that some key changed in another process.
+
+        ``callback`` receives the changed key, or the sentinel
+        ``"__CLEAR_ALL__"`` meaning every cached value should be dropped.
+
+        Returns an opaque subscription handle to pass to
+        :meth:`unsubscribe_changes`, or ``None`` if this store has no
+        cross-process notification mechanism (the default).
+        """
+        return None
+
+    async def publish_change(self, key: str) -> None:
+        """Notify other processes that ``key`` changed. No-op by default."""
+        return None
+
+    async def unsubscribe_changes(self, handle: Any) -> None:  # noqa: ANN401
+        """Cancel a subscription returned by :meth:`subscribe_changes`. No-op by default."""
+        return None

@@ -88,37 +88,64 @@ Your application is accessible via the configured ingress:
 
 {{- end }}
 
-{{- if eq (include "pipeshub-ai.sandboxMode" .) "local" }}
+{{- $path := include "pipeshub-ai.sandboxPath" . }}
 
-== CODING SANDBOX: NO ISOLATION ==
+== CODING SANDBOX ==
 
-SANDBOX_MODE=local. Code the model generates runs as a subprocess of the
-application pod, sharing its network and filesystem, bounded only by rlimits.
-That is fine for a single-tenant development cluster and is NOT fine for a
-shared or internet-reachable one.
+{{- if eq $path "local" }}
 
-For container isolation:
-  --set config.sandboxMode=docker --set sandbox.dind.enabled=true
+NO ISOLATION. Code the model generates runs as a subprocess of the application
+pod, sharing its network and filesystem, bounded only by rlimits. Fine for a
+single-tenant development cluster; NOT fine for a shared or internet-reachable
+one.
 
-{{- else if .Values.sandbox.dind.enabled }}
+  For container isolation:
+    --set config.sandboxMode=docker --set sandbox.dind.enabled=true
 
-== CODING SANDBOX: DOCKER-IN-DOCKER ==
+{{- else if eq $path "e2b" }}
 
-`run_code` executes in throwaway containers via the privileged `dind` sidecar.
-Two things to know:
+run_code executes OFF-CLUSTER on E2B. Nothing runs on this pod. Set E2B_API_KEY
+in the application's configuration, or run_code will fail at provision.
 
-  * The sidecar is PRIVILEGED and can escape to the node. Pod Security
-    Admission `restricted` and OpenShift's default SCC will reject this pod;
-    label the namespace `privileged`/`baseline` or grant a matching SCC.
-  * Anything running in this pod can reach the daemon on localhost:{{ .Values.sandbox.dind.port }}
+{{- else if eq $path "dind" }}
+
+run_code executes in throwaway containers on the `dind` sidecar
+({{ include "pipeshub-ai.dockerHost" . }}).
+
+{{- else if eq $path "external" }}
+
+run_code executes on the Docker daemon at {{ .Values.config.dockerHost }}.
+That daemon runs untrusted, model-generated code: it should be dedicated to
+this purpose and reachable only by this deployment.
+
+{{- else }}
+
+run_code executes on the Docker daemon reached through the socket you mounted.
+A mounted host socket is root on the node for anything that can reach it.
+
+{{- end }}
+
+{{- if .Values.sandbox.dind.enabled }}
+
+-- The `dind` sidecar is PRIVILEGED --
+
+  * It can escape to the node. Pod Security Admission `restricted` and
+    OpenShift's default SCC will reject this pod; label the namespace
+    `privileged`/`baseline` or grant a matching SCC.
+  * Anything in this pod can reach the daemon on localhost:{{ .Values.sandbox.dind.port }}
     and therefore has root on the node. Do not add untrusted sidecars here.
-
 {{- if not .Values.sandbox.dind.storage.existingClaim }}
   * /var/lib/docker is an emptyDir, so {{ .Values.config.sandboxDockerImage }}
     is re-pulled after every pod restart. Set
     sandbox.dind.storage.existingClaim to keep the cache.
 {{- end }}
+{{- if ne $path "dind" }}
 
+  NOTE: run_code is NOT using this sidecar (it uses the "{{ $path }}" path
+  above), so you are running a privileged container for nothing. Either
+  --set sandbox.dind.enabled=false, or point run_code at it by clearing
+  config.dockerHost and setting config.sandboxMode=docker.
+{{- end }}
 {{- end }}
 
 For more information, visit: https://pipeshub.com

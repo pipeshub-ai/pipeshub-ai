@@ -207,7 +207,6 @@ export function buildRedisBrokerConfig(
     password: redisConfig.password,
     db: redisConfig.db,
     maxLen: env.redisStreamsMaxLen,
-    keyPrefix: env.redisStreamsKeyPrefix,
     clientId: options?.clientId,
     groupId: options?.groupId,
   };

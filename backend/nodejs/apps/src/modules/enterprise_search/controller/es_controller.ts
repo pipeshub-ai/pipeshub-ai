@@ -68,6 +68,7 @@ import {
   buildUserQueryMessage,
   extractModelInfo,
   formatPreviousConversations,
+  StageTimer,
   getPaginationParams,
   sortMessages,
   attachPopulatedCitations,
@@ -780,6 +781,7 @@ export const streamChat =
   async (req: AuthenticatedUserRequest, res: Response) => {
     const requestId = req.context?.requestId;
     const startTime = Date.now();
+    const timer = new StageTimer();
     const userId = req.user?.userId;
     const orgId = req.user?.orgId;
 
@@ -872,6 +874,7 @@ export const streamChat =
             })}\n\n`,
       );
       (res as any).flush?.();
+      timer.mark('conversation_created');
 
       const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
@@ -912,6 +915,7 @@ export const streamChat =
       const stream = await startAIStream(aiCommandOptions, 'Chat Stream', {
         requestId,
       });
+      timer.mark('ai_stream_open');
 
       if (!stream) {
         throw new Error('Failed to get stream from AI service');
@@ -920,6 +924,7 @@ export const streamChat =
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
       let buffer = '';
+      let firstAiChunkSeen = false;
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
 
@@ -931,6 +936,11 @@ export const streamChat =
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
+        if (!firstAiChunkSeen) {
+          firstAiChunkSeen = true;
+          timer.mark('ai_first_byte');
+          timer.emit('chat stream (node)', { requestId, agentMode });
+        }
         const chunkStr = chunk.toString();
         buffer += chunkStr;
 

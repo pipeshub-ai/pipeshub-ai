@@ -101,13 +101,9 @@ spec:
               value: {{ include "pipeshub-ai.sandboxMode" . | quote }}
             - name: SANDBOX_DOCKER_IMAGE
               value: {{ .Values.config.sandboxDockerImage | quote }}
-            {{- $dockerHost := .Values.config.dockerHost }}
-            {{- if and (not $dockerHost) .Values.sandbox.dind.enabled }}
-            {{- $dockerHost = printf "tcp://localhost:%v" .Values.sandbox.dind.port }}
-            {{- end }}
-            {{- if $dockerHost }}
+            {{- with (include "pipeshub-ai.dockerHost" .) }}
             - name: DOCKER_HOST
-              value: {{ $dockerHost | quote }}
+              value: {{ . | quote }}
             {{- end }}
             # Resource-governor tuning. Every one defaults to "" so the
             # governor derives it from the pod's CPU/memory limits; set one
@@ -230,17 +226,31 @@ spec:
             # Redis config
             {{- /*
               Connection target:
-                - standalone or replication (no sentinel): use the Bitnami "<release>-redis-master" Service.
-                  This is a stable Service that the chart updates to follow the current master pod, so the
-                  app does not need Sentinel awareness.
+                - standalone or replication (no sentinel), redis.external.enabled=false (default):
+                  use the Bitnami "<release>-redis-master" Service. This is a stable Service that the
+                  chart updates to follow the current master pod, so the app does not need Sentinel
+                  awareness.
                 - sentinel enabled: the app MUST use a Sentinel-aware client. The chart still exposes the
                   master Service for compatibility, but failover updates may lag and stale connections are
                   possible. Enable Sentinel only if the app is migrated to a Sentinel client.
+                - redis.external.enabled=true: point at redis.external.clusterEndpoints (a self-hosted
+                  Redis Cluster or AWS MemoryDB, R21/R22) instead of the bundled subchart -- pair with
+                  redis.mode=cluster and --set redis.enabled=false to skip deploying the subchart
+                  entirely (wired via the `condition: redis.enabled` dependency in Chart.yaml).
             */}}
+            {{- if .Values.redis.external.enabled }}
+            - name: REDIS_HOST
+              value: ""
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_CLUSTER_ENDPOINTS
+              value: {{ .Values.redis.external.clusterEndpoints | quote }}
+            {{- else }}
             - name: REDIS_HOST
               value: "{{ .Release.Name }}-redis-master"
             - name: REDIS_PORT
               value: "6379"
+            {{- end }}
             {{- if .Values.redis.auth.enabled }}
             - name: REDIS_PASSWORD
               valueFrom:
@@ -255,6 +265,26 @@ spec:
             - name: REDIS_URL
               value: "redis://{{ .Release.Name }}-redis-master:6379"
             {{- end }}
+            - name: REDIS_MODE
+              value: {{ .Values.redis.mode | default "standalone" | quote }}
+            - name: REDIS_KEY_NAMESPACE
+              value: {{ .Values.redis.keyNamespace | default "" | quote }}
+            - name: REDIS_CLUSTER_SCALE_READS
+              value: {{ .Values.redis.clusterScaleReads | default "master" | quote }}
+            - name: REDIS_PROVIDER_MODULE
+              value: {{ .Values.redis.providerModule | default "" | quote }}
+            - name: REDIS_TLS_ENABLED
+              value: {{ .Values.redis.clientTls.enabled | default false | quote }}
+            - name: REDIS_TLS_REJECT_UNAUTHORIZED
+              value: {{ .Values.redis.clientTls.rejectUnauthorized | default true | quote }}
+            - name: REDIS_TLS_CA_PATH
+              value: {{ .Values.redis.clientTls.caPath | default "" | quote }}
+            # Celery has no Redis Cluster transport; required when redis.mode
+            # is not "standalone" (fails fast at startup otherwise).
+            - name: CELERY_BROKER_URL
+              value: {{ .Values.celery.brokerUrl | default "" | quote }}
+            - name: CELERY_RESULT_BACKEND
+              value: {{ .Values.celery.resultBackend | default "" | quote }}
             
             # MongoDB config
             {{- $isReplicaSet := eq (.Values.mongodb.architecture | default "standalone") "replicaset" }}

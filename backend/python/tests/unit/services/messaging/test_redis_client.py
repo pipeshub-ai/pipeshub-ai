@@ -35,7 +35,7 @@ class TestPerLoopAffinity:
     @pytest.mark.asyncio
     async def test_same_loop_reuses_one_client(self, logger) -> None:
         registry = _registry(logger)
-        with patch.object(RedisClientRegistry, "_build_client", lambda self: AsyncMock()):
+        with patch.object(registry._provider, "create_client", lambda *a, **k: AsyncMock()):
             assert registry.client() is registry.client()
 
     def test_separate_threads_get_separate_clients(self, logger) -> None:
@@ -48,7 +48,7 @@ class TestPerLoopAffinity:
 
             asyncio.run(main())
 
-        with patch.object(RedisClientRegistry, "_build_client", lambda self: AsyncMock()):
+        with patch.object(registry._provider, "create_client", lambda *a, **k: AsyncMock()):
             threads = [threading.Thread(target=run) for _ in range(2)]
             for t in threads:
                 t.start()
@@ -65,7 +65,7 @@ class TestPerLoopAffinity:
         registry = _registry(logger)
         clients: list[object] = []
 
-        with patch.object(RedisClientRegistry, "_build_client", lambda self: AsyncMock()):
+        with patch.object(registry._provider, "create_client", lambda *a, **k: AsyncMock()):
             async def main() -> None:
                 clients.append(registry.client())
 
@@ -103,10 +103,10 @@ class TestBoundedPool:
         production: far more concurrent commands than connections."""
         registry = _registry(logger, max_connections=4)
         with patch.object(
-            RedisClientRegistry,
-            "_build_client",
-            lambda self: fakeredis_aioredis.FakeRedis(
-                decode_responses=True, max_connections=self._max_connections
+            registry._provider,
+            "create_client",
+            lambda *a, **k: fakeredis_aioredis.FakeRedis(
+                decode_responses=True, max_connections=registry.max_connections
             ),
         ):
             client = registry.client()
@@ -124,7 +124,7 @@ class TestCleanup:
     async def test_aclose_closes_every_client_and_clears_the_map(self, logger) -> None:
         registry = _registry(logger)
         client = AsyncMock()
-        with patch.object(RedisClientRegistry, "_build_client", lambda self: client):
+        with patch.object(registry._provider, "create_client", lambda *a, **k: client):
             registry.client()
             await registry.aclose()
 

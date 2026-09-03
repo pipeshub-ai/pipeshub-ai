@@ -96,6 +96,10 @@ import { createSkillsRouter } from './modules/skills/routes/skills.routes';
 import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
 import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
+import {
+  RedisConnectionProviderFactory,
+  closeAllRedisProviders,
+} from './libs/services/redis/connectionProviderFactory';
 
 const loggerConfig = {
   service: 'Application',
@@ -136,6 +140,14 @@ export class Application {
     try {
       // Initialize Logger
       this.logger = new Logger(loggerConfig);
+
+      // Import REDIS_PROVIDER_MODULE (R10) before any container -- and
+      // therefore any RedisService/RedisDistributedKeyValueStore/streams
+      // client -- resolves REDIS_MODE against the provider registry. An EE
+      // `memorydb` module that self-registers on import is otherwise never
+      // loaded, since nothing else in this process imports it.
+      await RedisConnectionProviderFactory.ensureProviderModuleLoaded();
+
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();
       const appConfig = await loadAppConfig();
@@ -709,6 +721,12 @@ export class Application {
       await DesktopProxyContainer.dispose();
       await ApiDocsContainer.dispose();
       await OAuthProviderContainer.dispose();
+
+      // Last: the containers above still hand back Redis-backed services
+      // while they dispose. Nothing else closes these -- the provider owns
+      // every client it handed out (R11), and on cluster that is a socket to
+      // every node.
+      await closeAllRedisProviders();
 
       this.logger.info('Application stopped successfully');
     } catch (error) {

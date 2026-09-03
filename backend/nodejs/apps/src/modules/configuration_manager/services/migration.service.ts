@@ -135,7 +135,7 @@ export class MigrationService {
             'Marking connector sync schedule migration as done without backfill.',
         );
         await this.keyValueStoreService.set(
-          configPaths.connectorSyncScheduledJobsMigration,
+          configPaths.connectorSyncScheduledJobsMigrationV2,
           'true',
         );
         return;

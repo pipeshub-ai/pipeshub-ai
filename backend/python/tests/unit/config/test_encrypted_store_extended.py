@@ -143,20 +143,15 @@ class TestCancelWatch:
 
 
 class TestPublishCacheInvalidation:
-    @pytest.mark.asyncio
-    async def test_with_method(self):
-        ekv, mock_store, _ = _build_encrypted_store()
-        mock_store.publish_cache_invalidation = AsyncMock()
-        await ekv.publish_cache_invalidation("/key")
-        mock_store.publish_cache_invalidation.assert_awaited_once_with("/key")
+    """publish_cache_invalidation is a deprecated alias (R15) that now always
+    delegates to publish_change -> store.publish_change; there is no more
+    hasattr-based no-op branch to test."""
 
     @pytest.mark.asyncio
-    async def test_without_method(self):
+    async def test_delegates_to_publish_change(self):
         ekv, mock_store, _ = _build_encrypted_store()
-        # Remove the method
-        del mock_store.publish_cache_invalidation
-        # Should not raise
         await ekv.publish_cache_invalidation("/key")
+        mock_store.publish_change.assert_awaited_once_with("/key")
 
 
 # ============================================================================
@@ -165,25 +160,19 @@ class TestPublishCacheInvalidation:
 
 
 class TestSubscribeCacheInvalidation:
+    """subscribe_cache_invalidation is a deprecated alias (R15) that now
+    always delegates to subscribe_changes -> store.subscribe_changes."""
+
     @pytest.mark.asyncio
-    async def test_with_method(self):
+    async def test_delegates_to_subscribe_changes(self):
         ekv, mock_store, _ = _build_encrypted_store()
-        mock_task = AsyncMock()
-        mock_store.subscribe_cache_invalidation = AsyncMock(return_value=mock_task)
+        mock_store.subscribe_changes = AsyncMock(return_value="handle-1")
 
         callback = MagicMock()
         result = await ekv.subscribe_cache_invalidation(callback)
-        assert result == mock_task
 
-    @pytest.mark.asyncio
-    async def test_without_method(self):
-        ekv, mock_store, _ = _build_encrypted_store()
-        del mock_store.subscribe_cache_invalidation
-
-        callback = MagicMock()
-        result = await ekv.subscribe_cache_invalidation(callback)
-        # Should return a no-op task
-        assert result is not None
+        mock_store.subscribe_changes.assert_awaited_once_with(callback)
+        assert result == "handle-1"
 
 
 # ============================================================================

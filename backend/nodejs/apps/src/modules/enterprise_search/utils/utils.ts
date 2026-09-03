@@ -2195,3 +2195,33 @@ export const handleRegenerationError = async (
     );
   }
 };
+
+/**
+ * Monotonic stage timings for one streaming chat request, emitted as a single
+ * log line. Pairs with the Python `StageTimer` so the Node and Python halves of
+ * a request can be read side by side.
+ */
+export class StageTimer {
+  private readonly t0 = process.hrtime.bigint();
+  private last = this.t0;
+  private readonly marks: Array<[string, number]> = [];
+  private emitted = false;
+
+  mark(stage: string): void {
+    const now = process.hrtime.bigint();
+    this.marks.push([stage, Number(now - this.last) / 1e6]);
+    this.last = now;
+  }
+
+  get totalMs(): number {
+    return Number(process.hrtime.bigint() - this.t0) / 1e6;
+  }
+
+  /** Safe to call more than once; only the first call logs. */
+  emit(label: string, extra: Record<string, unknown> = {}): void {
+    if (this.emitted) return;
+    this.emitted = true;
+    const stages = this.marks.map(([n, ms]) => `${n}=${ms.toFixed(0)}ms`).join(' ');
+    logger.info(`⏱ ${label} total=${this.totalMs.toFixed(0)}ms | ${stages}`, extra);
+  }
+}
