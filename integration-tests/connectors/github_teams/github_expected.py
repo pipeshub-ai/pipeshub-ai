@@ -444,6 +444,31 @@ def _item_type(issue_type: Any) -> Optional[str]:
 _COLLABORATOR_ROLE_KEYS = ("admin", "maintain", "push", "triage", "pull")
 
 
+# GitHub collaborator role -> the PermissionType stored on the edge, mirroring
+# _highest_role_from_collaborator_permissions + _permission_type_from_role.
+_ROLE_TO_PERMISSION = {
+    "admin": "OWNER",
+    "maintain": "WRITER",
+    "push": "WRITER",
+    "triage": "READER",
+    "pull": "READER",
+}
+
+
+def expected_role_for_collaborator(collaborator: dict[str, Any]) -> Optional[str]:
+    """The ``role`` value the permission edge should carry, or None for no grant.
+
+    The connector reads GitHub's permission booleans highest-privilege-first. A
+    collaborator holding a custom repository role has none of them set, maps to no
+    PermissionType, and correctly receives no edge at all.
+    """
+    perms = collaborator.get("permissions") or {}
+    for key in _COLLABORATOR_ROLE_KEYS:
+        if perms.get(key):
+            return _ROLE_TO_PERMISSION[key]
+    return None
+
+
 def expected_repo_grant_emails(
     collaborators: list[dict[str, Any]], emails: dict[str, str]
 ) -> set[str]:

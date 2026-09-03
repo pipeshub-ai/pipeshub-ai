@@ -40,6 +40,7 @@ from connectors.github_teams.constants import (  # type: ignore[import-not-found
     ENV_TOKEN,
     GH_BLOCKS_ISSUE_NUMBER,
     GH_BLOCKS_PR_NUMBER,
+    GH_INCR_PR_NUMBER,
     GH_IT_RUN_ID,
     GH_SYNC_WAIT_SEC,
 )
@@ -62,6 +63,7 @@ from connectors.github_teams.github_test_utils import (  # type: ignore[import-n
     list_filter,
     reap_own_artifacts,
     resolve_app_user_emails,
+    sweep_pinned_pr_comments,
     sweep_stale_artifacts,
     sync_filters,
     teardown_connector,
@@ -216,6 +218,9 @@ async def github_connector(
     await sweep_stale_artifacts(
         github_rest, org, mutation_name, mutation["default_branch"],
     )
+    # The pinned incremental PR is never deleted, so comments stranded on it by a run
+    # that died before its cleanup would accumulate one per crashed run.
+    await sweep_pinned_pr_comments(github_rest, org, mutation_name, GH_INCR_PR_NUMBER)
 
     # ---------- SETUP: connector ----------
 

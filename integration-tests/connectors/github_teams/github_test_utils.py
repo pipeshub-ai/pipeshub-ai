@@ -27,6 +27,7 @@ import base64
 import logging
 import os
 import random
+import re
 import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Callable, Optional
@@ -60,6 +61,14 @@ _MAX_ATTEMPTS = 3
 _BASE_DELAY_SEC = 1.0
 
 _BLOB_MODE = "100644"
+
+# Attachment markup, matching what clean_github_content recognises.
+_HTML_IMG_RE = re.compile(
+    r"""<img\s+[^>]*?src=["'](.*?)["'][^>]*?/?>""", re.IGNORECASE | re.DOTALL,
+)
+_MD_IMAGE_RE = re.compile(r"!\[(.*?)\]\((.*?)\)")
+_MD_LINK_RE = re.compile(r"\[(.*?)\]\((.*?)\)")
+_ATTACHMENT_URL_PREFIX = "https://github.com/user-attachments/"
 
 
 # ---------------------------------------------------------------------------
@@ -329,28 +338,24 @@ async def discover_non_image_attachment_issue(
 
 
 def _first_non_image_attachment_url(body: str) -> Optional[str]:
-    """A GitHub user-attachments URL that is not rendered as an image.
+    """A GitHub user-attachments URL that becomes a FileRecord, or None.
 
-    Markdown image syntax is ``![alt](url)``; a plain link is ``[text](url)``. The
-    leading ``!`` is the whole distinction, so scan for links whose preceding
-    character is not ``!``.
+    Mirrors ``CommentsHelper.clean_github_content``'s order of operations: it strips
+    the two *image* forms first — an HTML ``<img src=...>`` tag and a markdown
+    ``![alt](url)`` — because both are inlined as base64 and deliberately produce no
+    FileRecord. Only a plain markdown link ``[text](url)`` yields one.
+
+    Handling the HTML form matters: GitHub's web UI pastes images as ``<img>`` tags,
+    not markdown, so scanning for a leading ``!`` alone silently mistakes a pasted
+    screenshot for an attachment.
     """
-    marker = "https://github.com/user-attachments/"
-    idx = 0
-    while True:
-        found = body.find(marker, idx)
-        if found == -1:
-            return None
-        idx = found + len(marker)
-        open_paren = body.rfind("(", 0, found)
-        if open_paren == -1:
-            continue
-        close_bracket = body.rfind("]", 0, open_paren)
-        if close_bracket > 0 and body[close_bracket - 1] == "!":
-            continue  # image — inlined, no FileRecord
-        end = body.find(")", found)
-        if end != -1:
-            return body[found:end].strip()
+    stripped = _HTML_IMG_RE.sub("", body)
+    stripped = _MD_IMAGE_RE.sub("", stripped)
+    for _text, url in _MD_LINK_RE.findall(stripped):
+        url = url.strip()
+        if url.startswith(_ATTACHMENT_URL_PREFIX):
+            return url
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +389,23 @@ async def add_comment(
         rest.post_json, f"/repos/{owner}/{repo}/issues/{number}/comments", {"body": body},
         context=f"add_comment {owner}/{repo}#{number}", retry_server_errors=False,
     )
+
+
+async def delete_issue_comment(
+    rest: GitHubAsyncRESTClient, owner: str, repo: str, comment_id: int
+) -> None:
+    """Remove a comment this run added to a long-lived fixture.
+
+    The pinned incremental PR is never deleted, so anything a run adds to it would
+    otherwise accumulate one item per run forever.
+    """
+    try:
+        await gh_call_with_retry(
+            rest.request, "DELETE", f"/repos/{owner}/{repo}/issues/comments/{comment_id}",
+            context=f"delete_issue_comment {owner}/{repo}#{comment_id}",
+        )
+    except Exception as e:
+        logger.warning("Could not delete comment %s on %s/%s: %s", comment_id, owner, repo, e)
 
 
 async def add_sub_issue(
@@ -536,6 +558,7 @@ async def read_file(
 async def commit_changes(
     rest: GitHubAsyncRESTClient, owner: str, repo: str, branch: str,
     changes: list[FileChange], message: str,
+    allow_paths: tuple[str, ...] = (),
 ) -> str:
     """Apply every change as ONE commit on ``branch``; returns the new commit sha.
 
@@ -549,10 +572,13 @@ async def commit_changes(
     would corrupt another run's fixtures.
     """
     for change in changes:
-        if not owns_path(change.path):
+        # ``allow_paths`` exists for the pinned PR fixture, whose single file lives on
+        # its own branch and is rewritten (never accumulated) by each run.
+        if not owns_path(change.path) and change.path not in allow_paths:
             raise AssertionError(
                 f"refusing to commit {change.path!r}: outside this run's namespace "
-                f"({GH_IT_PATH_ROOT}/{GH_IT_RUN_ID}/). Concurrent runs share this branch."
+                f"({GH_IT_PATH_ROOT}/{GH_IT_RUN_ID}/) and not in allow_paths. "
+                "Concurrent runs share this branch."
             )
 
     base_commit_sha = await get_branch_head(rest, owner, repo, branch)
@@ -633,6 +659,45 @@ async def reap_own_artifacts(
                 await delete_issue(rest, owner, repo, issue["number"])
     except Exception as e:
         logger.warning("TEARDOWN: could not close artifacts for run %s: %s", GH_IT_RUN_ID, e)
+
+
+# Marker carried by every comment TC-INCR-PR-001 leaves on the pinned PR, so the
+# sweep can recognise its own leftovers without touching a human's comment.
+PINNED_PR_COMMENT_MARKER = "TC-INCR-PR-001 run"
+
+
+async def sweep_pinned_pr_comments(
+    rest: GitHubAsyncRESTClient, owner: str, repo: str, number: int,
+) -> None:
+    """Delete IT comments stranded on the long-lived PR by runs that died.
+
+    The test removes its own comment in ``finally``, but a run killed mid-flight (a
+    dropped network, a cancelled CI job) never gets there. Because that PR is never
+    deleted, those leftovers would otherwise accumulate one per crashed run forever.
+
+    Age-gated like the artifact sweep so a concurrently running leg's comment is left
+    alone, and matched on the marker so a human comment is never touched.
+    """
+    cutoff = time.time() - GH_IT_STALE_ARTIFACT_AGE_SEC
+    try:
+        comments = await gh_call_with_retry(
+            rest.get_json, f"/repos/{owner}/{repo}/issues/{number}/comments",
+            params={"per_page": 100},
+            context=f"list pinned PR comments {owner}/{repo}#{number}",
+        ) or []
+    except Exception as e:
+        logger.warning("SETUP: could not list comments on pinned PR #%s: %s", number, e)
+        return
+
+    for comment in comments:
+        if PINNED_PR_COMMENT_MARKER not in (comment.get("body") or ""):
+            continue
+        created = _parse_iso8601(comment.get("created_at") or "")
+        if created is None or created >= cutoff:
+            continue
+        await delete_issue_comment(rest, owner, repo, comment["id"])
+        logger.info("SETUP: reaped stranded comment %s on pinned PR #%s",
+                    comment["id"], number)
 
 
 async def sweep_stale_artifacts(

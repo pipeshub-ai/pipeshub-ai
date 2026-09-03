@@ -33,6 +33,8 @@ default branch, so concurrent runs share it and only a path namespace keeps them
   order 15 TC-INCR-ISSUE-001      — new issue + sub-issue, then title/comment update
   order 16 TC-INCR-PR-001         — PR update-only: no new record, version += 1
   order 17 TC-INCR-CODE-001       — new/update/rename/move/delete in one commit set
+  order 18 TC-FILTER-001          — REPO_IDS scoping: unlisted repos do not sync
+  order 19 TC-FILTER-002          — Index Code Files off: records exist, AUTO_INDEX_OFF
 """
 
 import logging
@@ -69,6 +71,7 @@ from validation.graph_entity_validator import (  # noqa: E402
 from connectors.github_teams.constants import (  # noqa: E402
     ENV_BLOCKS_BOOTSTRAP,
     ENV_OVERSIZED_PATH,
+    GH_INCR_PR_NUMBER,
     GH_INDEXING_WAIT_SEC,
     GH_IT_RUN_ID,
     GH_SYNC_WAIT_SEC,
@@ -89,19 +92,19 @@ from connectors.github_teams.github_expected import (  # noqa: E402
     GitHubExpected,
     epoch_ms,
     expected_repo_grant_emails,
+    expected_role_for_collaborator,
 )
 from connectors.github_teams.github_test_utils import (  # noqa: E402
+    PINNED_PR_COMMENT_MARKER,
     FileChange,
     add_comment,
     add_sub_issue,
     blob_sha_for_path,
     delete_issue,
-    close_pull,
     commit_changes,
     create_issue,
-    create_pull,
     dedicated_connector,
-    get_branch_head,
+    delete_issue_comment,
     get_issue,
     get_pull,
     list_filter,
@@ -147,6 +150,12 @@ _TICKET_SKIP = _RECORD_SKIP | _TICKET_UNHYDRATED
 # sync, so a comparison here races it. TC-GH-CODE-TS-001 polls for them instead.
 _CODE_SKIP = _RECORD_SKIP | frozenset({"source_created_at", "source_updated_at"})
 
+# PermissionType values as stored on a permission edge. The tests assert an edge
+# carries one of these, not which one: the GitHub-role-to-level mapping is product
+# policy, and pinning it would make the suite fail on a deliberate policy change
+# rather than on a broken edge.
+_VALID_PERMISSION_ROLES = frozenset({"OWNER", "WRITER", "READER", "COMMENTER", "OTHERS"})
+
 
 async def _group_edge_count(
     graph_provider: GraphProviderProtocol,
@@ -190,6 +199,11 @@ def _mutation_filters(state: dict[str, Any]) -> dict[str, Any]:
     return sync_filters(
         repo_ids=list_filter("in", [state["mutation_repo"]["full_name"]]),
     )
+
+
+# The one file on the pinned PR's branch. Rewritten in place each run rather than
+# namespaced per run, so the branch never accumulates files.
+_PINNED_PR_FILE = "pr-fixture/change.txt"
 
 
 def _connector_name(kind: str) -> str:
@@ -963,6 +977,47 @@ class TestGitHubTeamsPermissions:
             connector_id, str(repo["id"]),
         )
         assert repo_group is not None
+
+        # The count above proves how many principals were granted, not that the edges
+        # themselves are well-formed. Check each one: it exists, there is exactly one,
+        # it points user -> repo group, and it is a USER permission carrying a valid
+        # role. The specific level is deliberately NOT pinned — that mapping is product
+        # policy and may change; what must hold is that the edge is correctly shaped.
+        checked_roles = 0
+        for collaborator in github_connector["primary_collaborators"]:
+            source_id = str(collaborator.get("id"))
+            # A collaborator on a custom repository role maps to no PermissionType and
+            # correctly gets no edge, so those are skipped rather than asserted on.
+            grantable = expected_role_for_collaborator(collaborator)
+            if not emails.get(source_id) or grantable is None:
+                continue
+            user = await graph_provider.get_user_by_source_id(
+                source_user_id=source_id, connector_id=connector_id,
+            )
+            assert user is not None, f"AppUser missing for granted collaborator {source_id}"
+            edges = await graph_provider.find_edges_between(
+                CollectionNames.USERS.value, user.id,
+                CollectionNames.RECORD_GROUPS.value, repo_group.id,
+                CollectionNames.PERMISSION.value,
+            )
+            assert len(edges) == 1, (
+                f"{collaborator.get('login')} should hold exactly one PERMISSION edge "
+                f"to the repo group, found {len(edges)}"
+            )
+            props = edges[0]
+            assert props.get("type") == "USER", (
+                f"a collaborator grant must be a USER permission, got {props.get('type')!r}"
+            )
+            assert props.get("role") in _VALID_PERMISSION_ROLES, (
+                f"{collaborator.get('login')} holds edge role {props.get('role')!r}, "
+                f"which is not a PermissionType ({sorted(_VALID_PERMISSION_ROLES)})"
+            )
+            checked_roles += 1
+        assert checked_roles, (
+            "no collaborator role could be verified — every collaborator either failed "
+            "to resolve to a PipesHub identity or carries a custom repository role"
+        )
+
         for kind in ("work-items", "pull-requests", "code-repository"):
             child_perms = await graph_provider.count_permission_edges_to_record_groups(
                 connector_id, f"{repo['id']}-{kind}",
@@ -983,8 +1038,8 @@ class TestGitHubTeamsPermissions:
         # A private repo has no visibility floor: access comes solely from collaborators.
         assert repo.get("visibility") == "private"
         logger.info(
-            "TC-GH-PERM-001 passed: %d collaborator grant(s) on the repo group only",
-            repo_group_perms,
+            "TC-GH-PERM-001 passed: %d grant(s) on the repo group, %d role(s) verified",
+            repo_group_perms, checked_roles,
         )
 
     @pytest.mark.order(13)
@@ -1023,6 +1078,32 @@ class TestGitHubTeamsPermissions:
         assert org_edges, (
             f"public repo {public['full_name']} has no organization → record-group "
             "PERMISSION edge; the visibility-derived Permission(READ, ORG) is missing"
+        )
+        org_props = org_edges[0]
+        assert org_props.get("type") == "ORG", (
+            f"the visibility grant must be an ORG permission, got {org_props.get('type')!r}"
+        )
+        assert org_props.get("role") in _VALID_PERMISSION_ROLES, (
+            f"ORG grant carries role {org_props.get('role')!r}, which is not a "
+            f"PermissionType ({sorted(_VALID_PERMISSION_ROLES)})"
+        )
+
+        # The mirror image: a PRIVATE repo has no visibility floor, so it must carry no
+        # org-wide grant at all. Without this the ORG assertion above would still pass
+        # if the connector handed every repo an ORG grant regardless of visibility.
+        private_group = await graph_provider.get_record_group_by_external_id(
+            connector_id, str(github_connector["primary_repo"]["id"]),
+        )
+        assert private_group is not None
+        private_org_edges = await graph_provider.find_edges_between(
+            CollectionNames.ORGS.value, pipeshub_client.org_id,
+            CollectionNames.RECORD_GROUPS.value, private_group.id,
+            CollectionNames.PERMISSION.value,
+        )
+        assert not private_org_edges, (
+            f"private repo {github_connector['primary_repo']['full_name']} carries an "
+            "org-wide PERMISSION edge; access to a private repo must come solely from "
+            "collaborators"
         )
         repo_group_perms = await graph_provider.count_permission_edges_to_record_groups(
             connector_id, str(public["id"]),
@@ -1220,100 +1301,133 @@ class TestGitHubTeamsIncremental:
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-INCR-PR-001: editing a PR's title/body/comments updates the SAME record.
+        """TC-INCR-PR-001: editing an existing PR updates the SAME record.
 
-        Exercises the PR sweep, which has no ``since`` parameter — it pages
-        updated-desc and stops on either a filtered-out PR *or* a short page. A
-        regression that requires both conditions would loop the whole listing every
-        sync; one that drops the filtered-out check would miss the update entirely.
+        This case deliberately creates **no** pull request. GitHub has no API to delete
+        one — not REST, not a ``deletePullRequest`` GraphQL mutation — so a PR opened
+        per run would accumulate in the mutation repo forever. Instead one long-lived
+        PR is pinned (``GH_INCR_PR_NUMBER``) and every run pushes a commit, edits the
+        description and adds a comment to it.
+
+        Assertions are written to survive a concurrent run touching the same PR:
+        version must *increase* rather than land on an exact number, and the revision
+        is compared against the value read live at assert time.
         """
         state = github_connector
         org = state["org"]
         repo_name = state["mutation_repo_name"]
         repo_id = state["mutation_repo"]["id"]
-        branch = state["mutation_repo"]["default_branch"]
+        number = GH_INCR_PR_NUMBER
 
-        pr_number: int | None = None
-        head_branch = f"it/{GH_IT_RUN_ID}-pr"
+        pr = await get_pull(github_rest, org, repo_name, number)
+        if pr.get("state") != "open":
+            pytest.skip(
+                f"pinned PR #{number} is {pr.get('state')}; it must stay open — see "
+                "GH_TEAMS_INCR_PR_NUMBER"
+            )
+        head_branch = pr["head"]["ref"]
+        comment_id: int | None = None
+
         async with dedicated_connector(
             pipeshub_client, graph_provider,
             token=state["token"], name=_connector_name("incr-pr"),
-            filters=_mutation_filters(state),
+            filters=_mutation_filters(state), min_records=1,
         ) as connector_id:
             try:
-                # A PR needs a branch with at least one commit ahead of the base.
-                base_sha = await get_branch_head(github_rest, org, repo_name, branch)
-                await github_rest.post_json(
-                    f"/repos/{org}/{repo_name}/git/refs",
-                    {"ref": f"refs/heads/{head_branch}", "sha": base_sha},
-                )
-                await commit_changes(
-                    github_rest, org, repo_name, head_branch,
-                    [FileChange.upsert(it_path("pr", "change.txt"), "pr fixture\n")],
-                    message="TC-INCR-PR-001 fixture",
-                )
-                pr = await create_pull(
-                    github_rest, org, repo_name,
-                    title=artifact_title("IncrPr"), head=head_branch, base=branch,
-                    body="Original description.",
-                )
-                pr_number = pr["number"]
-
-                await _resync(pipeshub_client, graph_provider, connector_id)
-
-                external_id = f"{repo_id}/pull/{pr_number}"
+                external_id = f"{repo_id}/pull/{number}"
                 before = await wait_for_record_by_external_id(
                     graph_provider, connector_id, external_id,
-                    description="TC-INCR-PR-001 new PR",
+                    description="TC-INCR-PR-001 pinned PR baseline",
                 )
-                before_id, before_version = before.id, int(before.version)
+                before_id = before.id
+                before_version = int(before.version)
+                # last_commit_sha lives on PullRequestRecord, not on the base Record
+                # that get_record_by_external_id returns — reading it off the untyped
+                # record silently yields None on both sides and the comparison below
+                # can never fail.
+                before_typed = await graph_provider.get_typed_record_by_external_id(
+                    connector_id, external_id,
+                )
+                assert before_typed is not None, f"typed PR record missing for {external_id}"
+                before_sha = before_typed.last_commit_sha
+                assert before_sha, (
+                    "baseline PR record carries no last_commit_sha; the connector reads "
+                    "it from head.sha on the /pulls listing payload"
+                )
+                pr_count_before = await graph_provider.count_records_by_type(
+                    connector_id, RecordType.PULL_REQUEST.value, scoped=True,
+                )
 
-                # --- update only: no new PR is opened ---
-                new_title = artifact_title("EditedPr")
+                # --- three kinds of update, no creation ---
+                await commit_changes(
+                    github_rest, org, repo_name, head_branch,
+                    [FileChange.upsert(
+                        _PINNED_PR_FILE,
+                        f"Updated by integration-test run {GH_IT_RUN_ID}.\n",
+                    )],
+                    message=f"TC-INCR-PR-001 commit ({GH_IT_RUN_ID})",
+                    allow_paths=(_PINNED_PR_FILE,),
+                )
                 await update_pull(
-                    github_rest, org, repo_name, pr_number,
-                    title=new_title, body="Edited description.",
+                    github_rest, org, repo_name, number,
+                    body=(
+                        "Long-lived fixture for `TC-INCR-PR-001`.\n\n"
+                        f"Last updated by run `{GH_IT_RUN_ID}`.\n"
+                    ),
                 )
-                await add_comment(
-                    github_rest, org, repo_name, pr_number,
-                    "Conversation comment from TC-INCR-PR-001.",
+                comment = await add_comment(
+                    github_rest, org, repo_name, number,
+                    f"Conversation comment from {PINNED_PR_COMMENT_MARKER} {GH_IT_RUN_ID}.",
                 )
+                comment_id = comment.get("id")
+
                 pipeshub_client.wait(5)
                 await _resync(pipeshub_client, graph_provider, connector_id)
 
                 after = await graph_provider.get_record_by_external_id(connector_id, external_id)
-                assert after is not None, "PR record disappeared after update"
-                # The identity check is what proves no second record was created. A
-                # count delta cannot say this: concurrent runs open their own PRs in
-                # this same mutation repo, so the total moves for reasons unrelated to
-                # the edit under test.
+                assert after is not None, "pinned PR record disappeared after update"
+                # The identity check is the point: an edit must reuse the record rather
+                # than produce a second one.
                 assert after.id == before_id, (
                     "an updated PR must reuse its record, not create a new one "
                     f"({before_id} → {after.id})"
                 )
-                assert after.version == before_version + 1, (
-                    f"expected version {before_version + 1}, got {after.version}"
+                assert after.version > before_version, (
+                    f"version must advance after an edit ({before_version} → "
+                    f"{after.version})"
                 )
-                assert new_title in (after.record_name or ""), (
-                    f"edited title not reflected: {after.record_name!r}"
-                )
-                live = await get_pull(github_rest, org, repo_name, pr_number)
+                live = await get_pull(github_rest, org, repo_name, number)
                 assert str(after.external_revision_id) == str(epoch_ms(live["updated_at"])), (
                     "external_revision_id must track the source updated_at in epoch ms"
                 )
-                logger.info("TC-INCR-PR-001 passed: same record, version %s → %s",
-                            before_version, after.version)
+                after_typed = await graph_provider.get_typed_record_by_external_id(
+                    connector_id, external_id,
+                )
+                assert after_typed is not None, "typed PR record missing after update"
+                assert after_typed.last_commit_sha, "last_commit_sha was cleared by the update"
+                assert after_typed.last_commit_sha != before_sha, (
+                    "pushing a commit must move last_commit_sha "
+                    f"(still {before_sha!r})"
+                )
+                pr_count_after = await graph_provider.count_records_by_type(
+                    connector_id, RecordType.PULL_REQUEST.value, scoped=True,
+                )
+                assert pr_count_after == pr_count_before, (
+                    f"updating a PR must not add a record ({pr_count_before} → "
+                    f"{pr_count_after}). Nothing in this suite opens a PR any more, so "
+                    "this count is stable even under concurrent runs."
+                )
+                logger.info(
+                    "TC-INCR-PR-001 passed: pinned PR #%s, version %s → %s",
+                    number, before_version, after.version,
+                )
             finally:
-                if pr_number:
-                    await close_pull(github_rest, org, repo_name, pr_number)
-                try:
-                    await github_rest.request(
-                        "DELETE", f"/repos/{org}/{repo_name}/git/refs/heads/{head_branch}",
-                    )
-                except Exception as e:
-                    logger.warning("Could not delete branch %s: %s", head_branch, e)
+                # The PR is long-lived, so anything this run added to it must come back
+                # off or it accumulates one item per run.
+                if comment_id:
+                    await delete_issue_comment(github_rest, org, repo_name, comment_id)
 
-    @pytest.mark.order(17)
+
     async def test_tc_incr_code_001_all_deltas(
         self,
         github_connector: dict[str, Any],
@@ -1340,7 +1454,10 @@ class TestGitHubTeamsIncremental:
         keep = it_path("code", "keep.txt")          # updated in place
         renamed_from = it_path("code", "before.txt")  # renamed within its directory
         renamed_to = it_path("code", "after.txt")
-        moved_from = it_path("code", "moving.txt")    # moved to another directory
+        # The move source lives alone in its own directory so that directory becomes
+        # EMPTY after the move — that is what exercises _cleanup_emptied_folders. With
+        # it under `code/` (which keeps other files) the sweep would never run.
+        moved_from = it_path("movesrc", "moving.txt")
         moved_to = it_path("moved", "moving.txt")
         doomed = it_path("code", "doomed.txt")        # deleted
         fresh = it_path("added", "nested", "new.txt")  # new file in a new folder chain
@@ -1403,6 +1520,14 @@ class TestGitHubTeamsIncremental:
                 assert await graph_provider.get_record_by_external_id(
                     connector_id, f"/{repo_id}/tree/{directory}",
                 ), f"folder record missing for new directory {directory}"
+            # Present is not enough — the chain must be wired, or the new file is
+            # unreachable by navigation even though every record exists.
+            assert await graph_provider.get_record_parent_external_id(
+                connector_id, blob_id(fresh),
+            ) == f"/{repo_id}/tree/{it_path('added', 'nested')}"
+            assert await graph_provider.get_record_parent_external_id(
+                connector_id, f"/{repo_id}/tree/{it_path('added', 'nested')}",
+            ) == f"/{repo_id}/tree/{it_path('added')}"
 
             # (b) UPDATE — same record, new blob sha, version bumped.
             updated = await graph_provider.get_typed_record_by_external_id(
@@ -1434,6 +1559,11 @@ class TestGitHubTeamsIncremental:
             assert await graph_provider.get_record_by_external_id(
                 connector_id, blob_id(renamed_from),
             ) is None, "the old path must no longer resolve after a rename"
+            assert await graph_provider.get_record_parent_external_id(
+                connector_id, blob_id(renamed_to),
+            ) == f"/{repo_id}/tree/{it_path('code')}", (
+                "a rename within one directory must leave the parent folder unchanged"
+            )
 
             # (d) MOVE — new parent folder edge; the emptied source folder is swept.
             moved = await wait_for_record_by_external_id(
@@ -1446,6 +1576,15 @@ class TestGitHubTeamsIncremental:
             )
             assert new_parent == f"/{repo_id}/tree/{it_path('moved')}", (
                 f"moved file's parent is {new_parent!r}, expected the new directory"
+            )
+            # _cleanup_emptied_folders: the source directory held only this file, so it
+            # must be gone. Without this the connector would leave permanent ghost
+            # folders behind every move — a real incident on the full-sync side.
+            assert await graph_provider.get_record_by_external_id(
+                connector_id, f"/{repo_id}/tree/{it_path('movesrc')}",
+            ) is None, (
+                f"{it_path('movesrc')} became empty after the move and must have been "
+                "swept, but its folder record is still there"
             )
 
             # (e) DELETE — record gone. The incremental delete path has no valve.
@@ -1474,3 +1613,148 @@ async def _has_dates(
         and getattr(record, "source_created_at", None)
         and getattr(record, "source_updated_at", None)
     )
+
+
+# =============================================================================
+# TestGitHubTeamsFilters — dedicated connectors over the read-only repos
+# =============================================================================
+
+
+class TestGitHubTeamsFilters:
+    """Filter behaviour. Both cases build their own connector over repos nothing
+    writes to, so they are the most parallel-safe tests in the suite."""
+
+    @pytest.mark.order(18)
+    async def test_tc_filter_001_repo_scoping(
+        self,
+        github_connector: dict[str, Any],
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-FILTER-001: ``REPO_IDS in`` is authoritative — unlisted repos do not sync.
+
+        Asserting that the listed repo arrived is the easy half and proves little; a
+        connector that ignored the filter entirely would still pass it. The assertion
+        that matters is the negative one: the *unlisted* repo must be wholly absent,
+        record group included. A filter written to the wrong config path is silently
+        ignored and syncs everything, which is exactly what this catches.
+        """
+        state = github_connector
+        public = state["public_repo"]
+        primary = state["primary_repo"]
+
+        async with dedicated_connector(
+            pipeshub_client, graph_provider,
+            token=state["token"], name=_connector_name("filter-scope"),
+            filters=sync_filters(repo_ids=list_filter("in", [public["full_name"]])),
+            min_records=1,
+        ) as connector_id:
+            included = await graph_provider.get_record_group_by_external_id(
+                connector_id, str(public["id"]),
+            )
+            assert included is not None, (
+                f"{public['full_name']} was listed in REPO_IDS but produced no record "
+                "group"
+            )
+
+            excluded = await graph_provider.get_record_group_by_external_id(
+                connector_id, str(primary["id"]),
+            )
+            assert excluded is None, (
+                f"{primary['full_name']} is NOT in REPO_IDS yet has a record group — "
+                "the filter was ignored, most likely written to the wrong config path "
+                "(it must be config.filters.sync.values.repo_ids)"
+            )
+
+            # And no content leaked in either: the primary repo's issues must be absent.
+            for issue in state["primary_issues"][:3]:
+                external_id = f"{primary['id']}/issues/{issue['number']}"
+                assert await graph_provider.get_record_by_external_id(
+                    connector_id, external_id,
+                ) is None, (
+                    f"issue #{issue['number']} from the unlisted repo was synced "
+                    f"({external_id})"
+                )
+
+            total = await graph_provider.count_records(connector_id, scoped=True)
+            assert total > 0, "the listed repo produced no records at all"
+            logger.info(
+                "TC-FILTER-001 passed: only %s synced (%d records)",
+                public["full_name"], total,
+            )
+
+    @pytest.mark.order(19)
+    async def test_tc_filter_002_code_files_indexing_off(
+        self,
+        github_connector: dict[str, Any],
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-FILTER-002: ``Index Code Files = false`` stops indexing, not syncing.
+
+        An indexing filter is not a sync filter: the record is still created so the
+        file stays visible and name-searchable, and only its content indexing is
+        switched off via ``AUTO_INDEX_OFF``. Treating it as a sync filter — dropping
+        the records — would silently lose data the user can still see in GitHub.
+
+        Folders carry the same flag as the files they contain: they hold no content,
+        so publishing indexing events for them when their files are off is pure waste.
+        """
+        state = github_connector
+        public = state["public_repo"]
+
+        async with dedicated_connector(
+            pipeshub_client, graph_provider,
+            token=state["token"], name=_connector_name("filter-index"),
+            filters={
+                "sync": {"values": {"repo_ids": list_filter("in", [public["full_name"]])}},
+                # FilterCollection.from_dict drops any entry missing operator/type, so a
+                # bare {"code_files": False} would be ignored and the flag never applied.
+                "indexing": {
+                    "values": {
+                        "code_files": {"operator": "is", "type": "boolean", "value": False},
+                    },
+                },
+            },
+            min_records=1,
+        ) as connector_id:
+            code_files = await graph_provider.fetch_records_by_type(
+                connector_id, RecordType.CODE_FILE.value,
+            )
+            assert code_files, (
+                "no CODE_FILE records at all — an indexing filter must not stop the "
+                "records being created, only their content being indexed"
+            )
+            off = ProgressStatus.AUTO_INDEX_OFF.value
+            for record in code_files:
+                status = record.get("indexingStatus")
+                assert status == off, (
+                    f"{record.get('recordName')!r} has indexingStatus {status!r}, "
+                    f"expected {off} with Index Code Files switched off"
+                )
+
+            folders = await graph_provider.fetch_records_by_type(
+                connector_id, RecordType.FILE.value,
+            )
+            for record in folders:
+                status = record.get("indexingStatus")
+                assert status == off, (
+                    f"folder {record.get('recordName')!r} has indexingStatus "
+                    f"{status!r}; folders take the same flag as the code files they "
+                    "contain"
+                )
+
+            # Issues and PRs have their own filters and must be untouched by this one.
+            tickets = await graph_provider.fetch_records_by_type(
+                connector_id, RecordType.TICKET.value,
+            )
+            for record in tickets:
+                assert record.get("indexingStatus") != off, (
+                    f"ticket {record.get('recordName')!r} was switched off by the "
+                    "CODE_FILES filter; issues have their own filter"
+                )
+            logger.info(
+                "TC-FILTER-002 passed: %d code file(s) + %d folder(s) AUTO_INDEX_OFF, "
+                "%d ticket(s) unaffected",
+                len(code_files), len(folders), len(tickets),
+            )

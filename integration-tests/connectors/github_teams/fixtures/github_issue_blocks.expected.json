@@ -20,10 +20,18 @@
           {
             "end": 7,
             "start": 7
+          },
+          {
+            "end": 10,
+            "start": 10
           }
         ]
       },
-      "children_records": [],
+      "children_records": [
+        {
+          "child_type": "record"
+        }
+      ],
       "citation_metadata": null,
       "code_metadata": null,
       "comments": [],
@@ -152,8 +160,8 @@
         "block_group_ranges": [],
         "block_ranges": [
           {
-            "end": 11,
-            "start": 10
+            "end": 12,
+            "start": 11
           }
         ]
       },
@@ -182,8 +190,8 @@
         "block_group_ranges": [],
         "block_ranges": [
           {
-            "end": 13,
-            "start": 12
+            "end": 14,
+            "start": 13
           }
         ]
       },
@@ -490,32 +498,45 @@
       "citation_metadata": null,
       "code_metadata": null,
       "comments": [],
-      "data": "**Comment by Pipeshub-IT on 2026-09-01:**",
+      "data": {
+        "uri": "data:PLACEHOLDER;base64,PLACEHOLDER"
+      },
       "file_metadata": null,
-      "format": "markdown",
-      "image_metadata": null,
+      "format": "base64",
+      "image_metadata": {
+        "annotations": [],
+        "captions": [
+          "Image_1"
+        ],
+        "footnotes": [],
+        "image_dpi": null,
+        "image_format": "png",
+        "image_resolution": null,
+        "image_size": null,
+        "image_type": null
+      },
       "index": 10,
       "link_metadata": null,
       "links": null,
       "list_metadata": null,
       "media_metadata": null,
       "parent_block_index": null,
-      "parent_index": 4,
+      "parent_index": 0,
       "public_data_link": null,
       "public_data_link_expiration_epoch_time_in_ms": null,
       "semantic_metadata": null,
       "source_type": null,
-      "sub_type": "paragraph",
+      "sub_type": null,
       "table_cell_metadata": null,
       "table_row_metadata": null,
-      "type": "text"
+      "type": "image"
     },
     {
       "children_records": null,
       "citation_metadata": null,
       "code_metadata": null,
       "comments": [],
-      "data": "First fixture comment: the parser must emit this as its own block group.",
+      "data": "**Comment by Pipeshub-IT on 2026-09-01:**",
       "file_metadata": null,
       "format": "markdown",
       "image_metadata": null,
@@ -540,11 +561,36 @@
       "citation_metadata": null,
       "code_metadata": null,
       "comments": [],
-      "data": "**Comment by Pipeshub-IT on 2026-09-01:**",
+      "data": "First fixture comment: the parser must emit this as its own block group.",
       "file_metadata": null,
       "format": "markdown",
       "image_metadata": null,
       "index": 12,
+      "link_metadata": null,
+      "links": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_block_index": null,
+      "parent_index": 4,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "semantic_metadata": null,
+      "source_type": null,
+      "sub_type": "paragraph",
+      "table_cell_metadata": null,
+      "table_row_metadata": null,
+      "type": "text"
+    },
+    {
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": "**Comment by Pipeshub-IT on 2026-09-01:**",
+      "file_metadata": null,
+      "format": "markdown",
+      "image_metadata": null,
+      "index": 13,
       "link_metadata": null,
       "links": null,
       "list_metadata": null,
@@ -569,7 +615,7 @@
       "file_metadata": null,
       "format": "markdown",
       "image_metadata": null,
-      "index": 13,
+      "index": 14,
       "link_metadata": null,
       "links": null,
       "list_metadata": null,
