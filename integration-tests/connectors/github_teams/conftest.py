@@ -267,10 +267,16 @@ async def github_connector(
 
         yield state
     finally:
-        await teardown_connector(pipeshub_client, graph_provider, connector_id)
-        await reap_own_artifacts(
-            github_rest, org, mutation_name, mutation["default_branch"],
-        )
+        # Nested, not sequential: teardown_connector asserts the graph drained and
+        # raises when it does not, which would skip the GitHub-side cleanup entirely
+        # and strand this run's artifacts on the shared mutation repo until the
+        # two-hour stale sweep.
+        try:
+            await teardown_connector(pipeshub_client, graph_provider, connector_id)
+        finally:
+            await reap_own_artifacts(
+                github_rest, org, mutation_name, mutation["default_branch"],
+            )
 
 
 def _log_discovery(state: dict[str, Any]) -> None:

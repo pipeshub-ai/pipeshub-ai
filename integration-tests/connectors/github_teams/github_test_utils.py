@@ -117,6 +117,35 @@ async def gh_call_with_retry(
 # Reads / discovery
 # ---------------------------------------------------------------------------
 
+async def _walk_pages(
+    rest: GitHubAsyncRESTClient,
+    path: str,
+    *,
+    params: dict[str, Any],
+    per_page: int,
+    context: str,
+) -> list[dict[str, Any]]:
+    """Every page of a listing, not just the first.
+
+    ``get_json`` returns only the body, so the ``Link: rel="next"`` header is not
+    visible; a short page is the end-of-listing signal instead. Cleanup loops depend
+    on this — reading page 1 alone would silently leave artifacts behind on any repo
+    holding more than ``per_page`` issues.
+    """
+    collected: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        rows = await gh_call_with_retry(
+            rest.get_json, path,
+            params={**params, "per_page": per_page, "page": page},
+            context=f"{context} (page {page})",
+        ) or []
+        collected.extend(rows)
+        if len(rows) < per_page:
+            return collected
+        page += 1
+
+
 async def get_repo(rest: GitHubAsyncRESTClient, owner: str, repo: str) -> dict[str, Any]:
     return await gh_call_with_retry(
         rest.get_json, f"/repos/{owner}/{repo}", context=f"get_repo {owner}/{repo}",
@@ -129,12 +158,12 @@ async def list_issues(
     """Issues only — GitHub's /issues listing includes PR stubs, which we drop the
     same way the connector does (``issues.py``: skip anything whose html_url
     contains ``/pull/``)."""
-    rows = await gh_call_with_retry(
-        rest.get_json, f"/repos/{owner}/{repo}/issues",
-        params={"state": state, "per_page": per_page},
+    rows = await _walk_pages(
+        rest, f"/repos/{owner}/{repo}/issues",
+        params={"state": state}, per_page=per_page,
         context=f"list_issues {owner}/{repo}",
     )
-    return [r for r in rows or [] if "/pull/" not in (r.get("html_url") or "")]
+    return [r for r in rows if "/pull/" not in (r.get("html_url") or "")]
 
 
 async def get_issue(
@@ -149,11 +178,11 @@ async def get_issue(
 async def list_pulls(
     rest: GitHubAsyncRESTClient, owner: str, repo: str, *, state: str = "all", per_page: int = 100,
 ) -> list[dict[str, Any]]:
-    return await gh_call_with_retry(
-        rest.get_json, f"/repos/{owner}/{repo}/pulls",
-        params={"state": state, "per_page": per_page, "sort": "updated", "direction": "desc"},
-        context=f"list_pulls {owner}/{repo}",
-    ) or []
+    return await _walk_pages(
+        rest, f"/repos/{owner}/{repo}/pulls",
+        params={"state": state, "sort": "updated", "direction": "desc"},
+        per_page=per_page, context=f"list_pulls {owner}/{repo}",
+    )
 
 
 async def get_pull(
@@ -581,6 +610,30 @@ async def commit_changes(
                 "Concurrent runs share this branch."
             )
 
+    # Concurrent runs share this branch. Retrying only the ref update would reuse a
+    # parent that is no longer the tip, so the whole read-modify-write is repeated:
+    # re-read the head, rebuild the tree on it, commit, update. GitHub rejects a
+    # non-fast-forward ref update with 422, which gh_call_with_retry does not retry.
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            return await _commit_once(rest, owner, repo, branch, changes, message)
+        except GitHubHTTPError as e:
+            if getattr(e, "status", None) != 422 or attempt == _MAX_ATTEMPTS - 1:
+                raise
+            delay = _BASE_DELAY_SEC * (2**attempt) * (0.5 + random.random())
+            logger.warning(
+                "commit to %s/%s@%s lost a race (HTTP 422); rebuilding on the new tip "
+                "in %.1fs", owner, repo, branch, delay,
+            )
+            await asyncio.sleep(delay)
+    raise AssertionError(f"commit_changes {owner}/{repo}@{branch}: exhausted retries")
+
+
+async def _commit_once(
+    rest: GitHubAsyncRESTClient, owner: str, repo: str, branch: str,
+    changes: list["FileChange"], message: str,
+) -> str:
+    """One read-modify-write attempt: head -> tree -> commit -> ref."""
     base_commit_sha = await get_branch_head(rest, owner, repo, branch)
     base_commit = await gh_call_with_retry(
         rest.get_json, f"/repos/{owner}/{repo}/git/commits/{base_commit_sha}",
@@ -795,6 +848,27 @@ async def _force_commit_deletes(
     prefix = f"{GH_IT_PATH_ROOT}/"
     assert all(p.startswith(prefix) for p in paths), "sweep confined to the IT namespace"
 
+    # Same non-fast-forward race as commit_changes: the branch is shared, so the tip
+    # can move between reading it and updating the ref. Retry the whole sequence.
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            await _force_delete_once(rest, owner, repo, branch, paths)
+            return
+        except GitHubHTTPError as e:
+            if getattr(e, "status", None) != 422 or attempt == _MAX_ATTEMPTS - 1:
+                raise
+            delay = _BASE_DELAY_SEC * (2**attempt) * (0.5 + random.random())
+            logger.warning(
+                "sweep commit to %s/%s@%s lost a race (HTTP 422); retrying in %.1fs",
+                owner, repo, branch, delay,
+            )
+            await asyncio.sleep(delay)
+
+
+async def _force_delete_once(
+    rest: GitHubAsyncRESTClient, owner: str, repo: str, branch: str, paths: list[str],
+) -> None:
+    """One read-modify-write attempt for the namespace sweep."""
     base_commit_sha = await get_branch_head(rest, owner, repo, branch)
     base_commit = await gh_call_with_retry(
         rest.get_json, f"/repos/{owner}/{repo}/git/commits/{base_commit_sha}",
