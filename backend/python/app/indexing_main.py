@@ -502,7 +502,7 @@ async def recover_in_progress_records(
 
         # The counterpart for *live* connectors: a row whose event was lost or
         # never published is invisible to both the scan above and the sweep.
-        # Off unless STRANDED_RECORD_REPUBLISH_AFTER_SECONDS is set.
+        # STRANDED_RECORD_REPUBLISH_AFTER_SECONDS=0 disables it.
         total_records += await _republish_stranded_records(
             graph_provider=graph_provider,
             logger=logger,
@@ -800,9 +800,11 @@ async def _republish_stranded_records(
     itself, so it cannot distinguish "the event is on the broker" from "the
     event was never sent"; age can, and it recovers the row either way.
 
-    Off by default. Enable with STRANDED_RECORD_REPUBLISH_AFTER_SECONDS, set
-    comfortably longer than the worst backlog the broker is expected to carry,
-    or healthy records still queued behind it will be re-sent.
+    On by default (one hour); STRANDED_RECORD_REPUBLISH_AFTER_SECONDS=0
+    disables it. Keep the threshold comfortably longer than the worst backlog
+    the broker is expected to carry, or healthy records still queued behind it
+    will be re-sent -- harmlessly, since re-publishing is idempotent, but
+    wastefully.
 
     Re-publishing is safe to repeat: the handler skips a record that is already
     COMPLETED, and the per-record exclusivity lease stops a republished event
