@@ -26,6 +26,7 @@ import os
 import uuid
 
 import pytest
+import pytest_asyncio
 
 from app.services.redis.config import RedisConnectionConfig
 from app.services.redis.connection_provider_factory import (
@@ -52,7 +53,7 @@ def _redis_cluster_env() -> None:
     os.environ.setdefault("REDIS_CLUSTER_ENDPOINTS", DEFAULT_ENDPOINTS)
 
 
-@pytest.fixture(scope="session")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def redis_cluster_available(_redis_cluster_env: None) -> RedisConnectionConfig:
     """The resolved cluster config, or skip the module if no cluster answers."""
     pytest.importorskip("redis", reason="redis package not installed")

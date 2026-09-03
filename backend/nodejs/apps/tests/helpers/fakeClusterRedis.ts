@@ -167,6 +167,7 @@ export class FakeClusterRedis extends EventEmitter {
   }
 
   async exists(...keys: string[]): Promise<number> {
+    assertSameSlot(keys);
     return keys.filter(
       (key) => this.store.strings.has(key) || this.store.hashes.has(key),
     ).length;

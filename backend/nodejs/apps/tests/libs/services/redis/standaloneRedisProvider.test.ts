@@ -3,7 +3,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { createIoredisCapture } from '../../../helpers/mock-ioredis-capture';
+import {
+  createIoredisCapture,
+  FakeClientHandle,
+} from '../../../helpers/mock-ioredis-capture';
 import { RedisConnectionConfig } from '../../../../src/libs/services/redis/connectionConfig';
 
 const providerPath = require.resolve(
@@ -155,7 +158,7 @@ describe('StandaloneRedisProvider', () => {
   describe('scanKeys', () => {
     it('paginates through cursors until it returns to 0', async () => {
       const provider = new StandaloneRedisProvider(config());
-      const client = provider.getClient() as any;
+      const client = provider.getClient() as unknown as FakeClientHandle;
       client.scan
         .onCall(0)
         .resolves(['5', ['k1']])
@@ -173,7 +176,7 @@ describe('StandaloneRedisProvider', () => {
   describe('loadScript', () => {
     it('returns the sha from SCRIPT LOAD', async () => {
       const provider = new StandaloneRedisProvider(config());
-      const client = provider.getClient() as any;
+      const client = provider.getClient() as unknown as FakeClientHandle;
       client.script.resolves('deadbeef');
 
       const sha = await provider.loadScript('return 1');

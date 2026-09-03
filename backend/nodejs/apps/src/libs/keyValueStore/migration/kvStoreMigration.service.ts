@@ -54,6 +54,7 @@ export class KVStoreMigrationService {
         username: this.config.redis.username,
         password: this.config.redis.password,
         db: this.config.redis.db,
+        tls: this.config.redis.tls,
       }),
     );
   }

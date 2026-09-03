@@ -107,13 +107,24 @@ export class RedisConnectionProviderFactory {
 const providerCache = new Map<string, IRedisConnectionProvider>();
 
 function fingerprint(config: RedisConnectionConfig, mode: string): string {
+  // Every field consumed by StandaloneRedisProvider.connectionOptions() /
+  // ClusterRedisProvider.clusterOptions() must be here: two configs that
+  // differ in any of these need distinct provider instances, or the second
+  // caller silently reuses the first caller's connections (wrong creds/TLS).
   return JSON.stringify([
     mode,
     config.host,
     config.port,
+    config.username,
+    config.password,
+    config.tls,
+    config.tlsRejectUnauthorized,
+    config.tlsCaPath,
     config.db,
     config.keyNamespace,
+    config.connectTimeoutMs,
     config.clusterEndpoints,
+    config.scaleReads,
   ]);
 }
 

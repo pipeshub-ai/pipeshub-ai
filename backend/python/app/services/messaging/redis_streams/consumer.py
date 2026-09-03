@@ -54,9 +54,7 @@ class RedisStreamsConsumer(IMessagingConsumer):
         # one is looked up/created from this config, so behaviour for
         # existing callers is unchanged.
         self._provider: "IRedisConnectionProvider" = provider or get_redis_provider(
-            RedisConnectionConfig.from_host_port(
-                host=config.host, port=config.port, password=config.password, db=config.db
-            )
+            RedisConnectionConfig.from_redis_config(config)
         )
         self._planner = StreamReadPlanner(self._provider)
         self.redis: Optional[Redis] = None
@@ -445,6 +443,12 @@ class RedisStreamsConsumer(IMessagingConsumer):
         """
         groups = self._planner.group(self.config.topics)
         if not groups:
+            # Sleep, don't return straight into the caller's `continue`: with no
+            # topics subscribed this path does no I/O at all, so returning
+            # immediately spins the consume loop at 100% CPU. The inline
+            # XREADGROUP this replaced blocked for `block_ms` in the same
+            # state, and the Node consumer keeps an explicit idle sleep here.
+            await asyncio.sleep(self.config.block_ms / 1000.0)
             return []
 
         per_group_block_ms = (
@@ -462,21 +466,35 @@ class RedisStreamsConsumer(IMessagingConsumer):
         for group in groups:
             streams = dict.fromkeys(group, ">")
             try:
-                results = await asyncio.wait_for(
-                    self.redis.xreadgroup(  # type: ignore
-                        groupname=self.config.group_id,
-                        consumername=self.config.client_id,
-                        streams=streams,
-                        count=self.config.batch_size,
-                        block=per_group_block_ms,
-                    ),
-                    timeout=per_group_timeout_seconds,
+                read = self.redis.xreadgroup(  # type: ignore
+                    groupname=self.config.group_id,
+                    consumername=self.config.client_id,
+                    streams=streams,
+                    count=self.config.batch_size,
+                    block=per_group_block_ms,
+                )
+                # The deadline exists only to stop one wedged slot starving the
+                # *other* groups of their turn. With a single group -- every
+                # standalone deployment, since key_slot() is 0 for all keys --
+                # there is no other group to protect, and wrapping the call
+                # only invents a failure: under a saturated event loop the
+                # timeout fires on a perfectly healthy BLOCK, the read is
+                # abandoned, and the caller busy-loops on the error path.
+                results = (
+                    await read
+                    if len(groups) == 1
+                    else await asyncio.wait_for(read, timeout=per_group_timeout_seconds)
                 )
             except Exception as e:
+                # `type(e).__name__` because the message alone is often empty:
+                # `str(asyncio.TimeoutError())` is '', which logged as a bare
+                # "XREADGROUP failed for slot group X (1 streams): " with
+                # nothing to diagnose from.
                 self.logger.warning(
-                    "XREADGROUP failed for slot group %s (%d streams): %s",
+                    "XREADGROUP failed for slot group %s (%d streams): %s: %s",
                     group[0],
                     len(group),
+                    type(e).__name__,
                     e,
                 )
                 first_error = first_error or e
@@ -538,11 +556,15 @@ class RedisStreamsConsumer(IMessagingConsumer):
                     self.logger.info("Redis Streams consumer task cancelled")
                     break
                 except Exception as e:
-                    self.logger.error("Error in consume_messages loop: %s", e)
+                    self.logger.error(
+                        "Error in consume_messages loop: %s: %s", type(e).__name__, e
+                    )
                     await asyncio.sleep(1)
 
         except Exception as e:
-            self.logger.error("Fatal error in consume_messages: %s", e)
+            self.logger.error(
+                "Fatal error in consume_messages: %s: %s", type(e).__name__, e
+            )
         finally:
             await self.cleanup()
 

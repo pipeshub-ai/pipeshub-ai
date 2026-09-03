@@ -120,13 +120,24 @@ _provider_cache: dict[tuple, IRedisConnectionProvider] = {}
 
 
 def _fingerprint(config: RedisConnectionConfig, mode: str) -> tuple:
+    # Every field consumed by StandaloneRedisProvider._connection_kwargs() /
+    # ClusterRedisProvider._client_kwargs() must be here: two configs that
+    # differ only in one of these fields need distinct provider instances,
+    # or the second caller silently reuses the first caller's connection
+    # (wrong credentials/TLS/read routing) instead of getting its own.
     return (
         mode,
         config.host,
         config.port,
+        config.username,
+        config.password,
+        config.tls,
+        config.tls_reject_unauthorized,
+        config.tls_ca_path,
         config.db,
         config.key_namespace,
         tuple(config.cluster_endpoints),
+        config.scale_reads,
     )
 
 

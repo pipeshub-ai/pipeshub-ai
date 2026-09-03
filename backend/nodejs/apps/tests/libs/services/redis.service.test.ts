@@ -6,6 +6,11 @@ import { EventEmitter } from 'events';
 import { RedisCacheError } from '../../../src/libs/errors/redis.errors';
 import { createMockLogger, MockLogger } from '../../helpers/mock-logger';
 import { stubGetRedisProvider } from '../../helpers/fake-redis-provider';
+import { IRedisConnectionProvider } from '../../../src/libs/services/redis/connectionProvider.interface';
+import {
+  getSharedRedisService,
+  resetSharedRedisServices,
+} from '../../../src/libs/services/redis.service';
 
 // RedisService gets its client from `getRedisProvider().createClient(...)`
 // (`src/libs/services/redis/connectionProviderFactory`), not `new
@@ -34,7 +39,7 @@ describe('RedisService', () => {
     mockLogger = createMockLogger();
     capturedClientOptions = null;
 
-    const provider = {
+    const provider: IRedisConnectionProvider = {
       isCluster: false,
       mode: 'standalone',
       keyNamespace: '',
@@ -329,5 +334,59 @@ describe('RedisService', () => {
     it('leaves TLS off when the stored config does not ask for it', () => {
       expect(capturedConnectionConfig.tls).to.not.equal(true);
     });
+  });
+});
+
+describe('getSharedRedisService cache key', () => {
+  // Sharing one instance across containers is only safe while "same endpoint"
+  // means "same connection". Two configs differing only in credentials or TLS
+  // are different connections, and keying on host/port alone would hand the
+  // second caller the first one's authenticated client.
+  const base = { host: 'localhost', port: 6379, keyPrefix: 'app:' };
+
+  afterEach(() => {
+    resetSharedRedisServices();
+  });
+
+  it('reuses one instance for an identical connection', () => {
+    const a = getSharedRedisService({ ...base } as any, createMockLogger() as any);
+    const b = getSharedRedisService({ ...base } as any, createMockLogger() as any);
+    expect(a).to.equal(b);
+  });
+
+  it('does not share across different passwords', () => {
+    const a = getSharedRedisService(
+      { ...base, password: 'one' } as any,
+      createMockLogger() as any,
+    );
+    const b = getSharedRedisService(
+      { ...base, password: 'two' } as any,
+      createMockLogger() as any,
+    );
+    expect(a).to.not.equal(b);
+  });
+
+  it('does not share across different usernames', () => {
+    const a = getSharedRedisService(
+      { ...base, username: 'u1' } as any,
+      createMockLogger() as any,
+    );
+    const b = getSharedRedisService(
+      { ...base, username: 'u2' } as any,
+      createMockLogger() as any,
+    );
+    expect(a).to.not.equal(b);
+  });
+
+  it('does not share a TLS connection with a plaintext one', () => {
+    const a = getSharedRedisService(
+      { ...base, tls: true } as any,
+      createMockLogger() as any,
+    );
+    const b = getSharedRedisService(
+      { ...base, tls: false } as any,
+      createMockLogger() as any,
+    );
+    expect(a).to.not.equal(b);
   });
 });

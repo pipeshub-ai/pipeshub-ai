@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { injectable } from 'inversify';
 import type { RedisClient } from './redis/connectionProvider.interface';
 import { Logger } from './logger.service';
@@ -169,11 +170,21 @@ export class RedisService implements ICacheService {
 const cacheServices = new Map<string, RedisService>();
 
 function cacheKey(config: RedisConfig): string {
+  // The full connection identity, not just the endpoint: two configs that
+  // differ only in credentials or TLS are different connections, and keying
+  // on host/port alone would hand the second caller the first one's client.
+  // Credentials are hashed rather than embedded so a password never sits in
+  // a long-lived map key (heap dumps, debugger inspection).
+  const credentials = createHash('sha256')
+    .update(`${config.username ?? ''}\u0000${config.password ?? ''}`)
+    .digest('hex');
   return JSON.stringify([
     config.host,
     config.port,
     config.db ?? 0,
     config.keyPrefix ?? 'app:',
+    config.tls ?? false,
+    credentials,
   ]);
 }
 

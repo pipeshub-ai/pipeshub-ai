@@ -339,3 +339,30 @@ dind
 socket
 {{- end -}}
 {{- end -}}
+
+{{/*
+Validate the Redis wiring before anything renders.
+
+`redis.external.enabled` only works when paired with a cluster-capable mode
+and the bundled subchart switched off -- a pairing the template comment
+described but nothing enforced. Left unchecked, `external.enabled=true` alone
+renders `REDIS_HOST=""` while `REDIS_MODE=standalone` selects
+`StandaloneRedisProvider`, which ignores `REDIS_CLUSTER_ENDPOINTS` and falls
+back to localhost, and the subchart still deploys. Both failures are silent.
+*/}}
+{{- define "pipeshub-ai.validateRedis" -}}
+{{- $external := .Values.redis.external -}}
+{{- if $external.enabled -}}
+  {{- if not $external.clusterEndpoints -}}
+    {{- fail "redis.external.enabled=true requires redis.external.clusterEndpoints (comma-separated host:port list)." -}}
+  {{- end -}}
+  {{- if eq (.Values.redis.mode | default "standalone") "standalone" -}}
+    {{- fail "redis.external.enabled=true requires a cluster-capable redis.mode (set redis.mode=cluster, or an EE mode supplied via redis.providerModule). REDIS_MODE=standalone ignores redis.external.clusterEndpoints and would connect to localhost." -}}
+  {{- end -}}
+  {{- if .Values.redis.enabled -}}
+    {{- fail "redis.external.enabled=true also requires redis.enabled=false, otherwise the bundled Redis subchart is deployed and left unused." -}}
+  {{- end -}}
+{{- else if not .Values.redis.enabled -}}
+  {{- fail "redis.enabled=false requires redis.external.enabled=true with redis.external.clusterEndpoints; otherwise nothing provides Redis." -}}
+{{- end -}}
+{{- end -}}

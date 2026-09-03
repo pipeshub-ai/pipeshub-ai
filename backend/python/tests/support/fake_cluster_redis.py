@@ -25,9 +25,18 @@ from __future__ import annotations
 
 from typing import Any
 
-import fakeredis
+import pytest
 from redis.crc import key_slot
 from redis.exceptions import ClusterCrossSlotError
+
+# `importorskip`, not a plain `import`: `fakeredis` lives in the optional
+# `dev` extra, and every importer of this helper had its own
+# `pytest.importorskip("fakeredis.aioredis")` guard placed *below* the line
+# that imports this module -- so without the extra installed, collection
+# raised ModuleNotFoundError instead of skipping. Guarding here covers every
+# importer at once, including the ones that import this lazily inside a test
+# body, and any added later.
+fakeredis = pytest.importorskip("fakeredis")
 
 __all__ = ["FakeClusterRedis"]
 

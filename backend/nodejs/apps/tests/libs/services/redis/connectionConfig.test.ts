@@ -85,3 +85,51 @@ describe('DEFAULT_CLIENT_OPTIONS', () => {
     expect(DEFAULT_CLIENT_OPTIONS.enableOfflineQueue).to.equal(true);
   });
 });
+
+describe('REDIS_TLS_* boolean spellings', () => {
+  // Matching only the literal 'true' meant REDIS_TLS_ENABLED=1 produced a
+  // plaintext connection still carrying the Redis password, and -- because it
+  // defaults on -- REDIS_TLS_REJECT_UNAUTHORIZED=yes silently disabled
+  // certificate verification. Both fail open with nothing logged.
+  const saved: Record<string, string | undefined> = {};
+  const keys = ['REDIS_TLS_ENABLED', 'REDIS_TLS_REJECT_UNAUTHORIZED'];
+
+  beforeEach(() => {
+    keys.forEach((k) => {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    });
+  });
+
+  afterEach(() => {
+    keys.forEach((k) => {
+      if (saved[k] === undefined) {
+        delete process.env[k];
+      } else {
+        process.env[k] = saved[k];
+      }
+    });
+  });
+
+  ['1', 'yes', 'on', 'true', 'TRUE', ' true '].forEach((value) => {
+    it(`treats '${value}' as TLS enabled`, () => {
+      process.env.REDIS_TLS_ENABLED = value;
+      expect(redisConnectionConfigFromEnv().tls).to.equal(true);
+    });
+  });
+
+  ['0', 'no', 'off', 'false', ' FALSE '].forEach((value) => {
+    it(`treats '${value}' as verification disabled`, () => {
+      process.env.REDIS_TLS_REJECT_UNAUTHORIZED = value;
+      expect(redisConnectionConfigFromEnv().tlsRejectUnauthorized).to.equal(false);
+    });
+  });
+
+  it('never weakens the default on an unparseable value', () => {
+    process.env.REDIS_TLS_ENABLED = 'garbage';
+    process.env.REDIS_TLS_REJECT_UNAUTHORIZED = 'garbage';
+    const config = redisConnectionConfigFromEnv();
+    expect(config.tls).to.equal(false);
+    expect(config.tlsRejectUnauthorized).to.equal(true);
+  });
+});

@@ -64,11 +64,26 @@ function parseClusterEndpoints(raw: string | undefined): string[] {
     .filter((e) => e.length > 0);
 }
 
+/**
+ * Accepts the spellings operators actually write. Matching only `'true'` meant
+ * `REDIS_TLS_ENABLED=1` silently produced a *plaintext* connection still
+ * carrying the Redis password -- a failure with no error to notice.
+ */
+const TRUTHY = new Set(['true', '1', 'yes', 'on']);
+const FALSY = new Set(['false', '0', 'no', 'off']);
+
 function truthyEnv(value: string | undefined, fallback: boolean): boolean {
-  if (value === undefined || value === '') {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === undefined || normalized === '') {
     return fallback;
   }
-  return value.toLowerCase() === 'true';
+  if (TRUTHY.has(normalized)) {
+    return true;
+  }
+  if (FALSY.has(normalized)) {
+    return false;
+  }
+  return fallback;
 }
 
 /** Build config from the standard `REDIS_*` environment variables. */
@@ -124,8 +139,14 @@ export function redisConnectionConfigFromHostPort(params: {
     ...base,
     host: params.host,
     port: params.port,
-    password: params.password,
-    username: params.username,
+    // `??`, not bare assignment, for both credentials: a caller that omits
+    // one would otherwise null the value `REDIS_PASSWORD` / `REDIS_USERNAME`
+    // supplied. Callers such as `RedisDistributedKeyValueStore` and
+    // `streamsProvider` pass only the stored admin-UI fields, so a deployment
+    // that provides credentials through the environment would lose them and
+    // fail with NOAUTH.
+    password: params.password ?? base.password,
+    username: params.username ?? base.username,
     db: params.db ?? 0,
     tls: base.tls || params.tls === true,
   };

@@ -19,7 +19,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
-import os
 from typing import TYPE_CHECKING, Any
 
 from cachetools import LRUCache
@@ -37,6 +36,7 @@ from app.agent_loop_lib.modules.providers.skills.text_scoring import (
     skill_haystack,
     tokenize,
 )
+from app.utils.env_utils import env_int
 
 if TYPE_CHECKING:
     from langchain_core.embeddings import Embeddings
@@ -56,7 +56,11 @@ logger = logging.getLogger(__name__)
 # skill and its text changes, so its hash changes and it is re-embedded. Same
 # for switching embedding models. A stale entry is unreachable rather than
 # wrong.
-_VECTOR_CACHE_MAX = int(os.getenv("PIPESHUB_SKILL_VECTOR_CACHE_SIZE", "4096"))
+# `env_int(..., lo=1)`, not `int(os.getenv(...))`: a malformed value used to
+# raise at import (taking down every importer), and 0 or negative built an
+# LRUCache that raises "value too large" on the first write -- inside the
+# embedding path, where the fallback is silent keyword scoring.
+_VECTOR_CACHE_MAX = env_int("PIPESHUB_SKILL_VECTOR_CACHE_SIZE", 4096, lo=1)
 _vector_cache: LRUCache = LRUCache(maxsize=_VECTOR_CACHE_MAX)
 
 

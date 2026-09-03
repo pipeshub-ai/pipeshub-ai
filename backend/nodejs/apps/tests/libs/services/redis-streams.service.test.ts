@@ -5,6 +5,7 @@ import { EventEmitter } from 'events';
 import { MessageBrokerError } from '../../../src/libs/errors/messaging.errors';
 import { createMockLogger, MockLogger } from '../../helpers/mock-logger';
 import { stubGetRedisProvider } from '../../helpers/fake-redis-provider';
+import { IRedisConnectionProvider } from '../../../src/libs/services/redis/connectionProvider.interface';
 import { RedisBrokerConfig, StreamMessage } from '../../../src/libs/types/messaging.types';
 
 // ---------------------------------------------------------------------------
@@ -39,9 +40,12 @@ class MockRedisClient extends EventEmitter {
 let currentProvider: any;
 
 function setupIoredisMock(mockClient: MockRedisClient) {
-  const provider = {
+  // Typed, not `as any`: two of these doubles silently omitted `keyNamespace`,
+  // which an `as any` cast lets through as `undefined`.
+  const provider: IRedisConnectionProvider = {
     isCluster: false,
     mode: 'standalone',
+    keyNamespace: '',
     getClient: sinon.stub().returns(mockClient),
     createClient: sinon.stub().returns(mockClient),
     createPubSubClient: sinon.stub().returns(mockClient),

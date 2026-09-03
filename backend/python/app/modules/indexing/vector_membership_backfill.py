@@ -79,12 +79,7 @@ class VectorMembershipBackfillLeaderLock:
         from app.services.redis.connection_provider_factory import get_redis_provider
 
         provider = get_redis_provider(
-            RedisConnectionConfig.from_host_port(
-                host=self.redis_config.host,
-                port=self.redis_config.port,
-                password=self.redis_config.password,
-                db=self.redis_config.db,
-            )
+            RedisConnectionConfig.from_redis_config(self.redis_config)
         )
         client = provider.create_client(
             ClientOptions(

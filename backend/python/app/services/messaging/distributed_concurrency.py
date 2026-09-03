@@ -345,7 +345,17 @@ class DistributedConcurrencyManager(IDistributedLeaseManager):
             async with limit:
                 return await client.evalsha(sha, 1, key, owner, ms, ttl)
 
-        return list(await asyncio.gather(*(_one(*a) for a in args)))
+        # `return_exceptions=True` so every EVALSHA finishes before this
+        # returns. Without it, a single failure (e.g. NOSCRIPT) makes
+        # `gather` raise while sibling calls are still in flight; the caller
+        # then reloads the script and issues a *second* concurrent batch
+        # on top of the first, doubling the in-flight EVALSHA count past
+        # the pool-sized semaphore this fan-out exists to respect.
+        results = await asyncio.gather(*(_one(*a) for a in args), return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return list(results)
 
     def _is_cluster(self) -> bool:
         return self._registry is not None and self._registry.provider.is_cluster

@@ -50,6 +50,17 @@ export class StandaloneRedisProvider implements IRedisConnectionProvider {
         `REDIS_DB=${this.config.db} is deprecated; prefer REDIS_KEY_NAMESPACE for tenant isolation. Ignored entirely in cluster mode.`,
       );
     }
+    if (this.config.tls && !this.config.tlsRejectUnauthorized) {
+      // Kept as an escape hatch (self-signed certs, cert-rotation windows)
+      // but never silent: with verification off the connection is encrypted
+      // yet unauthenticated, so it does not protect against an active
+      // man-in-the-middle. REDIS_TLS_CA_PATH is the fix for a private CA.
+      logger.warn(
+        'REDIS_TLS_REJECT_UNAUTHORIZED=false: Redis TLS certificates are NOT ' +
+          'verified, so the connection is encrypted but not authenticated. Set ' +
+          'REDIS_TLS_CA_PATH to trust a private CA instead of disabling verification.',
+      );
+    }
   }
 
   private connectionOptions(options: ClientOptions): RedisOptions {
@@ -59,7 +70,7 @@ export class StandaloneRedisProvider implements IRedisConnectionProvider {
     const merged: Required<ClientOptions> = {
       blocking: options.blocking ?? DEFAULT_CLIENT_OPTIONS.blocking,
       connectTimeoutMs:
-        options.connectTimeoutMs ?? DEFAULT_CLIENT_OPTIONS.connectTimeoutMs,
+        options.connectTimeoutMs ?? this.config.connectTimeoutMs,
       maxRetriesPerRequest:
         options.maxRetriesPerRequest ?? DEFAULT_CLIENT_OPTIONS.maxRetriesPerRequest,
       enableOfflineQueue:

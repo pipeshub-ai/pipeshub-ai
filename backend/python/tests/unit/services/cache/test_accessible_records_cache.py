@@ -442,6 +442,23 @@ class TestKillSwitch:
             == AccessibleRecordsCache.DEFAULT_TTL_SECONDS
         )
 
+    async def test_create_closes_the_client_when_ping_fails(self, monkeypatch) -> None:
+        """`create_client()` hands out a caller-owned client -- a failed
+        setup ping must not leak that connection."""
+        monkeypatch.delenv(AccessibleRecordsCache.ENV_ENABLED, raising=False)
+        config = MagicMock()
+        config.get_redis_config = AsyncMock(
+            return_value=MagicMock(host="localhost", port=6379, password=None, db=0)
+        )
+        client = AsyncMock()
+        client.ping = AsyncMock(side_effect=ConnectionError("down"))
+
+        with patch.object(StandaloneRedisProvider, "create_client", lambda self, *a, **k: client):
+            cache = await AccessibleRecordsCache.create(MagicMock(), config)
+
+        assert isinstance(cache, NoopAccessibleRecordsCache)
+        client.aclose.assert_awaited_once()
+
     async def test_create_picks_up_redis_key_namespace(self, monkeypatch) -> None:
         """REDIS_KEY_NAMESPACE (R9) is read from the provider `create()`
         builds and applied by the key builders -- never as a client-level

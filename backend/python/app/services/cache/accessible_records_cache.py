@@ -125,6 +125,7 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             logger.info("Accessible-records cache disabled via %s", cls.ENV_ENABLED)
             return NoopAccessibleRecordsCache()
 
+        client = None
         try:
             redis_config = await config_service.get_redis_config()
             provider = get_redis_provider(
@@ -148,6 +149,17 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             logger.warning(
                 "Accessible-records cache unavailable (%s); falling back to live queries", str(e)
             )
+            # `create_client()` hands out a caller-owned client (not the
+            # provider's shared one) -- release it ourselves on failure, or
+            # the ping-that-never-succeeded connection leaks for good.
+            if client is not None:
+                try:
+                    await client.aclose()
+                except Exception as close_error:
+                    logger.debug(
+                        "Error closing accessible-records cache client after setup failure: %s",
+                        str(close_error),
+                    )
             return NoopAccessibleRecordsCache()
 
         logger.info("Accessible-records cache ready (ttl=%ss)", ttl)

@@ -132,7 +132,12 @@ jobs:
         run: |
           cd backend/python
           uv pip install --system pytest pytest-asyncio pytest-timeout coverage
-          uv pip install --system -e .
+          # `.[dev]`, not a bare `.`: the dev extra already declares
+          # fakeredis[lua], which the FakeClusterRedis contract suites (the
+          # CROSSSLOT/multi-key guards for MemoryDB readiness) need. Without
+          # it those suites skip and the cluster-safety checks never actually
+          # run here.
+          uv pip install --system -e ".[dev]"
 
       - name: Run unit tests with coverage
         run: |
@@ -183,6 +188,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -201,7 +208,7 @@ jobs:
         run: |
           cd backend/python
           uv pip install --system pytest pytest-asyncio pytest-timeout
-          uv pip install --system -e .
+          uv pip install --system -e ".[dev]"
 
       - name: Start Redis Cluster
         working-directory: deployment/docker-compose

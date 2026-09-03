@@ -66,7 +66,7 @@ export class ClusterRedisProvider implements IRedisConnectionProvider {
     const merged: Required<ClientOptions> = {
       blocking: options.blocking ?? DEFAULT_CLIENT_OPTIONS.blocking,
       connectTimeoutMs:
-        options.connectTimeoutMs ?? DEFAULT_CLIENT_OPTIONS.connectTimeoutMs,
+        options.connectTimeoutMs ?? this.config.connectTimeoutMs,
       maxRetriesPerRequest:
         options.maxRetriesPerRequest ?? DEFAULT_CLIENT_OPTIONS.maxRetriesPerRequest,
       enableOfflineQueue:

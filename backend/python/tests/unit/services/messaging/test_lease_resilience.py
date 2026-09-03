@@ -624,7 +624,14 @@ class TestRenewManyTransportShape:
     @pytest.mark.asyncio
     async def test_cluster_never_exceeds_the_pool_size_in_flight(self, logger) -> None:
         with _fake_backed():
-            manager = await _manager(logger)
+            # A pool smaller than the batch makes the semaphore the binding
+            # constraint: at the default 32 connections for 20 leases it
+            # never blocks, so peak <= pool_size would hold even if the
+            # semaphore were removed entirely.
+            manager = DistributedConcurrencyManager(
+                logger, RedisConfig(host="redis", port=6379), max_connections=4
+            )
+            await manager.initialize()
             try:
                 leases = [("indexing", f"w{i}") for i in range(20)]
                 for pool, owner in leases:
@@ -653,6 +660,7 @@ class TestRenewManyTransportShape:
                     results = await manager.renew_many(leases, 60)
 
                 assert len(results) == len(leases)
+                assert peak > 1, "the cluster path must fan out, not serialize"
                 assert peak <= pool_size, (
                     f"{peak} concurrent EVALSHA against a pool of {pool_size}: "
                     "the fan-out queues behind itself and times out under load"

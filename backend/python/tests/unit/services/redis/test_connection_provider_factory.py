@@ -161,3 +161,39 @@ class TestGetRedisProviderSingleton:
         reset_redis_provider_registry()
         p2 = get_redis_provider(config, mode="standalone")
         assert p1 is not p2
+
+    def test_different_password_returns_different_instance(self):
+        p1 = get_redis_provider(
+            RedisConnectionConfig(host="h", password="pw1"), mode="standalone"
+        )
+        p2 = get_redis_provider(
+            RedisConnectionConfig(host="h", password="pw2"), mode="standalone"
+        )
+        assert p1 is not p2
+
+    def test_different_username_returns_different_instance(self):
+        p1 = get_redis_provider(
+            RedisConnectionConfig(host="h", username="u1"), mode="standalone"
+        )
+        p2 = get_redis_provider(
+            RedisConnectionConfig(host="h", username="u2"), mode="standalone"
+        )
+        assert p1 is not p2
+
+    def test_different_tls_returns_different_instance(self):
+        p1 = get_redis_provider(
+            RedisConnectionConfig(host="h", tls=False), mode="standalone"
+        )
+        p2 = get_redis_provider(
+            RedisConnectionConfig(host="h", tls=True), mode="standalone"
+        )
+        assert p1 is not p2
+
+    def test_different_scale_reads_returns_different_instance(self):
+        p1 = get_redis_provider(
+            RedisConnectionConfig(host="h", scale_reads="master"), mode="standalone"
+        )
+        p2 = get_redis_provider(
+            RedisConnectionConfig(host="h", scale_reads="all"), mode="standalone"
+        )
+        assert p1 is not p2

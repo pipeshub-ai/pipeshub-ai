@@ -44,6 +44,14 @@ describe('FakeClusterRedis', () => {
     await expectRejection(() => fake.del('a', 'b'), /CROSSSLOT/);
   });
 
+  it('raises CROSSSLOT for a multi-key EXISTS spanning slots', async () => {
+    const fake = new FakeClusterRedis();
+    await fake.set('a', '1');
+    await fake.set('b', '2');
+
+    await expectRejection(() => fake.exists('a', 'b'), /CROSSSLOT/);
+  });
+
   it('does not raise when every key hashes to the same slot ({hashtag})', async () => {
     const fake = new FakeClusterRedis();
     await fake.set('{crawling}:a', '1');

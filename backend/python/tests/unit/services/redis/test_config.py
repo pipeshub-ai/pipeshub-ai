@@ -2,6 +2,8 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 
 
@@ -79,3 +81,35 @@ class TestRedisConnectionConfigFromHostPort:
         # Process-wide settings (TLS, namespace, cluster endpoints) still come
         # from the environment rather than being reset by the legacy shape.
         assert cfg.tls is True
+
+
+class TestEnvFlagSpellings:
+    """`REDIS_TLS_*` must accept what operators actually write.
+
+    Matching only the literal "true" meant `REDIS_TLS_ENABLED=1` produced a
+    plaintext connection still carrying the Redis password, and -- because it
+    defaults on -- `REDIS_TLS_REJECT_UNAUTHORIZED=yes` silently *disabled*
+    certificate verification. Both fail open with nothing logged.
+    """
+
+    @pytest.mark.parametrize("value", ["1", "yes", "on", "true", "TRUE", " true "])
+    def test_truthy_spellings_enable_tls(self, monkeypatch, value: str) -> None:
+        monkeypatch.setenv("REDIS_TLS_ENABLED", value)
+        assert RedisConnectionConfig.from_env().tls is True
+
+    @pytest.mark.parametrize("value", ["0", "no", "off", "false", " FALSE "])
+    def test_falsy_spellings_disable_verification(
+        self, monkeypatch, value: str
+    ) -> None:
+        monkeypatch.setenv("REDIS_TLS_REJECT_UNAUTHORIZED", value)
+        assert RedisConnectionConfig.from_env().tls_reject_unauthorized is False
+
+    def test_an_unparseable_value_never_weakens_the_default(
+        self, monkeypatch
+    ) -> None:
+        """The safety property: a typo must not turn verification off."""
+        monkeypatch.setenv("REDIS_TLS_ENABLED", "garbage")
+        monkeypatch.setenv("REDIS_TLS_REJECT_UNAUTHORIZED", "garbage")
+        config = RedisConnectionConfig.from_env()
+        assert config.tls is False
+        assert config.tls_reject_unauthorized is True

@@ -64,12 +64,7 @@ def _redis_from_config(redis_config: RedisConfig) -> "Redis":
     from app.services.redis.connection_provider_factory import get_redis_provider
 
     provider = get_redis_provider(
-        RedisConnectionConfig.from_host_port(
-            host=redis_config.host,
-            port=redis_config.port,
-            password=redis_config.password,
-            db=redis_config.db,
-        )
+        RedisConnectionConfig.from_redis_config(redis_config)
     )
     return provider.create_client(ClientOptions(decode_responses=True))
 

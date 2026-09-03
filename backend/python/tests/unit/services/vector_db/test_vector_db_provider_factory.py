@@ -33,6 +33,7 @@ class TestRedisModeGuard:
         self, logger, config_service, monkeypatch
     ):
         monkeypatch.setenv("VECTOR_DB_TYPE", "redis")
+        monkeypatch.delenv("VECTOR_REDIS_MODE", raising=False)
         monkeypatch.setenv("REDIS_MODE", "cluster")
 
         with pytest.raises(ValueError, match="incompatible with VECTOR_REDIS_MODE"):
@@ -45,6 +46,7 @@ class TestRedisModeGuard:
         self, logger, config_service, monkeypatch
     ):
         monkeypatch.setenv("VECTOR_DB_TYPE", "redis")
+        monkeypatch.delenv("VECTOR_REDIS_MODE", raising=False)
         monkeypatch.setenv("REDIS_MODE", "memorydb")
 
         with pytest.raises(ValueError, match="incompatible with VECTOR_REDIS_MODE"):
@@ -78,6 +80,7 @@ class TestRedisModeGuard:
         self, logger, config_service, monkeypatch
     ):
         monkeypatch.setenv("VECTOR_DB_TYPE", "redis")
+        monkeypatch.delenv("VECTOR_REDIS_MODE", raising=False)
         monkeypatch.setenv("REDIS_MODE", "standalone")
 
         fake_provider = AsyncMock()
@@ -96,6 +99,7 @@ class TestRedisModeGuard:
         self, logger, config_service, monkeypatch
     ):
         monkeypatch.setenv("VECTOR_DB_TYPE", "redis")
+        monkeypatch.delenv("VECTOR_REDIS_MODE", raising=False)
         monkeypatch.delenv("REDIS_MODE", raising=False)
 
         fake_provider = AsyncMock()

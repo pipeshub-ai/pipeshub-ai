@@ -23,6 +23,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 _APP_ROOT = Path(__file__).resolve().parents[4] / "app"
 
 # Only the connection-provider implementations themselves may import a
@@ -38,10 +40,21 @@ _ALLOWED_DIRECT_CLIENT_IMPORT_FILES = {
 # `redis.exceptions`, `redis.crc`, and `redis.backoff` are deliberately not
 # in this set -- they are pure types/helpers with no connection of their
 # own, and are safe to import anywhere.
+# Every module that hands out a client or a connection pool. The submodules
+# matter as much as the packages: `redis.asyncio.client.Redis` *is*
+# `redis.asyncio.Redis` (same class object), so listing only the package left
+# a one-import bypass of this entire guard. Safe helpers -- `redis.exceptions`,
+# `redis.asyncio.retry`, `redis.backoff`, `redis.crc` -- are deliberately
+# absent: feature code may import those freely.
 _RESTRICTED_MODULES = {
-    "redis.asyncio",
-    "redis.asyncio.cluster",
     "redis",
+    "redis.client",
+    "redis.cluster",
+    "redis.connection",
+    "redis.asyncio",
+    "redis.asyncio.client",
+    "redis.asyncio.cluster",
+    "redis.asyncio.connection",
 }
 
 
@@ -136,3 +149,52 @@ class TestNoDirectRedisClientImportsOutsideProviders:
         assert "redis.exceptions" not in _RESTRICTED_MODULES
         assert "redis.crc" not in _RESTRICTED_MODULES
         assert "redis.backoff" not in _RESTRICTED_MODULES
+
+
+class TestTheGuardItselfCatchesClientSubmodules:
+    """The guard is only worth having if it cannot be sidestepped.
+
+    `redis.asyncio.client.Redis` is the *same class object* as
+    `redis.asyncio.Redis`, so matching only the package left a one-line
+    bypass: any file could construct a client directly and still pass.
+    """
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "from redis.asyncio.client import Redis",
+            "from redis.client import Redis",
+            "from redis.cluster import RedisCluster",
+            "from redis.asyncio.connection import BlockingConnectionPool",
+            "from redis.connection import ConnectionPool",
+            "import redis.asyncio.client",
+            "from redis.asyncio import Redis",
+            "import redis",
+        ],
+    )
+    def test_a_client_import_is_flagged(self, source: str) -> None:
+        assert _find_restricted_imports(ast.parse(source)), (
+            f"{source!r} bypasses the architecture guard"
+        )
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "from redis.exceptions import ConnectionError",
+            "from redis.asyncio.retry import Retry",
+            "from redis.backoff import ExponentialBackoff",
+            "from redis.crc import key_slot",
+        ],
+    )
+    def test_safe_helpers_are_not_flagged(self, source: str) -> None:
+        """Feature code needs these; flagging them would make the guard
+        unusable and invite a blanket allow-list."""
+        assert _find_restricted_imports(ast.parse(source)) == []
+
+    def test_a_type_checking_only_import_is_not_flagged(self) -> None:
+        source = (
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n"
+            "    from redis.asyncio.client import Redis\n"
+        )
+        assert _find_restricted_imports(ast.parse(source)) == []

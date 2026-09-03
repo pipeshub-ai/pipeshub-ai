@@ -238,6 +238,7 @@ spec:
                   redis.mode=cluster and --set redis.enabled=false to skip deploying the subchart
                   entirely (wired via the `condition: redis.enabled` dependency in Chart.yaml).
             */}}
+            {{- include "pipeshub-ai.validateRedis" . }}
             {{- if .Values.redis.external.enabled }}
             - name: REDIS_HOST
               value: ""

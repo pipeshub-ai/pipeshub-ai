@@ -106,6 +106,33 @@ describe('MessageBrokerFactory', () => {
   });
 
   // ================================================================
+  // REDIS_KEY_NAMESPACE guard
+  // ================================================================
+  describe('buildRedisBrokerConfig REDIS_KEY_NAMESPACE guard', () => {
+    afterEach(() => {
+      delete process.env.REDIS_KEY_NAMESPACE;
+    });
+
+    it('refuses a namespaced Redis Streams broker', () => {
+      // The namespace isolates KV keys, the invalidation channel and the
+      // BullMQ prefix -- but not stream or consumer-group names. Two releases
+      // on one endpoint would share both, so a message produced by one can be
+      // delivered to the other's consumer and acked there.
+      process.env.REDIS_KEY_NAMESPACE = 'tenant-a';
+      expect(() => buildRedisBrokerConfig(redisConfig)).to.throw(
+        /does not isolate Redis Streams/,
+      );
+    });
+
+    it('allows an unset or blank namespace', () => {
+      delete process.env.REDIS_KEY_NAMESPACE;
+      expect(() => buildRedisBrokerConfig(redisConfig)).to.not.throw();
+      process.env.REDIS_KEY_NAMESPACE = '   ';
+      expect(() => buildRedisBrokerConfig(redisConfig)).to.not.throw();
+    });
+  });
+
+  // ================================================================
   // createMessageProducerForBrokerType
   // ================================================================
   describe('createMessageProducerForBrokerType', () => {

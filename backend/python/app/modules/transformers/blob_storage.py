@@ -218,7 +218,7 @@ async def get_shared_signed_url_cache(config_service: Any, logger: Any) -> ISign
                 )
             )
             await client.ping()
-            cache = RedisSignedUrlCache(client)
+            cache = RedisSignedUrlCache(client, provider.key_namespace)
         except Exception as e:
             if client is not None:
                 try:

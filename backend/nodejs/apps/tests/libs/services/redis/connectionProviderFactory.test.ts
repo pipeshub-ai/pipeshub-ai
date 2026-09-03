@@ -1,11 +1,15 @@
 import { expect } from 'chai';
+import type { Redis } from 'ioredis';
 
 import { createIoredisCapture } from '../../../helpers/mock-ioredis-capture';
 import {
   RedisConnectionConfig,
   redisConnectionConfigFromEnv,
 } from '../../../../src/libs/services/redis/connectionConfig';
-import { IRedisConnectionProvider } from '../../../../src/libs/services/redis/connectionProvider.interface';
+import {
+  IRedisConnectionProvider,
+  RedisClient,
+} from '../../../../src/libs/services/redis/connectionProvider.interface';
 import {
   RedisConnectionProviderFactory,
   getRedisProvider,
@@ -16,6 +20,10 @@ function config(overrides: Partial<RedisConnectionConfig> = {}): RedisConnection
   return { ...redisConnectionConfigFromEnv(), host: 'h', db: 0, ...overrides };
 }
 
+// This test only exercises factory registration/caching/dispatch, never a
+// real client, so the stub client is an empty object cast to the interface's
+// declared return types (not `any`) -- that keeps a future incompatible
+// change to `IRedisConnectionProvider`'s signatures caught here too.
 class FakeProvider implements IRedisConnectionProvider {
   readonly isCluster = false;
   readonly mode = 'fake';
@@ -23,9 +31,9 @@ class FakeProvider implements IRedisConnectionProvider {
     return this.config.keyNamespace;
   }
   constructor(public readonly config: RedisConnectionConfig) {}
-  getClient(): any { return {}; }
-  createClient(): any { return {}; }
-  createPubSubClient(): any { return {}; }
+  getClient(): RedisClient { return {} as RedisClient; }
+  createClient(): RedisClient { return {} as RedisClient; }
+  createPubSubClient(): Redis { return {} as Redis; }
   release(): void { /* no-op */ }
   async *scanKeys(): AsyncIterable<string> { /* empty */ }
   async loadScript(): Promise<string> { return 'sha'; }

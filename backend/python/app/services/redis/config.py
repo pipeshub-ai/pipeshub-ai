@@ -11,6 +11,27 @@ from typing import Awaitable, Callable, Literal, Optional
 
 ScaleReads = Literal["master", "slave", "all"]
 
+# The spellings operators actually write. Matching only "true" meant
+# `REDIS_TLS_ENABLED=1` produced a *plaintext* connection still carrying the
+# Redis password, and -- worse, because it defaults on --
+# `REDIS_TLS_REJECT_UNAUTHORIZED=yes` silently *disabled* certificate
+# verification. Both fail open with no error to notice.
+_TRUTHY = frozenset({"true", "1", "yes", "on"})
+_FALSY = frozenset({"false", "0", "no", "off"})
+
+
+def _env_flag(name: str, default: bool) -> bool:  # noqa: FBT001
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in _TRUTHY:
+        return True
+    if normalized in _FALSY:
+        return False
+    return default
+
+
 
 @dataclass
 class Credentials:
@@ -103,10 +124,36 @@ class RedisConnectionConfig:
         base.host = host
         base.port = port
         base.password = password
-        base.username = username
         base.db = db
+        # Only override the env-derived username when a caller actually
+        # supplies one. The stored Redis config has no username field at all,
+        # so `REDIS_USERNAME` is the only source there is -- assigning the
+        # parameter unconditionally nulled it at every call site, which breaks
+        # any Redis ACL deployment that has disabled the default user.
+        if username is not None:
+            base.username = username
         base.tls = base.tls or bool(tls)
         return base
+
+    @staticmethod
+    def from_redis_config(config: object) -> "RedisConnectionConfig":
+        """Adapt a stored Redis config object (``app.services.messaging.config``
+        ``RedisConfig`` / ``RedisStreamsConfig``, or the typed config
+        ``ConfigurationService.get_redis_config()`` returns) in one call.
+
+        Preferred over calling ``from_host_port`` field-by-field: every call
+        site that spelled the fields out by hand dropped ``tls``, silently
+        downgrading a TLS-configured deployment to a plaintext connection.
+        Adding a field to the stored model now reaches every caller.
+        """
+        return RedisConnectionConfig.from_host_port(
+            host=getattr(config, "host", "localhost"),
+            port=getattr(config, "port", 6379),
+            password=getattr(config, "password", None),
+            db=getattr(config, "db", 0),
+            username=getattr(config, "username", None),
+            tls=bool(getattr(config, "tls", False)),
+        )
 
     @staticmethod
     def from_env(prefix: str = "REDIS_") -> "RedisConnectionConfig":
@@ -118,11 +165,10 @@ class RedisConnectionConfig:
             port=int(os.getenv(f"{prefix}PORT", "6379")),
             username=os.getenv(f"{prefix}USERNAME") or None,
             password=os.getenv(f"{prefix}PASSWORD") or None,
-            tls=os.getenv(f"{prefix}TLS_ENABLED", "false").lower() == "true",
-            tls_reject_unauthorized=os.getenv(
-                f"{prefix}TLS_REJECT_UNAUTHORIZED", "true"
-            ).lower()
-            == "true",
+            tls=_env_flag(f"{prefix}TLS_ENABLED", False),
+            tls_reject_unauthorized=_env_flag(
+                f"{prefix}TLS_REJECT_UNAUTHORIZED", True
+            ),
             tls_ca_path=os.getenv(f"{prefix}TLS_CA_PATH") or None,
             db=int(os.getenv(f"{prefix}DB", "0")),
             key_namespace=os.getenv(f"{prefix}KEY_NAMESPACE", ""),

@@ -165,6 +165,15 @@ class TestConnectionUrl:
         provider = StandaloneRedisProvider(_config(host="h", port=1234, tls=True))
         assert provider.connection_url().startswith("rediss://")
 
+    def test_password_with_reserved_characters_is_percent_encoded(self, mock_redis_cls):
+        provider = StandaloneRedisProvider(
+            _config(host="h", port=1234, username="u@1", password="p@ss:w/rd#1")
+        )
+        url = provider.connection_url()
+        # Un-encoded '@'/'/'/'#' in the credentials would otherwise be
+        # mistaken for the authority separator, path, or fragment delimiter.
+        assert url == "redis://u%401:p%40ss%3Aw%2Frd%231@h:1234/0"
+
 
 class TestPing:
     @pytest.mark.asyncio

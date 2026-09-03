@@ -172,15 +172,17 @@ export abstract class BaseRedisStreamsProducerConnection
     this.redis = createStreamsClient(this.config);
     try {
       await closing.quit();
-      // The provider tracks every client it hands out so shutdown can close
-      // them; a reconnect loop that never releases the ones it replaced
-      // would hold a dead client per cycle for the process's life.
-      streamsProvider(this.config).release(closing);
       this.logger.info('Successfully disconnected Redis Streams producer');
     } catch (error) {
       this.logger.error('Error disconnecting Redis Streams producer', {
         error: (error as Error).message,
       });
+    } finally {
+      // `finally`, not the try body: `quit()` on a client whose connection
+      // already dropped rejects, and releasing only on the success path
+      // retains one dead client per reconnect cycle -- exactly the leak this
+      // release exists to prevent.
+      streamsProvider(this.config).release(closing);
     }
   }
 
@@ -372,11 +374,18 @@ export abstract class BaseRedisStreamsConsumerConnection
       const closing = [this.redis, this.ackRedis];
       this.redis = createStreamsClient(this.config);
       this.ackRedis = createStreamsClient(this.config);
-      await Promise.all(closing.map((client) => client.quit()));
-      // See the producer's disconnect(): released so the provider does not
-      // accumulate a dead client per reconnect cycle.
+      // `allSettled` + release outside the failure path: `Promise.all` rejects
+      // as soon as either `quit()` does, so a single dropped connection used
+      // to leave BOTH replaced clients tracked forever.
+      const results = await Promise.allSettled(
+        closing.map((client) => client.quit()),
+      );
       const provider = streamsProvider(this.config);
       closing.forEach((client) => provider.release(client));
+      const failure = results.find((r) => r.status === 'rejected');
+      if (failure) {
+        throw (failure as PromiseRejectedResult).reason;
+      }
       this.logger.info('Successfully disconnected Redis Streams consumer');
     } catch (error) {
       this.logger.error('Error disconnecting Redis Streams consumer', {

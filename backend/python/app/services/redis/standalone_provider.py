@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from typing import AsyncIterator, Optional
+from urllib.parse import quote
 
 from redis.asyncio import BlockingConnectionPool, Redis
 from redis.asyncio.retry import Retry
@@ -61,6 +62,18 @@ class StandaloneRedisProvider(IRedisConnectionProvider):
                 "REDIS_DB=%s is deprecated; prefer REDIS_KEY_NAMESPACE for tenant "
                 "isolation. Ignored entirely in cluster mode.",
                 self._config.db,
+            )
+        if self._config.tls and not self._config.tls_reject_unauthorized:
+            # Kept as an escape hatch (self-signed certs, cert-rotation
+            # windows) but never silent: with verification off the connection
+            # is encrypted yet unauthenticated, so it does not protect against
+            # an active man-in-the-middle. REDIS_TLS_CA_PATH is the fix for a
+            # private CA.
+            logger.warning(
+                "REDIS_TLS_REJECT_UNAUTHORIZED=false: Redis TLS certificates are "
+                "NOT verified, so the connection is encrypted but not "
+                "authenticated. Set REDIS_TLS_CA_PATH to trust a private CA "
+                "instead of disabling verification."
             )
 
     def _retry_policy(self) -> Retry:
@@ -157,12 +170,12 @@ class StandaloneRedisProvider(IRedisConnectionProvider):
         scheme = "rediss" if self._config.tls else "redis"
         auth = ""
         if self._config.username:
-            auth = self._config.username
+            auth = quote(self._config.username, safe="")
             if self._config.password:
-                auth += f":{self._config.password}"
+                auth += f":{quote(self._config.password, safe='')}"
             auth += "@"
         elif self._config.password:
-            auth = f":{self._config.password}@"
+            auth = f":{quote(self._config.password, safe='')}@"
         return f"{scheme}://{auth}{self._config.host}:{self._config.port}/{self._config.db}"
 
     async def ping(self) -> bool:

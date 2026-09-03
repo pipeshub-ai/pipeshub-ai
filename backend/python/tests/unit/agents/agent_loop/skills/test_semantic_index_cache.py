@@ -91,3 +91,63 @@ class TestVectorCache:
 
         # "a" was cached and still scores semantically; "new" falls back to keyword.
         assert set(index._vectors) == {"a"}
+
+
+class TestVectorCacheSizing:
+    """`PIPESHUB_SKILL_VECTOR_CACHE_SIZE` is a process-level memory knob, so a
+    bad value must degrade to the default rather than break the module.
+
+    Each of these used to fail: a non-numeric value raised `ValueError` at
+    *import*, taking down every importer of this module; 0 or a negative value
+    built an `LRUCache` that raises `ValueError: value too large` on the first
+    write — inside the embedding path, whose only fallback is silent keyword
+    scoring.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_module(self, monkeypatch) -> Iterator[None]:
+        """`importlib.reload` rebinds this module's globals for the rest of the
+        session, so the env is reset and the module reloaded once more on the
+        way out — otherwise a later test in another file inherits whichever
+        cache size ran last here."""
+        yield
+        monkeypatch.delenv("PIPESHUB_SKILL_VECTOR_CACHE_SIZE", raising=False)
+        import importlib
+
+        importlib.reload(si)
+
+    @staticmethod
+    def _reload(monkeypatch, value: str | None) -> object:
+        import importlib
+
+        if value is None:
+            monkeypatch.delenv("PIPESHUB_SKILL_VECTOR_CACHE_SIZE", raising=False)
+        else:
+            monkeypatch.setenv("PIPESHUB_SKILL_VECTOR_CACHE_SIZE", value)
+        return importlib.reload(si)
+
+    @pytest.mark.parametrize("value", ["abc", "", "  ", "1.5"])
+    def test_a_malformed_value_falls_back_to_the_default(
+        self, monkeypatch, value: str
+    ) -> None:
+        module = self._reload(monkeypatch, value)
+        assert module._VECTOR_CACHE_MAX == 4096
+
+    @pytest.mark.parametrize("value", ["0", "-5"])
+    def test_a_non_positive_value_still_yields_a_usable_cache(
+        self, monkeypatch, value: str
+    ) -> None:
+        module = self._reload(monkeypatch, value)
+        assert module._VECTOR_CACHE_MAX >= 1
+        # The regression: LRUCache(maxsize=0) raises on the first insert.
+        module._vector_cache["k"] = [0.1, 0.2]
+        assert module._vector_cache["k"] == [0.1, 0.2]
+
+    def test_a_valid_value_is_honoured(self, monkeypatch) -> None:
+        module = self._reload(monkeypatch, "256")
+        assert module._VECTOR_CACHE_MAX == 256
+        assert module._vector_cache.maxsize == 256
+
+    def test_unset_uses_the_default(self, monkeypatch) -> None:
+        module = self._reload(monkeypatch, None)
+        assert module._VECTOR_CACHE_MAX == 4096

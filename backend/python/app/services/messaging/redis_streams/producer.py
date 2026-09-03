@@ -25,9 +25,7 @@ class RedisStreamsProducer(IMessagingProducer):
         self.logger = logger
         self.config = config
         self._provider: "IRedisConnectionProvider" = provider or get_redis_provider(
-            RedisConnectionConfig.from_host_port(
-                host=config.host, port=config.port, password=config.password, db=config.db
-            )
+            RedisConnectionConfig.from_redis_config(config)
         )
         self.redis: "RedisClient | None" = None
         self._lock = asyncio.Lock()

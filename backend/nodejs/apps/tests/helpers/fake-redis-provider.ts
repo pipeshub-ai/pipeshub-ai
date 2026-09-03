@@ -13,6 +13,8 @@
 import { EventEmitter } from 'events';
 import sinon from 'sinon';
 
+import { IRedisConnectionProvider } from '../../src/libs/services/redis/connectionProvider.interface';
+
 export interface FakeRedisClient extends EventEmitter {
   [command: string]: any;
 }
@@ -65,7 +67,13 @@ export function makeFakeRedisClient(
   return client;
 }
 
-export interface FakeRedisProvider {
+/**
+ * `extends IRedisConnectionProvider` so the compiler enforces that this
+ * double stays complete: a member added to the interface breaks this file
+ * rather than silently returning `undefined` to production code through an
+ * `as any` cast.
+ */
+export interface FakeRedisProvider extends IRedisConnectionProvider {
   isCluster: boolean;
   mode: string;
   keyNamespace: string;
@@ -139,6 +147,6 @@ export function createFakeRedisProvider(
 export function stubGetRedisProvider(provider: FakeRedisProvider): () => void {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const mod = require('../../src/libs/services/redis/connectionProviderFactory');
-  const stub = sinon.stub(mod, 'getRedisProvider').returns(provider as any);
+  const stub = sinon.stub(mod, 'getRedisProvider').returns(provider);
   return () => stub.restore();
 }

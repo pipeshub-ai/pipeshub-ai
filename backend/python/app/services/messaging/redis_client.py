@@ -75,9 +75,7 @@ class RedisClientRegistry:
             blocking=True,
         )
         self._provider: "IRedisConnectionProvider" = get_redis_provider(
-            RedisConnectionConfig.from_host_port(
-                host=config.host, port=config.port, password=config.password, db=config.db
-            )
+            RedisConnectionConfig.from_redis_config(config)
         )
         self._lock = threading.Lock()
         # Keyed by thread, with the bound loop stored alongside so a client

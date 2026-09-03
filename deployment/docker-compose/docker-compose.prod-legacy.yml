@@ -89,10 +89,10 @@ services:
       # wire protocol) when REDIS_HOST/PORT above are overridden to point at
       # one. REDIS_DB is rejected outright once REDIS_MODE != standalone --
       # use REDIS_KEY_NAMESPACE for tenant isolation instead.
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-}@redis:6379
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_KV_PREFIX=${REDIS_KV_PREFIX:-pipeshub:kv:}
       - REDIS_TIMEOUT=${REDIS_TIMEOUT:-10000}
       - REDIS_DB=${REDIS_DB:-0}

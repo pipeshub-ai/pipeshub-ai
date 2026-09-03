@@ -18,6 +18,10 @@ import asyncio
 
 import pytest
 
+from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
+
+fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
+
 from app.modules.transformers import blob_storage as bs
 from app.modules.transformers.blob_storage import BlobStorage, signed_url_cache_seconds
 from app.services.cache.interface import NoopSignedUrlCache
@@ -223,3 +227,36 @@ class TestClientIsSharedNotPerInstance:
 
         assert get_provider.call_count == 1, "the failure verdict must be cached"
         fake_client.aclose.assert_awaited_once()
+
+
+class TestSignedUrlKeyNamespacing:
+    """`REDIS_KEY_NAMESPACE` has to reach these keys too (R9).
+
+    Every signed-URL key is `sigurl:<org>:<doc>`, and org ids do not differ
+    between a staging and a production copy of the same tenant -- so two
+    deployments sharing one Redis would serve each other's signed URLs, which
+    are bearer credentials for blob content.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_value_written_under_one_namespace_misses_under_another(
+        self,
+    ) -> None:
+        fake = fakeredis_aioredis.FakeRedis(decode_responses=True)
+        cache_a = RedisSignedUrlCache(fake, "tenant-a")
+        cache_b = RedisSignedUrlCache(fake, "tenant-b")
+
+        await cache_a.set("sigurl:org1:doc1", "https://a.example/signed", 60)
+
+        assert await cache_a.get("sigurl:org1:doc1") == "https://a.example/signed"
+        assert await cache_b.get("sigurl:org1:doc1") is None
+
+    @pytest.mark.asyncio
+    async def test_an_unset_namespace_leaves_the_key_unchanged(self) -> None:
+        """Existing deployments keep their current keys; the namespace is opt-in."""
+        fake = fakeredis_aioredis.FakeRedis(decode_responses=True)
+        cache = RedisSignedUrlCache(fake)
+
+        await cache.set("sigurl:org1:doc1", "https://example/signed", 60)
+
+        assert await fake.get("sigurl:org1:doc1") == "https://example/signed"

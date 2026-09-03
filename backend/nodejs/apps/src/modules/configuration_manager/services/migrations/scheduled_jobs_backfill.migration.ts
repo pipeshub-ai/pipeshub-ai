@@ -255,7 +255,11 @@ export class ScheduledJobsBackfillMigration {
    * it must never block the backfill that actually restores the schedules.
    */
   private async sweepLegacyQueueKeys(): Promise<void> {
-    const LEGACY_PREFIX = 'bull:';
+    // Scoped to this one queue, never a bare `bull:*`: that default prefix is
+    // shared by every BullMQ queue in the database, so a wildcard sweep would
+    // delete another service's jobs, delayed work, and queue metadata if it
+    // shares this Redis.
+    const LEGACY_PREFIX = 'bull:crawling-scheduler:';
     const DELETE_CHUNK = 200;
     try {
       const provider = getRedisProvider(

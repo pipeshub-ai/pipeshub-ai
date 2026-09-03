@@ -3,6 +3,7 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import { EventEmitter } from 'events';
 import { stubGetRedisProvider } from '../../helpers/fake-redis-provider';
+import { IRedisConnectionProvider } from '../../../src/libs/services/redis/connectionProvider.interface';
 
 /**
  * Regression cover for reconnect-after-stop.
@@ -44,9 +45,10 @@ describe('Redis Streams reconnect after disconnect', () => {
 
   beforeEach(() => {
     clients = [];
-    const provider = {
+    const provider: IRedisConnectionProvider = {
       isCluster: false,
       mode: 'standalone',
+      keyNamespace: '',
       getClient: sinon.stub().callsFake(() => {
         const c = makeClient();
         clients.push(c);
