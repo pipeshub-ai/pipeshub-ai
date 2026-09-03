@@ -34964,8 +34964,7 @@ paths:
         '404':
           description: |
             No AI models configuration in KV store, or no provider with the given modelKey.
-            Health-check runs before KV lookup, so unknown keys with invalid credentials may
-            return 400 from the health-check instead.
+            KV lookup and type-mismatch checks run before the health-check.
           content:
             application/json:
               schema:
