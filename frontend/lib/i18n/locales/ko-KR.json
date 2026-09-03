@@ -377,6 +377,7 @@
       "subtitleExisting": "PipesHub 서버 URL을 확인하거나 업데이트하세요.",
       "label": "서버 URL",
       "submit": "연결",
+      "changeServer": "서버 변경",
       "errors": {
         "empty": "서버 URL을 입력해 주세요.",
         "invalid": "유효한 URL을 입력해 주세요 (예: http://localhost:3000).",
