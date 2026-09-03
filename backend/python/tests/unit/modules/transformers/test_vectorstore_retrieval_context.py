@@ -1,14 +1,11 @@
-"""Embedded text carries where a block lives, and tests get no summary vector.
+"""Embedded text carries where a block lives, not only what it contains.
 
 Measured on a live index for the query `"stream record" implementation`: the
 top eight results were six test files and two TypeScript files, and
 `connector_service.py` -- which defines the abstract `stream_record` contract --
-was returned by neither of the two searches at all.
-
-Two causes, one per change here. The abstract method is a signature and a
-docstring, so its block had almost no text to match on; and every test file
-carried a summary vector describing the thing it tests, in that thing's own
-words.
+was returned by neither of the two searches at all. Its blocks are a signature
+and a docstring, so there was almost nothing in them to match on; the words
+that identify the file live in its name and path.
 """
 from types import SimpleNamespace
 
@@ -24,10 +21,8 @@ VRID = "vrid-1"
 ORG = "org-1"
 
 
-def _record(name, external_id, file_role=None):
-    return SimpleNamespace(
-        record_name=name, external_record_id=external_id, file_role=file_role
-    )
+def _record(name, external_id):
+    return SimpleNamespace(record_name=name, external_record_id=external_id)
 
 
 def _code_block(text, qualified_name=None, block_id="b1", index=0):
@@ -104,36 +99,10 @@ class TestRecordSummaryDocument:
         summary="Synchronizes Jira projects, issues and permissions."
     )
 
-    def test_a_test_file_gets_no_summary_vector(self) -> None:
-        """Its summary describes the connector, not the test, so it competes
-        with the connector for the connector's own queries."""
-        assert _build_summary(
-            "rec-1", VRID, ORG, self._SUMMARY,
-            _record("test_jira_connector.py", "tests/test_jira_connector.py", file_role="test"),
-        ) is None
-
-    def test_role_match_is_case_insensitive(self) -> None:
-        assert _build_summary(
-            "rec-1", VRID, ORG, self._SUMMARY,
-            _record("t.py", "t.py", file_role="TEST"),
-        ) is None
-
-    def test_source_files_still_get_one(self) -> None:
-        doc = _build_summary(
-            "rec-1", VRID, ORG, self._SUMMARY,
-            _record("jira_connector.py", "app/jira_connector.py", file_role="source"),
-        )
+    def test_every_record_gets_one(self) -> None:
+        doc = _build_summary("rec-1", VRID, ORG, self._SUMMARY)
         assert doc is not None
         assert doc.metadata["isRecordSummary"] is True
 
-    def test_records_with_no_role_are_unaffected(self) -> None:
-        """Non-code records (documents, mail) carry no file_role at all."""
-        assert _build_summary("rec-1", VRID, ORG, self._SUMMARY, _record("a.pdf", "a.pdf")) is not None
-
-    def test_record_is_optional(self) -> None:
-        assert _build_summary("rec-1", VRID, ORG, self._SUMMARY) is not None
-
     def test_still_none_without_a_summary(self) -> None:
-        assert _build_summary(
-            "rec-1", VRID, ORG, SimpleNamespace(summary=""), _record("a.py", "a.py")
-        ) is None
+        assert _build_summary("rec-1", VRID, ORG, SimpleNamespace(summary="")) is None

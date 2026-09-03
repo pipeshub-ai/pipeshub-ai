@@ -1,6 +1,5 @@
 import base64
 import io
-import json
 import logging
 from functools import lru_cache
 from typing import List, Literal, Optional, Union
@@ -244,13 +243,14 @@ def to_semantic_metadata(
 
 
 def find_code_summary_block(blocks: List[Block]) -> Optional[Block]:
-    """Return the file-summary block CodeFileParser emits, if this is a code file.
+    """Return the file-summary block CodeFileParser emits, if there is one.
 
-    Keying off the block rather than ``record.record_type`` is what lets the
-    inline transformer and the standalone extraction service take the same
-    branch: the service only ever receives a BlocksContainer, and the summary
-    block carries the file path and language the prompt needs. No other parser
-    emits ``BlockType.RECORD_SUMMARY``.
+    This locates the code prompt's input, it does not decide the branch — that
+    is the caller's ``is_code``. The block carries the repo-relative path, the
+    language, and the symbol table the prompt renders instead of raw source,
+    none of which reach the extraction service any other way. Absent on a file
+    with no tree-sitter grammar, which parses as prose. No other parser emits
+    ``BlockType.RECORD_SUMMARY``.
     """
     for block in blocks:
         if (
@@ -272,7 +272,7 @@ class DocumentExtraction(Transformer):
         record = ctx.record
         blocks = record.block_containers.blocks
 
-        summary_block = find_code_summary_block(blocks)
+        summary_block = find_code_summary_block(blocks) if ctx.is_code else None
         if summary_block is not None:
             classification = await self.process_code_document(
                 blocks, summary_block, record.block_containers.block_groups
@@ -283,27 +283,8 @@ class DocumentExtraction(Transformer):
         if classification is None:
             record.semantic_metadata = None
             return
-        record.semantic_metadata = SemanticMetadata(
-            departments=document_classification.departments,
-            languages=document_classification.languages,
-            topics=document_classification.topics,
-            summary=document_classification.summary,
-            categories=[document_classification.category],
-            sub_category_level_1=document_classification.subcategories.level1,
-            sub_category_level_2=document_classification.subcategories.level2,
-            sub_category_level_3=document_classification.subcategories.level3,
-        )
+        record.semantic_metadata = to_semantic_metadata(classification)
         self.logger.debug("🎯 Document extraction completed successfully")
-
-
-        try:
-            with open("test.txt", "a") as f:
-                f.write(f"record_id={record.id} record_name={getattr(record, 'record_name', 'N/A')}\n")
-                f.write(json.dumps(record.semantic_metadata.model_dump(), indent=2, default=str))
-                f.write("\n---\n")
-        except Exception:
-            self.logger.debug("Failed to write semantic metadata to test.txt", exc_info=True)
-
 
     def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool, context_length: int) -> List[dict]:
         MAX_TOKENS = int(context_length * CONTENT_TOKEN_RATIO)
@@ -412,6 +393,7 @@ class DocumentExtraction(Transformer):
         org_id: str,
         departments: Optional[List[str]] = None,
         block_groups: Optional[List[BlockGroup]] = None,
+        is_code: bool = False,
     ) -> Optional[Union[DocumentClassification, CodeClassification]]:
         """Extract metadata using pre-fetched *departments*.
 
@@ -420,13 +402,21 @@ class DocumentExtraction(Transformer):
         ``None`` or empty the method falls back to the DepartmentNames defaults
         rather than making a graph call.
 
-        Code files take the same branch here as they do in :meth:`apply`, so the
-        service pipeline and the inline pipeline classify them identically.
+        *is_code* is the caller's record-level decision (``events._is_code_file``),
+        so the service pipeline and the inline pipeline classify a given record
+        identically. The summary block is still read for the path and language the
+        code prompt interpolates; a record flagged as code that produced no such
+        block was parsed as prose (no tree-sitter grammar) and has nothing for
+        that prompt to describe, so it falls through to the document prompt.
         """
 
-        summary_block = find_code_summary_block(blocks)
+        summary_block = find_code_summary_block(blocks) if is_code else None
         if summary_block is not None:
             return await self.process_code_document(blocks, summary_block, block_groups)
+        if is_code:
+            self.logger.info(
+                "Record flagged as code has no summary block; using document extraction"
+            )
 
         self.logger.info("🎯 Extracting domain metadata (pre-fetched departments)")
         self.llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
