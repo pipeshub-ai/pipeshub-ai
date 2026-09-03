@@ -170,7 +170,7 @@ class TestConnectorDeletion:
             graph_provider=graph, collection_registry=registry, vector_db_service=vdb,
         )
 
-        await pipeline.purge_connector(
+        await pipeline.purge_connector_by_virtual_record_ids(
             DeleteContext(org_id="org-1", connector_id="inst-1", connector_name="DRIVE"),
             ["vr-1"],
         )
@@ -396,7 +396,7 @@ class TestConnectorDeleteEndToEnd:
             vdb, registry, {"vr-shared": [_rec("rec-slack", "SLACK", "inst-slack")]}
         )
 
-        result = await pipeline.purge_connector(
+        result = await pipeline.purge_connector_by_virtual_record_ids(
             DeleteContext(
                 org_id="org-1", connector_id="inst-drive", connector_name="DRIVE"
             ),
@@ -413,7 +413,7 @@ class TestConnectorDeleteEndToEnd:
         registry = await _two_connectors(vdb)
         pipeline, graph = await self._pipeline_with(vdb, registry, {})
 
-        result = await pipeline.purge_connector(
+        result = await pipeline.purge_connector_by_virtual_record_ids(
             DeleteContext(
                 org_id="org-1", connector_id="inst-drive", connector_name="DRIVE"
             ),
@@ -433,7 +433,7 @@ class TestConnectorDeleteEndToEnd:
             vdb, registry, {"vr-shared": [_rec("rec-slack", "SLACK", "inst-slack")]}
         )
 
-        await pipeline.purge_connector(
+        await pipeline.purge_connector_by_virtual_record_ids(
             DeleteContext(
                 org_id="org-1", connector_id="inst-drive", connector_name="DRIVE"
             ),
@@ -451,7 +451,7 @@ class TestConnectorDeleteEndToEnd:
         registry = await _two_connectors(vdb)
         pipeline, _ = await self._pipeline_with(vdb, registry, {})
 
-        result = await pipeline.purge_connector(
+        result = await pipeline.purge_connector_by_virtual_record_ids(
             DeleteContext(
                 org_id="org-1", connector_id="inst-drive", connector_name="DRIVE"
             ),
@@ -465,7 +465,7 @@ class TestConnectorDeleteEndToEnd:
         registry = await _two_connectors(vdb)
         pipeline, _ = await self._pipeline_with(vdb, registry, {})
 
-        result = await pipeline.purge_connector(
+        result = await pipeline.purge_connector_by_virtual_record_ids(
             DeleteContext(
                 org_id="org-1", connector_id="inst-drive", connector_name="DRIVE"
             ),

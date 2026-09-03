@@ -63,6 +63,14 @@ def field_conditions_to_redis_query(conditions: List[FieldCondition]) -> str:
     for cond in conditions:
         field = cond.key  # already has "metadata." prefix
         redis_field = "@" + field.replace(".", "_")  # dots not allowed in field names
+        if cond.values_count_lte is not None:
+            # RediSearch TAG fields carry no length predicate. Callers must peel
+            # these off with split_values_count_conditions() and apply them to
+            # the results; silently dropping one here would widen a delete.
+            raise NotImplementedError(
+                f"values_count_lte on '{field}' cannot be expressed as a Redis "
+                "FT query; split it off before building the query"
+            )
         if cond.values is not None:
             escaped = "|".join(escape_tag_value(str(v)) for v in cond.values)
             parts.append(f"{redis_field}:{{{escaped}}}")
@@ -185,6 +193,81 @@ def split_tag_values(value: Any) -> List[str]:
     if isinstance(value, (list, tuple)):
         return [str(v) for v in value if v is not None and str(v)]
     return [p for p in str(value).split(",") if p]
+
+
+def parse_search_rows(raw: Any) -> Tuple[List[tuple], int]:
+    """Split an ``FT.SEARCH`` reply into ``(key, {field: value})`` rows.
+
+    The reply is a flat ``[total, key1, fields1, key2, fields2, ...]`` list.
+    Returns the parsed rows and how many rows the reply actually contained: a
+    caller paging through results uses the raw count to decide whether it saw a
+    full page, and using the parsed count instead would let one unreadable
+    document end the walk early and silently skip the rest.
+    """
+    if not raw or not isinstance(raw, (list, tuple)) or len(raw) < 2:
+        return [], 0
+
+    rows: List[tuple] = []
+    raw_rows = 0
+    items = list(raw[1:])
+    i = 0
+    while i < len(items) - 1:
+        key = items[i]
+        fields_list = items[i + 1]
+        i += 2
+        raw_rows += 1
+        if not isinstance(fields_list, (list, tuple)):
+            continue
+        try:
+            rows.append((key, _parse_fields_list(fields_list)))
+        except Exception:
+            continue
+    return rows, raw_rows
+
+
+def parse_aggregate_rows(raw: Any) -> Tuple[List[tuple], int, int]:
+    """Split an ``FT.AGGREGATE ... WITHCURSOR`` reply into rows and a cursor id.
+
+    The reply is ``[[total, row1, row2, ...], cursor_id]`` where each row is a
+    flat ``[name, value, ...]`` list and the document key arrives as ``__key``
+    because the caller asked for it via ``LOAD @__key``. A cursor id of 0 means
+    the walk is finished. Returns ``(rows, cursor_id, unparsed_row_count)``.
+    """
+    if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+        return [], 0, 0
+
+    results, cursor = raw[0], raw[1]
+    try:
+        cursor_id = int(_decode(cursor) or 0)
+    except (TypeError, ValueError):
+        cursor_id = 0
+
+    rows: List[tuple] = []
+    unparsed = 0
+    if isinstance(results, (list, tuple)):
+        for row in list(results)[1:]:
+            fields = _parse_fields_list(row)
+            key = fields.get("__key")
+            if not key:
+                unparsed += 1
+                continue
+            rows.append((key, fields))
+    return rows, cursor_id, unparsed
+
+
+def within_values_count(fields: Dict[str, Any], limits: List[tuple]) -> bool:
+    """True when every ``(field, upper_bound)`` holds for this document.
+
+    Mirrors the "absent field counts as zero" semantics of the other providers'
+    array-length filters.
+    """
+    for redis_field, limit in limits:
+        raw = fields.get(redis_field)
+        if isinstance(raw, bytes):
+            raw = raw.decode(errors="replace")
+        if len(split_tag_values(raw)) > limit:
+            return False
+    return True
 
 
 def _coerce_hash_value(v: Any) -> Union[str, int, float, bytes]:

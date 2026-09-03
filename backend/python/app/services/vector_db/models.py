@@ -63,9 +63,19 @@ class SparseVector:
 
 @dataclass
 class FieldCondition:
+    """One filter predicate on a payload field.
+
+    ``values_count_lte`` bounds how many elements an array field holds. Only
+    meaningful for the membership arrays (``connectorIds``,
+    ``recordGroupIds``), and only ever valid in a MUST clause — callers apply
+    the bound conjunctively, so under ``must_not`` it would come back with its
+    meaning inverted.
+    """
+
     key: str
     value: Optional[FilterValue] = None
     values: Optional[List[Union[str, int, float, bool]]] = None
+    values_count_lte: Optional[int] = None
 
 
 @dataclass
@@ -77,6 +87,24 @@ class FilterExpression:
 
     def is_empty(self) -> bool:
         return not self.must and not self.should and not self.must_not
+
+    def has_positive_match(self) -> bool:
+        """Whether anything here matches on a *value* rather than only a count.
+
+        A point whose array field is absent satisfies an array-length bound
+        too, so a count-only expression matches most of a collection. Delete
+        paths refuse one on that basis.
+
+        ``must_not`` is deliberately excluded: it only ever *subtracts*, so a
+        term there is not the positive match a bound needs. Counting it would
+        let ``filter_collection(MUST_NOT, max_values=..., virtualRecordId=x)``
+        — a single public call — pass every provider's delete guard and wipe
+        the collection bar one record.
+        """
+        return any(
+            cond.value is not None or cond.values is not None
+            for cond in (*self.must, *self.should)
+        )
 
 
 @dataclass
