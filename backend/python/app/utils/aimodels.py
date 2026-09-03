@@ -235,6 +235,14 @@ def embedding_config_hash(embedding_configs: "list[dict[str, Any]] | None") -> s
             "endpoint": configuration.get("endpoint"),
             "dimensions": configuration.get("dimensions"),
             "apiKey": configuration.get("apiKey"),
+            "organizationId": configuration.get("organizationId"),
+            "trustRemoteCode": configuration.get("trustRemoteCode"),
+            "region": configuration.get("region"),
+            "awsAccessKeyId": configuration.get("awsAccessKeyId"),
+            "awsAccessSecretKey": configuration.get("awsAccessSecretKey"),
+            "serviceAccountJson": configuration.get("serviceAccountJson"),
+            "project": configuration.get("project"),
+            "location": configuration.get("location"),
         })
     return hashlib.sha256(
         json.dumps(serialisable, sort_keys=True, default=str).encode()

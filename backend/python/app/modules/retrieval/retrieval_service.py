@@ -44,6 +44,7 @@ from app.utils.aimodels import (
     get_embedding_model,
     get_generator_model,
 )
+from app.utils.embedding_retry import await_with_retry
 from app.utils.chat_helpers import (
     GRAPH_BATCH_CHUNK_SIZE,
     get_flattened_results,
@@ -59,6 +60,8 @@ MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
 # Applied when a caller passes no limit at all. Matches `search_with_filters`'s
 # own default so the None path and the omitted path retrieve the same amount.
 DEFAULT_SEARCH_LIMIT = 20
+
+_RETRIEVAL_EMBED_MAX_RETRIES = 3
 
 # Caps concurrent per-collection queries during search fan-out. One under the
 # default SingleCollectionStrategy; a multi-collection strategy must not turn
@@ -886,7 +889,15 @@ class RetrievalService:
 
         sparse_embedder = await self._ensure_sparse_embedder()
 
-        dense_tasks = [dense_embeddings.aembed_query(query) for query in queries]
+        dense_tasks = [
+            await_with_retry(
+                lambda q=query: dense_embeddings.aembed_query(q),
+                max_retries=_RETRIEVAL_EMBED_MAX_RETRIES,
+                operation="aembed_query",
+                service_name="retrieval",
+            )
+            for query in queries
+        ]
         supports_sparse = self._capabilities.supports_sparse_vectors
         supports_text = self._capabilities.supports_server_side_text_search
 
