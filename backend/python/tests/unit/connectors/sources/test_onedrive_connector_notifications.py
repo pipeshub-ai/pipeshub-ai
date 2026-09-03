@@ -7,7 +7,10 @@ import pytest
 from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
-from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
+from app.connectors.sources.microsoft.onedrive.connector import (
+    OneDriveConnector,
+    OneDriveUserStatus,
+)
 from app.services.notification.types import NotificationSeverity, NotificationType
 
 
@@ -218,7 +221,7 @@ class TestSyncUserGroupsNotifications:
 class TestProcessUsersInBatchesNotifications:
 
     @pytest.mark.asyncio
-    async def test_user_drive_403_raises_without_notification(self):
+    async def test_user_drive_403_sends_unknown_error_warning(self):
         connector = _make_connector()
         active_user = MagicMock()
         active_user.email = "active@test.com"
@@ -233,14 +236,19 @@ class TestProcessUsersInBatchesNotifications:
             side_effect=_make_403_odata_error()
         )
 
-        with pytest.raises(ODataError):
-            await connector._process_users_in_batches([user])
+        await connector._process_users_in_batches([user])
 
         connector.msgraph_client.get_user_drive.assert_awaited_once_with("su-1")
-        connector.notify.assert_not_called()
+        _assert_notify(
+            connector,
+            notification_type=NotificationType.CONNECTOR_WARNING,
+            severity=NotificationSeverity.WARNING,
+            title="Some OneDrive users could not be checked",
+            message_contains="active@test.com",
+        )
 
     @pytest.mark.asyncio
-    async def test_user_drive_transient_error_does_not_notify(self):
+    async def test_user_drive_transient_error_sends_warning(self):
         connector = _make_connector()
         active_user = MagicMock()
         active_user.email = "active@test.com"
@@ -255,13 +263,18 @@ class TestProcessUsersInBatchesNotifications:
             side_effect=_make_transient_odata_error()
         )
 
-        with pytest.raises(ODataError):
-            await connector._process_users_in_batches([user])
+        await connector._process_users_in_batches([user])
 
-        connector.notify.assert_not_called()
+        _assert_notify(
+            connector,
+            notification_type=NotificationType.CONNECTOR_WARNING,
+            severity=NotificationSeverity.WARNING,
+            title="Some OneDrive users could not be checked",
+            message_contains="picked up by a later sync",
+        )
 
     @pytest.mark.asyncio
-    async def test_no_onedrive_users_warns(self):
+    async def test_user_without_provisioned_onedrive_warns(self):
         connector = _make_connector()
 
         active_user = MagicMock()
@@ -273,20 +286,19 @@ class TestProcessUsersInBatchesNotifications:
         user = MagicMock()
         user.email = "active@test.com"
         user.source_user_id = "su-1"
-        connector._user_has_onedrive = AsyncMock(return_value=False)
+        connector._user_has_onedrive = AsyncMock(
+            return_value=OneDriveUserStatus.NOT_PROVISIONED
+        )
         connector._run_sync_with_yield = AsyncMock()
 
         await connector._process_users_in_batches([user])
 
         _assert_notify(
             connector,
-            notification_type=NotificationType.CONNECTOR_RECORD_SYNC_ERROR,
+            notification_type=NotificationType.CONNECTOR_WARNING,
             severity=NotificationSeverity.WARNING,
-            title="No OneDrive users synced",
-            message=(
-                "Ensure that your OneDrive users are invited to Pipeshub, and verify "
-                "that your application has Files.Read.All API permission with admin consent."
-            ),
+            title="OneDrive not provisioned for some users",
+            message_contains="active@test.com",
         )
 
     @pytest.mark.asyncio
@@ -302,13 +314,46 @@ class TestProcessUsersInBatchesNotifications:
         user = MagicMock()
         user.email = "active@test.com"
         user.source_user_id = "su-1"
-        connector._user_has_onedrive = AsyncMock(return_value=True)
+        connector._user_has_onedrive = AsyncMock(
+            return_value=OneDriveUserStatus.AVAILABLE
+        )
         connector._run_sync_with_yield = AsyncMock()
 
         await connector._process_users_in_batches([user])
 
         connector.notify.assert_not_called()
         assert connector.onedrive_users_synced == 1
+
+    @pytest.mark.asyncio
+    async def test_failure_notifications_are_grouped_and_truncated(self):
+        connector = _make_connector()
+        failed_users = [
+            *[
+                (f"missing-{index}@test.com", OneDriveUserStatus.NOT_PROVISIONED)
+                for index in range(6)
+            ],
+            ("locked@test.com", OneDriveUserStatus.LOCKED),
+            ("unknown@test.com", OneDriveUserStatus.UNKNOWN_ERROR),
+        ]
+
+        await connector._notify_onedrive_user_failures(failed_users)
+
+        assert connector.notify.await_count == 3
+        notifications = {
+            call.kwargs["title"]: call.kwargs["message"]
+            for call in connector.notify.await_args_list
+        }
+        not_provisioned_message = notifications[
+            "OneDrive not provisioned for some users"
+        ]
+        assert "missing-0@test.com" in not_provisioned_message
+        assert "missing-4@test.com" in not_provisioned_message
+        assert "missing-5@test.com" not in not_provisioned_message
+        assert "and 1 more" in not_provisioned_message
+        assert "locked@test.com" in notifications["OneDrive locked for some users"]
+        assert "unknown@test.com" in notifications[
+            "Some OneDrive users could not be checked"
+        ]
 
 
 # ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple, Any
 
@@ -112,6 +113,14 @@ class OneDriveCredentials:
     client_id: str
     client_secret: str
     has_admin_consent: bool = False
+
+
+class OneDriveUserStatus(str, Enum):
+    AVAILABLE = "available"
+    NOT_PROVISIONED = "not_provisioned"
+    LOCKED = "locked"
+    UNKNOWN_ERROR = "unknown_error"
+
 
 @ConnectorBuilder("OneDrive")\
     .in_group("Microsoft 365")\
@@ -1285,21 +1294,27 @@ class OneDriveConnector(BaseConnector):
 
             self.logger.info(f"Found {len(active_users)} active users out of {len(users)} total users")
 
-            # Further filter to only users with OneDrive provisioned
             users_to_sync = []
+            failed_users: List[Tuple[str, OneDriveUserStatus]] = []
             for user in active_users:
                 try:
-                    has_onedrive = await self._user_has_onedrive(user.source_user_id)
+                    onedrive_status = await self._user_has_onedrive(user.source_user_id)
                 except Exception as e:
-                    # An unexpected error for one user (auth, network, etc.) should not
-                    # abort the drive-provisioning check for the remaining users.
                     self.logger.error(f"❌ Error checking OneDrive for user {user.email}, skipping: {e}", exc_info=True)
+                    failed_users.append((user.email, OneDriveUserStatus.UNKNOWN_ERROR))
                     continue
 
-                if has_onedrive:
+                if onedrive_status is OneDriveUserStatus.AVAILABLE:
                     users_to_sync.append(user)
                 else:
-                    self.logger.info(f"Skipping user {user.email}: No OneDrive license or drive not provisioned")
+                    failed_users.append((user.email, onedrive_status))
+                    self.logger.info(
+                        "Skipping user %s: OneDrive status is %s",
+                        user.email,
+                        onedrive_status.value,
+                    )
+
+            await self._notify_onedrive_user_failures(failed_users)
 
             self.logger.info(f"Processing {len(users_to_sync)} users with OneDrive out of {len(active_users)} active users")
             self.onedrive_users_synced = len(users_to_sync)
@@ -1337,7 +1352,49 @@ class OneDriveConnector(BaseConnector):
             self.logger.error(f"❌ Error processing users in batches: {e}")
             raise
 
-    async def _user_has_onedrive(self, user_id: str) -> bool:
+    async def _notify_onedrive_user_failures(
+        self,
+        failed_users: List[Tuple[str, OneDriveUserStatus]],
+    ) -> None:
+        notifications = {
+            OneDriveUserStatus.NOT_PROVISIONED: (
+                "OneDrive not provisioned for some users",
+                "OneDrive is not provisioned or licensed for these users, so they were not synced: {emails}.",
+            ),
+            OneDriveUserStatus.LOCKED: (
+                "OneDrive blocked for some users",
+                "OneDrive is archived, or blocked for these users, so they were not synced: {emails}.",
+            ),
+            OneDriveUserStatus.UNKNOWN_ERROR: (
+                "Some OneDrive users could not be synced",
+                "OneDrive availability could not be checked for these users: {emails}. "
+                "This may be a transient error; they will be picked up by a later sync if the issue resolves.",
+            ),
+        }
+
+        for status, (title, message_template) in notifications.items():
+            emails = [email for email, reason in failed_users if reason is status]
+            if not emails:
+                continue
+
+            displayed_emails = ", ".join(emails[:5])
+            if len(emails) > 5:
+                displayed_emails = f"{displayed_emails}, and {len(emails) - 5} more"
+
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=title,
+                message=message_template.format(emails=displayed_emails),
+                recipient_user_ids=[self.created_by],
+                payload={
+                    "connector_id": self.connector_id,
+                    "connector_name": self.connector_name.value,
+                    "connector_scope": self.scope,
+                },
+            )
+
+    async def _user_has_onedrive(self, user_id: str) -> OneDriveUserStatus:
         """
         Check if a user has OneDrive provisioned.
 
@@ -1345,11 +1402,11 @@ class OneDriveConnector(BaseConnector):
             user_id: The user identifier
 
         Returns:
-            True if user has OneDrive, False otherwise
+            The user's OneDrive availability status.
         """
         try:
             await self.msgraph_client.get_user_drive(user_id)
-            return True
+            return OneDriveUserStatus.AVAILABLE
         except ODataError as e:
             error_message = str(e).lower()
             error_code = (e.error.code or "").lower() if e.error else ""
@@ -1363,11 +1420,8 @@ class OneDriveConnector(BaseConnector):
                 }
                 or "404" in error_message
             ):
-                return False
+                return OneDriveUserStatus.NOT_PROVISIONED
 
-            # 423 Locked / resourceLocked: the user's OneDrive site is locked or
-            # blocked by an admin (e.g. archived, offboarded, or compliance hold).
-            # Treat like a missing drive so one locked user doesn't abort the whole sync.
             if (
                 e.response_status_code == 423
                 or "resourcelocked" in error_message
@@ -1375,7 +1429,7 @@ class OneDriveConnector(BaseConnector):
                 self.logger.warning(
                     f"⚠️ OneDrive for user {user_id} is locked or blocked (423 resourceLocked), skipping: {e}"
                 )
-                return False
+                return OneDriveUserStatus.LOCKED
             raise
         except Exception as e:
             self.logger.error("❌ Error checking if user has OneDrive: %s", e)
