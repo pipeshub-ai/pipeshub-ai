@@ -15,10 +15,6 @@ import sinon from 'sinon';
 
 import { IRedisConnectionProvider } from '../../src/libs/services/redis/connectionProvider.interface';
 
-export interface FakeRedisClient extends EventEmitter {
-  [command: string]: any;
-}
-
 const DEFAULT_STUBBED_COMMANDS = [
   'get',
   'set',
@@ -44,10 +40,45 @@ const DEFAULT_STUBBED_COMMANDS = [
   'type',
   'script',
   'keys',
-];
+] as const;
+
+type StubbedCommand = (typeof DEFAULT_STUBBED_COMMANDS)[number];
+
+/** Every command a test can stub a return value for, typed as a Sinon stub
+ * rather than a `[key: string]: any` index -- a call site with a typo in the
+ * command name is a compile error, not a silently-`undefined` mock method. */
+export interface FakeRedisClient extends EventEmitter {
+  status: string;
+  multi: sinon.SinonStub;
+  pipeline: sinon.SinonStub;
+  get: sinon.SinonStub;
+  set: sinon.SinonStub;
+  del: sinon.SinonStub;
+  getBuffer: sinon.SinonStub;
+  exists: sinon.SinonStub;
+  incr: sinon.SinonStub;
+  expire: sinon.SinonStub;
+  scan: sinon.SinonStub;
+  watch: sinon.SinonStub;
+  unwatch: sinon.SinonStub;
+  ping: sinon.SinonStub;
+  quit: sinon.SinonStub;
+  disconnect: sinon.SinonStub;
+  connect: sinon.SinonStub;
+  publish: sinon.SinonStub;
+  subscribe: sinon.SinonStub;
+  xadd: sinon.SinonStub;
+  xreadgroup: sinon.SinonStub;
+  xack: sinon.SinonStub;
+  xgroup: sinon.SinonStub;
+  xautoclaim: sinon.SinonStub;
+  type: sinon.SinonStub;
+  script: sinon.SinonStub;
+  keys: sinon.SinonStub;
+}
 
 export function makeFakeRedisClient(
-  overrides: Record<string, any> = {},
+  overrides: Partial<Pick<FakeRedisClient, StubbedCommand | 'multi' | 'pipeline' | 'status'>> = {},
 ): FakeRedisClient {
   const client = new EventEmitter() as FakeRedisClient;
   client.status = 'ready';

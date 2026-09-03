@@ -2,6 +2,7 @@
 service on every chat request — a fresh `SkillManager` is built per request and
 calls `rebuild()` each time."""
 
+import os
 from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock
 
@@ -109,9 +110,19 @@ class TestVectorCacheSizing:
         """`importlib.reload` rebinds this module's globals for the rest of the
         session, so the env is reset and the module reloaded once more on the
         way out — otherwise a later test in another file inherits whichever
-        cache size ran last here."""
+        cache size ran last here.
+
+        Restores the *original* ambient value (not just "unset") before that
+        final reload: an environment that legitimately sets
+        PIPESHUB_SKILL_VECTOR_CACHE_SIZE must not leave the module reloaded
+        against the default while the variable itself reverts around it.
+        """
+        original = os.environ.get("PIPESHUB_SKILL_VECTOR_CACHE_SIZE")
         yield
-        monkeypatch.delenv("PIPESHUB_SKILL_VECTOR_CACHE_SIZE", raising=False)
+        if original is None:
+            monkeypatch.delenv("PIPESHUB_SKILL_VECTOR_CACHE_SIZE", raising=False)
+        else:
+            monkeypatch.setenv("PIPESHUB_SKILL_VECTOR_CACHE_SIZE", original)
         import importlib
 
         importlib.reload(si)

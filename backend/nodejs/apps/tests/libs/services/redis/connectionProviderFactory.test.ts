@@ -182,3 +182,68 @@ describe('RedisConnectionProviderFactory', () => {
     });
   });
 });
+
+describe('credentials over unverified TLS', () => {
+  // TLS with verification off is encrypted but *unauthenticated*: a MITM can
+  // present any cert, terminate the session, and harvest the password. The
+  // guard lives in the factory so an EE-registered provider is covered too.
+  const withTls = (over: Partial<RedisConnectionConfig>): RedisConnectionConfig => ({
+    host: 'localhost',
+    port: 6379,
+    tls: true,
+    tlsRejectUnauthorized: true,
+    db: 0,
+    keyNamespace: '',
+    connectTimeoutMs: 10000,
+    clusterEndpoints: [],
+    scaleReads: 'master',
+    ...over,
+  });
+
+  it('refuses a password when verification is disabled', () => {
+    expect(() =>
+      RedisConnectionProviderFactory.create(
+        withTls({ tlsRejectUnauthorized: false, password: 'secret' }),
+        'standalone',
+      ),
+    ).to.throw(/REDIS_TLS_REJECT_UNAUTHORIZED=false with Redis credentials/);
+  });
+
+  it('refuses a username when verification is disabled', () => {
+    expect(() =>
+      RedisConnectionProviderFactory.create(
+        withTls({ tlsRejectUnauthorized: false, username: 'acl-user' }),
+        'standalone',
+      ),
+    ).to.throw(/REDIS_TLS_REJECT_UNAUTHORIZED=false with Redis credentials/);
+  });
+
+  it('allows credentials when verification is on', () => {
+    expect(() =>
+      RedisConnectionProviderFactory.create(
+        withTls({ password: 'secret' }),
+        'standalone',
+      ),
+    ).to.not.throw();
+  });
+
+  it('allows unverified TLS when there are no credentials to leak', () => {
+    expect(() =>
+      RedisConnectionProviderFactory.create(
+        withTls({ tlsRejectUnauthorized: false }),
+        'standalone',
+      ),
+    ).to.not.throw();
+  });
+
+  it('leaves the default install (no TLS, password set) alone', () => {
+    // Compose and Helm both ship a password with TLS off on a private
+    // network; this guard must not break that.
+    expect(() =>
+      RedisConnectionProviderFactory.create(
+        withTls({ tls: false, password: 'secret' }),
+        'standalone',
+      ),
+    ).to.not.throw();
+  });
+});

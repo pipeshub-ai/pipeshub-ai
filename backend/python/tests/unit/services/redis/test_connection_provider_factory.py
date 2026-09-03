@@ -197,3 +197,42 @@ class TestGetRedisProviderSingleton:
             RedisConnectionConfig(host="h", scale_reads="all"), mode="standalone"
         )
         assert p1 is not p2
+
+
+class TestCredentialsOverUnverifiedTls:
+    """TLS with verification off is encrypted but *unauthenticated* (CWE-295).
+
+    A MITM can present any certificate, terminate the session, and harvest the
+    password. The guard lives in the factory rather than in each provider so an
+    EE-registered provider is covered by the same rule.
+    """
+
+    @staticmethod
+    def _config(**overrides) -> RedisConnectionConfig:
+        base = {"host": "localhost", "port": 6379, "tls": True}
+        base.update(overrides)
+        return RedisConnectionConfig(**base)
+
+    @pytest.mark.parametrize(
+        "credential", [{"password": "secret"}, {"username": "acl-user"}]
+    )
+    def test_credentials_are_refused_when_verification_is_disabled(
+        self, credential: dict
+    ) -> None:
+        config = self._config(tls_reject_unauthorized=False, **credential)
+        with pytest.raises(ValueError, match="encrypted but not authenticated"):
+            RedisConnectionProviderFactory.create(config, mode="standalone")
+
+    def test_credentials_are_allowed_when_verification_is_on(self) -> None:
+        config = self._config(password="secret")
+        assert RedisConnectionProviderFactory.create(config, mode="standalone")
+
+    def test_unverified_tls_is_allowed_with_nothing_to_leak(self) -> None:
+        config = self._config(tls_reject_unauthorized=False)
+        assert RedisConnectionProviderFactory.create(config, mode="standalone")
+
+    def test_the_default_install_is_untouched(self) -> None:
+        """Compose and Helm both ship a password with TLS off on a private
+        network; this guard must not break that."""
+        config = self._config(tls=False, password="secret")
+        assert RedisConnectionProviderFactory.create(config, mode="standalone")

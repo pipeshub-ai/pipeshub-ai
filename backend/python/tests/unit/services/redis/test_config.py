@@ -104,12 +104,24 @@ class TestEnvFlagSpellings:
         monkeypatch.setenv("REDIS_TLS_REJECT_UNAUTHORIZED", value)
         assert RedisConnectionConfig.from_env().tls_reject_unauthorized is False
 
-    def test_an_unparseable_value_never_weakens_the_default(
-        self, monkeypatch
+    @pytest.mark.parametrize(
+        "name", ["REDIS_TLS_ENABLED", "REDIS_TLS_REJECT_UNAUTHORIZED"]
+    )
+    def test_an_unparseable_value_is_refused_not_guessed(
+        self, monkeypatch, name: str
     ) -> None:
-        """The safety property: a typo must not turn verification off."""
-        monkeypatch.setenv("REDIS_TLS_ENABLED", "garbage")
-        monkeypatch.setenv("REDIS_TLS_REJECT_UNAUTHORIZED", "garbage")
+        """A typo has no safe reading: `REDIS_TLS_ENABLED=ture` would mean
+        plaintext and `REDIS_TLS_REJECT_UNAUTHORIZED=yse` would mean
+        unverified, both silently. Refusing to start beats guessing."""
+        monkeypatch.setenv(name, "ture")
+        with pytest.raises(ValueError, match="not a valid boolean"):
+            RedisConnectionConfig.from_env()
+
+    @pytest.mark.parametrize("value", ["", "   "])
+    def test_a_blank_value_still_falls_back(self, monkeypatch, value: str) -> None:
+        """Blank is "unset" (compose writes `VAR=${VAR:-}`), not a typo."""
+        monkeypatch.setenv("REDIS_TLS_ENABLED", value)
+        monkeypatch.setenv("REDIS_TLS_REJECT_UNAUTHORIZED", value)
         config = RedisConnectionConfig.from_env()
         assert config.tls is False
         assert config.tls_reject_unauthorized is True

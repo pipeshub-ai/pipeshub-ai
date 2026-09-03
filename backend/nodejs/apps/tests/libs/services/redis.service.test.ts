@@ -4,6 +4,7 @@ import sinon from 'sinon';
 import { EventEmitter } from 'events';
 
 import { RedisCacheError } from '../../../src/libs/errors/redis.errors';
+import { Logger } from '../../../src/libs/services/logger.service';
 import { createMockLogger, MockLogger } from '../../helpers/mock-logger';
 import { stubGetRedisProvider } from '../../helpers/fake-redis-provider';
 import { IRedisConnectionProvider } from '../../../src/libs/services/redis/connectionProvider.interface';
@@ -348,32 +349,37 @@ describe('getSharedRedisService cache key', () => {
     resetSharedRedisServices();
   });
 
+  // `createMockLogger()` returns a `MockLogger`, not a `Logger` instance --
+  // `Logger` carries private fields, so no plain object literal is
+  // structurally assignable to it without going through `unknown` first.
+  const asLogger = (logger: MockLogger): Logger => logger as unknown as Logger;
+
   it('reuses one instance for an identical connection', () => {
-    const a = getSharedRedisService({ ...base } as any, createMockLogger() as any);
-    const b = getSharedRedisService({ ...base } as any, createMockLogger() as any);
+    const a = getSharedRedisService({ ...base }, asLogger(createMockLogger()));
+    const b = getSharedRedisService({ ...base }, asLogger(createMockLogger()));
     expect(a).to.equal(b);
   });
 
   it('does not share across different passwords', () => {
     const a = getSharedRedisService(
-      { ...base, password: 'one' } as any,
-      createMockLogger() as any,
+      { ...base, password: 'one' },
+      asLogger(createMockLogger()),
     );
     const b = getSharedRedisService(
-      { ...base, password: 'two' } as any,
-      createMockLogger() as any,
+      { ...base, password: 'two' },
+      asLogger(createMockLogger()),
     );
     expect(a).to.not.equal(b);
   });
 
   it('does not share across different usernames', () => {
     const a = getSharedRedisService(
-      { ...base, username: 'u1' } as any,
-      createMockLogger() as any,
+      { ...base, username: 'u1' },
+      asLogger(createMockLogger()),
     );
     const b = getSharedRedisService(
-      { ...base, username: 'u2' } as any,
-      createMockLogger() as any,
+      { ...base, username: 'u2' },
+      asLogger(createMockLogger()),
     );
     expect(a).to.not.equal(b);
   });
@@ -384,16 +390,16 @@ describe('getSharedRedisService cache key', () => {
     // next lookup gets one built with the current credentials, never the
     // stale authenticated client.
     const first = getSharedRedisService(
-      { ...base, password: 'old' } as any,
-      createMockLogger() as any,
+      { ...base, password: 'old' },
+      asLogger(createMockLogger()),
     );
     const second = getSharedRedisService(
-      { ...base, password: 'new' } as any,
-      createMockLogger() as any,
+      { ...base, password: 'new' },
+      asLogger(createMockLogger()),
     );
     const third = getSharedRedisService(
-      { ...base, password: 'new' } as any,
-      createMockLogger() as any,
+      { ...base, password: 'new' },
+      asLogger(createMockLogger()),
     );
 
     expect(second).to.not.equal(first);
@@ -402,12 +408,12 @@ describe('getSharedRedisService cache key', () => {
 
   it('does not share a TLS connection with a plaintext one', () => {
     const a = getSharedRedisService(
-      { ...base, tls: true } as any,
-      createMockLogger() as any,
+      { ...base, tls: true },
+      asLogger(createMockLogger()),
     );
     const b = getSharedRedisService(
-      { ...base, tls: false } as any,
-      createMockLogger() as any,
+      { ...base, tls: false },
+      asLogger(createMockLogger()),
     );
     expect(a).to.not.equal(b);
   });

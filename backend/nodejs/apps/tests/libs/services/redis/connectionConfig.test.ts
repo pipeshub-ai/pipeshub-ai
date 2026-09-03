@@ -92,7 +92,7 @@ describe('REDIS_TLS_* boolean spellings', () => {
   // defaults on -- REDIS_TLS_REJECT_UNAUTHORIZED=yes silently disabled
   // certificate verification. Both fail open with nothing logged.
   const saved: Record<string, string | undefined> = {};
-  const keys = ['REDIS_TLS_ENABLED', 'REDIS_TLS_REJECT_UNAUTHORIZED'];
+  const keys = ['REDIS_TLS_ENABLED', 'REDIS_TLS_REJECT_UNAUTHORIZED', 'REDIS_TLS'];
 
   beforeEach(() => {
     keys.forEach((k) => {
@@ -125,9 +125,33 @@ describe('REDIS_TLS_* boolean spellings', () => {
     });
   });
 
-  it('never weakens the default on an unparseable value', () => {
-    process.env.REDIS_TLS_ENABLED = 'garbage';
-    process.env.REDIS_TLS_REJECT_UNAUTHORIZED = 'garbage';
+  // A typo has no safe reading: REDIS_TLS_ENABLED=ture would silently mean
+  // plaintext and REDIS_TLS_REJECT_UNAUTHORIZED=yse would silently mean
+  // unverified. Refusing to start beats guessing either one.
+  it('refuses an unparseable REDIS_TLS_ENABLED instead of guessing', () => {
+    process.env.REDIS_TLS_ENABLED = 'ture';
+    expect(() => redisConnectionConfigFromEnv()).to.throw(
+      /REDIS_TLS_ENABLED='ture' is not a valid boolean/,
+    );
+  });
+
+  it('refuses an unparseable REDIS_TLS_REJECT_UNAUTHORIZED', () => {
+    process.env.REDIS_TLS_REJECT_UNAUTHORIZED = 'yse';
+    expect(() => redisConnectionConfigFromEnv()).to.throw(
+      /REDIS_TLS_REJECT_UNAUTHORIZED='yse' is not a valid boolean/,
+    );
+  });
+
+  it('names the legacy REDIS_TLS alias when that is what was set', () => {
+    process.env.REDIS_TLS = 'ture';
+    expect(() => redisConnectionConfigFromEnv()).to.throw(/REDIS_TLS='ture'/);
+    delete process.env.REDIS_TLS;
+  });
+
+  it('treats a blank value as unset, not a typo', () => {
+    // Compose writes `VAR=${VAR:-}`, so blank is the normal "not configured".
+    process.env.REDIS_TLS_ENABLED = '   ';
+    process.env.REDIS_TLS_REJECT_UNAUTHORIZED = '';
     const config = redisConnectionConfigFromEnv();
     expect(config.tls).to.equal(false);
     expect(config.tlsRejectUnauthorized).to.equal(true);

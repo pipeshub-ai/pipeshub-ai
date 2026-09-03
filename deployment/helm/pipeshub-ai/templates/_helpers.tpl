@@ -364,5 +364,15 @@ back to localhost, and the subchart still deploys. Both failures are silent.
   {{- end -}}
 {{- else if not .Values.redis.enabled -}}
   {{- fail "redis.enabled=false requires redis.external.enabled=true with redis.external.clusterEndpoints; otherwise nothing provides Redis." -}}
+{{- else if ne (.Values.redis.mode | default "standalone") "standalone" -}}
+  {{- /*
+    The bundled Bitnami subchart is *replication*, not Redis Cluster. Pointing
+    a cluster-mode client at `<release>-redis-master` makes it attempt cluster
+    discovery (CLUSTER SLOTS) against a server that has none, so it fails to
+    connect -- and with no REDIS_CLUSTER_ENDPOINTS emitted there is nothing
+    else for it to talk to. A non-standalone mode only makes sense with an
+    external endpoint.
+  */ -}}
+  {{- fail (printf "redis.mode=%s requires redis.external.enabled=true with redis.external.clusterEndpoints. The bundled Redis subchart is a replication deployment, not a Redis Cluster, so a cluster-mode client cannot connect to it. Use redis.mode=standalone with the bundled chart." (.Values.redis.mode | default "standalone")) -}}
 {{- end -}}
 {{- end -}}

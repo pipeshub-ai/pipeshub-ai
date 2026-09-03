@@ -72,7 +72,20 @@ function parseClusterEndpoints(raw: string | undefined): string[] {
 const TRUTHY = new Set(['true', '1', 'yes', 'on']);
 const FALSY = new Set(['false', '0', 'no', 'off']);
 
-function truthyEnv(value: string | undefined, fallback: boolean): boolean {
+/**
+ * Throws on an unrecognized non-empty value rather than falling back.
+ *
+ * These two settings decide whether a credential-bearing Redis connection is
+ * encrypted and whether its certificate is checked, and a typo has no safe
+ * reading: `REDIS_TLS_ENABLED=ture` would silently mean plaintext, and
+ * `REDIS_TLS_REJECT_UNAUTHORIZED=yse` would silently mean unverified. Refusing
+ * to start beats guessing either one.
+ */
+function truthyEnv(
+  name: string,
+  value: string | undefined,
+  fallback: boolean,
+): boolean {
   const normalized = value?.trim().toLowerCase();
   if (normalized === undefined || normalized === '') {
     return fallback;
@@ -83,7 +96,12 @@ function truthyEnv(value: string | undefined, fallback: boolean): boolean {
   if (FALSY.has(normalized)) {
     return false;
   }
-  return fallback;
+  throw new Error(
+    `${name}='${value}' is not a valid boolean. Use one of ` +
+      `${[...TRUTHY].join('/')} or ${[...FALSY].join('/')}. Refusing to guess: ` +
+      'this setting controls whether the Redis connection is encrypted and ' +
+      'verified.',
+  );
 }
 
 /** Build config from the standard `REDIS_*` environment variables. */
@@ -97,8 +115,17 @@ export function redisConnectionConfigFromEnv(
     port: parseInt(env[`${prefix}PORT`] || '6379', 10),
     username: env[`${prefix}USERNAME`] || undefined,
     password: password && password.trim() !== '' ? password : undefined,
-    tls: truthyEnv(env[`${prefix}TLS_ENABLED`] ?? env[`${prefix}TLS`], false),
+    // Report whichever name actually supplied the value, so the error names
+    // the variable the operator set (TLS_ENABLED or the legacy TLS alias).
+    tls: truthyEnv(
+      env[`${prefix}TLS_ENABLED`] !== undefined
+        ? `${prefix}TLS_ENABLED`
+        : `${prefix}TLS`,
+      env[`${prefix}TLS_ENABLED`] ?? env[`${prefix}TLS`],
+      false,
+    ),
     tlsRejectUnauthorized: truthyEnv(
+      `${prefix}TLS_REJECT_UNAUTHORIZED`,
       env[`${prefix}TLS_REJECT_UNAUTHORIZED`],
       true,
     ),

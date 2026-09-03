@@ -53,6 +53,25 @@ export class RedisConnectionProviderFactory {
       );
     }
 
+    // Credentials over an unauthenticated channel (CWE-295). TLS with
+    // verification off is encrypted but *unauthenticated*: any MITM can
+    // present a self-signed cert, terminate the session, and harvest the
+    // password. Enforced here rather than in each provider so every
+    // implementation -- including one registered by an EE repo -- is covered.
+    if (
+      resolvedConfig.tls &&
+      !resolvedConfig.tlsRejectUnauthorized &&
+      (resolvedConfig.password || resolvedConfig.username)
+    ) {
+      throw new Error(
+        'REDIS_TLS_REJECT_UNAUTHORIZED=false with Redis credentials set: the ' +
+          'connection would be encrypted but not authenticated, so the password ' +
+          'is exposed to anyone who can intercept it. Point REDIS_TLS_CA_PATH at ' +
+          'the CA that signed your Redis certificate instead of disabling ' +
+          'verification.',
+      );
+    }
+
     if (resolvedMode !== 'standalone' && resolvedConfig.db) {
       throw new Error(
         'REDIS_DB is not supported outside standalone mode ' +

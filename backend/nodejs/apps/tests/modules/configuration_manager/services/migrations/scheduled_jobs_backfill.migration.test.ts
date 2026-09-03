@@ -5,6 +5,9 @@ import { ScheduledJobsBackfillMigration } from '../../../../../src/modules/confi
 import { configPaths } from '../../../../../src/modules/configuration_manager/paths/paths';
 import * as connectorUtils from '../../../../../src/modules/tokens_manager/utils/connector.utils';
 import * as createJwt from '../../../../../src/libs/utils/createJwt';
+import { Logger } from '../../../../../src/libs/services/logger.service';
+import { KeyValueStoreService } from '../../../../../src/libs/services/keyValueStore.service';
+import { CrawlingSchedulerService } from '../../../../../src/modules/crawling_manager/services/crawling_service';
 import { createFakeRedisProvider, stubGetRedisProvider } from '../../../../helpers/fake-redis-provider';
 
 const makeLogger = () => ({
@@ -89,9 +92,9 @@ describe('ScheduledJobsBackfillMigration', () => {
       };
 
       await new ScheduledJobsBackfillMigration(
-        logger as any,
-        kv as any,
-        makeScheduler() as any,
+        logger as unknown as Logger,
+        kv as unknown as KeyValueStoreService,
+        makeScheduler() as unknown as CrawlingSchedulerService,
         appConfig,
       ).run();
 

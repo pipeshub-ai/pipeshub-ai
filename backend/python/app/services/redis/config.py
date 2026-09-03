@@ -21,15 +21,30 @@ _FALSY = frozenset({"false", "0", "no", "off"})
 
 
 def _env_flag(name: str, default: bool) -> bool:  # noqa: FBT001
+    """Raise on an unrecognized non-empty value rather than falling back.
+
+    These two settings decide whether a credential-bearing Redis connection is
+    encrypted and whether its certificate is checked, and a typo has no safe
+    reading: ``REDIS_TLS_ENABLED=ture`` would silently mean plaintext, and
+    ``REDIS_TLS_REJECT_UNAUTHORIZED=yse`` would silently mean unverified.
+    Refusing to start beats guessing either one.
+    """
     raw = os.getenv(name)
     if raw is None:
         return default
     normalized = raw.strip().lower()
+    if normalized == "":
+        return default
     if normalized in _TRUTHY:
         return True
     if normalized in _FALSY:
         return False
-    return default
+    raise ValueError(
+        f"{name}={raw!r} is not a valid boolean. Use one of "
+        f"{'/'.join(sorted(_TRUTHY))} or {'/'.join(sorted(_FALSY))}. Refusing "
+        "to guess: this setting controls whether the Redis connection is "
+        "encrypted and verified."
+    )
 
 
 

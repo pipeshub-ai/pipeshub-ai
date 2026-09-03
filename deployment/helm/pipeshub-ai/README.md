@@ -185,7 +185,7 @@ helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
 | `celery.brokerUrl` / `celery.resultBackend` | Celery has no Redis Cluster transport; required whenever `redis.mode` isn't `standalone` — point these at a plain standalone Redis (can be a small dedicated instance, does not need to be the same backend as the KV/cache/streams Redis). |
 
 Redis Cluster and MemoryDB never support `SELECT` (`REDIS_DB`); it is only
-honoured when `redis.mode` is `standalone`. Use `redis.keyNamespace` for
+honoured when `redis.mode` is `standalone` (and a non-standalone `redis.mode` requires `redis.external.enabled=true` — the bundled subchart is a replication deployment, not a Redis Cluster). Use `redis.keyNamespace` for
 isolation instead.
 
 ## Secret Management Modes
