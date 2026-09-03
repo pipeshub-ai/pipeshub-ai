@@ -62,6 +62,9 @@ _BASE_DELAY_SEC = 1.0
 
 _BLOB_MODE = "100644"
 
+# GitHub silently caps listing pages at 100 regardless of what is requested.
+_GITHUB_MAX_PER_PAGE = 100
+
 # Attachment markup, matching what clean_github_content recognises.
 _HTML_IMG_RE = re.compile(
     r"""<img\s+[^>]*?src=["'](.*?)["'][^>]*?/?>""", re.IGNORECASE | re.DOTALL,
@@ -132,6 +135,14 @@ async def _walk_pages(
     on this — reading page 1 alone would silently leave artifacts behind on any repo
     holding more than ``per_page`` issues.
     """
+    # A short page is the end-of-listing signal, which is only meaningful when the
+    # requested size is one GitHub will honour. Above 100 it silently returns 100 and
+    # the first page would look "short", truncating the listing; at or below 0 the
+    # comparison can never be true and the loop would never terminate.
+    if per_page < 1:
+        raise ValueError(f"per_page must be >= 1, got {per_page}")
+    per_page = min(per_page, _GITHUB_MAX_PER_PAGE)
+
     collected: list[dict[str, Any]] = []
     page = 1
     while True:
