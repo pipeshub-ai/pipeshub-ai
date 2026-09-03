@@ -2155,6 +2155,10 @@ class TestStreamRecord:
 
             await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
             mock_stream.assert_called_once()
+            mock_service.files.return_value.get_media.assert_called_once_with(
+                fileId=record.external_record_id,
+                supportsAllDrives=True,
+            )
 
     @pytest.mark.asyncio
     async def test_regular_file_download(self, connector):
