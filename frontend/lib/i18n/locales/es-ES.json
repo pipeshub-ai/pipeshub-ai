@@ -2721,6 +2721,8 @@
     "lineCount": "{{count}} líneas",
     "instructionsLabel": "Instrucciones",
     "startingMessageLabel": "Mensaje inicial",
+    "defaultReasoningEffortLabel": "Esfuerzo de razonamiento predeterminado",
+    "defaultReasoningEffortHint": "El valor predeterminado es Alto si no se establece.",
     "moreItems": "+{{count}} más",
     "toolsetNodeSubtitle": "Conjunto de herramientas",
     "toolsLabel": "Herramientas",
