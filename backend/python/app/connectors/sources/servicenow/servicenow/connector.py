@@ -239,6 +239,12 @@ class ServiceNowConnector(BaseConnector):
 
         # Configuration
         self.instance_url: Optional[str] = None
+        # The portal that serves the knowledge pages. Read from the instance
+        # during init(), because it differs from one instance to the next.
+        self.kb_portal_suffix: str = ServiceNowDefaults.KB_PORTAL_SUFFIX
+        # Whether article criteria override the criteria of the knowledge base.
+        # Read from the instance during init(); false is the ServiceNow default.
+        self.apply_article_read_criteria: bool = False
         self.client_id: Optional[str] = None
         self.client_secret: Optional[str] = None
         self.redirect_uri: Optional[str] = None
@@ -256,16 +262,12 @@ class ServiceNowConnector(BaseConnector):
                 data_store_provider=self.data_store_provider,
             )
 
-        # Sync points for different entity types
+        # Sync points for different entity types. Groups, roles and knowledge
+        # bases have none: those three reads must stay full, see
+        # _fetch_all_memberships and _sync_knowledge_bases.
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
-        self.group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
-        self.kb_sync_point = _create_sync_point(SyncDataPointType.RECORD_GROUPS)
         self.category_sync_point = _create_sync_point(SyncDataPointType.RECORD_GROUPS)
         self.article_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
-
-        # Role sync points (roles are represented as special user groups)
-        self.role_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
-        self.role_assignment_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
 
         # Organizational entity sync points
         self.company_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
@@ -320,7 +322,8 @@ class ServiceNowConnector(BaseConnector):
 
             oauth_config_data = oauth_config.get(OAuthConfigKeys.CONFIG, {})
 
-            self.instance_url = oauth_config_data.get(AuthFieldKeys.INSTANCE_URL)
+            # A trailing slash would give "https://<instance>.service-now.com//kb?...".
+            self.instance_url = (oauth_config_data.get(AuthFieldKeys.INSTANCE_URL) or "").rstrip("/") or None
             self.client_id = oauth_config_data.get(AuthFieldKeys.CLIENT_ID)
             self.client_secret = oauth_config_data.get(AuthFieldKeys.CLIENT_SECRET)
             self.redirect_uri = oauth_config.get(AuthFieldKeys.REDIRECT_URI)
@@ -374,6 +377,10 @@ class ServiceNowConnector(BaseConnector):
                 self.logger.error("❌ Connection test failed")
                 return False
 
+            self.kb_portal_suffix = await self._resolve_kb_portal_suffix()
+
+            self.apply_article_read_criteria = await self._resolve_article_read_criteria()
+
             self.logger.info("✅ ServiceNow KB Connector initialized successfully")
             return True
 
@@ -410,9 +417,8 @@ class ServiceNowConnector(BaseConnector):
         if not fresh_token:
             raise Exception("No access token available")
 
-        # Update client's token if it changed (mutation)
         if self.servicenow_client.access_token != fresh_token:
-            self.servicenow_client.access_token = fresh_token
+            self.servicenow_client.set_access_token(fresh_token)
 
         return ServiceNowDataSource(self.servicenow_client)
 
@@ -569,6 +575,101 @@ class ServiceNowConnector(BaseConnector):
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Failed to stream record: {str(e)}"
             )
+
+    async def _read_instance_property(self, name: str) -> Optional[str]:
+        """Read one sys_properties value. None means the property is not set.
+
+        A read that fails raises, because "not set" and "could not tell" are
+        different answers and only the caller knows which way to lean on the
+        second one.
+        """
+        datasource = await self._get_fresh_datasource()
+        response = await datasource.get_now_table_tableName(
+            tableName=ServiceNowTables.SYS_PROPERTIES,
+            sysparm_query=f"{ServiceNowFields.NAME}={name}",
+            sysparm_fields=ServiceNowFields.VALUE,
+            sysparm_limit=ServiceNowDefaults.DEFAULT_LIMIT,
+            sysparm_display_value=ServiceNowQueryValues.DISPLAY_VALUE_FALSE,
+            sysparm_no_count=ServiceNowQueryValues.NO_COUNT_TRUE,
+            sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
+        )
+        if response.result:
+            return (response.result[0].get(ServiceNowFields.VALUE) or "").strip()
+        return None
+
+    async def _resolve_article_read_criteria(self) -> bool:
+        """Whether an article's own Can Read criteria override its knowledge base.
+
+        ServiceNow applies them as an override only when
+        glide.knowman.apply_article_read_criteria is true, and leaves the
+        property unset on a default instance, so unset means false.
+
+        A property that cannot be read is a different case: the answer decides
+        who reaches an article, so it leans to true. That indexes an article
+        under its own criteria when the base would have opened it wider, which
+        shows fewer people less than they are entitled to, rather than showing
+        somebody something the instance restricts.
+        """
+        try:
+            value = await self._read_instance_property(
+                ServiceNowDefaults.ARTICLE_READ_CRITERIA_PROPERTY
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Could not read "
+                f"{ServiceNowDefaults.ARTICLE_READ_CRITERIA_PROPERTY} ({e}); "
+                "applying article read criteria as an override until it can be read"
+            )
+            return True
+
+        applies = (value or "").strip().lower() == "true"
+        self.logger.info(f"Article read criteria override the knowledge base: {applies}")
+        return applies
+
+    async def _resolve_kb_portal_suffix(self) -> str:
+        """Find the Service Portal that serves the knowledge pages.
+
+        The article pages (kb_article_view, kb_category, kb_home) belong to a
+        portal, and each instance chooses its own. The Knowledge Management
+        portal plugin records that choice in a system property. When the
+        property is empty the default portal serves the pages.
+
+        Returns:
+            str: The portal URL suffix, for example "kb" or "esc".
+        """
+        try:
+            suffix = await self._read_instance_property(ServiceNowDefaults.KB_PORTAL_PROPERTY)
+        except Exception as e:
+            # A link that points at the wrong portal is wrong on screen only, so
+            # this one falls back rather than leaning any particular way.
+            self.logger.warning(f"Could not read the knowledge portal property: {e}")
+            suffix = None
+        if suffix:
+            self.logger.info(f"Knowledge portal from the instance property: /{suffix}")
+            return suffix
+
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_now_table_tableName(
+                tableName=ServiceNowTables.SP_PORTAL,
+                sysparm_query=f"{ServiceNowFields.DEFAULT}=true",
+                sysparm_fields=ServiceNowFields.URL_SUFFIX,
+                sysparm_limit=ServiceNowDefaults.DEFAULT_LIMIT,
+                sysparm_display_value=ServiceNowQueryValues.DISPLAY_VALUE_FALSE,
+                sysparm_no_count=ServiceNowQueryValues.NO_COUNT_TRUE,
+                sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
+            )
+            suffix = (response.result[0].get(ServiceNowFields.URL_SUFFIX) or "").strip() if response.result else ""
+            if suffix:
+                self.logger.info(f"Knowledge portal from the default portal: /{suffix}")
+                return suffix
+        except Exception as e:
+            self.logger.warning(f"Could not read the default portal: {e}")
+
+        self.logger.info(
+            f"Knowledge portal falls back to /{ServiceNowDefaults.KB_PORTAL_SUFFIX}"
+        )
+        return ServiceNowDefaults.KB_PORTAL_SUFFIX
 
     async def _fetch_article_content(self, article_sys_id: str) -> str:
         """
@@ -920,8 +1021,11 @@ class ServiceNowConnector(BaseConnector):
                     )
                     
                 except ServiceNowAPIError as e:
-                    self.logger.error(f"❌ API error: {e.message} (status: {e.status_code})")
-                    break
+                    # A short list is indistinguishable from a complete one to
+                    # everything downstream, so the sync would report success over
+                    # whatever this page did not return.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 # Extract users from response
                 users_data = response.result
@@ -1072,8 +1176,11 @@ class ServiceNowConnector(BaseConnector):
                         sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
                     )
                     
-                except ServiceNowAPIError:
-                    break
+                except ServiceNowAPIError as e:
+                    # A partial list makes the caller delete permission edges that
+                    # it cannot rebuild, so stop the sync instead.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 if not response.result:
                     break
@@ -1095,26 +1202,23 @@ class ServiceNowConnector(BaseConnector):
 
 
     async def _fetch_all_memberships(self) -> List[SysUserGroupMembership]:
-        """Fetch all user-group memberships from ServiceNow
-        
+        """Fetch every user-group membership from ServiceNow.
+
+        This read must stay full. ``on_new_user_groups`` deletes all permission
+        edges that point to a group before it writes the members given to it, so
+        a delta read would drop every membership whose ``sys_user_grmember`` row
+        did not change inside the delta window.
+
         Returns:
             List of SysUserGroupMembership Pydantic models
         """
         try:
-            last_sync_data = await self.group_sync_point.read_sync_point(ServiceNowSyncPointKeys.GROUPS)
-            last_sync_time = (last_sync_data.get(ServiceNowSyncPointKeys.LAST_SYNC_TIME) if last_sync_data else None)
-
-            if last_sync_time:
-                self.logger.info(f"🔄 Delta sync: fetching user memberships updated after {last_sync_time}")
-                query = f"{ServiceNowFields.SYS_UPDATED_ON}>{last_sync_time}^{ServiceNowQueryValues.ORDER_BY_UPDATED}"
-            else:
-                self.logger.info("🆕 Full sync: fetching all user memberships")
-                query = ServiceNowQueryValues.ORDER_BY_UPDATED
+            self.logger.info("Fetching all user memberships")
+            query = ServiceNowQueryValues.ORDER_BY_UPDATED
 
             all_memberships: List[SysUserGroupMembership] = []
             batch_size = ServiceNowDefaults.BATCH_SIZE
             offset = ServiceNowDefaults.PAGINATION_OFFSET
-            latest_update_time = None
 
             while True:
                 datasource = await self._get_fresh_datasource()
@@ -1137,16 +1241,17 @@ class ServiceNowConnector(BaseConnector):
                         sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
                     )
                     
-                except ServiceNowAPIError:
-                    break
+                except ServiceNowAPIError as e:
+                    # A partial list makes the caller delete permission edges that
+                    # it cannot rebuild, so stop the sync instead.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 if not response.result:
                     break
 
                 # Parse records into Pydantic models
                 memberships = [SysUserGroupMembership(**record.model_dump()) for record in response.result]
-                latest_update_time = memberships[-1].sys_updated_on
-
                 all_memberships.extend(memberships)
                 offset += batch_size
 
@@ -1154,8 +1259,6 @@ class ServiceNowConnector(BaseConnector):
                     break
 
             self.logger.info(f"Fetched {len(all_memberships)} memberships")
-            if latest_update_time:
-                await self.group_sync_point.update_sync_point(ServiceNowSyncPointKeys.GROUPS, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: latest_update_time})
             return all_memberships
 
         except Exception as e:
@@ -1289,8 +1392,11 @@ class ServiceNowConnector(BaseConnector):
                         sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
                     )
                     
-                except ServiceNowAPIError:
-                    break
+                except ServiceNowAPIError as e:
+                    # A partial list makes the caller delete permission edges that
+                    # it cannot rebuild, so stop the sync instead.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 if not response.result:
                     break
@@ -1314,25 +1420,21 @@ class ServiceNowConnector(BaseConnector):
     async def _fetch_all_role_assignments(self) -> List[SysUserRoleAssignment]:
         """
         Fetch all user-role assignments from sys_user_has_role table.
-        
+
+        This read must stay full, for the reason given in
+        ``_fetch_all_memberships``: roles go through the same
+        ``on_new_user_groups`` replace-on-write path.
+
         Returns:
             List of SysUserRoleAssignment Pydantic models
         """
         try:
-            last_sync_data = await self.role_assignment_sync_point.read_sync_point(ServiceNowSyncPointKeys.ROLE_ASSIGNMENTS)
-            last_sync_time = last_sync_data.get(ServiceNowSyncPointKeys.LAST_SYNC_TIME) if last_sync_data else None
-
-            if last_sync_time:
-                self.logger.info(f"🔄 Delta sync: fetching role assignments updated after {last_sync_time}")
-                query = f"state={ServiceNowFields.ACTIVE}^{ServiceNowFields.SYS_UPDATED_ON}>{last_sync_time}^{ServiceNowQueryValues.ORDER_BY_UPDATED}"
-            else:
-                self.logger.info("🆕 Full sync: fetching all active role assignments")
-                query = f"state={ServiceNowFields.ACTIVE}^{ServiceNowQueryValues.ORDER_BY_UPDATED}"
+            self.logger.info("Fetching all active role assignments")
+            query = f"state={ServiceNowFields.ACTIVE}^{ServiceNowQueryValues.ORDER_BY_UPDATED}"
 
             all_assignments: List[SysUserRoleAssignment] = []
             batch_size = ServiceNowDefaults.BATCH_SIZE
             offset = ServiceNowDefaults.PAGINATION_OFFSET
-            latest_update_time = None
 
             while True:
                 datasource = await self._get_fresh_datasource()
@@ -1354,8 +1456,11 @@ class ServiceNowConnector(BaseConnector):
                         sysparm_no_count=ServiceNowQueryValues.NO_COUNT_TRUE,
                         sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
                     )
-                except ServiceNowAPIError:
-                    break
+                except ServiceNowAPIError as e:
+                    # A partial list makes the caller delete permission edges that
+                    # it cannot rebuild, so stop the sync instead.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 if not response.result:
                     break
@@ -1363,17 +1468,10 @@ class ServiceNowConnector(BaseConnector):
                 # Parse records into Pydantic models
                 assignments = [SysUserRoleAssignment(**record.model_dump()) for record in response.result]
                 all_assignments.extend(assignments)
-                latest_update_time = assignments[-1].sys_updated_on
 
                 offset += batch_size
                 if len(assignments) < batch_size:
                     break
-
-            if latest_update_time:
-                await self.role_assignment_sync_point.update_sync_point(
-                    ServiceNowSyncPointKeys.ROLE_ASSIGNMENTS,
-                    {ServiceNowSyncPointKeys.LAST_SYNC_TIME: latest_update_time}
-                )
 
             self.logger.info(f"Fetched {len(all_assignments)} role assignments")
             return all_assignments
@@ -1419,8 +1517,11 @@ class ServiceNowConnector(BaseConnector):
                         sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
                     )
                     
-                except ServiceNowAPIError:
-                    break
+                except ServiceNowAPIError as e:
+                    # A partial list makes the caller delete permission edges that
+                    # it cannot rebuild, so stop the sync instead.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 if not response.result:
                     break
@@ -1626,8 +1727,11 @@ class ServiceNowConnector(BaseConnector):
                     )
                     
                 except ServiceNowAPIError as e:
-                    self.logger.error(f"❌ API error: {e.message} (status: {e.status_code})")
-                    break
+                    # A short list is indistinguishable from a complete one to
+                    # everything downstream, so the sync would report success over
+                    # whatever this page did not return.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 # Extract entities from response
                 entities_data = response.result
@@ -1697,22 +1801,17 @@ class ServiceNowConnector(BaseConnector):
             admin_users: List of admin users to grant explicit READ permissions
         """
         try:
-            # Get sync checkpoint for delta sync
-            last_sync_data = await self.kb_sync_point.read_sync_point(ServiceNowSyncPointKeys.KNOWLEDGE_BASES)
-            last_sync_time = (last_sync_data.get(ServiceNowSyncPointKeys.LAST_SYNC_TIME) if last_sync_data else None)
-
-            if last_sync_time:
-                self.logger.info(f"🔄 Delta sync: Fetching KBs updated after {last_sync_time}")
-                query = f"{ServiceNowFields.SYS_UPDATED_ON}>{last_sync_time}^{ServiceNowQueryValues.ORDER_BY_UPDATED}"
-            else:
-                self.logger.info("🆕 Full sync: Fetching all knowledge bases")
-                query = ServiceNowQueryValues.ORDER_BY_UPDATED
+            # This read stays full. A knowledge base holds its read grants in
+            # kb_uc_can_read_mtom, and a change there does not touch
+            # kb_knowledge_base.sys_updated_on. A delta on the base row would
+            # therefore never see a new or a removed grant.
+            self.logger.info("Fetching all knowledge bases")
+            query = ServiceNowQueryValues.ORDER_BY_UPDATED
 
             # Pagination variables
             batch_size = ServiceNowDefaults.BATCH_SIZE
             offset = ServiceNowDefaults.PAGINATION_OFFSET
             total_synced = 0
-            latest_update_time = None
 
             # Paginate through all KBs
             while True:
@@ -1742,9 +1841,15 @@ class ServiceNowConnector(BaseConnector):
                     )
                     
                 except ServiceNowAPIError as e:
-                    if "Expecting value" not in str(e):
-                        self.logger.error(f"❌ API error: {e.message} (status: {e.status_code})")
-                    break
+                    # An empty page comes back as a body that is not JSON, so this
+                    # particular failure is how the read ends, not a fault.
+                    if "Expecting value" in str(e):
+                        break
+                    # A short list is indistinguishable from a complete one to
+                    # everything downstream, so the sync would report success over
+                    # whatever this page did not return.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 # Extract KBs from response
                 kbs_data = response.result
@@ -1752,10 +1857,6 @@ class ServiceNowConnector(BaseConnector):
                 if not kbs_data:
                     self.logger.info("✅ No more knowledge bases to fetch")
                     break
-
-                # Track the latest update timestamp for checkpoint
-                if kbs_data:
-                    latest_update_time = kbs_data[-1].sys_updated_on
 
                 # Transform to RecordGroup entities
                 kb_record_groups = []
@@ -1824,10 +1925,6 @@ class ServiceNowConnector(BaseConnector):
                 if len(kbs_data) < batch_size:
                     break
 
-            # Save checkpoint for next sync
-            if latest_update_time:
-                await self.kb_sync_point.update_sync_point(ServiceNowSyncPointKeys.KNOWLEDGE_BASES, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: latest_update_time})
-
             self.logger.info(f"✅ Knowledge base sync complete, Total synced: {total_synced}")
 
         except Exception as e:
@@ -1891,9 +1988,12 @@ class ServiceNowConnector(BaseConnector):
                         sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
                     )
                     
+                    # A short list is indistinguishable from a complete one to
+                    # everything downstream, so the sync would report success over
+                    # whatever this page did not return.
                 except ServiceNowAPIError as e:
-                    self.logger.error(f"❌ API error: {e.message} (status: {e.status_code}")
-                    break
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 # Extract categories from response
                 categories_data = response.result
@@ -1970,6 +2070,7 @@ class ServiceNowConnector(BaseConnector):
             offset = ServiceNowDefaults.PAGINATION_OFFSET
             total_articles_synced = 0
             total_attachments_synced = 0
+            total_records_dropped = 0
             latest_update_time = None
 
             # Paginate through all articles
@@ -2005,8 +2106,11 @@ class ServiceNowConnector(BaseConnector):
                     )
                     
                 except ServiceNowAPIError as e:
-                    self.logger.error(f"❌ API error: {e.message} (status: {e.status_code})")
-                    break
+                    # A short list is indistinguishable from a complete one to
+                    # everything downstream, so the sync would report success over
+                    # whatever this page did not return.
+                    self.logger.error(f"❌ API error at offset {offset}: {e.message} (status: {e.status_code})")
+                    raise
 
                 # Extract articles from response
                 articles_data = response.result
@@ -2035,7 +2139,7 @@ class ServiceNowConnector(BaseConnector):
 
                 # Process batch of RecordUpdates
                 if record_updates:
-                    await self._process_record_updates_batch(record_updates)
+                    total_records_dropped += await self._process_record_updates_batch(record_updates)
 
                 # Move to next batch
                 offset += batch_size
@@ -2048,7 +2152,11 @@ class ServiceNowConnector(BaseConnector):
             if latest_update_time:
                 await self.article_sync_point.update_sync_point(ServiceNowSyncPointKeys.ARTICLES, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: latest_update_time})
 
-            self.logger.info(f"✅ Articles synced: {total_articles_synced} articles, {total_attachments_synced} attachments")
+            self.logger.info(
+                f"✅ Articles synced: {total_articles_synced} articles, "
+                f"{total_attachments_synced} attachments, "
+                f"{total_records_dropped} record(s) dropped without permissions"
+            )
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing articles: {e}", exc_info=True)
@@ -2129,6 +2237,7 @@ class ServiceNowConnector(BaseConnector):
                     att_data,
                     parent_record_group_type=article_record.record_group_type,
                     parent_external_record_group_id=article_record.external_record_group_id,
+                    inherit_permissions=article_record.inherit_permissions,
                 )
 
                 if att_record:
@@ -2152,7 +2261,7 @@ class ServiceNowConnector(BaseConnector):
             self.logger.error(f"Failed to process article {article_data.get('sys_id')}: {e}", exc_info=True)
             return []
 
-    async def _process_record_updates_batch(self, record_updates: List[RecordUpdate]) -> None:
+    async def _process_record_updates_batch(self, record_updates: List[RecordUpdate]) -> int:
         """
         Process a batch of RecordUpdates using the data entities processor.
 
@@ -2161,20 +2270,39 @@ class ServiceNowConnector(BaseConnector):
 
         Args:
             record_updates: List of RecordUpdate objects
+
+        Returns:
+            int: Number of records dropped because they carry no permissions.
         """
         try:
             if not record_updates:
-                return
+                return 0
 
             # Convert RecordUpdates to (Record, Permissions) tuples
             records_with_permissions = []
+            dropped_external_ids = []
             for update in record_updates:
-                if update.record and update.new_permissions:
+                if not update.record:
+                    continue
+                if update.new_permissions:
                     records_with_permissions.append((update.record, update.new_permissions))
+                else:
+                    dropped_external_ids.append(update.external_record_id)
+
+            # A record with no principal reaches nobody, so it is not written. Name
+            # the records, otherwise the sync reports a count it did not store.
+            if dropped_external_ids:
+                self.logger.warning(
+                    "Dropped %d record(s) with no permissions: %s",
+                    len(dropped_external_ids),
+                    dropped_external_ids,
+                )
 
             # Use processor's batch method
             if records_with_permissions:
                 await self.data_entities_processor.on_new_records(records_with_permissions)
+
+            return len(dropped_external_ids)
 
         except Exception as e:
             self.logger.error(f"Failed to process record updates batch: {e}", exc_info=True)
@@ -2676,7 +2804,11 @@ class ServiceNowConnector(BaseConnector):
             # Construct web URL
             web_url = None
             if self.instance_url:
-                web_url = ServiceNowURLPatterns.KB_BASE.format(instance_url=self.instance_url, sys_id=sys_id)
+                web_url = ServiceNowURLPatterns.KB_BASE.format(
+                    instance_url=self.instance_url,
+                    portal=self.kb_portal_suffix,
+                    sys_id=sys_id,
+                )
 
             # Create RecordGroup for Knowledge Base
             kb_record_group = RecordGroup(
@@ -2730,7 +2862,11 @@ class ServiceNowConnector(BaseConnector):
             # Construct web URL
             web_url = None
             if self.instance_url:
-                web_url = ServiceNowURLPatterns.KB_CATEGORY.format(instance_url=self.instance_url, sys_id=sys_id)
+                web_url = ServiceNowURLPatterns.KB_CATEGORY.format(
+                    instance_url=self.instance_url,
+                    portal=self.kb_portal_suffix,
+                    sys_id=sys_id,
+                )
 
             # Create RecordGroup for Category
             category_record_group = RecordGroup(
@@ -2785,7 +2921,11 @@ class ServiceNowConnector(BaseConnector):
             # Construct web URL
             web_url = None
             if self.instance_url:
-                web_url = ServiceNowURLPatterns.KB_ARTICLE.format(instance_url=self.instance_url, sys_id=sys_id)
+                web_url = ServiceNowURLPatterns.KB_ARTICLE.format(
+                    instance_url=self.instance_url,
+                    portal=self.kb_portal_suffix,
+                    sys_id=sys_id,
+                )
 
             # Extract category sys_id for external_record_group_id
             # Fallback to KB if category is empty/missing
@@ -2808,11 +2948,22 @@ class ServiceNowConnector(BaseConnector):
                     self.logger.warning(f"Article {sys_id} has no category and no KB - skipping")
                     return None
 
+            # An article that carries its own Can Read criteria must not also
+            # receive the grants of its knowledge base, but only on an instance
+            # where that override is switched on. See KBKnowledgeSNC.canRead.
+            own_read_criteria = bool((article_data.can_read_user_criteria or "").strip())
+            inherit_permissions = not (self.apply_article_read_criteria and own_read_criteria)
+
             # Create WebpageRecord for Article
             record_id = str(uuid.uuid4())
             article_record = WebpageRecord(
                 id=record_id,
+                inherit_permissions=inherit_permissions,
                 external_record_id=sys_id,
+                # The processor rewrites a stored record, and re-queues it for
+                # indexing, only when this differs from what it holds. Leaving it
+                # unset froze every record at its first index.
+                external_revision_id=article_data.sys_updated_on,
                 version=0,
                 record_name=short_description,
                 record_type=RecordType.WEBPAGE,
@@ -2838,6 +2989,8 @@ class ServiceNowConnector(BaseConnector):
         attachment_data: AttachmentMetadata,
         parent_record_group_type: Optional[RecordGroupType] = None,
         parent_external_record_group_id: Optional[str] = None,
+        *,
+        inherit_permissions: bool = True,
     ) -> Optional[FileRecord]:
         """
         Transform ServiceNow sys_attachment to FileRecord entity.
@@ -2846,6 +2999,8 @@ class ServiceNowConnector(BaseConnector):
             attachment_data: ServiceNow sys_attachment AttachmentMetadata model
             parent_record_group_type: The record group type from parent article (CATEGORY or KB)
             parent_external_record_group_id: The external record group ID from parent article
+            inherit_permissions: Follows the parent article, so an attachment never
+                reaches a reader that the article itself keeps out
 
         Returns:
             FileRecord: Transformed attachment or None if invalid
@@ -2893,6 +3048,8 @@ class ServiceNowConnector(BaseConnector):
             attachment_record_id = str(uuid.uuid4())
             attachment_record = FileRecord(
                 id=attachment_record_id,
+                inherit_permissions=inherit_permissions,
+                external_revision_id=attachment_data.sys_updated_on,
                 org_id=self.data_entities_processor.org_id,
                 record_name=file_name,
                 record_type=RecordType.FILE,
