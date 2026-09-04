@@ -16642,10 +16642,10 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (team:{team_label} {{id: $teamId}})
             OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL
+            WHERE member_user IS NOT NULL AND member_user.isActive = true
             WITH team,
                  collect(DISTINCT properties(current_permission))[0] AS current_user_permission,
-                 collect(DISTINCT {{
+                 collect(DISTINCT CASE WHEN member_user IS NULL THEN null ELSE {{
                      id: member_user.id,
                      userId: member_user.userId,
                      userName: member_user.fullName,
@@ -16653,7 +16653,7 @@ class Neo4jProvider(IGraphDBProvider):
                      role: member_permission.role,
                      joinedAt: member_permission.createdAtTimestamp,
                      isOwner: member_permission.role = 'OWNER'
-                 }}) AS team_members
+                 }} END) AS team_members
             RETURN {{
                 id: team.id,
                 name: team.name,
@@ -16730,9 +16730,9 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team:{team_label})
             WHERE 1=1 {search_where} {extra_where}
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL
+            WHERE member_user IS NOT NULL AND member_user.isActive = true
             WITH team, properties(p) AS current_user_permission,
-                 collect(DISTINCT {{
+                 collect(DISTINCT CASE WHEN member_user IS NULL THEN null ELSE {{
                      id: member_user.id,
                      userId: member_user.userId,
                      userName: member_user.fullName,
@@ -16740,7 +16740,7 @@ class Neo4jProvider(IGraphDBProvider):
                      role: member_permission.role,
                      joinedAt: member_permission.createdAtTimestamp,
                      isOwner: member_permission.role = 'OWNER'
-                 }}) AS team_members
+                 }} END) AS team_members
             WITH team, current_user_permission, team_members, size(team_members) AS member_count
             ORDER BY team.createdAtTimestamp DESC
             SKIP $offset
@@ -16839,10 +16839,10 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (team:{team_label} {{id: $teamId, orgId: $orgId}})
             OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL {search_where}
+            WHERE member_user IS NOT NULL AND member_user.isActive = true {search_where}
             WITH team,
                  collect(DISTINCT properties(current_permission))[0] AS current_user_permission,
-                 collect(DISTINCT {{
+                 collect(DISTINCT CASE WHEN member_user IS NULL THEN null ELSE {{
                      id: member_user.id,
                      userId: member_user.userId,
                      userName: member_user.fullName,
@@ -16850,7 +16850,7 @@ class Neo4jProvider(IGraphDBProvider):
                      role: member_permission.role,
                      joinedAt: member_permission.createdAtTimestamp,
                      isOwner: member_permission.role = 'OWNER'
-                 }}) AS all_members
+                 }} END) AS all_members
             RETURN {{
                 id: team.id,
                 name: team.name,
