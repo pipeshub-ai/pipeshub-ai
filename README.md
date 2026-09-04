@@ -211,13 +211,25 @@ the one-command installer above always uses prebuilt images.
 
 > **Advanced options:** CI environment variables, slim vs. full deployment types, manual Compose profile usage, and local source builds are covered in [Advanced Deployment Options](deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
 
-## MCP Server
+## Build with PipesHub
+
+The built-in search experience is one way to use PipesHub. The same connected,
+permission-filtered context is available to your own agents and applications —
+over MCP for any compatible client, or through the SDKs when you are calling it
+from your own code.
+
+An agent connects as a specific person rather than as the application, so it
+retrieves exactly what that person is allowed to see. Access is resolved when
+the query runs, against the source system's own permissions, instead of being
+approximated at build time.
+
+### MCP Server
 
 Use PipesHub with any MCP-compatible client to bring your enterprise context into AI workflows. Check the README for setup and usage.
 
 **Repository:** [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/)
 
-### Connecting an Omnigent agent
+#### Connecting an Omnigent agent
 
 First, mint a long-lived credential: **workspace → Developer settings →
 Personal Access Tokens → New token**. Pick an expiry (30/90/365 days, or
@@ -236,7 +248,7 @@ Three ways to connect, from least to most setup:
    (`setup.sh` / `run.sh`) for CI, service accounts, or password/OAuth
    client-credentials auth instead of a personal token.
 
-## SDKs
+### SDKs
 
 PipesHub provides developer SDKs for Python, TypeScript, and Go to help you integrate quickly. Check the respective SDK repository README for setup and usage details.
 
