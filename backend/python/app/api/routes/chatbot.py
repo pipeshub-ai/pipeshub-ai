@@ -756,6 +756,42 @@ class AttachmentPermissionRequest(BaseModel):
     recordIds: list[str]
 
 
+async def _org_scoped_record_ids(
+    graph_provider: IGraphDBProvider, record_ids: list[str], org_id: str
+) -> tuple[list[str], int]:
+    """Drop any record_id that doesn't belong to the caller's org.
+
+    Without this, grant/revoke_attachment_permissions would build PERMISSION
+    edges straight from client-supplied recordIds with no ownership check at
+    all -- unlike delete_chat_attachment's equivalent single-record check
+    below -- letting a caller who guesses/enumerates a record key from another
+    org grant themselves READER access to it.
+
+    Returns (valid_record_ids, skipped_count). The count (not which IDs, or
+    why) is surfaced back to the caller -- matching kb_service.py's
+    skipped_users/skipped_teams pattern -- so a legitimate caller sees that
+    something was dropped instead of a silently lower count with no
+    explanation, while a record that exists but belongs to another org is
+    still indistinguishable from one that doesn't exist at all.
+    """
+    valid: list[str] = []
+    skipped = 0
+    for record_id in record_ids:
+        record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+        if not record:
+            logger.warning("Record not found for permission grant/revoke, skipping: %s", record_id)
+            skipped += 1
+            continue
+        if record.get("orgId") != org_id:
+            logger.warning(
+                "Record %s does not belong to caller's org, skipping", record_id
+            )
+            skipped += 1
+            continue
+        valid.append(record_id)
+    return valid, skipped
+
+
 @router.post("/chat/attachments/permissions", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
 @inject
 async def grant_attachment_permissions(
@@ -774,21 +810,44 @@ async def grant_attachment_permissions(
         raise HTTPException(status_code=400, detail=f"Invalid request payload: {str(e)}")
 
     if not payload.userIds or not payload.recordIds:
-        return {"granted": 0}
+        return {"granted": 0, "skippedRecords": 0, "skippedUsers": 0}
+
+    org_id = (request.state.user or {}).get("orgId")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Missing org context")
+
+    record_ids, skipped_records = await _org_scoped_record_ids(
+        graph_provider, payload.recordIds, org_id
+    )
+    if not record_ids:
+        return {"granted": 0, "skippedRecords": skipped_records, "skippedUsers": 0}
 
     ts = get_epoch_timestamp_in_ms()
     edges: list[dict[str, Any]] = []
+    skipped_users = 0
 
     for user_id in payload.userIds:
         user_doc = await graph_provider.get_user_by_user_id(user_id)
         if not user_doc:
             logger.warning("User not found for permission grant, skipping: %s", user_id)
+            skipped_users += 1
+            continue
+        # get_user_by_user_id looks up a user by userId alone, with no org
+        # filter -- without this check a caller could name one of their own
+        # (correctly org-scoped) records but a userId from a DIFFERENT org,
+        # granting an outsider read access to their org's record.
+        if user_doc.get("orgId") != org_id:
+            logger.warning(
+                "User %s does not belong to caller's org, skipping", user_id
+            )
+            skipped_users += 1
             continue
         user_key = user_doc.get("_key") or user_doc.get("id")
         if not user_key:
             logger.warning("Resolved user missing _key/id, skipping: %s", user_id)
+            skipped_users += 1
             continue
-        for record_id in payload.recordIds:
+        for record_id in record_ids:
             edges.append(
                 {
                     "from_id": user_key,
@@ -805,7 +864,11 @@ async def grant_attachment_permissions(
     if edges:
         await graph_provider.batch_create_edges(edges, CollectionNames.PERMISSION.value)
 
-    return {"granted": len(edges)}
+    return {
+        "granted": len(edges),
+        "skippedRecords": skipped_records,
+        "skippedUsers": skipped_users,
+    }
 
 
 @router.delete("/chat/attachments/permissions", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
@@ -826,20 +889,42 @@ async def revoke_attachment_permissions(
         raise HTTPException(status_code=400, detail=f"Invalid request payload: {str(e)}")
 
     if not payload.userIds or not payload.recordIds:
-        return {"revoked": 0}
+        return {"revoked": 0, "skippedRecords": 0, "skippedUsers": 0}
+
+    org_id = (request.state.user or {}).get("orgId")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Missing org context")
+
+    record_ids, skipped_records = await _org_scoped_record_ids(
+        graph_provider, payload.recordIds, org_id
+    )
+    if not record_ids:
+        return {"revoked": 0, "skippedRecords": skipped_records, "skippedUsers": 0}
 
     edges: list[dict[str, Any]] = []
+    skipped_users = 0
 
     for user_id in payload.userIds:
         user_doc = await graph_provider.get_user_by_user_id(user_id)
         if not user_doc:
             logger.warning("User not found for permission revoke, skipping: %s", user_id)
+            skipped_users += 1
+            continue
+        # Same org check as grant_attachment_permissions -- get_user_by_user_id
+        # isn't org-scoped, so without this a revoke targeting a userId from
+        # another org would still build/execute a delete edge for it.
+        if user_doc.get("orgId") != org_id:
+            logger.warning(
+                "User %s does not belong to caller's org, skipping", user_id
+            )
+            skipped_users += 1
             continue
         user_key = user_doc.get("_key") or user_doc.get("id")
         if not user_key:
             logger.warning("Resolved user missing _key/id, skipping: %s", user_id)
+            skipped_users += 1
             continue
-        for record_id in payload.recordIds:
+        for record_id in record_ids:
             edges.append(
                 {
                     "from_id": user_key,
@@ -852,7 +937,11 @@ async def revoke_attachment_permissions(
     if edges:
         await graph_provider.batch_delete_edges(edges, CollectionNames.PERMISSION.value)
 
-    return {"revoked": len(edges)}
+    return {
+        "revoked": len(edges),
+        "skippedRecords": skipped_records,
+        "skippedUsers": skipped_users,
+    }
 
 
 @router.delete(
