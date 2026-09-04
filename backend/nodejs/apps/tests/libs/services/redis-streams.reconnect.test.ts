@@ -2,6 +2,8 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { EventEmitter } from 'events';
+import { stubGetRedisProvider } from '../../helpers/fake-redis-provider';
+import { IRedisConnectionProvider } from '../../../src/libs/services/redis/connectionProvider.interface';
 
 /**
  * Regression cover for reconnect-after-stop.
@@ -12,11 +14,9 @@ import { EventEmitter } from 'events';
  * request handlers, so this is reachable in normal operation.
  */
 describe('Redis Streams reconnect after disconnect', () => {
-  const ioredisPath = require.resolve('ioredis');
   const svcPath = require.resolve(
     '../../../src/libs/services/redis-streams.service',
   );
-  let original: NodeJS.Module | undefined;
   let clients: any[];
 
   const makeClient = () => {
@@ -45,24 +45,37 @@ describe('Redis Streams reconnect after disconnect', () => {
 
   beforeEach(() => {
     clients = [];
-    original = require.cache[ioredisPath];
-    const FakeRedis = function (this: any) {
-      const c = makeClient();
-      clients.push(c);
-      return c;
-    } as any;
+    const provider: IRedisConnectionProvider = {
+      isCluster: false,
+      mode: 'standalone',
+      keyNamespace: '',
+      getClient: sinon.stub().callsFake(() => {
+        const c = makeClient();
+        clients.push(c);
+        return c;
+      }),
+      createClient: sinon.stub().callsFake(() => {
+        const c = makeClient();
+        clients.push(c);
+        return c;
+      }),
+      createPubSubClient: sinon.stub().callsFake(() => makeClient()),
+      keySlot: sinon.stub().returns(0),
+      loadScript: sinon.stub().resolves('fakesha'),
+      connectionUrl: sinon.stub().returns('redis://fake:6379/0'),
+      ping: sinon.stub().resolves(true),
+      close: sinon.stub().resolves(),
+      release: sinon.stub(),
+      scanKeys: sinon.stub().callsFake(async function* (): AsyncIterable<string> {}),
+    };
+    // Restored by the global `sinon.restore()` in this suite's `afterEach`.
+    stubGetRedisProvider(provider as any);
 
-    require.cache[ioredisPath] = {
-      ...original!,
-      exports: { Redis: FakeRedis, default: FakeRedis, RedisOptions: {} },
-    } as any;
     delete require.cache[svcPath];
     svc = require('../../../src/libs/services/redis-streams.service');
   });
 
   afterEach(() => {
-    if (original) require.cache[ioredisPath] = original;
-    else delete require.cache[ioredisPath];
     delete require.cache[svcPath];
     sinon.restore();
   });

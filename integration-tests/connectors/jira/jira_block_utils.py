@@ -1,8 +1,8 @@
 """Normalization + expected-snapshot loading for the Jira streamed-blocks integration test.
 
 The Jira connector streams a ``BlocksContainer`` (``application/blocks`` JSON) built from a
-ticket's ADF description + comments + inline images. That output carries per-run volatile
-values (uuid ids, ``source_group_id`` with the issue id, ``weburl`` with the issue key,
+ticket's rendered HTML description + comments + inline images. That output carries per-run
+volatile values (uuid ids, ``source_group_id`` with the issue id, ``weburl`` with the issue key,
 ``content_hash``, source timestamps, and giant base64 image data-URIs). This module strips /
 placeholders those so the expected snapshot is stable across runs, and loads (or bootstraps)
 the expected-snapshot file.
@@ -92,16 +92,17 @@ async def parse_connector_blocks_via_processor(blocks_data: bytes | str | dict) 
     """Run the connector's ``application/blocks`` through the production ``Processor.process_blocks``
     and return the FINAL parsed ``BlocksContainer`` as a dict.
 
-    Mirrors the parser IT (``process_md_document``) but for connector records: block-groups with
-    ``requires_processing=True`` are parsed into fine-grained typed blocks via the real markdown
-    parser. The graph DB, indexing pipeline and LLM table-enhancement are mocked so only the
-    parsing path runs (no external services, deterministic output).
+    Mirrors the parser IT but for connector records: block-groups with
+    ``requires_processing=True`` are parsed into fine-grained typed blocks via the real HTML
+    (or markdown) parser. The graph DB, indexing pipeline and LLM table-enhancement are mocked
+    so only the parsing path runs (no external services, deterministic output).
     """
     import logging as _logging
     from unittest.mock import AsyncMock, MagicMock, patch
 
     from app.config.constants.arangodb import ExtensionTypes
     from app.events.processor import Processor
+    from app.modules.parsers.html_parser.html_parser import HTMLParser
     from app.modules.parsers.image_parser.image_parser import ImageParser
     from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 
@@ -109,6 +110,7 @@ async def parse_connector_blocks_via_processor(blocks_data: bytes | str | dict) 
     logger.setLevel(_logging.CRITICAL)
     parsers = {
         ExtensionTypes.MD.value: MarkdownParser(),
+        ExtensionTypes.HTML.value: HTMLParser(logger=logger),
         ExtensionTypes.PNG.value: ImageParser(logger),
     }
     with patch("app.events.processor.DoclingClient"):
@@ -149,8 +151,21 @@ async def parse_connector_blocks_via_processor(blocks_data: bytes | str | dict) 
     }
 
 
-def load_expected() -> dict:
-    """Load the committed expected snapshot, failing if it is absent.
+# Provenance block written next to the snapshot (top-level key, stripped before compare).
+# Records which revision of the source ticket the snapshot was taken from, so an edit
+# to the frozen ticket on the shared site is reported as such instead of as a diff.
+META_KEY = "_meta"
+
+
+def split_meta(snapshot: dict) -> tuple[dict, dict]:
+    """Return ``(expected_without_meta, meta)``; ``meta`` is ``{}`` for a legacy snapshot."""
+    expected = dict(snapshot)
+    meta = expected.pop(META_KEY, None) or {}
+    return expected, meta
+
+
+def load_expected() -> tuple[dict, dict]:
+    """Load the committed expected snapshot as ``(expected, meta)``, failing if it is absent.
 
     Mirrors the parser snapshot IT: the expected file is committed and hand-reviewed,
     and a missing one is a hard failure — no silent bootstrap/skip. To (re)generate
@@ -165,14 +180,34 @@ def load_expected() -> dict:
             "TC-JIRA-BLOCKS-001 once with JIRA_BLOCKS_BOOTSTRAP=1, hand-review the "
             "JSON (description markdown, comment threading, image placeholder), and commit it."
         )
-    return json.loads(_EXPECTED_PATH.read_text(encoding="utf-8"))
+    return split_meta(json.loads(_EXPECTED_PATH.read_text(encoding="utf-8")))
 
 
-def bootstrap_expected(actual: dict) -> None:
+def bootstrap_expected(actual: dict, *, meta: dict | None = None) -> None:
     """Write ``actual`` (already normalized) as the expected snapshot — local regeneration only.
 
     Not part of the assertion path; the test invokes this solely when
     ``JIRA_BLOCKS_BOOTSTRAP=1`` so an operator can regenerate, hand-review, and commit.
+    ``meta`` (issue key + ``updated`` revision) is stored under ``META_KEY``.
     """
+    payload = dict(actual)
+    if meta:
+        payload[META_KEY] = meta
     _EXPECTED_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _EXPECTED_PATH.write_text(json.dumps(actual, indent=2, sort_keys=True), encoding="utf-8")
+    _EXPECTED_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def assert_snapshot_source_unchanged(meta: dict, *, issue_key: str, live_updated_ms: int) -> None:
+    """Fail with a diagnosis, not a dict diff, when the frozen ticket moved since the snapshot.
+
+    A legacy snapshot without provenance is accepted silently — the next bootstrap adds it.
+    """
+    recorded = meta.get("issue_updated_ms")
+    if recorded is None or int(recorded) == int(live_updated_ms):
+        return
+    raise AssertionError(
+        f"{issue_key} was edited on the shared Jira site after the blocks snapshot was taken "
+        f"(live updated={live_updated_ms}, snapshot updated={recorded}). The parser did not "
+        "regress; the source moved. Review the ticket, then regenerate with "
+        "JIRA_BLOCKS_BOOTSTRAP=1 and commit the new snapshot."
+    )

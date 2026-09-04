@@ -267,6 +267,12 @@ const conversationSchema = new Schema<IConversation>(
       type: Map,
       of: Schema.Types.Mixed,
     },
+    // Phase 2 migration bookkeeping: set once this document has been copied
+    // into chatSessions/chatSessionMessages (see chat_sessions.migration.ts).
+    // Declared on the schema (not just written via the native driver) so
+    // `strictQuery` cannot silently drop the `{isMigrated: {$ne: true}}`
+    // scan filter or the completion write.
+    isMigrated: { type: Boolean, index: true },
   },
   { timestamps: true },
 );

@@ -704,7 +704,6 @@ class TestGetConnectorStatsException:
         with pytest.raises(HTTPException) as exc:
             await get_connector_stats_endpoint(
                 request=req,
-                org_id="o1",
                 connector_id="c1",
                 graph_provider=gp,
             )

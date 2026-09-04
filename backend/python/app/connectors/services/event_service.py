@@ -168,6 +168,7 @@ class EventService:
             # Extract scope, createdBy and org from connector document
             scope = connector_doc.get("scope", "personal")
             created_by = connector_doc.get("createdBy", "")
+            last_synced_by = connector_doc.get("lastSyncedBy", "") or None
             org_id = connector_doc.get("orgId") or self._resolve_org_id()
             data_store_provider = self._build_data_store(org_id)
 
@@ -182,6 +183,8 @@ class EventService:
                 org_id=org_id,
                 data_entities_processor_cls=get_data_entities_processor_cls(),
                 notification_service=self.app_container.connector_notification_service(),
+                connector_instance_name=connector_doc.get("name"),
+                last_synced_by=last_synced_by,
             )
 
             if not connector:
@@ -271,6 +274,8 @@ class EventService:
                 return False
             scope = connector_doc.get("scope", "personal")
             created_by = connector_doc.get("createdBy", "")
+            last_synced_by = connector_doc.get("lastSyncedBy", "") or None
+            connector_instance_name = connector_doc.get("name")
             
             # Use generic connector factory
             connector = await ConnectorFactory.create_connector(
@@ -284,6 +289,8 @@ class EventService:
                 org_id=org_id,
                 data_entities_processor_cls=get_data_entities_processor_cls(),
                 notification_service=self.app_container.connector_notification_service(),
+                connector_instance_name=connector_instance_name,
+                last_synced_by=last_synced_by,
             )
 
             if not connector:
@@ -336,6 +343,14 @@ class EventService:
         if not connector:
             self.logger.error(f"{connector_name.capitalize()} {connector_id} connector not initialized")
             return False
+
+        synced_by = payload.get("syncedBy", "")
+        if synced_by:
+            await self.graph_provider.update_node(
+                connector_id, CollectionNames.APPS.value,
+                {"lastSyncedBy": synced_by},
+            )
+            connector.last_synced_by = synced_by
 
         pending_full_sync = False
         if connector_doc:

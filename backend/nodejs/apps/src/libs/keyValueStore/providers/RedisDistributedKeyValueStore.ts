@@ -1,8 +1,10 @@
-import { Redis } from 'ioredis';
 import { DistributedKeyValueStore } from '../keyValueStore';
 import { KeyAlreadyExistsError, KeyNotFoundError } from '../../errors/etcd.errors';
 import { RedisConfig } from '../../types/redis.types';
 import { Logger } from '../../services/logger.service';
+import { getRedisProvider } from '../../services/redis/connectionProviderFactory';
+import { redisConnectionConfigFromHostPort } from '../../services/redis/connectionConfig';
+import type { IRedisConnectionProvider, RedisClient } from '../../services/redis/connectionProvider.interface';
 
 export interface RedisStoreConfig extends RedisConfig {
   keyPrefix?: string;
@@ -10,12 +12,50 @@ export interface RedisStoreConfig extends RedisConfig {
 
 const CACHE_INVALIDATION_CHANNEL = 'pipeshub:cache:invalidate';
 
+/**
+ * Atomic single-key compare-and-set (R6): `GET` then conditional `SET`,
+ * done server-side so no client round-trip can race another writer.
+ * `WATCH`/`MULTI`/`EXEC` is what this replaces -- MemoryDB's cluster mode
+ * pins a transaction to whichever node the key hashes to, but many
+ * `ioredis.Cluster` versions do not route `WATCH` there reliably, so a Lua
+ * script (single key, one node, one round trip) is the only comparison
+ * primitive that behaves identically on standalone and cluster.
+ *
+ * `ARGV[3]` disambiguates "expected no existing value" from "expected an
+ * empty buffer": Lua's `redis.call('GET', ...)` returns `false` for a
+ * missing key, which cannot be produced any other way from a Lua string
+ * comparison against `ARGV[1]`.
+ */
+const COMPARE_AND_SET_SCRIPT = `
+local current = redis.call('GET', KEYS[1])
+if ARGV[3] == '1' then
+  if current == false then
+    redis.call('SET', KEYS[1], ARGV[2])
+    return 1
+  end
+else
+  if current ~= false and current == ARGV[1] then
+    redis.call('SET', KEYS[1], ARGV[2])
+    return 1
+  end
+end
+return 0
+`;
+
+function isNoScriptError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('NOSCRIPT');
+}
+
 
 export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStore<T> {
-  private client: Redis;
+  private client: RedisClient;
+  private readonly provider: IRedisConnectionProvider;
+  private casSha: string | null = null;
   private serializer: (value: T) => Buffer;
   private deserializer: (buffer: Buffer) => T;
   private keyPrefix: string;
+  /** REDIS_KEY_NAMESPACE (R9), resolved once from the provider. */
+  private readonly namespacedPrefix: string;
   private watchers: Map<string, Array<(value: T | null) => void>> = new Map();
 
   constructor(
@@ -27,28 +67,31 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
     this.serializer = serializer;
     this.deserializer = deserializer;
 
-    this.client = new Redis({
-      host: config.host,
-      port: config.port,
-      password: config.password,
-      db: config.db || 0,
-      connectTimeout: config.connectTimeout || 10000,
-      maxRetriesPerRequest: config.maxRetriesPerRequest || 3,
-      enableOfflineQueue: config.enableOfflineQueue ?? true,
-      retryStrategy: (times: number) => {
-        const delay = Math.min(times * 50, 2000);
-        return delay;
-      },
+    this.provider = getRedisProvider(
+      redisConnectionConfigFromHostPort({
+        host: config.host,
+        port: config.port,
+        password: config.password,
+        db: config.db,
+      }),
+    );
+    this.namespacedPrefix = this.provider.keyNamespace
+      ? `${this.provider.keyNamespace}:${this.keyPrefix}`
+      : this.keyPrefix;
+    this.client = this.provider.createClient({
+      connectTimeoutMs: config.connectTimeout,
+      maxRetriesPerRequest: config.maxRetriesPerRequest,
+      enableOfflineQueue: config.enableOfflineQueue,
     });
   }
 
   private buildKey(key: string): string {
-    return `${this.keyPrefix}${key}`;
+    return `${this.namespacedPrefix}${key}`;
   }
 
   private stripPrefix(key: string): string {
-    if (key.startsWith(this.keyPrefix)) {
-      return key.substring(this.keyPrefix.length);
+    if (key.startsWith(this.namespacedPrefix)) {
+      return key.substring(this.namespacedPrefix.length);
     }
     return key;
   }
@@ -97,23 +140,7 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
   }
 
   async getAllKeys(): Promise<string[]> {
-    const pattern = `${this.keyPrefix}*`;
-    const keys: string[] = [];
-
-    let cursor = '0';
-    do {
-      const [newCursor, foundKeys] = await this.client.scan(
-        cursor,
-        'MATCH',
-        pattern,
-        'COUNT',
-        100,
-      );
-      cursor = newCursor;
-      keys.push(...foundKeys.map((k) => this.stripPrefix(k)));
-    } while (cursor !== '0');
-
-    return keys;
+    return this.scanPrefixed(`${this.namespacedPrefix}*`);
   }
 
   async watchKey(key: string, callback: (value: T | null) => void): Promise<void> {
@@ -143,23 +170,29 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
 
   async listKeysInDirectory(directory: string): Promise<string[]> {
     const prefix = directory.endsWith('/') ? directory : `${directory}/`;
-    const pattern = `${this.keyPrefix}${prefix}*`;
+    return this.scanPrefixed(`${this.namespacedPrefix}${prefix}*`);
+  }
+
+  /**
+   * `provider.scanKeys()`, not `client.scan()` (R2): ioredis routes
+   * `Cluster.scan()` to one arbitrary node, so a raw SCAN on a cluster
+   * returns whatever fraction of the keyspace that shard happens to hold --
+   * silently, with no error to notice. The provider owns the topology and
+   * fans out over every master.
+   */
+  private async scanPrefixed(pattern: string): Promise<string[]> {
     const keys: string[] = [];
-
-    let cursor = '0';
-    do {
-      const [newCursor, foundKeys] = await this.client.scan(
-        cursor,
-        'MATCH',
-        pattern,
-        'COUNT',
-        100,
-      );
-      cursor = newCursor;
-      keys.push(...foundKeys.map((k) => this.stripPrefix(k)));
-    } while (cursor !== '0');
-
+    for await (const key of this.provider.scanKeys(pattern)) {
+      keys.push(this.stripPrefix(key));
+    }
     return keys;
+  }
+
+  private async ensureCasScriptLoaded(): Promise<string> {
+    if (this.casSha === null) {
+      this.casSha = await this.provider.loadScript(COMPARE_AND_SET_SCRIPT);
+    }
+    return this.casSha;
   }
 
   async compareAndSet(
@@ -170,33 +203,40 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
     const fullKey = this.buildKey(key);
     const newBuffer = this.serializer(newValue);
     const expectedBuffer =
-      expectedValue !== null ? this.serializer(expectedValue) : null;
+      expectedValue !== null ? this.serializer(expectedValue) : Buffer.alloc(0);
+    const expectNoExisting = expectedValue === null ? '1' : '0';
 
     try {
-      // Watch the key for any changes.
-      await this.client.watch(fullKey);
-
-      const currentBuffer = await this.client.getBuffer(fullKey);
-
-      // Compare buffers for an exact match.
-      const valuesMatch =
-        (expectedValue === null && currentBuffer === null) ||
-        (expectedBuffer !== null &&
-          currentBuffer !== null &&
-          expectedBuffer.equals(currentBuffer));
-
-      if (!valuesMatch) {
-        // Values don't match, abort.
-        await this.client.unwatch();
-        return false;
+      let sha = await this.ensureCasScriptLoaded();
+      let result: number;
+      try {
+        result = (await this.client.evalsha(
+          sha,
+          1,
+          fullKey,
+          expectedBuffer,
+          newBuffer,
+          expectNoExisting,
+        )) as number;
+      } catch (error) {
+        if (!isNoScriptError(error)) {
+          throw error;
+        }
+        // Evicted by a `SCRIPT FLUSH` or a MemoryDB node replacement (R6):
+        // reload once and retry rather than failing the whole operation.
+        this.casSha = null;
+        sha = await this.ensureCasScriptLoaded();
+        result = (await this.client.evalsha(
+          sha,
+          1,
+          fullKey,
+          expectedBuffer,
+          newBuffer,
+          expectNoExisting,
+        )) as number;
       }
 
-      // Atomically set the new value.
-      const result = await this.client.multi().set(fullKey, newBuffer).exec();
-
-      // If result is null, it means the key was modified by another client
-      // after we started watching it. The transaction was aborted.
-      if (result === null) {
+      if (result !== 1) {
         return false;
       }
 
@@ -209,10 +249,18 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
     }
   }
 
+  private invalidationChannel(): string {
+    // Namespaced (R9): two deployments sharing one Redis/MemoryDB endpoint
+    // must not invalidate each other's caches.
+    return this.provider.keyNamespace
+      ? `${this.provider.keyNamespace}:${CACHE_INVALIDATION_CHANNEL}`
+      : CACHE_INVALIDATION_CHANNEL;
+  }
+
   async publishCacheInvalidation(key: string): Promise<void> {
     try {
       await this.client.publish(
-        CACHE_INVALIDATION_CHANNEL,
+        this.invalidationChannel(),
         key,
       );
     } catch (error) {

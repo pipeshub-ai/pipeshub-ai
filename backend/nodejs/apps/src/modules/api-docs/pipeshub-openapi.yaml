@@ -12314,8 +12314,9 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Success response from getAIModelsProviders. Returns the full stored
-        models bucket map (masked when secrets are hidden).
+        Success response from getAIModelsProviders. Returns the stored models
+        bucket map. Each entry's `configuration` includes only `model`,
+        `modelFriendlyName`, and `dimensions` when those keys were stored.
       required:
         - status
         - models
@@ -12338,6 +12339,8 @@ components:
       description: |
         Success response from getModelsByType. Returns stored provider entries
         for a single model type bucket (not the flattened available-models shape).
+        Each entry's `configuration` includes only `model`, `modelFriendlyName`,
+        and `dimensions` when stored.
       required:
         - status
         - models
@@ -12834,12 +12837,13 @@ components:
       description: |
         Provider-specific configuration stored on each AI model entry.
 
-        **Passthrough contract:** `additionalProperties` is intentionally `true` at this
-        level only. Node validation uses Zod `configurationSchema` with `.passthrough()`
-        so provider-specific keys reach the Python backend unchanged. The canonical field
-        list for each provider lives in `backend/python/app/config/ai_models/providers/`;
-        new providers may add keys without updating this spec. Do not set
-        `additionalProperties: false` here unless every registry field is enumerated.
+        **Read shape:** user-facing GET responses return only `model`,
+        `modelFriendlyName`, and `dimensions` (when stored). Values are copied as-is;
+        other keys including credentials are omitted.
+
+        **Write shape:** create and update still accept the full provider payload
+        (Zod `configurationSchema` with `.passthrough()`). An omitted key retains
+        the stored value; send an empty string to clear one.
 
         Properties below are the documented union of the Zod base shape and registry-defined
         configuration keys (all optional unless required by a given provider at runtime).
@@ -19687,13 +19691,16 @@ paths:
                 $ref: '#/components/schemas/Organization'
         '400':
           description: |
-            Request validation failed. Possible reasons:
+            Request validation failed, or the request was well-formed but rejected. Possible reasons:
 
             - Missing required fields (accountType, contactEmail, adminFullName, password)
             - accountType is not one of: individual, business
             - contactEmail is not a valid email address
             - password is shorter than 8 characters
             - registeredName is required when accountType is business
+            - Password does not meet complexity requirements (requires uppercase, lowercase, number, and special character)
+            - Organization already exists
+            - contactEmail does not contain a valid domain (e.g. emailname@example.com)
           content:
             application/json:
               schema:
@@ -19702,8 +19709,6 @@ paths:
           description: |
             Internal server error. Possible reasons:
 
-            - Organization already exists
-            - Password does not meet complexity requirements (requires uppercase, lowercase, number, and special character)
             - Database save failure
             - Event service error
           content:
@@ -33948,10 +33953,18 @@ paths:
                     description: Base URL for files (Local)
                   accessKeyId:
                     type: string
-                    description: AWS access key ID (S3)
+                    description: >-
+                      AWS access key ID (S3). Omitted when useIamRole is true.
                   secretAccessKey:
                     type: string
-                    description: AWS secret access key (S3)
+                    description: >-
+                      AWS secret access key (S3). Omitted when useIamRole is true.
+                  useIamRole:
+                    type: boolean
+                    description: >-
+                      True when S3 is configured to use the EC2/ECS IAM role
+                      (via the AWS default credential chain) instead of
+                      explicit IAM user credentials.
                   region:
                     type: string
                     description: AWS region (S3)
@@ -34001,17 +34014,25 @@ paths:
             schema:
               oneOf:
                 - type: object
-                  required: [storageType, s3AccessKeyId, s3SecretAccessKey, s3Region, s3BucketName]
+                  required: [storageType, s3Region, s3BucketName]
                   properties:
                     storageType:
                       type: string
                       enum: [s3]
                     s3AccessKeyId:
                       type: string
-                      description: AWS access key ID
+                      description: >-
+                        AWS access key ID. Optional - omit both this and
+                        s3SecretAccessKey to use the EC2/ECS IAM role
+                        credentials via the AWS default credential chain.
+                        Supplying only one of the pair is rejected.
                     s3SecretAccessKey:
                       type: string
-                      description: AWS secret access key
+                      description: >-
+                        AWS secret access key. Optional - omit both this and
+                        s3AccessKeyId to use the EC2/ECS IAM role credentials
+                        via the AWS default credential chain. Supplying only
+                        one of the pair is rejected.
                     s3Region:
                       type: string
                       description: AWS region (e.g. us-east-1)
@@ -34053,11 +34074,17 @@ paths:
                       format: uri
             examples:
               s3:
-                summary: Amazon S3
+                summary: Amazon S3 (explicit IAM user credentials)
                 value:
                   storageType: s3
                   s3AccessKeyId: AKIAIOSFODNN7EXAMPLE
                   s3SecretAccessKey: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                  s3Region: us-east-1
+                  s3BucketName: my-pipeshub-bucket
+              s3IamRole:
+                summary: Amazon S3 (EC2/ECS IAM role, no explicit credentials)
+                value:
+                  storageType: s3
                   s3Region: us-east-1
                   s3BucketName: my-pipeshub-bucket
               azureBlob:
@@ -34455,7 +34482,9 @@ paths:
       tags:
         - AI Models Providers
       summary: Get models by type
-      description: Get all configured models of a specific type.
+      description: |
+        Get all configured models of a specific type. Each entry's `configuration`
+        includes only `model`, `modelFriendlyName`, and `dimensions` when stored.
       operationId: getModelsByType
       security:
         - bearerAuth: []
@@ -34880,7 +34909,13 @@ paths:
       tags:
         - AI Models Providers
       summary: Update AI model provider
-      description: Update an existing AI model provider configuration.
+      description: |
+        Update an existing AI model provider configuration.
+
+        Credential keys omitted from `configuration` retain their stored value,
+        which is how a client that never received them can save other edits. The
+        health check runs against the merged configuration. Send an empty string
+        to clear a credential.
       operationId: updateAIModelProvider
       security:
         - bearerAuth: []
@@ -34929,8 +34964,7 @@ paths:
         '404':
           description: |
             No AI models configuration in KV store, or no provider with the given modelKey.
-            Health-check runs before KV lookup, so unknown keys with invalid credentials may
-            return 400 from the health-check instead.
+            KV lookup and type-mismatch checks run before the health-check.
           content:
             application/json:
               schema:
@@ -36381,7 +36415,9 @@ paths:
         - Configuration Manager
       summary: Get AI models configuration
       description: |
-        Retrieve the AI models configuration for the organization.
+        Retrieve the AI models configuration for the organization. Each entry's
+        `configuration` includes only `model`, `modelFriendlyName`, and
+        `dimensions` when stored.
       operationId: getAIModelsConfig
       security:
         - bearerAuth: []
@@ -36436,7 +36472,8 @@ paths:
       description: |
         Retrieve all configured AI model provider entries grouped by model type
         (admin-only). Returns the stored KV shape under `models`, not the flattened
-        list from getAvailableModelsByType.
+        list from getAvailableModelsByType. Each entry's `configuration` includes
+        only `model`, `modelFriendlyName`, and `dimensions` when stored.
       operationId: getAIModelsProviders
       security:
         - bearerAuth: []

@@ -62,6 +62,58 @@ __all__ = ["MessagePart", "TranscriptCollector"]
 _MAX_TOOL_ARGS_CHARS = 2000
 _MAX_TOOL_RESULT_CHARS = 500
 
+# Longest single argument value kept verbatim. Anything longer is shortened
+# in place, leaving the surrounding JSON intact — see `_serialize_tool_args`.
+_MAX_ARG_VALUE_CHARS = 1200
+
+
+def _serialize_tool_args(args: object) -> str:
+    """Serialize tool arguments to JSON that always parses, however large the
+    inputs were.
+
+    The Node gateway rebuilds a previous turn's tool calls by running
+    `JSON.parse` over this string
+    (`enterprise_search/utils/utils.ts::toolResultsFromParts`) and, on
+    failure, silently drops the arguments. Truncating the finished JSON at a
+    byte offset produces exactly that failure, so a `run_code` program over
+    the cap did not reach the next turn shortened — it vanished, taking the
+    language and package list with it, and the model rewrote from scratch
+    instead of editing.
+
+    So the truncation happens per VALUE, before serialization, and says so:
+    a caller that reads a prefix believing it is the whole program is the
+    other way this goes wrong. The full source of a `run_code` call is
+    durable anyway as its CODE artifact — this transcript only has to stay
+    honest about being a summary.
+    """
+    if not isinstance(args, dict):
+        args = {"value": args}
+
+    shortened: dict[str, object] = {}
+    for key, value in args.items():
+        if isinstance(value, str) and len(value) > _MAX_ARG_VALUE_CHARS:
+            shortened[str(key)] = (
+                f"{value[:_MAX_ARG_VALUE_CHARS]}"
+                f"… [truncated, {_MAX_ARG_VALUE_CHARS} of {len(value)} chars]"
+            )
+        else:
+            shortened[str(key)] = value
+
+    serialized = json.dumps(shortened, default=str)
+    if len(serialized) <= _MAX_TOOL_ARGS_CHARS:
+        return serialized
+
+    # Still oversized: many arguments, each under the per-value cap. Drop
+    # whole entries (never a partial one) until it fits, so the result stays
+    # parseable, and record how many went.
+    keys = list(shortened)
+    while keys and len(serialized) > _MAX_TOOL_ARGS_CHARS:
+        dropped = keys.pop()
+        del shortened[dropped]
+        shortened["__truncated__"] = f"{len(args) - len(keys)} argument(s) omitted"
+        serialized = json.dumps(shortened, default=str)
+    return serialized
+
 
 class MessagePart(TypedDict, total=False):
     type: Literal["text", "reasoning", "tool_call", "sub_agent"]
@@ -205,7 +257,7 @@ class TranscriptCollector(EventEmitter):
                 "type": "tool_call",
                 "toolCallId": tool_call_id,
                 "toolName": payload.get("tool", "tool"),
-                "args": json.dumps(payload.get("args", {}), default=str)[:_MAX_TOOL_ARGS_CHARS],
+                "args": _serialize_tool_args(payload.get("args", {})),
                 "status": "running",
                 "runId": run_id,
             }

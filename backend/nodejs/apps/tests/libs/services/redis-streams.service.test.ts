@@ -4,10 +4,15 @@ import sinon from 'sinon';
 import { EventEmitter } from 'events';
 import { MessageBrokerError } from '../../../src/libs/errors/messaging.errors';
 import { createMockLogger, MockLogger } from '../../helpers/mock-logger';
+import { stubGetRedisProvider } from '../../helpers/fake-redis-provider';
+import { IRedisConnectionProvider } from '../../../src/libs/services/redis/connectionProvider.interface';
 import { RedisBrokerConfig, StreamMessage } from '../../../src/libs/types/messaging.types';
 
 // ---------------------------------------------------------------------------
-// Mock Redis class for ioredis
+// Mock Redis client, shared by every connection the module under test opens
+// (producer.redis, consumer.redis, consumer.ackRedis, admin's client) --
+// mirrors the pre-provider-refactor test setup where `new Redis(...)`
+// always returned the same instance.
 // ---------------------------------------------------------------------------
 class MockRedisClient extends EventEmitter {
   status = 'ready';
@@ -26,26 +31,51 @@ class MockRedisClient extends EventEmitter {
   pipeline = sinon.stub();
 }
 
-// ---------------------------------------------------------------------------
-// Helper: override ioredis mock and reload redis-streams.service
-// ---------------------------------------------------------------------------
+/**
+ * Stub `getRedisProvider` so every client the module under test asks for
+ * (`createClient`/`getClient`) is `mockClient`, and `scanKeys` fans out
+ * through `mockClient.scan` the same way `StandaloneRedisProvider` does --
+ * so assertions on `mockRedis.scan.callCount` still hold.
+ */
+let currentProvider: any;
+
 function setupIoredisMock(mockClient: MockRedisClient) {
-  const ioredisPath = require.resolve('ioredis');
-  const original = require.cache[ioredisPath];
+  // Typed, not `as any`: two of these doubles silently omitted `keyNamespace`,
+  // which an `as any` cast lets through as `undefined`.
+  const provider: IRedisConnectionProvider = {
+    isCluster: false,
+    mode: 'standalone',
+    keyNamespace: '',
+    getClient: sinon.stub().returns(mockClient),
+    createClient: sinon.stub().returns(mockClient),
+    createPubSubClient: sinon.stub().returns(mockClient),
+    release: sinon.stub(),
+    keySlot: sinon.stub().returns(0),
+    loadScript: sinon.stub().resolves('fakesha'),
+    connectionUrl: sinon.stub().returns('redis://fake:6379/0'),
+    ping: sinon.stub().resolves(true),
+    close: sinon.stub().resolves(),
+    scanKeys: sinon.stub().callsFake(async function* (
+      pattern: string,
+    ): AsyncIterable<string> {
+      let cursor = '0';
+      do {
+        const [nextCursor, found] = await mockClient.scan(
+          cursor,
+          'MATCH',
+          pattern,
+          'COUNT',
+          '100',
+        );
+        cursor = nextCursor;
+        yield* found;
+      } while (cursor !== '0');
+    }),
+  };
 
-  const FakeRedis = function (this: any, _options: any) {
-    Object.assign(this, mockClient);
-    this.on = mockClient.on.bind(mockClient);
-    this.emit = mockClient.emit.bind(mockClient);
-    this.removeListener = mockClient.removeListener.bind(mockClient);
-    return mockClient;
-  } as any;
-  FakeRedis.prototype = mockClient;
-
-  require.cache[ioredisPath] = {
-    ...original!,
-    exports: { Redis: FakeRedis, default: FakeRedis, RedisOptions: {} },
-  } as any;
+  // Restored by the global `sinon.restore()` in this suite's `afterEach`.
+  stubGetRedisProvider(provider as any);
+  currentProvider = provider;
 
   const svcPath = require.resolve('../../../src/libs/services/redis-streams.service');
   delete require.cache[svcPath];
@@ -84,89 +114,10 @@ describe('Redis Streams Service', () => {
     sinon.restore();
   });
 
-  // ================================================================
-  // buildRedisOptions — retryStrategy (lines 54-57)
-  // ================================================================
-  describe('buildRedisOptions retryStrategy', () => {
-    it('should cap delay at maxRetryTime (default 30000)', () => {
-      let capturedOptions: any;
-      const ioredisPath = require.resolve('ioredis');
-      const original = require.cache[ioredisPath];
-
-      const CapturingRedis = function (this: any, options: any) {
-        capturedOptions = options;
-        const client = new MockRedisClient();
-        Object.assign(this, client);
-        this.on = client.on.bind(client);
-        this.emit = client.emit.bind(client);
-        return client;
-      } as any;
-      CapturingRedis.prototype = new MockRedisClient();
-
-      require.cache[ioredisPath] = {
-        ...original!,
-        exports: { Redis: CapturingRedis, default: CapturingRedis, RedisOptions: {} },
-      } as any;
-
-      const svcPath = require.resolve(
-        '../../../src/libs/services/redis-streams.service',
-      );
-      delete require.cache[svcPath];
-      const mod = require('../../../src/libs/services/redis-streams.service');
-
-      class TestP extends mod.BaseRedisStreamsProducerConnection {
-        constructor(cfg: any, lgr: any) { super(cfg, lgr); }
-      }
-      new TestP(defaultConfig, mockLogger);
-
-      expect(capturedOptions.retryStrategy).to.be.a('function');
-      // times=1 → min(200, 30000) = 200
-      expect(capturedOptions.retryStrategy(1)).to.equal(200);
-      // times=200 → min(40000, 30000) = 30000 (capped)
-      expect(capturedOptions.retryStrategy(200)).to.equal(30000);
-
-      if (original) require.cache[ioredisPath] = original;
-      delete require.cache[svcPath];
-    });
-
-    it('should use custom maxRetryTime from config', () => {
-      let capturedOptions: any;
-      const ioredisPath = require.resolve('ioredis');
-      const original = require.cache[ioredisPath];
-
-      const CapturingRedis = function (this: any, options: any) {
-        capturedOptions = options;
-        const client = new MockRedisClient();
-        Object.assign(this, client);
-        this.on = client.on.bind(client);
-        this.emit = client.emit.bind(client);
-        return client;
-      } as any;
-      CapturingRedis.prototype = new MockRedisClient();
-
-      require.cache[ioredisPath] = {
-        ...original!,
-        exports: { Redis: CapturingRedis, default: CapturingRedis, RedisOptions: {} },
-      } as any;
-
-      const svcPath = require.resolve(
-        '../../../src/libs/services/redis-streams.service',
-      );
-      delete require.cache[svcPath];
-      const mod = require('../../../src/libs/services/redis-streams.service');
-
-      class TestP extends mod.BaseRedisStreamsProducerConnection {
-        constructor(cfg: any, lgr: any) { super(cfg, lgr); }
-      }
-      new TestP({ ...defaultConfig, maxRetryTime: 5000 }, mockLogger);
-
-      // times=50 → min(10000, 5000) = 5000 (capped at custom value)
-      expect(capturedOptions.retryStrategy(50)).to.equal(5000);
-
-      if (original) require.cache[ioredisPath] = original;
-      delete require.cache[svcPath];
-    });
-  });
+  // Retry/backoff strategy now lives entirely in the connection provider
+  // (`tests/libs/services/redis/standaloneRedisProvider.test.ts` and
+  // `clusterRedisProvider.test.ts`) -- every Redis-backed feature shares
+  // one strategy instead of each owning its own `retryStrategy` closure.
 
   // ================================================================
   // BaseRedisStreamsProducerConnection
@@ -564,6 +515,77 @@ describe('Redis Streams Service', () => {
         expect(consumer.running).to.be.true;
         expect(consumer.consumeLoopPromise).to.not.be.null;
         consumer.running = false;
+      });
+    });
+
+    describe('xreadGroupGrouped (R1)', () => {
+      // On Redis Cluster / MemoryDB, `XREADGROUP STREAMS a b` is a CROSSSLOT
+      // error the moment `a` and `b` hash to different slots -- which lane
+      // streams (`record-events.0..7`) reliably do. StreamReadPlanner splits
+      // the read into one call per slot; these pin what that split must do
+      // when one slot's node is unhealthy.
+      beforeEach(() => {
+        consumer.subscribedTopics = ['lane-a', 'lane-b'];
+        // Two distinct slots -> two groups -> two XREADGROUP calls.
+        currentProvider.keySlot.callsFake((key: string) => (key === 'lane-a' ? 1 : 2));
+      });
+
+      it('issues one XREADGROUP per slot group', async () => {
+        mockRedis.xreadgroup.resolves([]);
+
+        await consumer.xreadGroupGrouped();
+
+        expect(mockRedis.xreadgroup.callCount).to.equal(2);
+        const streamsArgs = mockRedis.xreadgroup
+          .getCalls()
+          .map((call: any) => call.args.slice(call.args.indexOf('STREAMS') + 1));
+        expect(streamsArgs).to.deep.equal([
+          ['lane-a', '>'],
+          ['lane-b', '>'],
+        ]);
+      });
+
+      it('keeps a healthy group\'s messages when another group fails', async () => {
+        // Once XREADGROUP `>` hands a message out it is in that consumer's
+        // PEL and `>` will never return it again. Letting one failing group
+        // reject the whole call would strand the other group's entries until
+        // an idle XAUTOCLAIM pass -- or forever, under steady traffic.
+        const entries = [['lane-b', [['1-1', ['value', '{}']]]]];
+        mockRedis.xreadgroup
+          .onFirstCall()
+          .rejects(new Error('CLUSTERDOWN The cluster is down'))
+          .onSecondCall()
+          .resolves(entries);
+
+        const result = await consumer.xreadGroupGrouped();
+
+        expect(result).to.deep.equal(entries);
+        expect(mockLogger.warn.calledWithMatch('XREADGROUP failed for slot group')).to.be.true;
+      });
+
+      it('propagates the failure when no group produced anything', async () => {
+        mockRedis.xreadgroup.rejects(new Error('CLUSTERDOWN The cluster is down'));
+
+        try {
+          await consumer.xreadGroupGrouped();
+          expect.fail('Should have thrown');
+        } catch (error) {
+          expect((error as Error).message).to.include('CLUSTERDOWN');
+        }
+      });
+
+      it('uses one call with the full block budget on standalone', async () => {
+        // `keySlot` returns 0 for every key on standalone, so every stream
+        // lands in one group and the call shape is unchanged from before
+        // the planner existed.
+        currentProvider.keySlot.returns(0);
+        mockRedis.xreadgroup.resolves(null);
+
+        await consumer.xreadGroupGrouped();
+
+        expect(mockRedis.xreadgroup.callCount).to.equal(1);
+        const args = mockRedis.xreadgroup.firstCall.args;
+        expect(args[args.indexOf('BLOCK') + 1]).to.equal(String(consumer.blockMs));
       });
     });
 
@@ -1021,10 +1043,8 @@ describe('Redis Streams Service', () => {
         ];
         mockRedis.exists.resolves(0);
         await admin.ensureTopicsExist(topics);
-        expect(mockRedis.connect.calledOnce).to.be.true;
         // Each topic triggers xgroup CREATE + xgroup DESTROY = 2 calls per topic
         expect(mockRedis.xgroup.callCount).to.equal(4);
-        expect(mockRedis.quit.calledOnce).to.be.true;
       });
 
       it('should skip existing streams', async () => {
@@ -1046,20 +1066,6 @@ describe('Redis Streams Service', () => {
         expect(mockLogger.error.called).to.be.true;
       });
 
-      it('should disconnect even on connection error', async () => {
-        mockRedis.connect.rejects(new Error('Connection refused'));
-        try {
-          await admin.ensureTopicsExist();
-        } catch (_e) { /* expected */ }
-        expect(mockRedis.quit.calledOnce).to.be.true;
-      });
-
-      it('should handle disconnect error gracefully', async () => {
-        mockRedis.quit.rejects(new Error('disconnect failed'));
-        await admin.ensureTopicsExist([{ topic: 'stream-1' }]);
-        expect(mockLogger.warn.called).to.be.true;
-      });
-
       it('should use default topics when none provided', async () => {
         await admin.ensureTopicsExist();
         expect(mockRedis.exists.callCount).to.be.greaterThan(0);
@@ -1076,8 +1082,6 @@ describe('Redis Streams Service', () => {
 
         const result = await admin.listTopics();
         expect(result).to.deep.equal(['stream-1', 'stream-2']);
-        expect(mockRedis.connect.calledOnce).to.be.true;
-        expect(mockRedis.quit.calledOnce).to.be.true;
       });
 
       it('should return empty array when no streams exist', async () => {

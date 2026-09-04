@@ -7,6 +7,7 @@ links to every merged PR. Generated with the `release-changelog` skill
 
 | Version | Date | Channel | Summary |
 |---|---|---|---|
+| [0.7.0](0.7.0.md) | August 26, 2026 | Stable | Personal access tokens, a GitHub connector, AWS Bedrock, and a one-command installer |
 | [0.6.0](0.6.0.md) | August 10, 2026 | Stable | The new agent loop ships stable, and the query service gets ~1.8× faster |
 | [0.6.0-beta](0.6.0-beta.md) | August 1, 2026 | Beta | New agent loop, standalone parsing & extraction services, OpenSearch arrives |
 | [0.5.0](0.5.0.md) | July 1, 2026 | Stable | Jira & Confluence go Data Center, agents get real tools, model providers open up |

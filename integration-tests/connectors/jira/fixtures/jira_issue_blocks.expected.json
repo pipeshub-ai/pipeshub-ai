@@ -1,4 +1,8 @@
 {
+  "_meta": {
+    "issue_key": "KAN-13",
+    "issue_updated_ms": 1784181931380
+  },
   "block_groups": [
     {
       "children": {
@@ -10,10 +14,6 @@
           {
             "end": 10,
             "start": 10
-          },
-          {
-            "end": 12,
-            "start": 12
           }
         ],
         "block_ranges": [
@@ -52,14 +52,6 @@
           {
             "end": 41,
             "start": 41
-          },
-          {
-            "end": 44,
-            "start": 43
-          },
-          {
-            "end": 47,
-            "start": 46
           }
         ]
       },
@@ -69,7 +61,7 @@
       "comments": [],
       "data": null,
       "file_metadata": null,
-      "format": "markdown",
+      "format": "html",
       "index": 0,
       "link_metadata": null,
       "list_metadata": null,
@@ -267,7 +259,10 @@
       "table_cell_metadata": null,
       "table_metadata": {
         "captions": [],
-        "column_names": null,
+        "column_names": [
+          "Property",
+          "Value"
+        ],
         "footnotes": [],
         "has_header": true,
         "num_of_cells": 12,
@@ -375,7 +370,10 @@
       "table_cell_metadata": null,
       "table_metadata": {
         "captions": [],
-        "column_names": null,
+        "column_names": [
+          "Description",
+          "Image"
+        ],
         "footnotes": [],
         "has_header": true,
         "num_of_cells": 4,
@@ -389,7 +387,7 @@
       "children": {
         "block_group_ranges": [
           {
-            "end": 11,
+            "end": 12,
             "start": 11
           }
         ],
@@ -431,7 +429,7 @@
       "comments": [],
       "data": null,
       "file_metadata": null,
-      "format": "markdown",
+      "format": "html",
       "index": 11,
       "link_metadata": null,
       "list_metadata": null,
@@ -440,36 +438,6 @@
       "requires_processing": false,
       "semantic_metadata": null,
       "sub_type": "comment",
-      "table_cell_metadata": null,
-      "table_metadata": null,
-      "table_row_metadata": null,
-      "type": "text_section"
-    },
-    {
-      "children": {
-        "block_group_ranges": [
-          {
-            "end": 13,
-            "start": 13
-          }
-        ],
-        "block_ranges": []
-      },
-      "children_records": null,
-      "citation_metadata": null,
-      "code_metadata": null,
-      "comments": [],
-      "data": null,
-      "file_metadata": null,
-      "format": null,
-      "index": 12,
-      "link_metadata": null,
-      "list_metadata": null,
-      "media_metadata": null,
-      "parent_index": 0,
-      "requires_processing": false,
-      "semantic_metadata": null,
-      "sub_type": "comment_thread",
       "table_cell_metadata": null,
       "table_metadata": null,
       "table_row_metadata": null,
@@ -491,12 +459,12 @@
       "comments": [],
       "data": null,
       "file_metadata": null,
-      "format": "markdown",
-      "index": 13,
+      "format": "html",
+      "index": 12,
       "link_metadata": null,
       "list_metadata": null,
       "media_metadata": null,
-      "parent_index": 12,
+      "parent_index": 10,
       "requires_processing": false,
       "semantic_metadata": null,
       "sub_type": "comment",
@@ -587,7 +555,7 @@
       "citation_metadata": null,
       "code_metadata": null,
       "comments": [],
-      "data": "Product Guide: [https://example.com/docs/authentication](https://example.com/docs/authentication)",
+      "data": "Product Guide: <https://example.com/docs/authentication>",
       "file_metadata": null,
       "format": "markdown",
       "image_metadata": null,
@@ -612,7 +580,7 @@
       "citation_metadata": null,
       "code_metadata": null,
       "comments": [],
-      "data": "API Documentation: [https://example.com/api/auth/login](https://example.com/api/auth/login)",
+      "data": "API Documentation: <https://example.com/api/auth/login>",
       "file_metadata": null,
       "format": "markdown",
       "image_metadata": null,
@@ -637,7 +605,7 @@
       "citation_metadata": null,
       "code_metadata": null,
       "comments": [],
-      "data": "Monitoring Dashboard: [https://example.com/monitoring](https://example.com/monitoring)",
+      "data": "Monitoring Dashboard: <https://example.com/monitoring>",
       "file_metadata": null,
       "format": "markdown",
       "image_metadata": null,
@@ -1553,17 +1521,17 @@
       "children_records": null,
       "citation_metadata": null,
       "code_metadata": {
+        "decorators": null,
         "dependencies": null,
+        "docstring": null,
+        "end_line": null,
         "execution_context": null,
         "is_executable": false,
-        "language": "http",
         "kind": null,
-        "signature": null,
-        "docstring": null,
-        "decorators": null,
+        "language": null,
         "qualified_name": null,
-        "start_line": null,
-        "end_line": null
+        "signature": null,
+        "start_line": null
       },
       "comments": [],
       "data": "POST /api/v2/auth/login HTTP/1.1\nHost: example.com\nContent-Type: application/json\n\n{\n  \"username\": \"john.doe@example.com\",\n  \"password\": \"********\"\n}",
@@ -1653,7 +1621,7 @@
       "list_metadata": null,
       "media_metadata": null,
       "parent_block_index": 42,
-      "parent_index": 0,
+      "parent_index": null,
       "public_data_link": null,
       "public_data_link_expiration_epoch_time_in_ms": null,
       "semantic_metadata": null,
@@ -1676,7 +1644,7 @@
       "image_metadata": {
         "annotations": [],
         "captions": [
-          "Image_1"
+          "image-20260716-060437.png"
         ],
         "footnotes": [],
         "image_dpi": null,
@@ -1691,7 +1659,7 @@
       "list_metadata": null,
       "media_metadata": null,
       "parent_block_index": 42,
-      "parent_index": 0,
+      "parent_index": null,
       "public_data_link": null,
       "public_data_link_expiration_epoch_time_in_ms": null,
       "semantic_metadata": null,
@@ -1743,7 +1711,7 @@
       "list_metadata": null,
       "media_metadata": null,
       "parent_block_index": 45,
-      "parent_index": 0,
+      "parent_index": null,
       "public_data_link": null,
       "public_data_link_expiration_epoch_time_in_ms": null,
       "semantic_metadata": null,
@@ -1766,7 +1734,7 @@
       "image_metadata": {
         "annotations": [],
         "captions": [
-          "Image_2"
+          "image-20260716-060452.png"
         ],
         "footnotes": [],
         "image_dpi": null,
@@ -1781,7 +1749,7 @@
       "list_metadata": null,
       "media_metadata": null,
       "parent_block_index": 45,
-      "parent_index": 0,
+      "parent_index": null,
       "public_data_link": null,
       "public_data_link_expiration_epoch_time_in_ms": null,
       "semantic_metadata": null,
@@ -1831,7 +1799,7 @@
       "list_metadata": null,
       "media_metadata": null,
       "parent_block_index": null,
-      "parent_index": 13,
+      "parent_index": 12,
       "public_data_link": null,
       "public_data_link_expiration_epoch_time_in_ms": null,
       "semantic_metadata": null,

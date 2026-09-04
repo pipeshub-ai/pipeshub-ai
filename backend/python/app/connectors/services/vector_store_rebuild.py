@@ -5,10 +5,8 @@ from __future__ import annotations
 import asyncio
 import os
 from logging import Logger
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
-
-from redis.asyncio import Redis
 
 from app.config.constants.arangodb import EventTypes, MimeTypes, ProgressStatus
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -33,6 +31,9 @@ from app.services.vector_db.rebuild_state import (
     set_cleanup_phase,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from app.services.redis.connection_provider import RedisClient as Redis
 
 TASK_KEY = "vector-store-rebuild"
 PAGE_SIZE = 100

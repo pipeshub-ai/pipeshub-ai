@@ -5,6 +5,10 @@ import { ScheduledJobsBackfillMigration } from '../../../../../src/modules/confi
 import { configPaths } from '../../../../../src/modules/configuration_manager/paths/paths';
 import * as connectorUtils from '../../../../../src/modules/tokens_manager/utils/connector.utils';
 import * as createJwt from '../../../../../src/libs/utils/createJwt';
+import { Logger } from '../../../../../src/libs/services/logger.service';
+import { KeyValueStoreService } from '../../../../../src/libs/services/keyValueStore.service';
+import { CrawlingSchedulerService } from '../../../../../src/modules/crawling_manager/services/crawling_service';
+import { createFakeRedisProvider, stubGetRedisProvider } from '../../../../helpers/fake-redis-provider';
 
 const makeLogger = () => ({
   info: sinon.stub(),
@@ -66,6 +70,42 @@ describe('ScheduledJobsBackfillMigration', () => {
   afterEach(() => sinon.restore());
 
   // ------------------------------------------------------------
+  // Legacy BullMQ key sweep
+  // ------------------------------------------------------------
+  describe('legacy queue-prefix sweep', () => {
+    it('only scans this queue, never every bull: key in the database', async () => {
+      // `bull:` is BullMQ's *default* prefix, shared by every queue in the
+      // database. A wildcard sweep would delete another service's jobs,
+      // delayed work, and queue metadata if it shares this Redis.
+      const provider = createFakeRedisProvider();
+      stubGetRedisProvider(provider);
+      const logger = makeLogger();
+      const kv = makeKvStore(undefined);
+      executeStub.resolves(okEnumerationResponse([]));
+
+      // The shared fixture has no `redis` block; the sweep needs one, and
+      // its best-effort try/catch would otherwise swallow the TypeError and
+      // silently skip -- which is how this test first passed vacuously.
+      const appConfig = {
+        ...makeAppConfig(),
+        redis: { host: 'localhost', port: 6379 },
+      };
+
+      await new ScheduledJobsBackfillMigration(
+        logger as unknown as Logger,
+        kv as unknown as KeyValueStoreService,
+        makeScheduler() as unknown as CrawlingSchedulerService,
+        appConfig,
+      ).run();
+
+      expect(provider.scanKeys.called).to.equal(true);
+      const pattern = provider.scanKeys.firstCall.args[0];
+      expect(pattern).to.equal('bull:crawling-scheduler:*');
+      expect(pattern).to.not.equal('bull:*');
+    });
+  });
+
+  // ------------------------------------------------------------
   // Flag-based skip
   // ------------------------------------------------------------
   describe('migration flag', () => {
@@ -81,7 +121,7 @@ describe('ScheduledJobsBackfillMigration', () => {
       );
       await m.run();
 
-      expect(kv.get.calledOnceWith(configPaths.connectorSyncScheduledJobsMigration)).to.equal(true);
+      expect(kv.get.calledOnceWith(configPaths.connectorSyncScheduledJobsMigrationV2)).to.equal(true);
       expect(executeStub.called).to.equal(false);
       expect(scheduler.scheduleJob.called).to.equal(false);
       expect(kv.set.called).to.equal(false);
@@ -161,7 +201,7 @@ describe('ScheduledJobsBackfillMigration', () => {
       // Flag set after success
       expect(
         kv.set.calledOnceWith(
-          configPaths.connectorSyncScheduledJobsMigration,
+          configPaths.connectorSyncScheduledJobsMigrationV2,
           'true',
         ),
       ).to.equal(true);

@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -23,6 +23,8 @@ from app.agent_loop_lib.hooks.middleware.routing import path_match
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.sandbox.coding.docker import DockerCodingSandbox
 from app.agent_loop_lib.sandbox.coding.local import LocalCodingSandbox
+from app.agent_loop_lib.sandbox.coding.base import SandboxContext
+from app.agent_loop_lib.sandbox.governor import reset_default_governor
 from app.agent_loop_lib.sandbox.manager import SandboxManager, SandboxType, UnknownSandboxError
 from app.agent_loop_lib.tools.base import ToolOutput
 from app.agent_loop_lib.tools.builtin.sandbox import input_staging
@@ -118,39 +120,51 @@ class TestSandboxNetworkEnabled:
 
 
 class TestBuildCodingSandboxManager:
-    def test_local_mode_registers_local_backend_with_curated_allowlist(self, monkeypatch) -> None:
+    """`build_coding_sandbox_manager` goes through the settings loader and
+    backend registry, so these assert on the backend the factory actually
+    builds rather than on a patched constructor — a mock would pass even if
+    the config never reached the real backend, which is precisely the bug
+    this path had."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_governor(self):
+        reset_default_governor()
+        yield
+        reset_default_governor()
+
+    async def _backend(self, **kwargs):
+        manager = await build_coding_sandbox_manager(**kwargs)
+        entry = manager._factories[SandboxType.CODING]
+        return manager, entry.backend_factory.create(SandboxContext())
+
+    async def test_local_mode_registers_local_backend_with_curated_allowlist(
+        self, monkeypatch,
+    ) -> None:
         monkeypatch.delenv("SANDBOX_MODE", raising=False)
-        with patch("app.agents.agent_loop.sandbox_bridge.LocalCodingSandbox") as mock_local:
-            manager = build_coding_sandbox_manager()
-            assert manager.is_registered(SandboxType.CODING)
-            manager._factories[SandboxType.CODING].factory()
+        _, backend = await self._backend()
+        assert isinstance(backend, LocalCodingSandbox)
+        # The local backend delegates package policy to its EnvironmentManager.
+        assert "pandas" in backend._environment._allowlist
+        assert "sharp" in backend._environment._allowlist
 
-        mock_local.assert_called_once()
-        _, kwargs = mock_local.call_args
-        assert "pandas" in kwargs["package_allowlist"]
-        assert "sharp" in kwargs["package_allowlist"]
-
-    def test_docker_mode_registers_docker_backend_with_env_config(self, monkeypatch) -> None:
+    async def test_docker_mode_registers_docker_backend_with_env_config(
+        self, monkeypatch,
+    ) -> None:
         monkeypatch.setenv("SANDBOX_MODE", "docker")
         monkeypatch.setenv("SANDBOX_DOCKER_IMAGE", "custom/sandbox:v2")
         monkeypatch.setenv("SANDBOX_EGRESS_NETWORK", "custom_egress")
         monkeypatch.setenv("SANDBOX_PIP_INDEX_URL", "https://pip.example.com/simple")
         monkeypatch.setenv("SANDBOX_NPM_REGISTRY", "https://npm.example.com")
 
-        with patch("app.agents.agent_loop.sandbox_bridge.DockerCodingSandbox") as mock_docker:
-            manager = build_coding_sandbox_manager()
-            assert manager.is_registered(SandboxType.CODING)
-            manager._factories[SandboxType.CODING].factory()
+        _, backend = await self._backend()
+        assert isinstance(backend, DockerCodingSandbox)
+        assert backend._image == "custom/sandbox:v2"
+        assert backend._egress_network == "custom_egress"
+        assert backend._pip_index_url == "https://pip.example.com/simple"
+        assert backend._npm_registry == "https://npm.example.com"
+        assert "pandas" in backend._allowlist
 
-        mock_docker.assert_called_once()
-        _, kwargs = mock_docker.call_args
-        assert kwargs["image"] == "custom/sandbox:v2"
-        assert kwargs["egress_network"] == "custom_egress"
-        assert kwargs["pip_index_url"] == "https://pip.example.com/simple"
-        assert kwargs["npm_registry"] == "https://npm.example.com"
-        assert "pandas" in kwargs["package_allowlist"]
-
-    def test_docker_mode_uses_defaults_without_env_overrides(self, monkeypatch) -> None:
+    async def test_docker_mode_uses_pipeshub_defaults(self, monkeypatch) -> None:
         monkeypatch.setenv("SANDBOX_MODE", "docker")
         for var in (
             "SANDBOX_DOCKER_IMAGE", "SANDBOX_EGRESS_NETWORK",
@@ -158,54 +172,81 @@ class TestBuildCodingSandboxManager:
         ):
             monkeypatch.delenv(var, raising=False)
 
-        with patch("app.agents.agent_loop.sandbox_bridge.DockerCodingSandbox") as mock_docker:
-            manager = build_coding_sandbox_manager()
-            manager._factories[SandboxType.CODING].factory()
+        _, backend = await self._backend()
+        assert backend._image == "pipeshub/sandbox:latest"
+        assert backend._egress_network == "pipeshub_sandbox_egress"
+        # Baked into the image — without it every sandbox re-installs the
+        # common packages.
+        assert backend._image_node_modules == "/home/sandbox/node_modules"
 
-        _, kwargs = mock_docker.call_args
-        assert kwargs["image"] == "pipeshub/sandbox:latest"
-        assert kwargs["egress_network"] == "pipeshub_sandbox_egress"
-
-    def test_limits_are_applied_to_registered_factory(self, monkeypatch) -> None:
+    async def test_limits_are_applied_to_registered_factory(self, monkeypatch) -> None:
         monkeypatch.delenv("SANDBOX_MODE", raising=False)
-        manager = build_coding_sandbox_manager(max_concurrent=3, max_lifetime_s=60.0)
+        manager = await build_coding_sandbox_manager(max_concurrent=3, max_lifetime_s=60.0)
         entry = manager._factories[SandboxType.CODING]
         assert entry.limits.max_concurrent == 3
         assert entry.limits.max_lifetime_s == 60.0
 
-    async def test_local_factory_produces_real_local_sandbox_instance(self, monkeypatch) -> None:
+    async def test_local_factory_produces_real_local_sandbox_instance(
+        self, monkeypatch,
+    ) -> None:
         monkeypatch.delenv("SANDBOX_MODE", raising=False)
-        manager = build_coding_sandbox_manager()
+        manager = await build_coding_sandbox_manager()
         _, backend = await manager.get_or_create(SandboxType.CODING)
         assert isinstance(backend, LocalCodingSandbox)
         await manager.destroy_all()
 
-    async def test_docker_factory_produces_real_docker_sandbox_instance(self, monkeypatch) -> None:
+    @pytest.mark.parametrize("allow_network", [True, False])
+    async def test_docker_backend_receives_resolved_allow_network_flag(
+        self, monkeypatch, allow_network: bool,
+    ) -> None:
         monkeypatch.setenv("SANDBOX_MODE", "docker")
-        manager = build_coding_sandbox_manager()
-        entry = manager._factories[SandboxType.CODING]
-        backend = entry.factory()
-        assert isinstance(backend, DockerCodingSandbox)
+        _, backend = await self._backend(allow_network=allow_network)
+        assert backend._allow_network is allow_network
 
-    def test_docker_backend_receives_resolved_allow_network_flag(self, monkeypatch) -> None:
-        monkeypatch.setenv("SANDBOX_MODE", "docker")
-        with patch("app.agents.agent_loop.sandbox_bridge.DockerCodingSandbox") as mock_docker:
-            manager = build_coding_sandbox_manager(allow_network=True)
-            manager._factories[SandboxType.CODING].factory()
-        assert mock_docker.call_args.kwargs["allow_network"] is True
-
-        with patch("app.agents.agent_loop.sandbox_bridge.DockerCodingSandbox") as mock_docker:
-            manager = build_coding_sandbox_manager(allow_network=False)
-            manager._factories[SandboxType.CODING].factory()
-        assert mock_docker.call_args.kwargs["allow_network"] is False
-
-    def test_docker_backend_falls_back_to_env_flag_when_allow_network_omitted(self, monkeypatch) -> None:
+    async def test_docker_backend_falls_back_to_env_flag_when_omitted(
+        self, monkeypatch,
+    ) -> None:
         monkeypatch.setenv("SANDBOX_MODE", "docker")
         monkeypatch.setenv("SANDBOX_ALLOW_NETWORK", "false")
-        with patch("app.agents.agent_loop.sandbox_bridge.DockerCodingSandbox") as mock_docker:
-            manager = build_coding_sandbox_manager()
-            manager._factories[SandboxType.CODING].factory()
-        assert mock_docker.call_args.kwargs["allow_network"] is False
+        _, backend = await self._backend()
+        assert backend._allow_network is False
+
+    async def test_agent_context_ids_reach_the_backend(self, monkeypatch) -> None:
+        """The governor's per-org cap and remote provider tagging both
+        depend on the org reaching the sandbox — the tools call
+        `get_or_create` with no context of their own."""
+        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        manager = await build_coding_sandbox_manager(ctx=_make_context())
+        entry = manager._factories[SandboxType.CODING]
+        assert entry.default_ctx.org_id == "org-1"
+        assert entry.default_ctx.user_id == "user-1"
+        assert entry.default_ctx.conversation_id == "conv-1"
+
+    async def test_managers_from_separate_requests_share_one_governor(
+        self, monkeypatch,
+    ) -> None:
+        """Per-request managers, one process-wide ceiling — otherwise N
+        concurrent chats each get their own quota and nothing is capped."""
+        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        first = await build_coding_sandbox_manager()
+        second = await build_coding_sandbox_manager()
+        assert first._governor is second._governor
+
+    async def test_unknown_backend_raises_instead_of_falling_back(
+        self, monkeypatch,
+    ) -> None:
+        """A backend that can't be resolved must fail loudly at wiring
+        time; silently substituting an ungoverned manager would defer the
+        failure into the middle of a conversation."""
+        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        with patch(
+            "app.agents.agent_loop.sandbox_bridge.build_default_registry"
+        ) as mock_registry:
+            mock_registry.return_value.get.side_effect = ValueError(
+                "unknown sandbox backend 'nope'"
+            )
+            with pytest.raises(ValueError, match="unknown sandbox backend"):
+                await build_coding_sandbox_manager()
 
 
 class TestRegisterCodingSandboxTools:
@@ -767,7 +808,10 @@ class TestCodingSandboxArtifactBridge:
         monkeypatch.setattr(AgentContext, "artifact_registry", property(lambda self: registry))
         manager = SandboxManager()
 
-        class _PartiallyBrokenBackend:
+        class _PartiallyBrokenBackend(_FakeBackend):
+            def __init__(self) -> None:
+                super().__init__({})
+
             async def download_file(self, path: str) -> bytes:
                 if path == "output/bad.pdf":
                     raise OSError("disk read error")
@@ -924,7 +968,10 @@ class TestOutputDirScreenshotRegression:
         manager = SandboxManager()
         download_calls: list[str] = []
 
-        class _TrackingBackend:
+        class _TrackingBackend(_FakeBackend):
+            def __init__(self) -> None:
+                super().__init__({})
+
             async def download_file(self, path: str) -> bytes:
                 download_calls.append(path)
                 return b"pdf-bytes"
@@ -1198,8 +1245,24 @@ class TestDeferredScratchFallback:
 
 
 class _FakeBackend:
+    """Download stub for the artifact-bridge hooks.
+
+    Implements the full `SandboxLifecycle` contract (`sandbox_id`,
+    `provision`, `destroy`) because it is registered into a real
+    `SandboxManager` — the manager requires it of every backend rather
+    than probing with `getattr`, so a backend that forgets one of these
+    fails at registration instead of at teardown.
+    """
+
     def __init__(self, files: dict[str, bytes]) -> None:
         self._files = files
+        self.sandbox_id = f"fake-{uuid4().hex[:8]}"
+
+    async def provision(self) -> None:
+        return None
+
+    async def destroy(self) -> None:
+        return None
 
     async def download_file(self, path: str) -> bytes:
         return self._files[path]

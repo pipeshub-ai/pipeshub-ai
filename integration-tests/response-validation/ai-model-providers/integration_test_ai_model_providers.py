@@ -880,13 +880,7 @@ class TestUpdateAIModelProviderLive(AIModelsTestBase):
                 _teardown_provider(self.ai, created)
 
     def test_model_type_mismatch_returns_400(self) -> None:
-        """PUT embedding path + LLM modelKey: health-check runs before KV mismatch check.
-
-        updateAIModelProvider validates provider/config, then calls the AI health-check
-        with the path modelType (embedding). An LLM model fails that check; the
-        controller never reaches the 'belongs to type' 400 branch. Matches documented
-        controller order (not a product bug fix target for this test suite).
-        """
+        """Model exists under llm but path uses embedding → 400 before health-check."""
         openai_spec = next(
             s for s in _live_provider_specs() if s.provider_id == _PROVIDER_OPENAI
         )
@@ -900,17 +894,11 @@ class TestUpdateAIModelProviderLive(AIModelsTestBase):
                 created.model_key,
                 **update_body,
             )
-            assert resp.status_code in (400, 401, 422, 500), (
-                f"Expected health-check failure before type mismatch, "
-                f"got {resp.status_code}: {resp.text}"
+            assert resp.status_code == 400, (
+                f"Expected 400 model type mismatch, got {resp.status_code}: {resp.text}"
             )
             body = resp.json()
-            message = (
-                body.get("error", {}).get("message")
-                or body.get("message")
-                or ""
-            )
-            assert "belongs to type" not in message, body
+            assert "belongs to type" in (body.get("message") or ""), body
         finally:
             if created:
                 _teardown_provider(self.ai, created)

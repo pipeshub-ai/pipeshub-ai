@@ -44,12 +44,15 @@ export function EntityPagination({
     <Flex
       justify="between"
       align="center"
+      wrap="wrap"
+      gap="2"
       style={{
         padding: 'var(--space-3) var(--space-4)',
         borderTop: '1px solid var(--slate-4)',
         backgroundColor: 'var(--slate-1)',
         flexShrink: 0,
         width: '100%',
+        rowGap: 'var(--space-2)',
       }}
     >
       {/* Left: showing count */}

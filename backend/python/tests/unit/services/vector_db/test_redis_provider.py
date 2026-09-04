@@ -843,11 +843,17 @@ class TestHashDocDecoding:
 class TestConnectionLifecycle:
     @pytest.mark.asyncio
     async def test_connect_success(self, redis_config, mock_redis_client):
-        """connect() establishes connection and verifies with ping."""
+        """connect() establishes connection through the connection provider
+        and verifies it with ping."""
         svc = RedisVectorService(redis_config)
-        with patch("app.services.vector_db.redis.redis_vector.aioredis.Redis", return_value=mock_redis_client):
+        mock_provider = MagicMock()
+        mock_provider.create_client = MagicMock(return_value=mock_redis_client)
+        with patch(
+            "app.services.redis.connection_provider_factory.get_redis_provider",
+            return_value=mock_provider,
+        ):
             await svc.connect()
-        
+
         assert svc.client is not None
         mock_redis_client.ping.assert_called_once()
 
@@ -857,8 +863,13 @@ class TestConnectionLifecycle:
         svc = RedisVectorService(redis_config)
         mock_client = AsyncMock()
         mock_client.ping = AsyncMock(side_effect=ConnectionError("Cannot reach Redis"))
-        
-        with patch("app.services.vector_db.redis.redis_vector.aioredis.Redis", return_value=mock_client):
+
+        mock_provider = MagicMock()
+        mock_provider.create_client = MagicMock(return_value=mock_client)
+        with patch(
+            "app.services.redis.connection_provider_factory.get_redis_provider",
+            return_value=mock_provider,
+        ):
             with pytest.raises(ConnectionError):
                 await svc.connect()
 

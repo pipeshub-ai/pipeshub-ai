@@ -13,7 +13,7 @@ import asyncio
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 from app.config.constants.arangodb import ProgressStatus  # type: ignore[import-not-found]
@@ -25,10 +25,17 @@ from app.sources.external.linear.linear import (
     LinearDataSource,  # type: ignore[import-not-found]
 )
 from connectors.linear.constants import (  # type: ignore[import-not-found]
+    LINEAR_FROZEN_ISSUE_IDENTIFIERS,
     LINEAR_INDEXING_WAIT_SEC,
+    LINEAR_IT_ARTIFACT_PREFIX,
+    LINEAR_IT_RUN_ID,
+    LINEAR_IT_STALE_ARTIFACT_AGE_SEC,
     LINEAR_TEST_SETTLE_WAIT_SEC,
 )
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
+from helper.graph_provider_utils import (  # type: ignore[import-not-found]
+    owned_record_external_ids,
+)
 
 logger = logging.getLogger("linear-test-utils")
 
@@ -47,44 +54,68 @@ def _raise_on_auth_error(response: Any, context: str) -> None:
             )
 
 
-_TRANSIENT_STATUS_CODES = {"429", "500", "502", "503", "504"}
+# Linear reports throttling as a GraphQL error ("Rate limit exceeded", code RATELIMITED),
+# not as a message carrying "429"; gateway failures come back as non-JSON bodies that the
+# client surfaces as "Request failed: ..."; and a read timeout (``asyncio.TimeoutError``,
+# whose ``str`` is empty) reaches the datasource, which wraps it as "Failed to execute
+# <op>: ". All of them are worth a retry on a workspace that N concurrent runs (and their
+# connectors) are hitting at once.
+_TRANSIENT_MARKERS = (
+    "429", "500", "502", "503", "504",
+    "rate limit", "ratelimited", "timeout", "timed out", "temporarily",
+    "request failed", "failed to execute", "failed to fetch", "unexpected mimetype",
+    "service unavailable", "bad gateway", "internal server error",
+)
+LINEAR_RETRY_MAX_DELAY_SEC = 60
 
 
 def _is_transient_error(response: Any) -> bool:
     """Return True if the response looks like a transient Linear API failure."""
-    msg = getattr(response, "message", "") or ""
-    for code in _TRANSIENT_STATUS_CODES:
-        if code in msg:
-            return True
-    return False
+    msg = (getattr(response, "message", "") or "").lower()
+    return any(marker in msg for marker in _TRANSIENT_MARKERS)
 
 
 async def _api_call_with_retry(
     fn: Callable[..., Awaitable[Any]],
     *args: Any,
     context: str,
-    max_retries: int = 3,
+    max_retries: int = 4,
     base_delay: float = 2.0,
     **kwargs: Any,
 ) -> Any:
-    """Call ``fn`` and retry on transient Linear API errors (503, 429, etc.)."""
-    last_response = None
+    """Call ``fn`` and retry on transient Linear API errors (rate limit, 5xx, transport).
+
+    A transport exception is retried like a transient response: the GraphQL client only
+    converts ``aiohttp.ClientError``, so a read timeout escapes as ``asyncio.TimeoutError``.
+    Auth failures raise ``LinearAuthError`` at once; anything else non-transient (an unknown
+    id, a validation error) raises ``RuntimeError`` without retrying.
+    """
+    last_error = ""
+    attempts = 0
     for attempt in range(max_retries + 1):
-        response = await fn(*args, **kwargs)
-        if response.success:
-            return response
-        _raise_on_auth_error(response, context)
-        last_response = response
-        if not _is_transient_error(response) or attempt == max_retries:
+        attempts = attempt + 1
+        try:
+            response = await fn(*args, **kwargs)
+        except LinearAuthError:
+            raise
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e}"
+        else:
+            if response.success:
+                return response
+            _raise_on_auth_error(response, context)
+            last_error = getattr(response, "message", "") or ""
+            if not _is_transient_error(response):
+                break
+        if attempt == max_retries:
             break
-        delay = base_delay * (2 ** attempt)
+        delay = min(base_delay * (2 ** attempt), LINEAR_RETRY_MAX_DELAY_SEC)
         logger.warning(
             "%s: transient error (attempt %d/%d), retrying in %.1fs: %s",
-            context, attempt + 1, max_retries + 1,
-            delay, getattr(response, "message", ""),
+            context, attempt + 1, max_retries + 1, delay, last_error,
         )
         await asyncio.sleep(delay)
-    raise RuntimeError(f"{context} failed after {max_retries + 1} attempts: {getattr(last_response, 'message', '')}")
+    raise RuntimeError(f"{context} failed after {attempts} attempt(s): {last_error}")
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +152,7 @@ async def fetch_linear_team_issue_ids(
     page_size: int = 100,
     max_pages: int = 200,
 ) -> set[str]:
-    """Return all issue IDs belonging to ``team_id`` via paginated GraphQL query."""
+    """Return issue IDs belonging to ``team_id``, excluding IT artifacts."""
     issue_ids: set[str] = set()
     cursor: Optional[str] = None
 
@@ -136,7 +167,7 @@ async def fetch_linear_team_issue_ids(
         nodes = issues_data.get("nodes", [])
         for node in nodes:
             issue_id = node.get("id")
-            if issue_id:
+            if issue_id and LINEAR_IT_ARTIFACT_PREFIX not in (node.get("title") or ""):
                 issue_ids.add(issue_id)
 
         page_info = issues_data.get("pageInfo", {})
@@ -154,7 +185,7 @@ async def count_linear_team_issues(
     page_size: int = 100,
     max_pages: int = 200,
 ) -> int:
-    """Count all issues belonging to ``team_id`` via paginated GraphQL query."""
+    """Count issues belonging to ``team_id``, excluding IT artifacts."""
     return len(
         await fetch_linear_team_issue_ids(
             datasource, team_id, page_size=page_size, max_pages=max_pages,
@@ -491,10 +522,14 @@ async def resolve_issue_by_identifier(
 ) -> Optional[Dict[str, Any]]:
     """Return the issue JSON for a human identifier (``ENG-2``) or a UUID.
 
-    Linear's ``issue(id:)`` accepts either form.
+    Linear's ``issue(id:)`` accepts either form. Transient failures are retried; an
+    unknown identifier yields ``None``.
     """
-    resp = await datasource.issue(id=identifier)
-    if not resp.success:
+    try:
+        resp = await _api_call_with_retry(
+            datasource.issue, id=identifier, context=f"resolve_issue_by_identifier({identifier})",
+        )
+    except RuntimeError:
         return None
     issue = (resp.data or {}).get("issue")
     return issue if issue and issue.get("id") else None
@@ -570,6 +605,29 @@ async def check_issue_exists_bool(
     return issue is not None and bool(issue.get("id"))
 
 
+async def check_issue_trashed_bool(
+    datasource: LinearDataSource,
+    issue_id: str,
+) -> bool:
+    """True once Linear reports the issue trashed, or can no longer resolve it.
+
+    ``issueDelete`` moves an issue to the trash rather than removing it: ``issue(id)`` keeps
+    returning it with ``trashed=True`` (and it drops out of every active listing), so
+    "gone" has to be read from that flag, not from a lookup failure. A transient failure
+    reads as "not yet" so a poller keeps going.
+    """
+    try:
+        resp = await datasource.issue(id=issue_id)
+    except Exception:
+        return False
+    if not resp.success:
+        return "not found" in (getattr(resp, "message", "") or "").lower()
+    issue = (resp.data or {}).get("issue")
+    if not issue or not issue.get("id"):
+        return True
+    return bool(issue.get("trashed"))
+
+
 # ---------------------------------------------------------------------------
 # Graph reconciliation
 # ---------------------------------------------------------------------------
@@ -583,24 +641,25 @@ async def assert_linear_issues_match_graph_records(
     *,
     phase: str,
 ) -> None:
-    """Assert graph TICKET count >= Linear API issue count for the filtered teams.
+    """Assert every live issue in the filtered teams reached the graph.
 
-    The graph legitimately has more TICKET nodes than the API issue count because the
-    connector creates placeholder stubs for parent/related issues referenced by synced
-    issues. The connector's team_ids filter already scopes all graph records to the
-    correct teams, so we only need to verify the graph captured at least every issue
-    the API reports.
+    Inclusion, not equality: the graph legitimately holds *more* TICKETs than the API reports,
+    because the connector mints placeholder stubs for referenced parents. Compared as id sets
+    so a failure names the missing issues, and IT artifacts are skipped on both sides — a
+    concurrently running leg shares this workspace and its mutation issues come and go.
     """
-    api_total = 0
+    api_ids: Set[str] = set()
     for tid in team_ids:
-        api_total += await count_linear_team_issues(datasource, tid)
+        api_ids |= await fetch_linear_team_issue_ids(datasource, tid)
 
-    graph_ticket_count = await graph_provider.count_records_by_type(connector_id, "TICKET")
-    if graph_ticket_count < api_total:
+    graph_ids = await owned_record_external_ids(
+        graph_provider, connector_id, prefix=LINEAR_IT_ARTIFACT_PREFIX, record_type="TICKET",
+    )
+    missing = api_ids - graph_ids
+    if missing:
         raise AssertionError(
-            f"{phase}: graph TICKET count ({graph_ticket_count}) < "
-            f"Linear API issue count ({api_total}) for connector {connector_id}. "
-            "Expected graph count to be >= API count (placeholders are additive)."
+            f"{phase}: {len(missing)} live Linear issue(s) absent from the graph for "
+            f"connector {connector_id} (IT artifacts excluded): {sorted(missing)}"
         )
 
 
@@ -813,3 +872,264 @@ async def wait_until_record_indexing_completed(
         f"Timed out waiting for {description} on externalRecordId={external_record_id!r} "
         f"after {timeout}s (last indexingStatus={last_status!r}, attempts={attempt})"
     )
+
+
+# =============================================================================
+# Artifact ownership — this run's issues, and leftovers from crashed runs
+# =============================================================================
+#
+# Every leg, every PR and the nightly cron share one Linear workspace. The mutation tests
+# delete what they create, but a cancelled CI run (``cancel-in-progress``) SIGTERMs pytest
+# before any ``finally`` runs, so leaks are inevitable and something has to reap them.
+# Ownership is encoded in the title (``LinearIT-<run_id>-<Kind>-<hex>``, see
+# ``constants.artifact_title``); the registry tracks what this process created so its own
+# teardown deletes exactly that, and the sweep reaps anything old enough that no live run
+# can still own it. Deleting means trashing: the issue stays fetchable by id with
+# ``trashed=True`` and leaves every active listing, which is all the suite needs.
+
+
+class LinearArtifactRegistry:
+    """Issue ids this run created and has not yet confirmed trashed."""
+
+    def __init__(self) -> None:
+        self._issues: dict[str, str] = {}
+
+    def register(self, issue_id: str, title: str) -> None:
+        self._issues[str(issue_id)] = title
+
+    def release(self, issue_id: str) -> None:
+        self._issues.pop(str(issue_id), None)
+
+    def is_registered(self, issue_id: str) -> bool:
+        return str(issue_id) in self._issues
+
+    def drain(self) -> list[tuple[str, str]]:
+        """Return and forget every outstanding ``(issue_id, title)``."""
+        items = list(self._issues.items())
+        self._issues.clear()
+        return items
+
+    def __len__(self) -> int:
+        return len(self._issues)
+
+
+linear_artifacts = LinearArtifactRegistry()
+
+# The exact shape ``constants.artifact_title`` produces. Ownership for deletion is decided
+# by THIS, not by the ``LinearIT-`` marker alone: the marker also sits on legacy artifacts
+# (``LinearIT-IncrTest-<hex>``) that an older suite version left in the trash, and a
+# marker-only rule would happily delete a fixture someone renamed by hand.
+ARTIFACT_TITLE_RE = re.compile(
+    rf"^{re.escape(LINEAR_IT_ARTIFACT_PREFIX)}[0-9a-f]{{8}}-[A-Za-z]+-[0-9a-f]{{8}}$"
+)
+
+
+def is_run_artifact_title(title: str) -> bool:
+    """True only for titles in the current ``LinearIT-<run_id>-<Kind>-<hex>`` form."""
+    return bool(ARTIFACT_TITLE_RE.fullmatch((title or "").strip()))
+
+
+def pick_mutation_team(team_ids: List[str]) -> str:
+    """Where the mutation tests write.
+
+    The *secondary* filtered team when one is configured, so the primary — home of every
+    pinned fixture and every baseline — stays read-only for the whole suite. A single-team
+    setup falls back to the primary; artifact exclusion still protects its baselines.
+    """
+    return team_ids[1] if len(team_ids) > 1 else team_ids[0]
+
+
+async def create_artifact_issue(
+    datasource: LinearDataSource,
+    *,
+    team_id: str,
+    title: str,
+    context: str,
+) -> str:
+    """Create a test-owned issue and register it; returns the issue id.
+
+    A retried ``issueCreate`` whose first attempt actually succeeded leaves a twin behind;
+    the teardown sweep on this run id (``reap_own_artifacts``) is what catches that.
+    """
+    resp = await _api_call_with_retry(
+        datasource.issueCreate, input={"teamId": team_id, "title": title},
+        context=f"{context} issueCreate",
+    )
+    issue = ((resp.data or {}).get("issueCreate") or {}).get("issue") or {}
+    issue_id = issue.get("id")
+    assert issue_id, f"{context}: issueCreate returned no issue id"
+    linear_artifacts.register(issue_id, title)
+    logger.info("%s: created %s (%s)", context, issue.get("identifier"), title)
+    return str(issue_id)
+
+
+async def delete_artifact_issue(
+    datasource: LinearDataSource,
+    *,
+    issue_id: str,
+    context: str,
+    timeout: int = 60,
+) -> bool:
+    """Trash a test-owned issue, wait until Linear confirms it, release it from the registry.
+
+    Idempotent: an id already released (deleted earlier in the same test) is skipped, so
+    a ``finally`` can call this unconditionally. Never raises — it runs where an exception
+    would mask the test body's real failure — and returns False when the issue could not
+    be confirmed trashed, leaving it registered for the teardown reap.
+    """
+    if not linear_artifacts.is_registered(issue_id):
+        return True
+    try:
+        await _api_call_with_retry(
+            datasource.issueDelete, id=issue_id, context=f"{context} issueDelete",
+        )
+    except Exception as e:
+        if "not found" not in str(e).lower():
+            logger.warning("%s: issueDelete %s failed: %s", context, issue_id, e)
+            return False
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if await check_issue_trashed_bool(datasource, issue_id):
+            linear_artifacts.release(issue_id)
+            logger.info("%s: issue %s confirmed trashed", context, issue_id)
+            return True
+        await asyncio.sleep(3)
+    logger.warning("%s: issue %s not confirmed trashed within %ds", context, issue_id, timeout)
+    return False
+
+
+def _iso_utc(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def stale_artifact_filter(
+    team_ids: List[str],
+    *,
+    min_age_sec: float = LINEAR_IT_STALE_ARTIFACT_AGE_SEC,
+    only_run_id: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """``issues`` filter selecting *candidate* artifacts for the sweep.
+
+    Structured filters only — ``title.startsWith`` on the marker (or on this run's stem)
+    and, without ``only_run_id``, ``createdAt`` older than ``min_age_sec``. The age gate is
+    what keeps the sweep safe under concurrency: a younger issue may belong to a run that is
+    still asserting on it. ``createdAt`` is immutable so the cut never drifts. Linear does
+    not accept relative durations here, so the cut is an absolute UTC instant. Ownership is
+    still decided in Python from the full title (``is_run_artifact_title``).
+    """
+    stem = f"{LINEAR_IT_ARTIFACT_PREFIX}{only_run_id}-" if only_run_id else LINEAR_IT_ARTIFACT_PREFIX
+    issue_filter: Dict[str, Any] = {
+        "team": {"id": {"in": list(team_ids)}},
+        "title": {"startsWith": stem},
+    }
+    if not only_run_id:
+        cut = (now or datetime.now(timezone.utc)) - timedelta(seconds=min_age_sec)
+        issue_filter["createdAt"] = {"lt": _iso_utc(cut)}
+    return issue_filter
+
+
+async def sweep_stale_linear_artifacts(
+    datasource: LinearDataSource,
+    team_ids: List[str],
+    *,
+    min_age_sec: float = LINEAR_IT_STALE_ARTIFACT_AGE_SEC,
+    only_run_id: Optional[str] = None,
+) -> int:
+    """Trash leaked IT issues in ``team_ids``; return how many were trashed.
+
+    Trashing requires ALL of: the title is in the exact run-id artifact form
+    (``is_run_artifact_title``), it starts with the requested stem, the identifier is not a
+    frozen fixture, and the issue has neither parent nor children (an artifact is always
+    flat — this is what shields the placeholder chain whatever its titles say). Already
+    trashed issues never show up: the query runs without ``includeArchived``. Any failure
+    is logged and skipped: reaping is best-effort hygiene and must never fail the run that
+    performs it.
+    """
+    if not team_ids:
+        return 0
+    stem = f"{LINEAR_IT_ARTIFACT_PREFIX}{only_run_id}-" if only_run_id else LINEAR_IT_ARTIFACT_PREFIX
+    issue_filter = stale_artifact_filter(team_ids, min_age_sec=min_age_sec, only_run_id=only_run_id)
+
+    candidates: List[Dict[str, Any]] = []
+    cursor: Optional[str] = None
+    try:
+        for _ in range(50):
+            resp = await _api_call_with_retry(
+                datasource.issues, first=100, after=cursor, filter=issue_filter,
+                context="SWEEP issues",
+            )
+            data = (resp.data or {}).get("issues", {})
+            candidates.extend(data.get("nodes", []))
+            page_info = data.get("pageInfo", {})
+            if not page_info.get("hasNextPage") or not page_info.get("endCursor"):
+                break
+            cursor = page_info["endCursor"]
+    except Exception as e:
+        logger.warning("SWEEP: artifact search failed (%s) — skipping: %s", issue_filter, e)
+        return 0
+
+    deleted = 0
+    for issue in candidates:
+        title = (issue.get("title") or "").strip()
+        issue_id = str(issue.get("id") or "")
+        identifier = str(issue.get("identifier") or "")
+        if not issue_id or not title.startswith(stem) or not is_run_artifact_title(title):
+            continue
+        if identifier in LINEAR_FROZEN_ISSUE_IDENTIFIERS:
+            logger.error(
+                "SWEEP: refusing to delete frozen fixture %s even though its title is %r "
+                "— restore its real title", identifier, title,
+            )
+            continue
+        if issue.get("parent") or ((issue.get("children") or {}).get("nodes")):
+            logger.error(
+                "SWEEP: refusing to delete %s (%r) — it is part of a hierarchy, artifacts never are",
+                identifier, title,
+            )
+            continue
+        if issue.get("trashed"):
+            continue
+        try:
+            await _api_call_with_retry(
+                datasource.issueDelete, id=issue_id, context=f"SWEEP delete {identifier}",
+            )
+        except LinearAuthError:
+            logger.debug("SWEEP: no permission to delete %s — skipping", identifier)
+            continue
+        except Exception as e:
+            logger.warning("SWEEP: delete %s (%s) failed: %s", identifier, title, e)
+            continue
+        logger.warning(
+            "SWEEP: trashed leaked IT artifact %s (%s, created %s)",
+            identifier, title, issue.get("createdAt"),
+        )
+        deleted += 1
+    return deleted
+
+
+async def reap_own_artifacts(
+    datasource: LinearDataSource, team_ids: List[str],
+) -> int:
+    """Teardown hygiene: trash everything this run still owns.
+
+    Registry first (ids we know), then a title sweep on this run id — the sweep also
+    catches an issue whose ``issueCreate`` succeeded after the registry line was never
+    reached (interrupt between the two, or a retried create that made a twin).
+    """
+    deleted = 0
+    for issue_id, title in linear_artifacts.drain():
+        try:
+            await _api_call_with_retry(
+                datasource.issueDelete, id=issue_id, context=f"teardown delete {title}",
+            )
+            deleted += 1
+        except Exception as e:
+            if "not found" in str(e).lower():
+                deleted += 1
+            else:
+                logger.warning("TEARDOWN: delete %s (%s) failed: %s", issue_id, title, e)
+    deleted += await sweep_stale_linear_artifacts(
+        datasource, team_ids, only_run_id=LINEAR_IT_RUN_ID,
+    )
+    return deleted

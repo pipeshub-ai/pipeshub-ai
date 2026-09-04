@@ -19,7 +19,11 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.modules.transformers.transformer import TransformContext, Transformer
+from app.services.cache.interface import ISignedUrlCache, NoopSignedUrlCache
+from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.redis.config import ClientOptions, RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
 from app.utils.request_context import inject_request_headers
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.worker_scaling import scaled
@@ -155,10 +159,10 @@ async def close_shared_session() -> None:
         await session.close()
 
 
-# Same reasoning as _shared_sessions: one client per loop, not per BlobStorage.
-# `None` is a cached "unavailable" verdict, so an outage costs one failed
-# connect per loop instead of one per record fetch.
-_shared_redis: "dict[asyncio.AbstractEventLoop, Any]" = {}
+# Same reasoning as _shared_sessions: one cache per loop, not per BlobStorage.
+# A cached `NoopSignedUrlCache` is the "unavailable" verdict, so an outage
+# costs one failed connect per loop instead of one per record fetch.
+_shared_redis: "dict[asyncio.AbstractEventLoop, ISignedUrlCache]" = {}
 # One lock per loop, not one shared lock: agent action tools run background loops
 # in this process (see agents/actions/*, asyncio.new_event_loop in a thread), and
 # a single asyncio.Lock contended from two loops parks a waiter on one loop that
@@ -178,14 +182,15 @@ def _redis_lock_for(loop: "asyncio.AbstractEventLoop") -> asyncio.Lock:
         return lock
 
 
-async def get_shared_redis(config_service: Any, logger: Any) -> Any:  # noqa: ANN401
-    """Process-wide Redis client for the signed-URL cache, one per event loop.
+async def get_shared_signed_url_cache(config_service: Any, logger: Any) -> ISignedUrlCache:  # noqa: ANN401
+    """Process-wide `ISignedUrlCache`, one per event loop.
 
-    Returns None when the cache is disabled or Redis is unreachable; callers
-    then use the uncached path, which is what they did before it existed.
+    Returns a `NoopSignedUrlCache` when the cache is disabled or Redis is
+    unreachable, so callers never need a None check -- they get the same
+    uncached behaviour they had before this cache existed.
     """
     if not signed_url_cache_seconds():
-        return None
+        return NoopSignedUrlCache()
     loop = asyncio.get_running_loop()
     if loop in _shared_redis:
         return _shared_redis[loop]
@@ -196,35 +201,42 @@ async def get_shared_redis(config_service: Any, logger: Any) -> Any:  # noqa: AN
         for stale_loop in [lp for lp in _shared_redis if lp.is_closed()]:
             _shared_redis.pop(stale_loop, None)
 
+        cache: ISignedUrlCache
         client = None
         try:
-            from redis.asyncio import Redis
-
             cfg = await config_service.get_redis_config()
-            client = Redis(
-                host=cfg.host, port=cfg.port, password=cfg.password,
-                db=cfg.db, decode_responses=True,
-                socket_timeout=2.0, socket_connect_timeout=2.0,
+            provider = get_redis_provider(
+                RedisConnectionConfig.from_host_port(
+                    host=cfg.host, port=cfg.port, password=cfg.password, db=cfg.db, tls=cfg.tls
+                )
+            )
+            client = provider.create_client(
+                ClientOptions(
+                    decode_responses=True,
+                    socket_timeout_seconds=2.0,
+                    socket_connect_timeout_seconds=2.0,
+                )
             )
             await client.ping()
+            cache = RedisSignedUrlCache(client, provider.key_namespace)
         except Exception as e:
             if client is not None:
                 try:
                     await client.aclose()
                 except Exception:
                     pass
-            client = None
+            cache = NoopSignedUrlCache()
             logger.warning("Signed-URL cache unavailable, disabled: %s", str(e))
-        _shared_redis[loop] = client
-        return client
+        _shared_redis[loop] = cache
+        return cache
 
 
 async def close_shared_redis() -> None:
-    """Close the pooled Redis client for the running loop; call from shutdown."""
+    """Close the pooled signed-URL cache for the running loop; call from shutdown."""
     loop = asyncio.get_running_loop()
-    client = _shared_redis.pop(loop, None)
-    if client is not None:
-        await client.aclose()
+    cache = _shared_redis.pop(loop, None)
+    if cache is not None:
+        await cache.close()
 
 
 class CustomMetadataEntry(TypedDict):
@@ -256,8 +268,8 @@ class BlobStorage(Transformer):
         self.config_service = config_service
         self.graph_provider = graph_provider
 
-    async def _signed_url_client(self):
-        """Redis client for the signed-URL cache, or None when it is disabled.
+    async def _signed_url_client(self) -> ISignedUrlCache:
+        """`ISignedUrlCache` for this loop; a `NoopSignedUrlCache` when disabled.
 
         Shared per event loop rather than per instance: BlobStorage is built ad
         hoc at ~20 call sites (per request, per tool call), so a per-instance
@@ -265,7 +277,7 @@ class BlobStorage(Transformer):
         reason get_shared_session exists. Failures are never fatal; the caller
         falls back to asking the gateway.
         """
-        return await get_shared_redis(self.config_service, self.logger)
+        return await get_shared_signed_url_cache(self.config_service, self.logger)
 
     async def _record_from_signed_url(
         self,
@@ -329,22 +341,20 @@ class BlobStorage(Transformer):
         return f"sigurl:{org_id}:{document_id}"
 
     async def _cached_signed_url(self, org_id: str, document_id: str) -> str | None:
-        client = await self._signed_url_client()
-        if client is None:
-            return None
+        cache = await self._signed_url_client()
         try:
-            return await client.get(self._signed_url_key(org_id, document_id))
+            return await cache.get(self._signed_url_key(org_id, document_id))
         except Exception as e:
             self.logger.debug("Signed-URL cache read failed: %s", str(e))
             return None
 
     async def _store_signed_url(self, org_id: str, document_id: str, url: str) -> None:
-        client = await self._signed_url_client()
-        if client is None or not url:
+        if not url:
             return
+        cache = await self._signed_url_client()
         try:
-            await client.set(
-                self._signed_url_key(org_id, document_id), url, ex=signed_url_cache_seconds()
+            await cache.set(
+                self._signed_url_key(org_id, document_id), url, signed_url_cache_seconds()
             )
         except Exception as e:
             self.logger.debug("Signed-URL cache write failed: %s", str(e))

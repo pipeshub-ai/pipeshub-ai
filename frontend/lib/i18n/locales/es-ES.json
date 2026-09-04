@@ -130,10 +130,12 @@
       "providerTypeLabel": "Tipo de proveedor*",
       "providerLocal": "Local (Predeterminado del sistema)",
       "providerS3": "Amazon S3",
-      "accessKeyLabel": "Clave de acceso*",
+      "accessKeyLabel": "Clave de acceso (opcional)",
       "accessKeyPlaceholder": "Ingresa la clave de acceso",
-      "secretKeyLabel": "Clave secreta*",
+      "secretKeyLabel": "Clave secreta (opcional)",
       "secretKeyPlaceholder": "Ingresa la clave secreta",
+      "credentialsHint": "Deja ambas claves vacías para autenticarte con el rol de IAM de la instancia EC2/ECS.",
+      "credentialsPartialError": "Introduce la clave de acceso y la clave secreta juntas, o deja ambas vacías para usar el rol de IAM de la instancia.",
       "bucketLabel": "Bucket*",
       "bucketPlaceholder": "Ingresa el bucket",
       "regionLabel": "Región*",
@@ -280,6 +282,7 @@
     "clearFilter": "Limpiar filtros"
   },
   "form": {
+    "leaveBlankToKeep": "Déjalo vacío para conservar el valor existente.",
     "title": "Título",
     "description": "Descripción",
     "search": "Buscar",
@@ -2023,7 +2026,6 @@
         "apiToken": "Token de API",
         "credentialsHeading": "Credenciales (opcional)",
         "credentialsHint": "Añade las credenciales ahora, o sáltalo y conéctate más tarde desde la pestaña Conexión y herramientas.",
-        "leaveBlankToKeep": "Déjalo vacío para conservar el valor existente.",
         "multiEnvIncomplete": "Completa todas las variables de entorno obligatorias, o déjalas todas en blanco para conectar más tarde.",
         "oauthPairRequired": "Introduce tanto el ID de cliente como el secreto de cliente, o deja ambos vacíos.",
         "connectAfterCreateHint": "Guarda este servidor y luego vuelve a abrir Gestionar para conectarlo."

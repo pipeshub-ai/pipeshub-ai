@@ -4920,6 +4920,9 @@ class TestOnRecordsDeletedCascade:
 
         await proc.on_records_deleted_cascade(["r1"], "kb-123")
 
+        tx_store.delete_records_recursive.assert_awaited_once_with(
+            ["r1"], "kb-123", cascade_children=True,
+        )
         proc.messaging_producer.send_message.assert_awaited_once()
         assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"
 
@@ -4996,6 +4999,48 @@ class TestOnRecordsDeletedCascade:
 
         assert "vectorCleanupPending" not in result
         assert proc.messaging_producer.send_message.await_count == 2
+
+
+class TestOnRecordsDeletedCascadeAttachmentOnly:
+    """Tests for on_records_deleted_cascade with cascade_children=False."""
+
+    @pytest.mark.asyncio
+    async def test_empty_list(self):
+        proc = _make_processor()
+        result = await proc.on_records_deleted_cascade([], "conn-123", cascade_children=False)
+        assert result["success"] is True
+        assert result["total_requested"] == 0
+        proc.data_store_provider.transaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_publishes_delete_events_attachment_only(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.delete_records_recursive = AsyncMock(
+            return_value={
+                "success": True,
+                "eventData": {"payloads": [{"recordId": "r1", "virtualRecordId": "v1"}]},
+            }
+        )
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_deleted_cascade(["r1"], "conn-123", cascade_children=False)
+
+        tx_store.delete_records_recursive.assert_awaited_once_with(
+            ["r1"], "conn-123", cascade_children=False,
+        )
+        proc.messaging_producer.send_message.assert_awaited_once()
+        assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"
+
+    @pytest.mark.asyncio
+    async def test_no_event_data(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.delete_records_recursive = AsyncMock(return_value={"success": True})
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_deleted_cascade(["r1"], "conn-123", cascade_children=False)
+        proc.messaging_producer.send_message.assert_not_awaited()
 
 
 class TestOnNewRecordsKbUpload:

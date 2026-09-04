@@ -764,6 +764,7 @@ TEXT_FRAGMENT_DIRECTIVE_PREFIX = "#:~:text="
 GRAPH_CONTEXT_ENRICHMENT_CONNECTORS: frozenset[Connectors] = frozenset({
     Connectors.JIRA,
     Connectors.JIRA_PERSONAL,
+    Connectors.JIRA_CLOUD_PERSONAL,
     Connectors.JIRA_DATA_CENTER,
     Connectors.JIRA_DATA_CENTER_PERSONAL,
     Connectors.LINEAR,

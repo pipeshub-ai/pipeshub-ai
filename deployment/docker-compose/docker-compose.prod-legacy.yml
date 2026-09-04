@@ -84,14 +84,30 @@ services:
       # Kafka config
       - KAFKA_BROKERS=kafka-1:9092
 
-      # Redis config
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      # Redis config. REDIS_MODE selects the connection provider:
+      # "standalone" (default) or "cluster" (Redis Cluster / AWS MemoryDB's
+      # wire protocol) when REDIS_HOST/PORT above are overridden to point at
+      # one. REDIS_DB is rejected outright once REDIS_MODE != standalone --
+      # use REDIS_KEY_NAMESPACE for tenant isolation instead.
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-}@redis:6379
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_KV_PREFIX=${REDIS_KV_PREFIX:-pipeshub:kv:}
       - REDIS_TIMEOUT=${REDIS_TIMEOUT:-10000}
       - REDIS_DB=${REDIS_DB:-0}
+      - REDIS_KEY_NAMESPACE=${REDIS_KEY_NAMESPACE:-}
+      - REDIS_MODE=${REDIS_MODE:-standalone}
+      - REDIS_CLUSTER_ENDPOINTS=${REDIS_CLUSTER_ENDPOINTS:-}
+      - REDIS_CLUSTER_SCALE_READS=${REDIS_CLUSTER_SCALE_READS:-master}
+      - REDIS_PROVIDER_MODULE=${REDIS_PROVIDER_MODULE:-}
+      - REDIS_TLS_ENABLED=${REDIS_TLS_ENABLED:-false}
+      - REDIS_TLS_REJECT_UNAUTHORIZED=${REDIS_TLS_REJECT_UNAUTHORIZED:-true}
+      - REDIS_TLS_CA_PATH=${REDIS_TLS_CA_PATH:-}
+      # Celery has no Redis Cluster transport; required when REDIS_MODE is
+      # not "standalone" (fails fast at startup otherwise).
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-}
 
       # MongoDB config
       - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@mongodb:27017/?authSource=admin

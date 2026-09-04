@@ -357,14 +357,12 @@ class ConnectorRegistry:
         *,
         is_admin: bool,
     ) -> bool:
-        """Read-only visibility for a connector, mirroring the connector listing.
+        """Gate stats visibility to the connector creator or an org admin.
 
-        Whereas :meth:`_can_access_connector` gates *mutations* to the creator or
-        an admin, a team-scoped connector is *viewable* by anyone who can reach it
-        via a direct or team app edge — the same rule
-        :meth:`get_all_connector_instances` uses. This keeps stats visibility in
-        sync with list visibility: if a user can see a connector, they can see its
-        stats.
+        Only admins and the user who created the connector may view its stats.
+        The connector *listing* has broader visibility (team-scoped connectors
+        are visible to all org members via graph edges), but stats are
+        restricted to prevent leaking usage data to non-privileged users.
         """
         try:
             scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value)
@@ -374,11 +372,7 @@ class ConnectorRegistry:
                 return created_by == user_id
 
             if scope == ConnectorScope.TEAM.value:
-                if is_admin or created_by == user_id:
-                    return True
-                graph_provider = await self._get_graph_provider()
-                accessible = await graph_provider.get_user_accessible_team_app_ids(user_id)
-                return connector_id in accessible
+                return is_admin or created_by == user_id
 
             return False
 

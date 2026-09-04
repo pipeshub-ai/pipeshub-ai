@@ -260,6 +260,13 @@ const agentConversationSchema = new Schema({
   compactedSummary: { type: String },
   compactedAtTurnIndex: { type: Number },
   compactedAtTimestamp: { type: Number },
+
+  // Phase 2 migration bookkeeping: set once this document has been copied
+  // into chatSessions/chatSessionMessages (see chat_sessions.migration.ts).
+  // Declared on the schema (not just written via the native driver) so
+  // `strictQuery` cannot silently drop the `{isMigrated: {$ne: true}}`
+  // scan filter or the completion write.
+  isMigrated: { type: Boolean, index: true },
 }, { timestamps: true });
 
 // Create indexes

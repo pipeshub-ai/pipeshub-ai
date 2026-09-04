@@ -153,6 +153,41 @@ Provider-specific values for the storage classes:
 The chart **refuses to install** when `replicaCount > 1` and persistence is not
 `ReadWriteMany` — to avoid silently leaving replicas stuck on `Multi-Attach`.
 
+## Redis: standalone, self-hosted cluster, or AWS MemoryDB
+
+By default the chart deploys the bundled Bitnami `redis` subchart in
+`replication` mode (`redis.mode: standalone`) — no extra configuration
+needed.
+
+To point at a self-hosted Redis Cluster or AWS MemoryDB instead, skip the
+bundled subchart and give the app the external endpoints:
+
+```bash
+helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
+  ... \
+  --set redis.enabled=false \
+  --set redis.mode=cluster \
+  --set redis.external.enabled=true \
+  --set redis.external.clusterEndpoints="my-cluster.abcdef.memorydb.us-east-1.amazonaws.com:6379" \
+  --set redis.clientTls.enabled=true \
+  --set redis.auth.password="<the cluster/MemoryDB AUTH token>"
+```
+
+| Value | Purpose |
+|---|---|
+| `redis.enabled` | Set `false` to skip deploying the Bitnami subchart entirely (wired via `condition: redis.enabled` in `Chart.yaml`). Leave `true` for the default bundled Redis. |
+| `redis.mode` | `standalone` (default) or `cluster`. Any other value is resolved via `redis.providerModule`, e.g. an enterprise-only MemoryDB provider that adds IAM auth rotation. |
+| `redis.external.enabled` / `redis.external.clusterEndpoints` | Point at an external cluster instead of the in-cluster Service. Comma-separated `host:port` list. |
+| `redis.clientTls.*` | TLS for the app's *client* connection to `redis.external.clusterEndpoints`. Deliberately not named `redis.tls` — that key is reserved by the Bitnami subchart for its own in-cluster server TLS and configures a different thing. |
+| `redis.keyNamespace` | Prefix applied inside key builders (not a client-level prefix) so multiple releases/tenants can share one Redis/MemoryDB. Covers the config KV store and its invalidation channel, the session/app cache, the accessible-records cache, retry counters, leases, and the BullMQ crawling queue. It does **not** cover Redis Streams topic or consumer-group names, so setting it together with `MESSAGE_BROKER=redis` is **rejected at startup** rather than silently letting two releases consume each other's messages. Use a separate Redis per deployment for the stream broker, or `MESSAGE_BROKER=kafka`. |
+| `redis.clusterScaleReads` | `master` (default) \| `slave` \| `all` — cluster-mode read distribution. |
+| `redis.providerModule` | npm/Python module path for a `REDIS_MODE` this chart doesn't know natively (enterprise providers). |
+| `celery.brokerUrl` / `celery.resultBackend` | Celery has no Redis Cluster transport; required whenever `redis.mode` isn't `standalone` — point these at a plain standalone Redis (can be a small dedicated instance, does not need to be the same backend as the KV/cache/streams Redis). |
+
+Redis Cluster and MemoryDB never support `SELECT` (`REDIS_DB`); it is only
+honoured when `redis.mode` is `standalone` (and a non-standalone `redis.mode` requires `redis.external.enabled=true` — the bundled subchart is a replication deployment, not a Redis Cluster). Use `redis.keyNamespace` for
+isolation instead.
+
 ## Secret Management Modes
 
 - `inline` (default): chart creates Kubernetes Secret from values

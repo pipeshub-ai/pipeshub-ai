@@ -398,37 +398,25 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     # -------------------------------------------------------------------------
 
     async def publish_cache_invalidation(self, key: str) -> None:
-        """Publish a cache invalidation message for the given key.
-
-        Only works when using Redis as the backend.
-        """
-        if hasattr(self.store, 'publish_cache_invalidation'):
-            await self.store.publish_cache_invalidation(key)
-        else:
-            self.logger.debug(
-                "Underlying store doesn't support publish_cache_invalidation"
-            )
+        """Deprecated alias; use ``publish_change`` (KeyValueStore interface, R15)."""
+        await self.publish_change(key)
 
     async def subscribe_cache_invalidation(
         self, callback: Callable[[str], None]
-    ) -> asyncio.Task:
-        """Subscribe to cache invalidation messages.
+    ) -> Optional[Any]:
+        """Deprecated alias; use ``subscribe_changes`` (KeyValueStore interface, R15)."""
+        return await self.subscribe_changes(callback)
 
-        Only works when using Redis as the backend.
+    # -- KeyValueStore cross-process notification interface (R15) -----------
+    # Delegates to whatever the underlying store implements (Redis Pub/Sub,
+    # etcd's native watch, or the in-memory no-op) so this wrapper never
+    # branches on backend type.
 
-        Args:
-            callback: Function to call with the invalidated key when a message is received.
+    async def subscribe_changes(self, callback: Callable[[str], None]) -> Optional[Any]:
+        return await self.store.subscribe_changes(callback)
 
-        Returns:
-            The subscription task that can be cancelled to stop listening.
-        """
-        if hasattr(self.store, 'subscribe_cache_invalidation'):
-            return await self.store.subscribe_cache_invalidation(callback)
-        else:
-            self.logger.debug(
-                "Underlying store doesn't support subscribe_cache_invalidation"
-            )
-            # Return a no-op task for stores that don't support Pub/Sub
-            async def noop()  -> None:
-                pass
-            return asyncio.create_task(noop())
+    async def publish_change(self, key: str) -> None:
+        await self.store.publish_change(key)
+
+    async def unsubscribe_changes(self, handle: Any) -> None:  # noqa: ANN401
+        await self.store.unsubscribe_changes(handle)

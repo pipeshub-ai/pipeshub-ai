@@ -1,83 +1,11 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
-import { EventEmitter } from 'events';
 import { createMockLogger, MockLogger } from '../../helpers/mock-logger';
 import { KafkaConfig } from '../../../src/libs/types/kafka.types';
 import { RedisBrokerConfig } from '../../../src/libs/types/messaging.types';
 import { ENV_MESSAGE_BROKER } from '../../../src/libs/constants/messaging.constants';
-
-// ---------------------------------------------------------------------------
-// Override ioredis mock to support `import { Redis } from 'ioredis'`
-// ---------------------------------------------------------------------------
-class FakeRedisForFactory extends EventEmitter {
-  status = 'ready';
-  connect = sinon.stub().resolves();
-  quit = sinon.stub().resolves();
-  xadd = sinon.stub().resolves('1-0');
-  ping = sinon.stub().resolves('PONG');
-  constructor(_options?: any) {
-    super();
-    process.nextTick(() => {
-      this.emit('connect');
-      this.emit('ready');
-    });
-  }
-}
-
-const ioredisPath = require.resolve('ioredis');
-const rsPath = require.resolve(
-  '../../../src/libs/services/redis-streams.service',
-);
-const factoryPath = require.resolve(
-  '../../../src/libs/services/message-broker.factory',
-);
-
-// Other spec files (e.g. app.test.ts, which mocha loads before this file
-// because 'a' < 'l' alphabetically) may already have required
-// message-broker.factory/redis-streams.service — and cached them bound to
-// the global ioredis mock. If we simply `delete require.cache[...]` here to
-// force our own fake-ioredis reload, that stale cache entry never comes
-// back: any file loaded *after* us (e.g. kb_container.test.ts) would then
-// resolve a *different* module instance than the one already-loaded
-// consumers (kb_container.ts) closed over, so sinon stubs applied to "our"
-// instance silently never run against the real call sites. Snapshot the
-// pre-mutation cache entries so we can restore them once our own imports
-// below have captured what they need.
-const originalIoredisEntry = require.cache[ioredisPath];
-const originalRsEntry = require.cache[rsPath];
-const originalFactoryEntry = require.cache[factoryPath];
-
-function ensureIoredisMock() {
-  require.cache[ioredisPath] = {
-    ...originalIoredisEntry!,
-    exports: {
-      Redis: FakeRedisForFactory,
-      default: FakeRedisForFactory,
-      RedisOptions: {},
-    },
-  } as any;
-
-  // Reload the modules that import ioredis
-  delete require.cache[rsPath];
-  delete require.cache[factoryPath];
-}
-
-function restoreIoredisMock() {
-  const restore = (key: string, entry: NodeModule | undefined) => {
-    if (entry) {
-      require.cache[key] = entry;
-    } else {
-      delete require.cache[key];
-    }
-  };
-  restore(ioredisPath, originalIoredisEntry);
-  restore(rsPath, originalRsEntry);
-  restore(factoryPath, originalFactoryEntry);
-}
-
-// Set up the mock before any module that uses ioredis is loaded
-ensureIoredisMock();
+import { stubGetRedisProvider, createFakeRedisProvider } from '../../helpers/fake-redis-provider';
 
 import {
   getMessageBrokerType,
@@ -105,14 +33,6 @@ import {
   RedisStreamsAdminService,
 } from '../../../src/libs/services/redis-streams.service';
 
-// All named bindings above are now bound to our fake-ioredis-backed module
-// instances. Put require.cache back the way we found it so later-loaded
-// spec files (and anything already-loaded that transitively depends on
-// message-broker.factory/redis-streams.service) keep resolving the same
-// module instance consistently, instead of forking off a second one that
-// stubs elsewhere in the suite can't see.
-restoreIoredisMock();
-
 describe('MessageBrokerFactory', () => {
   let mockLogger: MockLogger;
 
@@ -136,13 +56,18 @@ describe('MessageBrokerFactory', () => {
 
   beforeEach(() => {
     mockLogger = createMockLogger();
+    // Redis-path factories build real `BaseRedisStreamsProducerConnection` /
+    // `...ConsumerConnection` / `RedisStreamsAdminService` instances, which
+    // resolve their client through `getRedisProvider()` -- stub the
+    // provider (R18), not the `ioredis` module it would otherwise
+    // construct a real client from.
+    stubGetRedisProvider(createFakeRedisProvider());
   });
 
   afterEach(() => {
     sinon.restore();
     delete process.env.MESSAGE_BROKER;
     delete process.env.REDIS_STREAMS_MAXLEN;
-    delete process.env.REDIS_STREAMS_PREFIX;
   });
 
   // ================================================================
@@ -177,6 +102,33 @@ describe('MessageBrokerFactory', () => {
       expect(() => getMessageBrokerType()).to.throw(
         `Unsupported ${ENV_MESSAGE_BROKER} type`,
       );
+    });
+  });
+
+  // ================================================================
+  // REDIS_KEY_NAMESPACE guard
+  // ================================================================
+  describe('buildRedisBrokerConfig REDIS_KEY_NAMESPACE guard', () => {
+    afterEach(() => {
+      delete process.env.REDIS_KEY_NAMESPACE;
+    });
+
+    it('refuses a namespaced Redis Streams broker', () => {
+      // The namespace isolates KV keys, the invalidation channel and the
+      // BullMQ prefix -- but not stream or consumer-group names. Two releases
+      // on one endpoint would share both, so a message produced by one can be
+      // delivered to the other's consumer and acked there.
+      process.env.REDIS_KEY_NAMESPACE = 'tenant-a';
+      expect(() => buildRedisBrokerConfig(redisConfig)).to.throw(
+        /does not isolate Redis Streams/,
+      );
+    });
+
+    it('allows an unset or blank namespace', () => {
+      delete process.env.REDIS_KEY_NAMESPACE;
+      expect(() => buildRedisBrokerConfig(redisConfig)).to.not.throw();
+      process.env.REDIS_KEY_NAMESPACE = '   ';
+      expect(() => buildRedisBrokerConfig(redisConfig)).to.not.throw();
     });
   });
 
@@ -351,17 +303,6 @@ describe('MessageBrokerFactory', () => {
       expect(config.maxLen).to.equal(500000);
     });
 
-    it('should use REDIS_STREAMS_PREFIX env var for keyPrefix', () => {
-      process.env.REDIS_STREAMS_PREFIX = 'myapp:';
-      const config = buildRedisBrokerConfig({ host: 'localhost', port: 6379 });
-      expect(config.keyPrefix).to.equal('myapp:');
-    });
-
-    it('should default keyPrefix to empty string', () => {
-      delete process.env.REDIS_STREAMS_PREFIX;
-      const config = buildRedisBrokerConfig({ host: 'localhost', port: 6379 });
-      expect(config.keyPrefix).to.equal('');
-    });
   });
 
   // ================================================================

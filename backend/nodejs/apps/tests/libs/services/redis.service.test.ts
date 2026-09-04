@@ -3,8 +3,19 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import { EventEmitter } from 'events';
 
-// We need to mock ioredis before importing RedisService
-// since the constructor calls initializeClient which creates a Redis instance
+import { RedisCacheError } from '../../../src/libs/errors/redis.errors';
+import { Logger } from '../../../src/libs/services/logger.service';
+import { createMockLogger, MockLogger } from '../../helpers/mock-logger';
+import { stubGetRedisProvider } from '../../helpers/fake-redis-provider';
+import { IRedisConnectionProvider } from '../../../src/libs/services/redis/connectionProvider.interface';
+import {
+  getSharedRedisService,
+  resetSharedRedisServices,
+} from '../../../src/libs/services/redis.service';
+
+// RedisService gets its client from `getRedisProvider().createClient(...)`
+// (`src/libs/services/redis/connectionProviderFactory`), not `new
+// Redis(...)` directly, so this mocks that seam instead of `ioredis`.
 class MockRedisClient extends EventEmitter {
   get = sinon.stub();
   set = sinon.stub();
@@ -14,57 +25,50 @@ class MockRedisClient extends EventEmitter {
   quit = sinon.stub();
 }
 
-// We'll use proxyquire or manual approach to inject mock
-// Since the project uses require, we can use sinon to stub the module
-
-import { RedisCacheError } from '../../../src/libs/errors/redis.errors';
-import { createMockLogger, MockLogger } from '../../helpers/mock-logger';
+const rsPath = require.resolve('../../../src/libs/services/redis.service');
 
 describe('RedisService', () => {
   let RedisService: any;
   let mockClient: MockRedisClient;
   let mockLogger: MockLogger;
   let service: any;
-  let capturedRedisOptions: any;
-
-  // Saved require.cache entries for exception-safe restoration in afterEach
-  const ioredisPath = require.resolve('ioredis');
-  const rsPath = require.resolve('../../../src/libs/services/redis.service');
-  let savedIoredis: NodeModule | undefined;
+  let capturedClientOptions: any;
+  let capturedConnectionConfig: any;
 
   beforeEach(() => {
     mockClient = new MockRedisClient();
     mockLogger = createMockLogger();
-    capturedRedisOptions = null;
+    capturedClientOptions = null;
 
-    // Save original cache entries BEFORE mutation
-    savedIoredis = require.cache[ioredisPath];
+    const provider: IRedisConnectionProvider = {
+      isCluster: false,
+      mode: 'standalone',
+      keyNamespace: '',
+      getClient: sinon.stub().returns(mockClient),
+      createClient: sinon.stub().callsFake((options: any) => {
+        capturedClientOptions = options;
+        return mockClient;
+      }),
+      createPubSubClient: sinon.stub().returns(mockClient),
+      keySlot: sinon.stub().returns(0),
+      loadScript: sinon.stub().resolves('fakesha'),
+      connectionUrl: sinon.stub().returns('redis://fake:6379/0'),
+      ping: sinon.stub().resolves(true),
+      close: sinon.stub().resolves(),
+      release: sinon.stub(),
+      scanKeys: sinon.stub().callsFake(async function* (): AsyncIterable<string> {}),
+    };
+    // Restored by the global `sinon.restore()` in this suite's `afterEach`.
+    const restoreProvider = stubGetRedisProvider(provider as any);
+    restoreProvider();
+    const factoryModule = require('../../../src/libs/services/redis/connectionProviderFactory');
+    sinon
+      .stub(factoryModule, 'getRedisProvider')
+      .callsFake((connectionConfig: any) => {
+        capturedConnectionConfig = connectionConfig;
+        return provider as any;
+      });
 
-    // Create a fake ioredis module that returns our mock client.
-    // Invoke retryStrategy inside the constructor so c8 attributes
-    // the callback execution to the source file's V8 script context.
-    const FakeRedis = function(this: any, options: any) {
-      capturedRedisOptions = options;
-      if (typeof options?.retryStrategy === 'function') {
-        options.retryStrategy(1);
-      }
-      // Copy all mock client methods/properties to `this`
-      Object.assign(this, mockClient);
-      // Copy EventEmitter methods
-      this.on = mockClient.on.bind(mockClient);
-      this.emit = mockClient.emit.bind(mockClient);
-      this.removeListener = mockClient.removeListener.bind(mockClient);
-      return mockClient;
-    } as any;
-    FakeRedis.prototype = mockClient;
-
-    // Replace ioredis in require cache
-    require.cache[ioredisPath] = {
-      ...savedIoredis!,
-      exports: { Redis: FakeRedis, default: FakeRedis },
-    } as any;
-
-    // Clear RedisService from cache so it picks up our fake ioredis
     delete require.cache[rsPath];
 
     const config = {
@@ -75,22 +79,14 @@ describe('RedisService', () => {
       keyPrefix: 'test:',
     };
 
-    // Now import RedisService - it will use our fake ioredis
     const { RedisService: RS } = require('../../../src/libs/services/redis.service');
     RedisService = RS;
 
     service = new RS(config, mockLogger);
-
-    // Ensure mock client is set (FakeRedis constructor returns mockClient)
-    (service as any).client = mockClient;
     (service as any).connected = true;
   });
 
   afterEach(() => {
-    // Restore require.cache to original state (exception-safe — always runs)
-    if (savedIoredis) {
-      require.cache[ioredisPath] = savedIoredis;
-    }
     delete require.cache[rsPath];
     sinon.restore();
   });
@@ -105,6 +101,35 @@ describe('RedisService', () => {
 
     it('should use provided keyPrefix', () => {
       expect((service as any).keyPrefix).to.equal('test:');
+    });
+
+    it('prepends the provider key namespace (R9) to the key prefix', () => {
+      const namespacedProvider = {
+        isCluster: false,
+        mode: 'standalone',
+        keyNamespace: 'tenant-a',
+        getClient: sinon.stub().returns(mockClient),
+        createClient: sinon.stub().returns(mockClient),
+        createPubSubClient: sinon.stub().returns(mockClient),
+        keySlot: sinon.stub().returns(0),
+        loadScript: sinon.stub().resolves('fakesha'),
+        connectionUrl: sinon.stub().returns('redis://fake:6379/0'),
+        ping: sinon.stub().resolves(true),
+        close: sinon.stub().resolves(),
+        scanKeys: sinon.stub().callsFake(async function* (): AsyncIterable<string> {}),
+      };
+      // `beforeEach` already stubbed `getRedisProvider`; retarget that same
+      // stub for this one construction instead of re-wrapping it.
+      const mod = require('../../../src/libs/services/redis/connectionProviderFactory');
+      (mod.getRedisProvider as sinon.SinonStub).returns(namespacedProvider);
+
+      delete require.cache[rsPath];
+      const { RedisService: RS } = require('../../../src/libs/services/redis.service');
+      const namespaced = new RS(
+        { host: 'localhost', port: 6379, keyPrefix: 'test:' },
+        mockLogger,
+      );
+      expect((namespaced as any).keyPrefix).to.equal('tenant-a:test:');
     });
 
     it('should enable TLS when config.tls is true', () => {
@@ -283,39 +308,113 @@ describe('RedisService', () => {
     });
   });
 
-  // ================================================================
-  // initializeClient — retryStrategy & TLS branches (lines 35-36, 42-44)
-  // Uses capturedRedisOptions from the beforeEach FakeRedis so coverage
-  // is tracked in the same V8 context as other tests.
-  // ================================================================
+  // TLS socket options and retry backoff now live entirely in
+  // StandaloneRedisProvider (tests/libs/services/redis/standaloneRedisProvider.test.ts);
+  // RedisService forwards pool-sizing knobs (ClientOptions) and the stored
+  // config's TLS flag into the connection config.
   describe('initializeClient internals', () => {
-    it('should configure retryStrategy that caps delay at 2000ms', () => {
-      // capturedRedisOptions is set by beforeEach when new RS(config, ...) runs
-      expect(capturedRedisOptions.retryStrategy).to.be.a('function');
-      // times=1  → min(1*50, 2000) = 50
-      expect(capturedRedisOptions.retryStrategy(1)).to.equal(50);
-      // times=10 → min(10*50, 2000) = 500
-      expect(capturedRedisOptions.retryStrategy(10)).to.equal(500);
-      // times=100 → min(100*50, 2000) = 2000  (capped)
-      expect(capturedRedisOptions.retryStrategy(100)).to.equal(2000);
+    it('forwards connect timeout / retry / offline-queue knobs as ClientOptions', () => {
+      expect(capturedClientOptions).to.deep.equal({
+        connectTimeoutMs: undefined,
+        maxRetriesPerRequest: undefined,
+        enableOfflineQueue: undefined,
+      });
     });
 
-    it('should enable TLS when config.tls is true', () => {
-      // Create a new service with TLS using the same RedisService class
-      // (which still binds to the FakeRedis from beforeEach's require)
-      const tlsLogger = createMockLogger();
+    // The stored (admin-UI) Redis config is the only place a `tls` flag
+    // lives for installs that never set REDIS_TLS_ENABLED. Dropping it here
+    // would connect in plaintext to a TLS-only endpoint.
+    it('forwards the stored config TLS flag into the connection config', () => {
       new RedisService(
         { host: 'localhost', port: 6379, keyPrefix: 'tls:', tls: true },
-        tlsLogger,
+        createMockLogger(),
       );
-      // capturedRedisOptions now holds the TLS service's options
-      expect(capturedRedisOptions.tls).to.deep.equal({});
-      expect(tlsLogger.info.calledWithMatch('Redis TLS enabled')).to.be.true;
+      expect(capturedConnectionConfig.tls).to.equal(true);
     });
 
-    it('should not set TLS when config.tls is falsy', () => {
-      // capturedRedisOptions is from beforeEach (no tls in config)
-      expect(capturedRedisOptions.tls).to.be.undefined;
+    it('leaves TLS off when the stored config does not ask for it', () => {
+      expect(capturedConnectionConfig.tls).to.not.equal(true);
     });
+  });
+});
+
+describe('getSharedRedisService cache key', () => {
+  // Sharing one instance across containers is only safe while "same endpoint"
+  // means "same connection". Two configs differing only in credentials or TLS
+  // are different connections, and keying on host/port alone would hand the
+  // second caller the first one's authenticated client.
+  const base = { host: 'localhost', port: 6379, keyPrefix: 'app:' };
+
+  afterEach(() => {
+    resetSharedRedisServices();
+  });
+
+  // `createMockLogger()` returns a `MockLogger`, not a `Logger` instance --
+  // `Logger` carries private fields, so no plain object literal is
+  // structurally assignable to it without going through `unknown` first.
+  const asLogger = (logger: MockLogger): Logger => logger as unknown as Logger;
+
+  it('reuses one instance for an identical connection', () => {
+    const a = getSharedRedisService({ ...base }, asLogger(createMockLogger()));
+    const b = getSharedRedisService({ ...base }, asLogger(createMockLogger()));
+    expect(a).to.equal(b);
+  });
+
+  it('does not share across different passwords', () => {
+    const a = getSharedRedisService(
+      { ...base, password: 'one' },
+      asLogger(createMockLogger()),
+    );
+    const b = getSharedRedisService(
+      { ...base, password: 'two' },
+      asLogger(createMockLogger()),
+    );
+    expect(a).to.not.equal(b);
+  });
+
+  it('does not share across different usernames', () => {
+    const a = getSharedRedisService(
+      { ...base, username: 'u1' },
+      asLogger(createMockLogger()),
+    );
+    const b = getSharedRedisService(
+      { ...base, username: 'u2' },
+      asLogger(createMockLogger()),
+    );
+    expect(a).to.not.equal(b);
+  });
+
+  it('rebinds the endpoint to the newer credentials rather than reusing', () => {
+    // The key is the endpoint alone, so a credential change replaces the
+    // cached entry. The first caller keeps its own working instance; the
+    // next lookup gets one built with the current credentials, never the
+    // stale authenticated client.
+    const first = getSharedRedisService(
+      { ...base, password: 'old' },
+      asLogger(createMockLogger()),
+    );
+    const second = getSharedRedisService(
+      { ...base, password: 'new' },
+      asLogger(createMockLogger()),
+    );
+    const third = getSharedRedisService(
+      { ...base, password: 'new' },
+      asLogger(createMockLogger()),
+    );
+
+    expect(second).to.not.equal(first);
+    expect(third).to.equal(second);
+  });
+
+  it('does not share a TLS connection with a plaintext one', () => {
+    const a = getSharedRedisService(
+      { ...base, tls: true },
+      asLogger(createMockLogger()),
+    );
+    const b = getSharedRedisService(
+      { ...base, tls: false },
+      asLogger(createMockLogger()),
+    );
+    expect(a).to.not.equal(b);
   });
 });

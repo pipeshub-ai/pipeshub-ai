@@ -258,3 +258,121 @@ This helper is called during template rendering to fail fast with clear error me
   {{- end }}
 {{- end }}
 {{- end }}
+
+{{/*
+Validate that SANDBOX_MODE=docker actually has a daemon to reach.
+
+Without one, `run_code` fails at provision with an opaque Docker error in the
+middle of a user's conversation. Failing here instead makes the operator
+choose how code execution is isolated, at install time, with the options in
+front of them.
+*/}}
+{{- define "pipeshub-ai.validateSandbox" -}}
+{{- if eq (include "pipeshub-ai.sandboxMode" .) "docker" }}
+  {{- $hasDaemon := or .Values.sandbox.dind.enabled .Values.config.dockerHost }}
+  {{- if not $hasDaemon }}
+    {{- $socketMounted := false }}
+    {{- range .Values.extraVolumeMounts }}
+      {{- if contains "docker.sock" (.mountPath | default "") }}
+        {{- $socketMounted = true }}
+      {{- end }}
+    {{- end }}
+    {{- if not $socketMounted }}
+      {{- fail "config.sandboxMode is \"docker\" but no Docker daemon is configured, so run_code would fail at runtime. Pick one: (a) --set sandbox.dind.enabled=true to run a Docker-in-Docker sidecar (needs a PRIVILEGED container - see sandbox.dind in values.yaml); (b) --set config.dockerHost=tcp://<host>:2375 to use a daemon you already run; (c) mount the node's /var/run/docker.sock via extraVolumes/extraVolumeMounts; (d) --set config.sandboxMode=e2b with an E2B_API_KEY to execute off-cluster; or (e) --set config.sandboxMode=local to run generated code as a subprocess of this pod - NO container isolation, acceptable only for single-tenant development clusters." }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Canonical `config.sandboxMode`, validated against what the service accepts.
+
+The runtime loader upper-cases before matching, so DOCKER/Docker/docker all
+select the Docker backend there. Comparing the raw value in the chart meant
+`sandboxMode: DOCKER` skipped the daemon validation below while the service
+still chose Docker — the install succeeded and run_code failed at provision.
+Emitting the canonical spelling into the env var keeps both layers reading
+the same thing.
+*/}}
+{{- define "pipeshub-ai.sandboxMode" -}}
+{{- $raw := .Values.config.sandboxMode | toString -}}
+{{- $mode := $raw | trim | lower -}}
+{{- if not (has $mode (list "local" "docker" "e2b")) -}}
+  {{- fail (printf "config.sandboxMode=%q is not a supported coding sandbox. Use one of: local, docker, e2b." $raw) -}}
+{{- end -}}
+{{- $mode -}}
+{{- end -}}
+
+{{/*
+Effective DOCKER_HOST, or "" when no daemon is configured.
+
+Single source for the precedence so the deployment's env var and the NOTES
+description cannot disagree: an explicitly configured daemon wins, otherwise
+the DinD sidecar's loopback address if one is being deployed.
+*/}}
+{{- define "pipeshub-ai.dockerHost" -}}
+{{- if .Values.config.dockerHost -}}
+{{- .Values.config.dockerHost -}}
+{{- else if .Values.sandbox.dind.enabled -}}
+{{- printf "tcp://localhost:%v" .Values.sandbox.dind.port -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+How run_code actually executes: local | e2b | dind | external | socket.
+
+Deploying the sidecar and USING it are independent — `sandbox.dind.enabled`
+creates a privileged container whatever the backend is, while
+`config.sandboxMode` and `config.dockerHost` decide what run_code talks to.
+Describing one in terms of the other is how the notes came to claim
+Docker-in-Docker for an e2b deployment.
+*/}}
+{{- define "pipeshub-ai.sandboxPath" -}}
+{{- $mode := include "pipeshub-ai.sandboxMode" . -}}
+{{- if ne $mode "docker" -}}
+{{- $mode -}}
+{{- else if .Values.config.dockerHost -}}
+external
+{{- else if .Values.sandbox.dind.enabled -}}
+dind
+{{- else -}}
+socket
+{{- end -}}
+{{- end -}}
+
+{{/*
+Validate the Redis wiring before anything renders.
+
+`redis.external.enabled` only works when paired with a cluster-capable mode
+and the bundled subchart switched off -- a pairing the template comment
+described but nothing enforced. Left unchecked, `external.enabled=true` alone
+renders `REDIS_HOST=""` while `REDIS_MODE=standalone` selects
+`StandaloneRedisProvider`, which ignores `REDIS_CLUSTER_ENDPOINTS` and falls
+back to localhost, and the subchart still deploys. Both failures are silent.
+*/}}
+{{- define "pipeshub-ai.validateRedis" -}}
+{{- $external := .Values.redis.external -}}
+{{- if $external.enabled -}}
+  {{- if not $external.clusterEndpoints -}}
+    {{- fail "redis.external.enabled=true requires redis.external.clusterEndpoints (comma-separated host:port list)." -}}
+  {{- end -}}
+  {{- if eq (.Values.redis.mode | default "standalone") "standalone" -}}
+    {{- fail "redis.external.enabled=true requires a cluster-capable redis.mode (set redis.mode=cluster, or an EE mode supplied via redis.providerModule). REDIS_MODE=standalone ignores redis.external.clusterEndpoints and would connect to localhost." -}}
+  {{- end -}}
+  {{- if .Values.redis.enabled -}}
+    {{- fail "redis.external.enabled=true also requires redis.enabled=false, otherwise the bundled Redis subchart is deployed and left unused." -}}
+  {{- end -}}
+{{- else if not .Values.redis.enabled -}}
+  {{- fail "redis.enabled=false requires redis.external.enabled=true with redis.external.clusterEndpoints; otherwise nothing provides Redis." -}}
+{{- else if ne (.Values.redis.mode | default "standalone") "standalone" -}}
+  {{- /*
+    The bundled Bitnami subchart is *replication*, not Redis Cluster. Pointing
+    a cluster-mode client at `<release>-redis-master` makes it attempt cluster
+    discovery (CLUSTER SLOTS) against a server that has none, so it fails to
+    connect -- and with no REDIS_CLUSTER_ENDPOINTS emitted there is nothing
+    else for it to talk to. A non-standalone mode only makes sense with an
+    external endpoint.
+  */ -}}
+  {{- fail (printf "redis.mode=%s requires redis.external.enabled=true with redis.external.clusterEndpoints. The bundled Redis subchart is a replication deployment, not a Redis Cluster, so a cluster-mode client cannot connect to it. Use redis.mode=standalone with the bundled chart." (.Values.redis.mode | default "standalone")) -}}
+{{- end -}}
+{{- end -}}

@@ -41,6 +41,7 @@ from app.agents.agent_loop.hooks import CitationCollector
 from app.agents.agent_loop.respond import AnswerFinalizer
 
 if TYPE_CHECKING:
+    from app.utils.stage_timer import StageTimer
     from collections.abc import AsyncGenerator
 
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -252,6 +253,7 @@ async def run_agent_loop_stream(
     llm_provider: str = "",
     context_length: int | None = None,
     is_reasoning_model: bool = False,
+    stage_timer: "StageTimer | None" = None,
 ) -> "AsyncGenerator[str, None]":
     """agent-loop counterpart to `app.api.routes.agent.stream_response()` —
     same signature/SSE wire format, so `chat_stream`'s feature-flag branch
@@ -263,16 +265,19 @@ async def run_agent_loop_stream(
     second LLM call — see `respond.py`) through one shared `QueueEventSink`.
     """
     from app.modules.agents.qna.chat_state import build_initial_state
-    from app.utils.execute_query import has_sql_connector_configured
-    from app.utils.fetch_slack_thread import has_slack_connector_configured
+    from app.utils.connector_instances import fetch_user_connector_instances
+    from app.utils.execute_query import connector_instances_have_sql
+    from app.utils.fetch_slack_thread import connector_instances_have_slack
 
     try:
-        has_sql_connector = await has_sql_connector_configured(
-            graph_provider, user_info["userId"], user_info["orgId"]
+        # One query feeds both flags; they used to be two identical lookups.
+        connector_instances = await fetch_user_connector_instances(
+            graph_provider, user_info["userId"], user_info["orgId"], log,
         )
-        has_slack_connector = await has_slack_connector_configured(
-            graph_provider, user_info["userId"], user_info["orgId"]
-        )
+        has_sql_connector = connector_instances_have_sql(connector_instances)
+        has_slack_connector = connector_instances_have_slack(connector_instances)
+        if stage_timer:
+            stage_timer.mark("connector_flags")
         chat_state = build_initial_state(
             query_info, user_info, llm, log, retrieval_service, graph_provider,
             reranker_service, config_service, model_name, model_key, org_info,
@@ -292,6 +297,8 @@ async def run_agent_loop_stream(
     # direct access to AgentContext — chat_state IS tool_state in AgentContext.
     chat_state["event_sink"] = event_sink
     chat_state["sse_protocol"] = protocol
+    # Picked up by PipesHubAgentFactory.create() for its own sub-stage marks.
+    chat_state["_stage_timer"] = stage_timer
     # Model profile fields from etcd llm_config go in at construction, not
     # after: `model_post_init` resolves this request's image policy from
     # `llm_provider`, and a later assignment would leave it on the
@@ -312,6 +319,8 @@ async def run_agent_loop_stream(
                 model_name=model_name or "",
                 model_key=model_key,
             )
+            if stage_timer:
+                stage_timer.mark("factory.create")
 
             if clarifying_questions:
                 # Too ambiguous to safely reorganize into a Goal — skip
@@ -387,14 +396,32 @@ async def run_agent_loop_stream(
     producer = asyncio.create_task(_produce())
     heartbeat = asyncio.create_task(_heartbeat(queue)) if protocol == "agui" else None
     normal_exit = False
+    first_event_seen = False
     try:
         while True:
             item = await queue.get()
             if item is _DONE:
                 normal_exit = True
                 break
+            if not first_event_seen:
+                first_event_seen = True
+                if stage_timer:
+                    # Everything up to the model's first emission — the number
+                    # that actually decides how long the UI sits on "Thinking".
+                    stage_timer.mark("first_agent_event")
+                    stage_timer.emit(
+                        log, "agent chat stream",
+                        mode=query_info.get("chatMode"), model=model_name,
+                    )
             yield f"event: {item['event']}\ndata: {json.dumps(item['data'])}\n\n"
     finally:
+        # Idempotent: a stream that errored or was cancelled before its first
+        # event still reports where the time went.
+        if stage_timer:
+            stage_timer.emit(
+                log, "agent chat stream (incomplete)",
+                mode=query_info.get("chatMode"), model=model_name,
+            )
         if heartbeat and not heartbeat.done():
             heartbeat.cancel()
         if not normal_exit and not producer.done():

@@ -8019,7 +8019,7 @@ class TestGetAuthenticatedToolsets:
         config_service.get_config.return_value = []
         registry = MagicMock()
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert result == []
 
     @pytest.mark.asyncio
@@ -8031,7 +8031,7 @@ class TestGetAuthenticatedToolsets:
         config_service.get_config.side_effect = Exception("etcd error")
         registry = MagicMock()
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert result == []
 
     @pytest.mark.asyncio
@@ -8063,7 +8063,7 @@ class TestGetAuthenticatedToolsets:
             "tools": []
         }
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert len(result) == 1
         assert result[0]["instanceId"] == "inst1"
 
@@ -8098,7 +8098,7 @@ class TestGetAuthenticatedToolsets:
             "tools": []
         }
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert len(result) == 2
         instance_ids = [t["instanceId"] for t in result]
         assert "inst1" in instance_ids
@@ -8133,7 +8133,7 @@ class TestGetAuthenticatedToolsets:
             ]
         }
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert len(result) == 1
         assert result[0]["toolCount"] == 2
         assert len(result[0]["tools"]) == 2
@@ -8160,7 +8160,7 @@ class TestGetAuthenticatedToolsets:
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = None
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert len(result) == 1
         assert result[0]["displayName"] == "unknown"
         assert result[0]["tools"] == []
@@ -8196,7 +8196,7 @@ class TestGetAuthenticatedToolsets:
             "tools": [{"name": "search", "description": "Search"}]
         }
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert len(result) == 1
         toolset = result[0]
         assert toolset["instanceId"] == "inst1"

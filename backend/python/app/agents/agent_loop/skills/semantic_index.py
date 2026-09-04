@@ -16,9 +16,12 @@ what an in-process cosine scan over one org's skills can serve cheaply.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 from typing import TYPE_CHECKING, Any
+
+from cachetools import LRUCache
 
 from app.agent_loop_lib.modules.providers.skills.base import (
     SkillFilter,
@@ -33,6 +36,7 @@ from app.agent_loop_lib.modules.providers.skills.text_scoring import (
     skill_haystack,
     tokenize,
 )
+from app.utils.env_utils import env_int
 
 if TYPE_CHECKING:
     from langchain_core.embeddings import Embeddings
@@ -40,6 +44,39 @@ if TYPE_CHECKING:
 __all__ = ["SemanticSkillIndex"]
 
 logger = logging.getLogger(__name__)
+
+
+# Skill vectors are pure functions of the skill's text and the embedding model,
+# so they are cached for the life of the process, shared across requests and
+# orgs. `SkillManager` is built per request and calls `rebuild()` every time —
+# without this, every chat re-embedded the org's whole skill catalog before the
+# agent could start (measured at multiple seconds against a local embedder).
+#
+# The key IS the content, so there is no invalidation to get wrong: edit a
+# skill and its text changes, so its hash changes and it is re-embedded. Same
+# for switching embedding models. A stale entry is unreachable rather than
+# wrong.
+# `env_int(..., lo=1)`, not `int(os.getenv(...))`: a malformed value used to
+# raise at import (taking down every importer), and 0 or negative built an
+# LRUCache that raises "value too large" on the first write -- inside the
+# embedding path, where the fallback is silent keyword scoring.
+_VECTOR_CACHE_MAX = env_int("PIPESHUB_SKILL_VECTOR_CACHE_SIZE", 4096, lo=1)
+_vector_cache: LRUCache = LRUCache(maxsize=_VECTOR_CACHE_MAX)
+
+
+def _embedder_id(embedder: "Embeddings") -> str:
+    """Stable-enough identity for the embedding model, so vectors from one
+    model are never served to another (different space, often different
+    dimensionality)."""
+    for attr in ("model", "model_name", "model_id"):
+        value = getattr(embedder, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    return type(embedder).__name__
+
+
+def _cache_key(embedder_id: str, text: str) -> str:
+    return hashlib.sha256(f"{embedder_id}\x00{text}".encode()).hexdigest()
 
 
 def _embedding_text(metadata: SkillMetadata) -> str:
@@ -77,8 +114,16 @@ class SemanticSkillIndex(SkillIndex):
         if embedder is None:
             self._vectors.pop(metadata.name, None)
             return
+        text = _embedding_text(metadata)
+        key = _cache_key(_embedder_id(embedder), text)
+        cached = _vector_cache.get(key)
+        if cached is not None:
+            self._vectors[metadata.name] = cached
+            return
         try:
-            self._vectors[metadata.name] = await embedder.aembed_query(_embedding_text(metadata))
+            vector = await embedder.aembed_query(text)
+            self._vectors[metadata.name] = vector
+            _vector_cache[key] = vector
         except Exception:
             logger.exception("SemanticSkillIndex: failed to embed skill %r", metadata.name)
             self._vectors.pop(metadata.name, None)
@@ -91,13 +136,41 @@ class SemanticSkillIndex(SkillIndex):
         if embedder is None or not skills:
             self._vectors = {}
             return
-        try:
-            vectors = await embedder.aembed_documents([_embedding_text(m) for m in skills])
-        except Exception:
-            logger.exception("SemanticSkillIndex: bulk embedding failed, falling back to keyword search")
-            self._vectors = {}
-            return
-        self._vectors = {m.name: v for m, v in zip(skills, vectors)}
+
+        embedder_id = _embedder_id(embedder)
+        texts = {m.name: _embedding_text(m) for m in skills}
+        keys = {name: _cache_key(embedder_id, text) for name, text in texts.items()}
+
+        vectors: dict[str, list[float]] = {}
+        missing: list[SkillMetadata] = []
+        for m in skills:
+            cached = _vector_cache.get(keys[m.name])
+            if cached is None:
+                missing.append(m)
+            else:
+                vectors[m.name] = cached
+
+        if missing:
+            try:
+                fresh = await embedder.aembed_documents([texts[m.name] for m in missing])
+            except Exception:
+                # Whatever is already cached still scores semantically; only the
+                # uncached skills fall back to keyword matching.
+                logger.exception(
+                    "SemanticSkillIndex: bulk embedding failed for %d/%d skill(s), "
+                    "those fall back to keyword search", len(missing), len(skills),
+                )
+                self._vectors = vectors
+                return
+            for m, vector in zip(missing, fresh):
+                vectors[m.name] = vector
+                _vector_cache[keys[m.name]] = vector
+
+        logger.debug(
+            "SemanticSkillIndex: rebuilt %d skill(s), %d embedded, %d from cache",
+            len(skills), len(missing), len(skills) - len(missing),
+        )
+        self._vectors = vectors
 
     async def search(self, query: str, filter: SkillFilter | None = None, limit: int = 10) -> list[SkillMatch]:
         candidates = list(self._entries.values())

@@ -253,6 +253,57 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         app.state.knn_warmup_task = asyncio.create_task(_warmup_knn_index())
 
+    # Prepare the coding sandbox backend before a user needs it. On Docker
+    # that means pulling the sandbox image and creating the egress network —
+    # otherwise the first `run_code` of a deployment pays for both inside a
+    # user's request. Background and best-effort, like the warmups above: a
+    # backend that is misconfigured or unreachable must not stop the service
+    # from serving everything else, and the reason is recorded on app.state
+    # so it can be read back without re-probing the daemon on every health
+    # check.
+    async def _warmup_coding_sandbox() -> None:
+        from app.agent_loop_lib.sandbox.coding.registry import build_default_registry
+        from app.agent_loop_lib.sandbox.coding.settings import (
+            EnvSandboxSettingsLoader,
+            SharedSandboxConfig,
+        )
+        from app.agent_loop_lib.sandbox.coding.base import SandboxContext
+
+        try:
+            settings = await EnvSandboxSettingsLoader().load(SandboxContext())
+            registry = build_default_registry(
+                shared_config=SharedSandboxConfig(max_lifetime_s=settings.max_lifetime_s),
+                backend_options=settings.backend_options,
+            )
+            factory = registry.get(settings.backend)
+            health = await factory.health_check()
+            app.state.sandbox_health = {
+                "backend": settings.backend,
+                "available": health.available,
+                "reason": health.reason,
+            }
+            if not health.available:
+                logger.warning(
+                    "Coding sandbox backend %r unavailable: %s",
+                    settings.backend, health.reason,
+                )
+                return
+            logger.info("🔥 Warming up coding sandbox backend %r", settings.backend)
+            await factory.warmup()
+            logger.info("✅ Coding sandbox warmup complete (%s)", settings.backend)
+        except Exception as warmup_error:
+            app.state.sandbox_health = {
+                "backend": os.getenv("SANDBOX_MODE", "local").lower(),
+                "available": False,
+                "reason": f"{type(warmup_error).__name__}: {warmup_error}",
+            }
+            logger.warning(
+                "Coding sandbox warmup failed (will retry on first use): %s",
+                warmup_error,
+            )
+
+    app.state.sandbox_warmup_task = asyncio.create_task(_warmup_coding_sandbox())
+
     # Initialize toolset registry for agent tool execution.
     # auto_discover_toolsets() imports ~20 heavy SDK modules (Google, Microsoft,
     # Slack, …) synchronously. Offload to a worker thread so the event loop
@@ -285,7 +336,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await telemetry.pusher.stop()
 
     # Cancel background warmup tasks if still running.
-    for _warmup_attr in ("embedding_warmup_task", "knn_warmup_task"):
+    for _warmup_attr in (
+        "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
+    ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():
             warmup_task.cancel()

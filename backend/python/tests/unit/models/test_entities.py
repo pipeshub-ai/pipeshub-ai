@@ -3287,6 +3287,7 @@ class TestAppMetadataCoverage:
             "isAuthenticated": False,
             "createdBy": "u1",
             "updatedBy": "u2",
+            "lastSyncedBy": "u3",
             "createdAtTimestamp": 100,
             "updatedAtTimestamp": 200,
             "status": "SYNCING",
@@ -3297,6 +3298,7 @@ class TestAppMetadataCoverage:
         assert meta.is_agent_active is True
         assert meta.status == "SYNCING"
         assert meta.is_locked is True
+        assert meta.last_synced_by == "u3"
         assert meta.vector_membership_backfilled is False
         assert meta.vector_membership_backfill_after_key is None
 

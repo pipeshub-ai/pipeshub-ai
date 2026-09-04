@@ -36,12 +36,13 @@ Note: The ReJSON module is NOT required — all documents are stored as Redis Ha
 (``ON HASH``), not as JSON documents.  Only the RediSearch module must be loaded.
 """
 
+from __future__ import annotations
+
 import asyncio
 import re
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
-import redis.asyncio as aioredis
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.services.vector_db.filters import canonical_filter_key
@@ -79,6 +80,9 @@ from app.services.vector_db.redis.utils import (
     vector_to_bytes,
 )
 from app.utils.logger import create_logger
+
+if TYPE_CHECKING:
+    import redis.asyncio as aioredis
 
 logger = create_logger("redis_vector_service")
 
@@ -156,14 +160,27 @@ class RedisVectorService(IVectorDBService):
             cfg = await self._load_config()
             self._dense_dtype = cfg.dense_dtype
             self._max_concurrent_searches = cfg.max_concurrent_searches
-            self.client = aioredis.Redis(
-                host=cfg.host,
-                port=cfg.port,
-                password=cfg.password,
-                db=cfg.db,
-                socket_timeout=cfg.timeout,
-                socket_connect_timeout=cfg.timeout,
-                decode_responses=False,  # we handle bytes ourselves for vectors
+
+            # Always the standalone provider, regardless of the process-wide
+            # REDIS_MODE: RediSearch's FT.HYBRID/FT.SEARCH have no Redis
+            # Cluster support in this implementation (VectorDBProviderFactory
+            # refuses to select this backend on a cluster/MemoryDB
+            # deployment), and `_load_config` already enforces db=0.
+            from app.services.redis.config import ClientOptions, RedisConnectionConfig
+            from app.services.redis.connection_provider_factory import get_redis_provider
+
+            provider = get_redis_provider(
+                RedisConnectionConfig.from_host_port(
+                    host=cfg.host, port=cfg.port, password=cfg.password, db=cfg.db
+                ),
+                mode="standalone",
+            )
+            self.client = provider.create_client(
+                ClientOptions(
+                    decode_responses=False,  # we handle bytes ourselves for vectors
+                    socket_timeout_seconds=cfg.timeout,
+                    socket_connect_timeout_seconds=cfg.timeout,
+                )
             )
             # Verify connectivity
             await self.client.ping()

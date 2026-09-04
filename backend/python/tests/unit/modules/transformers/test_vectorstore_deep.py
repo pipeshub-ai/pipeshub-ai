@@ -9,8 +9,10 @@ Covers:
 - _is_local_cpu_embedding
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import openai
 import pytest
 
 from app.exceptions.indexing_exceptions import (
@@ -137,6 +139,145 @@ class TestInitializeCollection:
 # ===================================================================
 # get_embedding_model_instance
 # ===================================================================
+
+class TestEmbeddingModelCaching:
+    """The model is rebuilt only when the embedding config actually changes."""
+
+    @staticmethod
+    def _config(model="text-embedding-3-small"):
+        return {"embedding": [{
+            "provider": "openAI",
+            "isDefault": True,
+            "isMultimodal": False,
+            "configuration": {"model": model, "apiKey": "fake-key"},
+        }]}
+
+    @pytest.mark.asyncio
+    async def test_second_call_reuses_client_and_skips_probe(self):
+        """Rebuilding per record opens a fresh connection pool and burns an
+        extra embed round trip on the dimension probe."""
+        vs = _make_vectorstore()
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 1024)
+        mock_embeddings.model_name = "m"
+        vs.config_service.get_config = AsyncMock(return_value=self._config())
+
+        with patch(
+            "app.modules.transformers.vectorstore.get_embedding_model",
+            return_value=mock_embeddings,
+        ) as build:
+            await vs.get_embedding_model_instance()
+            await vs.get_embedding_model_instance()
+
+        assert build.call_count == 1
+        assert mock_embeddings.aembed_query.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_config_change_rebuilds_client(self):
+        vs = _make_vectorstore()
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 1024)
+        mock_embeddings.model_name = "m"
+        vs.config_service.get_config = AsyncMock(return_value=self._config())
+
+        with patch(
+            "app.modules.transformers.vectorstore.get_embedding_model",
+            return_value=mock_embeddings,
+        ) as build:
+            await vs.get_embedding_model_instance()
+            vs.config_service.get_config = AsyncMock(
+                return_value=self._config("text-embedding-3-large")
+            )
+            await vs.get_embedding_model_instance()
+
+        assert build.call_count == 2
+
+
+class TestEmbedDocumentsWithRetry:
+    """Tests for VectorStore._embed_documents_with_retry."""
+
+    @staticmethod
+    def _rate_limit_error():
+        response = MagicMock()
+        response.headers = {"Retry-After": "7"}
+        return openai.RateLimitError("rate limited", response=response, body=None)
+
+    @pytest.mark.asyncio
+    async def test_transient_failure_is_retried(self):
+        """One 429 must not discard the batches already upserted for the record."""
+        vs = _make_vectorstore()
+        vs.embedding_provider = "openAI"
+        vs.dense_embeddings = MagicMock()
+        vs.dense_embeddings.aembed_documents = AsyncMock(
+            side_effect=[self._rate_limit_error(), [[0.1] * 3]]
+        )
+
+        with patch("app.modules.transformers.vectorstore.asyncio.sleep", AsyncMock()):
+            result = await vs._embed_documents_with_retry(["hello"], "rec-1")
+
+        assert result == [[0.1] * 3]
+        assert vs.dense_embeddings.aembed_documents.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_signals_backpressure(self):
+        """A 429 has to pause the consumer, not just expire as a batch timeout."""
+        from app.services.messaging.backpressure import (
+            BackpressureCoordinator,
+            set_default_backpressure_coordinator,
+        )
+
+        coordinator = BackpressureCoordinator()
+        set_default_backpressure_coordinator(coordinator)
+        try:
+            vs = _make_vectorstore()
+            vs.embedding_provider = "openAI"
+            vs.dense_embeddings = MagicMock()
+            vs.dense_embeddings.aembed_documents = AsyncMock(
+                side_effect=[self._rate_limit_error(), [[0.1] * 3]]
+            )
+
+            with patch("app.modules.transformers.vectorstore.asyncio.sleep", AsyncMock()):
+                await vs._embed_documents_with_retry(["hello"], "rec-1")
+
+            assert coordinator.paused_services == frozenset({"openAI"})
+        finally:
+            set_default_backpressure_coordinator(None)
+
+    @pytest.mark.asyncio
+    async def test_non_retriable_error_is_not_retried(self):
+        vs = _make_vectorstore()
+        vs.embedding_provider = "openAI"
+        vs.dense_embeddings = MagicMock()
+        vs.dense_embeddings.aembed_documents = AsyncMock(
+            side_effect=ValueError("bad model name")
+        )
+
+        with pytest.raises(ValueError):
+            await vs._embed_documents_with_retry(["hello"], "rec-1")
+
+        assert vs.dense_embeddings.aembed_documents.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_exhausted_attempts_raise_embedding_error(self):
+        from app.exceptions.indexing_exceptions import EmbeddingError
+        from app.modules.transformers.vectorstore import _EMBEDDING_BATCH_MAX_ATTEMPTS
+
+        vs = _make_vectorstore()
+        vs.embedding_provider = "openAI"
+        vs.dense_embeddings = MagicMock()
+        vs.dense_embeddings.aembed_documents = AsyncMock(
+            side_effect=asyncio.TimeoutError()
+        )
+
+        with patch("app.modules.transformers.vectorstore.asyncio.sleep", AsyncMock()):
+            with pytest.raises(EmbeddingError, match="chars"):
+                await vs._embed_documents_with_retry(["hello"], "rec-1")
+
+        assert (
+            vs.dense_embeddings.aembed_documents.await_count
+            == _EMBEDDING_BATCH_MAX_ATTEMPTS
+        )
+
 
 class TestGetEmbeddingModelInstance:
     @pytest.mark.asyncio
@@ -1133,6 +1274,9 @@ def _make_vectorstore_p1(supports_sparse=False):
     dense.aembed_query = AsyncMock(return_value=[0.1] * 1024)
     vs.dense_embeddings = dense
     vs.embedding_provider = None
+    vs.embedding_endpoint = None
+    vs._embedding_config_hash = None
+    vs._embedding_model_lock = asyncio.Lock()
     vs.api_key = None
     vs.model_name = "test-model"
     vs.region_name = None

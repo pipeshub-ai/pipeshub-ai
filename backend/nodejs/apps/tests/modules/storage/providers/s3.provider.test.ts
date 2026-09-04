@@ -11,7 +11,13 @@ import {
   PresignedUrlError,
 } from '../../../../src/libs/errors/storage.errors'
 
+import { S3 } from 'aws-sdk'
+import mongoose from 'mongoose'
 import AmazonS3Adapter from '../../../../src/modules/storage/providers/s3.provider'
+import {
+  Document,
+  StorageVendor,
+} from '../../../../src/modules/storage/types/storage.service.types'
 import { StorageError } from '../../../../src/libs/errors/storage.errors';
 
 // Helper to create a valid adapter instance for method testing
@@ -31,7 +37,7 @@ describe('AmazonS3Adapter', () => {
   // constructor
   // -------------------------------------------------------------------------
   describe('constructor', () => {
-    it('should throw StorageConfigurationError when credentials are missing', () => {
+    it('should throw StorageConfigurationError when region and bucket are missing', () => {
       try {
         new AmazonS3Adapter({ accessKeyId: '', secretAccessKey: '', region: '', bucket: '' })
         expect.fail('Should have thrown')
@@ -64,7 +70,7 @@ describe('AmazonS3Adapter', () => {
       }
     })
 
-    it('should throw StorageConfigurationError when only accessKeyId is missing', () => {
+    it('should throw when only secretAccessKey is supplied', () => {
       try {
         new AmazonS3Adapter({
           accessKeyId: '', secretAccessKey: 'secret',
@@ -112,6 +118,57 @@ describe('AmazonS3Adapter', () => {
       // Verify via getS3Url which includes the region
       const url = (adapter as any).getS3Url('test.pdf')
       expect(url).to.include('us-east-1')
+    })
+
+    it('should create adapter without any credentials (IAM role mode)', () => {
+      const adapter = new AmazonS3Adapter({ region: 'us-east-1', bucket: 'my-bucket' })
+      expect(adapter).to.be.instanceOf(AmazonS3Adapter)
+    })
+
+    it('should create adapter when both credential fields are empty strings (IAM role mode)', () => {
+      const adapter = new AmazonS3Adapter({
+        accessKeyId: '', secretAccessKey: '',
+        region: 'us-east-1', bucket: 'my-bucket',
+      })
+      expect(adapter).to.be.instanceOf(AmazonS3Adapter)
+    })
+
+    it('should create adapter when both credential fields are whitespace-only (IAM role mode)', () => {
+      const adapter = new AmazonS3Adapter({
+        accessKeyId: '   ', secretAccessKey: '   ',
+        region: 'us-east-1', bucket: 'my-bucket',
+      })
+      expect(adapter).to.be.instanceOf(AmazonS3Adapter)
+    })
+
+    it('should throw StorageConfigurationError when only accessKeyId is provided', () => {
+      try {
+        new AmazonS3Adapter({
+          accessKeyId: 'AKIAIOSFODNN7EXAMPLE', secretAccessKey: '',
+          region: 'us-east-1', bucket: 'my-bucket',
+        })
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(StorageConfigurationError)
+        expect((error as StorageConfigurationError).message).to.include(
+          'must be provided together',
+        )
+      }
+    })
+
+    it('should throw StorageConfigurationError when only secretAccessKey is provided', () => {
+      try {
+        new AmazonS3Adapter({
+          accessKeyId: '   ', secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+          region: 'us-east-1', bucket: 'my-bucket',
+        })
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(StorageConfigurationError)
+        expect((error as StorageConfigurationError).message).to.include(
+          'must be provided together',
+        )
+      }
     })
   })
 
@@ -661,25 +718,25 @@ describe('AmazonS3Adapter - branch coverage', () => {
   // Constructor validation branches
   // =========================================================================
   describe('constructor validation', () => {
-    it('should throw StorageConfigurationError when accessKeyId is missing', () => {
-      try {
-        // Dynamically import
-        const AmazonS3Adapter = require('../../../../src/modules/storage/providers/s3.provider').default
-        new AmazonS3Adapter({ accessKeyId: '', secretAccessKey: 'key', region: 'us-east-1', bucket: 'b' })
-        expect.fail('Should have thrown')
-      } catch (error: any) {
-        expect(error).to.be.instanceOf(StorageConfigurationError)
-      }
+    it('should throw when accessKeyId is missing but secretAccessKey is supplied', () => {
+      // Dynamically import
+      const AmazonS3Adapter = require('../../../../src/modules/storage/providers/s3.provider').default
+      expect(
+        () => new AmazonS3Adapter({ accessKeyId: '', secretAccessKey: 'key', region: 'us-east-1', bucket: 'b' }),
+      ).to.throw(StorageConfigurationError)
     })
 
-    it('should throw StorageConfigurationError when secretAccessKey is missing', () => {
-      try {
-        const AmazonS3Adapter = require('../../../../src/modules/storage/providers/s3.provider').default
-        new AmazonS3Adapter({ accessKeyId: 'key', secretAccessKey: '', region: 'us-east-1', bucket: 'b' })
-        expect.fail('Should have thrown')
-      } catch (error: any) {
-        expect(error).to.be.instanceOf(StorageConfigurationError)
-      }
+    it('should throw when secretAccessKey is missing but accessKeyId is supplied', () => {
+      const AmazonS3Adapter = require('../../../../src/modules/storage/providers/s3.provider').default
+      expect(
+        () => new AmazonS3Adapter({ accessKeyId: 'key', secretAccessKey: '', region: 'us-east-1', bucket: 'b' }),
+      ).to.throw(StorageConfigurationError)
+    })
+
+    it('should not throw when both accessKeyId and secretAccessKey are omitted (IAM role mode)', () => {
+      const AmazonS3Adapter = require('../../../../src/modules/storage/providers/s3.provider').default
+      const adapter = new AmazonS3Adapter({ region: 'us-east-1', bucket: 'b' })
+      expect(adapter).to.exist
     })
 
     it('should throw StorageConfigurationError when region is missing', () => {
@@ -1177,5 +1234,86 @@ describe('AmazonS3Adapter - branch coverage', () => {
       const result = await adapter.generatePresignedUrlForDirectUpload('path')
       expect(result.data.url).to.equal('https://direct-upload.com')
     })
+  })
+})
+
+// =========================================================================
+// IAM role mode (no explicit accessKeyId/secretAccessKey)
+// =========================================================================
+describe('AmazonS3Adapter - IAM role mode', () => {
+  afterEach(() => { sinon.restore() })
+
+  function createIamRoleAdapter(): AmazonS3Adapter {
+    return new AmazonS3Adapter({ region: 'us-east-1', bucket: 'my-bucket' })
+  }
+
+  // The adapter owns its S3 client privately; tests stub it through a typed seam.
+  function s3ClientOf(adapter: AmazonS3Adapter): S3 {
+    return (adapter as unknown as { s3: S3 }).s3
+  }
+
+  function s3Document(url: string): Document {
+    return {
+      documentName: 'file.pdf',
+      isVersionedFile: false,
+      orgId: new mongoose.Types.ObjectId(),
+      initiatorUserId: null,
+      extension: 'pdf',
+      currentVersion: 1,
+      isDeleted: false,
+      storageVendor: StorageVendor.S3,
+      s3: { url },
+    }
+  }
+
+  it('should upload successfully without explicit credentials', async () => {
+    const adapter = createIamRoleAdapter()
+    sinon.stub(s3ClientOf(adapter), 'upload').returns({
+      promise: sinon.stub().resolves({ Key: 'folder/file.pdf' }),
+    } as unknown as ReturnType<S3['upload']>)
+
+    const result = await adapter.uploadDocumentToStorageService({
+      buffer: Buffer.from('test'), documentPath: 'folder/file.pdf',
+      mimeType: 'application/pdf', isVersioned: false,
+    })
+
+    expect(result.statusCode).to.equal(200)
+    expect(result.data).to.include('my-bucket.s3.us-east-1.amazonaws.com')
+  })
+
+  it('should read back an object successfully without explicit credentials', async () => {
+    const adapter = createIamRoleAdapter()
+    const testBuffer = Buffer.from('content')
+    sinon.stub(s3ClientOf(adapter), 'getObject').returns({
+      promise: sinon.stub().resolves({ Body: testBuffer }),
+    } as unknown as ReturnType<S3['getObject']>)
+
+    const result = await adapter.getBufferFromStorageService(
+      s3Document('https://my-bucket.s3.us-east-1.amazonaws.com/folder/file.pdf'),
+    )
+
+    expect(result.statusCode).to.equal(200)
+    expect(result.data).to.equal(testBuffer)
+  })
+
+  it('should generate a signed GET URL successfully without explicit credentials', async () => {
+    const adapter = createIamRoleAdapter()
+    sinon.stub(s3ClientOf(adapter), 'getSignedUrlPromise').resolves('https://signed.com/file')
+
+    const result = await adapter.getSignedUrl(
+      s3Document('https://my-bucket.s3.us-east-1.amazonaws.com/file.pdf'),
+    )
+
+    expect(result.statusCode).to.equal(200)
+    expect(result.data).to.equal('https://signed.com/file')
+  })
+
+  it('should generate a signed PUT URL for direct upload successfully without explicit credentials', async () => {
+    const adapter = createIamRoleAdapter()
+    sinon.stub(s3ClientOf(adapter), 'getSignedUrlPromise').resolves('https://put-presigned.com')
+
+    const result = await adapter.generatePresignedUrlForDirectUpload('folder/file.pdf')
+    expect(result.statusCode).to.equal(200)
+    expect(result.data.url).to.equal('https://put-presigned.com')
   })
 })

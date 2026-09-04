@@ -1,5 +1,6 @@
 {{- /* Validate required secrets before deployment */ -}}
 {{- include "pipeshub-ai.validateRequiredSecrets" . }}
+{{- include "pipeshub-ai.validateSandbox" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -94,6 +95,16 @@ spec:
               value: {{ .Values.config.signedUrlCacheSeconds | quote }}
             - name: DISTRIBUTED_INDEXING_CONCURRENCY
               value: {{ .Values.config.distributedIndexingConcurrency | quote }}
+            # Coding sandbox. Set explicitly: the service's own fallback is
+            # "local", which executes generated code on this pod.
+            - name: SANDBOX_MODE
+              value: {{ include "pipeshub-ai.sandboxMode" . | quote }}
+            - name: SANDBOX_DOCKER_IMAGE
+              value: {{ .Values.config.sandboxDockerImage | quote }}
+            {{- with (include "pipeshub-ai.dockerHost" .) }}
+            - name: DOCKER_HOST
+              value: {{ . | quote }}
+            {{- end }}
             # Resource-governor tuning. Every one defaults to "" so the
             # governor derives it from the pod's CPU/memory limits; set one
             # only to pin it. Mirrors the same list in docker-compose.yml.
@@ -215,17 +226,32 @@ spec:
             # Redis config
             {{- /*
               Connection target:
-                - standalone or replication (no sentinel): use the Bitnami "<release>-redis-master" Service.
-                  This is a stable Service that the chart updates to follow the current master pod, so the
-                  app does not need Sentinel awareness.
+                - standalone or replication (no sentinel), redis.external.enabled=false (default):
+                  use the Bitnami "<release>-redis-master" Service. This is a stable Service that the
+                  chart updates to follow the current master pod, so the app does not need Sentinel
+                  awareness.
                 - sentinel enabled: the app MUST use a Sentinel-aware client. The chart still exposes the
                   master Service for compatibility, but failover updates may lag and stale connections are
                   possible. Enable Sentinel only if the app is migrated to a Sentinel client.
+                - redis.external.enabled=true: point at redis.external.clusterEndpoints (a self-hosted
+                  Redis Cluster or AWS MemoryDB, R21/R22) instead of the bundled subchart -- pair with
+                  redis.mode=cluster and --set redis.enabled=false to skip deploying the subchart
+                  entirely (wired via the `condition: redis.enabled` dependency in Chart.yaml).
             */}}
+            {{- include "pipeshub-ai.validateRedis" . }}
+            {{- if .Values.redis.external.enabled }}
+            - name: REDIS_HOST
+              value: ""
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_CLUSTER_ENDPOINTS
+              value: {{ .Values.redis.external.clusterEndpoints | quote }}
+            {{- else }}
             - name: REDIS_HOST
               value: "{{ .Release.Name }}-redis-master"
             - name: REDIS_PORT
               value: "6379"
+            {{- end }}
             {{- if .Values.redis.auth.enabled }}
             - name: REDIS_PASSWORD
               valueFrom:
@@ -240,6 +266,26 @@ spec:
             - name: REDIS_URL
               value: "redis://{{ .Release.Name }}-redis-master:6379"
             {{- end }}
+            - name: REDIS_MODE
+              value: {{ .Values.redis.mode | default "standalone" | quote }}
+            - name: REDIS_KEY_NAMESPACE
+              value: {{ .Values.redis.keyNamespace | default "" | quote }}
+            - name: REDIS_CLUSTER_SCALE_READS
+              value: {{ .Values.redis.clusterScaleReads | default "master" | quote }}
+            - name: REDIS_PROVIDER_MODULE
+              value: {{ .Values.redis.providerModule | default "" | quote }}
+            - name: REDIS_TLS_ENABLED
+              value: {{ .Values.redis.clientTls.enabled | default false | quote }}
+            - name: REDIS_TLS_REJECT_UNAUTHORIZED
+              value: {{ .Values.redis.clientTls.rejectUnauthorized | default true | quote }}
+            - name: REDIS_TLS_CA_PATH
+              value: {{ .Values.redis.clientTls.caPath | default "" | quote }}
+            # Celery has no Redis Cluster transport; required when redis.mode
+            # is not "standalone" (fails fast at startup otherwise).
+            - name: CELERY_BROKER_URL
+              value: {{ .Values.celery.brokerUrl | default "" | quote }}
+            - name: CELERY_RESULT_BACKEND
+              value: {{ .Values.celery.resultBackend | default "" | quote }}
             
             # MongoDB config
             {{- $isReplicaSet := eq (.Values.mongodb.architecture | default "standalone") "replicaset" }}
@@ -356,6 +402,54 @@ spec:
             periodSeconds: {{ .Values.healthCheck.livenessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.healthCheck.livenessProbe.timeoutSeconds }}
             failureThreshold: {{ .Values.healthCheck.livenessProbe.failureThreshold }}
+        {{- if .Values.sandbox.dind.enabled }}
+        # Docker-in-Docker: gives SANDBOX_MODE=docker a daemon, so
+        # model-generated code runs in a throwaway container instead of as a
+        # subprocess of the application. See `sandbox.dind` in values.yaml for
+        # the privilege trade this makes.
+        - name: dind
+          image: {{ .Values.sandbox.dind.image | quote }}
+          imagePullPolicy: {{ .Values.sandbox.dind.pullPolicy | quote }}
+          securityContext:
+            # The daemon needs to create namespaces, mount filesystems and
+            # manage cgroups, which no unprivileged container can do. This
+            # deliberately overrides the pod-level runAsNonRoot.
+            privileged: true
+            runAsNonRoot: false
+            runAsUser: 0
+          env:
+            # TLS off because the listener is bound to loopback below and
+            # never leaves the pod's network namespace. That binding is what
+            # makes it safe: 0.0.0.0 would also bind the pod IP, publishing
+            # an unauthenticated root-equivalent API to anything on the
+            # cluster network that can route to this pod.
+            - name: DOCKER_TLS_CERTDIR
+              value: ""
+          args:
+            - "--host=tcp://127.0.0.1:{{ .Values.sandbox.dind.port }}"
+            - "--host=unix:///var/run/docker.sock"
+          resources:
+            {{- toYaml .Values.sandbox.dind.resources | nindent 12 }}
+          volumeMounts:
+            - name: dind-storage
+              mountPath: /var/lib/docker
+          livenessProbe:
+            exec:
+              command: ["docker", "info"]
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          startupProbe:
+            # Pulling the sandbox image on a cold cache can take a while;
+            # this is what stops a slow first start being read as a crash.
+            exec:
+              command: ["docker", "info"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 30
+        {{- end }}
           {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -369,6 +463,16 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if .Values.sandbox.dind.enabled }}
+        - name: dind-storage
+          {{- if .Values.sandbox.dind.storage.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.sandbox.dind.storage.existingClaim | quote }}
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.sandbox.dind.storage.sizeLimit | quote }}
+          {{- end }}
+        {{- end }}
         - name: cache
           emptyDir: {}
         - name: app-logs

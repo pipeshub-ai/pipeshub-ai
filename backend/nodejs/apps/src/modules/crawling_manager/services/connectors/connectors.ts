@@ -56,7 +56,7 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
         return { success: true };
       }
 
-      const event = constructSyncConnectorEvent(orgId, connector, connectorId);
+      const event = constructSyncConnectorEvent(orgId, connector, connectorId, userId);
 
       await this.syncEventsService.publishEvent(event);
 

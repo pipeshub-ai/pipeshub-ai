@@ -169,7 +169,10 @@ async def is_local_cpu_embedding_configured(
         config = next(
             (c for c in embedding_configs if c.get("isDefault")), embedding_configs[0]
         )
-        return is_local_cpu_embedding_provider(config.get("provider"))
+        configuration = config.get("configuration") or {}
+        return is_local_cpu_embedding_provider(
+            config.get("provider"), configuration.get("endpoint")
+        )
     except Exception:
         logger.warning(
             "Could not resolve the embedding provider; assuming a local CPU model",

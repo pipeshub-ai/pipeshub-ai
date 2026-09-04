@@ -176,10 +176,7 @@ class TestInitialize:
             c.worker_loop = MagicMock()
             c.worker_loop.is_running.return_value = True
 
-            with patch(
-                "app.services.messaging.redis_streams.indexing_consumer.Redis",
-                return_value=mock_redis,
-            ):
+            with patch.object(c._provider, "create_client", return_value=mock_redis):
                 await c.initialize()
 
         mock_redis.ping.assert_awaited_once()
@@ -204,10 +201,7 @@ class TestInitialize:
             c.worker_loop = MagicMock()
             c.worker_loop.is_running.return_value = True
 
-            with patch(
-                "app.services.messaging.redis_streams.indexing_consumer.Redis",
-                return_value=mock_redis,
-            ):
+            with patch.object(c._provider, "create_client", return_value=mock_redis):
                 await c.initialize()
 
         assert c.redis is mock_redis
@@ -228,10 +222,7 @@ class TestInitialize:
             c.worker_loop = MagicMock()
             c.worker_loop.is_running.return_value = True
 
-            with patch(
-                "app.services.messaging.redis_streams.indexing_consumer.Redis",
-                return_value=mock_redis,
-            ):
+            with patch.object(c._provider, "create_client", return_value=mock_redis):
                 with patch.object(c, "stop", new_callable=AsyncMock) as mock_stop:
                     with pytest.raises(Exception, match="Connection lost"):
                         await c.initialize()
@@ -297,10 +288,7 @@ class TestInitialize:
             c.worker_loop = MagicMock()
             c.worker_loop.is_running.return_value = True
 
-            with patch(
-                "app.services.messaging.redis_streams.indexing_consumer.Redis",
-                return_value=mock_redis,
-            ):
+            with patch.object(c._provider, "create_client", return_value=mock_redis):
                 await c.initialize()  # should not raise
 
         assert c.redis is mock_redis
@@ -2051,6 +2039,13 @@ class TestDrainPending:
                 None,
             ]
         )
+        # Phase 2 only runs when the pending list holds something this
+        # consumer is not already tracking -- the XREADGROUP below bumps
+        # times_delivered on everything it returns, so it must not run
+        # speculatively.
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"message_id": "9-0"}]
+        )
 
         with patch.object(
             consumer, "_start_processing_task", new_callable=AsyncMock
@@ -2075,7 +2070,11 @@ class TestDrainPending:
         consumer.running = True
         consumer.redis = AsyncMock()
         consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
-        consumer.redis.xpending_range = AsyncMock(return_value=[])
+        # Non-empty so the Phase-2 gate lets the recovery read run: it is
+        # skipped when nothing in the pending list is unaccounted for.
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"message_id": "5-0"}]
+        )
         consumer.redis.xreadgroup = AsyncMock(
             side_effect=[
                 [(first_topic, [("5-0", _valid_fields()), ("9-0", _valid_fields())])],
@@ -2116,6 +2115,7 @@ class TestExceedsMaxRetries:
             "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
         ) as mock_env:
             mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
@@ -2129,7 +2129,7 @@ class TestExceedsMaxRetries:
         """Message at the delivery threshold should be ACK-ed (dead-lettered)."""
         consumer.redis = AsyncMock()
         consumer.redis.xpending_range = AsyncMock(
-            return_value=[{"times_delivered": 10}]
+            return_value=[{"times_delivered": 11}]
         )
         consumer.redis.xack = AsyncMock()
 
@@ -2137,6 +2137,7 @@ class TestExceedsMaxRetries:
             "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
         ) as mock_env:
             mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
@@ -2157,6 +2158,7 @@ class TestExceedsMaxRetries:
             "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
         ) as mock_env:
             mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
@@ -2176,6 +2178,7 @@ class TestExceedsMaxRetries:
             "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
         ) as mock_env:
             mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
@@ -2202,7 +2205,7 @@ class TestExceedsMaxRetries:
         consumer.retry_manager.get_count.return_value = 1  # app counter lagging
         consumer.redis = AsyncMock()
         consumer.redis.xpending_range = AsyncMock(
-            return_value=[{"times_delivered": 10}]
+            return_value=[{"times_delivered": 11}]
         )
         consumer.redis.xack = AsyncMock()
 
@@ -2210,6 +2213,7 @@ class TestExceedsMaxRetries:
             "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
         ) as mock_env:
             mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
@@ -2240,6 +2244,7 @@ class TestExceedsMaxRetries:
             "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
         ) as mock_env:
             mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
@@ -2264,7 +2269,7 @@ class TestExceedsMaxRetries:
         )
         consumer.redis = AsyncMock()
         consumer.redis.xpending_range = AsyncMock(
-            return_value=[{"times_delivered": 10}]
+            return_value=[{"times_delivered": 11}]
         )
         consumer.redis.xack = AsyncMock()
 
@@ -2272,6 +2277,7 @@ class TestExceedsMaxRetries:
             "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
         ) as mock_env:
             mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
@@ -2315,6 +2321,13 @@ class TestExceedsMaxRetries:
                 None,
                 None,
             ]
+        )
+        # Phase 2 only runs when the pending list holds something this
+        # consumer is not already tracking -- the XREADGROUP below bumps
+        # times_delivered on everything it returns, so it must not run
+        # speculatively.
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"message_id": "9-0"}]
         )
 
         with patch.object(
@@ -2449,7 +2462,6 @@ class TestConsumeLoop:
             call_count += 1
             if call_count >= 3:
                 consumer.running = False
-            return None
 
         consumer.redis.xreadgroup = mock_xreadgroup
 
@@ -2738,10 +2750,7 @@ class TestFullLifecycle:
             c.worker_loop = MagicMock()
             c.worker_loop.is_running.return_value = True
 
-            with patch(
-                "app.services.messaging.redis_streams.indexing_consumer.Redis",
-                return_value=mock_redis,
-            ):
+            with patch.object(c._provider, "create_client", return_value=mock_redis):
                 await c.start(handler)
 
         assert c.running is True
@@ -2788,3 +2797,172 @@ class TestModuleConstants:
 
     def test_message_value_field_constant(self):
         assert _MESSAGE_VALUE_FIELD == "value"
+
+
+# ===================================================================
+# Abandonment: nothing is discarded without a terminal record status
+# ===================================================================
+
+
+class TestAbandonmentNotifiesTheSink:
+    """A discarded message must leave its record in a terminal, visible state.
+
+    An XACK is final — the entry leaves the PEL and nothing redelivers it. If
+    the record's status is not made terminal first, no recovery sweep revisits
+    it: the stale scan filters on IN_PROGRESS and the connector sweep only
+    touches connectors that are gone. That is how records sat in QUEUED for
+    ever with nothing in the logs but a stream id.
+    """
+
+    @staticmethod
+    def _with_counters(consumer, *, failures):
+        consumer.retry_manager = AsyncMock()
+        consumer.retry_manager.get_count = AsyncMock(return_value=failures)
+        consumer.redis = AsyncMock()
+        consumer.redis.xack = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_sink_hears_about_it_before_the_ack(self, consumer):
+        self._with_counters(consumer, failures=99)
+        calls = []
+        sink = AsyncMock()
+        sink.on_message_abandoned = AsyncMock(
+            side_effect=lambda *a, **kw: calls.append("sink")
+        )
+        consumer.disposition_sink = sink
+        consumer.redis.xack = AsyncMock(
+            side_effect=lambda *a, **kw: calls.append("xack")
+        )
+        message = StreamMessage(
+            eventType="newRecord", payload={"recordId": "rec-1"}
+        )
+
+        result = await consumer._should_dead_letter(
+            "topic-a", "1-0", None, message
+        )
+
+        assert result is True
+        assert calls == ["sink", "xack"]
+        assert sink.on_message_abandoned.await_args.args[0] is message
+
+    @pytest.mark.asyncio
+    async def test_a_failing_sink_does_not_block_the_ack(self, consumer):
+        """Losing the status write is bad; stalling the stream is worse."""
+        self._with_counters(consumer, failures=99)
+        sink = AsyncMock()
+        sink.on_message_abandoned = AsyncMock(side_effect=Exception("graph down"))
+        consumer.disposition_sink = sink
+
+        result = await consumer._should_dead_letter("topic-a", "1-0")
+
+        assert result is True
+        consumer.redis.xack.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_healthy_message_is_not_abandoned(self, consumer):
+        self._with_counters(consumer, failures=0)
+        sink = AsyncMock()
+        consumer.disposition_sink = sink
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"times_delivered": 2}]
+        )
+
+        result = await consumer._should_dead_letter("topic-a", "1-0")
+
+        assert result is False
+        sink.on_message_abandoned.assert_not_awaited()
+        consumer.redis.xack.assert_not_awaited()
+
+
+class TestProcessLocalRecordClaim:
+    """Two entries can carry the same record; the entry-id set cannot see that.
+
+    The stranded sweep re-publishes a record whose event went missing, so the
+    original entry and the new one both name it. The cross-replica guard is the
+    distributed `record:` lease, but that is only taken when a concurrency
+    manager is configured — without one there was nothing keyed by record at
+    all, and the two deliveries could race each other's status writes.
+    """
+
+    def test_a_record_can_only_be_claimed_once(self, consumer):
+        assert consumer._claim_record("rec-1") is True
+        assert consumer._claim_record("rec-1") is False
+
+    def test_releasing_lets_the_next_delivery_through(self, consumer):
+        consumer._claim_record("rec-1")
+        consumer._release_record("rec-1")
+        assert consumer._claim_record("rec-1") is True
+
+    def test_different_records_do_not_block_each_other(self, consumer):
+        assert consumer._claim_record("rec-1") is True
+        assert consumer._claim_record("rec-2") is True
+
+    def test_releasing_an_unheld_record_is_harmless(self, consumer):
+        consumer._release_record("never-claimed")
+
+    @pytest.mark.asyncio
+    async def test_a_duplicate_delivery_is_left_for_redelivery(self, consumer):
+        """The loser is not acked: it comes back once the winner finishes.
+
+        Dropping it instead would discard a genuinely different event for the
+        same record — a create and its update are not interchangeable.
+        """
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.redis = AsyncMock()
+        consumer.main_loop = asyncio.get_running_loop()
+        consumer.message_handler = MagicMock()
+        # Another delivery of this record is already running in this process.
+        consumer._claim_record("r1")
+
+        result = await consumer._process_message_wrapper(
+            "s", "1-0", _valid_fields(payload={"recordId": "r1"})
+        )
+
+        assert result is False
+        consumer.message_handler.assert_not_called()
+        consumer.redis.xack.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_claim_is_released_when_processing_finishes(self, consumer):
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.redis = AsyncMock()
+        consumer.main_loop = asyncio.get_running_loop()
+
+        async def handler(msg):
+            yield PipelineEvent(
+                event=IndexingEvent.PARSING_COMPLETE,
+                data=PipelineEventData(record_id="r1"),
+            )
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id="r1"),
+            )
+
+        consumer.message_handler = handler
+
+        await consumer._process_message_wrapper(
+            "s", "1-0", _valid_fields(payload={"recordId": "r1"})
+        )
+
+        assert consumer._claim_record("r1") is True
+
+    @pytest.mark.asyncio
+    async def test_the_claim_is_released_when_the_handler_raises(self, consumer):
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.redis = AsyncMock()
+        consumer.main_loop = asyncio.get_running_loop()
+
+        async def handler(msg):
+            raise RuntimeError("boom")
+            yield  # pragma: no cover - makes this an async generator
+
+        consumer.message_handler = handler
+
+        await consumer._process_message_wrapper(
+            "s", "1-0", _valid_fields(payload={"recordId": "r1"})
+        )
+
+        assert consumer._claim_record("r1") is True

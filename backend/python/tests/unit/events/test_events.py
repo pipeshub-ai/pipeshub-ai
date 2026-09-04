@@ -18,6 +18,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.events.events import DedupDecision, EventProcessor
+from app.exceptions.indexing_exceptions import ProcessingError
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -202,6 +203,26 @@ class TestMarkRecordStatusEdgeCases:
 
         with pytest.raises(Exception, match="fail"):
             await ep.mark_record_status(doc, ProgressStatus.EMPTY)
+
+    @pytest.mark.asyncio
+    async def test_silent_write_failure_raises_indexing_error(self):
+        """A write that fails without raising (update_node returns False,
+        e.g. a transient graph DB write failure) must not be swallowed.
+
+        Without this, mark_record_status would report success on a status
+        that was never actually persisted — leaving the record stuck at its
+        prior status forever, since reconciliation only revisits QUEUED/
+        IN_PROGRESS records and the caller would still yield completion
+        events as if the write had succeeded.
+        """
+        from app.exceptions.indexing_exceptions import IndexingError  # noqa: PLC0415
+
+        ep, _, _, gp = _make_event_processor()
+        gp.update_node = AsyncMock(return_value=False)
+        doc = {"_key": "k8"}
+
+        with pytest.raises(IndexingError):
+            await ep.mark_record_status(doc, ProgressStatus.FILE_TYPE_NOT_SUPPORTED)
 
 
 # ===========================================================================
@@ -1445,30 +1466,47 @@ class TestOnEventEarlyReturns:
     """Test on_event early return edge cases."""
 
     @pytest.mark.asyncio
-    async def test_no_payload_returns_early(self):
-        """No payload in event data (lines 244-245)."""
-        ep, logger, _, _ = _make_event_processor()
+    async def test_no_payload_raises_terminal_error(self):
+        """A malformed envelope must fail loudly and once.
+
+        Returning bare here yielded neither completion event, which the
+        consumers read as an unexplained failure and retried to the dead-letter
+        ceiling — three deliveries and no diagnosis for something no retry can
+        fix.
+        """
+        ep, _logger, _, _ = _make_event_processor()
         event_data = {"eventType": "NEW_RECORD"}  # no payload key
-        events = await _drain(ep.on_event(event_data))
-        assert events == []
-        logger.error.assert_called()
+
+        with pytest.raises(ProcessingError):
+            await _drain(ep.on_event(event_data))
 
     @pytest.mark.asyncio
-    async def test_no_record_id_returns_early(self):
-        """No recordId in payload (lines 253-254)."""
-        ep, logger, _, _ = _make_event_processor()
+    async def test_no_record_id_raises_terminal_error(self):
+        """A payload with no recordId can never come good on a retry."""
+        ep, _logger, _, _ = _make_event_processor()
         event_data = {"payload": {"orgId": "org-1"}}  # no recordId
-        events = await _drain(ep.on_event(event_data))
-        assert events == []
+
+        with pytest.raises(ProcessingError):
+            await _drain(ep.on_event(event_data))
 
     @pytest.mark.asyncio
-    async def test_record_not_found_returns_early(self):
-        """Record not found in DB (lines 261-262)."""
-        ep, logger, _, gp = _make_event_processor()
+    async def test_record_not_found_drains_the_message(self):
+        """A deleted record is drained, not retried.
+
+        Unlike the two malformed cases above this is legitimately reachable —
+        a record can be deleted between an event being published and consumed —
+        so it completes the pipeline rather than raising.
+        """
+        ep, _logger, _, gp = _make_event_processor()
         gp.get_document.return_value = None
         event_data = _make_event_payload()
+
         events = await _drain(ep.on_event(event_data))
-        assert events == []
+
+        assert [e.event for e in events] == [
+            IndexingEvent.PARSING_COMPLETE,
+            IndexingEvent.INDEXING_COMPLETE,
+        ]
 
     @pytest.mark.asyncio
     async def test_no_buffer_proceeds_with_none_content(self):
