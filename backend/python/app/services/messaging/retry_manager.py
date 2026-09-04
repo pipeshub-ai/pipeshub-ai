@@ -31,6 +31,7 @@ class RetryManager(IRetryTracker):
     """
 
     KEY_PREFIX = "messaging:retry"
+    DELIVERY_KEY_PREFIX = "messaging:deliveries"
     DEFAULT_TTL_SECONDS = 86400  # 24 hours
 
     def __init__(
@@ -112,7 +113,7 @@ class RetryManager(IRetryTracker):
             return self._registry.client()
         raise RuntimeError("RetryManager is not initialized")
 
-    def _build_key(self, message_id: str) -> str:
+    def _build_key(self, message_id: str, prefix: str | None = None) -> str:
         """Build Redis key for a message.
 
         Args:
@@ -122,7 +123,7 @@ class RetryManager(IRetryTracker):
             Redis key in format: [{namespace}:]messaging:retry:{message_id}
         """
         namespace = f"{self._key_namespace}:" if self._key_namespace else ""
-        return f"{namespace}{self.KEY_PREFIX}:{message_id}"
+        return f"{namespace}{prefix or self.KEY_PREFIX}:{message_id}"
 
     async def increment_and_check(
         self, message_id: str, max_attempts: int
@@ -149,11 +150,15 @@ class RetryManager(IRetryTracker):
 
         key = self._build_key(message_id)
 
-        # INCR is atomic; creates key with value 1 if it doesn't exist
-        count = await self._client().incr(key)
-
-        # Set/refresh TTL on every increment
-        await self._client().expire(key, self.ttl_seconds)
+        # INCR and EXPIRE in one MULTI/EXEC round trip: issued separately, a
+        # Redis failure between them left a counter with no TTL, persisting
+        # forever, and raised out of the consumer's own exception handler.
+        # One key, so one slot; cluster-safe.
+        async with self._client().pipeline(transaction=True) as pipe:
+            pipe.incr(key)
+            pipe.expire(key, self.ttl_seconds)
+            count, _ = await pipe.execute()
+        count = int(count)
 
         should_dead_letter = count >= max_attempts
 
@@ -173,6 +178,17 @@ class RetryManager(IRetryTracker):
             )
 
         return count, should_dead_letter
+
+    async def record_delivery(self, message_id: str) -> int:
+        """Count one delivery of *message_id*; see ``IRetryTracker``."""
+        if self._redis is None and self._registry is None:
+            raise RuntimeError("RetryManager not initialized. Call initialize() first.")
+        key = self._build_key(message_id, prefix=self.DELIVERY_KEY_PREFIX)
+        async with self._client().pipeline(transaction=True) as pipe:
+            pipe.incr(key)
+            pipe.expire(key, self.ttl_seconds)
+            count, _ = await pipe.execute()
+        return int(count)
 
     async def get_count(self, message_id: str) -> int:
         """Get current retry count for a message.
@@ -209,8 +225,14 @@ class RetryManager(IRetryTracker):
         if self._redis is None and self._registry is None:
             raise RuntimeError("RetryManager not initialized. Call initialize() first.")
 
-        key = self._build_key(message_id)
-        deleted = await self._client().delete(key)
+        # The delivery counter goes with the failure counter: a record that
+        # completed (or was dead-lettered) must not carry its deliveries into
+        # the next time its stable id is seen. Two single-key DELs, not one
+        # multi-key DEL, so each routes to its own slot on a cluster.
+        async with self._client().pipeline(transaction=False) as pipe:
+            pipe.delete(self._build_key(message_id))
+            pipe.delete(self._build_key(message_id, prefix=self.DELIVERY_KEY_PREFIX))
+            deleted, _ = await pipe.execute()
 
         if deleted:
             self.logger.debug("RetryManager: Cleared retry tracking for %s", message_id)
@@ -238,12 +260,14 @@ class RetryManager(IRetryTracker):
         # slots, and a single `DEL k1 k2 ...` raises CROSSSLOT there.
         # redis-py's ClusterPipeline routes each command to its own node; on
         # standalone this is still one round trip.
-        keys = [self._build_key(msg_id) for msg_id in message_ids]
         async with self._client().pipeline(transaction=False) as pipe:
-            for key in keys:
-                pipe.delete(key)
+            for msg_id in message_ids:
+                pipe.delete(self._build_key(msg_id))
+                pipe.delete(self._build_key(msg_id, prefix=self.DELIVERY_KEY_PREFIX))
             results = await pipe.execute()
-        deleted = sum(1 for r in results if r)
+        # Count cleared messages by their failure counter; the delivery
+        # counter alongside it is housekeeping.
+        deleted = sum(1 for r in results[0::2] if r)
 
         self.logger.debug(
             "RetryManager: Cleared retry tracking for %d/%d messages",

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.utils.request_context import inject_request_headers
 
 if TYPE_CHECKING:
@@ -361,8 +362,16 @@ class BaseServiceClient:
         files: dict | None = None,
         data: dict | None = None,
         operation: str = "request",
+        budget_seconds: float | None = None,
     ) -> httpx.Response:
         """Execute *method* request with exponential-backoff retry.
+
+        ``budget_seconds`` is the caller's own deadline for the whole
+        operation (for the indexing pipeline, the record's processing
+        timeout). A retry is only scheduled if it can complete inside what is
+        left of it: a read timeout longer than the remaining budget would
+        just be cancelled from above, having tied up the downstream service
+        for nothing.
 
         Guarded by a circuit breaker: when open, this fails immediately with
         no connection attempt and no retry sleeps, so a downstream outage
@@ -407,6 +416,7 @@ class BaseServiceClient:
         transient_attempts = 0
         backpressure_attempts = 0
         last_error_message: str | None = None
+        started_at = time.monotonic()
 
         async with self._make_client() as client:
             while True:
@@ -464,6 +474,18 @@ class BaseServiceClient:
                                 retry_after=retry_after,
                                 service_name=self.service_name,
                             )
+                        if budget_seconds is not None:
+                            spent = time.monotonic() - started_at
+                            if spent + wait + (self._timeout.read or 0.0) > budget_seconds:
+                                # The record above would cancel this attempt
+                                # anyway; a backpressure error re-queues it
+                                # with a proper backoff instead.
+                                raise ServiceBackpressureError(
+                                    f"{self.service_name} {operation} is backpressured and "
+                                    f"the remaining budget cannot fit another attempt",
+                                    retry_after=retry_after,
+                                    service_name=self.service_name,
+                                )
                         self.logger.debug(
                             "[%s] %s backpressured (429, Retry-After=%.1fs), waiting %.1fs (%d/%d)",
                             self.service_name, operation, retry_after, wait,
@@ -492,6 +514,10 @@ class BaseServiceClient:
                         self.service_name, operation, transient_attempts, exc,
                     )
                     last_exc = exc
+                    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+                        # Connect/write errors are not timeouts; they are
+                        # reported once, as unavailable, if the retries run out.
+                        get_default_downstream_feedback().report_timeout(self.service_name)
                 except httpx.RequestError as exc:
                     # Everything else under RequestError (InvalidURL,
                     # UnsupportedProtocol, ProtocolError, ...) is a
@@ -512,6 +538,17 @@ class BaseServiceClient:
                 if transient_attempts >= attempt_limit:
                     break
                 delay = self.retry_delay * (2 ** (transient_attempts - 1))
+                if budget_seconds is not None:
+                    spent = time.monotonic() - started_at
+                    read_timeout = self._timeout.read or 0.0
+                    if spent + delay + read_timeout > budget_seconds:
+                        self.logger.warning(
+                            "[%s] %s not retried: %.0fs of a %.0fs budget spent and another "
+                            "attempt could take %.0fs",
+                            self.service_name, operation, spent, budget_seconds,
+                            delay + read_timeout,
+                        )
+                        break
                 self.logger.debug("[%s] Retrying in %.1fs …", self.service_name, delay)
                 await asyncio.sleep(delay)
 
@@ -528,6 +565,7 @@ class BaseServiceClient:
             self.service_name, operation, attempted, summary,
         )
         self.circuit_breaker.record_failure()
+        get_default_downstream_feedback().report_unavailable(self.service_name)
 
         if last_exc is not None:
             raise ServiceUnavailableError(
@@ -565,10 +603,12 @@ class BaseServiceClient:
         files: dict,
         data: dict,
         operation: str = "POST multipart",
+        budget_seconds: float | None = None,
     ) -> httpx.Response:
         url = f"{self.service_url}{path}"
         return await self._request_with_retry(
-            "POST", url, files=files, data=data, operation=operation
+            "POST", url, files=files, data=data, operation=operation,
+            budget_seconds=budget_seconds,
         )
 
     async def _get_json(self, path: str, operation: str = "GET") -> httpx.Response:

@@ -38,6 +38,7 @@ from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactor
 from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
+from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -1161,6 +1162,7 @@ class VectorStore(Transformer):
                 )
             except asyncio.TimeoutError as e:
                 last_error = e
+                get_default_downstream_feedback().report_timeout(service_name)
             except Exception as e:
                 signal_backpressure_if_rate_limited(
                     e,

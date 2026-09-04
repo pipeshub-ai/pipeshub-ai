@@ -19,6 +19,8 @@ import contextlib
 import time
 from typing import TYPE_CHECKING
 
+from app.services.messaging.redis_errors import report_redis_error
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from logging import Logger
@@ -26,6 +28,11 @@ if TYPE_CHECKING:
     from app.services.messaging.distributed_concurrency import (
         DistributedConcurrencyManager,
     )
+
+
+DEADLINE_LOSS_REASON = (
+    "Distributed concurrency lease could not be renewed before its safety deadline"
+)
 
 
 class LeaseHandle:
@@ -50,6 +57,18 @@ class LeaseHandle:
         if not self.lost.is_set():
             self.reason = reason
             self.lost.set()
+
+    @property
+    def lost_to_deadline(self) -> bool:
+        """Lost because renewals kept failing, not because Redis said no.
+
+        Redis has expired these leases by now (the deadline is one interval
+        short of the lease TTL), so releasing them is a round trip per pool
+        against the very Redis that has been failing for the last 90s. With
+        hundreds of records losing their leases in the same instant, those
+        releases were most of the storm that kept it failing.
+        """
+        return self.reason == DEADLINE_LOSS_REASON
 
 
 class LeaseRenewer:
@@ -156,6 +175,9 @@ class LeaseRenewer:
                 handle.mark_lost(f"Lost distributed {pool} concurrency lease")
 
     def _note_failure(self, exc: Exception) -> None:
+        # The renewer is the earliest observer of a Redis outage -- one
+        # round every interval, from a process that may otherwise be idle.
+        report_redis_error(exc)
         overdue = self.seconds_since_success
         if overdue < self._deadline:
             self._logger.debug(
@@ -176,7 +198,4 @@ class LeaseRenewer:
         # node-local gate, not about continuing to process a record whose
         # exclusivity lease the fleet can no longer see.
         for handle in list(self._handles.values()):
-            handle.mark_lost(
-                "Distributed concurrency lease could not be renewed "
-                "before its safety deadline"
-            )
+            handle.mark_lost(DEADLINE_LOSS_REASON)

@@ -820,6 +820,41 @@ class TestRunAgentLoopStream:
         assert payload["type"] == "rate_limit"
         assert payload["message"] == "The AI service is currently rate limited. Please try again in a moment."
 
+    async def test_agent_run_failure_surfaces_invalid_request_provider_message(self) -> None:
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
+            raise RuntimeError(
+                "LangChain transport error (stream): Error code: 400 - "
+                "{'error': {'message': 'invalid Qwen3.8 reasoning_effort', "
+                "'type': 'invalid_request_error'}}"
+            )
+
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            patch(
+                "app.utils.execute_query.has_sql_connector_configured",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "app.utils.fetch_slack_thread.has_slack_connector_configured",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create",
+                new=_fake_create,
+            ),
+        ):
+            events = [chunk async for chunk in run_agent_loop_stream(**self._base_kwargs())]
+
+        assert len(events) == 1
+        payload = json.loads(events[0].split("data: ", 1)[1].strip())
+        assert payload["type"] == "invalid_request"
+        assert payload["message"] == (
+            "The AI service rejected this request: invalid Qwen3.8 reasoning_effort"
+        )
+
     async def test_sandbox_manager_destroyed_on_successful_completion(self) -> None:
         """Phase 8's `_produce()` `finally` block must tear down the
         per-request `SandboxManager` whenever one was stashed on the

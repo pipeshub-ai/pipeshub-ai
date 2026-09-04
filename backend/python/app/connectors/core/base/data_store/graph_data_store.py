@@ -38,6 +38,9 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+_TRANSACTION_RETRY_ATTEMPTS = 3
+_TRANSACTION_RETRY_BASE_DELAY = 0.5
+
 
 def _is_deadlock_error(exception: Exception) -> bool:
     """
@@ -832,15 +835,51 @@ class GraphDataStore(DataStoreProvider):
 
         try:
             yield tx_store
-        except Exception as e:
-            self.logger.error(f"❌ Transaction error, rolling back: {str(e)}")
-            await tx_store.rollback()
+        except BaseException as e:
+            # BaseException, not Exception: asyncio.CancelledError is a
+            # BaseException, so `except Exception` let a cancellation -- the
+            # record-processing timeout, or a lost-lease guard -- pass straight
+            # through with neither rollback nor commit. The session stayed in
+            # the Neo4j client's `_active_sessions` holding a pooled connection,
+            # and nothing sweeps that map until process shutdown. Under load
+            # each such cancel leaked one of the pool's 100 connections until
+            # every query waited out the 60s acquisition timeout -- which
+            # produced more record timeouts, more cancels, more leaks.
+            if isinstance(e, Exception):
+                self.logger.error(f"❌ Transaction error, rolling back: {str(e)}")
+            else:
+                self.logger.warning("Transaction interrupted (%s); rolling back", type(e).__name__)
+            try:
+                await tx_store.rollback()
+            except Exception as rb_err:
+                # Never mask the original failure; the client's abort already
+                # tolerates a dead session.
+                self.logger.warning("Rollback after transaction failure raised: %s", rb_err)
             raise
         else:
             await tx_store.commit()
 
     async def execute_in_transaction(self, func, *args, **kwargs) -> None:
-        """Execute function within graph database transaction"""
-        async with self.transaction() as tx_store:
-            return await func(tx_store, *args, **kwargs)
+        """Execute function within graph database transaction.
+
+        Re-run on a transient transaction failure (a deadlock between two
+        writers on the same nodes, a lock timeout) -- but only when the
+        provider says the failed attempt rolled back cleanly, which is what
+        ``is_transient_error`` answers; the default is never to retry.
+        """
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                async with self.transaction() as tx_store:
+                    return await func(tx_store, *args, **kwargs)
+            except Exception as e:
+                if attempts >= _TRANSACTION_RETRY_ATTEMPTS or not self.graph_provider.is_transient_error(e):
+                    raise
+                delay = _TRANSACTION_RETRY_BASE_DELAY * attempts
+                self.logger.warning(
+                    "Transient graph transaction failure (attempt %d/%d), retrying in %.1fs: %s",
+                    attempts, _TRANSACTION_RETRY_ATTEMPTS, delay, e,
+                )
+                await asyncio.sleep(delay)
 

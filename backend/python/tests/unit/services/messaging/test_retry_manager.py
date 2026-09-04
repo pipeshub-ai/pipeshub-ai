@@ -101,20 +101,35 @@ class TestRetryManagerIncrementAndCheck:
     @pytest.mark.asyncio
     async def test_increment_first_attempt(self, mock_logger, mock_redis):
         """Test first attempt increments to 1."""
-        mock_redis.incr = AsyncMock(return_value=1)
+        pipeline = _make_pipeline([1, True])
+        mock_redis.pipeline = MagicMock(return_value=pipeline)
         manager = RetryManager(mock_logger, redis_client=mock_redis)
 
         count, should_dead_letter = await manager.increment_and_check("msg-1", 3)
 
         assert count == 1
         assert should_dead_letter is False
-        mock_redis.incr.assert_called_once_with("messaging:retry:msg-1")
-        mock_redis.expire.assert_called_once()
+        # One MULTI/EXEC: a Redis failure between INCR and EXPIRE used to
+        # leave a counter with no TTL.
+        mock_redis.pipeline.assert_called_once_with(transaction=True)
+        pipeline.incr.assert_called_once_with("messaging:retry:msg-1")
+        pipeline.expire.assert_called_once_with("messaging:retry:msg-1", manager.ttl_seconds)
+        mock_redis.incr.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_record_delivery_counts_under_its_own_key(self, mock_logger, mock_redis) -> None:
+        pipeline = _make_pipeline([4, True])
+        mock_redis.pipeline = MagicMock(return_value=pipeline)
+        manager = RetryManager(mock_logger, redis_client=mock_redis)
+
+        assert await manager.record_delivery("msg-1") == 4
+        pipeline.incr.assert_called_once_with("messaging:deliveries:msg-1")
+        pipeline.expire.assert_called_once_with("messaging:deliveries:msg-1", manager.ttl_seconds)
 
     @pytest.mark.asyncio
     async def test_increment_second_attempt(self, mock_logger, mock_redis):
         """Test second attempt increments to 2."""
-        mock_redis.incr = AsyncMock(return_value=2)
+        mock_redis.pipeline = MagicMock(return_value=_make_pipeline([2, True]))
         manager = RetryManager(mock_logger, redis_client=mock_redis)
 
         count, should_dead_letter = await manager.increment_and_check("msg-1", 3)
@@ -125,7 +140,7 @@ class TestRetryManagerIncrementAndCheck:
     @pytest.mark.asyncio
     async def test_increment_reaches_max(self, mock_logger, mock_redis):
         """Test when max attempts reached, should_dead_letter is True."""
-        mock_redis.incr = AsyncMock(return_value=3)
+        mock_redis.pipeline = MagicMock(return_value=_make_pipeline([3, True]))
         manager = RetryManager(mock_logger, redis_client=mock_redis)
 
         count, should_dead_letter = await manager.increment_and_check("msg-1", 3)
@@ -136,7 +151,7 @@ class TestRetryManagerIncrementAndCheck:
     @pytest.mark.asyncio
     async def test_increment_exceeds_max(self, mock_logger, mock_redis):
         """Test when count exceeds max attempts."""
-        mock_redis.incr = AsyncMock(return_value=5)
+        mock_redis.pipeline = MagicMock(return_value=_make_pipeline([5, True]))
         manager = RetryManager(mock_logger, redis_client=mock_redis)
 
         count, should_dead_letter = await manager.increment_and_check("msg-1", 3)
@@ -184,17 +199,22 @@ class TestRetryManagerClear:
     @pytest.mark.asyncio
     async def test_clear_existing(self, mock_logger, mock_redis):
         """Test clearing existing key."""
-        mock_redis.delete = AsyncMock(return_value=1)
+        pipeline = _make_pipeline([1, 1])
+        mock_redis.pipeline = MagicMock(return_value=pipeline)
         manager = RetryManager(mock_logger, redis_client=mock_redis)
 
         await manager.clear("msg-1")
 
-        mock_redis.delete.assert_called_once_with("messaging:retry:msg-1")
+        # Both counters go: a completed record must not carry its delivery
+        # count into the next time its stable id is seen.
+        pipeline.delete.assert_any_call("messaging:retry:msg-1")
+        pipeline.delete.assert_any_call("messaging:deliveries:msg-1")
+        assert pipeline.delete.call_count == 2
 
     @pytest.mark.asyncio
     async def test_clear_non_existent(self, mock_logger, mock_redis):
         """Test clearing non-existent key doesn't raise."""
-        mock_redis.delete = AsyncMock(return_value=0)
+        mock_redis.pipeline = MagicMock(return_value=_make_pipeline([0, 0]))
         manager = RetryManager(mock_logger, redis_client=mock_redis)
 
         # Should not raise
@@ -207,14 +227,16 @@ class TestRetryManagerClearBatch:
     @pytest.mark.asyncio
     async def test_clear_batch(self, mock_logger, mock_redis):
         """Test clearing multiple keys via a pipelined per-key DELETE (R5)."""
-        pipeline = _make_pipeline([1, 1, 1])
+        # One retry key and one delivery key per message.
+        pipeline = _make_pipeline([1, 1, 1, 0, 1, 1])
         mock_redis.pipeline = MagicMock(return_value=pipeline)
         manager = RetryManager(mock_logger, redis_client=mock_redis)
 
         deleted = await manager.clear_batch(["msg-1", "msg-2", "msg-3"])
 
         assert deleted == 3
-        assert pipeline.delete.call_count == 3
+        assert pipeline.delete.call_count == 6
+        pipeline.delete.assert_any_call("messaging:deliveries:msg-2")
         pipeline.execute.assert_awaited_once()
 
     @pytest.mark.asyncio

@@ -187,13 +187,16 @@ async def parse_file(
                 "Parse failed: record='%s' provider=%s parse_ms=%.0f code=%s message=%s",
                 record_name, provider_enum.value, parse_ms, exc.code.value, exc.message,
             )
-            http_status = (
-                status.HTTP_422_UNPROCESSABLE_ENTITY
-                if exc.code in (ParseErrorCode.UNSUPPORTED_FORMAT, ParseErrorCode.INVALID_INPUT)
-                else status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            # 422 for every ParseError, not just the unsupported/invalid
+            # ones: a document this service could not parse is a fact about
+            # the document, and the client reads the error code from the
+            # body either way. Reported as a 500 it looked like an outage --
+            # the client retried it, counted it against the parsing circuit
+            # breaker, and five unparseable files in a row then failed every
+            # other record fast for the breaker's cooldown and sent them to
+            # the back of the queue with a retry attempt spent.
             return JSONResponse(
-                status_code=http_status,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 content={"success": False, "error": exc.to_dict()},
             )
         except Exception as exc:  # noqa: BLE001

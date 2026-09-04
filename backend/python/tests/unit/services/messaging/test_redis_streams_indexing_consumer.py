@@ -38,7 +38,7 @@ from app.services.messaging.config import (
     StreamMessage,
     messaging_env,
 )
-from app.services.messaging.lease import LeaseRenewer
+from app.services.messaging.lease import DEADLINE_LOSS_REASON, LeaseRenewer
 from app.services.messaging.redis_streams.indexing_consumer import (
     _BUSYGROUP_ERROR,
     _MESSAGE_VALUE_FIELD,
@@ -1421,9 +1421,9 @@ class TestProcessMessageWrapperWithGovernor:
 
         real_acquire = concurrency.acquire_parsing_slot
 
-        async def spy(host, tier, size_bytes):
+        async def spy(host, tier, size_bytes, **kwargs):
             order.append("gate")
-            return await real_acquire(host, tier, size_bytes)
+            return await real_acquire(host, tier, size_bytes, **kwargs)
 
         async def handler(_msg):
             yield PipelineEvent(
@@ -1718,6 +1718,179 @@ class TestProcessMessageWrapperWithGovernor:
         assert "parsing" not in lease_limits
         assert lease_limits["parsing:light"] == governor_consumer.governor.ceilings.light
         assert lease_limits["parsing:light"] > 4
+
+
+    @pytest.mark.asyncio
+    async def test_leases_lost_to_the_renewal_deadline_are_not_released(
+        self, governor_consumer
+    ) -> None:
+        """Redis has already expired them, and it has been failing for the
+        whole lease TTL: releasing each one is a doomed round trip, issued by
+        every in-flight record in the same instant."""
+        governor_consumer.running = True
+        governor_consumer.redis = AsyncMock()
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        manager = AsyncMock()
+        manager.try_acquire.return_value = True
+        governor_consumer.concurrency_manager = manager
+        governor_consumer.lease_renewer = LeaseRenewer(
+            governor_consumer.logger, manager, lease_seconds=120.0, interval_seconds=30.0
+        )
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1", tier=ParseTier.LIGHT, size_bytes=128),
+            )
+            for handle in list(governor_consumer.lease_renewer._handles.values()):
+                handle.mark_lost(DEADLINE_LOSS_REASON)
+            await asyncio.sleep(5)
+
+        governor_consumer.message_handler = handler
+        result = await governor_consumer._process_message_wrapper(
+            "stream-a", "1-0", _valid_fields()
+        )
+
+        assert result is False
+        assert manager.try_acquire.await_count >= 1
+        manager.release.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_leases_redis_refused_are_still_released(
+        self, governor_consumer
+    ) -> None:
+        governor_consumer.running = True
+        governor_consumer.redis = AsyncMock()
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        manager = AsyncMock()
+        manager.try_acquire.return_value = True
+        governor_consumer.concurrency_manager = manager
+        governor_consumer.lease_renewer = LeaseRenewer(
+            governor_consumer.logger, manager, lease_seconds=120.0, interval_seconds=30.0
+        )
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1", tier=ParseTier.LIGHT, size_bytes=128),
+            )
+            for handle in list(governor_consumer.lease_renewer._handles.values()):
+                handle.mark_lost("Lost distributed parsing:light concurrency lease")
+            await asyncio.sleep(5)
+
+        governor_consumer.message_handler = handler
+        result = await governor_consumer._process_message_wrapper(
+            "stream-a", "1-0", _valid_fields()
+        )
+
+        assert result is False
+        assert manager.release.await_count >= 1
+
+
+    @pytest.mark.asyncio
+    async def test_a_record_that_never_got_a_parse_slot_is_requeued_without_an_attempt(
+        self, governor_consumer, monkeypatch
+    ) -> None:
+        """Queue time is not a failure: no retry increment, so a queue
+        behind long parses can never dead-letter a record."""
+        governor_consumer.running = True
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.retry_manager = AsyncMock()
+        governor_consumer._requeue_message = AsyncMock()
+        governor_consumer._ack_message = AsyncMock()
+        gate = governor_consumer.governor.gate(Pool.LIGHT_PARSE)
+        for _ in range(gate.limit):
+            assert await gate.acquire()
+        monkeypatch.setattr(concurrency, "parse_admission_wait_seconds", lambda: 0.05)
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1", tier=ParseTier.LIGHT, size_bytes=128),
+            )
+
+        governor_consumer.message_handler = handler
+        result = await governor_consumer._process_message_wrapper(
+            "stream-a", "1-0", _valid_fields()
+        )
+
+        assert result is False
+        governor_consumer._requeue_message.assert_awaited_once()
+        assert governor_consumer._requeue_message.await_args.kwargs["retry_count"] == 0
+        governor_consumer.retry_manager.increment_and_check.assert_not_awaited()
+        governor_consumer._ack_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_admission_requeues_stop_at_the_delivery_backstop(
+        self, governor_consumer, monkeypatch
+    ) -> None:
+        """A record that is never admitted must not append stream entries
+        forever: past the delivery backstop it stays in the PEL."""
+        governor_consumer.running = True
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.retry_manager = AsyncMock()
+        governor_consumer.retry_manager.record_delivery = AsyncMock(return_value=10)
+        governor_consumer._requeue_message = AsyncMock()
+        governor_consumer._ack_message = AsyncMock()
+        gate = governor_consumer.governor.gate(Pool.LIGHT_PARSE)
+        for _ in range(gate.limit):
+            assert await gate.acquire()
+        monkeypatch.setattr(concurrency, "parse_admission_wait_seconds", lambda: 0.05)
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1", tier=ParseTier.LIGHT, size_bytes=128),
+            )
+
+        governor_consumer.message_handler = handler
+        with patch("app.services.messaging.consumer_concurrency.messaging_env") as env:
+            env.redis_max_deliveries = 10
+            env.record_processing_timeout = 5.0
+            result = await governor_consumer._process_message_wrapper(
+                "stream-a", "1-0", _valid_fields()
+            )
+
+        assert result is False
+        governor_consumer._requeue_message.assert_not_awaited()
+        governor_consumer._ack_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_time_spent_waiting_for_a_parse_slot_does_not_count_against_the_record(
+        self, governor_consumer, monkeypatch
+    ) -> None:
+        governor_consumer.running = True
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer._ack_message = AsyncMock()
+        gate = governor_consumer.governor.gate(Pool.LIGHT_PARSE)
+        held = [await gate.acquire() for _ in range(gate.limit)]
+        assert all(held)
+        monkeypatch.setattr(concurrency, "parse_admission_wait_seconds", lambda: 5.0)
+
+        async def free_a_slot_later() -> None:
+            await asyncio.sleep(0.3)
+            gate.release()
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1", tier=ParseTier.LIGHT, size_bytes=128),
+            )
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        governor_consumer.message_handler = handler
+        releaser = asyncio.create_task(free_a_slot_later())
+        with patch.object(
+            type(messaging_env), "record_processing_timeout", new_callable=PropertyMock, return_value=0.15,
+        ):
+            result = await governor_consumer._process_message_wrapper(
+                "stream-a", "1-0", _valid_fields()
+            )
+        await releaser
+
+        # 0.3s queued against a 0.15s budget: only possible if the clock paused.
+        assert result is True
 
     @pytest.mark.asyncio
     async def test_legacy_semaphore_path_unaffected_when_no_governor(
@@ -2102,6 +2275,52 @@ class TestDrainPending:
 
 class TestExceedsMaxRetries:
     """Tests for _should_dead_letter() — dead-letter logic for poison messages."""
+
+    @pytest.mark.asyncio
+    async def test_an_ack_failure_after_the_abandon_decision_does_not_dispatch_as_healthy(
+        self, consumer
+    ) -> None:
+        """The sink has already been told the record is abandoned; a Redis
+        error in the XACK must leave the entry pending for the next drain,
+        not hand it out as work."""
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range = AsyncMock(return_value=[{"times_delivered": 11}])
+        consumer.redis.xack = AsyncMock(side_effect=ConnectionError("No connection available."))
+        sink = MagicMock()
+        sink.on_message_abandoned = AsyncMock()
+        consumer.disposition_sink = sink
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
+            result = await consumer._should_dead_letter("topic-a", "1-0")
+
+        assert result is True
+        sink.on_message_abandoned.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_an_ack_failure_on_the_failure_counter_path_is_contained(
+        self, consumer
+    ) -> None:
+        consumer.redis = AsyncMock()
+        consumer.redis.xack = AsyncMock(side_effect=ConnectionError("No connection available."))
+        consumer.retry_manager = AsyncMock()
+        consumer.retry_manager.get_count = AsyncMock(return_value=3)
+        sink = MagicMock()
+        sink.on_message_abandoned = AsyncMock()
+        consumer.disposition_sink = sink
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 3
+            mock_env.redis_max_deliveries = 10
+            result = await consumer._should_dead_letter("topic-a", "1-0")
+
+        assert result is True
+        consumer.redis.xpending_range.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_under_limit_returns_false(self, consumer):

@@ -64,6 +64,26 @@ class TestErrorPath:
         assert result["errorCode"] == "rate_limit"
         assert result["answer"] == "The AI service is currently rate limited. Please try again in a moment."
 
+    async def test_agent_failure_surfaces_invalid_request_provider_message(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=False,
+            agent_error=(
+                "LangChain transport error (stream): Error code: 400 - "
+                "{'error': {'message': 'invalid Qwen3.8 reasoning_effort', "
+                "'type': 'invalid_request_error'}}"
+            ),
+            event_sink=sink,
+        )
+
+        assert result["errorCode"] == "invalid_request"
+        assert result["answer"] == (
+            "The AI service rejected this request: invalid Qwen3.8 reasoning_effort"
+        )
+
 
 class TestSuccessPath:
     async def test_streamed_answer_matches_agent_output_emits_authoritative_chunk_then_complete(self) -> None:

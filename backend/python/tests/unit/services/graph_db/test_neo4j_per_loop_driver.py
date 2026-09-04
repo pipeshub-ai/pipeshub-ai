@@ -25,20 +25,15 @@ pytestmark = pytest.mark.asyncio
 
 
 def _client() -> Neo4jClient:
-    client = Neo4jClient.__new__(Neo4jClient)
-    client.logger = MagicMock()
-    client.uri = "bolt://localhost:7687"
-    client.username = "neo4j"
-    client.password = "pw"
-    client.database = "neo4j"
-    client._drivers = {}
-    client._driver_override = None
-    client._connect_locks = {}
-    client._drivers_lock = threading.Lock()
-    client._active_sessions = {}
-    client._session_locks = {}
-    client._session_loops = {}
-    return client
+    # The real constructor: it only records settings and logs, and building
+    # the object by hand silently fell behind every field added to it.
+    return Neo4jClient(
+        uri="bolt://localhost:7687",
+        username="neo4j",
+        password="pw",
+        database="neo4j",
+        logger=MagicMock(),
+    )
 
 
 def _run_on_another_loop(coro_factory):

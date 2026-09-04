@@ -795,11 +795,13 @@ export interface SSEErrorEvent {
   code?: string;
   /**
    * Stable error classification the backend derives from the underlying
-   * failure (`rate_limit` / `auth_error` / `server_error` / `timeout` /
-   * `unknown` — see `error_classification.py`). `message` is already a
-   * user-friendly string for any of these, so this is only needed if a
-   * caller wants to branch on the failure kind (e.g. offer a "try again"
-   * affordance for `rate_limit` specifically).
+   * failure (`rate_limit` / `request_too_large` / `auth_error` /
+   * `invalid_request` / `server_error` / `timeout` / `unknown` — see
+   * `error_classification.py`).
+   * `message` is already a user-friendly string for any of these, so this
+   * is only needed if a caller wants to branch on the failure kind (e.g.
+   * offer a "try again" affordance for `rate_limit` specifically, or show
+   * a "shorten your message" hint for `request_too_large`).
    */
   type?: string;
 }
