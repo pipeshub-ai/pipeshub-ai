@@ -62,7 +62,10 @@ class TestIndexAndParseCeiling:
         for every tier, so a cluster-wide Redis lease of 4 (Docling-sized)
         serialized Jira/Slack parses and the local LIGHT_PARSE gate never
         saw demand."""
-        governor = _make_governor()
+        # A total wide enough that light keeps more than its reserve: an
+        # explicit 8 on this 4-CPU probe splits 4/4, which is a legitimate
+        # cap but says nothing about the tier routing under test.
+        governor = _make_governor(env_index=24)
         host = _host(governor=governor)
         assert concurrency.parse_ceiling(host, ParseTier.LIGHT) > concurrency.parse_ceiling(host, ParseTier.HEAVY)
         assert concurrency.parse_ceiling(host, ParseTier.LIGHT) == governor.ceilings.light
@@ -119,15 +122,22 @@ class TestPendingTaskCeiling:
         host = _host(governor=governor)
         assert concurrency.pending_task_ceiling(host) == 17
 
-    def test_unaffected_by_adaptive_shrink(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_pending_ceiling_follows_adaptive_limits(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The read-ahead cap tracks the limits the gates admit against, so a
+        governor that has shrunk its index pools also stops the consumer
+        pulling records ahead of them. (The distributed lease is the one that
+        stays sized to the fixed ceiling — see TestIndexAndParseCeiling.)"""
         monkeypatch.delenv("MAX_PENDING_INDEXING_TASKS", raising=False)
-        governor = _make_governor(env_parse=4, env_index=8)
+        governor = _make_governor(env_parse=None, env_index=200)
+        host = _host(governor=governor)
+        governor._registry.set(Pool.INDEX_HEAVY, 40)
+        governor._registry.set(Pool.INDEX_LIGHT, 20)
+        assert concurrency.pending_task_ceiling(host) == 120
+
         governor._registry.set(Pool.INDEX_HEAVY, 1)
         governor._registry.set(Pool.INDEX_LIGHT, 1)
-        governor._registry.set(Pool.HEAVY_PARSE, 1)
-        host = _host(governor=governor)
-        # Derived from the resolved total index budget, then clamped: the
-        # read-ahead floor keeps a small host from starving its own loop.
+        # Shrunk to the floor: the cap is clamped there rather than tracking
+        # the pools all the way down, so a small host can still fill its loop.
         assert concurrency.pending_task_ceiling(host) == 64
 
 
@@ -284,3 +294,49 @@ class TestReportMemoryIncidentIfApplicable:
 
         # Must not raise: called unconditionally from the outer except block.
         concurrency.report_memory_incident_if_applicable(host, "msg-1", MemoryError("oom"))
+
+
+class TestParseAdmissionWait:
+    """Queue time is bounded and reported as its own outcome, never as a
+    processing failure."""
+
+    @pytest.mark.asyncio
+    async def test_a_full_gate_raises_parse_admission_timeout(self) -> None:
+        governor = _make_governor()
+        host = _host(governor=governor)
+        gate = governor.gate(Pool.LIGHT_PARSE)
+        for _ in range(gate.limit):
+            assert await gate.acquire()
+        with pytest.raises(concurrency.ParseAdmissionTimeout) as info:
+            await concurrency.acquire_parsing_slot(host, ParseTier.LIGHT, 10, timeout=0.02)
+        assert info.value.pool == Pool.LIGHT_PARSE.value
+
+    @pytest.mark.asyncio
+    async def test_the_legacy_semaphore_path_times_out_the_same_way(self) -> None:
+        host = _host(governor=None, parsing_semaphore=asyncio.Semaphore(0))
+        with pytest.raises(concurrency.ParseAdmissionTimeout):
+            await concurrency.acquire_parsing_slot(host, None, None, timeout=0.02)
+
+    @pytest.mark.asyncio
+    async def test_the_record_clock_is_paused_while_waiting(self) -> None:
+        host = _host(governor=None)
+        host.logger = MagicMock()
+        async with asyncio.timeout(0.5) as budget:
+            before = budget.when()
+            async with concurrency.parse_admission_wait(host, budget, "m1") as wait:
+                assert budget.when() is None, "the clock is off while queued"
+                assert wait.remaining() > 0
+                await asyncio.sleep(0.1)
+            after = budget.when()
+        assert after is not None and before is not None
+        assert after - before == pytest.approx(0.1, abs=0.05)
+
+    @pytest.mark.asyncio
+    async def test_a_long_wait_is_logged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        host = _host(governor=None)
+        host.logger = MagicMock()
+        monkeypatch.setattr(concurrency, "_PARSE_WAIT_LOG_SECONDS", 0.0)
+        async with concurrency.parse_admission_wait(host, None, "m1"):
+            await asyncio.sleep(0.01)
+        host.logger.info.assert_called_once()
+        assert "waited" in host.logger.info.call_args.args[0]

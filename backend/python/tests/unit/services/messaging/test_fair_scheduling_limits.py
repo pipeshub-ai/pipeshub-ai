@@ -29,6 +29,7 @@ from app.services.messaging.redis_streams.indexing_consumer import (
     IndexingRedisStreamsConsumer,
 )
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
+from app.services.resource_governor import DownstreamFeedback
 from app.services.resource_governor.models import ParseTier, Pool
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
@@ -124,6 +125,17 @@ def _redis_consumer(logger, topics=("record-events",), **fair_overrides):
     return consumer
 
 
+async def _hold_just_under_the_limits(governor) -> None:
+    """Take every light permit and all but one heavy permit, so the gates
+    are one admission short of saturated at their *current* limits."""
+    heavy = governor.gate(Pool.INDEX_HEAVY)
+    for _ in range(heavy.limit - 1):
+        assert await heavy.acquire()
+    light = governor.gate(Pool.INDEX_LIGHT)
+    for _ in range(light.limit):
+        assert await light.acquire()
+
+
 class TestDispatchStopsOnEveryBackpressureSignal:
     async def test_kafka_stops_at_the_pending_task_ceiling(self, logger):
         consumer = _kafka_consumer(logger, parallel_partitions=True)
@@ -203,6 +215,47 @@ class TestDispatchStopsOnEveryBackpressureSignal:
         await consumer._IndexingKafkaConsumer__dispatch_phase()
 
         consumer._IndexingKafkaConsumer__start_processing_task.assert_not_awaited()
+
+    async def test_kafka_stops_dispatching_after_a_downstream_shrink(self, logger) -> None:
+        """The governor narrows the index gates when a downstream service
+        reports distress; permits already out then fill the narrower gates,
+        and the dispatch loop sees them as saturated -- on either broker,
+        because both read the same gates."""
+        feedback = DownstreamFeedback()
+        consumer = _kafka_consumer(logger)
+        consumer.governor = make_test_governor(feedback=feedback)
+        tp = TopicPartition("record-events", 0)
+        for offset in range(5):
+            await consumer._IndexingKafkaConsumer__enqueue_message(
+                tp, _kafka_message(offset, connector_id=f"c{offset}")
+            )
+        await _hold_just_under_the_limits(consumer.governor)
+        assert not concurrency.index_gates_saturated(consumer)
+
+        feedback.report_pool_exhausted("neo4j")
+        await consumer.governor._sample_once()
+
+        assert concurrency.index_gates_saturated(consumer)
+        await consumer._IndexingKafkaConsumer__dispatch_phase()
+        consumer._IndexingKafkaConsumer__start_processing_task.assert_not_awaited()
+
+    async def test_redis_stops_dispatching_after_a_downstream_shrink(self, logger) -> None:
+        feedback = DownstreamFeedback()
+        consumer = _redis_consumer(logger)
+        consumer.governor = make_test_governor(feedback=feedback)
+        for index in range(5):
+            await consumer._IndexingRedisStreamsConsumer__enqueue_message(
+                "record-events", f"{index}-0", _redis_fields(index, f"c{index}")
+            )
+        await _hold_just_under_the_limits(consumer.governor)
+        assert not concurrency.index_gates_saturated(consumer)
+
+        feedback.report_pool_exhausted("neo4j")
+        await consumer.governor._sample_once()
+
+        assert concurrency.index_gates_saturated(consumer)
+        await consumer._IndexingRedisStreamsConsumer__dispatch_phase()
+        consumer._start_processing_task.assert_not_awaited()
 
     async def test_dispatch_continues_while_one_pool_still_has_room(self, logger):
         """Saturation means *both* tiers are full. A light record must still

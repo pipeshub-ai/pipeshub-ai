@@ -122,6 +122,99 @@ class TestBridgeToMainLoop:
                 await bridge_to_main_loop(host, coro())
 
 
+@contextmanager
+def _main_loop_in_thread() -> Iterator[asyncio.AbstractEventLoop]:
+    """A second running loop, standing in for the consumer's main loop."""
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        yield loop
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+        loop.close()
+
+
+class TestBridgeDoesNotCancelTheMainLoopOperation:
+    """A caller that stops waiting (record timeout, lease loss, shutdown)
+    must not cancel the XACK/commit/requeue already in flight on the main
+    loop: redis-py tears down a connection whose command was cancelled
+    mid-read, and under a mass cancellation those teardowns were the pool
+    storm."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_leaves_the_operation_running_to_completion(self) -> None:
+        with _main_loop_in_thread() as main_loop:
+            host = _make_host(main_loop=main_loop)
+            finished = threading.Event()
+            cancelled = threading.Event()
+
+            async def slow_ack() -> str:
+                try:
+                    await asyncio.sleep(0.2)
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+                finished.set()
+                return "acked"
+
+            with pytest.raises(asyncio.TimeoutError):
+                await bridge_to_main_loop(host, slow_ack(), timeout=0.02)
+
+            assert finished.wait(2.0), "the main-loop operation was not allowed to finish"
+            assert not cancelled.is_set()
+
+    @pytest.mark.asyncio
+    async def test_caller_cancellation_leaves_the_operation_running(self) -> None:
+        with _main_loop_in_thread() as main_loop:
+            host = _make_host(main_loop=main_loop)
+            finished = threading.Event()
+
+            async def slow_ack() -> None:
+                await asyncio.sleep(0.2)
+                finished.set()
+
+            task = asyncio.create_task(bridge_to_main_loop(host, slow_ack(), timeout=5.0))
+            await asyncio.sleep(0.02)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            assert finished.wait(2.0)
+
+    @pytest.mark.asyncio
+    async def test_a_detached_failure_is_consumed_quietly(self) -> None:
+        """Its outcome is retrieved so asyncio never logs an unretrieved
+        exception for an operation whose caller has already moved on."""
+        with _main_loop_in_thread() as main_loop:
+            host = _make_host(main_loop=main_loop)
+            raised = threading.Event()
+
+            async def failing_ack() -> None:
+                await asyncio.sleep(0.05)
+                raised.set()
+                raise ConnectionError("redis went away")
+
+            with pytest.raises(asyncio.TimeoutError):
+                await bridge_to_main_loop(host, failing_ack(), timeout=0.01)
+            assert raised.wait(2.0)
+            # Give the done-callback a turn on the main loop.
+            done = threading.Event()
+            main_loop.call_soon_threadsafe(done.set)
+            assert done.wait(2.0)
+
+    @pytest.mark.asyncio
+    async def test_a_completed_result_is_still_returned(self) -> None:
+        with _main_loop_in_thread() as main_loop:
+            host = _make_host(main_loop=main_loop)
+
+            async def quick() -> str:
+                return "acked"
+
+            assert await bridge_to_main_loop(host, quick(), timeout=5.0) == "acked"
+
+
 # ---------------------------------------------------------------------------
 # log_distributed_error
 # ---------------------------------------------------------------------------
@@ -799,12 +892,26 @@ class TestPendingTaskCeiling:
                 assert pending_task_ceiling(host) == 50
 
     def test_governor_derived(self):
-        gov = SimpleNamespace(ceilings=SimpleNamespace(index=5, index_heavy=2, index_light=3, heavy=3))
+        limits = {Pool.INDEX_HEAVY: 2, Pool.INDEX_LIGHT: 3}
+        gov = SimpleNamespace(
+            ceilings=SimpleNamespace(index=5, index_heavy=2, index_light=3, heavy=3),
+            limit=limits.__getitem__,
+        )
         host = _make_host(governor=gov)
         with patch.dict("os.environ", {}, clear=True):
             result = pending_task_ceiling(host)
-        # index total 5 * 2 read-ahead = 10, raised to the 64 floor.
+        # current index limits 5 * 2 read-ahead = 10, raised to the 64 floor.
         assert result == 64
+
+    def test_governor_derived_follows_current_limits_not_ceilings(self) -> None:
+        limits = {Pool.INDEX_HEAVY: 40, Pool.INDEX_LIGHT: 20}
+        gov = SimpleNamespace(
+            ceilings=SimpleNamespace(index=400, index_heavy=200, index_light=200, heavy=3),
+            limit=limits.__getitem__,
+        )
+        host = _make_host(governor=gov)
+        with patch.dict("os.environ", {}, clear=True):
+            assert pending_task_ceiling(host) == 120
 
     def test_default_from_env(self):
         host = _make_host(governor=None)

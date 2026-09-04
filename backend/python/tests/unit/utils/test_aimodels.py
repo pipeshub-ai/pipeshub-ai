@@ -13,6 +13,7 @@ from app.utils.aimodels import (
     LLMProvider,
     _get_anthropic_max_tokens,
     _is_openai_gpt5_model,
+    _is_qwen_38_or_later,
     _reasoning_effort_kwargs,
     get_default_embedding_model,
     get_embedding_model,
@@ -301,6 +302,97 @@ class TestReasoningEffortKwargs:
         config = {"isReasoning": True}
         result = _reasoning_effort_kwargs("max", config, provider="xai")
         assert result == {"reasoning_effort": "high"}
+
+    def test_qwen38_clamps_max_to_high_on_any_openai_compatible_host(self):
+        """Qwen 3.8+ rejects 'xhigh' regardless of which OpenAI-compatible
+        host serves it — Groq, OpenRouter, LiteLLM, a self-hosted vLLM."""
+        config = {"isReasoning": True}
+        for provider, base_url in (
+            ("openAICompatible", "https://api.groq.com/openai/v1"),
+            ("openAICompatible", "https://vllm.internal.corp/v1"),
+            ("openRouter", "https://openrouter.ai/api/v1"),
+            ("litellmProxy", "http://localhost:4000"),
+            ("groq", None),
+        ):
+            result = _reasoning_effort_kwargs(
+                "max", config, provider=provider, base_url=base_url,
+                model_name="qwen/qwen3.8-27b",
+            )
+            assert result == {"reasoning_effort": "high"}, (provider, base_url)
+            assert "use_responses_api" not in result
+
+    def test_qwen38_later_versions_also_clamp_max(self):
+        config = {"isReasoning": True}
+        for model_name in ("qwen/qwen3.9-27b", "Qwen3.8-Max", "qwen4-plus", "qwen/qwen4.0-max"):
+            result = _reasoning_effort_kwargs(
+                "max", config, provider="openAICompatible",
+                base_url="https://openrouter.ai/api/v1",
+                model_name=model_name,
+            )
+            assert result == {"reasoning_effort": "high"}, model_name
+
+    def test_qwen38_passes_high_through(self):
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "high", config, provider="openAICompatible",
+            base_url="https://vllm.internal.corp/v1",
+            model_name="qwen/qwen3.8-27b",
+        )
+        assert result == {"reasoning_effort": "high"}
+
+    def test_older_qwen_on_non_groq_host_keeps_openai_xhigh(self):
+        """Qwen 3.6 / Qwen 3-32B are not 3.8+; a non-Groq OpenAI-compatible
+        host still gets the OpenAI family map."""
+        config = {"isReasoning": True}
+        for model_name in ("qwen/qwen3.6-27b", "qwen3-32b", "qwen3-8b"):
+            result = _reasoning_effort_kwargs(
+                "max", config, provider="openAICompatible",
+                base_url="https://vllm.internal.corp/v1",
+                model_name=model_name,
+            )
+            assert result == {"reasoning_effort": "xhigh"}, model_name
+
+    def test_openai_compatible_groq_legacy_qwen_maps_enabled_effort_to_default(self):
+        """Qwen 3.6 on Groq only accepts none/default; low/medium/high 400."""
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "high", config, provider="openAICompatible",
+            base_url="https://api.groq.com/openai/v1",
+            model_name="qwen/qwen3.6-27b",
+        )
+        assert result == {"reasoning_effort": "default"}
+
+    def test_openai_compatible_groq_gpt_oss_clamps_max_to_high(self):
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "max", config, provider="openAICompatible",
+            base_url="https://api.groq.com/openai/v1",
+            model_name="openai/gpt-oss-120b",
+        )
+        assert result == {"reasoning_effort": "high"}
+
+    def test_openai_compatible_groq_lookalike_host_does_not_use_groq_legacy_map(self):
+        """A lookalike host must not get Groq's Qwen 3.6 none/default map."""
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "high", config, provider="openAICompatible",
+            base_url="https://api.groq.com.evil.example/v1",
+            model_name="qwen/qwen3.6-27b",
+        )
+        assert result == {"reasoning_effort": "high"}
+
+    def test_qwen38_ignores_learned_responses_api_mode(self):
+        """Qwen 3.8+ has no /v1/responses — a stale RESPONSES fact must not
+        flip the constructor onto use_responses_api."""
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "high", config, provider="openAICompatible",
+            base_url="https://vllm.internal.corp/v1",
+            model_name="qwen/qwen3.8-27b",
+            api_mode=LLMApiMode.RESPONSES.value,
+        )
+        assert result == {"reasoning_effort": "high"}
+        assert "use_responses_api" not in result
 
     def test_azure_ai_openai_subpath_uses_responses_api(self):
         """Azure AI's OpenAI sub-path is called with provider=OPENAI.value
@@ -1363,6 +1455,29 @@ class TestIsOpenaiGpt5Model:
 
     def test_unrelated_model_returns_false(self):
         assert _is_openai_gpt5_model("gpt-4o") is False
+
+
+class TestIsQwen38OrLater:
+    def test_matches_dotted_groq_style_id(self):
+        assert _is_qwen_38_or_later("qwen/qwen3.8-27b") is True
+
+    def test_matches_official_max_id(self):
+        assert _is_qwen_38_or_later("Qwen3.8-Max") is True
+
+    def test_matches_later_minor_and_next_major(self):
+        assert _is_qwen_38_or_later("qwen/qwen3.9-27b") is True
+        assert _is_qwen_38_or_later("qwen4-plus") is True
+        assert _is_qwen_38_or_later("qwen/qwen4.0-max") is True
+
+    def test_excludes_older_dotted_and_param_size_ids(self):
+        assert _is_qwen_38_or_later("qwen/qwen3.6-27b") is False
+        assert _is_qwen_38_or_later("qwen3.5:9b") is False
+        assert _is_qwen_38_or_later("qwen3-32b") is False
+        assert _is_qwen_38_or_later("qwen3-8b") is False
+
+    def test_none_and_non_qwen_return_false(self):
+        assert _is_qwen_38_or_later(None) is False
+        assert _is_qwen_38_or_later("openai/gpt-oss-120b") is False
 
 
 # ---------------------------------------------------------------------------

@@ -37,6 +37,20 @@ from app.agents.agent_loop.error_classification import classify_error
             "content_filter",
         ),
         ("openai content_policy_violation: request rejected", "content_filter"),
+        (
+            "LangChain transport error (stream): Error code: 400 - "
+            "{'error': {'message': 'invalid Qwen3.8 reasoning_effort', "
+            "'type': 'invalid_request_error'}}",
+            "invalid_request",
+        ),
+        ("Error code: 400 - {'error': {'message': 'bad schema'}}", "invalid_request"),
+        (
+            "LangChain transport error (stream): Error code: 413 - "
+            "{'error': {'message': 'Request too large for model'}}",
+            "request_too_large",
+        ),
+        ("context length exceeded: 128000 max, got 150000", "request_too_large"),
+        ("maximum context length is 4096 tokens", "request_too_large"),
     ],
 )
 def test_classify_error_returns_expected_code(raw: str, expected_code: str) -> None:
@@ -77,3 +91,86 @@ def test_classify_error_prioritizes_rate_limit_over_server_error_hints() -> None
     actionable code for the user (retry shortly vs. wait indefinitely)."""
     error_code, _ = classify_error("429 too many requests (peer also saw a 503 earlier)")
     assert error_code == "rate_limit"
+
+
+def test_invalid_request_surfaces_provider_message() -> None:
+    """A 400 invalid_request must show the provider's own message — retrying
+    the same request cannot succeed, unlike rate-limit/5xx. Regression for
+    Groq Qwen3.8 rejecting an unsupported reasoning_effort value while the
+    UI only showed the generic 'unknown' apology."""
+    raw = (
+        "LangChain transport error (stream): Error code: 400 - "
+        "{'error': {'message': 'invalid Qwen3.8 reasoning_effort', "
+        "'type': 'invalid_request_error'}}"
+    )
+    error_code, message = classify_error(raw)
+    assert error_code == "invalid_request"
+    assert "invalid Qwen3.8 reasoning_effort" in message
+    assert "LangChain transport error" not in message
+    assert "invalid_request_error" not in message
+
+
+def test_invalid_request_without_extractable_message_uses_canned_text() -> None:
+    error_code, message = classify_error("Error code: 400 - malformed payload")
+    assert error_code == "invalid_request"
+    assert message == (
+        "The AI service rejected this request. Please check the model configuration "
+        "and try again."
+    )
+
+
+# -- request_too_large (413 / context-length) --
+
+
+def test_request_too_large_wins_over_rate_limit_hints() -> None:
+    """Groq returns 413 with `code: rate_limit_exceeded` and "rate limit" in
+    the body.  That must classify as request_too_large — "try again in a
+    moment" is wrong advice for a permanently oversized request."""
+    raw = (
+        "LangChain transport error (stream): Error code: 413 - "
+        "{'error': {'message': 'Request too large for model `qwen/qwen3.8-27b` "
+        "in organization `org_01jvkxz4twekr9rrb94kdf9qpk` service tier `on_demand` "
+        "on input tokens per minute (ITPM): Limit 7000, Requested 13657, please "
+        "reduce your message size and try again. Need more tokens? Upgrade to Dev "
+        "Tier today at https://console.groq.com/settings/billing', "
+        "'type': 'tokens', 'code': 'rate_limit_exceeded'}}"
+    )
+    error_code, message = classify_error(raw)
+    assert error_code == "request_too_large"
+    assert "Limit 7000" in message
+    assert "rate limited" not in message.lower()
+
+
+def test_request_too_large_surfaces_provider_message() -> None:
+    raw = (
+        "LangChain transport error (stream): Error code: 413 - "
+        "{'error': {'message': 'Request too large for model `qwen/qwen3.8-27b`', "
+        "'type': 'tokens'}}"
+    )
+    error_code, message = classify_error(raw)
+    assert error_code == "request_too_large"
+    assert "Request too large" in message
+    assert "LangChain transport error" not in message
+
+
+def test_request_too_large_context_length_exceeded() -> None:
+    """OpenAI-style `context length exceeded` error."""
+    raw = (
+        "Error code: 400 - {'error': {'message': "
+        "'This model\\'s maximum context length is 128000 tokens. "
+        "However, your messages resulted in 150000 tokens.', "
+        "'type': 'invalid_request_error', 'code': 'context_length_exceeded'}}"
+    )
+    error_code, message = classify_error(raw)
+    assert error_code == "request_too_large"
+    assert "128000" in message
+
+
+def test_request_too_large_without_extractable_message_uses_canned_text() -> None:
+    raw = "something about payload too large without structured body"
+    error_code, message = classify_error(raw)
+    assert error_code == "request_too_large"
+    assert message == (
+        "The request exceeds the model's token limit. Please shorten your message "
+        "or start a new conversation to reduce context size."
+    )

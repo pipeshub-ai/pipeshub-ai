@@ -7,12 +7,18 @@ import logging
 import pytest
 
 from app.services.resource_governor.controller import ResourceGovernor
+from app.services.resource_governor.feedback import (
+    DownstreamFeedback,
+    get_default_downstream_feedback,
+    set_default_downstream_feedback,
+)
 from app.services.resource_governor.models import Pool, ResourceSnapshot
 from app.services.resource_governor.policy import (
     HEAVY_START_INTERVAL_SECONDS,
     MEM_HARD,
     MEM_SOFT,
     floor_for,
+    pressure_floor,
     start_rate_limiter_params,
 )
 
@@ -250,6 +256,7 @@ class TestResourceGovernorController:
             "cpu_throttled_ratio", "mem_pressure", "mem_limit_bytes",
             "mem_usable_bytes", "mem_working_set_raw_bytes", "mem_baseline_bytes",
             "worker_count", "ceilings", "limits", "in_use", "demand",
+            "downstream_feedback",
             "mem_pressure_raw",
         }
         assert set(stats["limits"].keys()) == {pool.value for pool in Pool}
@@ -270,3 +277,66 @@ class TestResourceGovernorController:
 class TestControllerConstants:
     def test_mem_soft_below_mem_hard(self) -> None:
         assert MEM_SOFT < MEM_HARD
+
+
+class TestDownstreamFeedbackWiring:
+    """The controller drains the downstream accumulator every sample, hands
+    it to the policy, and reports it on the health payload."""
+
+    def _governor(self, feedback: DownstreamFeedback, clock: ManualClock) -> ResourceGovernor:
+        return ResourceGovernor(
+            logger=logging.getLogger("test.downstream"),
+            probe=ScriptedProbe([_snap(1.0)]),
+            feedback=feedback,
+            clock=clock,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_sample_drains_the_window_and_shrinks_the_index_pools(self) -> None:
+        feedback = DownstreamFeedback()
+        clock = ManualClock()
+        governor = self._governor(feedback, clock)
+        before_heavy = governor.limit(Pool.INDEX_HEAVY)
+        before_light = governor.limit(Pool.INDEX_LIGHT)
+        heavy_floor = pressure_floor(Pool.INDEX_HEAVY, governor.ceilings.index_heavy)
+
+        feedback.report_pool_exhausted("neo4j")
+        feedback.report_timeout("ParsingService")
+        clock.now = 100.0
+        await governor._sample_once()
+
+        assert governor.limit(Pool.INDEX_HEAVY) == max(heavy_floor, before_heavy // 2)
+        assert governor.limit(Pool.INDEX_LIGHT) <= before_light
+        assert governor.limit(Pool.HEAVY_PARSE) >= floor_for(Pool.HEAVY_PARSE, governor.ceilings.heavy)
+        assert governor.stats()["downstream_feedback"] == {
+            "throttles": {},
+            "timeouts": {"ParsingService": 1},
+            "pool_exhaustions": {"neo4j": 1},
+            "unavailable": {},
+        }
+        assert feedback.drain().is_empty, "the sample must consume the window"
+
+    @pytest.mark.asyncio
+    async def test_a_clean_sample_reports_an_empty_window(self) -> None:
+        feedback = DownstreamFeedback()
+        governor = self._governor(feedback, ManualClock())
+        await governor._sample_once()
+        assert governor.stats()["downstream_feedback"] == {
+            "throttles": {}, "timeouts": {}, "pool_exhaustions": {}, "unavailable": {},
+        }
+
+    def test_limit_reads_the_live_registry(self) -> None:
+        governor = self._governor(DownstreamFeedback(), ManualClock())
+        assert governor.limit(Pool.INDEX_HEAVY) == governor._registry.get(Pool.INDEX_HEAVY)
+        governor._registry.set(Pool.INDEX_HEAVY, 3)
+        assert governor.limit(Pool.INDEX_HEAVY) == 3
+
+    def test_the_default_accumulator_is_used_when_none_is_given(self) -> None:
+        set_default_downstream_feedback(None)
+        try:
+            governor = ResourceGovernor(
+                logger=logging.getLogger("test.downstream"), probe=ScriptedProbe([_snap(1.0)]),
+            )
+            assert governor._feedback is get_default_downstream_feedback()
+        finally:
+            set_default_downstream_feedback(None)

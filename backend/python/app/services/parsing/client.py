@@ -28,6 +28,7 @@ from app.services.base_client import (
     ServiceCallError,
 )
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
+from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import (
     ParseErrorCode,
     ParseResult,
@@ -80,18 +81,33 @@ class ParsingClientError(Exception):
         self.details: dict[str, Any] = details or {}
 
 
+MAX_PARSE_READ_TIMEOUT_SECONDS = 2400.0  # Docling's own PDF budget
+PARSE_SHARE_OF_RECORD_BUDGET = 0.8
+
+
 class ParsingClient(BaseServiceClient):
     """Async HTTP client for the Parsing Service (port 8092)."""
 
     def __init__(
         self,
         service_url: str | None = None,
-        read_timeout: float = 2400.0,  # 40 min — matching DoclingClient
-        max_retries: int = 3,
+        read_timeout: float | None = None,
+        max_retries: int = 2,
         retry_delay: float = 2.0,
         backpressure_coordinator: "BackpressureCoordinator | None" = None,
         config_service: object | None = None,
     ) -> None:
+        # The record this parse belongs to is cancelled at
+        # RECORD_PROCESSING_TIMEOUT, so a read timeout past that (it was a
+        # flat 40 minutes, matching Docling) could never fire: the record
+        # timed out first and the parse became a cancellation, with the
+        # parsing service still grinding on. Held under the record budget
+        # with room for the retry and the stages after it.
+        if read_timeout is None:
+            read_timeout = min(
+                MAX_PARSE_READ_TIMEOUT_SECONDS,
+                messaging_env.record_processing_timeout * PARSE_SHARE_OF_RECORD_BUDGET,
+            )
         super().__init__(
             service_url=service_url or os.getenv("PARSING_SERVICE_URL", "http://localhost:8092"),
             service_name="ParsingService",
@@ -156,6 +172,7 @@ class ParsingClient(BaseServiceClient):
                 files={"file": (record_name, file_content, mime_type or "application/octet-stream")},
                 data=form_data,
                 operation="parse",
+                budget_seconds=messaging_env.record_processing_timeout,
             )
         except ServiceBackpressureError as exc:
             raise ParsingClientError(

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
+from typing import NoReturn
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -17,6 +18,7 @@ from app.services.base_client import (
     BaseServiceClient,
     CircuitState,
     ServiceBackpressureError,
+    ServiceUnavailableError,
 )
 from app.services.messaging.backpressure import BackpressureCoordinator
 
@@ -237,3 +239,58 @@ class TestBackpressureCoordinatorSignal:
             await client._post_json("/test", {})
 
         assert coordinator.is_paused() is False
+
+
+class TestRetryBudget:
+    """A retry only makes sense if it can finish inside the caller's budget;
+    one that cannot just ties up the downstream service until the record
+    above it is cancelled."""
+
+    @pytest.mark.asyncio
+    async def test_no_retry_when_another_attempt_cannot_fit(self) -> None:
+        client = _ConcreteClient(read_timeout=100.0, max_retries=3, retry_delay=0.0)
+        calls = 0
+
+        async def _fail(method, url, **kwargs) -> NoReturn:
+            nonlocal calls
+            calls += 1
+            raise httpx.ConnectError("refused")
+
+        with _fake_http_client(client, _fail):
+            with pytest.raises(ServiceUnavailableError):
+                await client._request_with_retry(
+                    "POST", "http://fake:9000/x", operation="parse", budget_seconds=50.0,
+                )
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_retries_continue_while_the_budget_allows(self) -> None:
+        client = _ConcreteClient(read_timeout=10.0, max_retries=3, retry_delay=0.0)
+        calls = 0
+
+        async def _fail(method, url, **kwargs) -> NoReturn:
+            nonlocal calls
+            calls += 1
+            raise httpx.ConnectError("refused")
+
+        with _fake_http_client(client, _fail):
+            with pytest.raises(ServiceUnavailableError):
+                await client._request_with_retry(
+                    "POST", "http://fake:9000/x", operation="parse", budget_seconds=1000.0,
+                )
+        assert calls == 3
+
+    @pytest.mark.asyncio
+    async def test_no_budget_keeps_the_old_behaviour(self) -> None:
+        client = _ConcreteClient(read_timeout=100.0, max_retries=3, retry_delay=0.0)
+        calls = 0
+
+        async def _fail(method, url, **kwargs) -> NoReturn:
+            nonlocal calls
+            calls += 1
+            raise httpx.ConnectError("refused")
+
+        with _fake_http_client(client, _fail):
+            with pytest.raises(ServiceUnavailableError):
+                await client._request_with_retry("POST", "http://fake:9000/x", operation="parse")
+        assert calls == 3

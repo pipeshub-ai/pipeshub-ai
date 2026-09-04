@@ -204,7 +204,10 @@ def test_parse_endpoint_parse_failed() -> None:
         data={"mime_type": "application/pdf", "extension": "pdf", "provider": "default"},
     )
 
-    assert response.status_code == 500
+    # A document the service could not parse is not a service failure: 422,
+    # so the client reads the error code instead of retrying and counting it
+    # against the parsing circuit breaker.
+    assert response.status_code == 422
     body = response.json()
     assert body["success"] is False
     assert body["error"]["code"] == "PARSE_FAILED"

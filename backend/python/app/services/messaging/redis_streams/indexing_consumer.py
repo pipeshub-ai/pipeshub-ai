@@ -657,7 +657,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 self.logger.error("Error checking app-tracked retry count: %s", e)
             else:
                 if failure_count >= max_attempts:
-                    await self._abandon_message(
+                    return await self._abandon_or_leave_pending(
                         message_id,
                         tracking_id,
                         parsed_message,
@@ -670,7 +670,6 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                             topic, self.config.group_id, message_id
                         ),
                     )
-                    return True
                 # Fall through to the times_delivered backstop below: the
                 # app-tracked count only increments inside
                 # _process_message_wrapper's except handler, which never runs
@@ -685,28 +684,58 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 max=message_id,
                 count=1,
             )
-            if details:
-                times_delivered = details[0].get("times_delivered", 0)
-                if times_delivered >= delivery_backstop:
-                    await self._abandon_message(
-                        message_id,
-                        tracking_id,
-                        parsed_message,
-                        reason=(
-                            f"delivered {times_delivered} times "
-                            f"(backstop {delivery_backstop}); likely crashing "
-                            "the consumer before the failure counter is written"
-                        ),
-                        attempts=times_delivered,
-                        ack=lambda: self.redis.xack(  # type: ignore[union-attr]
-                            topic, self.config.group_id, message_id
-                        ),
-                    )
-                    return True
+            times_delivered = int(details[0].get("times_delivered", 0)) if details else 0
         except Exception as e:
             self.logger.error("Error checking delivery count: %s", e)
+            return False
+
+        if times_delivered >= delivery_backstop:
+            return await self._abandon_or_leave_pending(
+                message_id,
+                tracking_id,
+                parsed_message,
+                reason=(
+                    f"delivered {times_delivered} times "
+                    f"(backstop {delivery_backstop}); likely crashing "
+                    "the consumer before the failure counter is written"
+                ),
+                attempts=times_delivered,
+                ack=lambda: self.redis.xack(  # type: ignore[union-attr]
+                    topic, self.config.group_id, message_id
+                ),
+            )
 
         return False
+
+    async def _abandon_or_leave_pending(
+        self,
+        message_id: str,
+        tracking_id: str,
+        parsed_message: StreamMessage | None,
+        *,
+        reason: str,
+        attempts: int,
+        ack: Callable[[], Awaitable[Any]],
+    ) -> bool:
+        """Abandon the message; if the ack itself fails, leave it in the PEL.
+
+        Always ``True``: the decision to abandon has been made, and the sink
+        has been told. The failure mode this closes is a Redis error inside
+        the ack turning into "not dead-lettered" -- the message was then
+        dispatched as healthy work straight after the sink had marked its
+        record abandoned. Left un-acked instead, the next drain finds it,
+        re-evaluates it and acks it once Redis answers again.
+        """
+        try:
+            await self._abandon_message(
+                message_id, tracking_id, parsed_message, reason=reason, attempts=attempts, ack=ack,
+            )
+        except Exception as e:
+            self.logger.error(
+                "Dead-lettering %s could not be completed (%s); leaving it pending for the next drain",
+                message_id, e,
+            )
+        return True
 
     async def _abandon_message(
         self,
@@ -2164,7 +2193,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
                 async def consume_handler_events() -> None:
                     nonlocal parsing_held, indexing_held, indexing_complete, shutting_down, parsing_admission, parse_lease_pool
-                    async with asyncio.timeout(messaging_env.record_processing_timeout):
+                    async with asyncio.timeout(messaging_env.record_processing_timeout) as budget:
                         event_gen = self.message_handler(parsed_message)
                         try:
                             async for event in event_gen:
@@ -2184,32 +2213,39 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                     # whole queue on Redis instead, each waiter
                                     # re-polling on a timer — which is how a
                                     # backlog turned into a Redis outage.
-                                    parsing_admission = await concurrency.acquire_parsing_slot(
-                                        self,
-                                        parse_tier,
-                                        event.data.size_bytes if event.data else None,
-                                    )
-                                    # Set before the lease attempt so the
-                                    # wrapper's finally hands this permit back
-                                    # on every exit path below.
-                                    parsing_held = True
-                                    if (
-                                        self.concurrency_manager is not None
-                                        and not await self._acquire_distributed_slot(
-                                            parse_lease_pool,
-                                            lease_owner,
-                                            concurrency.parse_ceiling(self, parse_tier),
-                                            leases=distributed_leases,
+                                    async with concurrency.parse_admission_wait(
+                                        self, budget, message_id
+                                    ) as wait:
+                                        parsing_admission = await concurrency.acquire_parsing_slot(
+                                            self,
+                                            parse_tier,
+                                            event.data.size_bytes if event.data else None,
+                                            timeout=wait.remaining(),
                                         )
-                                    ):
-                                            # A capacity lease only gives up
-                                            # when self.running flips (it fails
-                                            # open on error), so this is a
-                                            # clean shutdown — abort without
-                                            # raising rather than burning a
-                                            # retry attempt.
-                                            shutting_down = True
-                                            return
+                                        # Set before the lease attempt so the
+                                        # wrapper's finally hands this permit
+                                        # back on every exit path below.
+                                        parsing_held = True
+                                        lease_held = (
+                                            self.concurrency_manager is None
+                                            or await self._acquire_distributed_slot(
+                                                parse_lease_pool,
+                                                lease_owner,
+                                                concurrency.parse_ceiling(self, parse_tier),
+                                                deadline_seconds=wait.remaining(),
+                                                leases=distributed_leases,
+                                            )
+                                        )
+                                        if not lease_held and self.running:
+                                            raise wait.timed_out(parse_lease_pool)
+                                    if not lease_held:
+                                        # A capacity lease only gives up when
+                                        # self.running flips (it fails open on
+                                        # error), so this is a clean shutdown —
+                                        # abort without raising rather than
+                                        # burning a retry attempt.
+                                        shutting_down = True
+                                        return
                                 elif (
                                     event.event == IndexingEvent.PARSING_COMPLETE
                                     and parsing_held
@@ -2315,6 +2351,28 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             raise
         except RedisAcknowledgementError as e:
             self.logger.warning("%s", e)
+            return False
+        except concurrency.ParseAdmissionTimeout as e:
+            # Queue time, not a failure: hand the record back with no attempt
+            # counted, so a queue behind long parses cannot dead-letter it.
+            self.logger.warning(
+                "%s waited %.0fs for a %s parse slot without being admitted; "
+                "re-queuing without counting an attempt",
+                message_id, e.waited, e.pool,
+            )
+            if parsed_message is not None:
+                try:
+                    await self._requeue_message(
+                        stream_name, parsed_message, stable_message_id, retry_count=0
+                    )
+                    await self._ack_message(stream_name, message_id)
+                    acked = True
+                except Exception as requeue_error:
+                    self.logger.error(
+                        "Failed to re-queue %s after its admission wait: %s. "
+                        "Message will stay in PEL",
+                        message_id, requeue_error,
+                    )
             return False
         except Exception as e:
             if acked:
@@ -2424,16 +2482,28 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # the TTL is for.
             if self.lease_renewer is not None:
                 self.lease_renewer.unregister(lease_owner)
+            # Leases lost to the renewal deadline are gone from Redis
+            # already; releasing them is doomed traffic against a Redis that
+            # is still failing, and it arrives from every record at once.
+            release_leases = not (
+                lease_handle is not None and getattr(lease_handle, "lost_to_deadline", False)
+            )
+            if not release_leases:
+                self.logger.debug(
+                    "Skipping distributed lease release for %s: leases expired with the renewal deadline",
+                    lease_owner,
+                )
             if parsing_held:
-                if distributed_leases.discard(parse_lease_pool) is not None:
+                if distributed_leases.discard(parse_lease_pool) is not None and release_leases:
                     await self._release_distributed_slot(parse_lease_pool, lease_owner)
                 concurrency.release_admission(parsing_admission)
                 parsing_admission = None
             if indexing_held:
-                if distributed_leases.discard(index_lease_pool) is not None:
+                if distributed_leases.discard(index_lease_pool) is not None and release_leases:
                     await self._release_distributed_slot(index_lease_pool, lease_owner)
                 concurrency.release_admission(index_admission)
 
             for pool, owner in distributed_leases.snapshot():
                 distributed_leases.discard(pool)
-                await self._release_distributed_slot(pool, owner)
+                if release_leases:
+                    await self._release_distributed_slot(pool, owner)

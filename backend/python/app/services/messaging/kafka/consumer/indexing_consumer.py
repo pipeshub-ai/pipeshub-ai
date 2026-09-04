@@ -1955,6 +1955,28 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             return False
 
         stable_message_id = self._get_stable_message_id(message, parsed_message)
+
+        # Delivery-count backstop, the Kafka counterpart of the Redis
+        # consumer's times_delivered check: the failure counter below is
+        # written only after a failure, so a message that crashes the
+        # consumer mid-handler is redelivered on every rebalance forever
+        # without ever reaching it.
+        deliveries, backstop_tripped = await concurrency.record_delivery(self, stable_message_id)
+        if backstop_tripped:
+            await self.__abandon_message(
+                message_id,
+                stable_message_id,
+                parsed_message,
+                reason=(
+                    f"delivered {deliveries} times "
+                    f"(backstop {messaging_env.redis_max_deliveries}); likely crashing "
+                    "the consumer before the failure counter is written"
+                ),
+                attempts=deliveries,
+            )
+            await self.__resolve_offset(in_flight, done=True)
+            return False
+
         record_lock_id = (
             parsed_message.payload.get("recordId") or stable_message_id
         )
@@ -2048,7 +2070,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
                 async def consume_handler_events() -> None:
                     nonlocal parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool
-                    async with asyncio.timeout(messaging_env.record_processing_timeout):
+                    async with asyncio.timeout(messaging_env.record_processing_timeout) as budget:
                         event_gen = self.message_handler(parsed_message)
                         try:
                             async for event in event_gen:
@@ -2068,32 +2090,39 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                     # whole queue on Redis instead, each waiter
                                     # re-polling on a timer — which is how a
                                     # backlog turned into a Redis outage.
-                                    parsing_admission = await concurrency.acquire_parsing_slot(
-                                        self,
-                                        parse_tier,
-                                        event.data.size_bytes if event.data else None,
-                                    )
-                                    # Set before the lease attempt so the
-                                    # wrapper's finally hands this permit back
-                                    # on every exit path below.
-                                    parsing_held = True
-                                    if (
-                                        self.concurrency_manager is not None
-                                        and not await self._acquire_distributed_slot(
-                                            parse_lease_pool,
-                                            lease_owner,
-                                            concurrency.parse_ceiling(self, parse_tier),
-                                            leases=distributed_leases,
+                                    async with concurrency.parse_admission_wait(
+                                        self, budget, message_id
+                                    ) as wait:
+                                        parsing_admission = await concurrency.acquire_parsing_slot(
+                                            self,
+                                            parse_tier,
+                                            event.data.size_bytes if event.data else None,
+                                            timeout=wait.remaining(),
                                         )
-                                    ):
-                                            # A capacity lease only gives up
-                                            # when self.running flips (it fails
-                                            # open on error), so this is a
-                                            # clean shutdown — abort without
-                                            # raising rather than burning a
-                                            # retry attempt.
-                                            shutting_down = True
-                                            return
+                                        # Set before the lease attempt so the
+                                        # wrapper's finally hands this permit
+                                        # back on every exit path below.
+                                        parsing_held = True
+                                        lease_held = (
+                                            self.concurrency_manager is None
+                                            or await self._acquire_distributed_slot(
+                                                parse_lease_pool,
+                                                lease_owner,
+                                                concurrency.parse_ceiling(self, parse_tier),
+                                                deadline_seconds=wait.remaining(),
+                                                leases=distributed_leases,
+                                            )
+                                        )
+                                        if not lease_held and self.running:
+                                            raise wait.timed_out(parse_lease_pool)
+                                    if not lease_held:
+                                        # A capacity lease only gives up when
+                                        # self.running flips (it fails open on
+                                        # error), so this is a clean shutdown —
+                                        # abort without raising rather than
+                                        # burning a retry attempt.
+                                        shutting_down = True
+                                        return
                                     self.logger.debug(
                                         f"Acquired parsing slot for {message_id}"
                                     )
@@ -2208,6 +2237,29 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 describe_message(parsed_message),
             )
             raise
+        except concurrency.ParseAdmissionTimeout as e:
+            # Queue time, not a failure: hand the record back with no attempt
+            # counted, so a queue behind long parses cannot dead-letter it.
+            self.logger.warning(
+                "%s waited %.0fs for a %s parse slot without being admitted; "
+                "re-queuing without counting an attempt",
+                message_id, e.waited, e.pool,
+            )
+            if parsed_message is not None:
+                try:
+                    await self._requeue_message(
+                        topic, parsed_message, stable_message_id, retry_count=0
+                    )
+                except Exception as requeue_error:
+                    self.logger.error(
+                        "Failed to re-queue %s after its admission wait: %s. "
+                        "Leaving the offset uncommitted for redelivery",
+                        message_id, requeue_error,
+                    )
+                    await self.__resolve_offset(in_flight, done=False)
+                    return False
+            await self.__resolve_offset(in_flight, done=True)
+            return False
         except Exception as e:
             # Log the full exception chain for debugging
             exception_chain = format_exception_chain(e)
@@ -2253,22 +2305,34 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # the TTL is for.
             if self.lease_renewer is not None:
                 self.lease_renewer.unregister(lease_owner)
+            # Leases lost to the renewal deadline are gone from Redis
+            # already; releasing them is doomed traffic against a Redis that
+            # is still failing, and it arrives from every record at once.
+            release_leases = not (
+                lease_handle is not None and getattr(lease_handle, "lost_to_deadline", False)
+            )
+            if not release_leases:
+                self.logger.debug(
+                    "Skipping distributed lease release for %s: leases expired with the renewal deadline",
+                    lease_owner,
+                )
 
             if parsing_held:
-                if distributed_leases.discard(parse_lease_pool) is not None:
+                if distributed_leases.discard(parse_lease_pool) is not None and release_leases:
                     await self._release_distributed_slot(parse_lease_pool, lease_owner)
                 concurrency.release_admission(parsing_admission)
                 parsing_admission = None
                 self.logger.debug(f"Released parsing slot in finally for {message_id}")
 
             if indexing_held:
-                if distributed_leases.discard(index_lease_pool) is not None:
+                if distributed_leases.discard(index_lease_pool) is not None and release_leases:
                     await self._release_distributed_slot(index_lease_pool, lease_owner)
                 concurrency.release_admission(index_admission)
                 self.logger.debug(f"Released indexing gate in finally for {message_id}")
 
             for pool, owner in distributed_leases.snapshot():
                 distributed_leases.discard(pool)
-                await self._release_distributed_slot(pool, owner)
+                if release_leases:
+                    await self._release_distributed_slot(pool, owner)
 
 

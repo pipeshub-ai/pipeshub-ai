@@ -64,3 +64,15 @@ class IRetryTracker(ABC):
 
     @abstractmethod
     async def cleanup(self) -> None: ...
+
+    async def record_delivery(self, message_id: str) -> int:
+        """Count one delivery of *message_id* and return the total so far.
+
+        Distinct from the failure counter: that one is written only after
+        processing has failed, which a process crash or kill mid-handler
+        skips, so a message that keeps crashing its consumer never
+        accumulates failures. Deliveries are counted *before* the handler
+        runs. Trackers that cannot count deliveries return 0, which leaves
+        the backstop disarmed rather than tripping it.
+        """
+        return 0

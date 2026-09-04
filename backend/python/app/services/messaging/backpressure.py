@@ -22,6 +22,8 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from app.services.resource_governor.feedback import get_default_downstream_feedback
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -46,6 +48,10 @@ class BackpressureCoordinator:
         *retry_after* seconds. A no-op for a non-positive duration."""
         if retry_after <= 0:
             return
+        # The pause below stops new reads for the requested duration; the
+        # governor additionally narrows the index pools so that when reads
+        # resume they resume at a width the service just said it can take.
+        get_default_downstream_feedback().report_throttle(service_name)
         until = self._clock() + retry_after
         previous = self._pause_until.get(service_name, 0.0)
         if until > previous:

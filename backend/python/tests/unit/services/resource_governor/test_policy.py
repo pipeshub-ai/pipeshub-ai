@@ -7,12 +7,14 @@ from unittest.mock import patch
 import pytest
 
 from app.services.resource_governor import policy as policy_mod
+from app.services.resource_governor.feedback import FeedbackWindow
 from app.services.resource_governor.models import (
     Ceilings,
     ControllerState,
     Limits,
     Pool,
     PoolDemand,
+    PoolState,
     ResourceSnapshot,
 )
 from app.services.resource_governor.policy import (
@@ -78,8 +80,11 @@ def _saturated_demand(limit: int, interval: float = INTERVAL) -> dict[Pool, Pool
 class TestResolveCeilings:
     """Slot counts are a pure function of the CPU quota, capped by the two
     operator vars: heavy = 1/CPU, light = 10/CPU up to LIGHT_PARSE_MAX, and
-    each index tier = 2x its own parse ceiling, clamped per tier. Memory is
-    deliberately absent — it gates heavy and both index tiers per sample
+    each index tier = 2x its own parse ceiling, clamped per tier — then the
+    two index tiers together are held to ``cpus * INDEX_SLOTS_PER_CPU``
+    (between INDEX_TOTAL_MIN and INDEX_TOTAL_MAX), heavy sized first, and
+    each parse ceiling is held to its index tier. Memory is deliberately
+    absent — it gates heavy and both index tiers per sample
     (``heavy_memory_cap`` / ``index_memory_cap``) rather than at startup."""
 
     def test_small_host_2cpu(self) -> None:
@@ -88,32 +93,73 @@ class TestResolveCeilings:
         assert ceilings.heavy == 2
         assert ceilings.light == 20
         assert ceilings.index_heavy == 4  # ceil(2 * 2.0)
-        assert ceilings.index_light == 40  # ceil(20 * 2.0)
+        assert ceilings.index_light == 20  # ceil(20 * 2.0) = 40, held to the 24 total
 
     def test_medium_host_8cpu(self) -> None:
         snap = _snapshot(cpu_quota=8.0, mem_limit_bytes=16 * 1024 ** 3)
         ceilings = resolve_ceilings(snap, None, None, worker_count=1)
         assert ceilings.heavy == 8
-        assert ceilings.light == 80
+        assert ceilings.light == 32  # 80 derived, held to its index tier
         assert ceilings.index_heavy == 16
-        assert ceilings.index_light == 160
+        assert ceilings.index_light == 32  # 48 total - 16 heavy
 
     def test_large_host_32cpu_scales_both_index_tiers(self) -> None:
         snap = _snapshot(cpu_quota=32.0, mem_limit_bytes=64 * 1024 ** 3)
         ceilings = resolve_ceilings(snap, None, None, worker_count=1)
         assert ceilings.heavy == 32
-        assert ceilings.light == policy_mod.LIGHT_PARSE_MAX  # 320 derived, capped
-        assert ceilings.index_heavy == 64
-        assert ceilings.index_light == policy_mod.INDEX_MAX_PER_TIER  # 512 derived, at cap
+        assert ceilings.light == 32  # 320 derived, capped, then held to its index tier
+        assert ceilings.index_heavy == 64  # two thirds of the 96 total
+        assert ceilings.index_light == 32
 
     def test_index_never_exceeds_its_absolute_maximum(self) -> None:
         """A very large host must not derive an in-flight budget nothing can
-        drain: every admitted record holds a downloaded buffer, so the width
-        is capped even when CPU says otherwise."""
+        drain: every admitted record fans out to the same fixed downstream
+        pools, so the total width is capped even when CPU says otherwise."""
         snap = _snapshot(cpu_quota=256.0, mem_limit_bytes=512 * 1024 ** 3)
         ceilings = resolve_ceilings(snap, None, None, worker_count=1)
-        assert ceilings.index_heavy == policy_mod.INDEX_MAX_PER_TIER
-        assert ceilings.index_light == policy_mod.INDEX_MAX_PER_TIER
+        assert ceilings.index == policy_mod.INDEX_TOTAL_MAX
+        # Heavy takes at most two thirds; light is not squeezed to its reserve.
+        assert ceilings.index_heavy == 64
+        assert ceilings.index_light == 32
+        assert ceilings.light == 32
+
+    def test_total_index_is_bounded_by_the_cpu_derived_cap(self) -> None:
+        """16 CPUs used to derive 32 + 320 in flight — more than the Neo4j
+        driver pool or the lease Redis pool behind every record can take."""
+        snap = _snapshot(cpu_quota=16.0, mem_limit_bytes=64 * 1024 ** 3)
+        ceilings = resolve_ceilings(snap, None, None, worker_count=1)
+        assert ceilings.index == 96
+        assert ceilings.index_heavy == 32
+        assert ceilings.index_light == 64
+        assert ceilings.light == 64
+
+    def test_heavy_tier_is_sized_first_under_the_total_cap(self) -> None:
+        """Light derives at 10x heavy's rate, so a proportional split would
+        hand heavy a handful of permits; heavy takes what it derived and
+        light gets the remainder, never below its small reserve."""
+        snap = _snapshot(cpu_quota=8.0, mem_limit_bytes=16 * 1024 ** 3)
+        ceilings = resolve_ceilings(snap, None, None, worker_count=1)
+        assert ceilings.index_heavy == 16  # not scaled down by light's share
+        assert ceilings.index_light == 32
+        for env_index in (2, 3, 9, 17):
+            capped = resolve_ceilings(snap, env_parse=None, env_index=env_index, worker_count=1)
+            assert capped.index_light >= 1, env_index
+            assert capped.index_heavy >= 1, env_index
+            assert capped.index == env_index, env_index
+
+    def test_explicit_max_concurrent_indexing_overrides_the_derived_cap(self) -> None:
+        snap = _snapshot(cpu_quota=16.0, mem_limit_bytes=64 * 1024 ** 3)
+        ceilings = resolve_ceilings(snap, env_parse=None, env_index=200, worker_count=1)
+        assert ceilings.index == 200  # 32 + 320 derived, held to the explicit total
+        assert ceilings.index_heavy == 32
+        assert ceilings.index > policy_mod.INDEX_TOTAL_MAX
+
+    def test_parse_ceilings_never_exceed_their_index_tier(self) -> None:
+        for cpu_quota in (0.5, 2.0, 8.0, 32.0, 256.0):
+            snap = _snapshot(cpu_quota=cpu_quota, mem_limit_bytes=16 * 1024 ** 3)
+            ceilings = resolve_ceilings(snap, None, None, worker_count=1)
+            assert ceilings.heavy <= ceilings.index_heavy, cpu_quota
+            assert ceilings.light <= ceilings.index_light, cpu_quota
 
     def test_index_always_covers_both_parse_tiers(self) -> None:
         """A record holding a parse permit also holds an index permit, so an
@@ -131,7 +177,7 @@ class TestResolveCeilings:
         snap = _snapshot(cpu_quota=6.0, mem_limit_bytes=None, mem_working_set_bytes=None)
         ceilings = resolve_ceilings(snap, None, None, worker_count=1)
         assert ceilings.heavy == 6
-        assert ceilings.light == 60
+        assert ceilings.light == 24  # 60 derived, held to its index tier (36 total - 12)
 
     def test_explicit_ceilings_honoured_including_one(self) -> None:
         snap = _snapshot(cpu_quota=8.0, mem_limit_bytes=32 * 1024 ** 3)
@@ -282,10 +328,12 @@ class TestEmbeddingCpuReservation:
         snap = _snapshot(cpu_quota=8.0, mem_limit_bytes=16 * 1024 ** 3)
         derived = resolve_ceilings(snap, None, None)
         reserved = resolve_ceilings(snap, None, None, reserve_embedding_cpus=True)
-        assert reserved.light == derived.light
-        assert derived.index - reserved.index == int(
-            (derived.heavy - reserved.heavy) * policy_mod.INDEX_HEADROOM
-        )
+        assert reserved.heavy < derived.heavy
+        assert reserved.index_heavy == int(reserved.heavy * policy_mod.INDEX_HEADROOM)
+        # The total in-flight budget is CPU-derived and unchanged; what heavy
+        # gives up, light picks up.
+        assert reserved.index == derived.index
+        assert reserved.light >= derived.light
 
     def test_reservation_cannot_flatten_heavy_on_a_small_host(self) -> None:
         """A flat 2-core reservation on a 4-core box left heavy with
@@ -1201,3 +1249,195 @@ class TestConfigurableThresholds:
             now += INTERVAL
 
         assert limits.get(Pool.HEAVY_PARSE) > before
+
+
+class TestDownstreamBrake:
+    """Downstream feedback narrows the index pools -- the pools that fan out
+    to the services that reported -- and holds their growth until the
+    symptoms have stayed away."""
+
+    @staticmethod
+    def _index_ceilings() -> Ceilings:
+        return Ceilings(heavy=8, light=32, index_heavy=32, index_light=64)
+
+    @staticmethod
+    def _healthy_snapshot() -> ResourceSnapshot:
+        return _snapshot(cpu_quota=16.0, mem_limit_bytes=64 * 1024 ** 3, mem_working_set_bytes=8 * 1024 ** 3)
+
+    @staticmethod
+    def _busy_demand(limit: int) -> PoolDemand:
+        return PoolDemand(permit_seconds=limit * INTERVAL, blocked_acquires=3, completions=limit)
+
+    def _limits(self, heavy: int, light: int) -> Limits:
+        return Limits(values={
+            Pool.HEAVY_PARSE: 4, Pool.LIGHT_PARSE: 16,
+            Pool.INDEX_HEAVY: heavy, Pool.INDEX_LIGHT: light,
+        })
+
+    def _window(self, **counts) -> FeedbackWindow:
+        return FeedbackWindow(
+            throttles=counts.get("throttles", {}),
+            timeouts=counts.get("timeouts", {}),
+            pool_exhaustions=counts.get("pool_exhaustions", {}),
+            unavailable=counts.get("unavailable", {}),
+        )
+
+    def test_a_pool_exhaustion_halves_both_index_pools_and_starts_an_incident_cooldown(self) -> None:
+        limits, state = next_limits(
+            self._limits(32, 64), self._healthy_snapshot(), self._index_ceilings(),
+            ControllerState.initial(), {p: self._busy_demand(32) for p in Pool}, now=1000.0,
+            feedback=self._window(pool_exhaustions={"neo4j": 1}),
+        )
+        assert limits.get(Pool.INDEX_HEAVY) == 16
+        assert limits.get(Pool.INDEX_LIGHT) == 32
+        assert state.get(Pool.INDEX_HEAVY).cooldown_until == 1000.0 + policy_mod.INCIDENT_COOLDOWN_SECONDS
+        assert state.get(Pool.INDEX_HEAVY).downstream_holdoff == policy_mod.DOWNSTREAM_GROW_CONFIRM_SAMPLES
+
+    @pytest.mark.parametrize("kind", ["throttles", "unavailable"])
+    def test_a_throttle_or_an_unreachable_service_is_an_incident_too(self, kind: str) -> None:
+        limits, _ = next_limits(
+            self._limits(32, 64), self._healthy_snapshot(), self._index_ceilings(),
+            ControllerState.initial(), {p: self._busy_demand(32) for p in Pool}, now=1000.0,
+            feedback=self._window(**{kind: {"ParsingService": 1}}),
+        )
+        assert limits.get(Pool.INDEX_HEAVY) == 16
+        assert limits.get(Pool.INDEX_LIGHT) == 32
+
+    def test_two_timeouts_in_one_sample_take_a_quarter_off(self) -> None:
+        limits, state = next_limits(
+            self._limits(32, 64), self._healthy_snapshot(), self._index_ceilings(),
+            ControllerState.initial(), {p: self._busy_demand(32) for p in Pool}, now=1000.0,
+            feedback=self._window(timeouts={"neo4j": 1, "ParsingService": 1}),
+        )
+        assert limits.get(Pool.INDEX_HEAVY) == 24
+        assert limits.get(Pool.INDEX_LIGHT) == 48
+        # A soft shrink: the ordinary cooldown, not the incident one.
+        assert state.get(Pool.INDEX_HEAVY).cooldown_until == 1000.0 + policy_mod.SHRINK_COOLDOWN_SECONDS
+
+    def test_one_timeout_does_not_shrink(self) -> None:
+        limits, _ = next_limits(
+            self._limits(32, 64), self._healthy_snapshot(), self._index_ceilings(),
+            ControllerState.initial(), {p: self._busy_demand(32) for p in Pool}, now=1000.0,
+            feedback=self._window(timeouts={"neo4j": 1}),
+        )
+        assert limits.get(Pool.INDEX_HEAVY) == 32
+        assert limits.get(Pool.INDEX_LIGHT) == 64
+
+    def test_parse_pools_ignore_downstream_feedback(self) -> None:
+        limits, _ = next_limits(
+            self._limits(32, 64), self._healthy_snapshot(), self._index_ceilings(),
+            ControllerState.initial(), {p: self._busy_demand(32) for p in Pool}, now=1000.0,
+            feedback=self._window(pool_exhaustions={"neo4j": 1}),
+        )
+        # Free to grow on their own law; never shrunk by the downstream window.
+        assert limits.get(Pool.HEAVY_PARSE) >= 4
+        assert limits.get(Pool.LIGHT_PARSE) >= 16
+
+    def test_never_below_the_pressure_floor(self) -> None:
+        ceilings = self._index_ceilings()
+        floor_heavy = policy_mod.pressure_floor(Pool.INDEX_HEAVY, ceilings.index_heavy)
+        limits = self._limits(floor_heavy, policy_mod.pressure_floor(Pool.INDEX_LIGHT, ceilings.index_light))
+        state = ControllerState.initial()
+        for _ in range(3):
+            limits, state = next_limits(
+                limits, self._healthy_snapshot(), ceilings, state,
+                {p: self._busy_demand(4) for p in Pool}, now=1000.0,
+                feedback=self._window(pool_exhaustions={"neo4j": 1}),
+            )
+        assert limits.get(Pool.INDEX_HEAVY) == floor_heavy
+
+    def test_growth_waits_for_two_clean_samples_after_a_downstream_shrink(self) -> None:
+        ceilings = self._index_ceilings()
+        snap = self._healthy_snapshot()
+        demand = {p: self._busy_demand(16) for p in Pool}
+        limits, state = next_limits(
+            self._limits(32, 64), snap, ceilings, ControllerState.initial(), demand, now=0.0,
+            feedback=self._window(pool_exhaustions={"neo4j": 1}),
+        )
+        assert limits.get(Pool.INDEX_HEAVY) == 16
+        # Past the incident cooldown, with demand: still held.
+        after_cooldown = policy_mod.INCIDENT_COOLDOWN_SECONDS + 1.0
+        grown: list[int] = []
+        for i in range(4):
+            limits, state = next_limits(
+                limits, snap, ceilings, state, demand, now=after_cooldown + i * INTERVAL,
+                feedback=FeedbackWindow.empty(),
+            )
+            grown.append(limits.get(Pool.INDEX_HEAVY))
+        # Two full clean intervals first; growth resumes on the third sample.
+        assert grown[0] == 16
+        assert grown[1] == 16
+        assert grown[2] > 16
+
+    def test_a_symptom_that_does_not_shrink_still_delays_growth(self) -> None:
+        ceilings = self._index_ceilings()
+        snap = self._healthy_snapshot()
+        demand = {p: self._busy_demand(16) for p in Pool}
+        limits, state = next_limits(
+            self._limits(32, 64), snap, ceilings, ControllerState.initial(), demand, now=0.0,
+            feedback=self._window(pool_exhaustions={"neo4j": 1}),
+        )
+        after_cooldown = policy_mod.INCIDENT_COOLDOWN_SECONDS + 1.0
+        for i in range(4):
+            # One timeout per sample: not enough to shrink, but not clean either.
+            limits, state = next_limits(
+                limits, snap, ceilings, state, demand, now=after_cooldown + i * INTERVAL,
+                feedback=self._window(timeouts={"neo4j": 1}),
+            )
+        assert limits.get(Pool.INDEX_HEAVY) == 16
+        assert state.get(Pool.INDEX_HEAVY).downstream_holdoff == policy_mod.DOWNSTREAM_GROW_CONFIRM_SAMPLES
+
+    def test_hold_time_double_the_baseline_blocks_growth(self) -> None:
+        """A permit held twice as long as it used to be is a record queueing
+        on something downstream; growing into that only queues more."""
+        ceilings = self._index_ceilings()
+        snap = self._healthy_snapshot()
+        limits = self._limits(16, 32)
+        state = ControllerState.initial()
+
+        def demand_with_hold(hold_seconds: float) -> dict[Pool, PoolDemand]:
+            completions = 40
+            return {
+                p: PoolDemand(
+                    permit_seconds=completions * hold_seconds, blocked_acquires=3, completions=completions,
+                )
+                for p in Pool
+            }
+
+        # Establish a baseline at ~2s per permit.
+        for i in range(3):
+            limits, state = next_limits(
+                limits, snap, ceilings, state, demand_with_hold(2.0), now=100.0 + i * INTERVAL,
+            )
+        baseline_limit = limits.get(Pool.INDEX_HEAVY)
+        assert state.get(Pool.INDEX_HEAVY).hold_baseline == pytest.approx(2.0)
+
+        # Hold time jumps to 8s: EWMA passes 2x baseline within two samples.
+        for i in range(3, 8):
+            before = limits.get(Pool.INDEX_HEAVY)
+            limits, state = next_limits(
+                limits, snap, ceilings, state, demand_with_hold(8.0), now=100.0 + i * INTERVAL,
+            )
+            if state.get(Pool.INDEX_HEAVY).hold_ewma > 4.0:
+                assert limits.get(Pool.INDEX_HEAVY) == before
+        assert state.get(Pool.INDEX_HEAVY).hold_ewma > 2.0 * state.get(Pool.INDEX_HEAVY).hold_baseline
+        assert limits.get(Pool.INDEX_HEAVY) >= baseline_limit
+
+    def test_the_baseline_drifts_up_toward_a_slower_workload(self) -> None:
+        """A workload that is simply slower must become the new normal, not
+        hold growth for the life of the process."""
+        state = PoolState(hold_ewma=2.0, hold_baseline=2.0)
+        demand = PoolDemand(permit_seconds=400.0, blocked_acquires=0, completions=40)  # 10s/permit
+        for _ in range(200):
+            state = policy_mod._track_hold_time(state, demand)
+        assert state.hold_ewma == pytest.approx(10.0, rel=1e-3)
+        assert state.hold_baseline == pytest.approx(10.0, rel=1e-2)
+        assert not policy_mod._latency_hold(state)
+
+    def test_no_feedback_argument_keeps_the_old_behaviour(self) -> None:
+        limits, _ = next_limits(
+            self._limits(32, 64), self._healthy_snapshot(), self._index_ceilings(),
+            ControllerState.initial(), {p: self._busy_demand(32) for p in Pool}, now=1000.0,
+        )
+        assert limits.get(Pool.INDEX_HEAVY) == 32
+        assert limits.get(Pool.INDEX_LIGHT) == 64

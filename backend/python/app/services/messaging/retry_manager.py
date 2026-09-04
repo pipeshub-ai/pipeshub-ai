@@ -31,6 +31,7 @@ class RetryManager(IRetryTracker):
     """
 
     KEY_PREFIX = "messaging:retry"
+    DELIVERY_KEY_PREFIX = "messaging:deliveries"
     DEFAULT_TTL_SECONDS = 86400  # 24 hours
 
     def __init__(
@@ -112,7 +113,7 @@ class RetryManager(IRetryTracker):
             return self._registry.client()
         raise RuntimeError("RetryManager is not initialized")
 
-    def _build_key(self, message_id: str) -> str:
+    def _build_key(self, message_id: str, prefix: str | None = None) -> str:
         """Build Redis key for a message.
 
         Args:
@@ -122,7 +123,7 @@ class RetryManager(IRetryTracker):
             Redis key in format: [{namespace}:]messaging:retry:{message_id}
         """
         namespace = f"{self._key_namespace}:" if self._key_namespace else ""
-        return f"{namespace}{self.KEY_PREFIX}:{message_id}"
+        return f"{namespace}{prefix or self.KEY_PREFIX}:{message_id}"
 
     async def increment_and_check(
         self, message_id: str, max_attempts: int
@@ -149,11 +150,15 @@ class RetryManager(IRetryTracker):
 
         key = self._build_key(message_id)
 
-        # INCR is atomic; creates key with value 1 if it doesn't exist
-        count = await self._client().incr(key)
-
-        # Set/refresh TTL on every increment
-        await self._client().expire(key, self.ttl_seconds)
+        # INCR and EXPIRE in one MULTI/EXEC round trip: issued separately, a
+        # Redis failure between them left a counter with no TTL, persisting
+        # forever, and raised out of the consumer's own exception handler.
+        # One key, so one slot; cluster-safe.
+        async with self._client().pipeline(transaction=True) as pipe:
+            pipe.incr(key)
+            pipe.expire(key, self.ttl_seconds)
+            count, _ = await pipe.execute()
+        count = int(count)
 
         should_dead_letter = count >= max_attempts
 
@@ -173,6 +178,17 @@ class RetryManager(IRetryTracker):
             )
 
         return count, should_dead_letter
+
+    async def record_delivery(self, message_id: str) -> int:
+        """Count one delivery of *message_id*; see ``IRetryTracker``."""
+        if self._redis is None and self._registry is None:
+            raise RuntimeError("RetryManager not initialized. Call initialize() first.")
+        key = self._build_key(message_id, prefix=self.DELIVERY_KEY_PREFIX)
+        async with self._client().pipeline(transaction=True) as pipe:
+            pipe.incr(key)
+            pipe.expire(key, self.ttl_seconds)
+            count, _ = await pipe.execute()
+        return int(count)
 
     async def get_count(self, message_id: str) -> int:
         """Get current retry count for a message.

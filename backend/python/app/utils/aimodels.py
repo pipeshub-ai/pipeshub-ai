@@ -888,6 +888,83 @@ def _targets_openai_responses_api(base_url: str | None) -> bool:
     return bool(host) and host.lower() in _OPENAI_RESPONSES_API_HOSTS
 
 
+# Qwen 3.8+ Chat Completions rejects OpenAI's 'xhigh' (Groq's error is
+# "invalid Qwen3.8 reasoning_effort"). That is a model-family constraint,
+# not a Groq-host one — OpenRouter, LiteLLM, a generic openai-compatible
+# entry, Fireworks, LM Studio, vLLM, ... all hit it when they serve these
+# IDs. Allowed set is none/default/low/medium/high; platform 'max' clamps
+# to 'high' (Groq documents that 'high' selects Qwen's native xhigh mode).
+_QWEN_38_EFFORT_MAP: Dict[str, str] = {
+    "none": "none",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "high",
+}
+
+# Dotted IDs: qwen/qwen3.8-27b, Qwen3.8-Max, qwen3.5:9b. Require the dot so
+# `qwen3-8b` (8B params of Qwen 3) is not mistaken for version 3.8.
+_QWEN_DOTTED_VERSION_RE = re.compile(r"(?:^|/)qwen[-_]?(\d+)\.(\d+)", re.IGNORECASE)
+# Undotted major-only: qwen4, qwen-4-plus. Does not consume a following
+# param-size (`qwen3-32b` → 3.0, which is older than 3.8).
+_QWEN_MAJOR_VERSION_RE = re.compile(r"(?:^|/)qwen[-_]?(\d+)(?:[-_]|$)", re.IGNORECASE)
+
+
+def _parse_qwen_version(model_name: str | None) -> tuple[int, int] | None:
+    """Return ``(major, minor)`` for a Qwen model ID, or ``None``.
+
+    ``qwen/qwen3.8-27b`` → (3, 8); ``qwen3-32b`` → (3, 0); ``qwen4-plus`` →
+    (4, 0). Non-Qwen names return ``None``.
+    """
+    if not model_name or "qwen" not in model_name.lower():
+        return None
+    dotted = _QWEN_DOTTED_VERSION_RE.search(model_name)
+    if dotted:
+        return int(dotted.group(1)), int(dotted.group(2))
+    major = _QWEN_MAJOR_VERSION_RE.search(model_name)
+    if major:
+        return int(major.group(1)), 0
+    return None
+
+
+def _is_qwen_38_or_later(model_name: str | None) -> bool:
+    parsed = _parse_qwen_version(model_name)
+    return parsed is not None and parsed >= (3, 8)
+
+
+# Groq's own API (native provider, or openai-compatible pointed at
+# api.groq.com) has extra per-model restrictions beyond Qwen 3.8+:
+# older Qwen 3.x only accept none/default, and gpt-oss has no 'xhigh'.
+# See https://console.groq.com/docs/reasoning.
+_GROQ_API_HOSTS = frozenset({"api.groq.com"})
+
+_GROQ_QWEN_LEGACY_EFFORT_MAP: Dict[str, str] = {
+    "none": "none",
+    "low": "default",
+    "medium": "default",
+    "high": "default",
+    "max": "default",
+}
+
+
+def _targets_groq_api(base_url: str | None) -> bool:
+    if not base_url:
+        return False
+    host = urlparse(base_url).hostname
+    return bool(host) and host.lower() in _GROQ_API_HOSTS
+
+
+def _groq_effort_value(effort_input: str, model_name: str | None) -> str:
+    """Groq-host leftovers after Qwen 3.8+ has already been handled.
+
+    Older Qwen 3.x collapse to 'default'; everything else (gpt-oss, ...)
+    uses the same no-xhigh map as Qwen 3.8+.
+    """
+    if _parse_qwen_version(model_name) is not None:
+        return _GROQ_QWEN_LEGACY_EFFORT_MAP.get(effort_input, "default")
+    return _QWEN_38_EFFORT_MAP.get(effort_input, effort_input)
+
+
 # LLM routers/gateways (Requesty, OpenRouter, LiteLLM proxy, and similar)
 # commonly proxy requests for OpenAI's own "gpt-5.x" models straight through
 # to OpenAI's real backend under an `openAICompatible`/`litellmProxy`/
@@ -1000,6 +1077,9 @@ def _reasoning_effort_kwargs(
     - Fireworks: none, low, medium, high, max (no 'xhigh')
     - MiniMax, XAI: none, low, medium, high (no 'max' or 'xhigh'; 'max' is
       clamped to 'high')
+    - Qwen 3.8+ (any OpenAI-compatible host, detected by model name): none,
+      default, low, medium, high (no 'xhigh'; 'max' clamps to 'high')
+    - Groq host additionally: older Qwen 3.x only accept none/default
     - Gemini: minimal, low, medium, high (no 'none' or 'max')
     - Anthropic: low, medium, high, xhigh, max (no 'none')
     - LM Studio: low, medium, high (no 'none' or 'max')
@@ -1082,6 +1162,17 @@ def _reasoning_effort_kwargs(
 
     if provider == LLMProvider.OLLAMA.value:
         return {"reasoning": _OLLAMA_EFFORT_MAP.get(effort_input, effort_input)}
+
+    # Model-family first, not host: Qwen 3.8+ 400s on 'xhigh' whether the
+    # caller reached Groq, OpenRouter, LiteLLM, or a self-hosted endpoint.
+    # Skip the Responses API — these are not OpenAI gpt-5.
+    if _is_qwen_38_or_later(model_name):
+        return {"reasoning_effort": _QWEN_38_EFFORT_MAP.get(effort_input, effort_input)}
+
+    # Groq has no /v1/responses. Remaining Groq-only restrictions (Qwen 3.6
+    # none/default, gpt-oss no xhigh) still need the host/provider check.
+    if _targets_groq_api(base_url) or provider == LLMProvider.GROQ.value:
+        return {"reasoning_effort": _groq_effort_value(effort_input, model_name)}
 
     effort = effort_input
     if provider in _OPENAI_FAMILY:

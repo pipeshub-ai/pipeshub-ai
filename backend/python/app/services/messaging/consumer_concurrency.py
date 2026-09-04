@@ -25,6 +25,8 @@ hierarchy or the (sometimes name-mangled) method names tests patch directly.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import os
 import random
 import time
@@ -37,11 +39,12 @@ from app.services.messaging.distributed_concurrency import (
     LeaseKind,
     lease_kind,
 )
+from app.services.messaging.redis_errors import report_redis_error
 from app.services.resource_governor import gate_pool, index_pool, parse_cost
 from app.services.resource_governor.models import ParseTier, Pool
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Callable
     from logging import Logger
 
     from app.services.messaging.distributed_concurrency import (
@@ -51,6 +54,8 @@ if TYPE_CHECKING:
     from app.services.messaging.retry_manager import RetryManager
     from app.services.resource_governor import ResourceGovernor
 
+logger = logging.getLogger(__name__)
+
 _MAIN_LOOP_OP_TIMEOUT = 5.0
 
 # Read-ahead depth, as a multiple of the total in-flight index budget and
@@ -59,7 +64,7 @@ _MAIN_LOOP_OP_TIMEOUT = 5.0
 # entries than a node can plausibly start before its lease on them lapses.
 _PENDING_TASKS_PER_INDEX_SLOT = 2
 _MIN_PENDING_INDEXING_TASKS = 64
-_MAX_PENDING_INDEXING_TASKS = 512
+_MAX_PENDING_INDEXING_TASKS = 256
 
 
 class ConcurrencyHost(Protocol):
@@ -108,14 +113,33 @@ async def bridge_to_main_loop(
             if close is not None:
                 close()
             raise
+        wrapped = asyncio.wrap_future(future)
         try:
-            return await asyncio.wait_for(
-                asyncio.wrap_future(future), timeout=timeout
-            )
+            # Shielded: a caller that times out or is cancelled (record
+            # timeout, lease loss, shutdown) must not cancel the XACK/commit/
+            # requeue already in flight on the main loop. redis-py tears down
+            # a connection whose command was cancelled mid-read, so under a
+            # mass cancellation every one of these cancels became a
+            # reconnect against a pool that was already starved -- the
+            # "No connection available" storm. Left to run, the operation is
+            # bounded by the client's own socket timeout; every caller is
+            # idempotent or already tolerates a late duplicate (the record's
+            # exclusivity lease and `_retry_tracking_id` absorb it).
+            return await asyncio.wait_for(asyncio.shield(wrapped), timeout=timeout)
         except BaseException:
-            future.cancel()
+            wrapped.add_done_callback(_consume_orphaned_result)
             raise
     return await coro
+
+
+def _consume_orphaned_result(fut: "asyncio.Future[Any]") -> None:
+    """Retrieve the outcome of a main-loop operation its caller stopped
+    waiting for, so asyncio does not log it as an unretrieved exception."""
+    if fut.cancelled():
+        return
+    exc = fut.exception()
+    if exc is not None:
+        logger.debug("Detached main-loop operation failed after its caller gave up: %r", exc)
 
 
 def _normalize_operation(operation: str) -> str:
@@ -133,6 +157,7 @@ def _normalize_operation(operation: str) -> str:
 def log_distributed_error(
     host: ConcurrencyHost, operation: str, error: Exception
 ) -> None:
+    report_redis_error(error)
     operation = _normalize_operation(operation)
     now = time.monotonic()
     if now - host._distributed_log_times.get(operation, 0.0) >= 30.0:
@@ -335,6 +360,26 @@ async def increment_retry_and_check(
     )
 
 
+async def record_delivery(host: ConcurrencyHost, message_id: str) -> tuple[int, bool]:
+    """``(deliveries, backstop_tripped)`` for this message, counted before
+    the handler runs.
+
+    Zero (and never tripped) when there is no tracker or the count cannot be
+    written: the backstop this feeds must never block processing because
+    Redis is briefly unavailable -- that is the failure counter's job, and
+    this counter exists precisely for the cases where that one is never
+    written (a consumer that crashes mid-handler).
+    """
+    if not host.retry_manager:
+        return 0, False
+    try:
+        deliveries = int(await host.retry_manager.record_delivery(message_id))
+    except Exception as exc:
+        log_distributed_error(host, "record_delivery", exc)
+        return 0, False
+    return deliveries, deliveries >= messaging_env.redis_max_deliveries
+
+
 # ---------------------------------------------------------------------------
 # ResourceGovernor-backed node-local gates (Phase 1 of the adaptive-concurrency
 # plan). The distributed Redis lease stays sized to the *resolved ceiling*
@@ -532,11 +577,14 @@ def pending_task_ceiling(host: ConcurrencyHost) -> int:
     stream reads (Phase 6 of the adaptive-concurrency plan).
 
     An explicit ``MAX_PENDING_INDEXING_TASKS`` always wins. Otherwise, with a
-    governor present the cap derives from the *resolved* index ceilings —
-    which reflect this node's actual cgroup/CPU limits — rather than the
-    static ``MAX_CONCURRENT_*`` env defaults baked into
-    ``messaging_env.max_pending_indexing_tasks``, which would either overshoot
-    a small container or undershoot a large one.
+    governor present the cap derives from the *current* index limits — the
+    adaptive values the gates admit against, not the resolved ceilings — so
+    when the governor shrinks the pools (memory pressure, or a downstream
+    service signalling distress) the read loops stop pulling ahead too,
+    instead of queueing hundreds of tasks behind gates that now admit a
+    dozen. The static ``MAX_CONCURRENT_*`` defaults baked into
+    ``messaging_env.max_pending_indexing_tasks`` would either overshoot a
+    small container or undershoot a large one.
 
     Absolutely clamped as well as derived: a queued task holds only a parsed
     envelope (the download happens after admission), but each is still an
@@ -548,11 +596,12 @@ def pending_task_ceiling(host: ConcurrencyHost) -> int:
         return messaging_env.max_pending_indexing_tasks
     governor = host.governor
     if governor is not None:
+        current_index = governor.limit(Pool.INDEX_HEAVY) + governor.limit(Pool.INDEX_LIGHT)
         return max(
             _MIN_PENDING_INDEXING_TASKS,
             min(
                 _MAX_PENDING_INDEXING_TASKS,
-                governor.ceilings.index * _PENDING_TASKS_PER_INDEX_SLOT,
+                current_index * _PENDING_TASKS_PER_INDEX_SLOT,
             ),
         )
     return messaging_env.max_pending_indexing_tasks
@@ -627,30 +676,108 @@ def release_admission(admission: "Admission | None") -> bool:
     return True
 
 
+class ParseAdmissionTimeout(Exception):
+    """The wait for a parse slot ran out before the record was admitted.
+
+    Not a processing failure: nothing was sent anywhere. The consumers
+    re-queue the record without counting an attempt, so a record cannot be
+    dead-lettered for having queued behind long parses.
+    """
+
+    def __init__(self, pool: str, waited: float) -> None:
+        super().__init__(f"no {pool} parse slot within {waited:.0f}s")
+        self.pool = pool
+        self.waited = waited
+
+
+def parse_admission_wait_seconds() -> float:
+    """How long a record may queue for a parse slot before it is handed back
+    to the broker. The processing budget, reused: long enough that a queue
+    behind a few Docling conversions drains, and one number fewer to tune."""
+    return messaging_env.record_processing_timeout
+
+
+_PARSE_WAIT_LOG_SECONDS = 5.0
+
+
+class AdmissionWait:
+    """A bounded wait for parse admission, during which the record's
+    processing clock is paused."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, bound: float) -> None:
+        self._loop = loop
+        self.started = loop.time()
+        self._deadline = self.started + bound
+
+    def remaining(self) -> float:
+        return max(0.0, self._deadline - self._loop.time())
+
+    def waited(self) -> float:
+        return self._loop.time() - self.started
+
+    def timed_out(self, pool: str) -> ParseAdmissionTimeout:
+        return ParseAdmissionTimeout(pool, self.waited())
+
+
+@contextlib.asynccontextmanager
+async def parse_admission_wait(
+    host: ConcurrencyHost, budget: "asyncio.Timeout | None", message_id: str
+) -> "AsyncIterator[AdmissionWait]":
+    """Pause *budget* (the record's ``asyncio.timeout``) while waiting for a
+    parse slot, and log how long the wait was.
+
+    Queue time is not processing time. The index tier admits twice its parse
+    slots by design, so a heavy record routinely waits for a slot behind
+    conversions that take many minutes; charging that wait to the record's
+    processing budget timed records out -- and after three such timeouts
+    dead-lettered them -- without a byte ever reaching the parsing service.
+    """
+    loop = asyncio.get_running_loop()
+    resume_at = budget.when() if budget is not None else None
+    if budget is not None:
+        budget.reschedule(None)
+    wait = AdmissionWait(loop, parse_admission_wait_seconds())
+    try:
+        yield wait
+    finally:
+        waited = wait.waited()
+        if budget is not None and resume_at is not None:
+            budget.reschedule(resume_at + waited)
+        if waited >= _PARSE_WAIT_LOG_SECONDS:
+            host.logger.info("%s waited %.0fs for a parse slot", message_id, waited)
+        else:
+            host.logger.debug("%s waited %.2fs for a parse slot", message_id, waited)
+
+
 async def acquire_parsing_slot(
     host: ConcurrencyHost,
     tier: ParseTier | None,
     size_bytes: int | None,
+    timeout: float | None = None,
 ) -> "Admission":
     """Acquire a parsing permit, routing heavy vs. light through the
     governor when one is configured, else falling back to the single legacy
     ``parsing_semaphore`` (pre-governor behaviour, cost always 1).
+
+    With *timeout*, raises ``ParseAdmissionTimeout`` instead of waiting on.
     """
     governor = host.governor
     if governor is not None:
         resolved_tier = tier if tier is not None else ParseTier.HEAVY
         cost = parse_cost(resolved_tier, size_bytes)
-        gate = governor.gate(gate_pool(resolved_tier))
-        if not await gate.acquire(cost=cost):
-            raise RuntimeError(
-                f"Parsing admission denied for pool {gate_pool(resolved_tier).value}"
-            )
+        pool = gate_pool(resolved_tier)
+        gate = governor.gate(pool)
+        if not await gate.acquire(cost=cost, timeout=timeout):
+            raise ParseAdmissionTimeout(pool.value, timeout or 0.0)
         return Admission(tier=resolved_tier, cost=cost, _release=lambda: gate.release(cost))
 
     legacy_semaphore = host.parsing_semaphore
     if legacy_semaphore is None:
         raise RuntimeError("No parsing concurrency primitive configured")
-    await legacy_semaphore.acquire()
+    try:
+        await asyncio.wait_for(legacy_semaphore.acquire(), timeout=timeout)
+    except TimeoutError:
+        raise ParseAdmissionTimeout("parsing", timeout or 0.0) from None
     return Admission(cost=1, _release=legacy_semaphore.release)
 
 

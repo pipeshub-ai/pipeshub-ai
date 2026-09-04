@@ -8,21 +8,24 @@ from __future__ import annotations
 
 import logging
 
-from app.services.resource_governor import ResourceGovernor
+from app.services.resource_governor import DownstreamFeedback, ResourceGovernor
 from app.services.resource_governor.models import ResourceSnapshot
 
 
 def make_test_governor(
     *,
     env_parse: int | None = None,
-    env_index: int | None = 8,
+    env_index: int | None = 24,
     logger_name: str = "test.governor",
+    feedback: DownstreamFeedback | None = None,
 ) -> ResourceGovernor:
     """A governor with deterministic ceilings: the fixed 4-CPU probe below
-    derives heavy=4 and light=12, and ``env_index`` caps index at 8 (see
+    derives heavy=4, and ``env_index`` caps the index total at 24, which
+    splits 8 heavy / 16 light and holds light parse to 16 (see
     policy.resolve_ceilings). ``env_parse`` defaults to no cap because
-    MAX_CONCURRENT_PARSING caps *both* parse tiers, which would collapse
-    the heavy/light distinction most of these tests exist to check."""
+    MAX_CONCURRENT_PARSING caps *both* parse tiers, and the total is wide
+    enough that light keeps more than its reserve, so the heavy/light
+    distinction most of these tests exist to check survives."""
     snapshot = ResourceSnapshot(
         cpu_quota=4.0,
         cpu_utilisation=0.1,
@@ -42,4 +45,5 @@ def make_test_governor(
         env_parse=env_parse,
         env_index=env_index,
         probe=_FixedProbe(),
+        feedback=feedback,
     )
