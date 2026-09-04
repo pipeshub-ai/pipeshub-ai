@@ -175,6 +175,7 @@ class RedisConnectionConfig:
         """Build config from the standard ``REDIS_*`` environment variables."""
         endpoints_raw = os.getenv(f"{prefix}CLUSTER_ENDPOINTS", "")
         endpoints = [e.strip() for e in endpoints_raw.split(",") if e.strip()]
+        nat_map = _parse_nat_map(os.getenv(f"{prefix}CLUSTER_NAT_MAP", ""))
         return RedisConnectionConfig(
             host=os.getenv(f"{prefix}HOST", "localhost"),
             port=int(os.getenv(f"{prefix}PORT", "6379")),
@@ -190,4 +191,36 @@ class RedisConnectionConfig:
             connect_timeout_seconds=float(os.getenv(f"{prefix}TIMEOUT", "10000")) / 1000,
             cluster_endpoints=endpoints,
             scale_reads=os.getenv(f"{prefix}CLUSTER_SCALE_READS", "master"),  # type: ignore[arg-type]
+            nat_map=nat_map,
         )
+
+
+def _parse_nat_map(raw: str) -> dict[str, tuple[str, int]]:
+    """Parse ``internalHost:internalPort=externalHost:externalPort,...`` (R3, F3).
+
+    Kubernetes-fronted self-hosted clusters advertise pod-internal
+    ``CLUSTER SLOTS``/``CLUSTER SHARDS`` addresses that are unreachable from
+    outside the cluster network; MemoryDB's private-VPC addressing has the
+    same shape. Both need the client to remap the address it discovers to
+    one it can actually dial, which is why this lives in the shared config
+    rather than being MemoryDB-specific.
+    """
+    nat_map: dict[str, tuple[str, int]] = {}
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        internal, _, external = entry.partition("=")
+        if not external:
+            raise ValueError(
+                f"Invalid REDIS_CLUSTER_NAT_MAP entry {entry!r}; expected "
+                "'internalHost:internalPort=externalHost:externalPort'."
+            )
+        ext_host, _, ext_port = external.rpartition(":")
+        if not ext_host or not ext_port.isdigit():
+            raise ValueError(
+                f"Invalid REDIS_CLUSTER_NAT_MAP entry {entry!r}; expected "
+                "'internalHost:internalPort=externalHost:externalPort'."
+            )
+        nat_map[internal.strip()] = (ext_host, int(ext_port))
+    return nat_map

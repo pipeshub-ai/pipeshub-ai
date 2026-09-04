@@ -43,6 +43,10 @@ export interface RedisConnectionConfig {
   port: number;
   username?: string;
   password?: string;
+  /** Rotating credentials (e.g. MemoryDB IAM auth); takes precedence over
+   * username/password when set (R21). Signature intentionally stable so an
+   * EE provider never needs an interface change to support IAM rotation. */
+  credentialsProvider?: () => Promise<Credentials>;
   tls: boolean;
   tlsRejectUnauthorized: boolean;
   tlsCaPath?: string;
@@ -52,6 +56,11 @@ export interface RedisConnectionConfig {
   /** Cluster-specific; ignored by StandaloneRedisProvider (R21). */
   clusterEndpoints: string[];
   scaleReads: ScaleReads;
+  /** Cluster-only. Maps an advertised `host:port` to the address it is
+   * actually reachable at (ioredis `ClusterOptions.natMap`); ignored by
+   * StandaloneRedisProvider (R21). Kubernetes-fronted self-hosted clusters
+   * need this as much as MemoryDB's private-VPC addressing does. */
+  natMap?: Record<string, { host: string; port: number }>;
 }
 
 function parseClusterEndpoints(raw: string | undefined): string[] {
@@ -62,6 +71,48 @@ function parseClusterEndpoints(raw: string | undefined): string[] {
     .split(',')
     .map((e) => e.trim())
     .filter((e) => e.length > 0);
+}
+
+/**
+ * Parse `internalHost:internalPort=externalHost:externalPort,...` (R3, F3)
+ * into ioredis' `NatMap` shape. Kept free of any `ioredis` import: the type
+ * shape (`{ [key: string]: { host, port } }`) is stable and duplicating it
+ * here avoids pulling the client library into a config module every caller
+ * (including tests that never touch a client) imports.
+ */
+function parseNatMap(
+  raw: string | undefined,
+): Record<string, { host: string; port: number }> | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  const natMap: Record<string, { host: string; port: number }> = {};
+  for (const rawEntry of raw.split(',')) {
+    const entry = rawEntry.trim();
+    if (!entry) {
+      continue;
+    }
+    const eqIndex = entry.indexOf('=');
+    if (eqIndex === -1) {
+      throw new Error(
+        `Invalid REDIS_CLUSTER_NAT_MAP entry '${entry}'; expected ` +
+          "'internalHost:internalPort=externalHost:externalPort'.",
+      );
+    }
+    const internal = entry.slice(0, eqIndex).trim();
+    const external = entry.slice(eqIndex + 1).trim();
+    const colonIndex = external.lastIndexOf(':');
+    const externalPort = colonIndex === -1 ? '' : external.slice(colonIndex + 1);
+    const externalHost = colonIndex === -1 ? '' : external.slice(0, colonIndex);
+    if (!externalHost || !/^\d+$/.test(externalPort)) {
+      throw new Error(
+        `Invalid REDIS_CLUSTER_NAT_MAP entry '${entry}'; expected ` +
+          "'internalHost:internalPort=externalHost:externalPort'.",
+      );
+    }
+    natMap[internal] = { host: externalHost, port: parseInt(externalPort, 10) };
+  }
+  return Object.keys(natMap).length > 0 ? natMap : undefined;
 }
 
 /**
@@ -135,6 +186,7 @@ export function redisConnectionConfigFromEnv(
     connectTimeoutMs: parseInt(env[`${prefix}TIMEOUT`] || '10000', 10),
     clusterEndpoints: parseClusterEndpoints(env[`${prefix}CLUSTER_ENDPOINTS`]),
     scaleReads: (env[`${prefix}CLUSTER_SCALE_READS`] as ScaleReads) || 'master',
+    natMap: parseNatMap(env[`${prefix}CLUSTER_NAT_MAP`]),
   };
 }
 

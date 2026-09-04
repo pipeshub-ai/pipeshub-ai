@@ -71,7 +71,7 @@ def _config_path(connector_id: str) -> str:
     return f"/services/connectors/{connector_id}/config"
 
 
-def _write_credentials_to_redis(
+async def _write_credentials_to_redis(
     connector_id: str,
     access_token: str,
     refresh_token: str,
@@ -82,8 +82,17 @@ def _write_credentials_to_redis(
     Replicates the serialization used by EncryptedKeyValueStore + RedisDistributedKeyValueStore:
       stored bytes  =  json.dumps(encrypted_string).encode("utf-8")
     where encrypted_string is ``iv_hex:ciphertext_hex:auth_tag_hex``.
+
+    Goes through ``IRedisConnectionProvider`` (T6), not a bare
+    ``redis.Redis(...)``, so this helper keeps working when the target
+    deployment is Redis Cluster / MemoryDB rather than standalone Redis.
     """
-    import redis as redis_lib  # noqa: PLC0415 — keep top-level import light
+    # Imported lazily (keep top-level import light) and after
+    # integration-tests/conftest.py has put backend/python on sys.path.
+    from app.services.redis.config import ClientOptions, RedisConnectionConfig  # noqa: PLC0415
+    from app.services.redis.connection_provider_factory import (  # noqa: PLC0415
+        get_prepared_redis_provider,
+    )
 
     redis_host = os.getenv("REDIS_HOST", "localhost")
     redis_port = int(os.getenv("REDIS_PORT", "6379"))
@@ -91,55 +100,60 @@ def _write_credentials_to_redis(
     redis_db = int(os.getenv("REDIS_DB", "0"))
     key_prefix = os.getenv("REDIS_KV_PREFIX", "pipeshub:kv:")
 
-    client = redis_lib.Redis(
-        host=redis_host,
-        port=redis_port,
-        password=redis_password,
-        db=redis_db,
-        socket_connect_timeout=10,
-        socket_timeout=10,
-        decode_responses=False,
+    provider = await get_prepared_redis_provider(
+        RedisConnectionConfig.from_host_port(
+            host=redis_host,
+            port=redis_port,
+            password=redis_password,
+            db=redis_db,
+        )
     )
+    client = provider.create_client(ClientOptions(decode_responses=False))
 
     path = _config_path(connector_id)
     redis_key = f"{key_prefix}{path}"
 
-    # Read + decrypt existing config so we preserve auth/sync/filters blocks
-    existing_config: dict = {}
-    raw = client.get(redis_key)
-    if raw:
-        try:
-            encrypted_str = json.loads(raw.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise RuntimeError(
-                f"Existing Redis KV config for connector {connector_id!r} is not valid JSON. "
-                "Aborting to prevent data loss."
-            ) from exc
-        try:
-            existing_config = json.loads(_decrypt(key_bytes, encrypted_str))
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to decrypt existing Redis KV config for connector {connector_id!r}. "
-                "Aborting to prevent accidental data loss. "
-                "Verify that SECRET_KEY matches the backend's value."
-            ) from exc
+    try:
+        # Read + decrypt existing config so we preserve auth/sync/filters blocks
+        existing_config: dict = {}
+        raw = await client.get(redis_key)
+        if raw:
+            try:
+                encrypted_str = json.loads(raw.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise RuntimeError(
+                    f"Existing Redis KV config for connector {connector_id!r} is not valid JSON. "
+                    "Aborting to prevent data loss."
+                ) from exc
+            try:
+                existing_config = json.loads(_decrypt(key_bytes, encrypted_str))
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to decrypt existing Redis KV config for connector {connector_id!r}. "
+                    "Aborting to prevent accidental data loss. "
+                    "Verify that SECRET_KEY matches the backend's value."
+                ) from exc
 
-    # Merge — only replace the credentials block
-    existing_config["credentials"] = {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "Bearer",
-    }
+        # Merge — only replace the credentials block
+        existing_config["credentials"] = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "Bearer",
+        }
 
-    # Encrypt → JSON-serialize → store
-    encrypted = _encrypt(key_bytes, json.dumps(existing_config))
-    serialized = json.dumps(encrypted).encode("utf-8")
-    client.set(redis_key, serialized)
+        # Encrypt → JSON-serialize → store
+        encrypted = _encrypt(key_bytes, json.dumps(existing_config))
+        serialized = json.dumps(encrypted).encode("utf-8")
+        await client.set(redis_key, serialized)
 
-    # Publish cache-invalidation so the backend drops its in-process LRU cache
-    client.publish(_CACHE_INVALIDATION_CHANNEL, path)
+        # Publish cache-invalidation so the backend drops its in-process LRU cache
+        await client.publish(_CACHE_INVALIDATION_CHANNEL, path)
+    finally:
+        # `create_client()` clients are caller-owned (T6); the provider only
+        # tracks them so its own `close()` can sweep up stragglers, there is
+        # no per-client `release()` on `IRedisConnectionProvider`.
+        await client.aclose()
 
-    client.close()
     logger.info("Wrote OAuth credentials to Redis for connector %s", connector_id)
 
 
@@ -215,7 +229,7 @@ def _write_credentials_to_etcd(
     logger.info("Wrote OAuth credentials to etcd for connector %s", connector_id)
 
 
-def _write_credentials_to_kv(
+async def _write_credentials_to_kv(
     connector_id: str,
     access_token: str,
     refresh_token: str,
@@ -224,7 +238,7 @@ def _write_credentials_to_kv(
     """Dispatch to the correct KV store based on KV_STORE_TYPE (default: redis)."""
     kv_type = os.getenv("KV_STORE_TYPE", "redis").lower()
     if kv_type == "redis":
-        _write_credentials_to_redis(connector_id, access_token, refresh_token, key_bytes)
+        await _write_credentials_to_redis(connector_id, access_token, refresh_token, key_bytes)
     elif kv_type == "etcd":
         _write_credentials_to_etcd(connector_id, access_token, refresh_token, key_bytes)
     else:
@@ -283,7 +297,7 @@ def exchange_refresh_token(
     return access_token, new_refresh_token
 
 
-def authenticate_connector_with_refresh_token(
+async def authenticate_connector_with_refresh_token(
     connector_id: str,
     refresh_token_env_var: str,
     token_url: str,
@@ -354,7 +368,7 @@ def authenticate_connector_with_refresh_token(
     )
 
     key_bytes = _derive_key(secret_key)
-    _write_credentials_to_kv(connector_id, access_token, new_refresh_token, key_bytes)
+    await _write_credentials_to_kv(connector_id, access_token, new_refresh_token, key_bytes)
 
     # Persist the updated refresh token if the provider issued a new one
     if new_refresh_token != refresh_token:

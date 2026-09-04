@@ -2635,7 +2635,9 @@
         "redis": {
           "label": "Redis",
           "descriptionWithKvStore": "快取、速率限制與組態管理",
-          "description": "快取與速率限制"
+          "description": "快取與速率限制",
+          "modeCluster": "叢集",
+          "modeMemorydb": "MemoryDB"
         },
         "mongodb": {
           "label": "MongoDB",

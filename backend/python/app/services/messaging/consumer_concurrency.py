@@ -29,6 +29,7 @@ import contextlib
 import logging
 import os
 import random
+import threading
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
@@ -40,13 +41,14 @@ from app.services.messaging.distributed_concurrency import (
     lease_kind,
 )
 from app.services.messaging.redis_errors import report_redis_error
-from app.services.resource_governor import gate_pool, index_pool, parse_cost
+from app.services.resource_governor import classify, gate_pool, index_pool, parse_cost
 from app.services.resource_governor.models import ParseTier, Pool
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Callable, Mapping
     from logging import Logger
 
+    from app.services.messaging.config import StreamMessage
     from app.services.messaging.distributed_concurrency import (
         DistributedConcurrencyManager,
     )
@@ -65,6 +67,17 @@ _MAIN_LOOP_OP_TIMEOUT = 5.0
 _PENDING_TASKS_PER_INDEX_SLOT = 2
 _MIN_PENDING_INDEXING_TASKS = 64
 _MAX_PENDING_INDEXING_TASKS = 256
+# Read-ahead floor for a tier whose own ceiling is derived (see
+# ``_tier_ceiling``): enough queued tasks to refill its gate the moment a
+# permit frees, even when the pool has been braked to a couple of permits.
+_MIN_PENDING_PER_TIER = 8
+# Tiers whose queued tasks park for the length of a heavy-parse queue. Their
+# read-ahead is held to their own gate depth: a heavy record dispatched past
+# that only holds a broker entry for minutes while counting against the total
+# every other tier needs. Light waiters are admitted in milliseconds, so the
+# total is the only bound they need -- reserving less for them would cut
+# read-ahead for the one tier that actually turns over.
+_READ_AHEAD_BOUNDED_TIERS: frozenset[ParseTier] = frozenset({ParseTier.HEAVY})
 
 
 class ConcurrencyHost(Protocol):
@@ -87,10 +100,9 @@ class ConcurrencyHost(Protocol):
     # so this is None before the thread starts and after it stops, as well as
     # whenever no concurrency_manager was injected.
     lease_renewer: "LeaseRenewer | None"
-    # Guarded by the same lock as ``_active_futures`` (see GateWaiterToken):
-    # count of tasks spawned but not yet admitted through the local
-    # indexing gate/semaphore.
-    _gate_waiters: int
+    # Tasks spawned but not yet admitted through the local indexing
+    # gate/semaphore, by index tier (see GateWaiters / GateWaiterToken).
+    gate_waiters: "GateWaiters"
     _futures_lock: Any
 
 
@@ -415,6 +427,28 @@ def effective_index_tier(
     return resolved
 
 
+def dispatch_tier(host: ConcurrencyHost, message: "StreamMessage | None") -> ParseTier:
+    """The index tier a message's record will be admitted under.
+
+    The one place the record event's own ``extension``/``mimeType`` is turned
+    into a tier, so the dispatcher (which decides whether there is room to
+    spawn the task), the gate-waiter token (which counts it) and the wrapper
+    (which acquires the index permit) cannot disagree. Pure given the
+    governor's ceilings. An unparseable envelope resolves to HEAVY -- the
+    wrapper acknowledges it without ever reaching a gate.
+    """
+    if message is None:
+        return effective_index_tier(host, ParseTier.HEAVY)
+    payload = message.payload
+    return effective_index_tier(
+        host,
+        classify(
+            str(payload.get("extension") or ""),
+            str(payload.get("mimeType") or ""),
+        ),
+    )
+
+
 def index_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     """Cluster-wide indexing lease limit for *tier* when a governor is
     present, else the legacy static env var — which was never split by tier,
@@ -494,9 +528,58 @@ def parse_lease_pool(tier: ParseTier | None) -> str:
     return "parsing:light" if tier is ParseTier.LIGHT else "parsing"
 
 
+class GateWaiters:
+    """Tasks spawned but not yet admitted through an index gate, by tier.
+
+    One counter per index tier rather than a single shared number: a heavy
+    record queued behind the few heavy-parse slots waits minutes for its
+    ``INDEX_HEAVY`` permit, and while it waits it must not occupy a slot that
+    a light record -- admitted through ``INDEX_LIGHT`` in milliseconds --
+    could have used. With one shared counter a burst of attachments filled
+    the whole read-ahead budget and stalled every page and issue behind it,
+    with the light pool sitting idle (docs/indexing-service.md section 5).
+
+    Only ``GateWaiterToken`` mutates it; readers go through ``count`` /
+    ``snapshot``. Thread-safe: tokens are created on the consumer's main
+    loop and admitted or released on the worker loop.
+    """
+
+    __slots__ = ("_lock", "_counts")
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counts: dict[ParseTier, int] = dict.fromkeys(ParseTier, 0)
+
+    def add(self, tier: ParseTier) -> None:
+        with self._lock:
+            self._counts[tier] += 1
+
+    def remove(self, tier: ParseTier) -> None:
+        with self._lock:
+            self._counts[tier] -= 1
+
+    def count(self, tier: ParseTier | None = None) -> int:
+        with self._lock:
+            if tier is None:
+                return sum(self._counts.values())
+            return self._counts[tier]
+
+    def snapshot(self) -> dict[ParseTier, int]:
+        with self._lock:
+            return dict(self._counts)
+
+    def reset(self) -> None:
+        """Forget every waiter. For consumer shutdown, after the worker loop
+        is gone: no token can be admitted or released after that, and a
+        restart must not start with phantom waiters."""
+        with self._lock:
+            for tier in self._counts:
+                self._counts[tier] = 0
+
+
 class GateWaiterToken:
-    """Tracks whether one spawned task still counts toward
-    ``pending_task_ceiling``'s backpressure check.
+    """Tracks whether one spawned task still counts toward the dispatch
+    budget's backpressure check, in its tier's bucket.
 
     A task counts as a "gate waiter" from the moment it's spawned (added to
     ``_active_futures``) until it is admitted through the local indexing
@@ -507,24 +590,31 @@ class GateWaiterToken:
     stop counting even though it stays in ``_active_futures`` until it
     finishes (that set backs shutdown draining and diagnostic logging, not
     backpressure).
+
+    ``tier`` must be the same tier the wrapper acquires its index permit
+    under -- both come from ``dispatch_tier`` -- or the budget would count a
+    waiter against one gate while it queues on the other.
     """
 
-    __slots__ = ("_host", "_admitted", "_released")
+    __slots__ = ("_host", "_tier", "_admitted", "_released")
 
-    def __init__(self, host: ConcurrencyHost) -> None:
+    def __init__(self, host: ConcurrencyHost, tier: ParseTier) -> None:
         self._host = host
+        self._tier = tier
         self._admitted = False
         self._released = False
-        with host._futures_lock:
-            host._gate_waiters += 1
+        host.gate_waiters.add(tier)
+
+    @property
+    def tier(self) -> ParseTier:
+        return self._tier
 
     def admit(self) -> None:
         """Call once the local indexing gate/semaphore has been acquired."""
         if self._admitted or self._released:
             return
         self._admitted = True
-        with self._host._futures_lock:
-            self._host._gate_waiters -= 1
+        self._host.gate_waiters.remove(self._tier)
 
     def release(self) -> None:
         """Idempotent cleanup for the task's terminal state (call from the
@@ -534,8 +624,7 @@ class GateWaiterToken:
             return
         self._released = True
         if not self._admitted:
-            with self._host._futures_lock:
-                self._host._gate_waiters -= 1
+            self._host.gate_waiters.remove(self._tier)
 
 
 def index_gates_saturated(host: ConcurrencyHost) -> bool:
@@ -563,11 +652,12 @@ def index_gates_saturated(host: ConcurrencyHost) -> bool:
     )
 
 
-def get_gate_waiter_count(host: ConcurrencyHost) -> int:
+def get_gate_waiter_count(
+    host: ConcurrencyHost, tier: ParseTier | None = None
+) -> int:
     """Number of spawned tasks not yet admitted through the local indexing
-    gate/semaphore — see ``GateWaiterToken``."""
-    with host._futures_lock:
-        return host._gate_waiters
+    gate/semaphore — see ``GateWaiterToken``. All tiers unless one is named."""
+    return host.gate_waiters.count(tier)
 
 
 def pending_task_ceiling(host: ConcurrencyHost) -> int:
@@ -605,6 +695,146 @@ def pending_task_ceiling(host: ConcurrencyHost) -> int:
             ),
         )
     return messaging_env.max_pending_indexing_tasks
+
+
+@dataclass(frozen=True)
+class TierBudget:
+    """One tier's share of the dispatch budget."""
+
+    waiters: int
+    ceiling: int
+
+    @property
+    def allows(self) -> bool:
+        return self.waiters < self.ceiling
+
+
+@dataclass(frozen=True)
+class DispatchBudget:
+    """Whether the consumer may spawn another task, and for which tier.
+
+    Computed once per consume-loop turn from the gate-waiter counts and the
+    governor's current limits; pure and cheap, so the read phase, the
+    dispatch phase and the recovery paths all judge the same numbers.
+
+    ``total_ceiling`` is ``pending_task_ceiling``: the memory/PEL bound on
+    tasks queued ahead of the gates, which an explicit
+    ``MAX_PENDING_INDEXING_TASKS`` pins. Each tier is bounded by it *and* by
+    its own ceiling (``_tier_ceiling``), so a tier that parks its waiters for
+    minutes can never take the read-ahead the other tier turns over in
+    milliseconds. A tier absent from ``tiers`` does not exist on this host
+    (a collapsed light budget routes every record to heavy) and is never
+    allowed.
+    """
+
+    total_ceiling: int
+    total_waiters: int
+    tiers: "Mapping[ParseTier, TierBudget]"
+
+    def allows(self, tier: ParseTier) -> bool:
+        budget = self.tiers.get(tier)
+        return (
+            budget is not None
+            and budget.allows
+            and self.total_waiters < self.total_ceiling
+        )
+
+    @property
+    def blocked(self) -> bool:
+        """No tier may spawn another task: the signal that pauses reads."""
+        return not any(self.allows(tier) for tier in self.tiers)
+
+    @property
+    def remaining(self) -> int:
+        """Tasks the total still has room for, regardless of tier. Sizes
+        reads on paths that dispatch in broker order (no scheduler) and the
+        PEL recovery claim, where the scheduler decides the tier order."""
+        return max(0, self.total_ceiling - self.total_waiters)
+
+    def describe(self) -> str:
+        parts = [
+            f"{tier.value} {budget.waiters}/{budget.ceiling}"
+            for tier, budget in self.tiers.items()
+        ]
+        parts.append(f"total {self.total_waiters}/{self.total_ceiling}")
+        return ", ".join(parts)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "total": {"waiters": self.total_waiters, "ceiling": self.total_ceiling},
+            "tiers": {
+                tier.value: {
+                    "waiters": budget.waiters,
+                    "ceiling": budget.ceiling,
+                    "allows": self.allows(tier),
+                }
+                for tier, budget in self.tiers.items()
+            },
+            "blocked": self.blocked,
+        }
+
+
+def _tier_ceiling(
+    host: ConcurrencyHost,
+    tier: ParseTier,
+    total_ceiling: int,
+    tiers_present: int,
+) -> int:
+    """How many tasks of *tier* may queue for its index gate.
+
+    The total, unless the tier is one whose waiters park (heavy), there is a
+    governor to size it from, and there is another tier to protect. Then
+    ``_PENDING_TASKS_PER_INDEX_SLOT`` times the tier's *current* limit,
+    floored so a braked pool still refills its gate from the queue.
+    """
+    governor = host.governor
+    if (
+        governor is None
+        or tier not in _READ_AHEAD_BOUNDED_TIERS
+        or tiers_present < 2
+    ):
+        return total_ceiling
+    derived = governor.limit(index_pool(tier)) * _PENDING_TASKS_PER_INDEX_SLOT
+    floor = min(_MIN_PENDING_PER_TIER, total_ceiling)
+    return max(floor, min(total_ceiling, derived))
+
+
+def dispatch_budget(host: ConcurrencyHost, *, tiered: bool = True) -> DispatchBudget:
+    """The budget for this turn of the consume loop.
+
+    ``tiered=False`` collapses every tier's ceiling to the total. For the
+    broker-order (no fair scheduler) paths: they cannot pass over a record to
+    reach one of another tier, so a per-tier ceiling there would only stall
+    the partition or PEL read behind the record at its head.
+    """
+    total_ceiling = pending_task_ceiling(host)
+    waiters = host.gate_waiters.snapshot()
+    governor = host.governor
+    present = [
+        tier
+        for tier in ParseTier
+        if not (
+            tier is ParseTier.LIGHT
+            and governor is not None
+            and governor.ceilings.index_light == 0
+        )
+    ]
+    tiers = {
+        tier: TierBudget(
+            waiters=waiters[tier],
+            ceiling=(
+                total_ceiling
+                if not tiered
+                else _tier_ceiling(host, tier, total_ceiling, len(present))
+            ),
+        )
+        for tier in present
+    }
+    return DispatchBudget(
+        total_ceiling=total_ceiling,
+        total_waiters=sum(waiters.values()),
+        tiers=tiers,
+    )
 
 
 @dataclass

@@ -33,6 +33,19 @@ export interface IRedisConnectionProvider {
   createPubSubClient(): Redis;
 
   /**
+   * Resolve anything that needs an `await` before clients are built.
+   *
+   * `getClient()`/`createClient()` are sync, so they cannot await
+   * `RedisConnectionConfig.credentialsProvider` (MemoryDB IAM tokens, which
+   * rotate every 12h -- R21); a provider that uses one resolves it here and
+   * caches the result for those builders to read. OSS providers no-op.
+   *
+   * Idempotent, and safe to call from any startup path; an EE provider that
+   * also refreshes on a timer starts that timer here.
+   */
+  prepare(): Promise<void>;
+
+  /**
    * Keyspace-wide SCAN (R2). Cluster implementations fan out over every
    * master. Streamed rather than returned as an array: `listTopics()` and
    * the KV-store migration scan broad patterns, and materialising a whole

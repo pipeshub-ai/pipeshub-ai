@@ -18,6 +18,7 @@ import * as messageBrokerModule from '../src/libs/services/message-broker.factor
 import * as kvMigrationModule from '../src/libs/keyValueStore/migration/kvStoreMigration.service';
 import * as oauthProviderModule from '../src/libs/services/oauth-token-service.provider';
 import { RedisConnectionProviderFactory } from '../src/libs/services/redis/connectionProviderFactory';
+import * as redisConnectionProviderFactoryModule from '../src/libs/services/redis/connectionProviderFactory';
 import { TokenManagerContainer } from '../src/modules/tokens_manager/container/token-manager.container';
 import { ConfigurationManagerContainer } from '../src/modules/configuration_manager/container/cm_container';
 import { StorageContainer } from '../src/modules/storage/container/storage.container';
@@ -386,6 +387,26 @@ describe('Application', () => {
       const ensureTopicsStub =
         messageBrokerModule.ensureMessageTopicsExist as sinon.SinonStub;
       expect(loadStub.calledBefore(ensureTopicsStub)).to.be.true;
+    });
+
+    it('prepares the Redis connection provider (F1) before loadConfigurationManagerConfig builds the bootstrap KV client (T5)', async () => {
+      const app = new Application();
+      stubAllContainers(sandbox);
+      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
+      const prepareStub = sandbox
+        .stub(redisConnectionProviderFactoryModule, 'getPreparedRedisProvider')
+        .resolves({} as any);
+
+      await app.initialize();
+
+      expect(prepareStub.calledOnce).to.be.true;
+      // An EE MemoryDB provider's `prepare()` resolves rotating IAM
+      // credentials (R21); it must run before this call builds the
+      // bootstrap KV store's Redis client, or that client is built with a
+      // stale/absent credential.
+      const loadConfigStub =
+        cmConfigModule.loadConfigurationManagerConfig as sinon.SinonStub;
+      expect(prepareStub.calledBefore(loadConfigStub)).to.be.true;
     });
 
     it('should continue initialization even if Kafka topic creation fails', async () => {

@@ -2404,7 +2404,9 @@
         "redis": {
           "label": "Redis",
           "descriptionWithKvStore": "कैशिंग, दर सीमा, और कॉन्फ़िगरेशन",
-          "description": "कैशिंग और दर सीमा"
+          "description": "कैशिंग और दर सीमा",
+          "modeCluster": "क्लस्टर",
+          "modeMemorydb": "MemoryDB"
         },
         "mongodb": {
           "label": "MongoDB",

@@ -173,7 +173,7 @@ async def drive_individual_connector(
         )
 
         try:
-            authenticate_connector_with_refresh_token(
+            await authenticate_connector_with_refresh_token(
                 connector_id=connector_id,
                 refresh_token_env_var=ENV_REFRESH_TOKEN,
                 token_url=GOOGLE_TOKEN_URL,

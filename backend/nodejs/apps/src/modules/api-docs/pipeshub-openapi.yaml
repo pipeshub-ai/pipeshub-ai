@@ -26779,10 +26779,13 @@ paths:
                     type: object
                     additionalProperties: false
                     description: |
-                      The conversation document after the title update, returned
-                      as stored in MongoDB. Messages are not included: they live
-                      in a separate `chatSessionMessages` collection and are read
-                      through `getConversationById`.
+                      The conversation document after the title update, as
+                      stored in the `chatSessions` collection.
+
+                      Carries no `messages`: they live in `chatSessionMessages`
+                      (see `chat.session.schema.ts`) and this route neither
+                      reads nor joins them. Fetch the conversation by id to
+                      get its messages.
                     required:
                       - _id
                       - userId

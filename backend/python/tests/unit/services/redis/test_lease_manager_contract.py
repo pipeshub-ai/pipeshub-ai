@@ -18,7 +18,7 @@ import pytest
 from app.services.messaging.config import RedisConfig
 from app.services.messaging.distributed_concurrency import DistributedConcurrencyManager
 from app.services.redis.standalone_provider import StandaloneRedisProvider
-from tests.support.fake_cluster_redis import FakeClusterRedis
+from tests.support.redis_provider_matrix import CLIENT_TRANSPORTS as TRANSPORTS
 
 fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
 
@@ -26,19 +26,10 @@ fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
 # see `test_distributed_concurrency.py` for the `redis.crc.key_slot` values.
 _DIFFERENT_SLOT_POOLS = ("indexing", "parsing:light")
 
-
-def _standalone_client() -> "fakeredis_aioredis.FakeRedis":
-    return fakeredis_aioredis.FakeRedis(decode_responses=True)
-
-
-def _cluster_client() -> FakeClusterRedis:
-    return FakeClusterRedis()
-
-
-TRANSPORTS = [
-    pytest.param(_standalone_client, id="standalone"),
-    pytest.param(_cluster_client, id="cluster"),
-]
+# `TRANSPORTS` (standalone/cluster) comes from
+# `tests/support/redis_provider_matrix.py` (T4) so an EE `conftest.py` can
+# append a `memorydb` entry and run this same suite against it with no
+# changes here.
 
 
 async def _make_manager(make_client) -> DistributedConcurrencyManager:
