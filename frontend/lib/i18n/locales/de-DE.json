@@ -2724,6 +2724,8 @@
     "lineCount": "{{count}} Zeilen",
     "instructionsLabel": "Anweisungen",
     "startingMessageLabel": "Startnachricht",
+    "defaultReasoningEffortLabel": "Standard-Reasoning-Aufwand",
+    "defaultReasoningEffortHint": "Standard ist Hoch, wenn nichts gesetzt ist.",
     "moreItems": "+{{count}} weitere",
     "toolsetNodeSubtitle": "Toolset",
     "toolsLabel": "Tools",

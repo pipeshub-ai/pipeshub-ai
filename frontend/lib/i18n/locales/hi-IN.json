@@ -2722,6 +2722,8 @@
     "lineCount": "{{count}} पंक्तियाँ",
     "instructionsLabel": "निर्देश",
     "startingMessageLabel": "प्रारंभिक संदेश",
+    "defaultReasoningEffortLabel": "डिफ़ॉल्ट रीज़निंग प्रयास",
+    "defaultReasoningEffortHint": "सेट न होने पर डिफ़ॉल्ट हाई है।",
     "moreItems": "+{{count}} और",
     "toolsetNodeSubtitle": "टूलसेट",
     "toolsLabel": "टूल",
