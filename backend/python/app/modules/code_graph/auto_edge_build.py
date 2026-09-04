@@ -54,6 +54,10 @@ class EdgeBuildScheduler:
         self._quiet_period = quiet_period if quiet_period is not None else quiet_period_seconds()
         self._deadlines: dict[tuple[str, str], float] = {}
         self._waiters: dict[tuple[str, str], asyncio.Task[None]] = {}
+        # Scheduling state (`_waiters`) and lifetime state are not the same
+        # span: a waiter deregisters itself before building so the next record
+        # can schedule, which leaves the build itself owned by nothing.
+        self._tasks: set[asyncio.Task[None]] = set()
         # Serialises builds for one group: a record completing mid-build starts
         # a new waiter, which must queue behind the build already running rather
         # than race it and be dropped by the cross-process lock.
@@ -81,9 +85,10 @@ class EdgeBuildScheduler:
         loop = asyncio.get_running_loop()
         self._deadlines[key] = loop.time() + self._quiet_period
         if key not in self._waiters:
-            self._waiters[key] = loop.create_task(
-                self._build_when_quiet(key, str(connector_id))
-            )
+            task = loop.create_task(self._build_when_quiet(key, str(connector_id)))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+            self._waiters[key] = task
 
     async def _build_when_quiet(
         self, key: tuple[str, str], connector_id: str
@@ -133,6 +138,7 @@ class EdgeBuildScheduler:
 
     async def drain(self) -> None:
         """Await in-flight waiters; for shutdown and for tests."""
-        for task in list(self._waiters.values()):
+        tasks = list(self._tasks)
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(*self._waiters.values(), return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)

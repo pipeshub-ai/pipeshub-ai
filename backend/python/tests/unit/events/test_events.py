@@ -2218,7 +2218,8 @@ class TestDuplicateCodeFileProjection:
     async def test_duplicate_code_file_projects_under_the_new_record(self) -> None:
         ep, processor = self._setup()
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=True):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=True)):
             event_data = _make_event_payload(
                 extension="py", mime_type="text/plain", record_name="client.py",
                 buffer=b"def helper():\n    return 1\n",
@@ -2240,7 +2241,8 @@ class TestDuplicateCodeFileProjection:
         """Projection is additive: the two terminal events are unchanged."""
         ep, processor = self._setup()
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=True):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=True)):
             event_data = _make_event_payload(extension="py", mime_type="text/plain")
             events = await _drain(ep.on_event(event_data))
 
@@ -2253,7 +2255,8 @@ class TestDuplicateCodeFileProjection:
     async def test_duplicate_non_code_file_is_not_projected(self) -> None:
         ep, processor = self._setup(record_type="FILE")
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=True):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=True)):
             event_data = _make_event_payload(extension=ExtensionTypes.DOCX.value)
             await _drain(ep.on_event(event_data))
 
@@ -2264,11 +2267,28 @@ class TestDuplicateCodeFileProjection:
         """Connectors walking a git tree often send text/plain and no extension."""
         ep, processor = self._setup()
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=True):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=True)):
             event_data = _make_event_payload(
                 extension="unknown", mime_type="text/plain", record_name="main.ts",
             )
             await _drain(ep.on_event(event_data))
 
         processor.project_code_blocks_to_graph.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_str_buffer_is_encoded_before_projection(self) -> None:
+        """`decode_source` indexes by byte offset and rejects a str."""
+        ep, processor = self._setup()
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=True)):
+            event_data = _make_event_payload(
+                extension="py", mime_type="text/plain", record_name="client.py",
+                buffer="def helper():\n    return 1\n",
+            )
+            await _drain(ep.on_event(event_data))
+
+        content = processor.project_code_blocks_to_graph.await_args.kwargs["content"]
+        assert content == b"def helper():\n    return 1\n"
 

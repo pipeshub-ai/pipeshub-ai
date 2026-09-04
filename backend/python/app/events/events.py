@@ -994,6 +994,10 @@ class EventProcessor:
                     # this file would otherwise be searchable and yet missing
                     # from the code graph entirely.
                     if is_code:
+                        # `_check_duplicate_by_md5` encodes only its own local
+                        # binding, so a str buffer reaches here unconverted and
+                        # `decode_source` (tree-sitter indexes by byte offset)
+                        # would fail on it.
                         await self.processor.project_code_blocks_to_graph(
                             record_id=record_id,
                             org_id=org_id,
@@ -1001,7 +1005,11 @@ class EventProcessor:
                             connector_id=doc.get("connectorId"),
                             record_name=record_name,
                             file_path=event_data.get("filePath"),
-                            content=file_content,
+                            content=(
+                                file_content.encode("utf-8")
+                                if isinstance(file_content, str)
+                                else file_content
+                            ),
                         )
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))

@@ -27,7 +27,8 @@ def _record(connector_name: str = "GitLab") -> dict[str, str]:
 
 
 async def _settle(scheduler: EdgeBuildScheduler) -> None:
-    await asyncio.gather(*scheduler._waiters.values(), return_exceptions=True)
+    """Unlike `drain`, lets in-flight builds finish instead of cancelling them."""
+    await asyncio.gather(*scheduler._tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -138,3 +139,29 @@ async def test_completion_during_a_build_schedules_another(logger: MagicMock) ->
     await _settle(scheduler)
 
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_drain_reaches_a_build_already_in_flight(logger: MagicMock) -> None:
+    """A waiter deregisters before building, so `_waiters` alone cannot see it."""
+    started = asyncio.Event()
+    cancelled = False
+
+    async def build(**_: object) -> None:
+        nonlocal cancelled
+        started.set()
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+
+    scheduler = EdgeBuildScheduler(build, logger, quiet_period=_QUIET)
+    scheduler.schedule(_record())
+    await asyncio.wait_for(started.wait(), timeout=2)
+    assert not scheduler._waiters
+
+    await asyncio.wait_for(scheduler.drain(), timeout=2)
+
+    assert cancelled
+    assert not scheduler._tasks

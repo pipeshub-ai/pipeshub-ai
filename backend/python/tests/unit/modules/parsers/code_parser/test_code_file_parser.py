@@ -165,11 +165,27 @@ def test_builtin_method_calls_on_untyped_receivers_are_dropped():
     type, and these receivers are language primitives. Recording them would only
     bloat a traversed node."""
     src = b'''
+def go(payload, label):
+    payload.get("k")
+    label.lower()
+    return custom(payload)
+'''
+    container = CodeFileParser().parse_to_blocks(src, "a.py", "src/a.py", "python")
+    go = _blocks_by_name(container)["go"]
+    assert [e["toName"] for e in go.code_metadata.pending_edges] == ["custom"]
 
 
 def test_typed_receiver_keeps_a_builtin_named_method():
     # `client.get()` where client is a repo type must survive: it is resolvable.
     src = b'''
+def go():
+    client: Client = build()
+    return client.get("/health")
+'''
+    container = CodeFileParser().parse_to_blocks(src, "a.py", "src/a.py", "python")
+    go = _blocks_by_name(container)["go"]
+    get = next(e for e in go.code_metadata.pending_edges if e["toName"] == "get")
+    assert get["receiverType"] == "Client"
 
 
 def test_builtins_do_not_become_edges():
