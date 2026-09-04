@@ -42,6 +42,7 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
+    Person,
     ProjectRecord,
     PullRequestRecord,
     Record,
@@ -546,6 +547,9 @@ class TestOnNewRecordGroupsAdvanced:
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         tx_store.get_user_by_email.return_value = None
+        # Model an email that belongs to nobody: no user, no existing person.
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
 
         rg = RecordGroup(
             external_group_id="ext-g1",
@@ -563,7 +567,12 @@ class TestOnNewRecordGroupsAdvanced:
 
         await proc.on_new_record_groups([(rg, [perm])])
 
-        proc.logger.warning.assert_called()
+        # bc2517dfb routed this through _resolve_principal: an email belonging to no
+        # user is now represented as a Person and keeps its permission edge, instead
+        # of being dropped with a warning.
+        tx_store.upsert_person_by_email.assert_awaited()
+        edges = tx_store.batch_create_edges.await_args.args[0]
+        assert edges[0]["from_collection"] == CollectionNames.PEOPLE.value
 
     @pytest.mark.asyncio
     async def test_group_permission_in_record_group(self):
@@ -811,6 +820,9 @@ class TestOnNewUserGroups:
 
         tx_store.get_user_by_email.return_value = None
         tx_store.get_user_group_by_external_id.return_value = None
+        # Model an email that belongs to nobody: no user, no existing person.
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
 
         ug = AppUserGroup(
             app_name=ConnectorsEnum.GOOGLE_MAIL,
@@ -829,9 +841,12 @@ class TestOnNewUserGroups:
 
         await proc.on_new_user_groups([(ug, [member])])
 
-        proc.logger.warning.assert_called()
-        # No permission edges created
-        tx_store.batch_create_edges.assert_not_awaited()
+        # bc2517dfb routed this through _resolve_principal: an email belonging to no
+        # user is now represented as a Person and keeps its permission edge, instead
+        # of being dropped with a warning.
+        tx_store.upsert_person_by_email.assert_awaited()
+        edges = tx_store.batch_create_edges.await_args.args[0]
+        assert edges[0]["from_collection"] == CollectionNames.PEOPLE.value
 
     @pytest.mark.asyncio
     async def test_updates_existing_user_group(self):
@@ -1743,6 +1758,70 @@ class TestGetAppCreatorUser:
 # ===========================================================================
 
 
+class TestOnExternalAppUsers:
+    """Phase 3 -- flagged app membership for collaborators the connector identified as
+    outside its workspace."""
+
+    @pytest.mark.asyncio
+    async def test_grants_flagged_membership_per_principal(self):
+        """The flag is what gates the browse-hoisting branches; without it the
+        collaborator sees the app but none of the records shared with them."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(
+            return_value=Person(id="p1", email="out@x.io")
+        )
+        tx_store.ensure_app_membership = AsyncMock()
+
+        await proc.on_external_app_users(["out@x.io"], "conn-1")
+
+        tx_store.ensure_app_membership.assert_awaited_once_with(
+            "p1", CollectionNames.PEOPLE.value, "conn-1", is_external=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolves_a_platform_user_to_users_collection(self):
+        """An external collaborator can already be a platform user -- someone outside the
+        Google Workspace domain but inside PipesHub. They get the flag against their User
+        node, not a duplicate Person."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_by_email.return_value = MagicMock(id="u1")
+        tx_store.ensure_app_membership = AsyncMock()
+
+        await proc.on_external_app_users(["member@other.com"], "conn-1")
+
+        tx_store.ensure_app_membership.assert_awaited_once_with(
+            "u1", CollectionNames.USERS.value, "conn-1", is_external=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_does_not_create_principals(self):
+        """This resolves, it never creates: an email with no principal has no grant, so
+        _handle_record_permissions did not create a Person for it and there is nothing to
+        give membership to."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value=None)
+        tx_store.ensure_app_membership = AsyncMock()
+
+        await proc.on_external_app_users(["ghost@x.io"], "conn-1")
+
+        tx_store.ensure_app_membership.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_list_is_a_no_op(self):
+        proc = _make_processor()
+        await proc.on_external_app_users([], "conn-1")
+        proc.data_store_provider.transaction.assert_not_called()
+
+
 class TestOnNewAppUsers:
     @pytest.mark.asyncio
     async def test_empty_list_skips(self):
@@ -1750,6 +1829,37 @@ class TestOnNewAppUsers:
         proc = _make_processor()
         await proc.on_new_app_users([])
         proc.logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_resolution_is_not_memoized(self):
+        """Principal resolution must stay uncached.
+
+        A Person becomes a User the instant its owner signs up or joins the workspace,
+        and a connector instance is reused across syncs for the life of the process. Any
+        cache keyed on email is therefore wrong from that instant until cleared, and the
+        permission edges written in between land on the stale Person while the real User
+        node gets none. This is the regression guard: if someone reintroduces
+        memoization for the N+1, the second assertion fails.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
+
+        assert await proc._resolve_principal("alice@partner.com", tx_store) == (
+            "person-1", CollectionNames.PEOPLE.value
+        )
+
+        # Alice joins; the very next resolution must see the User, with no reset call
+        # in between.
+        tx_store.get_user_by_email.return_value = MagicMock(id="user-alice")
+
+        assert await proc._resolve_principal("alice@partner.com", tx_store) == (
+            "user-alice", CollectionNames.USERS.value
+        )
 
     @pytest.mark.asyncio
     async def test_upserts_users(self):
@@ -3372,11 +3482,14 @@ class TestHandleRecordPermissionsEntityTypes:
         tx_store.batch_create_edges.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_user_permission_user_not_found_skips(self):
-        """Skips when user not found (external user)."""
+    async def test_user_permission_unknown_email_creates_person(self):
+        """An email belonging to no user is an external collaborator: a Person is
+        created and the grant is recorded against it rather than dropped."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
 
         record = _make_record()
         record.id = "rec-1"
@@ -3389,7 +3502,10 @@ class TestHandleRecordPermissionsEntityTypes:
 
         await proc._handle_record_permissions(record, [perm], tx_store)
 
-        proc.logger.warning.assert_called()
+        tx_store.upsert_person_by_email.assert_awaited_once()
+        edges = tx_store.batch_create_edges.await_args.args[0]
+        assert edges[0]["from_id"] == "person-1"
+        assert edges[0]["from_collection"] == CollectionNames.PEOPLE.value
 
     @pytest.mark.asyncio
     async def test_exception_logs_error(self):
@@ -3417,29 +3533,77 @@ class TestHandleRecordPermissionsEntityTypes:
 # ===========================================================================
 
 
-class TestUpsertExternalPerson:
+class TestResolvePrincipal:
     @pytest.mark.asyncio
-    async def test_upserts_person_and_returns_id(self):
-        """Upserts person record and returns person id."""
+    async def test_prefers_existing_user(self):
+        """A platform user wins; no Person is created for them."""
         proc = _make_processor()
         tx_store = _make_tx_store()
-        tx_store.batch_upsert_people = AsyncMock()
+        tx_store.get_user_by_email.return_value = MagicMock(id="user-1")
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock()
 
-        result = await proc._upsert_external_person("Test@Example.com", tx_store)
+        assert await proc._resolve_principal("a@corp.com", tx_store) == (
+            "user-1", CollectionNames.USERS.value
+        )
+        tx_store.upsert_person_by_email.assert_not_awaited()
 
-        assert result is not None
-        tx_store.batch_upsert_people.assert_awaited_once()
+    @pytest.mark.asyncio
+    async def test_falls_back_to_existing_person(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(
+            return_value=Person(id="person-9", email="out@x.io")
+        )
+        tx_store.upsert_person_by_email = AsyncMock()
+
+        assert await proc._resolve_principal("out@x.io", tx_store) == (
+            "person-9", CollectionNames.PEOPLE.value
+        )
+        tx_store.upsert_person_by_email.assert_not_awaited()
+        tx_store.get_person_by_email.assert_awaited_once_with("out@x.io", proc.org_id)
+
+    @pytest.mark.asyncio
+    async def test_returns_surviving_id_not_local_uuid(self):
+        """A concurrent sync may have created the node first, so the id the upsert
+        reports back is the one edges must point at."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="survivor-id")
+
+        assert await proc._resolve_principal("out@x.io", tx_store) == (
+            "survivor-id", CollectionNames.PEOPLE.value
+        )
+        upserted = tx_store.upsert_person_by_email.await_args.args[0]
+        assert upserted.org_id == proc.org_id
+
+    @pytest.mark.asyncio
+    async def test_member_costs_a_single_lookup(self):
+        """The common case is a workspace member, and it must not have got more
+        expensive: one query, exactly as before external users were represented. Only an
+        email that misses the user lookup pays for the person branch."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_user_by_email.return_value = MagicMock(id="user-1")
+        tx_store.get_person_by_email = AsyncMock()
+        tx_store.upsert_person_by_email = AsyncMock()
+
+        await proc._resolve_principal("member@corp.com", tx_store)
+
+        assert tx_store.get_user_by_email.await_count == 1
+        tx_store.get_person_by_email.assert_not_awaited()
+        tx_store.upsert_person_by_email.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self):
-        """Returns None on exception."""
         proc = _make_processor()
         tx_store = _make_tx_store()
-        tx_store.batch_upsert_people = AsyncMock(side_effect=RuntimeError("db fail"))
+        tx_store.get_user_by_email.side_effect = RuntimeError("db fail")
 
-        result = await proc._upsert_external_person("test@example.com", tx_store)
-
-        assert result is None
+        assert await proc._resolve_principal("out@x.io", tx_store) is None
         proc.logger.error.assert_called()
 
 

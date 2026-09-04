@@ -213,6 +213,30 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_person_by_email(self, email: str, org_id: str) -> Optional[Person]:
+        pass
+
+    @abstractmethod
+    async def upsert_person_by_email(self, person: Person) -> Optional[str]:
+        pass
+
+    @abstractmethod
+    async def ensure_app_membership(
+        self,
+        principal_id: str,
+        principal_collection: str,
+        connector_id: str,
+        *,
+        is_external: bool,
+        source_user_id: str | None = None,
+    ) -> None:
+        pass
+
+    @abstractmethod
+    async def reap_stale_external_app_relations(self, connector_id: str) -> int:
+        pass
+
+    @abstractmethod
     async def batch_create_edges(self, edges: list[dict], collection: str) -> None:
         pass
 

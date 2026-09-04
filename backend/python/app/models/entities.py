@@ -2832,8 +2832,10 @@ class Person(BaseModel):
     """Lightweight entity for external email addresses (not organization members)."""
     id: str = Field(description="Unique identifier", default_factory=lambda: str(uuid4()))
     email: str = Field(description="Email address")
-    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Creation timestamp")
-    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Update timestamp")
+    org_id: str | None = Field(default=None, description="Owning org for this Person")
+    created_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Creation timestamp")
+    updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Update timestamp")
+    full_name: str | None = Field(default=None, description="Display name")
     # Salesforce contact fields
     first_name: str | None = Field(default=None, description="First name")
     last_name: str | None = Field(default=None, description="Last name")
@@ -2842,9 +2844,15 @@ class Person(BaseModel):
     def to_arango_person(self) -> dict[str, Any]:
         return {
             "_key": self.id,
-            "email": self.email,
+            # (orgId, email) is this node's business key and carries a composite unique
+            # index. Atomic upserts match on exact equality, so the stored form must be
+            # normalised or Foo@x.com and foo@x.com become two nodes every reader sees
+            # as one.
+            "email": self.email.lower(),
+            "orgId": self.org_id,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
+            "fullName": self.full_name,
             "firstName": self.first_name,
             "lastName": self.last_name,
             "phone": self.phone,
@@ -2855,8 +2863,10 @@ class Person(BaseModel):
         return Person(
             id=data.get("_key"),
             email=data.get("email"),
+            org_id=data.get("orgId"),
             created_at=data.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
             updated_at=data.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()),
+            full_name=data.get("fullName"),
             first_name=data.get("firstName"),
             last_name=data.get("lastName"),
             phone=data.get("phone"),

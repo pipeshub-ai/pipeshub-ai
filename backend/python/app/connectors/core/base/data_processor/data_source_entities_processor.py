@@ -779,22 +779,10 @@ class DataSourceEntitiesProcessor:
                 from_collection = None
 
                 if permission.entity_type == EntityType.USER.value:
-                    user = None
                     if permission.email:
-                        user = await tx_store.get_user_by_email(permission.email)
-
-                        # If user doesn't exist (external user), use PEOPLE collection
-                        if not user and permission.email:
-                            self.logger.warning(f"Skipping user/person creation for external user {permission.email}")
-                            # TODO : Handle extenal user/person creation
-                            # person_id = await self._upsert_external_person(permission.email, tx_store)
-                            # if person_id:
-                            #     from_id = person_id
-                            #     from_collection = CollectionNames.PEOPLE.value
-
-                    if user:
-                        from_id = user.id
-                        from_collection = CollectionNames.USERS.value
+                        resolved = await self._resolve_principal(permission.email, tx_store)
+                        if resolved:
+                            from_id, from_collection = resolved
 
                 elif permission.entity_type == EntityType.GROUP.value:
                     user_group = None
@@ -849,28 +837,57 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error("Failed to create permission edge: %s", e)
 
-    async def _upsert_external_person(self, email: str, tx_store) -> str | None:
+    async def _resolve_principal(
+        self, email: str, tx_store: TransactionStore, create_if_missing: bool = True
+    ) -> tuple[str, str] | None:
         """
-        Upsert person record for external email address.
-        Uses deterministic UUID based on email to ensure only one Person record per email.
-        Returns person_id for creating permission edge.
+        Resolve an email to the graph principal a permission edge can originate from,
+        returning ``(id, collection)``.
+
+        A platform user wins over a Person; an email belonging to neither is an external
+        collaborator and, when ``create_if_missing`` is true, gets a Person created for
+        it, so that grants made to people outside the workspace are represented rather
+        than dropped.
+
+        ``create_if_missing=False`` is for callers that must not create anything —
+        e.g. ``on_external_app_users``, whose contract is to grant a membership edge to
+        a principal some other write already established, not to originate one. Passing
+        false there turns an unresolved email into a no-op instead of a Person with no
+        permission edge behind it.
+
+        The returned id is whatever survived the upsert, never the optimistic uuid4 on
+        the local Person — a concurrent sync may have created the node first.
+
+        Deliberately not memoized. A Person becomes a User the moment its owner signs up
+        or joins the workspace, so any cache keyed on email is wrong from that instant
+        until it is cleared, and permission edges written in between land on the stale
+        Person while the real User node gets none. The lookup this replaces was already
+        one query per user permission per record, so resolving every time costs no more
+        than before for members, and at most two extra queries for an external
+        collaborator — which is the only case that reaches past the first branch.
         """
         try:
-            # Use deterministic UUID based on email to ensure consistent ID for same email
-            # This ensures upsert works correctly and only one Person record exists per email
-            person_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, email.lower()))
-            person = Person(email=email.lower(), id=person_id)
+            user = await tx_store.get_user_by_email(email)
+            if user:
+                return (user.id, CollectionNames.USERS.value)
 
-            # Upsert to PEOPLE collection (handles both create and update)
-            await tx_store.batch_upsert_people([person])
+            person = await tx_store.get_person_by_email(email, self.org_id)
+            if person:
+                return (person.id, CollectionNames.PEOPLE.value)
 
-            self.logger.debug(f"Upserted person record for external email: {email}")
+            if not create_if_missing:
+                return None
 
-            # Return the person ID for permission edge
-            return person.id
+            person_id = await tx_store.upsert_person_by_email(
+                Person(email=email.lower(), org_id=self.org_id)
+            )
+            if person_id:
+                self.logger.debug("Created person for external email: %s", email)
+                return (person_id, CollectionNames.PEOPLE.value)
 
+            return None
         except Exception as e:
-            self.logger.error(f"Error upserting person for {email}: {e}")
+            self.logger.error(f"Failed to resolve principal for {email}: {e}")
             return None
 
     @retry_on_deadlock()
@@ -1815,15 +1832,14 @@ class DataSourceEntitiesProcessor:
                         from_collection = None
 
                         if permission.entity_type == EntityType.USER:
-                            user = None
+                            resolved = None
                             if permission.email:
-                                user = await tx_store.get_user_by_email(permission.email)
+                                resolved = await self._resolve_principal(permission.email, tx_store)
 
-                            if user:
-                                from_id = user.id
-                                from_collection = CollectionNames.USERS.value
+                            if resolved:
+                                from_id, from_collection = resolved
                             else:
-                                self.logger.warning(f"Could not find user with email {permission.email} for RecordGroup permission.")
+                                self.logger.warning(f"Could not resolve principal for email {permission.email} for RecordGroup permission.")
 
                         elif permission.entity_type == EntityType.GROUP:
                             user_group = None
@@ -1922,6 +1938,85 @@ class DataSourceEntitiesProcessor:
             raise e
 
     @retry_on_deadlock()
+    async def on_external_app_users(self, emails: list[str], connector_id: str) -> None:
+        """
+        Give external collaborators a flagged membership edge on an app.
+
+        An external collaborator holds a grant on individual records but is not a member
+        of the app, so browse — which walks down from the app — cannot reach them. The
+        flagged edge is what makes the app visible and marks the principal as one whose
+        records need hoisting to app level.
+
+        Principals are resolved, never created: a caller supplies emails it has already
+        seen on permissions, so _handle_record_permissions (or on_new_user_groups, for
+        group members) has created any Person that should exist. Resolution therefore
+        runs with create_if_missing=False — an email nothing else has already written a
+        Person or User for has no grant behind it, and gets no edge instead of a Person
+        this method would have to originate and the reaper would just delete next run.
+
+        Membership creation is create-only, so a collaborator who is also a real app user
+        keeps their unflagged edge.
+        """
+        if not emails:
+            return
+
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                for email in emails:
+                    resolved = await self._resolve_principal(email, tx_store, create_if_missing=False)
+                    if not resolved:
+                        self.logger.debug(
+                            "No principal for external email %s; skipping app membership",
+                            email,
+                        )
+                        continue
+
+                    principal_id, principal_collection = resolved
+                    await tx_store.ensure_app_membership(
+                        principal_id,
+                        principal_collection,
+                        connector_id,
+                        is_external=True,
+                    )
+
+            self.logger.info(
+                "Ensured external app membership for %d collaborator(s) on connector %s",
+                len(emails),
+                connector_id,
+            )
+        except Exception as e:
+            self.logger.error(f"Transaction on_external_app_users failed: {str(e)}")
+            raise e
+
+    @retry_on_deadlock()
+    async def reap_external_app_users(self, connector_id: str) -> int:
+        """
+        Drop external membership for collaborators whose shares no longer exist.
+
+        The counterpart to on_external_app_users: that grants membership when a share
+        appears, this withdraws it once every share behind it is gone. Without it the
+        membership edge outlives its justification and the collaborator keeps seeing an
+        app with nothing in it.
+
+        Connectors call this at the end of a sync, once every permission the run touched
+        is committed - judging an edge against half-written permissions would reap
+        someone whose share is merely still being processed.
+        """
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                reaped = await tx_store.reap_stale_external_app_relations(connector_id)
+            if reaped:
+                self.logger.info(
+                    "Removed %d orphaned person node(s) while reaping connector %s",
+                    reaped,
+                    connector_id,
+                )
+            return reaped
+        except Exception as e:
+            self.logger.error(f"Transaction reap_external_app_users failed: {str(e)}")
+            raise e
+
+    @retry_on_deadlock()
     async def on_new_user_groups(self, user_groups: list[tuple[AppUserGroup, list[AppUser]]]) -> None:
         """
         Processes new user groups, upserts them, and creates permission edges.
@@ -1972,13 +2067,12 @@ class DataSourceEntitiesProcessor:
                     to_collection = CollectionNames.GROUPS.value
 
                     for member in members:
-                        user = None
+                        resolved = None
                         if member.email:
-                            # Find the user's internal DB ID
-                            user = await tx_store.get_user_by_email(member.email)
+                            resolved = await self._resolve_principal(member.email, tx_store)
 
-                        if not user:
-                            self.logger.warning(f"Could not find user with email {member.email} for UserGroup permission.")
+                        if not resolved:
+                            self.logger.warning(f"Could not resolve principal for email {member.email} for UserGroup permission.")
                             continue
 
                         permission = Permission(
@@ -1987,8 +2081,7 @@ class DataSourceEntitiesProcessor:
                             type=PermissionType.READ,
                             entity_type=EntityType.USER
                         )
-                        from_id = user.id
-                        from_collection = CollectionNames.USERS.value
+                        from_id, from_collection = resolved
 
                         user_group_permissions.append(
                             permission.to_arango_permission(from_id, from_collection, to_id, to_collection)

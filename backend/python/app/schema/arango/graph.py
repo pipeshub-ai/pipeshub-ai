@@ -78,7 +78,13 @@ EDGE_DEFINITIONS = [
     },
     {
         "edge_collection": CollectionNames.USER_APP_RELATION.value,
-        "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value],
+        # people: an external collaborator who is not yet a platform user still needs
+        # app membership so their shared records are reachable in browse.
+        "from_vertex_collections": [
+            CollectionNames.USERS.value,
+            CollectionNames.TEAMS.value,
+            CollectionNames.PEOPLE.value,
+        ],
         "to_vertex_collections": [CollectionNames.APPS.value],
     },
     {
@@ -88,7 +94,9 @@ EDGE_DEFINITIONS = [
     },
     {
         "edge_collection": CollectionNames.PERMISSION.value,
-        "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value, CollectionNames.GROUPS.value, CollectionNames.ORGS.value],
+        # people: external collaborators hold grants on individual records before
+        # (or without ever) becoming platform users.
+        "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value, CollectionNames.GROUPS.value, CollectionNames.ORGS.value, CollectionNames.PEOPLE.value],
         "to_vertex_collections": [CollectionNames.AGENT_INSTANCES.value, CollectionNames.AGENT_TEMPLATES.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value, CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value, CollectionNames.AGENT_SKILLS.value],
     },
     {

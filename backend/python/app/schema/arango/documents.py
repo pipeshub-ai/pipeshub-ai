@@ -1178,10 +1178,14 @@ people_schema = {
     "rule": {
         "type": "object",
         "properties": {
-            "_key": {"type": "string"},  # deterministic UUID based on email
+            "_key": {"type": "string"},  # uuid4; (orgId, email) is the business key (composite unique index)
             "email": {"type": "string"},
+            # Not in "required": pre-existing documents written before org-scoping
+            # was added have no orgId and must stay schema-valid.
+            "orgId": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
+            "fullName": {"type": ["string", "null"]},
             "firstName": {"type": ["string", "null"]},
             "lastName": {"type": ["string", "null"]},
             "phone": {"type": ["string", "null"]},

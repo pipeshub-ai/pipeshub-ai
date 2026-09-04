@@ -5358,12 +5358,33 @@ class TestReindexSingleRecord:
 # ---------------------------------------------------------------------------
 
 
+class TestPeopleEmailUniqueIndex:
+    @pytest.mark.asyncio
+    async def test_org_email_index_is_unique(self, connected_provider):
+        """Load-bearing, not defensive: upsert_person_by_email is a read-then-write
+        UPSERT, which ArangoDB does not make atomic on its own. Without the unique index
+        two concurrent syncs resolving the same collaborator in the same org each insert
+        a Person and the permission edges split across them."""
+        from app.config.constants.arangodb import CollectionNames
+
+        connected_provider.http_client.ensure_persistent_index = AsyncMock(return_value=True)
+        await connected_provider._ensure_indexes()
+
+        people_calls = [
+            c for c in connected_provider.http_client.ensure_persistent_index.await_args_list
+            if c.args and c.args[0] == CollectionNames.PEOPLE.value
+        ]
+        assert people_calls, "no index registered on the person collection"
+        org_email_call = next(c for c in people_calls if c.args[1] == ["orgId", "email"])
+        assert org_email_call.kwargs.get("unique") is True
+
+
 class TestEnsureIndexes:
     @pytest.mark.asyncio
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 21
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 22
 
 
 # ---------------------------------------------------------------------------
@@ -5922,7 +5943,7 @@ class TestBulkGetEntityIdsByEmailFull:
         ]
         result = await connected_provider.bulk_get_entity_ids_by_email(["person@test.com"])
         assert "person@test.com" in result
-        assert result["person@test.com"][1] == "people"
+        assert result["person@test.com"][1] == "person"
         assert result["person@test.com"][2] == "USER"
 
     @pytest.mark.asyncio
@@ -7940,7 +7961,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 21
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 22
 
 
 # ---------------------------------------------------------------------------
@@ -14797,7 +14818,13 @@ class TestGetKnowledgeHubBreadcrumbs:
                 [{"id": "app1", "name": "App", "nodeType": "app", "subType": "GOOGLE_DRIVE", "parentId": None}],
             ]
         )
-        result = await connected_provider.get_knowledge_hub_breadcrumbs("app1")
+        connected_provider.filter_nodes_with_permission_role = AsyncMock(
+            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
+        )
+        connected_provider.get_knowledge_hub_node_access = AsyncMock(
+            side_effect=lambda node_id, **k: {"id": node_id}
+        )
+        result = await connected_provider.get_knowledge_hub_breadcrumbs("app1", "u1", "org1")
         assert len(result) == 1
         assert result[0]["id"] == "app1"
 
@@ -14810,7 +14837,13 @@ class TestGetKnowledgeHubBreadcrumbs:
                 [{"id": "app1", "name": "App", "nodeType": "app", "subType": "GOOGLE_DRIVE", "parentId": None}],
             ]
         )
-        result = await connected_provider.get_knowledge_hub_breadcrumbs("r1")
+        connected_provider.filter_nodes_with_permission_role = AsyncMock(
+            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
+        )
+        connected_provider.get_knowledge_hub_node_access = AsyncMock(
+            side_effect=lambda node_id, **k: {"id": node_id}
+        )
+        result = await connected_provider.get_knowledge_hub_breadcrumbs("r1", "u1", "org1")
         assert len(result) == 3
         assert result[0]["nodeType"] == "app"
         assert result[2]["nodeType"] == "record"
@@ -14818,13 +14851,25 @@ class TestGetKnowledgeHubBreadcrumbs:
     @pytest.mark.asyncio
     async def test_node_not_found(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[None])
-        result = await connected_provider.get_knowledge_hub_breadcrumbs("missing")
+        connected_provider.filter_nodes_with_permission_role = AsyncMock(
+            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
+        )
+        connected_provider.get_knowledge_hub_node_access = AsyncMock(
+            side_effect=lambda node_id, **k: {"id": node_id}
+        )
+        result = await connected_provider.get_knowledge_hub_breadcrumbs("missing", "u1", "org1")
         assert result == []
 
     @pytest.mark.asyncio
     async def test_empty_result(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        result = await connected_provider.get_knowledge_hub_breadcrumbs("missing")
+        connected_provider.filter_nodes_with_permission_role = AsyncMock(
+            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
+        )
+        connected_provider.get_knowledge_hub_node_access = AsyncMock(
+            side_effect=lambda node_id, **k: {"id": node_id}
+        )
+        result = await connected_provider.get_knowledge_hub_breadcrumbs("missing", "u1", "org1")
         assert result == []
 
 
@@ -15307,6 +15352,61 @@ class TestGetAppChildrenSubquery:
     def test_kb_app_children_projects_reason(self, connected_provider):
         sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
         assert "reason: record.reason" in sub_query
+
+    def test_external_hoisting_is_gated(self, connected_provider):
+        """Both hoisting arms must be behind the isExternalUser flag: an internal user
+        with 50k direct permission edges must not pay for candidate collection."""
+        sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
+        assert sub_query.count("!is_external_user ? [] :") == 2
+        assert "rel.isExternalUser == true" in sub_query
+
+    def test_hoisting_arms_are_bound_before_union(self, connected_provider):
+        """UNION must receive plain variables. Passing subqueries (let alone ternaries
+        wrapping subqueries) as function arguments is a shape this file does not
+        otherwise rely on."""
+        sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
+        assert "UNION(connector_rgs, hoisted_records, hoisted_groups)" in sub_query
+
+    def test_permission_role_never_redeclared_in_one_scope(self, connected_provider):
+        """AQL rejects two `LET permission_role` in the same scope, and the hoisting
+        arms need several permission lookups each. Every one must sit inside its own
+        subquery -- this walks the parens rather than trusting indentation."""
+        sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
+
+        stack, scopes, i = [], [], 0
+        while i < len(sub_query):
+            ch = sub_query[i]
+            if ch == "(":
+                stack.append(i)
+            elif ch == ")":
+                if stack:
+                    stack.pop()
+            elif sub_query.startswith("LET permission_role =", i):
+                scopes.append(stack[-1] if stack else None)
+                i += 20
+                continue
+            i += 1
+
+        assert len(scopes) > 1, "expected several permission lookups"
+        assert len(set(scopes)) == len(scopes), "permission_role redeclared in one scope"
+
+    def test_orphan_records_check_both_parent_directions(self, connected_provider):
+        """A parent folder is found by walking recordRelations backwards; a record group
+        by walking belongsTo forwards. Checking only one direction hoists records that
+        are already reachable, duplicating them."""
+        sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
+        assert "FILTER rel._to == orphan_record._id" in sub_query
+        assert "FILTER be._from == orphan_record._id" in sub_query
+        assert (
+            "FILTER LENGTH(visible_parent_recs) == 0 AND LENGTH(visible_parent_rgs) == 0"
+            in sub_query
+        )
+
+    def test_orphan_groups_skip_top_level(self, connected_provider):
+        """A top-level RG has no parent RG and is branch 1's job; hoisting it too would
+        return it twice."""
+        sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
+        assert "FILTER LENGTH(rg_parents) > 0" in sub_query
 
 
 # ---------------------------------------------------------------------------
@@ -18839,6 +18939,63 @@ class TestEnsureEdgeDefinitionsUpToDate:
     """Tests for _ensure_edge_definitions_up_to_date method."""
 
     @pytest.mark.asyncio
+    async def test_new_from_collection_is_migrated(self, connected_provider):
+        """Adding a `from` vertex collection has to reach databases that already have the
+        edge definition. Comparing only `to` -- as this did originally -- strands the
+        change on every existing deployment, so `people` could never hold a permission
+        edge anywhere but a fresh install."""
+        connected_provider.http_client.get_graph = AsyncMock(return_value={
+            "graph": {"edgeDefinitions": [
+                {"collection": "permission", "from": ["users"], "to": ["records"]}
+            ]}
+        })
+        connected_provider.http_client.base_url = "http://localhost:8529"
+        connected_provider.http_client.database = "test_db"
+        put_ctx = MagicMock()
+        put_ctx.__aenter__ = AsyncMock(return_value=MagicMock(status=200))
+        put_ctx.__aexit__ = AsyncMock(return_value=False)
+        session = MagicMock()
+        session.put = MagicMock(return_value=put_ctx)
+        connected_provider.http_client._get_session = AsyncMock(return_value=session)
+
+        with patch(
+            "app.services.graph_db.arango.arango_http_provider.EDGE_DEFINITIONS",
+            [{
+                "edge_collection": "permission",
+                "from_vertex_collections": ["users", "people"],
+                "to_vertex_collections": ["records"],
+            }],
+        ):
+            await connected_provider._ensure_edge_definitions_up_to_date("knowledge_graph")
+
+        session.put.assert_called_once()
+        payload = session.put.call_args.kwargs["json"]
+        assert "people" in payload["from"]
+        assert "users" in payload["from"], "must merge, not replace"
+
+    @pytest.mark.asyncio
+    async def test_no_change_when_both_sides_already_superset(self, connected_provider):
+        connected_provider.http_client.get_graph = AsyncMock(return_value={
+            "graph": {"edgeDefinitions": [
+                {"collection": "permission", "from": ["users", "people"], "to": ["records"]}
+            ]}
+        })
+        session = MagicMock()
+        connected_provider.http_client._get_session = AsyncMock(return_value=session)
+
+        with patch(
+            "app.services.graph_db.arango.arango_http_provider.EDGE_DEFINITIONS",
+            [{
+                "edge_collection": "permission",
+                "from_vertex_collections": ["users", "people"],
+                "to_vertex_collections": ["records"],
+            }],
+        ):
+            await connected_provider._ensure_edge_definitions_up_to_date("knowledge_graph")
+
+        session.put.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_graph_not_found_returns_early(self, connected_provider):
         """Should return early if graph does not exist."""
         connected_provider.http_client.get_graph = AsyncMock(return_value=None)
@@ -22064,3 +22221,330 @@ class TestGetConnectorStatsKB:
         assert bind_vars["origin_filter"] == OriginTypes.UPLOAD.value
         assert bind_vars["kb_app_id"] == f"{CollectionNames.APPS.value}/kb1"
         assert bind_vars["record_group_prefix"] is None
+
+
+class TestArangoPersonMigrationAndReaper:
+    """Arango twins of the Phase 5/6 invariants. Asserted against the same rules as the
+    Neo4j side so the two backends cannot drift apart."""
+
+    def test_reaper_matches_browse_candidates(self, connected_provider):
+        """Same invariant as the Neo4j test: miss the group/role/team hop and the reaper
+        silently revokes real access."""
+        reaper = connected_provider._external_grant_exists_aql("uar._from", "@connector_id")
+        browse, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
+
+        assert 'perm.type == "USER"' in reaper
+        assert "FOR perm2 IN permission" in reaper, "reaper ignores group/role/team grants"
+        for coll in ("groups/", "roles/", "teams/"):
+            assert coll in reaper, f"reaper ignores {coll} grants"
+            assert coll in browse
+        assert "n.connectorId == @connector_id" in reaper
+
+        # Soft-deleted grants must not keep membership alive — browse already drops them.
+        assert "n.isDeleted != true" in reaper
+        assert "n2.isDeleted != true" in reaper
+        assert "r.isDeleted != true" in browse
+        assert "g.isDeleted != true" in browse
+
+    # -- executing tests -----------------------------------------------------------
+    #
+    # migrate_person_to_user is several statements with dedup in Python, so these drive
+    # the real call sequence through a scripted execute_aql rather than grepping source.
+
+    @staticmethod
+    def _script(connected_provider, *returns):
+        """Feed execute_aql a fixed sequence of results and record every call."""
+        calls = []
+
+        async def fake(query, bind_vars=None, txn_id=None):
+            calls.append((query, bind_vars or {}))
+            return returns[len(calls) - 1] if len(calls) <= len(returns) else []
+
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=fake)
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_migration_returns_none_when_no_person(self, connected_provider):
+        """The ordinary case for anyone who was never an external collaborator."""
+        connected_provider.get_person_by_email = AsyncMock(return_value=None)
+        assert await connected_provider.migrate_person_to_user("a@x.io", "u1", "org-1") is None
+
+    @pytest.mark.asyncio
+    async def test_migration_reports_migrated_and_removes_person(self, connected_provider):
+        from app.config.constants.arangodb import PersonMigrationMode
+        from app.models.entities import Person
+
+        connected_provider.get_person_by_email = AsyncMock(
+            return_value=Person(id="p1", email="a@x.io")
+        )
+        calls = self._script(
+            connected_provider,
+            [False],                                    # CRM probe: not a contact
+            [{"mine": [], "theirs": []}],               # permission: nothing to move
+            [{"mine": [], "theirs": []}],               # userAppRelation: nothing to move
+        )
+        mode = await connected_provider.migrate_person_to_user(
+            "a@x.io", "u1", "org-1", transaction="txn-1"
+        )
+        assert mode == PersonMigrationMode.MIGRATED
+        assert any("REMOVE @person_key" in q for q, _ in calls)
+
+    @pytest.mark.asyncio
+    async def test_migration_reports_split_and_keeps_person(self, connected_provider):
+        """A Salesforce contact keeps its node and its CRM edges; only the collaborator
+        edges move."""
+        from app.config.constants.arangodb import PersonMigrationMode
+        from app.models.entities import Person
+
+        connected_provider.get_person_by_email = AsyncMock(
+            return_value=Person(id="p1", email="a@x.io")
+        )
+        calls = self._script(
+            connected_provider,
+            [True],                                     # CRM probe: is a contact
+            [{"mine": [], "theirs": []}],
+            [{"mine": [], "theirs": []}],
+        )
+        mode = await connected_provider.migrate_person_to_user(
+            "a@x.io", "u1", "org-1", transaction="txn-1"
+        )
+        assert mode == PersonMigrationMode.SPLIT
+        assert not any("REMOVE @person_key" in q for q, _ in calls)
+
+    @pytest.mark.asyncio
+    async def test_migration_checks_crm_edges_in_both_directions(self, connected_provider):
+        """lead/contact point AT the person (_to); memberOf points away (_from). Checking
+        one direction would miss two of the three and delete a contact outright."""
+        from app.config.constants.arangodb import (
+            PERSON_CRM_EDGES_INBOUND,
+            PERSON_CRM_EDGES_OUTBOUND,
+        )
+        from app.models.entities import Person
+
+        connected_provider.get_person_by_email = AsyncMock(
+            return_value=Person(id="p1", email="a@x.io")
+        )
+        calls = self._script(connected_provider, [False], [{"mine": [], "theirs": []}],
+                             [{"mine": [], "theirs": []}])
+        await connected_provider.migrate_person_to_user("a@x.io", "u1", "org-1", transaction="t")
+
+        probe = calls[0][0]
+        for coll in PERSON_CRM_EDGES_OUTBOUND:
+            assert f"FOR e IN {coll} FILTER e._from == @person_id" in probe
+        for coll in PERSON_CRM_EDGES_INBOUND:
+            assert f"FOR e IN {coll} FILTER e._to == @person_id" in probe
+
+    @pytest.mark.asyncio
+    async def test_migration_reinserts_edges_under_the_user(self, connected_provider):
+        from app.models.entities import Person
+
+        connected_provider.get_person_by_email = AsyncMock(
+            return_value=Person(id="p1", email="a@x.io")
+        )
+        edge = {
+            "_id": "permission/e1", "_key": "e1", "_rev": "r1",
+            "_from": "person/p1", "_to": "records/rec1", "role": "READER",
+        }
+        calls = self._script(
+            connected_provider,
+            [False],
+            [{"mine": [edge], "theirs": []}],           # permission: one edge to move
+            [],                                          # insert
+            [],                                          # remove old
+            [{"mine": [], "theirs": []}],               # userAppRelation
+        )
+        await connected_provider.migrate_person_to_user("a@x.io", "u1", "org-1", transaction="t")
+
+        insert = next(b for q, b in calls if "UPSERT {_from: e._from, _to: e._to}" in q)
+        moved = insert["edges"][0]
+        assert moved["_from"] == "users/u1"
+        assert moved["_to"] == "records/rec1"
+        assert moved["role"] == "READER"
+        # Arango rejects a document carrying a foreign _id/_key/_rev.
+        for k in ("_id", "_key", "_rev"):
+            assert k not in moved
+
+    @pytest.mark.asyncio
+    async def test_migration_skips_edges_the_user_already_has(self, connected_provider):
+        """Both nodes can hold the same grant, and re-inserting it would either duplicate
+        or fail on the unique constraint."""
+        from app.models.entities import Person
+
+        connected_provider.get_person_by_email = AsyncMock(
+            return_value=Person(id="p1", email="a@x.io")
+        )
+        edge = {"_id": "permission/e1", "_key": "e1", "_rev": "r1",
+                "_from": "person/p1", "_to": "records/rec1"}
+        calls = self._script(
+            connected_provider,
+            [False],
+            [{"mine": [edge], "theirs": ["records/rec1"]}],   # user already has it
+            [],                                               # remove old
+            [{"mine": [], "theirs": []}],
+        )
+        await connected_provider.migrate_person_to_user("a@x.io", "u1", "org-1", transaction="t")
+        assert not any("UPSERT {_from: e._from, _to: e._to}" in q for q, _ in calls)
+        # ...but the person's copy is still cleared away.
+        assert any("REMOVE e IN @@collection" in q for q, _ in calls)
+
+    @pytest.mark.asyncio
+    async def test_migration_only_touches_transferable_collections(self, connected_provider):
+        """CRM edges are what identify the Person as a contact; moving one would make a
+        split indistinguishable from a migration."""
+        from app.config.constants.arangodb import (
+            PERSON_CRM_EDGES,
+            PERSON_TRANSFERABLE_EDGES,
+        )
+        from app.models.entities import Person
+
+        connected_provider.get_person_by_email = AsyncMock(
+            return_value=Person(id="p1", email="a@x.io")
+        )
+        calls = self._script(connected_provider, [False], [{"mine": [], "theirs": []}],
+                             [{"mine": [], "theirs": []}])
+        await connected_provider.migrate_person_to_user("a@x.io", "u1", "org-1", transaction="t")
+
+        touched = {b["@collection"] for _, b in calls if "@collection" in b}
+        assert set(PERSON_TRANSFERABLE_EDGES) <= touched
+        assert not (touched & set(PERSON_CRM_EDGES))
+
+    @pytest.mark.asyncio
+    async def test_migration_rolls_back_a_transaction_it_owns(self, connected_provider):
+        """Called without a transaction it opens one, so a mid-way failure must not leave
+        edges half-moved."""
+        from app.models.entities import Person
+
+        connected_provider.get_person_by_email = AsyncMock(
+            return_value=Person(id="p1", email="a@x.io")
+        )
+        connected_provider.begin_transaction = AsyncMock(return_value="txn-9")
+        connected_provider.rollback_transaction = AsyncMock()
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=RuntimeError("db down")
+        )
+
+        with pytest.raises(RuntimeError):
+            await connected_provider.migrate_person_to_user("a@x.io", "u1", "org-1")
+        connected_provider.rollback_transaction.assert_awaited_once_with("txn-9")
+
+    @pytest.mark.asyncio
+    async def test_migration_does_not_manage_a_caller_transaction(self, connected_provider):
+        """batch_upsert_app_users already holds one; committing it here would end it
+        under the caller."""
+        from app.models.entities import Person
+
+        connected_provider.get_person_by_email = AsyncMock(
+            return_value=Person(id="p1", email="a@x.io")
+        )
+        connected_provider.begin_transaction = AsyncMock()
+        connected_provider.commit_transaction = AsyncMock()
+        self._script(connected_provider, [False], [{"mine": [], "theirs": []}],
+                     [{"mine": [], "theirs": []}])
+
+        await connected_provider.migrate_person_to_user("a@x.io", "u1", "org-1", transaction="outer")
+        connected_provider.begin_transaction.assert_not_awaited()
+        connected_provider.commit_transaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reaper_counts_only_the_people_it_stranded(self, connected_provider):
+        self._script(
+            connected_provider,
+            [                                        # stale flagged edges
+                {"edge": "e1", "principal": "person/p1"},
+                {"edge": "e2", "principal": "person/p2"},
+                {"edge": "e3", "principal": "users/u9"},   # a user, never swept
+            ],
+            [],                                      # delete the membership edges
+            [1, 1],                                  # two people removed
+        )
+        assert await connected_provider.reap_stale_external_app_relations("c1") == 2
+
+    @pytest.mark.asyncio
+    async def test_reaper_sweeps_people_but_never_users(self, connected_provider):
+        """A User node stripped of external membership is still a platform account."""
+        calls = self._script(
+            connected_provider,
+            [{"edge": "e3", "principal": "users/u9"}],
+            [],
+        )
+        assert await connected_provider.reap_stale_external_app_relations("c1") == 0
+        assert not any("REMOVE key IN person" in q for q, _ in calls)
+
+    @pytest.mark.asyncio
+    async def test_reaper_no_ops_when_nothing_is_stale(self, connected_provider):
+        calls = self._script(connected_provider, [])
+        assert await connected_provider.reap_stale_external_app_relations("c1") == 0
+        assert len(calls) == 1, "must not issue a delete when there is nothing to delete"
+
+    @pytest.mark.asyncio
+    async def test_reaper_swallows_failure(self, connected_provider):
+        """Housekeeping must not fail a sync that indexed every record."""
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=RuntimeError("db down")
+        )
+        assert await connected_provider.reap_stale_external_app_relations("c1") == 0
+
+    @pytest.mark.asyncio
+    async def test_reaper_only_touches_flagged_edges(self, connected_provider):
+        """A real app member's membership edge must never be a candidate."""
+        calls = self._script(connected_provider, [0])
+        await connected_provider.reap_stale_external_app_relations("c1")
+        assert any("uar.isExternalUser == true" in q for q, _ in calls)
+
+
+class TestArangoBreadcrumbVisibilityFilter:
+    """Phase 8 -- Arango twin of TestBreadcrumbVisibilityFilter.
+
+    The helper is duplicated per provider (as the whole breadcrumbs walk already is), so
+    these assert the two behave identically rather than re-deriving the cases.
+    """
+
+    TRAIL = [
+        {"id": "r1", "name": "api.pdf", "nodeType": "record", "subType": "FILE"},
+        {"id": "f1", "name": "Specs", "nodeType": "folder", "subType": None},
+        {"id": "rg1", "name": "Engineering", "nodeType": "recordGroup", "subType": None},
+        {"id": "app1", "name": "Drive", "nodeType": "app", "subType": None},
+    ]
+
+    @staticmethod
+    def _with_visibility(provider, visible_non_app, visible_apps):
+        provider.filter_nodes_with_permission_role = AsyncMock(
+            return_value=set(visible_non_app)
+        )
+
+        async def node_access(node_id, user_key, org_id, folder_mime_types, transaction=None):
+            return {"id": node_id} if node_id in visible_apps else None
+
+        provider.get_knowledge_hub_node_access = AsyncMock(side_effect=node_access)
+
+    @pytest.mark.asyncio
+    async def test_skips_denied_ancestor_keeps_leaf(self, connected_provider):
+        self._with_visibility(connected_provider, {"r1"}, {"app1"})
+        out = await connected_provider._filter_visible_breadcrumbs(
+            [dict(s) for s in self.TRAIL], "u1", "org1"
+        )
+        assert [s["id"] for s in out] == ["r1", "app1"]
+
+    @pytest.mark.asyncio
+    async def test_invisible_leaf_returns_empty(self, connected_provider):
+        self._with_visibility(connected_provider, {"f1", "rg1"}, {"app1"})
+        assert await connected_provider._filter_visible_breadcrumbs(
+            [dict(s) for s in self.TRAIL], "u1", "org1"
+        ) == []
+
+    @pytest.mark.asyncio
+    async def test_denied_app_dropped(self, connected_provider):
+        self._with_visibility(connected_provider, {"r1", "f1", "rg1"}, set())
+        out = await connected_provider._filter_visible_breadcrumbs(
+            [dict(s) for s in self.TRAIL], "u1", "org1"
+        )
+        assert [s["id"] for s in out] == ["r1", "f1", "rg1"]
+
+    @pytest.mark.asyncio
+    async def test_apps_never_reach_the_batched_filter(self, connected_provider):
+        self._with_visibility(connected_provider, {"r1", "f1", "rg1"}, {"app1"})
+        await connected_provider._filter_visible_breadcrumbs(
+            [dict(s) for s in self.TRAIL], "u1", "org1"
+        )
+        batched = connected_provider.filter_nodes_with_permission_role.await_args.args[0]
+        assert {n["type"] for n in batched} == {"record", "recordGroup"}

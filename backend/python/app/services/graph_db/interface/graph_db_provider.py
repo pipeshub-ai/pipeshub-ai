@@ -2183,6 +2183,137 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_person_by_email(
+        self,
+        email: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> Optional['Person']:
+        """
+        Get a person by (org_id, email) — Person's business key, same as User's.
+
+        Args:
+            email (str): Email address; matched case-insensitively
+            org_id (str): Owning org; required, same as any other org-scoped lookup
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Optional[Person]: The person, or None
+        """
+        pass
+
+    @abstractmethod
+    async def upsert_person_by_email(
+        self,
+        person: Person,
+        transaction: str | None = None,
+    ) -> str | None:
+        """
+        Upsert a Person keyed on (org_id, email), returning the id of the surviving node.
+
+        Callers must use the returned id rather than ``person.id``: on a match the
+        existing node wins and its id is what every edge must point at. Never updates
+        an existing node, so a caller that knows only an email cannot blank names or
+        phone numbers written by a richer source.
+
+        Args:
+            person (Person): The person to insert if no match exists; carries its own
+                org_id
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Optional[str]: Surviving person id, or None on failure
+        """
+        pass
+
+    @abstractmethod
+    async def ensure_app_membership(
+        self,
+        principal_id: str,
+        principal_collection: str,
+        connector_id: str,
+        *,
+        is_external: bool,
+        source_user_id: str | None = None,
+        transaction: str | None = None,
+    ) -> None:
+        """
+        Ensure a principal (user or person) has a membership edge to an app.
+
+        Create-only: an existing edge is left untouched, so this can never downgrade a
+        real member to an external collaborator.
+
+        Args:
+            principal_id (str): User or person key
+            principal_collection (str): CollectionNames.USERS or CollectionNames.PEOPLE
+            connector_id (str): Target app id
+            is_external (bool): True when the principal reached this app only through a
+                share rather than app membership
+            source_user_id (Optional[str]): Source-system user id, when known
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            None
+        """
+        pass
+
+    @abstractmethod
+    async def migrate_person_to_user(
+        self,
+        email: str,
+        user_key: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> str | None:
+        """
+        Promote a Person to a User by moving its collaborator edges onto that User.
+
+        A Person carrying any CRM edge (lead/contact/memberOf) splits rather than merges:
+        the collaborator edges move but the Person node survives holding its CRM edges,
+        because a Salesforce contact is a separate thing from a platform identity that
+        happens to share an address. A Person with no CRM edge is deleted once emptied.
+
+        Must be idempotent: a second run finds nothing left to move.
+
+        Args:
+            email (str): Email identifying the Person; matched against the normalised form
+            user_key (str): Key of the already-existing User to move the edges onto
+            org_id (str): Owning org of the Person being migrated; required, same as
+                get_person_by_email
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Optional[str]: PersonMigrationMode.MIGRATED or .SPLIT, or None when no Person
+                exists for the email - the ordinary case, not an error.
+        """
+        pass
+
+    @abstractmethod
+    async def reap_stale_external_app_relations(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """
+        Drop `isExternalUser` membership edges whose underlying grant is gone, plus any
+        Person the removal left with no edges at all.
+
+        The "still has a grant" test must mirror the candidate collection used by browse
+        hoisting, including the group/role/team hop - otherwise this reaps collaborators
+        whose access is real and their records vanish from the tree.
+
+        Only flagged edges are considered, so a real app member is never at risk.
+
+        Args:
+            connector_id (str): App whose membership edges to sweep
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            int: Number of orphaned Person nodes removed
+        """
+        pass
+
+    @abstractmethod
     async def get_app_role_by_external_id(
         self,
         connector_id: str,
@@ -3988,17 +4119,25 @@ class IGraphDBProvider(ABC):
     async def get_knowledge_hub_breadcrumbs(
         self,
         node_id: str,
+        user_key: str,
+        org_id: str,
         transaction: str | None = None
     ) -> list[dict[str, Any]]:
         """
-        Get breadcrumb trail for a node.
+        Get breadcrumb trail for a node, filtered to what the caller can see.
+
+        Ancestors without a permission role are omitted and the walk continues past
+        them, so a node renders under its nearest visible ancestor -- matching where
+        browse shows it. Returns [] when the node itself is not visible.
 
         Args:
             node_id: Node ID to get breadcrumbs for
+            user_key: Graph user key; required, not optional
+            org_id: Organization ID for org scoping
             transaction: Optional transaction context
 
         Returns:
-            List of breadcrumb items from root to current node
+            List of visible breadcrumb items from root to current node
         """
         pass
 

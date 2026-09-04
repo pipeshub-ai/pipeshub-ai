@@ -298,6 +298,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         # per-user and lives alongside the user being synced.
         self._synced_drive_ids: set = set()
 
+        # Collaborators granted access to a file but outside this Workspace domain.
+        # Accumulated across the run and flushed once at the end, so an email repeated
+        # across thousands of files costs one membership write.
+        self._external_emails: set[str] = set()
+
         # Google clients and data sources (initialized in init())
         self.admin_client: Optional[GoogleClient] = None
         self.drive_client: Optional[GoogleClient] = None
@@ -435,6 +440,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._blocked_folder_ids = set()
             self._tracked_folder_ids = set(self._folder_seed_ids)
             self._synced_drive_ids = set()
+            self._external_emails = set()
             if self._folder_seed_ids:
                 self.logger.info(
                     f"📁 Folder filter active with {len(self._folder_seed_ids)} seed folder(s)"
@@ -467,6 +473,16 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.info("Processing user drives in batches...")
             # Use users synced in Step 1
             await self._process_users_in_batches(self.synced_users)
+
+            # Step 6: Grant external collaborators app membership. Runs last because it
+            # resolves principals rather than creating them, so every permission edge
+            # from step 5 must already be committed.
+            await self._flush_external_app_users()
+
+            # Step 7: drop membership for collaborators whose shares were revoked at the
+            # source. Runs after step 6 so an edge created moments ago is judged against
+            # the permissions this same run just wrote.
+            await self._reap_external_app_users()
 
             self.logger.info("Google Drive enterprise connector sync completed successfully")
 
@@ -583,6 +599,58 @@ class GoogleDriveTeamConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error syncing users: {e}", exc_info=True)
             raise
+
+    def _track_external_collaborator(self, entity_type: EntityType, email: Optional[str]) -> None:
+        """Note a user grant whose email is outside this Workspace domain.
+
+        Guarded on a non-empty membership set: an empty one means user sync produced
+        nothing, and treating the whole domain as external would flag every member.
+        """
+        if entity_type != EntityType.USER or not email:
+            return
+        if not self.synced_user_emails:
+            return
+        normalized = email.lower()
+        if normalized not in self.synced_user_emails:
+            self._external_emails.add(normalized)
+
+    async def _flush_external_app_users(self) -> None:
+        """Hand accumulated external collaborators to the processor for app membership.
+
+        Non-fatal: a sync that indexed every record should not be reported as failed
+        because a visibility edge could not be written. The next run re-derives the set
+        from source permissions and retries.
+        """
+        if not self._external_emails:
+            return
+
+        emails = list(self._external_emails)
+        try:
+            await self.data_entities_processor.on_external_app_users(
+                emails, self.connector_id
+            )
+            self.logger.info(
+                "✅ Granted app membership to %d external collaborator(s)", len(emails)
+            )
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to grant app membership to external collaborators: {e}",
+                exc_info=True,
+            )
+
+    async def _reap_external_app_users(self) -> None:
+        """Drop external membership edges whose underlying share no longer exists.
+
+        Non-fatal for the same reason as the flush: a sync that indexed every record
+        should not be reported as failed because a cleanup pass did not finish. The next
+        run re-derives the same set.
+        """
+        try:
+            await self.data_entities_processor.reap_external_app_users(self.connector_id)
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to reap stale external app relations: {e}", exc_info=True
+            )
 
     async def _sync_user_groups(self) -> None:
         """Sync user groups and their members from Google Workspace Admin API."""
@@ -715,6 +783,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                         source_created_at=source_created_at_user
                     )
                     app_users.append(app_user)
+
+                    # Directory API reports an out-of-domain member as type USER (its
+                    # EXTERNAL type is documented "not currently used"), so external
+                    # members arrive through the same filter as everyone else and are
+                    # only distinguishable against the synced workspace set.
+                    self._track_external_collaborator(EntityType.USER, member_email)
 
                 except Exception as e:
                     self.logger.error(f"Error processing group member {member.get('id', 'unknown')}: {e}", exc_info=True)
@@ -897,6 +971,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                             entity_type=entity_type
                         )
                         permissions.append(permission)
+
+                        self._track_external_collaborator(entity_type, email)
 
                         # A "file"-type entry means this user was granted access directly on this
                         # item, as opposed to inheriting it via Shared Drive membership ("member").
@@ -3483,17 +3559,32 @@ class GoogleDriveTeamConnector(BaseConnector):
                 )
             self.logger.info(f"Streaming Drive file: {file_id}, convertTo: {convertTo}")
 
-            # If the caller already told us exactly who to impersonate, use that
-            # directly — no need to search permission holders. Only fall back to the
-            # broader candidate search when no user_id was given at all (e.g. the
-            # internal indexing stream route, whose JWT carries no user identity);
-            # resolve_explicit_user raises if a given user_id can't be resolved.
+            # If the caller already told us exactly who to impersonate, try that first —
+            # no need to search permission holders. resolve_explicit_user raises if a
+            # given user_id can't be resolved, so an unidentified caller never reaches
+            # the broader search.
             preferred_user = await resolve_explicit_user(self.logger, self.data_entities_processor, user_id)
-            if preferred_user:
-                candidates = [preferred_user]
-            else:
-                candidates = await get_impersonation_candidates(
+            candidates: List[User] = [preferred_user] if preferred_user else []
+
+            # A caller from outside this Workspace — an external collaborator who has
+            # since signed up — can never be impersonated, because the service account's
+            # delegation covers the synced domain only. Back them with the record's other
+            # permission holders, who can be. Safe because the route authorized this
+            # caller before streaming: impersonation picks whose credentials fetch the
+            # bytes, not who may read them. An empty membership set proves nothing about
+            # the caller, so it takes the same fallback.
+            preferred_is_impersonable = (
+                preferred_user is not None
+                and bool(self.synced_user_emails)
+                and (preferred_user.email or "").lower() in self.synced_user_emails
+            )
+            if not preferred_is_impersonable:
+                seen = {(user.email or "").lower() for user in candidates}
+                fallback = await get_impersonation_candidates(
                     self.data_entities_processor, record.id, self.synced_user_emails, self.logger
+                )
+                candidates.extend(
+                    user for user in fallback if (user.email or "").lower() not in seen
                 )
                 if not candidates:
                     self.logger.warning(f"No user found with permission to node: {record.id}, falling back to service account")

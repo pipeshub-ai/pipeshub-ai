@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from fastapi import Request
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PERSON_CRM_EDGES,
     RECORD_TYPE_COLLECTION_MAPPING,
     AppGroups,
     CollectionNames,
@@ -30,6 +31,7 @@ from app.config.constants.arangodb import (
     Connectors,
     DepartmentNames,
     OriginTypes,
+    PersonMigrationMode,
     PermissionModel,
     ProgressStatus,
     RecordTypes,
@@ -341,6 +343,28 @@ class Neo4jProvider(IGraphDBProvider):
 
         return constraints
 
+    def _generate_business_key_constraints(self) -> list[str]:
+        """
+        Generate uniqueness constraints for business keys — properties that identify a
+        node independently of its generated id.
+
+        These are load-bearing, not defensive. Neo4j serialises concurrent ``MERGE`` on
+        a property only when a uniqueness constraint backs it (the merge takes a lock on
+        the index entry); without one, two transactions resolving the same external
+        collaborator both create a node.
+
+        Composite uniqueness constraints (multiple properties) are supported on both
+        Neo4j Community and Enterprise — unlike the property existence constraints
+        below, this one needs no edition fallback.
+
+        Returns:
+            List of Cypher CREATE CONSTRAINT queries for business keys
+        """
+        return [
+            "CREATE CONSTRAINT person_org_email_unique IF NOT EXISTS "
+            f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.email) IS UNIQUE"
+        ]
+
     def _generate_performance_indexes(self) -> list[str]:
         """
         Generate strategic performance indexes based on query pattern analysis.
@@ -585,6 +609,20 @@ class Neo4jProvider(IGraphDBProvider):
                     self.logger.debug(f"Unique constraint creation (may already exist): {str(e)}")
 
             self.logger.info(f"✅ Created {len(unique_constraints)} unique id constraints")
+
+            # Business-key uniqueness (e.g. Person.(orgId, email)). Creation fails on a
+            # label that already holds duplicates, hence the same tolerant handling as above.
+            business_key_constraints = self._generate_business_key_constraints()
+
+            for constraint_query in business_key_constraints:
+                try:
+                    await self.client.execute_query(constraint_query)
+                except Exception as e:
+                    self.logger.warning(f"Business key constraint creation (may already exist): {str(e)}")
+
+            self.logger.info(
+                f"✅ Created {len(business_key_constraints)} business key constraints"
+            )
 
             # Create property existence constraints for required fields from schemas
             property_constraints = self._generate_required_field_constraints()
@@ -6009,6 +6047,17 @@ class Neo4jProvider(IGraphDBProvider):
 
                     user_record = await self.get_user_by_email(user.email, transaction)
 
+                    # This address may already exist as a Person from an external share.
+                    # Non-fatal: one CRM contact must not fail a whole sync.
+                    try:
+                        await self.migrate_person_to_user(
+                            user.email, user.id, org_id, transaction=transaction
+                        )
+                    except Exception as migrate_err:
+                        self.logger.error(
+                            f"❌ Person adoption failed for {user.email}: {migrate_err}"
+                        )
+
                     # Create org relation
                     user_org_edge = {
                         "from_id": user.id,
@@ -6033,6 +6082,9 @@ class Neo4jProvider(IGraphDBProvider):
                     "to_id": connector_id,
                     "to_collection": CollectionNames.APPS.value,
                     "sourceUserId": user.source_user_id,
+                    # Explicit False, not omission: this is what un-flags a member who
+                    # was first seen as an external collaborator on a shared record.
+                    "isExternalUser": False,
                     "syncState": "NOT_STARTED",
                     "lastSyncUpdate": get_epoch_timestamp_in_ms(),
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -12764,6 +12816,332 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Batch upsert people failed: {str(e)}")
             return False
 
+    async def get_person_by_email(
+        self,
+        email: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> Person | None:
+        """Get a person by (org_id, email) — Person's business key, same as User's."""
+        try:
+            label = collection_to_label(CollectionNames.PEOPLE.value)
+            query = f"""
+            MATCH (p:{label})
+            WHERE p.email = $email AND p.orgId = $org_id
+            RETURN p
+            LIMIT 1
+            """
+            parameters: dict[str, Any] = {"email": email.lower(), "org_id": org_id}
+
+            results = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            if not results:
+                return None
+
+            person_dict = self._neo4j_to_arango_node(
+                dict(results[0]["p"]), CollectionNames.PEOPLE.value
+            )
+            return Person.from_arango_person(person_dict)
+        except Exception as e:
+            self.logger.error(f"❌ Get person by email failed: {str(e)}")
+            return None
+
+    async def upsert_person_by_email(
+        self,
+        person: Person,
+        transaction: str | None = None,
+    ) -> str | None:
+        """
+        Upsert a Person keyed on (org_id, email), returning the id of the surviving node.
+
+        Callers must use the returned id rather than ``person.id``: on a match the
+        existing node wins, and its id is what every edge must point at.
+
+        Never updates on match. A Person written by Salesforce carries real names and
+        a phone number; a connector that knows only an email would otherwise blank them.
+
+        Atomicity depends on the person_org_email_unique constraint — see
+        _generate_business_key_constraints.
+        """
+        try:
+            label = collection_to_label(CollectionNames.PEOPLE.value)
+            props = self._arango_to_neo4j_node(
+                person.to_arango_person(), CollectionNames.PEOPLE.value
+            )
+
+            query = f"""
+            MERGE (p:{label} {{email: $email, orgId: $org_id}})
+            ON CREATE SET p = $props
+            RETURN p.id AS id
+            """
+            parameters: dict[str, Any] = {
+                "email": props["email"],
+                "org_id": props["orgId"],
+                "props": props,
+            }
+
+            results = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return results[0]["id"] if results else None
+        except Exception as e:
+            self.logger.error(f"❌ Upsert person by email failed: {str(e)}")
+            return None
+
+    async def ensure_app_membership(
+        self,
+        principal_id: str,
+        principal_collection: str,
+        connector_id: str,
+        *,
+        is_external: bool,
+        source_user_id: str | None = None,
+        transaction: str | None = None,
+    ) -> None:
+        """
+        Ensure a principal (user or person) has a membership edge to an app.
+
+        Create-only. An existing edge is left untouched, so this can never downgrade
+        a real member to an external collaborator, and re-running it over an
+        already-synced app is a no-op.
+
+        Deliberately not routed through batch_create_edges: that helper does
+        ``SET r = edge.props``, which would overwrite an existing edge's flag.
+        """
+        try:
+            now = get_epoch_timestamp_in_ms()
+            props = {
+                "isExternalUser": is_external,
+                "syncState": "NOT_STARTED",
+                "lastSyncUpdate": now,
+                "createdAtTimestamp": now,
+                "updatedAtTimestamp": now,
+            }
+            if source_user_id is not None:
+                props["sourceUserId"] = source_user_id
+
+            principal_label = collection_to_label(principal_collection)
+            app_label = collection_to_label(CollectionNames.APPS.value)
+            relationship = edge_collection_to_relationship(
+                CollectionNames.USER_APP_RELATION.value
+            )
+            query = f"""
+            MATCH (principal:{principal_label} {{id: $principal_id}})
+            MATCH (app:{app_label} {{id: $connector_id}})
+            MERGE (principal)-[r:{relationship}]->(app)
+            ON CREATE SET r = $props
+            """
+            await self.client.execute_query(
+                query,
+                parameters={
+                    "principal_id": principal_id,
+                    "connector_id": connector_id,
+                    "props": props,
+                },
+                txn_id=transaction,
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Ensure app membership failed: {str(e)}")
+            raise
+
+    def _external_grant_exists_cypher(self, principal_var: str, app_var: str) -> str:
+        """Predicate: does this principal still hold a grant that would make it an
+        external collaborator on this app?
+
+        **This must stay in step with the candidate collection in
+        `_get_app_children_cypher` (blocks 3 and 4).** The reaper deletes the
+        `isExternalUser` edge when this returns false; if it omitted the group/role/team
+        hop that browse honours, it would reap someone whose access is real and their
+        shared records would vanish from the tree. `test_reaper_matches_browse_candidates`
+        cross-checks the two.
+
+        Org-wide grants are excluded here for the same reason browse excludes them: they
+        are not what makes someone an external collaborator on this app.
+        """
+        return f"""(
+            EXISTS {{
+                MATCH ({principal_var})-[:PERMISSION {{type: 'USER'}}]->(granted)
+                WHERE (granted:Record OR granted:RecordGroup)
+                  AND granted.connectorId = {app_var}.id
+                  AND coalesce(granted.isDeleted, false) = false
+            }}
+            OR EXISTS {{
+                MATCH ({principal_var})-[:PERMISSION {{type: 'USER'}}]->(via)-[:PERMISSION]->(granted)
+                WHERE (via:Group OR via:Role OR via:Teams)
+                  AND (granted:Record OR granted:RecordGroup)
+                  AND granted.connectorId = {app_var}.id
+                  AND coalesce(granted.isDeleted, false) = false
+            }}
+        )"""
+
+    async def migrate_person_to_user(
+        self,
+        email: str,
+        user_key: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> str | None:
+        """
+        Promote a Person to a User by moving its collaborator edges onto that User.
+
+        Returns PersonMigrationMode.MIGRATED, .SPLIT, or None when no Person exists for
+        the email (the ordinary case, not an error).
+
+        A Person carrying any CRM edge splits instead of merging: the collaborator edges
+        move, but the node survives holding its `lead`/`contact`/`memberOf` edges, because
+        a Salesforce contact is a separate thing from a platform identity that happens to
+        share an address.
+
+        Idempotent - a second run finds nothing left to move. If the User already holds
+        an edge to the same target, that edge is left untouched and the Person's copy is
+        dropped.
+        """
+        try:
+            person_label = collection_to_label(CollectionNames.PEOPLE.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            crm_types = "|".join(
+                edge_collection_to_relationship(e) for e in PERSON_CRM_EDGES
+            )
+            permission_rel = edge_collection_to_relationship(
+                CollectionNames.PERMISSION.value
+            )
+            app_rel = edge_collection_to_relationship(
+                CollectionNames.USER_APP_RELATION.value
+            )
+
+            # The transfers are written out per relationship type rather than looped:
+            # Cypher has no dynamic relationship type without APOC.
+            query = f"""
+            MATCH (p:{person_label} {{email: $email, orgId: $org_id}})
+            MATCH (u:{user_label} {{id: $user_key}})
+
+            // Undirected on purpose: memberOf points away from the Person while lead and
+            // contact point at it.
+            WITH p, u, EXISTS {{ (p)-[:{crm_types}]-() }} AS is_crm
+
+            CALL {{
+                WITH p, u
+                MATCH (p)-[r:{permission_rel}]->(target)
+                MERGE (u)-[moved:{permission_rel}]->(target)
+                ON CREATE SET moved = properties(r)
+                DELETE r
+                RETURN count(*) AS moved_permissions
+            }}
+
+            CALL {{
+                WITH p, u
+                MATCH (p)-[r:{app_rel}]->(target)
+                MERGE (u)-[moved:{app_rel}]->(target)
+                ON CREATE SET moved = properties(r)
+                DELETE r
+                RETURN count(*) AS moved_app_relations
+            }}
+
+            // Aggregating rather than returning the deleted node keeps this block from
+            // yielding zero rows and dropping the outer row when the Person is kept.
+            CALL {{
+                WITH p, is_crm
+                WITH p WHERE NOT is_crm
+                DETACH DELETE p
+                RETURN count(*) AS deleted
+            }}
+
+            RETURN CASE WHEN is_crm THEN $split ELSE $migrated END AS mode,
+                   moved_permissions, moved_app_relations
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "email": email.lower(),
+                    "user_key": user_key,
+                    "org_id": org_id,
+                    "split": PersonMigrationMode.SPLIT,
+                    "migrated": PersonMigrationMode.MIGRATED,
+                },
+                txn_id=transaction,
+            )
+            if not results:
+                return None
+
+            row = results[0]
+            self.logger.info(
+                "Person %s -> user %s: %s (%s permission, %s app-relation edges moved)",
+                email,
+                user_key,
+                row.get("mode"),
+                row.get("moved_permissions"),
+                row.get("moved_app_relations"),
+            )
+            return row.get("mode")
+
+        except Exception as e:
+            self.logger.error(f"❌ Migrate person to user failed for {email}: {str(e)}")
+            raise
+
+    async def reap_stale_external_app_relations(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """
+        Drop `isExternalUser` membership edges whose underlying grant is gone, and any
+        Person left with no edges at all.
+
+        Access is revoked at the source constantly, and on_updated_record_permissions
+        deletes every permission edge to a record before recreating it. Without this the
+        membership edge outlives the share that justified it and the collaborator keeps
+        seeing an app with nothing in it.
+
+        Only flagged edges are considered, so a real app member is never at risk.
+        """
+        try:
+            app_label = collection_to_label(CollectionNames.APPS.value)
+            person_label = collection_to_label(CollectionNames.PEOPLE.value)
+            app_rel = edge_collection_to_relationship(
+                CollectionNames.USER_APP_RELATION.value
+            )
+            grant_exists = self._external_grant_exists_cypher("principal", "app")
+
+            query = f"""
+            MATCH (app:{app_label} {{id: $connector_id}})
+            MATCH (principal)-[uar:{app_rel}]->(app)
+            WHERE uar.isExternalUser = true
+              AND NOT {grant_exists}
+            WITH collect(DISTINCT principal) AS stale_principals, collect(uar) AS stale_edges
+
+            FOREACH (e IN stale_edges | DELETE e)
+
+            // Delete only Persons this pass actually stranded. A global sweep would risk
+            // a Person created moments ago whose first edge is not committed yet.
+            WITH stale_principals
+            UNWIND stale_principals AS principal
+            WITH principal WHERE principal:{person_label} AND NOT (principal)--()
+            DETACH DELETE principal
+            RETURN count(*) AS reaped_people
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"connector_id": connector_id},
+                txn_id=transaction,
+            )
+            reaped = results[0].get("reaped_people", 0) if results else 0
+            if reaped:
+                self.logger.info(
+                    "Reaped %d orphaned person node(s) for connector %s",
+                    reaped,
+                    connector_id,
+                )
+            return reaped
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Reap stale external app relations failed for {connector_id}: {str(e)}"
+            )
+            return 0
+
     async def check_connector_name_exists(
         self,
         collection: str,
@@ -13787,10 +14165,16 @@ class Neo4jProvider(IGraphDBProvider):
     async def get_knowledge_hub_breadcrumbs(
         self,
         node_id: str,
+        user_key: str,
+        org_id: str,
         transaction: str | None = None
     ) -> list[dict[str, Any]]:
         """
         Get breadcrumb trail for a node using iterative parent lookup.
+
+        Ancestors the caller cannot see are omitted (see _filter_visible_breadcrumbs).
+        `user_key` is required rather than optional: an optional filter is how a leak
+        like this survives a refactor.
 
         NOTE(N+1 Queries): Uses iterative parent lookup (one query per level) because a single
         graph traversal isn't feasible here. Parent relationships are stored via multiple
@@ -13950,6 +14334,10 @@ class Neo4jProvider(IGraphDBProvider):
                 # Move to parent
                 current_id = node_info.get("parentId")
 
+            breadcrumbs = await self._filter_visible_breadcrumbs(
+                breadcrumbs, user_key, org_id, transaction
+            )
+
             # Reverse to get root -> leaf order (matching ArangoDB behavior)
             breadcrumbs.reverse()
             return breadcrumbs
@@ -13958,6 +14346,78 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get knowledge hub breadcrumbs failed: {str(e)}")
             self.logger.error(traceback.format_exc())
             return []
+
+    async def _filter_visible_breadcrumbs(
+        self,
+        trail: list[dict[str, Any]],
+        user_key: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Drop trail segments the caller cannot see, keeping the rest.
+
+        Skip-and-continue, **not** truncate. Permission on a grandparent but not on the
+        immediate parent is the normal shape for an externally shared record, and skipping
+        renders the node at the level of its nearest visible ancestor -- which is exactly
+        where browse puts it, so the two views cannot disagree. Contrast
+        `filter_accessible_prefix` in agents/actions/knowledge_graph/location.py, which
+        breaks at the first denied node: right for a search-result location string, wrong
+        here, because it would drop the leaf the user is currently looking at.
+
+        Returns [] when the leaf itself is not visible.
+
+        `trail` is leaf-first (the walk reverses afterwards).
+        """
+        if not trail:
+            return []
+
+        # The ACL helper knows 'record' and 'recordGroup'; the trail says 'folder' for a
+        # folder record. Apps are excluded on purpose -- that helper does not check them,
+        # and grading an App with the record permission model would be wrong (App access
+        # is USER_APP_RELATION-based).
+        non_app = [
+            {
+                "id": seg["id"],
+                "type": "recordGroup" if seg.get("nodeType") == "recordGroup" else "record",
+            }
+            for seg in trail
+            if seg.get("nodeType") != "app"
+        ]
+        app_ids = [seg["id"] for seg in trail if seg.get("nodeType") == "app"]
+
+        async def _visible_non_app() -> set[str]:
+            if not non_app:
+                return set()
+            return await self.filter_nodes_with_permission_role(
+                non_app, user_key, org_id, transaction=transaction
+            )
+
+        async def _visible_apps() -> set[str]:
+            visible: set[str] = set()
+            for app_id in app_ids:
+                # folder_mime_types only shapes the nodeType of a *record* result, so it is
+                # unused on the App branch -- and importing the connector-layer constant
+                # into a provider would invert the layering.
+                info = await self.get_knowledge_hub_node_access(
+                    node_id=app_id,
+                    user_key=user_key,
+                    org_id=org_id,
+                    folder_mime_types=[],
+                    transaction=transaction,
+                )
+                if info:
+                    visible.add(app_id)
+            return visible
+
+        non_app_visible, app_visible = await asyncio.gather(
+            _visible_non_app(), _visible_apps()
+        )
+        visible = non_app_visible | app_visible
+
+        if trail[0].get("id") not in visible:
+            return []
+
+        return [seg for seg in trail if seg.get("id") in visible]
 
     async def filter_nodes_with_permission_role(
         self,
@@ -14768,19 +15228,40 @@ class Neo4jProvider(IGraphDBProvider):
           - Root-level = no incoming PARENT_CHILD edge (from recordRelations)
         For other (external connector) apps:
           - Children are RecordGroups linked via BELONGS_TO
+
+        Plus two branches for external collaborators only (``uar.isExternalUser``).
+        Browse walks *down* from the App, so a record shared directly with someone who
+        has no permission on its container is unreachable — they could only find it via
+        search. Blocks 3 and 4 hoist exactly those orphans to app level.
+
+        The rule both use: hoist N iff the user has permission on N and cannot see any
+        immediate parent of N. Browse is one level at a time, so that is sufficient and
+        needs no recursion — and it is also what prevents duplicates, since a record
+        whose parent *is* visible is already reachable by drilling in.
         """
         record_permission_role_cypher = self._get_permission_role_cypher("record", "record", "u")
         rg_permission_role_cypher = self._get_permission_role_cypher("recordGroup", "rg", "u")
+        # Parent-visibility probes. Distinct node variables so the generated blocks
+        # cannot collide with the candidate variable in the same scope.
+        parent_record_perm_cypher = self._get_permission_role_cypher("record", "parent_record", "u")
+        parent_group_perm_cypher = self._get_permission_role_cypher("recordGroup", "parent_group", "u")
+        orphan_record_perm_cypher = self._get_permission_role_cypher("record", "orphan_record", "u")
+        orphan_group_perm_cypher = self._get_permission_role_cypher("recordGroup", "orphan_group", "u")
 
         return f"""
         MATCH (app:App {{id: $parent_id}})
         MATCH (u:User {{id: $user_key}})
 
-        WITH app, u, $parent_id AS parent_id, (app.type = 'KB') AS is_kb_app
+        // One property read for everyone. Users without the flag fail the gate in
+        // blocks 3 and 4 immediately and execute neither.
+        OPTIONAL MATCH (u)-[uar:USER_APP_RELATION]->(app)
+
+        WITH app, u, $parent_id AS parent_id, (app.type = 'KB') AS is_kb_app,
+             coalesce(uar.isExternalUser, false) AS is_external_user
 
         // ---- KB app: return root-level records/folders ----
         CALL {{
-            WITH app, u, parent_id, is_kb_app
+            WITH app, u, parent_id, is_kb_app, is_external_user
             WITH app, u, parent_id, is_kb_app WHERE is_kb_app
 
             // Root records are those without an incoming PARENT_CHILD edge
@@ -14824,7 +15305,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         // ---- Non-KB app: return RecordGroups ----
         CALL {{
-            WITH app, u, parent_id, is_kb_app
+            WITH app, u, parent_id, is_kb_app, is_external_user
             WITH app, u, parent_id, is_kb_app WHERE NOT is_kb_app
 
             OPTIONAL MATCH (rg:RecordGroup)-[:BELONGS_TO]->(app)
@@ -14865,7 +15346,171 @@ class Neo4jProvider(IGraphDBProvider):
             }}) AS connector_children
         }}
 
-        WITH coalesce(kb_children, []) + coalesce(connector_children, []) AS raw_children
+        // ---- External collaborator: hoist orphaned Records to app level ----
+        CALL {{
+            WITH app, u, parent_id, is_kb_app, is_external_user
+            WITH app, u, parent_id WHERE is_external_user AND NOT is_kb_app
+
+            // Candidates are only what was explicitly shared with this person: direct
+            // grants plus grants via a group/role/team. Org-wide grants are excluded on
+            // purpose - they apply to everyone and would flood the view.
+            OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(direct_rec:Record)
+            WHERE direct_rec.connectorId = app.id
+            OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(principal)-[:PERMISSION]->(shared_rec:Record)
+            WHERE (principal:Group OR principal:Role OR principal:Teams)
+              AND shared_rec.connectorId = app.id
+            WITH app, u, parent_id,
+                 collect(DISTINCT direct_rec) + collect(DISTINCT shared_rec) AS candidates
+            UNWIND candidates AS orphan_record
+            WITH DISTINCT app, u, parent_id, orphan_record
+            WHERE coalesce(orphan_record.isDeleted, false) = false
+
+            // Immediate parents, in both directions: a parent folder is found by
+            // following RECORD_RELATION *backwards*, a record group by following
+            // BELONGS_TO *forwards*. Hence two lookups, collected so a record filed
+            // under several groups is judged on all of them.
+            OPTIONAL MATCH (parent_rec:Record)-[:RECORD_RELATION {{relationshipType: 'PARENT_CHILD'}}]->(orphan_record)
+            OPTIONAL MATCH (orphan_record)-[:BELONGS_TO]->(parent_rg:RecordGroup)
+            WITH app, u, parent_id, orphan_record,
+                 collect(DISTINCT parent_rec) AS parent_recs,
+                 collect(DISTINCT parent_rg) AS parent_rgs
+            // Never hoist a container-less node. This also excludes top-level nodes,
+            // which branch 2 already owns.
+            WHERE size(parent_recs) > 0 OR size(parent_rgs) > 0
+
+            // _get_permission_role_cypher ends in LIMIT 1 and yields ZERO rows when the
+            // user has no permission, and a zero-row CALL deletes the outer row. Used
+            // directly to test for *absence* it would silently drop every candidate whose
+            // parent is invisible - the exact opposite of the intent. Wrapping it so the
+            // block ends in an aggregation with no grouping key is what preserves the
+            // row: that always yields exactly one row, an empty list when there is no
+            // permission.
+            CALL {{
+                WITH u, parent_recs
+                UNWIND parent_recs AS parent_record
+                {parent_record_perm_cypher}
+                RETURN collect(permission_role) AS visible_parent_records
+            }}
+            CALL {{
+                WITH u, parent_rgs
+                UNWIND parent_rgs AS parent_group
+                {parent_group_perm_cypher}
+                RETURN collect(permission_role) AS visible_parent_groups
+            }}
+
+            // Keep only the orphans: if any parent is visible the user reaches this
+            // record by drilling into that parent, and hoisting it would duplicate it.
+            WITH app, u, parent_id, orphan_record, visible_parent_records, visible_parent_groups
+            WHERE size(visible_parent_records) = 0 AND size(visible_parent_groups) = 0
+
+            {orphan_record_perm_cypher}
+
+            WITH app, parent_id, orphan_record, permission_role
+            WHERE permission_role IS NOT NULL AND permission_role <> ''
+
+            OPTIONAL MATCH (orphan_record)-[:IS_OF_TYPE]->(file_info:File)
+            OPTIONAL MATCH (orphan_record)-[:RECORD_RELATION {{relationshipType: 'PARENT_CHILD'}}]->(child:Record)
+            WITH parent_id, orphan_record, permission_role, file_info,
+                 count(DISTINCT child) > 0 AS has_children
+
+            RETURN collect({{
+                id: orphan_record.id,
+                name: orphan_record.recordName,
+                nodeType: CASE WHEN file_info IS NOT NULL AND file_info.isFile = false THEN 'folder' ELSE 'record' END,
+                parentId: 'apps/' + parent_id,
+                origin: 'CONNECTOR',
+                connector: orphan_record.connectorName,
+                connectorId: orphan_record.connectorId,
+                externalGroupId: orphan_record.externalGroupId,
+                recordType: orphan_record.recordType,
+                recordGroupType: null,
+                indexingStatus: orphan_record.indexingStatus,
+                reason: orphan_record.reason,
+                createdAt: coalesce(orphan_record.sourceCreatedAtTimestamp, orphan_record.createdAtTimestamp, 0),
+                updatedAt: coalesce(orphan_record.sourceLastModifiedTimestamp, orphan_record.updatedAtTimestamp, 0),
+                sizeInBytes: coalesce(orphan_record.sizeInBytes, file_info.fileSizeInBytes),
+                mimeType: orphan_record.mimeType,
+                extension: file_info.extension,
+                webUrl: orphan_record.webUrl,
+                hasChildren: has_children,
+                previewRenderable: coalesce(orphan_record.previewRenderable, true),
+                userRole: permission_role,
+                sharingStatus: null,
+                isInternal: coalesce(orphan_record.isInternal, false),
+                isPlaceholder: coalesce(orphan_record.isPlaceholder, false)
+            }}) AS hoisted_records
+        }}
+
+        // ---- External collaborator: hoist orphaned RecordGroups to app level ----
+        // Needed because on_new_record_groups only creates the RG->App edge when the RG
+        // has no parent RG, so a nested RG's BELONGS_TO points at its parent and branch 2
+        // never returns it. Real today in SharePoint (drives nested under sites).
+        CALL {{
+            WITH app, u, parent_id, is_kb_app, is_external_user
+            WITH app, u, parent_id WHERE is_external_user AND NOT is_kb_app
+
+            OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(direct_rg:RecordGroup)
+            WHERE direct_rg.connectorId = app.id
+            OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(rg_principal)-[:PERMISSION]->(shared_rg:RecordGroup)
+            WHERE (rg_principal:Group OR rg_principal:Role OR rg_principal:Teams)
+              AND shared_rg.connectorId = app.id
+            WITH app, u, parent_id,
+                 collect(DISTINCT direct_rg) + collect(DISTINCT shared_rg) AS rg_candidates
+            UNWIND rg_candidates AS orphan_group
+            WITH DISTINCT app, u, parent_id, orphan_group
+            WHERE coalesce(orphan_group.isDeleted, false) = false
+
+            OPTIONAL MATCH (orphan_group)-[:BELONGS_TO]->(parent_rg:RecordGroup)
+            WITH app, u, parent_id, orphan_group, collect(DISTINCT parent_rg) AS parent_rgs
+            // A top-level RG has no parent RG and belongs to branch 2, not here.
+            WHERE size(parent_rgs) > 0
+
+            // Same zero-row wrapper as block 3 - see the note there.
+            CALL {{
+                WITH u, parent_rgs
+                UNWIND parent_rgs AS parent_group
+                {parent_group_perm_cypher}
+                RETURN collect(permission_role) AS visible_parent_groups
+            }}
+
+            WITH app, u, parent_id, orphan_group, visible_parent_groups
+            WHERE size(visible_parent_groups) = 0
+
+            {orphan_group_perm_cypher}
+
+            WITH app, parent_id, orphan_group, permission_role
+            WHERE permission_role IS NOT NULL AND permission_role <> ''
+
+            OPTIONAL MATCH (orphan_group)<-[:BELONGS_TO]-(child_rg:RecordGroup)
+            OPTIONAL MATCH (orphan_group)<-[:BELONGS_TO]-(child_record:Record)
+            WITH parent_id, orphan_group, permission_role,
+                 count(DISTINCT child_rg) > 0 OR count(DISTINCT child_record) > 0 AS has_children
+
+            RETURN collect({{
+                id: orphan_group.id,
+                name: orphan_group.groupName,
+                nodeType: 'recordGroup',
+                parentId: 'apps/' + parent_id,
+                origin: 'CONNECTOR',
+                connector: orphan_group.connectorName,
+                recordType: null,
+                recordGroupType: orphan_group.groupType,
+                indexingStatus: null,
+                createdAt: coalesce(orphan_group.sourceCreatedAtTimestamp, orphan_group.createdAtTimestamp, 0),
+                updatedAt: coalesce(orphan_group.sourceLastModifiedTimestamp, orphan_group.updatedAtTimestamp, 0),
+                sizeInBytes: null,
+                mimeType: null,
+                extension: null,
+                webUrl: orphan_group.webUrl,
+                hasChildren: has_children,
+                userRole: permission_role,
+                sharingStatus: null,
+                isInternal: coalesce(orphan_group.isInternal, false)
+            }}) AS hoisted_groups
+        }}
+
+        WITH coalesce(kb_children, []) + coalesce(connector_children, [])
+             + coalesce(hoisted_records, []) + coalesce(hoisted_groups, []) AS raw_children
         RETURN raw_children
         """
 
