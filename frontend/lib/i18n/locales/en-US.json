@@ -1836,6 +1836,24 @@
         "confirm": "Confirm",
         "cancel": "Cancel"
       },
+      "stopSync": {
+        "label": "Stop sync",
+        "labelFull": "Stop full sync",
+        "stopping": "Stopping…"
+      },
+      "stopSyncConfirm": {
+        "title": "Stop the running sync?",
+        "titleFull": "Stop the running full sync?",
+        "message": "Records already synced are kept, but the rest of this run is abandoned. The sync may take a moment to wind down. You can start it again afterwards.",
+        "confirm": "Stop sync",
+        "confirmFull": "Stop full sync"
+      },
+      "fullSync": {
+        "disabledTooltip": "Stop the running sync before starting a full sync"
+      },
+      "sync": {
+        "disabledTooltip": "Stop the running full sync first"
+      },
       "fullSyncConfirm": {
         "title": "Start full sync?",
         "message": "Overwrites and re-syncs all data from scratch and is slower than normal Sync. Use full sync when content is missing, duplicated, or doesn't match the source. For routine updates, use Sync instead.",
@@ -2005,6 +2023,8 @@
           "syncingTooltip": "This connector is syncing new and updated content.",
           "fullSyncing": "Full sync in progress",
           "fullSyncingTooltip": "This connector is running a full re-sync from the source.",
+          "queued": "Queued",
+          "queuedTooltip": "Waiting for a free sync slot. It will start automatically when one frees up.",
           "removing": "Removing",
           "removingTooltip": "This instance is being deleted."
         }

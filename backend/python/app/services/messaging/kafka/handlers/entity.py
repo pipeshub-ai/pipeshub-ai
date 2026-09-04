@@ -11,7 +11,8 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
+from app.connectors.core.sync.sync_coordinator import get_coordinator
+from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.containers.connector import (
     ConnectorAppContainer,
 )
@@ -452,13 +453,21 @@ class EntityEventService(BaseEventService):
                 app_updates, CollectionNames.APPS.value
             )
 
-            # Cancel any running sync/reindex task so they stop promptly
+            # Stop any running sync/reindex, without waiting for the unwind.
+            #
+            # This runs on the entity consumer, which processes messages
+            # strictly serially — every second spent here delays userAdded,
+            # orgCreated and KB events behind it, and a bulk toggle-off
+            # multiplies that. The app doc is already isActive=False by this
+            # point, so any records still written are correct, just late.
             try:
-                await sync_task_manager.cancel_sync(connector_id)
-                await reindex_task_manager.cancel_by_prefix(f"reindex:{connector_id}:")
-                self.logger.info(f"✅ Cancelled running sync/reindex for connector {connector_id}")
+                reindex_task_manager.request_stop_by_prefix(f"reindex:{connector_id}:")
+                coordinator = get_coordinator()
+                if coordinator is not None:
+                    await coordinator.request_stop(connector_id)
+                self.logger.info(f"✅ Requested stop of running sync/reindex for connector {connector_id}")
             except Exception as cancel_err:
-                self.logger.error(f"❌ Failed to cancel sync for connector {connector_id}: {cancel_err}")
+                self.logger.error(f"❌ Failed to stop sync for connector {connector_id}: {cancel_err}")
 
             # Drain the backlog. Records already QUEUED have no event guard to
             # catch them and no processingStartedAt, so stale recovery — which

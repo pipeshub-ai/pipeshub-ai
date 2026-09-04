@@ -63,8 +63,14 @@ export class SyncEventProducer {
   }
 
   async publishEvent(event: Event): Promise<void> {
+    // Partition by connector, not by event type. Kafka hashes this key to pick
+    // a partition and gives each partition to one consumer in the group, so
+    // keying by eventType puts every connector of a given kind -- every
+    // Confluence instance, say -- on one partition and therefore one consumer.
+    // Keying by connectorId spreads them and gives per-connector ordering as a
+    // bonus. Events without a connectorId keep the old key.
     const message: StreamMessage<string> = {
-      key: event.eventType,
+      key: event.payload?.connectorId ?? event.eventType,
       value: JSON.stringify(event),
       headers: {
         eventType: event.eventType,

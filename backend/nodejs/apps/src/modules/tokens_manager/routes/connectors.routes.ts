@@ -60,6 +60,7 @@ import {
   reindexVectorStore,
   reindexConnector,
   resyncConnectorRecords,
+  stopConnectorSync,
 } from '../controllers/connector.controllers';
 import { RecordRelationService } from '../../knowledge_base/services/kb.relation.service';
 import { RecordsEventProducer } from '../../knowledge_base/services/records_events.service';
@@ -685,6 +686,18 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE, OAuthScopeNames.KB_WRITE),
     ValidationMiddleware.validate(resyncConnectorSchema),
     resyncConnectorRecords(recordRelationService, config),
+  );
+
+  /**
+   * POST /:connectorId/sync/stop
+   * Request cancellation of the in-flight sync for a connector.
+   */
+  router.post(
+    '/:connectorId/sync/stop',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    stopConnectorSync(config),
   );
 
   // ============================================================================

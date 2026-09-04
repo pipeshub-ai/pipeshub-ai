@@ -107,6 +107,7 @@ class ConnectorStateKeys:
     VECTOR_MEMBERSHIP_BACKFILL_ATTEMPTS = "vectorMembershipBackfillAttempts"
     VECTOR_MEMBERSHIP_BACKFILL_VRIDS = "vectorMembershipBackfillVrids"
     VECTOR_MEMBERSHIP_BACKFILL_EXHAUSTED = "vectorMembershipBackfillExhausted"
+    PENDING_RESYNC = "pendingResync"
     UPDATED_AT_TIMESTAMP = "updatedAtTimestamp"
     UPDATED_BY = "updatedBy"
     CREATED_AT_TIMESTAMP = "createdAtTimestamp"

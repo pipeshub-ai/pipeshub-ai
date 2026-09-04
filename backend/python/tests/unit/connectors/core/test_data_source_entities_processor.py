@@ -36,6 +36,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
     RecordGroupWithPermissions,
     UserGroupWithMembers,
+    deterministic_record_id,
 )
 from app.models.entities import (
     AppRole,
@@ -5382,3 +5383,88 @@ class TestPlaceholderFlag:
         assert kwargs["record_group_id"] == "rg-1"
         assert kwargs["is_placeholder"] is True
         assert kwargs["status_filters"] is None
+
+# Deterministic record ids
+#
+# _process_record reads by external id then inserts when absent. Two overlapping
+# syncs of one connector both read None, so with a random id both insert and the
+# record becomes two. Deriving the id from (connector_id, external_record_id)
+# makes the second insert overwrite the first instead.
+# ===========================================================================
+
+
+class TestDeterministicRecordId:
+    def test_same_pair_yields_same_id(self) -> None:
+        assert deterministic_record_id("conn-1", "ext-1") == deterministic_record_id(
+            "conn-1", "ext-1"
+        )
+
+    def test_different_connectors_do_not_collide(self) -> None:
+        assert deterministic_record_id("conn-1", "ext-1") != deterministic_record_id(
+            "conn-2", "ext-1"
+        )
+
+    def test_separator_prevents_boundary_collision(self) -> None:
+        """("ab", "c") and ("a", "bc") must not hash to the same id.
+
+        Plain concatenation would make them identical; the NUL separator is what
+        keeps a connector id ending in a prefix of an external id distinct.
+        """
+        assert deterministic_record_id("ab", "c") != deterministic_record_id("a", "bc")
+
+    def test_is_a_valid_uuid(self) -> None:
+        uuid.UUID(deterministic_record_id("conn-1", "ext-1"))
+
+    @pytest.mark.asyncio
+    async def test_two_racing_inserts_write_the_same_key(self) -> None:
+        """The duplicate-record scenario: two syncs, both see the record as new.
+
+        Both call _process_record with a freshly built Record carrying its own
+        random default id. After processing, both must have been upserted under
+        one id — that is what lets the graph write collapse them into a single
+        document instead of two.
+        """
+        proc = _make_processor()
+
+        upserted_ids = []
+        for _ in range(2):
+            tx_store = _make_tx_store()
+            tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+            record = _make_record(external_record_id="shared-ext-id")
+            await proc._process_record(record, [], tx_store)
+            upserted = tx_store.batch_upsert_records.call_args[0][0][0]
+            upserted_ids.append(upserted.id)
+
+        assert upserted_ids[0] == upserted_ids[1]
+        assert upserted_ids[0] == deterministic_record_id("conn-1", "shared-ext-id")
+
+    @pytest.mark.asyncio
+    async def test_existing_record_keeps_its_stored_id(self) -> None:
+        """Records already in the graph keep their original (random) id.
+
+        This is what makes the change non-breaking: it only governs newly
+        created records, so no historical row needs rewriting.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        existing = _make_record(external_record_id="ext-1")
+        existing.id = "legacy-random-id"
+        tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+
+        incoming = _make_record(external_record_id="ext-1")
+        await proc._process_record(incoming, [], tx_store)
+
+        assert incoming.id == "legacy-random-id"
+
+    def test_placeholder_parent_gets_a_deterministic_id(self) -> None:
+        """Placeholders are created on the same read-then-insert path."""
+        proc = _make_processor()
+        child = _make_record(external_record_id="child-ext")
+
+        placeholder = proc._create_placeholder_parent_record(
+            parent_external_id="parent-ext",
+            parent_record_type=RecordType.FILE,
+            record=child,
+        )
+
+        assert placeholder.id == deterministic_record_id("conn-1", "parent-ext")

@@ -22,6 +22,8 @@ from app.utils.request_context import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from app.services.redis.connection_provider import IRedisConnectionProvider, RedisClient as Redis
 
 MAX_CONCURRENT_TASKS = 5
@@ -63,6 +65,13 @@ class RedisStreamsConsumer(IMessagingConsumer):
         self.message_handler: Optional[MessageHandler] = None
         self._consecutive_empty_polls = 0
         self._idle_threshold = 3  # Drain pending after N consecutive empty polls
+        # Returns False while this consumer is full. Redis Streams needs no
+        # pause API: simply not calling XREADGROUP leaves the message for another
+        # consumer that does have room, which is what balances work across the group.
+        # Distinct consumer names alone balance nothing — the handler returns as
+        # soon as a sync task spawns, so a busy consumer asks just as fast as an
+        # idle one.
+        self.capacity_gate: "Callable[[], bool] | None" = None
 
     async def initialize(self) -> None:
         try:
@@ -145,7 +154,7 @@ class RedisStreamsConsumer(IMessagingConsumer):
 
     async def stop(
         self,
-        message_handler: Optional[MessageHandler] = None,
+        message_handler: MessageHandler | None = None,
     ) -> None:
         self.running = False
 
@@ -518,6 +527,13 @@ class RedisStreamsConsumer(IMessagingConsumer):
             await self._drain_pending()
             while self.running:
                 try:
+                    if self.capacity_gate is not None and not self.capacity_gate():
+                        # Sleep rather than `continue`: the loop normally idles
+                        # inside XREADGROUP's block, so spinning here would burn
+                        # a core on a box that is already CPU-bound.
+                        await asyncio.sleep(min(self.config.block_ms / 1000, 0.5))
+                        continue
+
                     results = await self._read_new_messages()
 
                     if not results:

@@ -14,6 +14,7 @@ from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
+from app.edition_services import bootstrap_guard
 from app.health.health import Health
 from app.migrations.all_team_migration import run_all_team_migration
 from app.migrations.kb_apps_migration import run_kb_apps_migration
@@ -113,8 +114,24 @@ class ConnectorAppContainer(BaseAppContainer):
         ]
     )
 
-async def initialize_container(container) -> bool:
-    """Initialize container resources with health checks."""
+async def initialize_container(container, *, bootstrap: bool = True) -> bool:
+    """Initialize container resources with health checks.
+
+    ``bootstrap=False`` skips every step that mutates shared state, leaving only
+    the health check and the data store. Secondary processes must pass False:
+    the skipped steps are not safe to run concurrently.
+
+    - The deployment KV write is a read-modify-write of one document.
+    - ``ensure_schema`` is check-then-act over collections and the graph, and on
+      Arango includes a read-modify-write of the edge definitions.
+    - The All-team migration guards itself with a KV flag it reads and then
+      writes, so two processes booting together both see "not done" and both run
+      the full cross-org backfill.
+
+    On Docker the ordering also protects us — the supervisor blocks on the API's
+    /health before starting anything else — but that guarantee does not hold for
+    multi-replica Kubernetes, so the flag is the real protection.
+    """
 
     logger = container.logger()
     config_service = container.config_service()
@@ -123,91 +140,110 @@ async def initialize_container(container) -> bool:
     try:
         await Health.system_health_check(container)
 
-        # Write deployment config to KV store so Node.js can read it
-        data_store_type = os.getenv("DATA_STORE", "arangodb").lower()
-        try:
-            existing_deployment = await config_service.get_config(
-                config_node_constants.DEPLOYMENT.value, default={}
-            ) or {}
-            existing_deployment["dataStoreType"] = data_store_type
-            existing_deployment["vectorDbType"] = os.getenv("VECTOR_DB_TYPE", "qdrant").lower().strip()
-            await config_service.set_config(
-                config_node_constants.DEPLOYMENT.value, existing_deployment
-            )
-            logger.info(f"✅ Deployment config written to KV store (dataStoreType={data_store_type})")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to write deployment config to KV store: {e}")
+        if not bootstrap:
+            data_store = await container.data_store()
+            if not data_store:
+                raise Exception("Failed to initialize data store")
+            logger.info("✅ Container initialized (secondary process, bootstrap skipped)")
+            return True
 
-        logger.info("Ensuring graph database provider is initialized")
-        data_store = await container.data_store()
-        if not data_store:
-            raise Exception("Failed to initialize data store")
-        logger.info("✅ Data store initialized")
+        # Only one process does the one-time work. Without this every uvicorn
+        # worker races ensure_schema and the All-team migration, which is slow
+        # enough to blow the supervisor's health gate and makes the migration's
+        # read-then-write "done" flag useless.
+        async with bootstrap_guard(logger, config_service) as should_bootstrap:
+            if not should_bootstrap:
+                data_store = await container.data_store()
+                if not data_store:
+                    raise Exception("Failed to initialize data store")
+                logger.info("✅ Container initialized (bootstrap done by another process)")
+                return True
 
-        # Schema init: collections, graph, departments seed
-        await data_store.graph_provider.ensure_schema()
-        logger.info("✅ Schema ensured")
+            # Write deployment config to KV store so Node.js can read it
+            data_store_type = os.getenv("DATA_STORE", "arangodb").lower()
+            try:
+                existing_deployment = await config_service.get_config(
+                    config_node_constants.DEPLOYMENT.value, default={}
+                ) or {}
+                existing_deployment["dataStoreType"] = data_store_type
+                existing_deployment["vectorDbType"] = os.getenv("VECTOR_DB_TYPE", "qdrant").lower().strip()
+                await config_service.set_config(
+                    config_node_constants.DEPLOYMENT.value, existing_deployment
+                )
+                logger.info(f"✅ Deployment config written to KV store (dataStoreType={data_store_type})")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to write deployment config to KV store: {e}")
 
-        logger.info("✅ Container initialization completed successfully")
+            logger.info("Ensuring graph database provider is initialized")
+            data_store = await container.data_store()
+            if not data_store:
+                raise Exception("Failed to initialize data store")
+            logger.info("✅ Data store initialized")
+
+            # Schema init: collections, graph, departments seed
+            await data_store.graph_provider.ensure_schema()
+            logger.info("✅ Schema ensured")
+
+            logger.info("✅ Container initialization completed successfully")
 
 
-        # Run All Team migration (DB-agnostic, runs for both ArangoDB and Neo4j)
-        try:
-            logger.info("🔄 Running All team migration...")
+            # Run All Team migration (DB-agnostic, runs for both ArangoDB and Neo4j)
+            try:
+                logger.info("🔄 Running All team migration...")
             
-            migration_result = await run_all_team_migration(
-                graph_provider=data_store.graph_provider,
-                config_service=config_service,
-                logger=logger
-            )
+                migration_result = await run_all_team_migration(
+                    graph_provider=data_store.graph_provider,
+                    config_service=config_service,
+                    logger=logger
+                )
             
-            if migration_result.get("success"):
-                if migration_result.get("skipped"):
-                    logger.info("✅ All team migration already completed")
+                if migration_result.get("success"):
+                    if migration_result.get("skipped"):
+                        logger.info("✅ All team migration already completed")
+                    else:
+                        orgs_processed = migration_result.get("orgs_processed", 0)
+                        teams_created = migration_result.get("teams_created", 0)
+                        logger.info(
+                            f"✅ All team migration completed: "
+                            f"{orgs_processed} orgs processed, {teams_created} All teams ensured"
+                        )
                 else:
-                    orgs_processed = migration_result.get("orgs_processed", 0)
-                    teams_created = migration_result.get("teams_created", 0)
-                    logger.info(
-                        f"✅ All team migration completed: "
-                        f"{orgs_processed} orgs processed, {teams_created} All teams ensured"
-                    )
-            else:
-                error_msg = migration_result.get("error", "Unknown error")
-                logger.error(f"❌ All team migration failed: {error_msg}")
-        except Exception as e:
-            logger.error(f"❌ All team migration error: {e}")
+                    error_msg = migration_result.get("error", "Unknown error")
+                    logger.error(f"❌ All team migration failed: {error_msg}")
+            except Exception as e:
+                logger.error(f"❌ All team migration error: {e}")
 
-        # Run KB apps migration (legacy recordGroup-based KBs -> per-KB app
-        # instances). Must run after the graph provider/schema are ready;
-        # must complete before connectors_main.py's resume_sync_services()
-        # so newly-migrated KB apps get a KnowledgeBaseConnector instance
-        # registered on the same boot that migrates them.
-        try:
-            logger.info("🔄 Running KB apps migration...")
+            # Run KB apps migration (legacy recordGroup-based KBs -> per-KB app
+            # instances). Must run after the graph provider/schema are ready;
+            # must complete before connectors_main.py's resume_sync_services()
+            # so newly-migrated KB apps get a KnowledgeBaseConnector instance
+            # registered on the same boot that migrates them.
+            try:
+                logger.info("🔄 Running KB apps migration...")
 
-            kb_migration_result = await run_kb_apps_migration(
-                graph_provider=data_store.graph_provider,
-                config_service=config_service,
-                logger=logger
-            )
+                kb_migration_result = await run_kb_apps_migration(
+                    graph_provider=data_store.graph_provider,
+                    config_service=config_service,
+                    logger=logger
+                )
 
-            if kb_migration_result.get("success"):
-                if kb_migration_result.get("skipped"):
-                    logger.info("✅ KB apps migration already completed")
+                if kb_migration_result.get("success"):
+                    if kb_migration_result.get("skipped"):
+                        logger.info("✅ KB apps migration already completed")
+                    else:
+                        orgs_processed = kb_migration_result.get("orgs_processed", 0)
+                        kbs_migrated = kb_migration_result.get("kbs_migrated", 0)
+                        logger.info(
+                            f"✅ KB apps migration completed: "
+                            f"{orgs_processed} orgs processed, {kbs_migrated} KB(s) migrated"
+                        )
                 else:
-                    orgs_processed = kb_migration_result.get("orgs_processed", 0)
-                    kbs_migrated = kb_migration_result.get("kbs_migrated", 0)
-                    logger.info(
-                        f"✅ KB apps migration completed: "
-                        f"{orgs_processed} orgs processed, {kbs_migrated} KB(s) migrated"
-                    )
-            else:
-                error_msg = kb_migration_result.get("error", "Unknown error")
-                logger.error(f"❌ KB apps migration failed: {error_msg}")
-        except Exception as e:
-            logger.error(f"❌ KB apps migration error: {e}")
+                    error_msg = kb_migration_result.get("error", "Unknown error")
+                    logger.error(f"❌ KB apps migration failed: {error_msg}")
+            except Exception as e:
+                logger.error(f"❌ KB apps migration error: {e}")
 
-        return True
+            return True
 
     except Exception as e:
         logger.error(f"❌ Container initialization failed: {str(e)}")

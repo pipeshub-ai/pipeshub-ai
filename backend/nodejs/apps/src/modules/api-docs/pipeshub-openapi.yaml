@@ -31223,6 +31223,64 @@ paths:
         '409':
           description: Conflict — the connector instance is disabled or locked.
 
+  /connectors/{connectorId}/sync/stop:
+    post:
+      tags:
+        - Connector Instances
+      summary: Stop the running sync for a connector
+      description: |
+        Ask the in-flight sync for a connector instance to stop.
+
+        **Overview:**
+
+        Returns as soon as the request is recorded; the sync halts at its next
+        interruptible point, which for a connector inside a long provider call
+        is when that call returns. `stopped` reports whether a sync was actually
+        running, and `false` is a normal answer rather than a failure.
+
+        Deliberately not refused while the connector is busy or locked: this is
+        the endpoint that has to work precisely then, including against a lock a
+        crashed process left behind. When nothing is running it also repairs a
+        stale SYNCING or FULL_SYNCING status, unless the service cannot tell a
+        live sync on another worker from a stale one, in which case it changes
+        nothing and says so.
+      operationId: stopConnectorSync
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:sync]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Stop recorded, or nothing was running
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  stopped:
+                    type: boolean
+                    description: >-
+                      Whether a sync was running and has been asked to stop.
+                      False is a normal answer, not an error.
+                  status:
+                    type: string
+                    description: >-
+                      The status the connector is actually left in.
+                    enum: [IDLE, SYNCING, FULL_SYNCING, QUEUED, DELETING]
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized
+        '404':
+          description: Connector instance not found or not accessible
   /connectors/{connectorId}/name:
     put:
       tags:

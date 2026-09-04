@@ -545,7 +545,7 @@ async def test_gate_refuses_when_records_are_queued():
     graph = AsyncMock()
     graph.get_records_by_status = AsyncMock(return_value=[MagicMock()])
 
-    with patch.object(rebuild.sync_task_manager, "active_keys", return_value=[]):
+    with patch.object(rebuild, "get_coordinator", return_value=MagicMock(active_keys=MagicMock(return_value=[]))):
         with pytest.raises(rebuild.VectorStoreRebuildConflictError, match="queued"):
             await rebuild.assert_no_indexing_in_flight(graph, [("org-1", "app-1")])
 
@@ -557,9 +557,7 @@ async def test_gate_refuses_while_a_connector_sync_runs():
     graph = AsyncMock()
     graph.get_records_by_status = AsyncMock(return_value=[])
 
-    with patch.object(
-        rebuild.sync_task_manager, "active_keys", return_value=["drive-1"]
-    ):
+    with patch.object(rebuild, "get_coordinator", return_value=MagicMock(active_keys=MagicMock(return_value=["drive-1"]))):
         with pytest.raises(rebuild.VectorStoreRebuildConflictError, match="sync"):
             await rebuild.assert_no_indexing_in_flight(graph, [("org-1", "app-1")])
 
@@ -571,7 +569,7 @@ async def test_gate_allows_an_idle_deployment():
     graph = AsyncMock()
     graph.get_records_by_status = AsyncMock(return_value=[])
 
-    with patch.object(rebuild.sync_task_manager, "active_keys", return_value=[]):
+    with patch.object(rebuild, "get_coordinator", return_value=MagicMock(active_keys=MagicMock(return_value=[]))):
         await rebuild.assert_no_indexing_in_flight(graph, [("org-1", "app-1")])
 
     # Bounded: pages rather than a single probe, because folder rows have to be
@@ -598,7 +596,7 @@ async def test_cleanup_rechecks_before_dropping():
     graph.get_records_by_status = AsyncMock(return_value=[MagicMock()])
     kafka = AsyncMock()
 
-    with patch.object(rebuild.sync_task_manager, "active_keys", return_value=[]):
+    with patch.object(rebuild, "get_coordinator", return_value=MagicMock(active_keys=MagicMock(return_value=[]))):
         with pytest.raises(rebuild.VectorStoreRebuildConflictError):
             await rebuild.start_vector_store_cleanup(
                 logger=MagicMock(),

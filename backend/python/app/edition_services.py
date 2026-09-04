@@ -1,3 +1,4 @@
+import contextlib
 from typing import Any
 
 from app.connectors.core.base.token_service.token_refresh_service import (
@@ -67,3 +68,51 @@ def get_data_entities_processor_cls():
     from app.connectors.core.base.data_processor.data_source_entities_processor import DataSourceEntitiesProcessor
     return DataSourceEntitiesProcessor
 
+
+
+# Multi-worker sync needs exclusion across processes, which this build does not
+# have. It therefore pins the service to one worker: raising
+# CONNECTOR_UVICORN_WORKERS here has never been safe, because exclusion would be
+# a per-process dict plus a fail-open database read.
+
+
+def max_connector_workers() -> int:
+    """Always one. Multi-worker sync needs exclusion this build lacks."""
+    return 1
+
+
+async def create_coordinator(logger, config_service):
+    """One worker, so an in-process registry is already an exact answer."""
+    from app.connectors.core.sync.sync_coordinator import LocalSyncCoordinator
+
+    return LocalSyncCoordinator(logger)
+
+
+def bootstrap_guard(logger, config_service, **kwargs):
+    """One process, so it is always the one that should bootstrap."""
+    @contextlib.asynccontextmanager
+    async def _single_process():
+        yield True
+
+    return _single_process()
+
+
+def build_sync_dispatcher(logger, producer):
+    """Syncs always run in this process."""
+    from app.connectors.core.sync.sync_dispatcher import SyncEventDispatcher
+
+    logger.info("Sync dispatch mode: inprocess")
+    return SyncEventDispatcher(logger, producer)
+
+
+def start_sync_reaper(graph_provider, coordinator, logger):
+    """Nothing to reap: a single process owns all of its own sync state."""
+    return None
+
+
+async def stop_sync_reaper(task) -> None:
+    return None
+
+
+def sync_executor_enabled() -> bool:
+    return False
