@@ -53,12 +53,13 @@
 > curl -fsSL https://get.pipeshub.com/install | bash
 > ```
 
-## Features
+## Why PipesHub
 
 - 📝 **Explainable Answers:** PipesHub delivers grounded answers with precise block citations to the original documents.
 - 🔒 **Permission-Aware Search:** Enforces source-level access controls so users only see what they're authorized to.
 - 🕸️ **Knowledge Graph Retrieval:** Graph-backed retrieval that captures relationships across enterprise data.
 - 🔌 **Enterprise Connectors:** 50+ connectors with real-time and scheduled indexing out of the box.
+- 🏠 **Self-host and control your data:** Run PipesHub in your own infrastructure and use your preferred LLM and storage providers.
 - 🔍 **Unified Search, Deep Research, and Agents:** Search, Q&A, deep research, web search, and AI agents on one context layer.
 - 📊 **Artifacts and Code Execution:** Generate reports, charts, and dashboards in a safe execution sandbox.
 - 🎙️ **Multimodal Support:** Image, diagram, and scanned-file understanding plus voice-based interaction.
