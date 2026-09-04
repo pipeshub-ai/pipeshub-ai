@@ -19446,6 +19446,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR permission IN {CollectionNames.PERMISSION.value}
                 FILTER permission._to == team._id
                 LET user = DOCUMENT(permission._from)
+                FILTER user != null AND user.isActive == true
                 RETURN {{
                     "id": user._key,
                     "userId": user.userId,
@@ -19535,7 +19536,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR member_permission IN @@permission_collection
                 FILTER member_permission._to == team._id
                 LET member_user = DOCUMENT(member_permission._from)
-                FILTER member_user != null
+                FILTER member_user != null AND member_user.isActive == true
                 RETURN {{
                     "id": member_user._key,
                     "userId": member_user.userId,
@@ -19648,7 +19649,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR permission IN {CollectionNames.PERMISSION.value}
                 FILTER permission._to == team._id
                 LET user = DOCUMENT(permission._from)
-                FILTER user != null
+                FILTER user != null AND user.isActive == true
                 {search_filter}
                 RETURN {{
                     "id": user._key,

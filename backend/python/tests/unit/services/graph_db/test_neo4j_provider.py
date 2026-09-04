@@ -4345,3 +4345,36 @@ class TestDeleteSingleRecord:
         mock_begin.assert_not_awaited()
         mock_commit.assert_not_awaited()
 
+
+
+# ---------------------------------------------------------------------------
+# Team member listing must exclude removed (isActive = false) users
+# ---------------------------------------------------------------------------
+
+
+class TestTeamQueriesExcludeInactiveUsers:
+    @staticmethod
+    def _queries(neo4j_provider: Neo4jProvider) -> list[str]:
+        return [
+            call.args[0]
+            for call in neo4j_provider.client.execute_query.call_args_list
+            if call.args and isinstance(call.args[0], str)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_get_team_with_users_filters_inactive(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.get_team_with_users("t1", "uk1")
+        assert any("member_user.isActive = true" in q for q in self._queries(neo4j_provider))
+
+    @pytest.mark.asyncio
+    async def test_get_user_teams_filters_inactive(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.get_user_teams("uk1")
+        assert any("member_user.isActive = true" in q for q in self._queries(neo4j_provider))
+
+    @pytest.mark.asyncio
+    async def test_get_team_users_filters_inactive(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.get_team_users("t1", "org1", "uk1")
+        assert any("member_user.isActive = true" in q for q in self._queries(neo4j_provider))
