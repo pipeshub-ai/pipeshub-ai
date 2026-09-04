@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
+from app.config.constants.neo4j import collection_to_label
 from app.config.constants.arangodb import Connectors
 from app.models.entities import AppMetadata, AppRole, Record
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
@@ -1020,31 +1021,6 @@ class TestNeo4jProvider(Neo4jProvider):
         "userAppRelation": "USER_APP_RELATION",
     }
 
-    _ARANGO_COLLECTION_TO_NEO4J_LABEL: dict[str, str] = {
-        "users": "User",
-        "groups": "Group",
-        "roles": "Role",
-        "organizations": "Organization",
-        "records": "Record",
-        "recordGroups": "RecordGroup",
-        "apps": "App",
-        "tickets": "Ticket",
-        "files": "File",
-        "mails": "Mail",
-        "webpages": "Webpage",
-        "comments": "Comment",
-        "links": "Link",
-        "projects": "Project",
-        "products": "Product",
-        "deals": "Deal",
-        "meetings": "Meeting",
-        "artifacts": "Artifact",
-        "codeFiles": "CodeFile",
-        "prs": "PullRequest",
-        "sqlTables": "SqlTable",
-        "sqlViews": "SqlView",
-    }
-
     async def find_edges_between(
         self,
         from_collection: str,
@@ -1057,8 +1033,14 @@ class TestNeo4jProvider(Neo4jProvider):
         if not self.client:
             raise RuntimeError("Provider not connected")
 
-        from_label = self._ARANGO_COLLECTION_TO_NEO4J_LABEL.get(from_collection)
-        to_label = self._ARANGO_COLLECTION_TO_NEO4J_LABEL.get(to_collection)
+        # Delegate to the production resolver rather than keeping a second copy of
+        # the mapping here. A local copy silently drifted: it guessed "PullRequest"
+        # and "CodeFile" while production falls back to ``collection.capitalize()``
+        # for collections absent from COLLECTION_TO_LABEL, producing "Prs" and
+        # "Codefiles". Nothing asserted a PR or code-file edge until the GitHub Teams
+        # suite did, so the wrong labels matched zero rows and read as a missing edge.
+        from_label = collection_to_label(from_collection)
+        to_label = collection_to_label(to_collection)
         edge_label = self._ARANGO_TO_NEO4J_EDGE.get(edge_collection)
 
         if not from_label or not to_label or not edge_label:
