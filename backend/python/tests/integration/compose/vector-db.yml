@@ -11,11 +11,15 @@
 # (FT.HYBRID), so this pins the 8.x line, which ships the modules in the base
 # image. redis-stack-server is still on 7.4 and every test skips against it.
 
+# Published on the loopback interface only: these carry throwaway or absent
+# credentials, and a test store reachable from the network is a standing
+# invitation on any shared or cloud host.
+
 services:
   redis-vector:
     image: redis:8.4
     ports:
-      - "${REDIS_VECTOR_HOST_PORT:-6399}:6379"
+      - "127.0.0.1:${REDIS_VECTOR_HOST_PORT:-6399}:6379"
     # MAXSEARCHRESULTS bounds FT.SEARCH offsets. Left at the 10k default on
     # purpose: raising it here would hide the paging behaviour the delete path
     # has to cope with in a stock deployment.
@@ -46,7 +50,7 @@ services:
         soft: 65536
         hard: 65536
     ports:
-      - "${OPENSEARCH_HOST_PORT:-9299}:9200"
+      - "127.0.0.1:${OPENSEARCH_HOST_PORT:-9299}:9200"
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
       interval: 10s
@@ -66,8 +70,8 @@ services:
       # 6334 the one port this service cannot be moved off, and the one that
       # collides with a running dev stack -- stop that stack's qdrant, or point
       # the tests at this container over the compose network instead.
-      - "${QDRANT_GRPC_HOST_PORT:-6334}:6334"
-      - "${QDRANT_HTTP_HOST_PORT:-6333}:6333"
+      - "127.0.0.1:${QDRANT_GRPC_HOST_PORT:-6334}:6334"
+      - "127.0.0.1:${QDRANT_HTTP_HOST_PORT:-6333}:6333"
     healthcheck:
       test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
       interval: 10s
