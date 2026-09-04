@@ -3170,7 +3170,9 @@
     "deprecatedToolsBanner": "此智能体上有 {{count}} 个工具已弃用，请移除它们：{{tools}}",
     "removeDeprecatedTools": "移除已弃用的工具",
     "showMore": "显示更多",
-    "showLess": "显示更少"
+    "showLess": "显示更少",
+    "defaultReasoningEffortLabel": "默认推理力度",
+    "defaultReasoningEffortHint": "当用户在聊天中未选择时使用的备用推理力度。"
   },
   "recordView": {
     "sections": {

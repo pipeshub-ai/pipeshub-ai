@@ -2938,7 +2938,9 @@
     "deprecatedToolsBanner": "{{count}} herramienta(s) de este agente están obsoletas, elimínalas: {{tools}}",
     "removeDeprecatedTools": "Eliminar herramientas obsoletas",
     "showMore": "Mostrar más",
-    "showLess": "Mostrar menos"
+    "showLess": "Mostrar menos",
+    "defaultReasoningEffortLabel": "Esfuerzo de razonamiento predeterminado",
+    "defaultReasoningEffortHint": "Esfuerzo de razonamiento de respaldo cuando el usuario no elige uno en el chat."
   },
   "recordView": {
     "sections": {

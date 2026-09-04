@@ -3170,7 +3170,9 @@
     "deprecatedToolsBanner": "此代理上有 {{count}} 個工具已淘汰，請移除：{{tools}}",
     "removeDeprecatedTools": "移除已淘汰的工具",
     "showMore": "顯示更多",
-    "showLess": "顯示較少"
+    "showLess": "顯示較少",
+    "defaultReasoningEffortLabel": "預設推理力度",
+    "defaultReasoningEffortHint": "當使用者在聊天中未選擇時使用的備用推理力度。"
   },
   "recordView": {
     "sections": {

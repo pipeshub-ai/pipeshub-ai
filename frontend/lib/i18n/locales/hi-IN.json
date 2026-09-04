@@ -2939,7 +2939,9 @@
     "deprecatedToolsBanner": "इस एजेंट पर {{count}} टूल(s) पुराने हैं, इन्हें हटाएं: {{tools}}",
     "removeDeprecatedTools": "पुराने टूल हटाएं",
     "showMore": "और दिखाएं",
-    "showLess": "कम दिखाएं"
+    "showLess": "कम दिखाएं",
+    "defaultReasoningEffortLabel": "डिफ़ॉल्ट रीज़निंग प्रयास",
+    "defaultReasoningEffortHint": "जब उपयोगकर्ता चैट में कोई विकल्प नहीं चुनता तब उपयोग किया जाने वाला फ़ॉलबैक रीज़निंग प्रयास।"
   },
   "recordView": {
     "sections": {

@@ -365,6 +365,12 @@ export interface ChatSettings {
    * Only meaningful when the selected model has `isReasoning: true`.
    */
   reasoningEffort: Record<string, ReasoningEffort | null>;
+  /**
+   * Per-agent default reasoning effort from the agent's config. Populated by
+   * `fetchModelsForContext` when loading an agent. Used as the fallback when
+   * the user hasn't set an explicit override.
+   */
+  agentDefaultReasoningEffort: Record<string, ReasoningEffort | null>;
 }
 
 /**

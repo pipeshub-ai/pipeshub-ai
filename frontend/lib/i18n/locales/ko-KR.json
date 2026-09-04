@@ -3170,7 +3170,9 @@
     "deprecatedToolsBanner": "이 에이전트의 도구 {{count}}개가 지원 중단되었습니다. 제거하세요: {{tools}}",
     "removeDeprecatedTools": "지원 중단된 도구 제거",
     "showMore": "더 보기",
-    "showLess": "간략히 보기"
+    "showLess": "간략히 보기",
+    "defaultReasoningEffortLabel": "기본 추론 노력",
+    "defaultReasoningEffortHint": "사용자가 채팅에서 선택하지 않을 때 사용되는 대체 추론 노력입니다."
   },
   "recordView": {
     "sections": {

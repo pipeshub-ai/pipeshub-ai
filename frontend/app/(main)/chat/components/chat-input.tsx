@@ -350,10 +350,9 @@ export function ChatInput({
 
   const activeModelSupportsReasoning = isModelReasoningCapable(modelCtxKey, displayModel);
   const reasoningEffortOverride = settings.reasoningEffort[modelCtxKey] ?? null;
-  // No explicit override → the backend applies DEFAULT_REASONING_EFFORT for any
-  // reasoning-capable model, so reflect that resolved value rather than a vague "Default".
+  const agentDefault = useChatStore((s) => s.settings.agentDefaultReasoningEffort[modelCtxKey] ?? null);
   const reasoningEffortLabel = activeModelSupportsReasoning
-    ? getReasoningEffortLabel(t, reasoningEffortOverride ?? DEFAULT_REASONING_EFFORT)
+    ? getReasoningEffortLabel(t, reasoningEffortOverride ?? agentDefault ?? DEFAULT_REASONING_EFFORT)
     : null;
 
   // Expansion panel view mode (inline vs overlay) from store

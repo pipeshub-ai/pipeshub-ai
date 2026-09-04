@@ -2942,7 +2942,9 @@
     "deprecatedToolsBanner": "{{count}} Tool(s) auf diesem Agenten sind veraltet, entferne sie: {{tools}}",
     "removeDeprecatedTools": "Veraltete Tools entfernen",
     "showMore": "Mehr anzeigen",
-    "showLess": "Weniger anzeigen"
+    "showLess": "Weniger anzeigen",
+    "defaultReasoningEffortLabel": "Standard-Denkaufwand",
+    "defaultReasoningEffortHint": "Ersatz-Denkaufwand, der verwendet wird, wenn der Benutzer im Chat keinen auswählt."
   },
   "recordView": {
     "sections": {

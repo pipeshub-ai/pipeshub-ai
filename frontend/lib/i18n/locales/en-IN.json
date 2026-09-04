@@ -2939,7 +2939,9 @@
     "deprecatedToolsBanner": "{{count}} tool(s) on this agent are deprecated remove them : {{tools}}",
     "removeDeprecatedTools": "Remove Deprecated Tools",
     "showMore": "Show more",
-    "showLess": "Show less"
+    "showLess": "Show less",
+    "defaultReasoningEffortLabel": "Default Reasoning Effort",
+    "defaultReasoningEffortHint": "Fallback reasoning effort used when the user doesn't choose one in chat."
   },
   "recordView": {
     "sections": {
