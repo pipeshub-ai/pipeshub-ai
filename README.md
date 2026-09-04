@@ -2,7 +2,7 @@
 
 <a href="https://www.pipeshub.com"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg" alt="PipesHub" width="280"/></a>
 
-<h3>Connect your company's knowledge to AI</h3>
+<h3>The Open-Source Workplace AI Platform</h3>
 
 <p>
   <a href="https://www.pipeshub.com/">Website</a> ·
@@ -286,7 +286,7 @@ Want to join our community of developers? Please check out our [Contributing Gui
 
 PipesHub is an open-source platform for connecting AI applications to the knowledge stored across your company's business systems.
 
-It connects systems such as Slack, Google Drive, GitHub, Microsoft 365 and Notion, then makes what they hold available through permission-aware search with citations, APIs, SDKs, MCP, AI agents and workflows. You can use the built-in search experience, or build your own applications on top of it.
+It connects systems such as Slack, Google Drive, GitHub, Microsoft 365 and Notion, then makes what they hold available in two ways: permission-aware search with citations for your team, and trusted context for your AI agents through APIs, SDKs and MCP. Agents get the same governed view of your company's knowledge that a person would, with the same access controls applied, so they can answer from real company data instead of guessing across tools. You can use the built-in search experience, or build your own agents, workflows and applications on top of it.
 
 ### How is PipesHub different from other workplace AI tools?
 
