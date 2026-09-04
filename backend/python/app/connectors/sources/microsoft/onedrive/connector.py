@@ -122,6 +122,26 @@ class OneDriveUserStatus(str, Enum):
     UNKNOWN_ERROR = "unknown_error"
 
 
+# Title/message templates for each non-AVAILABLE OneDriveUserStatus, used by
+# _notify_onedrive_user_failures. Kept next to the enum so a new status is a
+# visible reminder to add its notification copy here too.
+ONEDRIVE_USER_FAILURE_NOTIFICATIONS: Dict[OneDriveUserStatus, Tuple[str, str]] = {
+    OneDriveUserStatus.NOT_PROVISIONED: (
+        "OneDrive not provisioned for some users",
+        "OneDrive is not provisioned or licensed for these users, so they were not synced: {emails}.",
+    ),
+    OneDriveUserStatus.LOCKED: (
+        "OneDrive blocked for some users",
+        "OneDrive is archived, or blocked for these users, so they were not synced: {emails}.",
+    ),
+    OneDriveUserStatus.UNKNOWN_ERROR: (
+        "Some OneDrive users could not be synced",
+        "OneDrive availability could not be checked for these users: {emails}. "
+        "This may be a transient error; they will be picked up by a later sync if the issue resolves.",
+    ),
+}
+
+
 @ConnectorBuilder("OneDrive")\
     .in_group("Microsoft 365")\
     .with_description("Sync files and folders from OneDrive")\
@@ -1326,7 +1346,6 @@ class OneDriveConnector(BaseConnector):
                     message=(
                         "Ensure that your OneDrive users are invited to Pipeshub, and verify that your application has Files.Read.All API permission with admin consent."
                     ),
-                    recipient_user_ids=[self.created_by],
                     payload={
                         "connector_id": self.connector_id,
                         "connector_name": self.connector_name.value,
@@ -1356,23 +1375,7 @@ class OneDriveConnector(BaseConnector):
         self,
         failed_users: List[Tuple[str, OneDriveUserStatus]],
     ) -> None:
-        notifications = {
-            OneDriveUserStatus.NOT_PROVISIONED: (
-                "OneDrive not provisioned for some users",
-                "OneDrive is not provisioned or licensed for these users, so they were not synced: {emails}.",
-            ),
-            OneDriveUserStatus.LOCKED: (
-                "OneDrive blocked for some users",
-                "OneDrive is archived, or blocked for these users, so they were not synced: {emails}.",
-            ),
-            OneDriveUserStatus.UNKNOWN_ERROR: (
-                "Some OneDrive users could not be synced",
-                "OneDrive availability could not be checked for these users: {emails}. "
-                "This may be a transient error; they will be picked up by a later sync if the issue resolves.",
-            ),
-        }
-
-        for status, (title, message_template) in notifications.items():
+        for status, (title, message_template) in ONEDRIVE_USER_FAILURE_NOTIFICATIONS.items():
             emails = [email for email, reason in failed_users if reason is status]
             if not emails:
                 continue
@@ -1386,7 +1389,6 @@ class OneDriveConnector(BaseConnector):
                 severity=NotificationSeverity.WARNING,
                 title=title,
                 message=message_template.format(emails=displayed_emails),
-                recipient_user_ids=[self.created_by],
                 payload={
                     "connector_id": self.connector_id,
                     "connector_name": self.connector_name.value,

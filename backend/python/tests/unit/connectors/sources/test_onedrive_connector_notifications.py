@@ -68,6 +68,11 @@ def _notify_calls_by_title(connector: OneDriveConnector) -> dict:
     return {call.kwargs["title"]: call.kwargs for call in connector.notify.await_args_list}
 
 
+# Sentinel: assert recipient_user_ids == [connector.created_by] (the default
+# behavior for most notify() call sites in this connector).
+_DEFAULT_RECIPIENT = object()
+
+
 def _assert_notify(
     connector: OneDriveConnector,
     *,
@@ -77,6 +82,7 @@ def _assert_notify(
     message: str | None = None,
     message_contains: str | None = None,
     total_calls: int = 1,
+    recipient_user_ids: object = _DEFAULT_RECIPIENT,
 ) -> None:
     assert connector.notify.await_count == total_calls, (
         f"Expected {total_calls} notify call(s), got {connector.notify.await_count}: "
@@ -94,7 +100,14 @@ def _assert_notify(
     if message_contains is not None:
         assert message_contains in kwargs["message"]
     assert kwargs["payload"] == _expected_payload(connector)
-    assert kwargs["recipient_user_ids"] == [connector.created_by]
+    if recipient_user_ids is _DEFAULT_RECIPIENT:
+        assert kwargs["recipient_user_ids"] == [connector.created_by]
+    elif recipient_user_ids is None:
+        # Call site intentionally omits recipient_user_ids so notify()'s own
+        # default (creator + last_synced_by) applies.
+        assert "recipient_user_ids" not in kwargs
+    else:
+        assert kwargs["recipient_user_ids"] == recipient_user_ids
 
 
 # ---------------------------------------------------------------------------
@@ -259,10 +272,12 @@ class TestProcessUsersInBatchesNotifications:
             title="Some OneDrive users could not be synced",
             message_contains="active@test.com",
             total_calls=2,
+            recipient_user_ids=None,
         )
         fallback = _notify_calls_by_title(connector)["No OneDrive users synced"]
         assert fallback["type"] is NotificationType.CONNECTOR_RECORD_SYNC_ERROR
         assert fallback["severity"] is NotificationSeverity.WARNING
+        assert "recipient_user_ids" not in fallback
 
     @pytest.mark.asyncio
     async def test_user_drive_transient_error_sends_warning(self):
@@ -289,10 +304,12 @@ class TestProcessUsersInBatchesNotifications:
             title="Some OneDrive users could not be synced",
             message_contains="picked up by a later sync",
             total_calls=2,
+            recipient_user_ids=None,
         )
         fallback = _notify_calls_by_title(connector)["No OneDrive users synced"]
         assert fallback["type"] is NotificationType.CONNECTOR_RECORD_SYNC_ERROR
         assert fallback["severity"] is NotificationSeverity.WARNING
+        assert "recipient_user_ids" not in fallback
 
     @pytest.mark.asyncio
     async def test_user_without_provisioned_onedrive_warns(self):
@@ -321,10 +338,12 @@ class TestProcessUsersInBatchesNotifications:
             title="OneDrive not provisioned for some users",
             message_contains="active@test.com",
             total_calls=2,
+            recipient_user_ids=None,
         )
         fallback = _notify_calls_by_title(connector)["No OneDrive users synced"]
         assert fallback["type"] is NotificationType.CONNECTOR_RECORD_SYNC_ERROR
         assert fallback["severity"] is NotificationSeverity.WARNING
+        assert "recipient_user_ids" not in fallback
 
     @pytest.mark.asyncio
     async def test_users_with_onedrive_does_not_warn(self):
