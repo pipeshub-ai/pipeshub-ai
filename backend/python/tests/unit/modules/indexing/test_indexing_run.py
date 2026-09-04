@@ -498,6 +498,93 @@ class TestPurgeConnectorByMembership:
         assert pipeline._forget_virtual_record_mappings.await_args.args[0] == ["vr-only"]
 
     @pytest.mark.asyncio
+    async def test_survivors_beyond_the_first_confirm_page_keep_their_rows(self):
+        """The confirming re-read has to walk every page of the matched set.
+
+        It filters on virtualRecordId, and the filter matches *points* — a
+        record holds many chunks, so one page can be filled by a single VRID
+        while another's points sit on the next. Treating one page as the whole
+        answer reads those as "no points left" and forgets the mapping row of a
+        record that is still searchable, which is the one mistake here that
+        cannot be undone.
+        """
+        from app.services.vector_db.const.const import (
+            CONNECTOR_IDS_FIELD,
+            RECORD_GROUP_IDS_FIELD,
+        )
+        from app.services.vector_db.models import ScrollResult
+
+        pipeline = self._pipeline()
+
+        scan_queue = [[_point("vr-a", ["conn-1"]), _point("vr-b", ["conn-1"])]]
+        # vr-a fills the first page; vr-b only shows up on the second.
+        confirm_queue = [[_point("vr-a", ["conn-1"])], [_point("vr-b", ["conn-1"])]]
+        strip_queue = [[]]
+
+        async def _scroll(**kwargs):
+            with_payload = kwargs.get("with_payload") or []
+            if RECORD_GROUP_IDS_FIELD in with_payload:
+                queue = strip_queue
+            elif CONNECTOR_IDS_FIELD in with_payload:
+                queue = scan_queue
+            else:
+                queue = confirm_queue
+            if not queue:
+                return ScrollResult(points=[], next_offset=None)
+            page = queue.pop(0)
+            return ScrollResult(
+                points=page, next_offset=f"off-{len(queue)}" if queue else None
+            )
+
+        pipeline.vector_db_service.scroll = AsyncMock(side_effect=_scroll)
+
+        await pipeline.purge_connector(self._ctx())
+
+        forgotten = pipeline._forget_virtual_record_mappings.await_args.args[0]
+        assert "vr-b" not in forgotten, (
+            f"vr-b still has a point on the second page; forgetting its mapping "
+            f"row strands it. forgot={forgotten}"
+        )
+        assert forgotten == []
+
+    @pytest.mark.asyncio
+    async def test_an_unconfirmable_batch_keeps_every_row(self):
+        """A walk that never reaches the end proves nothing, so nothing is
+        reclaimed. Here the cursor stops advancing, which is the shape a
+        provider bug takes: it looks exactly like more pages forever."""
+        from app.services.vector_db.const.const import (
+            CONNECTOR_IDS_FIELD,
+            RECORD_GROUP_IDS_FIELD,
+        )
+        from app.services.vector_db.models import ScrollResult
+        from app.modules.indexing import run as run_mod
+
+        pipeline = self._pipeline()
+        scan_queue = [[_point("vr-a", ["conn-1"])]]
+
+        async def _scroll(**kwargs):
+            with_payload = kwargs.get("with_payload") or []
+            if RECORD_GROUP_IDS_FIELD in with_payload:
+                return ScrollResult(points=[], next_offset=None)
+            if CONNECTOR_IDS_FIELD in with_payload:
+                if scan_queue:
+                    return ScrollResult(points=scan_queue.pop(0), next_offset=None)
+                return ScrollResult(points=[], next_offset=None)
+            # Confirm phase: endless pages that never mention vr-a.
+            return ScrollResult(points=[_point("vr-other", ["conn-9"])], next_offset="n")
+
+        pipeline.vector_db_service.scroll = AsyncMock(side_effect=_scroll)
+
+        original = run_mod.PURGE_SCAN_MAX_POINTS
+        run_mod.PURGE_SCAN_MAX_POINTS = 3
+        try:
+            await pipeline.purge_connector(self._ctx())
+        finally:
+            run_mod.PURGE_SCAN_MAX_POINTS = original
+
+        assert pipeline._forget_virtual_record_mappings.await_args.args[0] == []
+
+    @pytest.mark.asyncio
     async def test_a_stalled_rewrite_raises_instead_of_reporting_success(self):
         """Acking would retire the only event that can finish the job."""
         from app.exceptions.indexing_exceptions import EmbeddingDeletionError

@@ -95,16 +95,32 @@ class FilterExpression:
         too, so a count-only expression matches most of a collection. Delete
         paths refuse one on that basis.
 
-        ``must_not`` is deliberately excluded: it only ever *subtracts*, so a
-        term there is not the positive match a bound needs. Counting it would
-        let ``filter_collection(MUST_NOT, max_values=..., virtualRecordId=x)``
-        — a single public call — pass every provider's delete guard and wipe
-        the collection bar one record.
+        ``must_not`` never counts: it only ever *subtracts*, so a term there is
+        not the positive match a bound needs. Counting it would let
+        ``filter_collection(MUST_NOT, max_values=..., virtualRecordId=x)``, a
+        single public call, pass every provider's delete guard and wipe the
+        collection bar one record.
+
+        ``should`` counts only when nothing in ``must`` bounds an array length.
+        A SHOULD clause on its own is a real constraint — every provider
+        requires one of them to match when there is no MUST beside it — and the
+        legacy id-shipping delete relies on exactly that. Put a length bound in
+        MUST next to it, though, and the picture inverts: OpenSearch makes SHOULD
+        optional as soon as a MUST exists (``min_should_match=0`` says so
+        outright), which leaves the bound standing alone as the whole filter —
+        and a point whose field is absent satisfies a bound.
         """
-        return any(
-            cond.value is not None or cond.values is not None
-            for cond in (*self.must, *self.should)
-        )
+        def _matches_a_value(conds: List[FieldCondition]) -> bool:
+            return any(
+                cond.value is not None or cond.values is not None
+                for cond in conds
+            )
+
+        if _matches_a_value(self.must):
+            return True
+        if any(cond.values_count_lte is not None for cond in self.must):
+            return False
+        return _matches_a_value(self.should)
 
 
 @dataclass

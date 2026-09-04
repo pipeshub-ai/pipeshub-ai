@@ -1458,6 +1458,12 @@ class DataSourceEntitiesProcessor:
         new_records_to_publish: list[Record] = []
         membership_vrids: list[tuple[str, str | None]] = []
 
+        def _is_publishable(record: Record) -> bool:
+            return (
+                record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+                and not record.is_internal
+            )
+
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 for old_external_id, new_record, permissions in moves:
@@ -1523,6 +1529,24 @@ class DataSourceEntitiesProcessor:
                         if new_record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
                             new_record.indexing_status = ProgressStatus.QUEUED.value
                         records_to_reindex.append(new_record)
+                        if not _is_publishable(new_record):
+                            # Content changed *and* the group moved, but the
+                            # reindex publish is filtered out below — so nothing
+                            # would ever recompute this record's membership and
+                            # its chunks would keep pointing at the old group.
+                            # Carrying the VRID also keeps the reused vertex from
+                            # being upserted with a null one, which would orphan
+                            # those chunks outright.
+                            vrid = (
+                                new_record.virtual_record_id
+                                or old_record.virtual_record_id
+                            )
+                            if isinstance(vrid, str) and vrid:
+                                if not new_record.virtual_record_id:
+                                    new_record.virtual_record_id = vrid
+                                membership_vrids.append(
+                                    (vrid, new_record.connector_id)
+                                )
                     else:
                         # Carry the VRID across explicitly: the upsert below reuses
                         # the existing vertex, so leaving this unset would null
@@ -1561,12 +1585,7 @@ class DataSourceEntitiesProcessor:
 
             # Publish events outside the transaction.
             def _publishable(candidates: list[Record]) -> list[Record]:
-                return [
-                    r
-                    for r in candidates
-                    if r.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
-                    and not r.is_internal
-                ]
+                return [r for r in candidates if _is_publishable(r)]
 
             new_batch = _publishable(new_records_to_publish)
             if new_batch:

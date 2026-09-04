@@ -426,11 +426,8 @@ class IndexingPipeline:
             )
             for name in collections:
                 try:
-                    page = await self.vector_db_service.scroll(
-                        collection_name=name,
-                        scroll_filter=filter_dict,
-                        limit=len(batch),
-                        with_payload=[VIRTUAL_RECORD_ID_FIELD],
+                    await self._mark_surviving_vrids(
+                        name, filter_dict, batch, survivors
                     )
                 except Exception as e:
                     # Unreadable means unproven, and an unproven row must be
@@ -444,12 +441,79 @@ class IndexingPipeline:
                     )
                     survivors.update(batch)
                     continue
-                for point in getattr(page, "points", None) or []:
-                    parsed = VectorChunkPayload.from_dict(point.payload or {})
-                    if parsed.metadata.virtualRecordId:
-                        survivors.add(parsed.metadata.virtualRecordId)
 
         return [v for v in virtual_record_ids if v not in survivors]
+
+    async def _mark_surviving_vrids(
+        self,
+        collection_name: str,
+        scroll_filter: Any,
+        batch: Sequence[str],
+        survivors: set,
+    ) -> None:
+        """Add every VRID from *batch* that still holds a point here.
+
+        Walks the whole matched set. One page sized to the batch does not do it:
+        the filter matches *points*, and a record holds many chunks, so a single
+        page can be filled by a handful of VRIDs while the rest go unseen — and
+        unseen reads as "no points left", which drops the mapping row of a
+        record that is still searchable.
+
+        Paging stops early once every VRID in the batch is accounted for. Any
+        other early exit — the bound, or a cursor that stops advancing — leaves
+        the rest *unproven*, and unproven is kept: the sweeper can always
+        reclaim a row later, but nothing can put one back.
+
+        Only two endings prove absence: a page that comes back empty, and a
+        page that reports no next offset. Both mean the matched set is
+        exhausted, so a VRID not seen in it genuinely has no points here.
+        """
+        remaining = {v for v in batch if v not in survivors}
+        offset = None
+        scanned = 0
+        exhausted = False
+
+        while remaining and scanned < PURGE_SCAN_MAX_POINTS:
+            page = await self.vector_db_service.scroll(
+                collection_name=collection_name,
+                scroll_filter=scroll_filter,
+                limit=PURGE_SCAN_PAGE_SIZE,
+                offset=offset,
+                with_payload=[VIRTUAL_RECORD_ID_FIELD],
+            )
+            points = list(getattr(page, "points", None) or [])
+            if not points:
+                exhausted = True
+                break
+            for point in points:
+                parsed = VectorChunkPayload.from_dict(point.payload or {})
+                vrid = parsed.metadata.virtualRecordId
+                if vrid and vrid in remaining:
+                    remaining.discard(vrid)
+                    survivors.add(vrid)
+            scanned += len(points)
+            next_offset = getattr(page, "next_offset", None)
+            if next_offset is None:
+                exhausted = True
+                break
+            if next_offset == offset:
+                # The cursor is not advancing. That is a stalled walk, not a
+                # finished one, so nothing below may be treated as absent.
+                break
+            offset = next_offset
+        else:
+            # Fell out of the condition: either every VRID is accounted for, or
+            # the bound stopped us with some still outstanding.
+            exhausted = not remaining
+
+        if remaining and not exhausted:
+            self.logger.warning(
+                "Could not walk %s to the end for %d virtual record id(s); "
+                "keeping their mapping rows",
+                collection_name,
+                len(remaining),
+            )
+            survivors.update(remaining)
 
     async def _strip_connector_from_shared_points(
         self,

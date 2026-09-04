@@ -118,6 +118,10 @@ class TestRedisMembershipDelete:
                 if await _count(redis_service, col, DYING) == len(points):
                     break
                 await asyncio.sleep(1)
+            else:
+                # Without this the delete below runs on a half-empty index and
+                # the "everything is gone" assertion passes on nothing.
+                raise AssertionError("seeded points never became searchable")
 
             await redis_service.delete_points(
                 col,

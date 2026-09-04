@@ -5143,6 +5143,70 @@ class TestOnRecordsMovedKbUpload:
         await proc.on_records_moved([("old-ext", new_record, [])])
         proc.messaging_producer.send_messages.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_auto_index_off_move_with_changed_content_still_refreshes(self):
+        """A record can change content *and* move at once.
+
+        Changed content routes it to the reindex batch, but AUTO_INDEX_OFF is
+        filtered out of the publish — so without this nothing emits
+        ``updateRecord`` and nothing emits ``syncVectorMembership`` either, and
+        the chunks keep pointing at the group the record just left.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        old = MagicMock(
+            id="r1",
+            external_revision_id="old-rev",
+            indexing_status=ProgressStatus.COMPLETED.value,
+            virtual_record_id="vr-1",
+        )
+        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        new_record = _make_kb_upload_record()
+        new_record.external_revision_id = "new-rev"
+        new_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+
+        events = _membership_events(proc)
+        assert [e["payload"]["virtualRecordId"] for e in events] == ["vr-1"]
+        assert events[0]["payload"]["connectorId"] == new_record.connector_id
+        # The reindex publish really is suppressed — otherwise the refresh
+        # above would be redundant rather than the only thing that runs.
+        published = [
+            message["eventType"]
+            for call in proc.messaging_producer.send_messages.await_args_list
+            for _key, message in (call.args[1] or [])
+        ]
+        assert "updateRecord" not in published
+
+    @pytest.mark.asyncio
+    async def test_a_reindexed_move_does_not_also_refresh_membership(self):
+        """Reindexing recomputes membership on its own; a second event would
+        be pure duplication on the common path."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        old = MagicMock(
+            id="r1",
+            external_revision_id="old-rev",
+            indexing_status=ProgressStatus.COMPLETED.value,
+            virtual_record_id="vr-1",
+        )
+        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        new_record = _make_kb_upload_record()
+        new_record.external_revision_id = "new-rev"
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+
+        assert _membership_events(proc) == []
+        published = [
+            message["eventType"]
+            for call in proc.messaging_producer.send_messages.await_args_list
+            for _key, message in (call.args[1] or [])
+        ]
+        assert "updateRecord" in published
+
 
 class TestPublishDeleteEvents:
     @pytest.mark.asyncio
