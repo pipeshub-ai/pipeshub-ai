@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import weakref
+from contextlib import AsyncExitStack
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Protocol, Sequence, runtime_checkable
@@ -68,11 +69,15 @@ class CollectionLocator(Protocol):
         """
         ...
 
-    async def all_collections(self, *, fresh: bool = False) -> Sequence[str]:
+    async def all_collections(
+        self, *, fresh: bool = False, strict: bool = False
+    ) -> Sequence[str]:
         """Every managed collection.
 
         ``fresh=True`` asks for an uncached view; delete paths use it, because
         acting on a stale enumeration leaves points in collections it missed.
+        ``strict=True`` makes a failed enumeration raise rather than come back
+        empty, so a delete can tell "nothing managed" from "could not tell".
 
         The only correct target when a VRID has no graph record left to
         resolve from — which is exactly when deleting everywhere is safe: a
@@ -134,6 +139,11 @@ _vrid_locks: "weakref.WeakValueDictionary[tuple[int, str], asyncio.Lock]" = (
 MEMBERSHIP_RESOLVE_CONCURRENCY = 32
 
 MEMBERSHIP_LOCK_TIMEOUT_SECONDS = 120
+
+# Ceiling on VRIDs rewritten by a single batched membership write. Bounds how
+# many locks one writer holds at once, and keeps the id list in the filter well
+# inside any provider's query-size limits.
+MEMBERSHIP_WRITE_BATCH_SIZE = 200
 
 # Deleting points is irreversible, and "no records remain" can be a stale read on
 # a cluster whose followers lag the commit that published this event. One
@@ -216,7 +226,7 @@ def _record_group_id_from_record(record: Any) -> Optional[str]:
     )
 
 
-def _record_group_id_from_edge(edge: dict) -> Optional[str]:
+def record_group_id_from_edge(edge: dict) -> Optional[str]:
     """Group id for a ``belongsTo`` edge, or None if it points somewhere else.
 
     Collections (connector type "KB") deliberately yield None. Their records
@@ -332,7 +342,7 @@ async def resolve_virtual_record_state(
             for edge in edges:
                 if isinstance(edge, dict):
                     _add_unique(
-                        record_group_ids, seen_groups, _record_group_id_from_edge(edge)
+                        record_group_ids, seen_groups, record_group_id_from_edge(edge)
                     )
 
     if not connector_ids and current_record is not None:
@@ -355,6 +365,63 @@ async def resolve_virtual_record_state(
         # here" on a destructive path, so both count as incomplete.
         complete=len(resolved) == len(record_keys),
     )
+
+
+async def write_membership_batch(
+    vector_db,
+    collection_name: str,
+    virtual_record_ids: Sequence[str],
+    remaining_connector_ids: Sequence[str],
+    remaining_record_group_ids: Optional[Sequence[str]],
+    logger,
+) -> None:
+    """Write one membership pair onto every point of many VRIDs, in one call.
+
+    Connector deletion strips the same ids from every shared VRID, so the VRIDs
+    whose arrays reduce to the same value can be rewritten together. One call
+    per *distinct resulting pair* instead of one per VRID is the difference
+    between a round trip per deduplicated record and a handful for the pass.
+
+    Unlike :func:`sync_vector_membership` the arrays are derived from the
+    point's own payload rather than the graph, but the write still lands on the
+    field that function maintains — hence the same per-VRID locks, taken in
+    sorted order so two overlapping batches cannot deadlock against each other.
+
+    ``remaining_record_group_ids`` is ``None`` when the caller has nothing to
+    say about groups, which leaves that field untouched rather than blanking it.
+    """
+    ordered = sorted({v for v in virtual_record_ids if v})
+    if not ordered or vector_db is None or not collection_name:
+        return
+
+    payload: dict[str, Any] = {CONNECTOR_IDS_FIELD: list(remaining_connector_ids)}
+    if remaining_record_group_ids is not None:
+        payload[RECORD_GROUP_IDS_FIELD] = list(remaining_record_group_ids)
+
+    async with asyncio.timeout(MEMBERSHIP_LOCK_TIMEOUT_SECONDS):
+        async with AsyncExitStack() as stack:
+            for virtual_record_id in ordered:
+                await stack.enter_async_context(_vrid_lock(virtual_record_id))
+            filt = await vector_db.filter_collection(
+                must={"virtualRecordId": ordered}
+            )
+            # refresh: the connector purge re-reads the matched set after each
+            # write to decide when it is done, so a rewritten point must stop
+            # matching immediately. Per-record membership writes do not pass it.
+            await vector_db.set_payload(
+                collection_name, payload, filt, refresh=True
+            )
+
+    if logger is not None:
+        logger.debug(
+            "Rewrote membership for %d virtual record(s) in %s "
+            "(%d connectorIds, %s recordGroupIds)",
+            len(ordered),
+            collection_name,
+            len(remaining_connector_ids),
+            "unchanged" if remaining_record_group_ids is None
+            else len(remaining_record_group_ids),
+        )
 
 
 async def sync_vector_membership(

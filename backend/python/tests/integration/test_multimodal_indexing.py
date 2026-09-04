@@ -10,7 +10,7 @@ keys, while everything else — dimension validation, blockType/isImage
 metadata, page_content handling, and storage/retrieval — runs through the
 real ``VectorStore`` and a real vector DB backend.
 
-Requires: docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml up -d
+Requires: docker compose -f tests/integration/compose/vector-db.yml up -d
 Run: pytest tests/integration/test_multimodal_indexing.py -m integration --timeout=120
 
 These tests skip automatically when Docker vector DB services aren't

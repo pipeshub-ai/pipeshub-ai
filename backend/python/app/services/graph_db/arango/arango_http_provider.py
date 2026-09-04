@@ -133,6 +133,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_aql,
     build_page_records_for_vector_membership_backfill_aql,
+    can_use_membership_cleanup,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -7795,10 +7796,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_id}: {str(e)}")
             raise
 
-    async def _collect_connector_entities(self, connector_id: str, transaction: str | None = None) -> dict:
+    async def _collect_connector_entities(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+        *,
+        include_virtual_record_ids: bool = False,
+    ) -> dict:
         """
         Collect all entity IDs for a connector in a single pass.
         Returns record keys, virtual record IDs, and full node IDs for edge deletion.
+
+        ``include_virtual_record_ids`` is off by default: the VRID list is only
+        consumed by the legacy id-shipping cleanup path, and materialising one
+        entry per distinct VRID is wasted memory and payload on a connector with
+        millions of records when nothing will read it.
         """
         result = {
             "record_keys": [],
@@ -7823,11 +7835,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
             },
             txn_id=transaction
         )
+        # VRIDs are deduplicated: records sharing content share one, and the
+        # consumer only ever needs the distinct set.
+        seen_virtual_record_ids: set[str] = set()
         for doc in (records_result or []):
             result["record_keys"].append(doc["_key"])
             result["record_ids"].append(f"records/{doc['_key']}")
-            if doc.get("virtualRecordId"):
-                result["virtual_record_ids"].append(doc["virtualRecordId"])
+            if not include_virtual_record_ids:
+                continue
+            virtual_record_id = doc.get("virtualRecordId")
+            if virtual_record_id and virtual_record_id not in seen_virtual_record_ids:
+                seen_virtual_record_ids.add(virtual_record_id)
+                result["virtual_record_ids"].append(virtual_record_id)
 
         # Collect record groups
         query = "FOR rg IN @@collection FILTER rg.connectorId == @connector_id RETURN rg._key"
@@ -8359,8 +8378,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "error": f"Connector instance {connector_id} not found"
                 }
 
+            # Whether the vector cleanup will need an explicit VRID list at all.
+            # Membership-based cleanup finds the points itself, so on that path
+            # the list is never read and collecting it is pure cost — which is
+            # the whole point on a connector with millions of records.
+            needs_virtual_record_ids = not can_use_membership_cleanup(connector)
+
             # Step 2: Collect all entities for this connector
-            collected = await self._collect_connector_entities(connector_id, transaction)
+            collected = await self._collect_connector_entities(
+                connector_id,
+                transaction,
+                include_virtual_record_ids=needs_virtual_record_ids,
+            )
 
             # Step 3: Get all edge collections from graph definition
             edge_collections = await self._get_all_edge_collections()
@@ -8579,6 +8608,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "deleted_edges_count": deleted_edges,
                     "deleted_isoftype_targets_count": deleted_isoftype,
                     "virtual_record_ids": collected["virtual_record_ids"],
+                    # The connector's own record groups went with it. A point
+                    # shared with a live connector survives the purge, so the
+                    # cleanup needs these to strip them from recordGroupIds.
+                    "record_group_ids": collected["record_group_keys"],
+                    "vector_membership_backfilled": bool(
+                        connector.get("vectorMembershipBackfilled", False)
+                    ),
+                    "vector_membership_backfill_exhausted": bool(
+                        connector.get("vectorMembershipBackfillExhausted", False)
+                    ),
                     "connector_id": connector_id,
                     "connector_name": connector.get("type"),
                 }

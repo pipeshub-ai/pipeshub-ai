@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -47,6 +47,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.services.vector_db.membership import record_group_id_from_edge
 from app.utils.retry import retry_async
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -457,13 +458,64 @@ class DataSourceEntitiesProcessor:
 
         return None
 
-    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore, existing_record: Record | None = None) -> None:
+    async def _publish_membership_sync(
+        self, membership_refreshes: Iterable[tuple[str, str | None]]
+    ) -> None:
+        """Ask indexing to recompute a VRID's membership arrays from the graph.
+
+        **Call this only after the transaction has committed.** The consumer
+        re-reads the graph, so an event published mid-transaction recomputes the
+        *old* membership and writes it back — worse than not publishing, because
+        it looks like a successful refresh.
+
+        Takes ``(virtual_record_id, connector_id)`` pairs. The connector id is
+        what fair scheduling lanes on: without it every refresh lands in the
+        shared default lane, so one connector's re-sync would queue behind, and
+        ahead of, every other connector's records.
+
+        Keyed by VRID so a broker with key affinity keeps one record's refreshes
+        in order.
+        """
+        unique: dict[str, str | None] = {}
+        for vrid, connector_id in membership_refreshes:
+            if vrid and vrid not in unique:
+                unique[vrid] = connector_id
+        if not unique:
+            return
+        await self.messaging_producer.send_messages(
+            "record-events",
+            [
+                (
+                    vrid,
+                    {
+                        "eventType": EventTypes.SYNC_VECTOR_MEMBERSHIP.value,
+                        "timestamp": get_epoch_timestamp_in_ms(),
+                        "payload": {
+                            "virtualRecordId": vrid,
+                            "orgId": self.org_id,
+                            "connectorId": connector_id,
+                        },
+                    },
+                )
+                for vrid, connector_id in unique.items()
+            ],
+        )
+
+    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore, existing_record: Record | None = None) -> bool:
         """
         Create edges between record and record group.
         This should be called AFTER saving the record (when record.id is available).
+
+        Returns whether the record's group membership actually moved. The
+        caller republishes the vector membership on that signal, and it is
+        deliberately the *same* predicate that drives the edge rewrite below —
+        anything else would let the graph and the chunks drift apart on a
+        re-sync where nothing changed.
         """
+        moved = False
 
         if existing_record and existing_record.record_group_id and existing_record.record_group_id != record_group_id:
+            moved = True
             await tx_store.delete_edge(existing_record.id, CollectionNames.RECORDS.value, existing_record.record_group_id, CollectionNames.RECORD_GROUPS.value, CollectionNames.BELONGS_TO.value)
             await tx_store.delete_inherit_permissions_relation_record_group(existing_record.id, existing_record.record_group_id)
 
@@ -477,6 +529,22 @@ class DataSourceEntitiesProcessor:
                 await tx_store.delete_inherit_permissions_relation_record_group(record.id, record_group_id)
 
         if record.shared_with_me_record_group_ids:
+            # create_record_group_relation is an idempotent upsert and cannot
+            # report insert-vs-noop, so the already-attached groups are read
+            # once and diffed. Reporting every call as a move would republish
+            # for every shared-with-me record on every sync — Drive team and Box
+            # set this list on each one, so that is a permanent event storm, not
+            # the rare over-report it might look like.
+            attached_group_ids = {
+                record_group_id_from_edge(edge)
+                for edge in (
+                    await tx_store.get_edges_from_node(
+                        f"{CollectionNames.RECORDS.value}/{record.id}",
+                        CollectionNames.BELONGS_TO.value,
+                    )
+                    or []
+                )
+            }
             for external_group_id in record.shared_with_me_record_group_ids:
                 shared_with_me_record_group = await tx_store.get_record_group_by_external_id(
                     connector_id=record.connector_id,
@@ -486,8 +554,12 @@ class DataSourceEntitiesProcessor:
                     await tx_store.create_record_group_relation(
                         record.id, shared_with_me_record_group.id
                     )
+                    if shared_with_me_record_group.id not in attached_group_ids:
+                        moved = True
                 else:
                     self.logger.warning(f"Shared with me record group with external ID {external_group_id} not found in database")
+
+        return moved
 
     async def _prepare_ticket_user_edge(
         self,
@@ -877,6 +949,8 @@ class DataSourceEntitiesProcessor:
     async def on_updated_record_permissions(self, record: Record, permissions: list[Permission]) -> None:
         self.logger.debug(f"Starting permission update for record: {record.record_name} ({record.id})")
 
+        moved_virtual_record_ids: list[tuple[str, str | None]] = []
+        stored_record: Record | None = None
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 # If BELONGS_TO was removed (e.g. full sync deletes sync edges), restore structural
@@ -891,11 +965,21 @@ class DataSourceEntitiesProcessor:
                         "to restore graph edges",
                         record.record_name,
                     )
-                    await self._process_record(record, [], tx_store)
+                    await self._process_record(
+                        record, [], tx_store, moved_virtual_record_ids
+                    )
                 elif record.shared_with_me_record_group_ids:
                     # The record already has BELONGS_TO edges (e.g. to the owner's "My Drive"), but
                     # the shared-with-me edge for *this* user may still be missing because
                     # _process_record is skipped in the belongs_to_edges branch above.
+                    # create_record_group_relation is an idempotent upsert, so it
+                    # cannot report insert-vs-noop. The edges were fetched just
+                    # above, so diffing against them tells a genuine new share
+                    # from a re-sync for free — which is what keeps a tight
+                    # permission-sync loop from storming the topic.
+                    attached_group_ids = {
+                        record_group_id_from_edge(edge) for edge in belongs_to_edges
+                    }
                     for external_group_id in record.shared_with_me_record_group_ids:
                         self.logger.debug(
                             "Creating shared-with-me record group relation for record %s and record group %s",
@@ -908,6 +992,26 @@ class DataSourceEntitiesProcessor:
                         )
                         if shared_with_me_rg:
                             await tx_store.create_record_group_relation(record.id, shared_with_me_rg.id)
+                            if shared_with_me_rg.id not in attached_group_ids:
+                                # The VRID has to come from the *stored* record.
+                                # Callers here build a fresh Record from the
+                                # source payload, and a connector never sets a
+                                # VRID — it is minted during indexing — so
+                                # reading it off `record` would silently never
+                                # publish. Hydrated lazily: a genuinely new
+                                # share is rare, permission sync is not.
+                                if stored_record is None:
+                                    stored_record = await tx_store.get_record_by_external_id(
+                                        connector_id=record.connector_id,
+                                        external_id=record.external_record_id,
+                                    )
+                                if stored_record and stored_record.virtual_record_id:
+                                    moved_virtual_record_ids.append(
+                                        (
+                                            stored_record.virtual_record_id,
+                                            record.connector_id,
+                                        )
+                                    )
                         else:
                             self.logger.warning(
                                 "Shared with me record group with external ID %s not found in database",
@@ -951,11 +1055,26 @@ class DataSourceEntitiesProcessor:
 
                 self.logger.debug(f"Successfully updated permissions for record: {record.id}")
 
+            await self._publish_membership_sync(moved_virtual_record_ids)
         except Exception as e:
             self.logger.error(f"Failed to update permissions for record {record.id}: {e}", exc_info=True)
             raise
 
-    async def _process_record(self, record: Record, permissions: list[Permission], tx_store: TransactionStore) -> Record | None:
+    async def _process_record(
+        self,
+        record: Record,
+        permissions: list[Permission],
+        tx_store: TransactionStore,
+        moved_virtual_record_ids: list[tuple[str, str | None]] | None = None,
+    ) -> Record | None:
+        """Upsert a record and its edges.
+
+        ``moved_virtual_record_ids`` collects the VRIDs whose record-group
+        membership actually changed. It is an out-parameter rather than a return
+        value because three callers already depend on the ``Record | None``
+        return; they publish the collected ids *after* their transaction
+        commits (see :meth:`_publish_membership_sync`).
+        """
         self.logger.debug(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
@@ -1045,7 +1164,29 @@ class DataSourceEntitiesProcessor:
 
         # Link record to group AFTER saving (when record.id is available for edges)
         if record_group_id or record.shared_with_me_record_group_ids:
-            await self._link_record_to_group(record, record_group_id, tx_store, existing_record)
+            moved = await self._link_record_to_group(
+                record, record_group_id, tx_store, existing_record
+            )
+            # Only an *existing* record has points to refresh, and only its
+            # stored VRID identifies them — a connector-supplied record carries
+            # none, since the VRID is minted during indexing.
+            if (
+                moved
+                and moved_virtual_record_ids is not None
+                and existing_record is not None
+                and existing_record.virtual_record_id
+            ):
+                # Deliberately not gated on the revision being unchanged. That
+                # looked like a way to skip work a reindex would redo, but the
+                # paths which drop the indexing publish (AUTO_INDEX_OFF, and a
+                # metadata-only update) also change the revision — so gating on
+                # it suppressed the refresh precisely where nothing else would
+                # ever recompute membership. A duplicate refresh is idempotent
+                # and cheap; a missing one is invisible until someone notices a
+                # record has stopped coming back.
+                moved_virtual_record_ids.append(
+                    (existing_record.virtual_record_id, record.connector_id)
+                )
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         if record.origin == OriginTypes.UPLOAD:
@@ -1125,10 +1266,19 @@ class DataSourceEntitiesProcessor:
                 return
 
             records_to_publish = []
+            # Deliberately a separate list from records_to_publish: the publish
+            # filters below (AUTO_INDEX_OFF, internal, COMPLETED, KB folders,
+            # placeholders) are about whether there is anything to *index*. A
+            # COMPLETED, unchanged record that merely moved between groups is
+            # exactly the case this exists for, and every one of those filters
+            # would drop it.
+            moved_virtual_record_ids: list[tuple[str, str | None]] = []
 
             async with self.data_store_provider.transaction() as tx_store:
                 for record, permissions in records_with_permissions:
-                    processed_record = await self._process_record(record, permissions, tx_store)
+                    processed_record = await self._process_record(
+                        record, permissions, tx_store, moved_virtual_record_ids
+                    )
 
                     if processed_record:
                         records_to_publish.append(processed_record)
@@ -1193,6 +1343,8 @@ class DataSourceEntitiesProcessor:
                 await self._mark_queued_after_publish(
                     [r.id for r, ok in zip(publishable, acked) if ok]
                 )
+
+            await self._publish_membership_sync(moved_virtual_record_ids)
         except Exception as e:
             self.logger.error(f"Transaction on_new_records failed: {str(e)}")
             raise e
@@ -1200,18 +1352,25 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def on_record_content_update(self, record: Record) -> None:
+        moved_virtual_record_ids: list[tuple[str, str | None]] = []
+        publish_update = True
         async with self.data_store_provider.transaction() as tx_store:
-            processed_record = await self._process_record(record, [], tx_store)
+            processed_record = await self._process_record(
+                record, [], tx_store, moved_virtual_record_ids
+            )
 
             # Skip publishing update events for records with AUTO_INDEX_OFF status
             if processed_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
                 self.logger.debug(
                     f"Skipping content update event for record {record.id} with AUTO_INDEX_OFF status"
                 )
-                return
+                publish_update = False
 
         # Publish after the transaction commits. Publishing inside it would put the
         # event on the topic even if the transaction went on to roll back.
+        await self._publish_membership_sync(moved_virtual_record_ids)
+        if not publish_update:
+            return
         await self.messaging_producer.send_message(
             "record-events",
             {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
@@ -1253,14 +1412,22 @@ class DataSourceEntitiesProcessor:
 
         Leaves the indexing lifecycle untouched — see ``_preserve_indexing_state``.
         """
+        moved_virtual_record_ids: list[tuple[str, str | None]] = []
         async with self.data_store_provider.transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
-            processed_record = await self._process_record(record, [], tx_store)
+            processed_record = await self._process_record(
+                record, [], tx_store, moved_virtual_record_ids
+            )
             if processed_record:
                 if existing_record is not None:
                     self._preserve_indexing_state(processed_record, existing_record)
                 await self._handle_updated_record(processed_record, existing_record, tx_store)
+
+        # This path deliberately publishes no indexing event and preserves the
+        # indexing lifecycle, so nothing downstream would ever recompute
+        # membership for a record that changed groups here.
+        await self._publish_membership_sync(moved_virtual_record_ids)
 
     @retry_on_deadlock()
     async def on_records_moved(
@@ -1289,7 +1456,13 @@ class DataSourceEntitiesProcessor:
 
         records_to_reindex: list[Record] = []
         new_records_to_publish: list[Record] = []
-        membership_vrids: list[str] = []
+        membership_vrids: list[tuple[str, str | None]] = []
+
+        def _is_publishable(record: Record) -> bool:
+            return (
+                record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+                and not record.is_internal
+            )
 
         try:
             async with self.data_store_provider.transaction() as tx_store:
@@ -1356,6 +1529,24 @@ class DataSourceEntitiesProcessor:
                         if new_record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
                             new_record.indexing_status = ProgressStatus.QUEUED.value
                         records_to_reindex.append(new_record)
+                        if not _is_publishable(new_record):
+                            # Content changed *and* the group moved, but the
+                            # reindex publish is filtered out below — so nothing
+                            # would ever recompute this record's membership and
+                            # its chunks would keep pointing at the old group.
+                            # Carrying the VRID also keeps the reused vertex from
+                            # being upserted with a null one, which would orphan
+                            # those chunks outright.
+                            vrid = (
+                                new_record.virtual_record_id
+                                or old_record.virtual_record_id
+                            )
+                            if isinstance(vrid, str) and vrid:
+                                if not new_record.virtual_record_id:
+                                    new_record.virtual_record_id = vrid
+                                membership_vrids.append(
+                                    (vrid, new_record.connector_id)
+                                )
                     else:
                         # Carry the VRID across explicitly: the upsert below reuses
                         # the existing vertex, so leaving this unset would null
@@ -1364,7 +1555,9 @@ class DataSourceEntitiesProcessor:
                         if isinstance(vrid, str) and vrid:
                             if not new_record.virtual_record_id:
                                 new_record.virtual_record_id = vrid
-                            membership_vrids.append(vrid)
+                            membership_vrids.append(
+                                (vrid, new_record.connector_id)
+                            )
 
                     await tx_store.batch_upsert_records([new_record])
 
@@ -1392,12 +1585,7 @@ class DataSourceEntitiesProcessor:
 
             # Publish events outside the transaction.
             def _publishable(candidates: list[Record]) -> list[Record]:
-                return [
-                    r
-                    for r in candidates
-                    if r.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
-                    and not r.is_internal
-                ]
+                return [r for r in candidates if _is_publishable(r)]
 
             new_batch = _publishable(new_records_to_publish)
             if new_batch:
@@ -1439,25 +1627,7 @@ class DataSourceEntitiesProcessor:
                     ],
                 )
 
-            unique_membership_vrids = list(dict.fromkeys(membership_vrids))
-            if unique_membership_vrids:
-                await self.messaging_producer.send_messages(
-                    "record-events",
-                    [
-                        (
-                            vrid,
-                            {
-                                "eventType": EventTypes.SYNC_VECTOR_MEMBERSHIP.value,
-                                "timestamp": get_epoch_timestamp_in_ms(),
-                                "payload": {
-                                    "virtualRecordId": vrid,
-                                    "orgId": self.org_id,
-                                },
-                            },
-                        )
-                        for vrid in unique_membership_vrids
-                    ],
-                )
+            await self._publish_membership_sync(membership_vrids)
 
         except Exception as e:
             self.logger.error(f"on_records_moved failed: {e}", exc_info=True)

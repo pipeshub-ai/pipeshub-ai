@@ -388,3 +388,57 @@ class TestQdrantCreateCollectionKnobs:
             f"MRL should reduce effective_dim to 512, got {dense_params.size}"
         )
 
+
+class TestHasPositiveMatch:
+    """The predicate every delete path checks before it is allowed to run.
+
+    A point whose array field is absent satisfies an array-length bound, so a
+    filter carrying only a bound matches most of a collection.
+    """
+
+    def test_a_value_in_must_is_enough(self):
+        expr = FilterExpression(must=[FieldCondition(key="virtualRecordId", value="v1")])
+        assert expr.has_positive_match() is True
+
+    def test_a_bare_count_bound_is_not(self):
+        expr = FilterExpression(
+            must=[FieldCondition(key="connectorIds", values_count_lte=1)]
+        )
+        assert expr.has_positive_match() is False
+
+    def test_must_not_never_counts(self):
+        """It subtracts; it cannot stand in for the match a bound needs."""
+        expr = FilterExpression(
+            must=[FieldCondition(key="connectorIds", values_count_lte=1)],
+            must_not=[FieldCondition(key="virtualRecordId", value="v1")],
+        )
+        assert expr.has_positive_match() is False
+
+    def test_should_alone_counts(self):
+        """No MUST beside it, so every provider requires one to match — this is
+        the shape the legacy id-shipping delete uses."""
+        expr = FilterExpression(
+            should=[FieldCondition(key="virtualRecordId", values=["v1", "v2"])]
+        )
+        assert expr.has_positive_match() is True
+
+    def test_should_does_not_rescue_a_count_bound(self):
+        """OpenSearch makes SHOULD optional once a MUST exists, which would
+        leave the bound as the entire filter."""
+        expr = FilterExpression(
+            must=[FieldCondition(key="connectorIds", values_count_lte=1)],
+            should=[FieldCondition(key="virtualRecordId", value="v1")],
+            min_should_match=0,
+        )
+        assert expr.has_positive_match() is False
+
+    def test_a_bound_paired_with_a_must_value_is_allowed(self):
+        """The connector purge's own filter: match this connector, and only
+        where it is the sole owner."""
+        expr = FilterExpression(
+            must=[
+                FieldCondition(key="connectorIds", value="conn-1"),
+                FieldCondition(key="connectorIds", values_count_lte=1),
+            ]
+        )
+        assert expr.has_positive_match() is True

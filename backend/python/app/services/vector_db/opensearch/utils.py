@@ -76,6 +76,29 @@ class OpenSearchUtils:
 
     @staticmethod
     def _field_condition_to_clause(cond: FieldCondition) -> Dict[str, Any]:
+        if cond.values_count_lte is not None:
+            # No native array-length filter; doc values on a keyword field give
+            # the count. A field with no values counts as zero, which is why
+            # this is only ever ANDed with a match on the same key.
+            script = {
+                "script": {
+                    "script": {
+                        "source": (
+                            "doc.containsKey(params.field) "
+                            "&& doc[params.field].size() <= params.limit"
+                        ),
+                        "params": {
+                            "field": cond.key,
+                            "limit": cond.values_count_lte,
+                        },
+                    }
+                }
+            }
+            if cond.values is not None:
+                return {"bool": {"must": [{"terms": {cond.key: cond.values}}, script]}}
+            if cond.value is not None:
+                return {"bool": {"must": [{"term": {cond.key: cond.value}}, script]}}
+            return script
         if cond.values is not None:
             return {"terms": {cond.key: cond.values}}
         return {"term": {cond.key: cond.value}}
