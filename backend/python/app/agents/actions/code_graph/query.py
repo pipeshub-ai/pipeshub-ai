@@ -93,10 +93,19 @@ def _looks_like_directory(select: str) -> bool:
     `app/agents/` and `app/agents` both mean "what is in here". Without this
     they take the prefix branch and return a jumble of blocks from whichever
     files scanned first, which is never what the caller wanted.
+
+    Paths are stored repo-relative, so every top-level directory is slash-free:
+    `backend` has to be tried as one. Nothing in the string separates it from
+    free text like `stream_record` -- only the listing does, so a bare name is
+    a candidate here and is rejected after it fails to resolve.
     """
     if "*" in select or "?" in select:
         return False
-    return "/" in select and not select.endswith(_CODE_EXTENSIONS)
+    # No path segment holds a space, and `:` and `#` belong to the symbol forms
+    # this tool refuses outright -- those need no lookup to turn away.
+    if any(c in select for c in " \t:#"):
+        return False
+    return not select.endswith(_CODE_EXTENSIONS)
 
 
 def _looks_like_locator(select: str) -> bool:
@@ -315,12 +324,6 @@ async def query_code_graph_impl(
             "walks its edges, and selecting its file lists every symbol the file "
             "defines."
         )}
-    if not _looks_like_path(select) and not _looks_like_directory(select):
-        return {"error": (
-            f"{select!r} is not a path. Select a directory to list what is in it, "
-            "or a file to list the symbols it defines. Search the knowledge base "
-            "to find a path first."
-        )}
 
     if _looks_like_directory(select):
         listing = await _list_children(
@@ -338,6 +341,16 @@ async def query_code_graph_impl(
                 "connector_id": connector_id,
                 **listing,
             }
+
+    # A name with no separator is a selector only if it just resolved as a
+    # directory. `app/agents` still falls through to the prefix scan, but
+    # `stream_record` is free text and the prefix scan cannot say so.
+    if not _looks_like_path(select):
+        return {"error": (
+            f"{select!r} is not a path. Select a directory to list what is in it, "
+            "or a file to list the symbols it defines. Search the knowledge base "
+            "to find a path first."
+        )}
 
     matched, scan_capped = await _select_by_path(
         graph_provider, org_id, select, connector_id
@@ -363,14 +376,19 @@ async def query_code_graph_impl(
     matched = await _readable_only(graph_provider, org_id, user_id, matched, accessible)
 
     if not matched:
-        return {
+        empty: dict[str, Any] = {
             "select": select, "resolved_as": how, "connector_id": connector_id,
-            "matches": 0, "nodes": [], "truncated": False,
+            # Empty after a capped scan is not the same as empty: files past the
+            # scan or fan-out limit were never loaded, so the miss is unproven.
+            "matches": 0, "nodes": [], "truncated": scan_capped,
             # A dead end is where the model most needs a next step. Without one
             # it guesses another name -- three wasted calls in the trace this
             # was written from.
             "hint": _miss_hint(select, how),
         }
+        if scan_capped:
+            empty["scan_capped"] = True
+        return empty
 
     # Rank after gating, not before: ranking a set that is then filtered spends
     # the top slots on rows the caller never sees. Degree counts every code

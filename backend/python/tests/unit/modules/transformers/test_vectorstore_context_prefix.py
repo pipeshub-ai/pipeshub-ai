@@ -76,26 +76,14 @@ class TestCodeDocuments:
 
 
 class TestRecordSummaryDocument:
-    def test_summary_carries_the_path(self) -> None:
-        """The discriminator between a connector and its tests is the path --
-        their summaries describe the same domain in the same words."""
-        doc = _build_record_summary_document(
-            "rec-1", VRID, ORG,
-            SimpleNamespace(summary="Synchronizes Jira projects, issues and permissions."),
-            _record("test_jira_connector.py",
-                    "/acme/repo/-/blob/HEAD/tests/unit/connectors/test_jira_connector.py"),
-        )
-        assert "tests/unit/connectors/test_jira_connector.py" in doc.page_content
-        assert "Synchronizes Jira projects" in doc.page_content
-
-    def test_still_none_without_a_summary(self) -> None:
-        """A path alone is not a summary -- adding one here would create a
-        summary vector for every record that never had extraction run."""
+    def test_none_without_a_summary(self) -> None:
+        """Emitting a document here would create a summary vector for every
+        record that never had extraction run."""
         assert _build_record_summary_document(
-            "rec-1", VRID, ORG, SimpleNamespace(summary=""), _record("a.py", "a.py")
+            "rec-1", VRID, ORG, SimpleNamespace(summary="")
         ) is None
 
-    def test_record_is_optional(self) -> None:
+    def test_page_content_is_the_summary(self) -> None:
         doc = _build_record_summary_document(
             "rec-1", VRID, ORG, SimpleNamespace(summary="A summary.")
         )

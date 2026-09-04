@@ -344,24 +344,18 @@ class CodeGraph:
         path="/tools/codegraph/read_code",
         short_description="Read source: one symbol, one line range, or a whole file",
         description=(
-            "Read source: one symbol, one line range, or a whole file.\n\n"
-            "Give `qualified_name` for a single symbol, `lines` for a window you have "
-            "a reason to want ('380-420'), or neither to read the whole file as its "
-            "symbols in source order.\n\n"
-            "Cost trade-offs: reading a file once beats reading five of its symbols "
-            "separately, but a whole file also fills context fast. Prefer "
-            "`qualified_name` when you need one definition, a whole-file read when "
-            "you need to understand a file's structure, and `lines` only when you "
-            "already know the exact range (e.g. a call-site line from "
-            "get_neighbour).\n\n"
-            "A whole-file read is bounded by `max_lines` and tells you where it "
-            "stopped, so you never need to guess a line window just to keep a file "
-            "from being too large.\n\n"
-            "What this does NOT give you: where the calls in the body actually go. "
-            "The source shows `self.orchestrator.index(ctx)`, never which file "
-            "defines it, and nothing about what calls the symbol you just read. When "
-            "the next step is following the flow rather than reading more of it, "
-            "call get_neighbour on this symbol instead of guessing filenames."
+            "Read source: one symbol, one line range, or a whole file. "
+            "Do NOT use fetch_full_record for code files — use this tool "
+            "instead.\n\n"
+            "Give `qualified_name` for a single symbol, `lines` for a range "
+            "you already know (e.g. a call-site line from get_neighbour), or "
+            "neither to read the whole file in source order.\n\n"
+            "Prefer `qualified_name` when you need one definition, a whole-file "
+            "read when you need the file's structure, and `lines` only for an "
+            "exact range. Whole-file reads are bounded by `max_lines` and tell "
+            "you where they stopped.\n\n"
+            "This does NOT resolve where calls go. Use get_neighbour to follow "
+            "the flow instead of guessing filenames."
         ),
         parameters=[
             ToolParameter(

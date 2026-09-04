@@ -160,7 +160,7 @@ class TestBuildDynamicToolsWebSearchGate:
         context = _make_context()
         context.tool_state["web_search_config"] = None
 
-        tools, _groups = _build_dynamic_tools(context)
+        tools = _build_dynamic_tools(context)
 
         assert tools == []
 
@@ -184,7 +184,7 @@ class TestBuildDynamicToolsWebSearchGate:
                 side_effect=[("web_search", "search"), ("fetch_url", "fetch")],
             ),
         ):
-            tools, _groups = _build_dynamic_tools(context)
+            tools = _build_dynamic_tools(context)
 
         assert len(tools) == 2
 
@@ -205,7 +205,7 @@ class TestBuildDynamicToolsConnectorKnowledgeGate:
             }
         )
 
-        tools, _groups = _build_dynamic_tools(context)
+        tools = _build_dynamic_tools(context)
 
         assert tools == []
 
@@ -229,7 +229,7 @@ class TestBuildDynamicToolsConnectorKnowledgeGate:
                 return_value=("sql", "execute_sql_query"),
             ),
         ):
-            tools, _groups = _build_dynamic_tools(context)
+            tools = _build_dynamic_tools(context)
 
         assert len(tools) == 1
 
@@ -243,7 +243,7 @@ class TestBuildDynamicToolsConnectorKnowledgeGate:
             }
         )
 
-        tools, _groups = _build_dynamic_tools(context)
+        tools = _build_dynamic_tools(context)
 
         assert tools == []
 

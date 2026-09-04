@@ -120,22 +120,15 @@ def _infer_path_prefix(cls: type, *, fallback_name: str) -> str:
     return f"/tools/{fallback_name}"
 
 
-def _build_dynamic_tools(
-    context: "AgentContext",
-) -> tuple[list["Tool"], list[tuple[str, str, list[str]]]]:
+def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
     """Build per-request dynamic tools and wrap them as ``Tool`` instances.
 
     Dynamic tools are LangChain ``StructuredTool`` objects created by
     factory functions, wrapped with ``PipesHubStructuredToolAdapter``.
-
-    Returns ``(tools, pending_groups)`` where each pending group is a
-    ``(name, description, tool_names)`` triple to register as a toolset
-    AFTER the individual tools are on the registry.
     """
     state = context.tool_state
     state_logger = state.get("logger")
     tools: list[Tool] = []
-    _pending_toolset_groups: list[tuple[str, str, list[str]]] = []
 
     config_service = state.get("config_service")
 
@@ -212,7 +205,7 @@ def _build_dynamic_tools(
             if state_logger:
                 state_logger.warning("Failed to create fetch_url tool: %s", e)
 
-    return tools, _pending_toolset_groups
+    return tools
 
 
 class PipesHubToolLoader:
@@ -336,7 +329,7 @@ class PipesHubToolLoader:
                 continue
 
         # ── Dynamic tools ─────────────────────────────────────────────────
-        dynamic_tools, pending_groups = _build_dynamic_tools(context)
+        dynamic_tools = _build_dynamic_tools(context)
         dynamic_count = 0
         for dt in dynamic_tools:
             try:
@@ -345,14 +338,6 @@ class PipesHubToolLoader:
             except (DuplicateToolPathError, DuplicateToolNameError):
                 if state_logger:
                     state_logger.warning("Skipping duplicate dynamic tool: %s", dt.name)
-
-        # Register toolset groups AFTER the individual tools are on the
-        # registry, so `group_connector_toolsets` can sweep them under
-        # `connectors` when lazy disclosure activates.
-        for group_name, group_desc, group_tool_names in pending_groups:
-            registered = [n for n in group_tool_names if registry.has(n)]
-            if registered:
-                registry.register_toolset(group_name, group_desc, registered)
 
         logger.info(
             "PipesHubToolLoader: %d connector tool(s) from %d toolset(s) + "
