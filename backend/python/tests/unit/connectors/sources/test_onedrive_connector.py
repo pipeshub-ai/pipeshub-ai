@@ -12,6 +12,7 @@ from app.connectors.sources.microsoft.onedrive.connector import (
     OneDriveConnector,
     OneDriveCredentials,
     OneDriveSubscriptionManager,
+    OneDriveUserStatus,
 )
 from app.models.entities import (
     AppUser,
@@ -642,7 +643,7 @@ class TestUserHasOneDrive:
         connector.msgraph_client.get_user_drive = AsyncMock(return_value=MagicMock())
 
         result = await connector._user_has_onedrive("user-1")
-        assert result is True
+        assert result is OneDriveUserStatus.AVAILABLE
 
     @pytest.mark.asyncio
     async def test_user_without_drive_resource_not_found(self):
@@ -655,7 +656,20 @@ class TestUserHasOneDrive:
         connector.msgraph_client.get_user_drive = AsyncMock(side_effect=error)
 
         result = await connector._user_has_onedrive("user-no-drive")
-        assert result is False
+        assert result is OneDriveUserStatus.NOT_PROVISIONED
+
+    @pytest.mark.asyncio
+    async def test_user_with_locked_drive(self):
+        connector = _make_connector()
+        connector.msgraph_client = MagicMock()
+        error = ODataError()
+        error.error = MainError()
+        error.error.code = "resourceLocked"
+        error.response_status_code = 423
+        connector.msgraph_client.get_user_drive = AsyncMock(side_effect=error)
+
+        result = await connector._user_has_onedrive("user-locked")
+        assert result is OneDriveUserStatus.LOCKED
 
 
 # ===========================================================================
@@ -1110,7 +1124,10 @@ class TestProcessUsersInBatches:
         user_no_drive.email = "nodrive@test.com"
         user_no_drive.source_user_id = "su2"
 
-        connector._user_has_onedrive = AsyncMock(side_effect=[True, False])
+        connector._user_has_onedrive = AsyncMock(side_effect=[
+            OneDriveUserStatus.AVAILABLE,
+            OneDriveUserStatus.NOT_PROVISIONED,
+        ])
         connector._run_sync_with_yield = AsyncMock()
 
         await connector._process_users_in_batches([user_with_drive, user_no_drive])
@@ -3340,7 +3357,7 @@ class TestUserHasOneDriveCoverage:
         connector.msgraph_client.get_user_drive = AsyncMock(side_effect=error)
 
         result = await connector._user_has_onedrive("user-1")
-        assert result is False
+        assert result is OneDriveUserStatus.NOT_PROVISIONED
 
     @pytest.mark.asyncio
     async def test_404_response_status(self):
@@ -3352,7 +3369,7 @@ class TestUserHasOneDriveCoverage:
         connector.msgraph_client.get_user_drive = AsyncMock(side_effect=error)
 
         result = await connector._user_has_onedrive("user-1")
-        assert result is False
+        assert result is OneDriveUserStatus.NOT_PROVISIONED
 
     @pytest.mark.asyncio
     async def test_unknown_error_raises(self):
@@ -3374,7 +3391,7 @@ class TestUserHasOneDriveCoverage:
         connector.msgraph_client.get_user_drive = AsyncMock(side_effect=error)
 
         result = await connector._user_has_onedrive("user-1")
-        assert result is False
+        assert result is OneDriveUserStatus.NOT_PROVISIONED
 
 
 # ===========================================================================

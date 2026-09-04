@@ -3028,6 +3028,8 @@
     "lineCount": "{{count}} lines",
     "instructionsLabel": "Instructions",
     "startingMessageLabel": "Starting message",
+    "defaultReasoningEffortLabel": "Default reasoning effort",
+    "defaultReasoningEffortHint": "Defaults to High when not set.",
     "moreItems": "+{{count}} more",
     "toolsetNodeSubtitle": "Toolset",
     "toolsLabel": "Tools",

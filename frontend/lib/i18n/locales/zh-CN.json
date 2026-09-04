@@ -3008,6 +3008,8 @@
     "lineCount": "{{count}} 行",
     "instructionsLabel": "指令",
     "startingMessageLabel": "起始消息",
+    "defaultReasoningEffortLabel": "默认推理强度",
+    "defaultReasoningEffortHint": "未设置时默认为高。",
     "moreItems": "还有 {{count}} 项",
     "toolsetNodeSubtitle": "工具集",
     "toolsLabel": "工具",

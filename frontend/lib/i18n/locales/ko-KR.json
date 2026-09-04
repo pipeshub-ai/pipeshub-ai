@@ -3008,6 +3008,8 @@
     "lineCount": "{{count}}줄",
     "instructionsLabel": "지침",
     "startingMessageLabel": "시작 메시지",
+    "defaultReasoningEffortLabel": "기본 추론 수준",
+    "defaultReasoningEffortHint": "설정하지 않으면 기본값은 높음입니다.",
     "moreItems": "+{{count}}개 더 보기",
     "toolsetNodeSubtitle": "툴셋",
     "toolsLabel": "도구",
