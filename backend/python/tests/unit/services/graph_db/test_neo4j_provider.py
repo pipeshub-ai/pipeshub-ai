@@ -4353,28 +4353,38 @@ class TestDeleteSingleRecord:
 
 
 class TestTeamQueriesExcludeInactiveUsers:
+    """Member listing must skip removed users (isActive = false) and must not
+    emit a placeholder member when an OPTIONAL MATCH yields no active member."""
+
     @staticmethod
-    def _queries(neo4j_provider: Neo4jProvider) -> list[str]:
-        return [
-            call.args[0]
-            for call in neo4j_provider.client.execute_query.call_args_list
-            if call.args and isinstance(call.args[0], str)
-        ]
+    def _member_query(neo4j_provider: Neo4jProvider) -> str:
+        # get_user_teams issues a count query first; the member projection is
+        # always in the last executed query for all three team methods.
+        return neo4j_provider.client.execute_query.call_args_list[-1].args[0]
+
+    @staticmethod
+    def _assert_guarded(query: str) -> None:
+        assert "member_user.isActive = true" in query
+        assert "CASE WHEN member_user IS NULL THEN null ELSE" in query
+        assert "END) AS" in query
 
     @pytest.mark.asyncio
     async def test_get_team_with_users_filters_inactive(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         await neo4j_provider.get_team_with_users("t1", "uk1")
-        assert any("member_user.isActive = true" in q for q in self._queries(neo4j_provider))
+        self._assert_guarded(self._member_query(neo4j_provider))
 
     @pytest.mark.asyncio
     async def test_get_user_teams_filters_inactive(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         await neo4j_provider.get_user_teams("uk1")
-        assert any("member_user.isActive = true" in q for q in self._queries(neo4j_provider))
+        calls = neo4j_provider.client.execute_query.call_args_list
+        assert len(calls) == 2
+        assert "isActive" not in calls[0].args[0]  # count query counts teams, not members
+        self._assert_guarded(calls[1].args[0])
 
     @pytest.mark.asyncio
     async def test_get_team_users_filters_inactive(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         await neo4j_provider.get_team_users("t1", "org1", "uk1")
-        assert any("member_user.isActive = true" in q for q in self._queries(neo4j_provider))
+        self._assert_guarded(self._member_query(neo4j_provider))
