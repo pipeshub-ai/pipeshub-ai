@@ -1,9 +1,8 @@
 <div align="center">
-<!-- dev note: README touch for branch test -->
 
 <a href="https://www.pipeshub.com"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg" alt="PipesHub" width="280"/></a>
 
-<h3>The Open-Source Workplace AI Platform</h3>
+<h3>Connect your company's knowledge to AI</h3>
 
 <p>
   <a href="https://www.pipeshub.com/">Website</a> ·
@@ -45,32 +44,15 @@
 
 <h2 id="about-pipeshub">PipesHub - Explainable & Extensible</h2>
 
-<strong>[PipesHub](https://www.pipeshub.com/)</strong> is the open-source Context Layer for Enterprise AI. Connect enterprise knowledge across your organization, preserve access permissions, generate trustworthy citations, and build AI agents, enterprise search, RAG applications, MCP servers, and agentic workflows on a single governed context layer.
+<strong>[PipesHub](https://www.pipeshub.com/)</strong> is an open-source platform for connecting AI applications to the knowledge stored across your company's business systems.
+
+Connect Slack, Google Drive, GitHub, Microsoft 365, Notion and 50+ other systems. Search across them and get answers with citations, filtered by what each person is allowed to see — or give that same context to your own agents, workflows and MCP clients.
 
 > [!TIP]
 > Deploy with a single command:
 > ```bash
 > curl -fsSL https://get.pipeshub.com/install | bash
 > ```
-
-## Features
-
-- 📝 **Explainable Answers:** PipesHub delivers grounded answers with precise block citations to the original documents.
-- 🔒 **Permission-Aware Search:** Enforces source-level access controls so users only see what they're authorized to.
-- 🕸️ **Knowledge Graph Retrieval:** Graph-backed retrieval that captures relationships across enterprise data.
-- 🔌 **Enterprise Connectors:** 50+ connectors with real-time and scheduled indexing out of the box.
-- 🔍 **Unified Search, Deep Research, and Agents:** Search, Q&A, deep research, web search, and AI agents on one context layer.
-- 📊 **Artifacts and Code Execution:** Generate reports, charts, and dashboards in a safe execution sandbox.
-- 🎙️ **Multimodal Support:** Image, diagram, and scanned-file understanding plus voice-based interaction.
-- 🤖 **No-Code Agents and Actions:** Build agents visually and execute actions across enterprise tools.
-- 🧠 **Bring Your Own Model, Fully Self-Hostable:** Any LLM provider, deployed in your VPC — data never leaves your infrastructure.
-- 🛠️ **Developer-First and Extensible:** APIs, SDKs, MCP tools, custom connectors, and independently scalable services.
-
-## PipesHub Cloud
-
-Prefer a fully managed PipesHub without running your own infrastructure? PipesHub Cloud is coming soon.
-
-👉 **[Join the Cloud Waitlist](https://pipeshub.com/cloud-waitlist)** to get early access.
 
 ## PipesHub in Action
 
@@ -85,6 +67,33 @@ Prefer a fully managed PipesHub without running your own infrastructure? PipesHu
 
 ### Knowledge Search
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Knowledge%20Search%20Demo.gif" alt="Knowledge Search" width="100%"/>
+
+## Features
+
+**Answers you can trust**
+
+- 📝 **Explainable Answers:** PipesHub delivers grounded answers with precise block citations to the original documents.
+- 🔒 **Permission-Aware Search:** Enforces source-level access controls so users only see what they're authorized to.
+- 🧠 **Bring Your Own Model, Fully Self-Hostable:** Any LLM provider, deployed in your VPC — data never leaves your infrastructure.
+
+**Connected to your systems**
+
+- 🔌 **Enterprise Connectors:** 50+ connectors with real-time and scheduled indexing out of the box.
+- 🕸️ **Knowledge Graph Retrieval:** Graph-backed retrieval that captures relationships across enterprise data.
+- 🎙️ **Multimodal Support:** Image, diagram, and scanned-file understanding plus voice-based interaction.
+
+**What you can build**
+
+- 🔍 **Unified Search, Deep Research, and Agents:** Search, Q&A, deep research, web search, and AI agents on one context layer.
+- 🤖 **No-Code Agents and Actions:** Build agents visually and execute actions across enterprise tools.
+- 📊 **Artifacts and Code Execution:** Generate reports, charts, and dashboards in a safe execution sandbox.
+- 🛠️ **Developer-First and Extensible:** APIs, SDKs, MCP tools, custom connectors, and independently scalable services.
+
+## PipesHub Cloud
+
+Prefer a fully managed PipesHub without running your own infrastructure? PipesHub Cloud is coming soon.
+
+👉 **[Join the Cloud Waitlist](https://pipeshub.com/cloud-waitlist)** to get early access.
 
 ## Connectors
 
@@ -275,7 +284,9 @@ Want to join our community of developers? Please check out our [Contributing Gui
 
 ### What is PipesHub?
 
-PipesHub is an open-source, self-hosted AI-native execution layer that connects enterprise knowledge, delivers explainable search with citations, and automates workflows across your systems. It provides a unified context layer for search, Q&A, deep research, web search, and AI agents.
+PipesHub is an open-source platform for connecting AI applications to the knowledge stored across your company's business systems.
+
+It connects systems such as Slack, Google Drive, GitHub, Microsoft 365 and Notion, then makes what they hold available through permission-aware search with citations, APIs, SDKs, MCP, AI agents and workflows. You can use the built-in search experience, or build your own applications on top of it.
 
 ### How is PipesHub different from other workplace AI tools?
 
