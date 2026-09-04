@@ -2361,6 +2361,20 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 message_id, e.waited, e.pool,
             )
             if parsed_message is not None:
+                # Each re-queue is a fresh stream entry, so times_delivered
+                # starts over and cannot bound this on its own; the delivery
+                # counter can. Past the backstop the entry stays in the PEL,
+                # where the idle drain's times_delivered check takes over.
+                cycles, backstop_tripped = await concurrency.record_delivery(
+                    self, stable_message_id
+                )
+                if backstop_tripped:
+                    self.logger.error(
+                        "%s has been handed back %d times without a parse slot; "
+                        "leaving it in the PEL rather than re-queuing again",
+                        message_id, cycles,
+                    )
+                    return False
                 try:
                     await self._requeue_message(
                         stream_name, parsed_message, stable_message_id, retry_count=0

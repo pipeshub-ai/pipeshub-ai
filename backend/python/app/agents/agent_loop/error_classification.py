@@ -90,10 +90,17 @@ _ERROR_PAYLOAD_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 _MAX_PROVIDER_MESSAGE_LEN = 240
+# Provider account metadata that has no business in front of an end user:
+# OpenAI-style organization/project ids ("in organization org-abc123 on
+# tokens per min") and the account/billing/docs links providers append.
+_PROVIDER_ACCOUNT_ID_RE = re.compile(r"\b(?:org|proj|acct|account)[-_][A-Za-z0-9_-]{4,}\b")
+_URL_RE = re.compile(r"https?://\S+")
 
 
 def _sanitize_provider_message(message: str) -> str | None:
-    text = " ".join(message.split())
+    text = _URL_RE.sub("", message)
+    text = _PROVIDER_ACCOUNT_ID_RE.sub("[redacted]", text)
+    text = " ".join(text.split())
     if not text or "traceback" in text.lower():
         return None
     if len(text) > _MAX_PROVIDER_MESSAGE_LEN:

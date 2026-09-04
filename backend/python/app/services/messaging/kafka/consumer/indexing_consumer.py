@@ -1748,6 +1748,25 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         )
         await self._clear_retry_tracking(tracking_id)
 
+    async def __settle_done(
+        self, message: ConsumerRecord, in_flight: "_InFlightOffset | None"
+    ) -> None:
+        """Mark this delivery finished with, whichever settlement mode is on:
+        the commit watermark under fair scheduling, a direct offset commit
+        otherwise. ``__resolve_offset`` alone is a no-op without a tracker,
+        which left FIFO-mode offsets uncommitted."""
+        if self._offset_tracker is not None:
+            await self.__resolve_offset(
+                in_flight
+                or _InFlightOffset(
+                    TopicPartition(message.topic, message.partition),
+                    message.offset,
+                ),
+                done=True,
+            )
+        else:
+            await self._commit_offset(message)
+
     async def __commit_if_appropriate(
         self,
         message: ConsumerRecord,
@@ -1820,17 +1839,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         # ALWAYS commit - message is either done, dead-lettered, or re-queued
         try:
-            if self._offset_tracker is not None:
-                await self.__resolve_offset(
-                    in_flight
-                    or _InFlightOffset(
-                        TopicPartition(message.topic, message.partition),
-                        message.offset,
-                    ),
-                    done=True,
-                )
-            else:
-                await self._commit_offset(message)
+            await self.__settle_done(message, in_flight)
             self.logger.info(f"Committed offset for {message_id}")
         except Exception as e:
             self.logger.error(f"Failed to commit offset for {message_id}: {e}")
@@ -1974,7 +1983,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 ),
                 attempts=deliveries,
             )
-            await self.__resolve_offset(in_flight, done=True)
+            await self.__settle_done(message, in_flight)
             return False
 
         record_lock_id = (
@@ -2258,7 +2267,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     )
                     await self.__resolve_offset(in_flight, done=False)
                     return False
-            await self.__resolve_offset(in_flight, done=True)
+            await self.__settle_done(message, in_flight)
             return False
         except Exception as e:
             # Log the full exception chain for debugging

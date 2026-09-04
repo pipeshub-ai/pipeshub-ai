@@ -199,17 +199,22 @@ class TestRetryManagerClear:
     @pytest.mark.asyncio
     async def test_clear_existing(self, mock_logger, mock_redis):
         """Test clearing existing key."""
-        mock_redis.delete = AsyncMock(return_value=1)
+        pipeline = _make_pipeline([1, 1])
+        mock_redis.pipeline = MagicMock(return_value=pipeline)
         manager = RetryManager(mock_logger, redis_client=mock_redis)
 
         await manager.clear("msg-1")
 
-        mock_redis.delete.assert_called_once_with("messaging:retry:msg-1")
+        # Both counters go: a completed record must not carry its delivery
+        # count into the next time its stable id is seen.
+        pipeline.delete.assert_any_call("messaging:retry:msg-1")
+        pipeline.delete.assert_any_call("messaging:deliveries:msg-1")
+        assert pipeline.delete.call_count == 2
 
     @pytest.mark.asyncio
     async def test_clear_non_existent(self, mock_logger, mock_redis):
         """Test clearing non-existent key doesn't raise."""
-        mock_redis.delete = AsyncMock(return_value=0)
+        mock_redis.pipeline = MagicMock(return_value=_make_pipeline([0, 0]))
         manager = RetryManager(mock_logger, redis_client=mock_redis)
 
         # Should not raise
@@ -222,14 +227,16 @@ class TestRetryManagerClearBatch:
     @pytest.mark.asyncio
     async def test_clear_batch(self, mock_logger, mock_redis):
         """Test clearing multiple keys via a pipelined per-key DELETE (R5)."""
-        pipeline = _make_pipeline([1, 1, 1])
+        # One retry key and one delivery key per message.
+        pipeline = _make_pipeline([1, 1, 1, 0, 1, 1])
         mock_redis.pipeline = MagicMock(return_value=pipeline)
         manager = RetryManager(mock_logger, redis_client=mock_redis)
 
         deleted = await manager.clear_batch(["msg-1", "msg-2", "msg-3"])
 
         assert deleted == 3
-        assert pipeline.delete.call_count == 3
+        assert pipeline.delete.call_count == 6
+        pipeline.delete.assert_any_call("messaging:deliveries:msg-2")
         pipeline.execute.assert_awaited_once()
 
     @pytest.mark.asyncio

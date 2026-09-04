@@ -305,7 +305,7 @@ class TestReasoningEffortKwargs:
 
     def test_qwen38_clamps_max_to_high_on_any_openai_compatible_host(self):
         """Qwen 3.8+ rejects 'xhigh' regardless of which OpenAI-compatible
-        host serves it — Groq, OpenRouter, LiteLLM, a self-hosted vLLM."""
+        host serves it — OpenRouter, LiteLLM, Groq, a self-hosted vLLM."""
         config = {"isReasoning": True}
         for provider, base_url in (
             ("openAICompatible", "https://api.groq.com/openai/v1"),
@@ -340,9 +340,9 @@ class TestReasoningEffortKwargs:
         )
         assert result == {"reasoning_effort": "high"}
 
-    def test_older_qwen_on_non_groq_host_keeps_openai_xhigh(self):
-        """Qwen 3.6 / Qwen 3-32B are not 3.8+; a non-Groq OpenAI-compatible
-        host still gets the OpenAI family map."""
+    def test_older_qwen_on_openai_compatible_host_keeps_openai_xhigh(self):
+        """Qwen 3.6 / Qwen 3-32B are not 3.8+; an OpenAI-compatible host
+        still gets the OpenAI family map (xhigh)."""
         config = {"isReasoning": True}
         for model_name in ("qwen/qwen3.6-27b", "qwen3-32b", "qwen3-8b"):
             result = _reasoning_effort_kwargs(
@@ -352,34 +352,22 @@ class TestReasoningEffortKwargs:
             )
             assert result == {"reasoning_effort": "xhigh"}, model_name
 
-    def test_openai_compatible_groq_legacy_qwen_maps_enabled_effort_to_default(self):
-        """Qwen 3.6 on Groq only accepts none/default; low/medium/high 400."""
+    def test_older_qwen_on_any_openai_compatible_host_uses_provider_map(self):
+        """Older Qwen on any OpenAI-compatible host (including Groq) falls
+        through to the provider's own effort map — error classification now
+        surfaces any provider rejection clearly."""
         config = {"isReasoning": True}
-        result = _reasoning_effort_kwargs(
-            "high", config, provider="openAICompatible",
-            base_url="https://api.groq.com/openai/v1",
-            model_name="qwen/qwen3.6-27b",
-        )
-        assert result == {"reasoning_effort": "default"}
-
-    def test_openai_compatible_groq_gpt_oss_clamps_max_to_high(self):
-        config = {"isReasoning": True}
-        result = _reasoning_effort_kwargs(
-            "max", config, provider="openAICompatible",
-            base_url="https://api.groq.com/openai/v1",
-            model_name="openai/gpt-oss-120b",
-        )
-        assert result == {"reasoning_effort": "high"}
-
-    def test_openai_compatible_groq_lookalike_host_does_not_use_groq_legacy_map(self):
-        """A lookalike host must not get Groq's Qwen 3.6 none/default map."""
-        config = {"isReasoning": True}
-        result = _reasoning_effort_kwargs(
-            "high", config, provider="openAICompatible",
-            base_url="https://api.groq.com.evil.example/v1",
-            model_name="qwen/qwen3.6-27b",
-        )
-        assert result == {"reasoning_effort": "high"}
+        for base_url in (
+            "https://api.groq.com/openai/v1",
+            "https://openrouter.ai/api/v1",
+            "https://vllm.internal.corp/v1",
+        ):
+            result = _reasoning_effort_kwargs(
+                "max", config, provider="openAICompatible",
+                base_url=base_url,
+                model_name="qwen/qwen3.6-27b",
+            )
+            assert result == {"reasoning_effort": "xhigh"}, base_url
 
     def test_qwen38_ignores_learned_responses_api_mode(self):
         """Qwen 3.8+ has no /v1/responses — a stale RESPONSES fact must not
@@ -1458,7 +1446,7 @@ class TestIsOpenaiGpt5Model:
 
 
 class TestIsQwen38OrLater:
-    def test_matches_dotted_groq_style_id(self):
+    def test_matches_dotted_qwen_style_id(self):
         assert _is_qwen_38_or_later("qwen/qwen3.8-27b") is True
 
     def test_matches_official_max_id(self):

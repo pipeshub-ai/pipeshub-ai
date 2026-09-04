@@ -474,6 +474,18 @@ class BaseServiceClient:
                                 retry_after=retry_after,
                                 service_name=self.service_name,
                             )
+                        if budget_seconds is not None:
+                            spent = time.monotonic() - started_at
+                            if spent + wait + (self._timeout.read or 0.0) > budget_seconds:
+                                # The record above would cancel this attempt
+                                # anyway; a backpressure error re-queues it
+                                # with a proper backoff instead.
+                                raise ServiceBackpressureError(
+                                    f"{self.service_name} {operation} is backpressured and "
+                                    f"the remaining budget cannot fit another attempt",
+                                    retry_after=retry_after,
+                                    service_name=self.service_name,
+                                )
                         self.logger.debug(
                             "[%s] %s backpressured (429, Retry-After=%.1fs), waiting %.1fs (%d/%d)",
                             self.service_name, operation, retry_after, wait,
@@ -502,7 +514,10 @@ class BaseServiceClient:
                         self.service_name, operation, transient_attempts, exc,
                     )
                     last_exc = exc
-                    get_default_downstream_feedback().report_timeout(self.service_name)
+                    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+                        # Connect/write errors are not timeouts; they are
+                        # reported once, as unavailable, if the retries run out.
+                        get_default_downstream_feedback().report_timeout(self.service_name)
                 except httpx.RequestError as exc:
                     # Everything else under RequestError (InvalidURL,
                     # UnsupportedProtocol, ProtocolError, ...) is a

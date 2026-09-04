@@ -128,6 +128,11 @@ def _main_loop_in_thread() -> Iterator[asyncio.AbstractEventLoop]:
     loop = asyncio.new_event_loop()
     thread = threading.Thread(target=loop.run_forever, daemon=True)
     thread.start()
+    # bridge_to_main_loop checks is_running() before any await, and
+    # thread.start() alone does not guarantee run_forever has begun.
+    started = threading.Event()
+    loop.call_soon_threadsafe(started.set)
+    assert started.wait(5), "the stand-in main loop never started"
     try:
         yield loop
     finally:

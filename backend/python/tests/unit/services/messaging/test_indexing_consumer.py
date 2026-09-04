@@ -335,6 +335,7 @@ class TestProcessMessageWrapperExtended:
         consumer = IndexingKafkaConsumer(logger, plain_config, retry_manager=retry_manager, producer=None)
         consumer.parsing_semaphore = asyncio.Semaphore(1)
         consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer._commit_offset = AsyncMock()
         sink = MagicMock()
         sink.on_message_abandoned = AsyncMock()
         consumer.disposition_sink = sink
@@ -355,6 +356,10 @@ class TestProcessMessageWrapperExtended:
         assert result is False
         assert handled == []
         sink.on_message_abandoned.assert_awaited_once()
+        # FIFO mode has no offset tracker: the abandoned offset must still be
+        # committed, or a rebalance redelivers it and it is abandoned again.
+        assert consumer._offset_tracker is None
+        consumer._commit_offset.assert_awaited_once()
         assert "delivered 10 times" in sink.on_message_abandoned.await_args.kwargs.get("reason", "") or \
             "delivered 10 times" in str(sink.on_message_abandoned.await_args)
 
@@ -1478,6 +1483,7 @@ class TestProcessMessageWrapperWithGovernor:
         governor_consumer.main_loop = asyncio.get_running_loop()
         governor_consumer.retry_manager = AsyncMock()
         governor_consumer._requeue_message = AsyncMock()
+        governor_consumer._commit_offset = AsyncMock()
         gate = governor_consumer.governor.gate(Pool.LIGHT_PARSE)
         for _ in range(gate.limit):
             assert await gate.acquire()
@@ -1497,6 +1503,7 @@ class TestProcessMessageWrapperWithGovernor:
         governor_consumer._requeue_message.assert_awaited_once()
         assert governor_consumer._requeue_message.await_args.kwargs["retry_count"] == 0
         governor_consumer.retry_manager.increment_and_check.assert_not_awaited()
+        governor_consumer._commit_offset.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_time_spent_waiting_for_a_parse_slot_does_not_count_against_the_record(

@@ -174,3 +174,20 @@ def test_request_too_large_without_extractable_message_uses_canned_text() -> Non
         "The request exceeds the model's token limit. Please shorten your message "
         "or start a new conversation to reduce context size."
     )
+
+
+def test_provider_account_metadata_is_redacted_from_surfaced_messages() -> None:
+    """Provider messages carry the provider account's own identifiers and
+    account links; the user sees the explanation, not the tenant metadata."""
+    raw = (
+        "LangChain transport error (complete): Error code: 400 - {'error': {'message': "
+        "'The model gpt-4o does not exist or organization org-AbC123xyz does not have "
+        "access to it. See https://platform.openai.com/docs/models for details.', "
+        "'type': 'invalid_request_error'}}"
+    )
+    code, user_message = classify_error(raw)
+    assert code == "invalid_request"
+    assert "org-AbC123xyz" not in user_message
+    assert "platform.openai.com" not in user_message
+    assert "https://" not in user_message
+    assert "The model gpt-4o does not exist" in user_message

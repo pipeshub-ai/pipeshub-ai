@@ -1821,6 +1821,41 @@ class TestProcessMessageWrapperWithGovernor:
         governor_consumer._ack_message.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_admission_requeues_stop_at_the_delivery_backstop(
+        self, governor_consumer, monkeypatch
+    ) -> None:
+        """A record that is never admitted must not append stream entries
+        forever: past the delivery backstop it stays in the PEL."""
+        governor_consumer.running = True
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.retry_manager = AsyncMock()
+        governor_consumer.retry_manager.record_delivery = AsyncMock(return_value=10)
+        governor_consumer._requeue_message = AsyncMock()
+        governor_consumer._ack_message = AsyncMock()
+        gate = governor_consumer.governor.gate(Pool.LIGHT_PARSE)
+        for _ in range(gate.limit):
+            assert await gate.acquire()
+        monkeypatch.setattr(concurrency, "parse_admission_wait_seconds", lambda: 0.05)
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1", tier=ParseTier.LIGHT, size_bytes=128),
+            )
+
+        governor_consumer.message_handler = handler
+        with patch("app.services.messaging.consumer_concurrency.messaging_env") as env:
+            env.redis_max_deliveries = 10
+            env.record_processing_timeout = 5.0
+            result = await governor_consumer._process_message_wrapper(
+                "stream-a", "1-0", _valid_fields()
+            )
+
+        assert result is False
+        governor_consumer._requeue_message.assert_not_awaited()
+        governor_consumer._ack_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_time_spent_waiting_for_a_parse_slot_does_not_count_against_the_record(
         self, governor_consumer, monkeypatch
     ) -> None:
