@@ -272,6 +272,25 @@ services:
       timeout: 3s
       retries: 20
 
+  # Nextcloud as a connector *source* — files to be indexed. Its admin
+  # credentials work for WebDAV directly, so unlike most SaaS sources there is
+  # no token to mint before the connector can authenticate.
+  nextcloud-source:
+    image: nextcloud:30-apache
+    restart: always
+    environment:
+      SQLITE_DATABASE: nextcloud
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_TEST_USER:-pipeshubtest}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_TEST_PASSWORD:-pipeshubtest123}
+      NEXTCLOUD_TRUSTED_DOMAINS: "localhost 127.0.0.1 nextcloud-source"
+    ports:
+      - "8096:80"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost/status.php"]
+      interval: 10s
+      timeout: 5s
+      retries: 40
+
   redis:
     image: redis:7.4-bookworm
     restart: always

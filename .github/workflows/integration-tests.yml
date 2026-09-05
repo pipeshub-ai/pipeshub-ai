@@ -23,6 +23,7 @@ on:
             - localfs
             - rss
             - web
+            - nextcloud
             - confluence
             - jira
             - linear
@@ -173,6 +174,12 @@ jobs:
       # the connector crawls it by service name.
       WEB_TEST_HOST_DIR: ../deployment/docker-compose/web-test-data
       WEB_CONNECTOR_START_URL: http://web-source/index.html
+      # Nextcloud runs in the stack. The test seeds it over WebDAV on the
+      # published port; the connector reaches it by service name.
+      NEXTCLOUD_TEST_URL: http://localhost:8096
+      NEXTCLOUD_CONNECTOR_URL: http://nextcloud-source
+      NEXTCLOUD_TEST_USER: pipeshubtest
+      NEXTCLOUD_TEST_PASSWORD: pipeshubtest123
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
