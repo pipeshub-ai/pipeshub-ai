@@ -22,6 +22,7 @@ on:
             - mariadb
             - localfs
             - rss
+            - web
             - confluence
             - jira
             - linear
@@ -167,6 +168,11 @@ jobs:
       # fetches it by service name.
       RSS_TEST_HOST_DIR: ../deployment/docker-compose/rss-test-data
       RSS_CONNECTOR_FEED_URL: http://rss-source/feed.xml
+      # The Web connector crawls a static site served by nginx in the
+      # stack. The test publishes pages on the host side of the bind mount;
+      # the connector crawls it by service name.
+      WEB_TEST_HOST_DIR: ../deployment/docker-compose/web-test-data
+      WEB_CONNECTOR_START_URL: http://web-source/index.html
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}

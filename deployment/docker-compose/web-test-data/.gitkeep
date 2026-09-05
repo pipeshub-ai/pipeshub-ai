@@ -1,0 +1,4 @@
+Document root for the nginx container the Web connector integration tests crawl.
+
+The directory must exist before compose starts, otherwise Docker creates it as
+root and the test process cannot write pages into it.

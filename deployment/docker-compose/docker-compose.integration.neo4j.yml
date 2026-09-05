@@ -256,6 +256,22 @@ services:
       timeout: 3s
       retries: 20
 
+  # Serves the small static site the Web connector crawls. Crawling a real site
+  # would make the suite depend on that site's uptime and content, and would
+  # send traffic to someone else's server on every CI run.
+  web-source:
+    image: nginx:1.27-alpine
+    restart: always
+    volumes:
+      - ${WEB_TEST_HOST_DIR:-./web-test-data}:/usr/share/nginx/html:ro
+    ports:
+      - "127.0.0.1:8097:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/index.html"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   redis:
     image: redis:7.4-bookworm
     restart: always
