@@ -33,8 +33,13 @@ export const handleMCPRequest =
   ): Promise<void> => {
     try {
       // Extract the raw Bearer token from the Authorization header for the MCP SDK
-      const token = req.headers.authorization?.replace('Bearer ', '') || '';
+      const token = req.headers.authorization?.replace('Bearer ', '') ?? '';
       const serverURL = `${appConfig.oauthBackendUrl}/api/v1`;
+
+      // Read inbound X-Pipeshub-Request-Id header (Express lowercases header keys)
+      const requestId = req.headers['x-pipeshub-request-id'] as
+        | string
+        | undefined;
 
       const { createMCPServer } = await mcpServerModule;
       const { PipeshubCore } = await coreModule;
@@ -61,12 +66,30 @@ export const handleMCPRequest =
       });
 
       await mcpServer.connect(transport);
+
+      // Echo the request ID back as a response header if the client sent one
+      if (requestId !== undefined && requestId !== '') {
+        res.setHeader('X-Pipeshub-Request-Id', requestId);
+      }
+
       await transport.handleRequest(req, res, req.body);
-    } catch (error: any) {
-      logger.error('MCP request failed', {
-        error: error.message,
+
+      // Log success with request ID
+      logger.info('MCP request completed', {
         method: req.method,
-        userId: req.user?.userId,
+        userId: req.user?.userId as string | undefined,
+        requestId,
+      });
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      const requestIdHeader = req.headers['x-pipeshub-request-id'] as
+        | string
+        | undefined;
+      logger.error('MCP request failed', {
+        error: err.message,
+        method: req.method,
+        userId: req.user?.userId as string | undefined,
+        requestId: requestIdHeader,
       });
       next(error);
     }
