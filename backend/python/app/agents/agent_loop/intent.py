@@ -91,6 +91,11 @@ class IntentRouteDecision(BaseModel):
     # blocks alone.  Consumers fall back to a conservative regex when this
     # is False and the intent call was skipped.
     whole_document: bool = False
+    # "yes" / "no" from the CORPUS_CENSUS marker, or None when the intent call
+    # was skipped or omitted it. Unlike `whole_document` this keeps "absent"
+    # distinct from "no": the consumer's regex fallback is a safety net that
+    # must not run when the model has actually answered.
+    corpus_census: str | None = None
 
 
 _INTENT_INSTRUCTIONS = (
@@ -194,6 +199,20 @@ def _build_intent_prompt(include_routing: bool, capability_block: str, sql_verif
         "unimportant.\n"
         "- `no` if a single locatable fact settles it: a date, a name, a number, a "
         "status, one clause, whether one specific thing is true.\n"
+        "\nOn ANOTHER new line, write ONLY `CORPUS_CENSUS: yes` or "
+        "`CORPUS_CENSUS: no`, answering this question about the request:\n"
+        "Is it asking which records exist across the whole knowledge base, with no "
+        "condition that narrows which ones count?\n"
+        "- `yes` only for a plain census: how many documents there are, what "
+        "documents exist, list every file. The answer is the record set itself.\n"
+        "- `no` for everything else, and in particular whenever any condition "
+        "narrows the set: a topic (\"about onboarding\", \"that mention "
+        "indemnity\"), a container (\"in this folder\", \"in this contract\"), a "
+        "time window (\"updated last week\"), or a specific thing (\"do we have "
+        "the Acme NDA\"). Also `no` when the count is of something inside one "
+        "document, such as pages or clauses or how many times a word appears.\n"
+        "When unsure, answer `no`: a census that ignores a condition returns a "
+        "confident answer about the wrong records.\n"
         "Judge the shape of the request, not its wording — those are illustrations of "
         "the question above, not an exhaustive list. When genuinely torn, answer `yes`: "
         "over-reading a document is recoverable, answering a whole-document question "
@@ -229,6 +248,28 @@ def _extract_whole_document_and_clean(text: str) -> tuple[str | None, str]:
     matches = _WHOLE_DOC_LINE_RE.findall(text)
     if matches:
         return matches[-1].lower(), _WHOLE_DOC_LINE_RE.sub("", text).strip()
+    return None, text
+
+
+# Matches the CORPUS_CENSUS sentinel. Stripped for the same reason as the other
+# markers: an internal token left in the goal text reads as a user instruction
+# to every model downstream.
+_CORPUS_CENSUS_LINE_RE = re.compile(
+    r"^[ \t]*CORPUS_CENSUS\s*:\s*(yes|no)[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _extract_corpus_census_and_clean(text: str) -> tuple[str | None, str]:
+    """Pulls the CORPUS_CENSUS marker out of the text.
+
+    Returns ("yes"|"no"|None, cleaned_text). None means the model did not
+    answer, which is different from answering "no" — the caller's regex
+    fallback only runs in the None case.
+    """
+    matches = _CORPUS_CENSUS_LINE_RE.findall(text)
+    if matches:
+        return matches[-1].lower(), _CORPUS_CENSUS_LINE_RE.sub("", text).strip()
     return None, text
 
 
@@ -282,11 +323,13 @@ def _decision_from_text(text: str, *, include_routing: bool) -> IntentRouteDecis
     # Strip WHOLE_DOCUMENT marker first so it is not present when the route
     # marker is extracted (both must be stripped before becoming goal text).
     whole_doc_marker, text = _extract_whole_document_and_clean(text)
+    census_marker, text = _extract_corpus_census_and_clean(text)
     route, cleaned = _extract_route_and_clean(text)
     return IntentRouteDecision(
         rewritten_query=cleaned.strip() or text.strip(),
         route=route,
         whole_document=(whole_doc_marker == "yes"),
+        corpus_census=census_marker,
     )
 
 
