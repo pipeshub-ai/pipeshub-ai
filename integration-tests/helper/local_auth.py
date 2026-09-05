@@ -101,7 +101,11 @@ def _create_oauth_app(
     fails session setup and every test in that worker errors: 826 of 839 on
     2026-09-04.
     """
+    if attempts < 1:
+        raise ValueError(f"attempts must be at least 1, got {attempts}")
+
     last_detail = ""
+    attempt = 0
     for attempt in range(1, attempts + 1):
         status, detail, parsed = _post_oauth_app(base_url, access_token, timeout)
         if status < 400:
