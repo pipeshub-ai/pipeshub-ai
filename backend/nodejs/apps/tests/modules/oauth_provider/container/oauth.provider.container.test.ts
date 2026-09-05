@@ -149,6 +149,8 @@ describe('OAuthProviderContainer', () => {
         expect(container.isBound('OAuthAuthMiddleware')).to.be.true
         expect(container.isBound('OAuthAppController')).to.be.true
         expect(container.isBound('OAuthProviderController')).to.be.true
+        expect(container.isBound('OAuthDcrService')).to.be.true
+        expect(container.isBound('OAuthDeviceService')).to.be.true
         expect(container.isBound('OIDCProviderController')).to.be.true
 
         // Verify getInstance returns the same container
@@ -287,6 +289,8 @@ describe('OAuthProviderContainer - coverage', () => {
       expect(container.isBound('OAuthAuthMiddleware')).to.be.true
       expect(container.isBound('OAuthAppController')).to.be.true
       expect(container.isBound('OAuthProviderController')).to.be.true
+      expect(container.isBound('OAuthDcrService')).to.be.true
+      expect(container.isBound('OAuthDeviceService')).to.be.true
       expect(container.isBound('OIDCProviderController')).to.be.true
 
       const instance = OAuthProviderContainer.getInstance()

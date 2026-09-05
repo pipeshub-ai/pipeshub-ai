@@ -20,7 +20,7 @@
 #   ./install.sh --help
 #
 # Environment overrides for CI / scripted installs (all optional):
-#   PIPESHUB_DEPLOY_TYPE     full | slim
+#   PIPESHUB_DEPLOY_TYPE     full | slim | eval
 #   PIPESHUB_GRAPH_DB        arango | neo4j
 #   PIPESHUB_BROKER          kafka | redis
 #   PIPESHUB_KV_STORE        etcd | redis
@@ -118,7 +118,7 @@ Options:
   -h, --help           Show this help
 
 Environment overrides (bypass prompts in CI):
-  PIPESHUB_DEPLOY_TYPE   full | slim
+  PIPESHUB_DEPLOY_TYPE   full | slim | eval
   PIPESHUB_GRAPH_DB      arango | neo4j
   PIPESHUB_BROKER        kafka | redis
   PIPESHUB_KV_STORE      etcd | redis
@@ -240,6 +240,9 @@ derive_compose_profiles() {
   esac
   [[ "${KV_STORE_TYPE:-}"  == "etcd"  ]] && p+=("kv-etcd")
   [[ "${MESSAGE_BROKER:-}" == "kafka" ]] && p+=("broker-kafka")
+  # Coding sandbox image. Eval skips it: Neo4j stays (search ACLs live there);
+  # run_code is the cut. Slim/full keep the profile so SANDBOX_MODE=docker works.
+  [[ "${DEPLOY_TYPE:-}" != "eval" ]] && p+=("sandbox")
   # Guard the empty-array case: on bash 3.2 under `set -u`, "${p[*]}" on an empty
   # array is an unbound-variable error.
   if (( ${#p[@]} == 0 )); then echo ""; return; fi
@@ -621,7 +624,7 @@ if $FLAG_STOP; then
   # profile stays attached to the network and blocks its removal
   # ("Resource is still in use"). --remove-orphans clears containers left by a
   # previously-active profile too.
-  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka"
+  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"
   docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down --remove-orphans
   success "PipesHub stopped (project ${PROJECT_NAME}). Data volumes are preserved."
   info "To start again: ./install.sh"
@@ -644,7 +647,7 @@ if $FLAG_UNINSTALL; then
   # profile was active for this deployment.  Without this, volumes from a
   # previously-used profile (e.g. arango_data after switching to neo4j) would
   # be silently left behind.
-  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka"
+  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"
   docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down -v --remove-orphans
   success "PipesHub stopped and all data volumes removed (project ${PROJECT_NAME})."
   exit 0
@@ -751,7 +754,11 @@ if ! $FLAG_UPGRADE; then
   # of MemTotal because firmware, the kernel, and (on iGPU systems) shared video
   # memory are reserved before user space sees it — commonly ~15.3–15.7 GiB. Use
   # a 16 GB-class floor (15000 MB) so genuine 16 GB machines are not warned.
-  if $IS_WSL; then
+  # Eval is an 8 GB-class laptop demo (Neo4j stays; coding sandbox is omitted).
+  if [[ "${PIPESHUB_DEPLOY_TYPE:-}" == "eval" ]]; then
+    _RAM_MIN_MB=7500
+    _RAM_MIN_LABEL="8 GB"
+  elif $IS_WSL; then
     _RAM_MIN_MB=10240
     _RAM_MIN_LABEL="10 GB"
   else
@@ -761,7 +768,7 @@ if ! $FLAG_UPGRADE; then
 
   if (( TOTAL_RAM_MB > 0 && TOTAL_RAM_MB < _RAM_MIN_MB )); then
     warn "Low RAM: ${TOTAL_RAM_MB} MB detected. PipesHub recommends a ${_RAM_MIN_LABEL}-class machine."
-    warn "The 'slim' deployment may still work on lower-memory machines, but performance may suffer."
+    warn "Slim and full want ~16 GB. Eval (PIPESHUB_DEPLOY_TYPE=eval) is the 8 GB-class laptop demo."
     if ! $FLAG_YES; then
       printf "\n  ${BOLD}Proceed with installation anyway?${RESET} [y/N]: "
       read -r _proceed
@@ -880,21 +887,26 @@ if ! ${SKIP_WIZARD:-false}; then
 
   printf "\n  ${BOLD}Choose a deployment type:${RESET}\n\n"
   printf "  ${GREEN}[1] Slim${RESET}  — Smaller image (model downloads on first use), fewer containers.\n"
-  printf "         Broker: Redis Streams  |  KV store: Redis  |  Graph: Neo4j\n"
-  printf "         Recommended for: laptops, low-resource servers, quick evaluations.\n\n"
+  printf "         Broker: Redis Streams  |  KV store: Redis  |  Graph: Neo4j  |  Sandbox: yes\n"
+  printf "         Recommended for: laptops, low-resource servers.\n\n"
   printf "  [2] Full  — Larger image with the embedding model bundled; uses Kafka.\n"
-  printf "         Broker: Kafka  |  KV store: Redis  |  Graph: Neo4j\n"
+  printf "         Broker: Kafka  |  KV store: Redis  |  Graph: Neo4j  |  Sandbox: yes\n"
   printf "         Recommended for: production servers, air-gapped deployments.\n\n"
+  printf "  [3] Eval  — Slim image without the coding-sandbox pull or Slack bot.\n"
+  printf "         Broker: Redis Streams  |  KV store: Redis  |  Graph: Neo4j  |  Sandbox: no\n"
+  printf "         Neo4j stays (search ACLs live there). run_code is unavailable.\n"
+  printf "         Recommended for: 8 GB-class laptops, MCP search/ask demos.\n\n"
 
   if [[ -n "${PIPESHUB_DEPLOY_TYPE:-}" ]]; then
     DEPLOY_TYPE="$PIPESHUB_DEPLOY_TYPE"
     info "Using PIPESHUB_DEPLOY_TYPE=$DEPLOY_TYPE"
   else
-    prompt_choice DEPLOY_TYPE "Deployment type?" "slim" "slim" "full"
+    prompt_choice DEPLOY_TYPE "Deployment type?" "slim" "slim" "full" "eval"
   fi
 
   case "$DEPLOY_TYPE" in
     full) DEFAULT_IMAGE_TAG="latest"; DEFAULT_GRAPH="neo4j";  DEFAULT_BROKER="kafka"; DEFAULT_KV="redis" ;;
+    eval) DEFAULT_IMAGE_TAG="slim";   DEFAULT_GRAPH="neo4j";  DEFAULT_BROKER="redis"; DEFAULT_KV="redis" ;;
     *)    DEPLOY_TYPE="slim"
           DEFAULT_IMAGE_TAG="slim";   DEFAULT_GRAPH="neo4j";  DEFAULT_BROKER="redis"; DEFAULT_KV="redis" ;;
   esac
@@ -1029,6 +1041,7 @@ if ! ${SKIP_WIZARD:-false}; then
   esac
   [[ "$KV_STORE"  == "etcd"  ]] && PROFILES+=("kv-etcd")
   [[ "$BROKER"    == "kafka" ]] && PROFILES+=("broker-kafka")
+  [[ "$DEPLOY_TYPE" != "eval" ]] && PROFILES+=("sandbox")
   COMPOSE_PROFILES="$(IFS=','; echo "${PROFILES[*]}")"
 
   case "$GRAPH_DB" in
@@ -1170,12 +1183,14 @@ IMAGE_TAG=${IMAGE_TAG}
 IMAGE_SOURCE=${IMAGE_SOURCE}
 # Override sandbox image tag for local builds; leave blank to use compose default
 SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE}
+# Eval skips the in-container Slack bot. Slim/full leave this false.
+PIPESHUB_SKIP_SLACKBOT=$([ "${DEPLOY_TYPE}" = "eval" ] && echo true || echo false)
 
 # ── Compose project (isolates volumes/network from other copies on this host) ─
 COMPOSE_PROJECT_NAME=${PROJECT_NAME}
 
 # ── Compose profiles (controls which optional containers start) ──────────────
-# Values: graph-arango | graph-neo4j | kv-etcd | broker-kafka  (comma-separated)
+# Values: graph-arango | graph-neo4j | kv-etcd | broker-kafka | sandbox  (comma-separated)
 COMPOSE_PROFILES=${COMPOSE_PROFILES}
 
 # ── Core ─────────────────────────────────────────────────────────────────────
@@ -1672,18 +1687,25 @@ if $_USE_BUILD; then
   fi
 else
   if [[ "$_DO_PULL" == true ]]; then
-    info "Refreshing the PipesHub images ($_APP_IMAGE, $_SANDBOX_IMAGE)... (pass --no-pull to keep cached images)"
+    info "Refreshing the PipesHub images ($_APP_IMAGE$([ "${DEPLOY_TYPE:-}" = "eval" ] || echo ", $_SANDBOX_IMAGE"))... (pass --no-pull to keep cached images)"
     # App and sandbox images share the moving IMAGE_TAG (often :latest). Infra
     # images use pinned tags and are fetched by `up -d` when absent.
     # A pull failure is non-fatal when an image is already cached, so a flaky
     # network or a temporary registry outage does not block a working install.
+    # Eval does not start the sandbox profile, so skip that pull.
+    _PULL_SERVICES=(pipeshub-ai)
+    [[ "${DEPLOY_TYPE:-}" != "eval" ]] && _PULL_SERVICES+=(sandbox-image)
     if ! docker compose "${_PROGRESS[@]}" \
         -f "$COMPOSE_FILE" \
         -p "$PROJECT_NAME" \
         --env-file "$ENV_FILE" \
-        pull pipeshub-ai sandbox-image 2>&1; then
-      if docker image inspect "$_APP_IMAGE" >/dev/null 2>&1 &&
-          docker image inspect "$_SANDBOX_IMAGE" >/dev/null 2>&1; then
+        pull "${_PULL_SERVICES[@]}" 2>&1; then
+      _cached=true
+      docker image inspect "$_APP_IMAGE" >/dev/null 2>&1 || _cached=false
+      if [[ "${DEPLOY_TYPE:-}" != "eval" ]]; then
+        docker image inspect "$_SANDBOX_IMAGE" >/dev/null 2>&1 || _cached=false
+      fi
+      if $_cached; then
         warn "Could not refresh images; continuing with cached copies if present."
       else
         warn "Could not pull a required image and it is not cached locally — the next step may fail."

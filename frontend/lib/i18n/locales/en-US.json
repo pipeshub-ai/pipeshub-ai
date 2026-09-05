@@ -3350,6 +3350,17 @@
       "server_error": "An unexpected error occurred on the server. Please try again later."
     }
   },
+  "oauthDevice": {
+    "title": "Connect a device",
+    "codeLabel": "Enter the code shown in your terminal",
+    "codePlaceholder": "ABCD-EFGH",
+    "continue": "Continue",
+    "loading": "Looking up this device…",
+    "doneTitle": "Device connected",
+    "doneLine": "You can return to the terminal. This window can be closed.",
+    "deniedTitle": "Request denied",
+    "deniedLine": "The device was not granted access."
+  },
   "auth": {
     "titleSection": {
       "defaultTitle": "Welcome to Pipeshub",

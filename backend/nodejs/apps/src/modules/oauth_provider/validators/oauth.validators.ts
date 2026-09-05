@@ -48,6 +48,7 @@ export const tokenSchema = z.object({
       OAuthGrantType.AUTHORIZATION_CODE,
       OAuthGrantType.CLIENT_CREDENTIALS,
       OAuthGrantType.REFRESH_TOKEN,
+      OAuthGrantType.DEVICE_CODE,
     ]),
     code: z.string().optional(),
     redirect_uri: z.string().url().optional(),
@@ -58,6 +59,41 @@ export const tokenSchema = z.object({
     scope: z.string().optional(),
     // RFC 7636: code_verifier must match the pattern [A-Za-z0-9-._~]{43,128}
     code_verifier: z.string().regex(codeVerifierPattern, 'Invalid code_verifier format').optional(),
+    device_code: z.string().min(1).optional(),
+  }),
+})
+
+export const dcrRequestSchema = z.object({
+  body: z.object({
+    redirect_uris: z.array(z.string().min(1)).max(10).optional(),
+    token_endpoint_auth_method: z
+      .enum(['none', 'client_secret_basic', 'client_secret_post'])
+      .optional(),
+    grant_types: z.array(z.string()).optional(),
+    response_types: z.array(z.string()).optional(),
+    client_name: z.string().min(1).max(100).optional(),
+    client_uri: z.string().url().optional(),
+    logo_uri: z.string().url().optional(),
+    scope: z.string().optional(),
+    contacts: z.array(z.string()).optional(),
+    tos_uri: z.string().url().optional(),
+    policy_uri: z.string().url().optional(),
+    software_id: z.string().optional(),
+    software_version: z.string().optional(),
+  }),
+})
+
+export const deviceAuthorizationSchema = z.object({
+  body: z.object({
+    client_id: z.string().min(1),
+    scope: z.string().optional(),
+  }),
+})
+
+export const deviceUserCodeSchema = z.object({
+  body: z.object({
+    user_code: z.string().min(1).max(32),
+    consent: z.enum(['granted', 'denied']).optional(),
   }),
 })
 

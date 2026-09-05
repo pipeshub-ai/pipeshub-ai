@@ -11,7 +11,7 @@ import {
   JWK,
 } from '../types/oauth.types';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { Users } from '../../../config';
+import { Users } from '../../user_management/schema/users.schema';
 import {
   OAuthRequest,
   buildWwwAuthenticateHeader,
@@ -112,6 +112,8 @@ export class OIDCProviderController {
       revocation_endpoint: `${baseUrl}/revoke`,
       introspection_endpoint: `${baseUrl}/introspect`,
       jwks_uri: `${backendUrl}/.well-known/jwks.json`,
+      registration_endpoint: `${baseUrl}/register`,
+      device_authorization_endpoint: `${baseUrl}/device_authorization`,
       scopes_supported: this.scopeValidatorService
         .getAllScopes()
         .map((s) => s.name),
@@ -120,8 +122,10 @@ export class OIDCProviderController {
         'authorization_code',
         'client_credentials',
         'refresh_token',
+        'urn:ietf:params:oauth:grant-type:device_code',
       ],
       token_endpoint_auth_methods_supported: [
+        'none',
         'client_secret_basic',
         'client_secret_post',
       ],

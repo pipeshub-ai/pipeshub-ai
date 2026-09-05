@@ -299,6 +299,19 @@ export const DefaultMcpScopes = [
   'connector:read',
 ];
 
+/**
+ * Scopes the CLI/agent preset mints. Dynamic Client Registration defaults to
+ * this set (intersected with instance MCP_SCOPES). Never grant
+ * `client_credentials` through DCR — that grant has no user identity.
+ */
+export const AgentMcpScopes = [
+  'conversation:chat',
+  'semantic:write',
+  'kb:read',
+  'user:read',
+  'connector:read',
+] as const;
+
 export const ScopeCategories = [
   'Identity',
   'Access',

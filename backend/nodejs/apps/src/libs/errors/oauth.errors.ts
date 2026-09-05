@@ -76,3 +76,16 @@ export class ServerError extends OAuthError {
     super('SERVER_ERROR', message, 500, metadata);
   }
 }
+
+/**
+ * RFC 8628 device-grant errors. Always HTTP 400; the JSON `error` member is
+ * `oauthError` (`authorization_pending`, `slow_down`, `expired_token`, …).
+ */
+export class DeviceGrantError extends OAuthError {
+  readonly oauthError: string
+
+  constructor(oauthError: string, message: string, metadata?: ErrorMetadata) {
+    super(oauthError.toUpperCase().replace(/-/g, '_'), message, 400, metadata)
+    this.oauthError = oauthError
+  }
+}
