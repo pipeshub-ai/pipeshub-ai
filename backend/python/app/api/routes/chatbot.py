@@ -38,7 +38,7 @@ from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import TransformContext
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.utils.aimodels import get_generator_model_async
+from app.utils.aimodels import get_generator_model_async, is_multimodal_llm as supports_multimodal
 from app.utils.attachment_mime_types import (
     DELIMITED_MIME_TYPES,
     DOCX_MIME_TYPES,
@@ -1007,7 +1007,7 @@ async def _generate_chat_stream_via_agent_loop(
     system_prompts_config: dict[str, Any] = await prompts_task
 
     policy = resolve_chat_mode_policy(query_info.chatMode)
-    is_multimodal_llm = bool(model_config.get("isMultimodal"))
+    is_multimodal_llm = supports_multimodal(model_config)
     context_length = model_config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
 
     # When the request carries agentCapabilities and we're in agent mode,
