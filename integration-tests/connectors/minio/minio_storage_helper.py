@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import boto3
 from botocore.config import Config
-
 from connectors.s3.s3_storage_helper import S3StorageHelper
 
 

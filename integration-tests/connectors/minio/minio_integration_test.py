@@ -22,7 +22,7 @@ Test cases:
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import pytest
 
@@ -30,19 +30,21 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
-from helper.graph_provider import GraphProviderProtocol  # noqa: E402
-from app.config.constants.arangodb import PermissionModel  # noqa: E402
-from helper.assertions import assert_permission_model  # noqa: E402
-from helper.storage_incremental import (  # noqa: E402
+from app.config.constants.arangodb import PermissionModel
+from connectors.minio.minio_storage_helper import (  # type: ignore[import-not-found]
+    MinioStorageHelper,
+)
+from helper.assertions import assert_permission_model
+from helper.graph_provider import GraphProviderProtocol
+from helper.storage_incremental import (
     assert_incremental_new_files,
     record_names_from_keys,
     settle_record_baseline,
     sync_until_names_visible,
     unique_incremental_csv_files,
 )
-from connectors.minio.minio_storage_helper import (  # type: ignore[import-not-found]  # noqa: E402
-    MinioStorageHelper,
+from pipeshub_client import (
+    PipeshubClient,  # type: ignore[import-not-found]
 )
 
 logger = logging.getLogger("minio-lifecycle-test")
@@ -57,7 +59,7 @@ class TestMinioConnector:
     @pytest.mark.order(1)
     async def test_tc_sync_001_full_sync_graph_validation(
         self,
-        minio_connector: Dict[str, Any],
+        minio_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-SYNC-001: After full sync, validate the graph thoroughly."""
@@ -95,7 +97,7 @@ class TestMinioConnector:
     @pytest.mark.order(2)
     async def test_tc_incr_001_incremental_sync_new_files(
         self,
-        minio_connector: Dict[str, Any],
+        minio_connector: dict[str, Any],
         minio_storage: MinioStorageHelper,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
@@ -143,7 +145,7 @@ class TestMinioConnector:
     @pytest.mark.order(3)
     async def test_tc_update_001_content_change_detection(
         self,
-        minio_connector: Dict[str, Any],
+        minio_connector: dict[str, Any],
         minio_storage: MinioStorageHelper,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
@@ -162,6 +164,18 @@ class TestMinioConnector:
             pipeshub_client, graph_provider, connector_id
         )
 
+        # The connector increments a record's version when it updates one, so
+        # comparing it is what separates "re-indexed" from "left alone". A count
+        # that holds steady proves only that nothing was duplicated — a
+        # connector that ignored the change entirely would also pass that.
+        before_record = await graph_provider.get_record_by_name(
+            connector_id, target_name
+        )
+        assert before_record is not None, (
+            f"TC-UPDATE-001: {target_name} is not in the graph before the change"
+        )
+        before_version = before_record.get("version")
+
         minio_storage.overwrite_object(
             bucket_name,
             target_key,
@@ -179,9 +193,21 @@ class TestMinioConnector:
             f"{after_count} after overwriting one object. An update must not "
             "create a second record for the same object."
         )
+        after_record = await graph_provider.get_record_by_name(
+            connector_id, target_name
+        )
+        assert after_record is not None, (
+            f"TC-UPDATE-001: {target_name} disappeared from the graph after the change"
+        )
+        assert after_record.get("version") != before_version, (
+            f"TC-UPDATE-001: version stayed at {before_version} after the content "
+            "changed, so the record was never re-indexed. The count assertion "
+            "above would have passed regardless."
+        )
         await graph_provider.assert_no_orphan_records(connector_id)
         logger.info(
             "TC-UPDATE-001 passed: %s updated in place, count stable at %d",
             target_name,
             after_count,
         )
+

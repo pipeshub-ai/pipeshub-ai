@@ -8,16 +8,15 @@ connector has live coverage on any machine that can start the stack.
 """
 
 import os
-from typing import Any, AsyncGenerator, Dict
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import pytest
 import pytest_asyncio
-
 from connector_lifecycle import constructor, destructor
-from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
-from helper.graph_provider import GraphProviderProtocol
-
 from connectors.minio.minio_storage_helper import MinioStorageHelper
+from helper.graph_provider import GraphProviderProtocol
+from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
 # Defaults match deployment/docker-compose/docker-compose.integration.*.yml, so
 # the suite runs against a locally started stack with nothing exported.
@@ -70,7 +69,7 @@ async def minio_connector(
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
     sample_data_root,
-) -> AsyncGenerator[Dict[str, Any], None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     # The connector runs inside the compose network, so it reaches MinIO by
     # service name; the test process reaches it on the published port.
     config = {
