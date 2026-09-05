@@ -251,7 +251,9 @@ services:
     ports:
       - "127.0.0.1:8099:80"
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost/feed.xml"]
+      # Probes the server, not feed.xml: the tests write the feed, so a
+      # healthcheck waiting on it would never pass before they run.
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
       interval: 5s
       timeout: 3s
       retries: 20
