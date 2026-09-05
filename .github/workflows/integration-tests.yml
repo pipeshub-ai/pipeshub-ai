@@ -352,6 +352,32 @@ jobs:
             -n "$WORKERS" --dist loadgroup \
             --junitxml=reports/neo4j-results.xml 2>&1
 
+
+      # app/scripts/connector_deletion_integration_test.py exercises
+      # delete_connector_instance() against a live graph: it builds three
+      # connectors with overlapping data, deletes each, and checks the other two
+      # survive intact. No workflow ran it, and the stack here is the only place
+      # it can run.
+      #
+      # After the pytest step on purpose: it creates and deletes its own
+      # connectors, so running it alongside the suite would have the two
+      # competing for the same graph.
+      - name: 'Neo4j: Connector deletion integration test'
+        if: ${{ !cancelled() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        working-directory: backend/python
+        env:
+          DATA_STORE: neo4j
+          # The same connection the pytest suites use, so this cannot drift from
+          # how the stack was actually started.
+          NEO4J_URI: ${{ secrets.TEST_NEO4J_URI }}
+          NEO4J_USERNAME: ${{ secrets.TEST_NEO4J_USERNAME }}
+          NEO4J_PASSWORD: ${{ secrets.TEST_NEO4J_PASSWORD }}
+          NEO4J_DATABASE: ${{ secrets.TEST_NEO4J_DATABASE }}
+        run: |
+          python -m venv /tmp/deletion-venv
+          /tmp/deletion-venv/bin/pip install --quiet -e .
+          /tmp/deletion-venv/bin/python -m app.scripts.connector_deletion_integration_test
+
       - name: 'Neo4j: Run Playwright e2e tests'
         if: ${{ !cancelled() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
         working-directory: frontend
