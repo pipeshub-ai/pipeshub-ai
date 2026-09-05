@@ -249,7 +249,7 @@ services:
     volumes:
       - ${RSS_TEST_HOST_DIR:-./rss-test-data}:/usr/share/nginx/html:ro
     ports:
-      - "8099:80"
+      - "127.0.0.1:8099:80"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost/feed.xml"]
       interval: 5s
