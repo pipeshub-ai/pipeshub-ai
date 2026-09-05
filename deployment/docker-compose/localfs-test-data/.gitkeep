@@ -1,0 +1,5 @@
+Bind-mount target for the Local FS connector integration tests.
+
+The directory has to exist before compose starts, otherwise Docker creates it
+as root and the test process cannot write into it. The tests add and remove
+files here; nothing else should be kept in it.
