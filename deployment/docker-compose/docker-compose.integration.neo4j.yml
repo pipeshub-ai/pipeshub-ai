@@ -265,7 +265,7 @@ services:
     volumes:
       - ${WEB_TEST_HOST_DIR:-./web-test-data}:/usr/share/nginx/html:ro
     ports:
-      - "8097:80"
+      - "127.0.0.1:8097:80"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost/index.html"]
       interval: 5s
