@@ -20,6 +20,10 @@ class ZendeskResponse(BaseModel):
     # Every call site already passes this; without the field Pydantic dropped it,
     # leaving callers unable to tell a retryable 429 from a fatal 401.
     status_code: Optional[int] = None
+    # Retry-After lives here. Zendesk's incremental exports allow 10 requests a
+    # minute, so a 429 wants roughly a minute of backoff; without the header the
+    # retry helper falls back to 0.5s and 1.0s and gives up in under two seconds.
+    headers: Optional[Dict[str, str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""

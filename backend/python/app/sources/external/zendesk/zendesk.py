@@ -132,7 +132,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -180,7 +181,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -336,7 +338,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -468,7 +471,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -511,7 +515,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -560,7 +565,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -614,7 +620,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -659,7 +666,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -708,7 +716,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -767,7 +776,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -871,7 +881,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -888,6 +899,8 @@ class ZendeskDataSource:
         include: Optional[str] = None,
         page: Optional[int] = None,
         per_page: Optional[int] = None,
+        page_size: Optional[int] = None,
+        page_after: Optional[str] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
         # Hand-edited generated file; regenerating zendesk.py will drop pagination.
@@ -917,6 +930,10 @@ class ZendeskDataSource:
                 _params["page"] = page
             if per_page is not None:
                 _params["per_page"] = per_page
+            if page_size is not None:
+                _params["page[size]"] = page_size
+            if page_after is not None:
+                _params["page[after]"] = page_after
 
             request = HTTPRequest(
                 method="GET",
@@ -932,7 +949,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -985,7 +1003,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -1047,7 +1066,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -1095,7 +1115,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -1248,7 +1269,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -1396,7 +1418,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -1439,7 +1462,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -1488,7 +1512,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -1533,7 +1558,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -1572,7 +1598,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -1621,7 +1648,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -1679,7 +1707,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -1728,7 +1757,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -1777,7 +1807,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -1830,7 +1861,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -1873,7 +1905,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -1924,7 +1957,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -1978,7 +2012,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2021,7 +2056,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2066,7 +2102,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2124,7 +2161,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2178,7 +2216,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2225,7 +2264,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2272,7 +2312,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2319,7 +2360,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2364,7 +2406,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2410,7 +2453,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2453,7 +2497,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2538,7 +2583,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2626,7 +2672,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2669,7 +2716,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2719,7 +2767,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2772,7 +2821,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2821,7 +2871,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2879,7 +2930,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2928,7 +2980,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -2977,7 +3030,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3026,7 +3080,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3041,6 +3096,8 @@ class ZendeskDataSource:
         exclude_deleted: Optional[bool] = None,
         page: Optional[int] = None,
         per_page: Optional[int] = None,
+        page_size: Optional[int] = None,
+        page_after: Optional[str] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
         # Hand-edited generated file; regenerating zendesk.py will drop pagination.
@@ -3066,6 +3123,10 @@ class ZendeskDataSource:
                 _params["page"] = page
             if per_page is not None:
                 _params["per_page"] = per_page
+            if page_size is not None:
+                _params["page[size]"] = page_size
+            if page_after is not None:
+                _params["page[after]"] = page_after
 
             request = HTTPRequest(
                 method="GET",
@@ -3081,7 +3142,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3124,7 +3186,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3185,7 +3248,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3249,7 +3313,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3292,7 +3357,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3306,6 +3372,8 @@ class ZendeskDataSource:
         self,
         page: Optional[int] = None,
         per_page: Optional[int] = None,
+        page_size: Optional[int] = None,
+        page_after: Optional[str] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
         # Hand-edited generated file; regenerating zendesk.py will drop pagination.
@@ -3328,6 +3396,10 @@ class ZendeskDataSource:
                 _params["page"] = page
             if per_page is not None:
                 _params["per_page"] = per_page
+            if page_size is not None:
+                _params["page[size]"] = page_size
+            if page_after is not None:
+                _params["page[after]"] = page_after
 
             request = HTTPRequest(
                 method="GET",
@@ -3343,7 +3415,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3386,7 +3459,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3429,7 +3503,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3472,7 +3547,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3528,7 +3604,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3571,7 +3648,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3616,7 +3694,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3665,7 +3744,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3722,7 +3802,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3771,7 +3852,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3816,7 +3898,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3866,7 +3949,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3909,7 +3993,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -3989,7 +4074,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4049,7 +4135,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4097,7 +4184,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4142,7 +4230,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4200,7 +4289,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4239,7 +4329,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4282,7 +4373,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4345,7 +4437,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4413,7 +4506,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4456,7 +4550,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4505,7 +4600,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4567,7 +4663,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4606,7 +4703,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4649,7 +4747,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4720,7 +4819,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4796,7 +4896,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4839,7 +4940,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4888,7 +4990,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4937,7 +5040,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -4982,7 +5086,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5056,7 +5161,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5095,7 +5201,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5138,7 +5245,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5202,7 +5310,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5270,7 +5379,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5313,7 +5423,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5360,7 +5471,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5403,7 +5515,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5448,7 +5561,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5497,7 +5611,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5542,7 +5657,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5588,7 +5704,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5631,7 +5748,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5707,7 +5825,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5791,7 +5910,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5834,7 +5954,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5888,7 +6009,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5941,7 +6063,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -5984,7 +6107,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -6029,7 +6153,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -6086,7 +6211,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -6129,7 +6255,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -6172,7 +6299,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -6222,7 +6350,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -6265,7 +6394,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -6381,7 +6511,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -6497,7 +6628,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -6540,7 +6672,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -6579,7 +6712,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -6622,7 +6756,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -6709,7 +6844,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -6793,7 +6929,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -6836,7 +6973,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -6875,7 +7013,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -6918,7 +7057,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7005,7 +7145,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7089,7 +7230,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7132,7 +7274,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7171,7 +7314,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7210,7 +7354,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7255,7 +7400,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7317,7 +7463,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7356,7 +7503,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7395,7 +7543,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7438,7 +7587,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7501,7 +7651,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7569,7 +7720,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7612,7 +7764,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7668,7 +7821,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7716,7 +7870,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7759,7 +7914,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7802,7 +7958,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7889,7 +8046,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -7937,7 +8095,232 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
+            )
+
+        except Exception as e:
+            return ZendeskResponse(
+                success=False,
+                error=str(e)
+            )
+
+
+    async def incremental_articles(
+        self,
+        start_time: int,
+        headers: Optional[Dict[str, Any]] = None
+    ) -> ZendeskResponse:
+        # Hand-edited generated file; regenerating zendesk.py will drop this method.
+        """Incremental export of Help Center articles
+
+        The list endpoint pages by offset and 400s past 10,000 records, so a large
+        Help Center can only be walked through this export.
+
+        Args:
+            start_time (int, required): Unix timestamp to start from
+
+        Returns:
+            ZendeskResponse: Standardized response object
+        """
+        try:
+            _headers = dict(headers or {})
+            _params = {"start_time": start_time}
+            _data = {}
+            url = f"{self.base_url}/help_center/incremental/articles.json"
+
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers=_headers,
+                query=_to_query(_params)
+            )
+            response = await self.http.execute(
+                request=request
+            )
+
+            return ZendeskResponse(
+                success=response.status < SUCCESS_CODE_IS_LESS_THAN,
+                data=response.json() if response.is_json else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                status_code=response.status,
+                headers=response.headers
+            )
+
+        except Exception as e:
+            return ZendeskResponse(
+                success=False,
+                error=str(e)
+            )
+
+
+    async def list_article_comments(
+        self,
+        article_id: int,
+        sort_by: Optional[Literal["created_at", "updated_at"]] = None,
+        sort_order: Optional[Literal["asc", "desc"]] = None,
+        page: Optional[int] = None,
+        per_page: Optional[int] = None,
+        page_size: Optional[int] = None,
+        page_after: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None
+    ) -> ZendeskResponse:
+        # Hand-edited generated file; regenerating zendesk.py will drop this method.
+        """List the comments on a Help Center article
+
+        Args:
+            article_id (int, required): ID of the article
+            sort_by (Optional[Literal["created_at", "updated_at"]], optional): Sort field
+            sort_order (Optional[Literal["asc", "desc"]], optional): Sort direction
+            page (Optional[int], optional): Page number for pagination
+            per_page (Optional[int], optional): Number of results per page (max 100)
+
+        Returns:
+            ZendeskResponse: Standardized response object
+        """
+        try:
+            _headers = dict(headers or {})
+            _params = {}
+            _data = {}
+            url = f"{self.base_url}/help_center/articles/{article_id}/comments.json"
+
+            if sort_by is not None:
+                _params["sort_by"] = sort_by
+            if sort_order is not None:
+                _params["sort_order"] = sort_order
+            if page is not None:
+                _params["page"] = page
+            if per_page is not None:
+                _params["per_page"] = per_page
+            if page_size is not None:
+                _params["page[size]"] = page_size
+            if page_after is not None:
+                _params["page[after]"] = page_after
+
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers=_headers,
+                query=_to_query(_params)
+            )
+            response = await self.http.execute(
+                request=request
+            )
+
+            return ZendeskResponse(
+                success=response.status < SUCCESS_CODE_IS_LESS_THAN,
+                data=response.json() if response.is_json else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                status_code=response.status,
+                headers=response.headers
+            )
+
+        except Exception as e:
+            return ZendeskResponse(
+                success=False,
+                error=str(e)
+            )
+
+
+    async def list_article_attachments(
+        self,
+        article_id: int,
+        page: Optional[int] = None,
+        per_page: Optional[int] = None,
+        page_size: Optional[int] = None,
+        page_after: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None
+    ) -> ZendeskResponse:
+        # Hand-edited generated file; regenerating zendesk.py will drop this method.
+        """List the attachments of a Help Center article
+
+        Args:
+            article_id (int, required): ID of the article
+            page (Optional[int], optional): Page number for pagination
+            per_page (Optional[int], optional): Number of results per page (max 100)
+
+        Returns:
+            ZendeskResponse: Standardized response object
+        """
+        try:
+            _headers = dict(headers or {})
+            _params = {}
+            _data = {}
+            url = f"{self.base_url}/help_center/articles/{article_id}/attachments.json"
+
+            if page is not None:
+                _params["page"] = page
+            if per_page is not None:
+                _params["per_page"] = per_page
+            if page_size is not None:
+                _params["page[size]"] = page_size
+            if page_after is not None:
+                _params["page[after]"] = page_after
+
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers=_headers,
+                query=_to_query(_params)
+            )
+            response = await self.http.execute(
+                request=request
+            )
+
+            return ZendeskResponse(
+                success=response.status < SUCCESS_CODE_IS_LESS_THAN,
+                data=response.json() if response.is_json else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                status_code=response.status,
+                headers=response.headers
+            )
+
+        except Exception as e:
+            return ZendeskResponse(
+                success=False,
+                error=str(e)
+            )
+
+
+    async def show_article_attachment(
+        self,
+        attachment_id: int,
+        headers: Optional[Dict[str, Any]] = None
+    ) -> ZendeskResponse:
+        # Hand-edited generated file; regenerating zendesk.py will drop this method.
+        """Show a Help Center article attachment
+
+        Article attachments live under their own path — /attachments/{id}.json is the
+        ticket endpoint and 404s for these ids.
+
+        Args:
+            attachment_id (int, required): ID of the article attachment
+
+        Returns:
+            ZendeskResponse: Standardized response object
+        """
+        try:
+            _headers = dict(headers or {})
+            _params = {}
+            _data = {}
+            url = f"{self.base_url}/help_center/articles/attachments/{attachment_id}.json"
+
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers=_headers,
+                query=_to_query(_params)
+            )
+            response = await self.http.execute(
+                request=request
+            )
+
+            return ZendeskResponse(
+                success=response.status < SUCCESS_CODE_IS_LESS_THAN,
+                data=response.json() if response.is_json else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8026,7 +8409,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8118,7 +8502,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8161,7 +8546,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8230,7 +8616,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8249,6 +8636,8 @@ class ZendeskDataSource:
         include: Optional[str] = None,
         page: Optional[int] = None,
         per_page: Optional[int] = None,
+        page_size: Optional[int] = None,
+        page_after: Optional[str] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
         # Hand-edited generated file; regenerating zendesk.py will drop pagination.
@@ -8284,6 +8673,10 @@ class ZendeskDataSource:
                 _params["page"] = page
             if per_page is not None:
                 _params["per_page"] = per_page
+            if page_size is not None:
+                _params["page[size]"] = page_size
+            if page_after is not None:
+                _params["page[after]"] = page_after
 
             request = HTTPRequest(
                 method="GET",
@@ -8299,7 +8692,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8342,7 +8736,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8416,7 +8811,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8492,7 +8888,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8535,7 +8932,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8551,8 +8949,13 @@ class ZendeskDataSource:
         sort_by: Optional[Literal["position", "created_at", "updated_at", "name"]] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
         include: Optional[str] = None,
+        page: Optional[int] = None,
+        per_page: Optional[int] = None,
+        page_size: Optional[int] = None,
+        page_after: Optional[str] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
+        # Hand-edited generated file; regenerating zendesk.py will drop pagination.
         """List all categories
 
         Args:
@@ -8579,6 +8982,15 @@ class ZendeskDataSource:
             if include is not None:
                 _params["include"] = include
 
+            if page is not None:
+                _params["page"] = page
+            if per_page is not None:
+                _params["per_page"] = per_page
+            if page_size is not None:
+                _params["page[size]"] = page_size
+            if page_after is not None:
+                _params["page[after]"] = page_after
+
             request = HTTPRequest(
                 method="GET",
                 url=url,
@@ -8593,7 +9005,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8641,7 +9054,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8701,7 +9115,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8761,7 +9176,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8804,7 +9220,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8843,7 +9260,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8886,7 +9304,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -8949,7 +9368,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9013,7 +9433,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9056,7 +9477,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9112,7 +9534,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9157,7 +9580,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9215,7 +9639,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9277,7 +9702,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9322,7 +9748,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9365,7 +9792,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9404,7 +9832,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9464,7 +9893,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9516,7 +9946,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9562,7 +9993,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9611,7 +10043,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9650,7 +10083,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9693,7 +10127,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9756,7 +10191,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9824,7 +10260,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9867,7 +10304,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
@@ -9916,7 +10354,8 @@ class ZendeskDataSource:
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
+                headers=response.headers
             )
 
         except Exception as e:
