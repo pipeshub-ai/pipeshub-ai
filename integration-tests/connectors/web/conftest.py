@@ -35,6 +35,18 @@ DEFAULT_START_URL = "http://web-source/index.html"
 EXPECTED_TITLES = DEPTH_0_TITLES + DEPTH_1_TITLES
 
 
+
+def _unavailable(reason: str) -> None:
+    """A source that is not reachable: skip locally, fail in CI.
+
+    Skipping on any exception turns a broken stack into a green run. CI brings
+    this source up itself, so if it is not reachable there, that is a result and
+    not a reason to report success.
+    """
+    if os.getenv("CI"):
+        pytest.fail(reason)
+    pytest.skip(reason)
+
 @pytest.fixture(scope="session")
 def web_source() -> WebSourceHelper:
     helper = WebSourceHelper(os.getenv("WEB_TEST_HOST_DIR", DEFAULT_HOST_DIR))
@@ -43,7 +55,7 @@ def web_source() -> WebSourceHelper:
     try:
         helper.ensure_root()
     except OSError as exc:
-        pytest.skip(f"Web site directory not writable at {helper.root}: {exc}")
+        _unavailable(f"Web site directory not writable at {helper.root}: {exc}")
     return helper
 
 
