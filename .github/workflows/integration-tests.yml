@@ -20,6 +20,7 @@ on:
             - s3
             - postgres
             - mariadb
+            - localfs
             - confluence
             - jira
             - linear
@@ -155,6 +156,11 @@ jobs:
       MARIADB_TEST_USER: pipeshubtest
       MARIADB_TEST_PASSWORD: pipeshubtest123
       MARIADB_TEST_DB: pipeshub_connector_test
+      # The Local FS connector reads a directory bind-mounted into the
+      # connector container. The test writes the host path; the connector
+      # is pointed at the container path.
+      LOCALFS_TEST_HOST_DIR: ../deployment/docker-compose/localfs-test-data
+      LOCALFS_CONNECTOR_ROOT: /data/localfs-test
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
