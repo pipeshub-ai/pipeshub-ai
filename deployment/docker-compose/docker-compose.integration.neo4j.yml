@@ -269,7 +269,9 @@ services:
     ports:
       - "127.0.0.1:8097:80"
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost/index.html"]
+      # Probes the server, not index.html: the tests publish the site, so a
+      # healthcheck waiting on a page would never pass before they run.
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
       interval: 5s
       timeout: 3s
       retries: 20

@@ -179,7 +179,11 @@ jobs:
       # The Web connector crawls a static site served by nginx in the
       # stack. The test publishes pages on the host side of the bind mount;
       # the connector crawls it by service name.
-      WEB_TEST_HOST_DIR: ../deployment/docker-compose/web-test-data
+      # Absolute, because this value is read from two different working
+      # directories: compose runs in deployment/docker-compose and pytest in
+      # integration-tests. A relative path resolves differently in each, so
+      # the bind mount and the test would use different directories.
+      WEB_TEST_HOST_DIR: ${{ github.workspace }}/deployment/docker-compose/web-test-data
       WEB_CONNECTOR_START_URL: http://web-source/index.html
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}

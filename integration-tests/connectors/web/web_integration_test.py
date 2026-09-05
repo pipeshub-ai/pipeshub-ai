@@ -114,6 +114,12 @@ class TestWebConnector:
         )
 
     @pytest.mark.order(3)
+    @pytest.mark.xfail(
+        reason="#3198: the web connector writes version=0 on every record, so a "
+               "re-crawl of edited content cannot be told apart from no "
+               "re-crawl. Strict, so a fix lights this up.",
+        strict=True,
+    )
     async def test_tc_update_001_editing_a_page_does_not_duplicate_it(
         self,
         web_connector: Dict[str, Any],
@@ -134,6 +140,11 @@ class TestWebConnector:
         before_count = await settle_record_baseline(
             pipeshub_client, graph_provider, connector_id
         )
+        before_record = await graph_provider.get_record_by_name(connector_id, title)
+        assert before_record is not None, (
+            f"TC-UPDATE-001: {title} is not in the graph before the edit"
+        )
+        before_version = before_record.get("version")
 
         web_source.write_page(
             "guides/billing.html",
@@ -152,6 +163,18 @@ class TestWebConnector:
             f"{after_count} after editing one page. A re-crawl must update the "
             "existing record, not add another for the same URL."
         )
+        # A stable count cannot tell a re-crawl from an ignored edit. This fails
+        # today because the web connector sets version=0 unconditionally
+        # (connector.py:903,1720) — #3198 — hence the strict xfail above.
+        after_record = await graph_provider.get_record_by_name(connector_id, title)
+        assert after_record is not None, (
+            f"TC-UPDATE-001: {title} disappeared from the graph after the edit"
+        )
+        assert after_record.get("version") != before_version, (
+            f"TC-UPDATE-001: version stayed at {before_version} after the page "
+            "changed, so it was never re-indexed (#3198)"
+        )
+
         await graph_provider.assert_no_orphan_records(connector_id)
         logger.info(
             "TC-UPDATE-001 passed: %s updated in place, count stable at %d",
