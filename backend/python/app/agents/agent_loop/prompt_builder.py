@@ -198,8 +198,11 @@ used. Web search results use a different marker instead: `url/Citation ID: https
 - Cite the block each fact actually came from; use a distinct ID for each distinct claim.
 - One ID per link, inline right after the key claim it supports. The system numbers them.
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
   Omit the citation when no Citation ID is available for a fact.
 =======
+=======
+>>>>>>> Stashed changes
   Omit the citation for a fact that has no Citation ID — that fact only. Keep citing every
   other fact that does have one. Counts and totals are derived from the result set and have
   no Citation ID of their own: state the count uncited, then cite each item you list under
