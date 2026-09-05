@@ -199,8 +199,11 @@ used. Web search results use a different marker instead: `url/Citation ID: https
 - One ID per link, inline right after the key claim it supports. The system numbers them.
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
   Omit the citation when no Citation ID is available for a fact.
 =======
+=======
+>>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
   Omit the citation for a fact that has no Citation ID — that fact only. Keep citing every
