@@ -6,6 +6,11 @@
 # waiting on CI. Everything here runs against local files only: no Docker, no
 # network, no cloud credentials, no running PipesHub.
 #
+# It does not run integration-tests/, which needs the whole stack and shared
+# cloud storage. It does run backend/python/tests/integration, which despite the
+# directory name is mostly in-process: the suites there that do need a service
+# skip themselves when it is absent, so on a bare machine they cost nothing.
+#
 #   scripts/verify.sh              # everything available
 #   scripts/verify.sh --list       # what would run, and why anything is skipped
 #   scripts/verify.sh shell python # only the named groups
@@ -87,6 +92,14 @@ run() {
 have() { command -v "$1" >/dev/null 2>&1 || { echo "$1 not installed"; return 1; }; }
 exists() { [[ -e "$1" ]] || { echo "$1 not present in this tree"; return 1; }; }
 
+# An interpreter that cannot import pytest is not a runnable suite. Without this
+# the suite is listed as runnable and then reports a test failure, which reads
+# as a broken tree rather than a missing dependency.
+has_pytest() {
+  "$1" -c 'import pytest' >/dev/null 2>&1 \
+    || { echo "$1 cannot import pytest (activate the venv, or set PYTHON=)"; return 1; }
+}
+
 printf '\n%sVerifying %s%s\n\n' "$BOLD" "$ROOT" "$RESET"
 
 # ── shell ────────────────────────────────────────────────────────────────────
@@ -105,15 +118,15 @@ run shell "omnigent helper tests" \
 # ── python ───────────────────────────────────────────────────────────────────
 PY="${PYTHON:-python3}"
 run python "python unit tests" \
-  "exists backend/python/tests/unit && have $PY" \
+  "exists backend/python/tests/unit && have $PY && has_pytest $PY" \
   bash -c "cd backend/python && $PY -m pytest tests/unit -q -p no:warnings"
 
 run python "golden agent evals" \
-  "exists backend/python/tests/evals && have $PY" \
+  "exists backend/python/tests/evals && have $PY && has_pytest $PY" \
   bash -c "cd backend/python && $PY -m pytest tests/evals -q -p no:warnings"
 
-run python "python integration (offline subset)" \
-  "exists backend/python/tests/integration && have $PY" \
+run python "python service tests (no infra)" \
+  "exists backend/python/tests/integration && have $PY && has_pytest $PY" \
   bash -c "cd backend/python && $PY -m pytest tests/integration \
       --ignore=tests/integration/redis_cluster \
       --ignore=tests/integration/test_model_reasoning_effort_e2e.py \

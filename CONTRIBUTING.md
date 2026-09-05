@@ -340,8 +340,13 @@ scripts/verify.sh --list   # what would run, and why anything is skipped
 
 This covers the Python, Node, frontend, Electron and shell suites and prints a
 single summary. A suite that cannot run on your machine is reported as skipped
-with the reason, never as a pass. It does not run the integration tests, which
-need the full stack and take considerably longer — those run in CI.
+with the reason, never as a pass.
+
+It does not run `integration-tests/`, which needs the whole stack and shared
+cloud storage and takes hours — that runs in CI. It does run
+`backend/python/tests/integration`, which despite the directory name is mostly
+in-process; the suites there that genuinely need a service skip themselves when
+it is absent.
 
 ### Running Node.js Unit Tests
 
