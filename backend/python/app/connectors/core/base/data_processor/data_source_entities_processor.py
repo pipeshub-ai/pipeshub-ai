@@ -106,6 +106,7 @@ class DataSourceEntitiesProcessor:
         RecordRelations.IMPLEMENTS.value,
         RecordRelations.REVIEWS.value,
         RecordRelations.CAUSES.value,
+        RecordRelations.CAUSED_BY.value,
         RecordRelations.RELATED.value,
         RecordRelations.LINKED_TO.value,
         RecordRelations.FOREIGN_KEY.value,
