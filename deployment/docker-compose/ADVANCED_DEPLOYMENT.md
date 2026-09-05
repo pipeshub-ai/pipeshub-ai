@@ -8,12 +8,13 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 ## Contents
 
 - [Standalone one-command install](#standalone-one-command-install)
-- [Deployment types (slim vs. full)](#deployment-types-slim-vs-full)
+- [Deployment types (slim vs. full vs. eval)](#deployment-types-slim-vs-full-vs-eval)
 - [Environment overrides for CI / scripted installs](#environment-overrides-for-ci--scripted-installs)
 - [Upgrading an existing Compose install](#upgrading-an-existing-compose-install)
 - [A second instance on the same host](#a-second-instance-on-the-same-host)
 - [Manual deployment with Compose profiles](#manual-deployment-with-compose-profiles)
 - [Secrets and configuration](#secrets-and-configuration)
+- [OAuth dynamic registration and device grant](#oauth-dynamic-registration-and-device-grant)
 - [Runtime tuning (workers and query-service flags)](#runtime-tuning-workers-and-query-service-flags)
 - [Container outbound connectivity](#container-outbound-connectivity)
 - [Developer / local build](#developer--local-build)
@@ -54,24 +55,36 @@ requires a full clone — see [Developer / local build](#developer--local-build)
 
 ---
 
-## Deployment types (slim vs. full)
+## Deployment types (slim vs. full vs. eval)
 
-| | **Slim** | **Full** |
-|---|---|---|
-| Image | `pipeshubai/pipeshub-ai:slim` | `pipeshubai/pipeshub-ai:latest` |
-| Embedding model | Downloaded on first use | Bundled in image (~1.3 GB extra) |
-| Graph DB (default) | Neo4j | Neo4j |
-| Broker (default) | Redis Streams | Kafka + Zookeeper |
-| KV store (default) | Redis | Redis |
-| Recommended for | Laptops, evaluations | Production, air-gapped servers |
+| | **Slim** | **Full** | **Eval** |
+|---|---|---|---|
+| Image | `pipeshubai/pipeshub-ai:slim` | `pipeshubai/pipeshub-ai:latest` | `pipeshubai/pipeshub-ai:slim` |
+| Embedding model | Downloaded on first use | Bundled in image (~1.3 GB extra) | Downloaded on first use |
+| Graph DB (default) | Neo4j | Neo4j | Neo4j (required) |
+| Broker (default) | Redis Streams | Kafka + Zookeeper | Redis Streams |
+| KV store (default) | Redis | Redis | Redis |
+| Coding sandbox | Pulled (`sandbox` profile) | Pulled | **Omitted** — `run_code` unavailable |
+| Slack bot process | Starts | Starts | Skipped (`PIPESHUB_SKIP_SLACKBOT=true`) |
+| RAM class | 16 GB host / 8 GB Docker VM | 16 GB+ | 8 GB-class laptop |
+| Recommended for | Laptops, servers | Production, air-gapped | MCP search/ask demos |
 
-Both deployment types default to **Neo4j** for the graph DB and **Redis** for the
+Eval is **not** a fourth image tag. It is slim plus a smaller Compose topology.
+Neo4j stays: records and ACLs live in the graph store, and search is not proven
+without it. Do not drop Neo4j to save RAM.
+
+```bash
+PIPESHUB_DEPLOY_TYPE=eval ./install.sh --yes
+```
+
+Both slim and full default to **Neo4j** for the graph DB and **Redis** for the
 KV store; the difference is the bundled embedding model and the message broker
 (Redis Streams for slim, Kafka for full). ArangoDB and etcd are opt-in — choose
 them at the prompts or via `PIPESHUB_GRAPH_DB` / `PIPESHUB_KV_STORE`.
 
 **Slim** uses no extra broker or KV-store containers (Redis handles both).  
 **Full** pre-bakes the [BAAI/bge-large-en-v1.5](https://huggingface.co/BAAI/bge-large-en-v1.5) embedding model so the first query does not stall waiting for a download.
+**Eval** is slim without the sandbox image pull and without the Slack bot process.
 
 ---
 
@@ -81,7 +94,7 @@ All variables are optional. When set, they suppress the corresponding interactiv
 
 | Variable | Values | Default |
 |----------|--------|---------|
-| `PIPESHUB_DEPLOY_TYPE` | `full` \| `slim` | interactive |
+| `PIPESHUB_DEPLOY_TYPE` | `full` \| `slim` \| `eval` | interactive |
 | `PIPESHUB_GRAPH_DB` | `arango` \| `neo4j` | per deploy type |
 | `PIPESHUB_BROKER` | `kafka` \| `redis` | per deploy type |
 | `PIPESHUB_KV_STORE` | `etcd` \| `redis` | per deploy type |
@@ -291,6 +304,28 @@ manager instead of `.env` — for example Docker/Swarm secrets, HashiCorp Vault,
 or your cloud provider's KMS / Secrets Manager — and inject the values into the
 containers at runtime. The Compose services read standard environment variables,
 so any tool that can populate the container environment will work.
+
+---
+
+## OAuth dynamic registration and device grant
+
+PipesHub's authorization server advertises RFC 7591 dynamic client registration
+and RFC 8628 device authorization. Coding agents use these to obtain a **user**
+access token (never `client_credentials` through DCR).
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `PIPESHUB_ENABLE_DCR` | on (any value other than `false`) | `POST /api/v1/oauth2/register` |
+| `PIPESHUB_ENABLE_DEVICE_GRANT` | on | `POST /api/v1/oauth2/device_authorization` and the device `grant_type` |
+
+Discovery: `GET {origin}/.well-known/openid-configuration` lists
+`registration_endpoint` and `device_authorization_endpoint`. Public clients
+register with `token_endpoint_auth_method: none`. Request
+`urn:ietf:params:oauth:grant-type:device_code` in `grant_types` if the agent
+will poll the device grant. The user completes consent at `/oauth/device`.
+
+DCR refuses `client_credentials`. Tokens issued after device consent carry the
+logged-in user's `userId` and `orgId`.
 
 ---
 

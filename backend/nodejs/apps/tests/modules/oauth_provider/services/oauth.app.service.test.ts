@@ -1301,6 +1301,55 @@ describe('OAuthAppService - branch coverage', () => {
     })
   })
 
+  describe('createDynamicClient', () => {
+    it('should reject client_credentials', async () => {
+      try {
+        await service.createDynamicClient({
+          orgId: VALID_ORG_ID,
+          createdBy: VALID_USER_ID,
+          name: 'Cursor',
+          redirectUris: ['https://example.com/cb'],
+          allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS],
+          allowedScopes: ['user:read'],
+          isConfidential: false,
+        })
+        expect.fail('should have thrown')
+      } catch (err: any) {
+        expect(err).to.be.instanceOf(BadRequestError)
+      }
+    })
+
+    it('should allow a private-use redirect URI', async () => {
+      const mockApp = {
+        _id: new Types.ObjectId(),
+        slug: 'dcr',
+        clientId: 'cid',
+        name: 'Cursor',
+        redirectUris: ['cursor://anysphere.cursor-mcp/oauth/callback'],
+        allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE, OAuthGrantType.REFRESH_TOKEN],
+        allowedScopes: ['user:read'],
+        status: OAuthAppStatus.ACTIVE,
+        isConfidential: false,
+        accessTokenLifetime: 3600,
+        refreshTokenLifetime: 2592000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      const createStub = sinon.stub(OAuthApp, 'create').resolves(mockApp as any)
+      await service.createDynamicClient({
+          orgId: VALID_ORG_ID,
+          createdBy: VALID_USER_ID,
+        name: 'Cursor',
+        redirectUris: ['cursor://anysphere.cursor-mcp/oauth/callback'],
+        allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE, OAuthGrantType.REFRESH_TOKEN],
+        allowedScopes: ['user:read'],
+        isConfidential: false,
+      })
+      expect(createStub.calledOnce).to.be.true
+      expect(createStub.firstCall.args[0].isDynamic).to.be.true
+    })
+  })
+
   // =========================================================================
   // deleteApp
   // =========================================================================

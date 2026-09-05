@@ -16,6 +16,9 @@ import {
   tokenSchema,
   revokeSchema,
   introspectSchema,
+  dcrRequestSchema,
+  deviceAuthorizationSchema,
+  deviceUserCodeSchema,
 } from '../validators/oauth.validators'
 
 export function createOAuthProviderRouter(container: Container): Router {
@@ -122,6 +125,63 @@ export function createOAuthProviderRouter(container: Container): Router {
     oauthAuthMiddleware.requireScopes('openid'),
     (req: Request, res: Response, next: NextFunction) =>
       oidcController.userInfo(req, res, next),
+  )
+
+  /**
+   * POST /register
+   * RFC 7591 Dynamic Client Registration. Never issues client_credentials.
+   */
+  router.post(
+    '/register',
+    oauthTokenRateLimiter,
+    ValidationMiddleware.validate(dcrRequestSchema),
+    (req: Request, res: Response, next: NextFunction) =>
+      controller.register(req, res, next),
+  )
+
+  /**
+   * POST /device_authorization
+   * RFC 8628 Device Authorization Grant.
+   */
+  router.post(
+    '/device_authorization',
+    oauthTokenRateLimiter,
+    ValidationMiddleware.validate(deviceAuthorizationSchema),
+    (req: Request, res: Response, next: NextFunction) => {
+      ;(req as Request & { oauthFrontendUrl?: string }).oauthFrontendUrl =
+        frontendUrl
+      controller.deviceAuthorization(req, res, next)
+    },
+  )
+
+  /**
+   * POST /device/verify — authenticated user_code lookup for the consent page.
+   */
+  router.post(
+    '/device/verify',
+    authMiddleware.authenticate.bind(authMiddleware),
+    ValidationMiddleware.validate(deviceUserCodeSchema),
+    (req: Request, res: Response, next: NextFunction) =>
+      controller.deviceVerify(
+        req as Parameters<typeof controller.deviceVerify>[0],
+        res,
+        next,
+      ),
+  )
+
+  /**
+   * POST /device/consent — user approves or denies a device grant.
+   */
+  router.post(
+    '/device/consent',
+    authMiddleware.authenticate.bind(authMiddleware),
+    ValidationMiddleware.validate(deviceUserCodeSchema),
+    (req: Request, res: Response, next: NextFunction) =>
+      controller.deviceConsent(
+        req as Parameters<typeof controller.deviceConsent>[0],
+        res,
+        next,
+      ),
   )
 
   return router

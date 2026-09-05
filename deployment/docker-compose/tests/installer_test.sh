@@ -241,7 +241,7 @@ check "health wait detects crash loops" "$inner" "crash_looping_containers"
 check "crash loop reported as the failure cause" "$inner" "keeps restarting"
 check "crash loop guidance is cause-neutral (137 vs 139)" "$inner" "exit 137"
 check "crash loop guidance covers segfault/corruption" "$inner" "exit 139"
-check "crash loop guidance still offers slim profile" "$inner" "drops Kafka/Zookeeper"
+check "eval is a deploy type" "$inner" 'prompt_choice DEPLOY_TYPE "Deployment type?" "slim" "slim" "full" "eval"'
 # Must not revert to asserting OOM as the definitive cause.
 if [[ "$inner" == *"almost always host memory pressure"* ]]; then
   fail "crash-loop message must not assert OOM as the certain cause"
@@ -252,6 +252,8 @@ fi
 echo "== Compose: app healthcheck reconciled with installer =="
 compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
 check "app healthcheck gates on core services" "$compose" "required=('query','connector','indexing','docling')"
+check "sandbox image is profile-gated" "$compose" 'profiles: ["sandbox"]'
+check "eval skip slackbot env is wired" "$compose" "PIPESHUB_SKIP_SLACKBOT"
 echo "== Compose: Hub slim empty ints are unset before start =="
 # Compose ${KEY:-} injects "". Hub slim int(os.getenv(KEY, default)) crashes
 # on that. The app entrypoint must unset blanks so the key is absent.
@@ -382,7 +384,7 @@ eval "$(extract_fn crash_looping_containers "$INNER_INSTALLER")"
 # --stop must tear down ALL profile-gated containers (not just the active
 # profile) so leftover graph/broker containers do not block network removal.
 stop_block="$(awk '/if \$FLAG_STOP; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")"
-check "stop enables all profiles" "$stop_block" 'COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka"'
+check "stop enables all profiles" "$stop_block" 'COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"'
 check "stop removes orphans" "$stop_block" "down --remove-orphans"
 check "stop uses COMPOSE_PROJECT_NAME from .env" "$stop_block" 'PROJECT_NAME="$(resolve_project_name)"'
 check "stop validates project name from .env" "$stop_block" 'require_valid_project_name "$PROJECT_NAME"'
@@ -424,15 +426,17 @@ eval "$(extract_fn derive_compose_profiles "$INNER_INSTALLER")"
 eval "$(extract_fn persist_env_var "$INNER_INSTALLER")"
 
 dp() { DATA_STORE="$1" KV_STORE_TYPE="$2" MESSAGE_BROKER="$3" derive_compose_profiles; }
-check "arango + kafka + redis kv" "$(dp arangodb redis kafka)" "graph-arango,broker-kafka"
-check "neo4j + redis + redis (slim)" "$(dp neo4j redis redis)" "graph-neo4j"
-check "neo4j + etcd + kafka (full custom)" "$(dp neo4j etcd kafka)" "graph-neo4j,kv-etcd,broker-kafka"
-[[ -z "$(dp '' '' '')" ]] && pass "all-unset derives empty" || fail "all-unset derives empty"
+check "arango + kafka + redis kv" "$(dp arangodb redis kafka)" "graph-arango,broker-kafka,sandbox"
+check "neo4j + redis + redis (slim)" "$(dp neo4j redis redis)" "graph-neo4j,sandbox"
+check "eval omits sandbox" "$(DEPLOY_TYPE=eval dp neo4j redis redis)" "graph-neo4j"
+check "neo4j + etcd + kafka (full custom)" "$(dp neo4j etcd kafka)" "graph-neo4j,kv-etcd,broker-kafka,sandbox"
+[[ -z "$(DEPLOY_TYPE=eval dp '' '' '')" ]] && pass "eval all-unset derives empty" || fail "eval all-unset derives empty"
+check "all-unset still includes sandbox" "$(dp '' '' '')" "sandbox"
 # The exact stale value from the user's terminal must be corrected, not trusted.
-check "repairs stale 'kafka' to real profiles" "$(dp arangodb redis kafka)" "graph-arango,broker-kafka"
+check "repairs stale 'kafka' to real profiles" "$(dp arangodb redis kafka)" "graph-arango,broker-kafka,sandbox"
 # Missing DATA_STORE drops the graph profile (only broker-kafka) — this is why
 # the installer hard-validates DATA_STORE before launch.
-check "missing DATA_STORE yields no graph profile" "$(dp '' redis kafka)" "broker-kafka"
+check "missing DATA_STORE yields no graph profile" "$(dp '' redis kafka)" "broker-kafka,sandbox"
 if [[ "$(dp '' redis kafka)" == *"graph-"* ]]; then fail "must not invent a graph profile"; else pass "no graph profile when DATA_STORE empty"; fi
 
 echo "== In-tree installer: persist_env_var replaces in place =="
@@ -466,7 +470,8 @@ check "PIPESHUB_NO_PULL=yes skips the refresh" "$(should_pull_image false false 
 # tag argument, so assert the launch path builds _APP_IMAGE from IMAGE_TAG.
 check "refresh target honours the pinned tag" "$inner" '_APP_IMAGE="pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}"'
 # Launch-path guards.
-check "refreshes app and sandbox images" "$inner" "pull pipeshub-ai sandbox-image"
+check "refreshes app image via compose pull" "$inner" 'pull "${_PULL_SERVICES[@]}"'
+check "eval skips sandbox image pull" "$inner" 'DEPLOY_TYPE:-}" != "eval"'
 check "--no-pull flag is parsed" "$inner" "FLAG_NO_PULL=true"
 check "refresh decision uses the testable helper" "$inner" 'should_pull_image "$_USE_BUILD" "$FLAG_NO_PULL" "${PIPESHUB_NO_PULL:-}"'
 # A pull failure must NOT abort when an image is already cached (flaky network).

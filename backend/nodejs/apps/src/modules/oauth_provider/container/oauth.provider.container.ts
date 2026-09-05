@@ -12,6 +12,8 @@ import { OAuthTokenService } from '../services/oauth_token.service'
 import { AuthorizationCodeService } from '../services/authorization_code.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
 import { PatService } from '../services/pat.service'
+import { OAuthDcrService } from '../services/oauth.dcr.service'
+import { OAuthDeviceService } from '../services/oauth.device.service'
 import { OAuthAppController } from '../controller/oauth.app.controller'
 import { OAuthProviderController } from '../controller/oauth.provider.controller'
 import { OIDCProviderController } from '../controller/oid.provider.controller'
@@ -152,6 +154,26 @@ export class OAuthProviderContainer {
       )
       container.bind<PatService>('PatService').toConstantValue(patService)
 
+      const oauthDcrService = new OAuthDcrService(
+        logger,
+        oauthAppService,
+        scopeValidatorService,
+        appConfig,
+      )
+      container
+        .bind<OAuthDcrService>('OAuthDcrService')
+        .toConstantValue(oauthDcrService)
+
+      const oauthDeviceService = new OAuthDeviceService(
+        logger,
+        oauthAppService,
+        oauthTokenService,
+        scopeValidatorService,
+      )
+      container
+        .bind<OAuthDeviceService>('OAuthDeviceService')
+        .toConstantValue(oauthDeviceService)
+
       // Initialize Controllers
       container
         .bind<OAuthAppController>('OAuthAppController')
@@ -177,6 +199,8 @@ export class OAuthProviderContainer {
             oauthTokenService,
             authorizationCodeService,
             scopeValidatorService,
+            oauthDcrService,
+            oauthDeviceService,
           )
         })
 

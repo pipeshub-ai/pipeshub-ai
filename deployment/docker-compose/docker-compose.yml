@@ -18,11 +18,13 @@
 #   graph-arango  — ArangoDB          (with DATA_STORE=arangodb)
 #   kv-etcd       — etcd              (with KV_STORE_TYPE=etcd)
 #   broker-kafka  — Zookeeper + Kafka (with MESSAGE_BROKER=kafka)
+#   sandbox       — coding-sandbox image pull (SANDBOX_MODE=docker)
 #
 # Full stack: DATA_STORE=neo4j, KV_STORE_TYPE=etcd, MESSAGE_BROKER=kafka and
-# COMPOSE_PROFILES=graph-neo4j,kv-etcd,broker-kafka
+# COMPOSE_PROFILES=graph-neo4j,kv-etcd,broker-kafka,sandbox
 #
-# Always-on: pipeshub-ai, redis, mongodb, qdrant, sandbox-image
+# Always-on: pipeshub-ai, redis, mongodb, qdrant.
+# Eval omits the sandbox profile (run_code is unavailable).
 #
 # Requires Docker Compose v2.20+ for `required: false` on depends_on.
 
@@ -211,6 +213,9 @@ services:
       - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read,agent:read,agent:execute,connector:read}
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+      # RFC 7591 / RFC 8628. Unset or any value other than "false" leaves them on.
+      - PIPESHUB_ENABLE_DCR=${PIPESHUB_ENABLE_DCR:-}
+      - PIPESHUB_ENABLE_DEVICE_GRANT=${PIPESHUB_ENABLE_DEVICE_GRANT:-}
 
       # ML threading
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
@@ -287,6 +292,8 @@ services:
       # Code sandbox
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+      # Eval deploy type skips the Slack bot process inside the app container.
+      - PIPESHUB_SKIP_SLACKBOT=${PIPESHUB_SKIP_SLACKBOT:-false}
 
       # Standalone parsing / extraction services (opt-in)
       - PARSING_SERVICE_URL=http://localhost:8092
@@ -322,6 +329,7 @@ services:
         required: false
       sandbox-image:
         condition: service_completed_successfully
+        required: false
 
     volumes:
       - pipeshub_data:/data/pipeshub
@@ -446,7 +454,10 @@ services:
 
   # Pull-only helper: ensures the sandbox image exists before pipeshub-ai starts.
   # With --build it builds the sandbox image locally from deployment/sandbox/Dockerfile.
+  # Profile-gated so eval can skip the pull; slim/full include `sandbox` in
+  # COMPOSE_PROFILES. depends_on above is required:false for the same reason.
   sandbox-image:
+    profiles: ["sandbox"]
     image: ${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
     build:
       context: ../../deployment/sandbox

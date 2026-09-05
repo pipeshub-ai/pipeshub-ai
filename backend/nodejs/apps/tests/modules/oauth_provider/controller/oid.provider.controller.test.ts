@@ -49,6 +49,14 @@ describe('OIDCProviderController', () => {
       expect(config.userinfo_endpoint).to.include('/userinfo')
       expect(config.response_types_supported).to.deep.equal(['code'])
       expect(config.grant_types_supported).to.include('authorization_code')
+      expect(config.grant_types_supported).to.include(
+        'urn:ietf:params:oauth:grant-type:device_code',
+      )
+      expect(config.registration_endpoint).to.include('/register')
+      expect(config.device_authorization_endpoint).to.include(
+        '/device_authorization',
+      )
+      expect(config.token_endpoint_auth_methods_supported).to.include('none')
       expect(config.code_challenge_methods_supported).to.deep.equal(['S256', 'plain'])
     })
   })

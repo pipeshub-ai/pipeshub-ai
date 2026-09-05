@@ -12,7 +12,9 @@ import {
   InvalidScopeError,
   AccessDeniedError,
   InvalidRedirectUriError,
+  DeviceGrantError,
 } from '../../../libs/errors/oauth.errors'
+import { BadRequestError, ForbiddenError, NotFoundError } from '../../../libs/errors/http.errors'
 import {
   AuthorizeRequest,
   TokenRequest,
@@ -20,7 +22,10 @@ import {
   ConsentData,
   OAuthErrorResponse,
 } from '../types/oauth.types'
-import { Users, Org } from '../../../config'
+import { Users } from '../../user_management/schema/users.schema'
+import { Org } from '../../user_management/schema/org.schema'
+import { OAuthDcrService } from '../services/oauth.dcr.service'
+import { OAuthDeviceService } from '../services/oauth.device.service'
 
 interface AuthenticatedRequest extends Request {
   user?: {
@@ -42,6 +47,8 @@ export class OAuthProviderController {
     private authorizationCodeService: AuthorizationCodeService,
     @inject('ScopeValidatorService')
     private scopeValidatorService: ScopeValidatorService,
+    @inject('OAuthDcrService') private oauthDcrService: OAuthDcrService,
+    @inject('OAuthDeviceService') private oauthDeviceService: OAuthDeviceService,
   ) {}
 
   /**
@@ -295,6 +302,14 @@ export class OAuthProviderController {
           )
           break
 
+        case 'urn:ietf:params:oauth:grant-type:device_code':
+          tokenResponse = await this.oauthDeviceService.poll(
+            clientId,
+            clientSecret,
+            tokenRequest.device_code || '',
+          )
+          break
+
         default:
           throw new UnsupportedGrantTypeError(
             `Unsupported grant_type: ${tokenRequest.grant_type}`,
@@ -372,6 +387,132 @@ export class OAuthProviderController {
       }
       // RFC 7662: For other errors, return inactive token to prevent information disclosure
       res.json({ active: false })
+    }
+  }
+
+  /**
+   * RFC 7591 Dynamic Client Registration — POST /oauth2/register
+   */
+  async register(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const created = await this.oauthDcrService.register(req.body)
+      res.status(201).json(created)
+    } catch (error) {
+      if (error instanceof ForbiddenError) {
+        res.status(403).json({
+          error: 'access_denied',
+          error_description: error.message,
+        })
+        return
+      }
+      if (
+        error instanceof BadRequestError ||
+        error instanceof InvalidScopeError ||
+        error instanceof InvalidRedirectUriError
+      ) {
+        res.status(400).json({
+          error: 'invalid_client_metadata',
+          error_description: error.message,
+        })
+        return
+      }
+      next(error)
+    }
+  }
+
+  /**
+   * RFC 8628 Device Authorization — POST /oauth2/device_authorization
+   */
+  async deviceAuthorization(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const { client_id, scope } = req.body
+      const frontendUrl = (req as Request & { oauthFrontendUrl?: string })
+        .oauthFrontendUrl
+      if (!frontendUrl) {
+        throw new Error('frontendUrl is not configured')
+      }
+      const result = await this.oauthDeviceService.createAuthorization(
+        client_id,
+        scope,
+        frontendUrl,
+      )
+      res.status(200).json(result)
+    } catch (error) {
+      const oauthError = this.buildErrorResponse(error as Error)
+      res.status(this.getErrorStatusCode(error as Error)).json(oauthError)
+    }
+  }
+
+  /**
+   * Authenticated lookup of a device user_code for the consent page.
+   */
+  async deviceVerify(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const user = req.user!
+      const consentData = await this.oauthDeviceService.getConsentData(
+        req.body.user_code,
+      )
+      consentData.user = {
+        email: user.email,
+        name: user.fullName,
+      }
+      res.json({ requiresConsent: true, consentData })
+    } catch (error) {
+      if (error instanceof NotFoundError || error instanceof BadRequestError) {
+        res.status(400).json({
+          error: 'invalid_request',
+          error_description: error.message,
+        })
+        return
+      }
+      if (error instanceof DeviceGrantError) {
+        res.status(400).json(this.buildErrorResponse(error))
+        return
+      }
+      next(error)
+    }
+  }
+
+  async deviceConsent(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const user = req.user!
+      const consent = req.body.consent === 'denied' ? 'denied' : 'granted'
+      await this.oauthDeviceService.approve(
+        req.body.user_code,
+        user.userId,
+        user.orgId,
+        consent,
+      )
+      res.json({ ok: true, consent })
+    } catch (error) {
+      if (error instanceof NotFoundError || error instanceof BadRequestError) {
+        res.status(400).json({
+          error: 'invalid_request',
+          error_description: error.message,
+        })
+        return
+      }
+      if (error instanceof DeviceGrantError) {
+        res.status(400).json(this.buildErrorResponse(error))
+        return
+      }
+      next(error)
     }
   }
 
@@ -615,6 +756,8 @@ export class OAuthProviderController {
 
     if (error instanceof InvalidGrantError) {
       errorCode = 'invalid_grant'
+    } else if (error instanceof DeviceGrantError) {
+      errorCode = error.oauthError
     } else if (error instanceof InvalidClientError) {
       errorCode = 'invalid_client'
     } else if (error instanceof UnsupportedGrantTypeError) {

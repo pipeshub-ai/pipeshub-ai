@@ -51,6 +51,8 @@ describe('OAuthProviderController', () => {
       mockOAuthTokenService,
       mockAuthCodeService,
       mockScopeValidatorService,
+      { register: sinon.stub() } as any,
+      { poll: sinon.stub(), createAuthorization: sinon.stub() } as any,
     )
     mockRes = {
       json: sinon.stub(),
