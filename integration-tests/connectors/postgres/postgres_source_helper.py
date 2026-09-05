@@ -12,7 +12,7 @@ exactly what schema the connector sees.
 
 from __future__ import annotations
 
-from typing import List, Sequence
+from collections.abc import Sequence
 
 import psycopg
 
@@ -24,14 +24,14 @@ class PostgresSourceHelper:
         self._dsn = dsn
         self.schema = schema
 
-    def _connect(self) -> "psycopg.Connection":
+    def _connect(self) -> psycopg.Connection:
         return psycopg.connect(self._dsn, autocommit=True)
 
     def ensure_schema(self) -> None:
         with self._connect() as conn:
             conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"')
 
-    def list_tables(self) -> List[str]:
+    def list_tables(self) -> list[str]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT table_name FROM information_schema.tables "

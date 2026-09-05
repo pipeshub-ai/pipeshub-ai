@@ -10,16 +10,15 @@ itself uses.
 
 import os
 import uuid
-from typing import Any, AsyncGenerator, Dict
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import pytest
 import pytest_asyncio
-
 from connector_lifecycle import create_connector_and_await_sync, destructor
-from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
-from helper.graph_provider import GraphProviderProtocol
-
 from connectors.postgres.postgres_source_helper import PostgresSourceHelper
+from helper.graph_provider import GraphProviderProtocol
+from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
 # Defaults match deployment/docker-compose/docker-compose.integration.*.yml.
 DEFAULT_USER = "pipeshubtest"
@@ -86,11 +85,11 @@ async def postgres_connector(
     postgres_source: PostgresSourceHelper,
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
-) -> AsyncGenerator[Dict[str, Any], None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     for table, rows in SEED_TABLES.items():
         postgres_source.create_table_with_rows(table, rows)
 
-    state: Dict[str, Any] = {
+    state: dict[str, Any] = {
         "resource_name": TEST_SCHEMA,
         "seeded_tables": sorted(SEED_TABLES),
         "uploaded_count": len(SEED_TABLES),
