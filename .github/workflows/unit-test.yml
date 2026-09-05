@@ -156,6 +156,26 @@ jobs:
           cd backend/python
           pytest tests/evals -v
 
+      # backend/python/tests/integration holds 24 files and only the three under
+      # redis_cluster were run by any workflow. Despite the name they need no
+      # services: the ones that do are written to skip when the service is
+      # absent, so on a bare runner they skip cleanly and the rest execute.
+      #
+      # test_model_reasoning_effort_e2e.py is excluded deliberately. It asserts
+      # that a model-level "defaultReasoningEffort" is honoured by
+      # get_generator_model, and that key appears nowhere in app/utils/aimodels.py
+      # — the setting is an agent-level field, applied in api/routes/agent.py.
+      # The test encodes a design the code does not have. Whether to implement
+      # it or delete the test is a product decision; excluding it here is what
+      # lets the other 23 files run in the meantime.
+      - name: Run Python integration tests
+        run: |
+          cd backend/python
+          pytest tests/integration \
+            --ignore=tests/integration/redis_cluster \
+            --ignore=tests/integration/test_model_reasoning_effort_e2e.py \
+            -v --timeout=300
+
       - name: Generate coverage reports
         if: ${{ always() && inputs.generate-coverage-reports == true }}
         run: |
