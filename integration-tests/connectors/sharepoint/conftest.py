@@ -15,15 +15,15 @@ without warning and a test that hard-codes them would fail for the wrong reason.
 
 import os
 import uuid
-from typing import Any, AsyncGenerator, Dict, List
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import pytest
 import pytest_asyncio
-
 from connector_lifecycle import destructor
-from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol
 from helper.graph_provider_utils import wait_until_graph_condition
+from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
 # The secrets are named ...FILE_CONTENT, but the workflow exports them as
 # ...FILE. These are the environment variable names, not the secret names.
@@ -36,14 +36,14 @@ REQUIRED_ENV = (
 )
 
 
-def expected_site_names() -> List[str]:
+def expected_site_names() -> list[str]:
     """Sites the tenant is expected to expose, from SHAREPOINT_TEST_SITE_NAMES."""
     raw = os.getenv("SHAREPOINT_TEST_SITE_NAMES", "")
     return [name.strip() for name in raw.replace("\n", ",").split(",") if name.strip()]
 
 
 @pytest.fixture(scope="session")
-def sharepoint_credentials() -> Dict[str, str]:
+def sharepoint_credentials() -> dict[str, str]:
     missing = [name for name in REQUIRED_ENV if not os.getenv(name)]
     if missing:
         pytest.skip(f"SharePoint credentials not set: {', '.join(missing)}")
@@ -52,10 +52,10 @@ def sharepoint_credentials() -> Dict[str, str]:
 
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
 async def sharepoint_connector(
-    sharepoint_credentials: Dict[str, str],
+    sharepoint_credentials: dict[str, str],
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
-) -> AsyncGenerator[Dict[str, Any], None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     config = {
         "auth": {
             "clientId": sharepoint_credentials["SHAREPOINT_TEST_CLIENT_ID"],
@@ -83,7 +83,7 @@ async def sharepoint_connector(
     )
     assert instance.connector_id, "Connector must have a valid ID"
 
-    state: Dict[str, Any] = {
+    state: dict[str, Any] = {
         "connector_id": instance.connector_id,
         "connector_name": connector_name,
         # Nothing is written to the tenant, so there is nothing to clear. The
@@ -92,24 +92,39 @@ async def sharepoint_connector(
         "expected_site_names": expected_site_names(),
     }
 
-    pipeshub_client.toggle_sync(instance.connector_id, enable=True)
+    # Everything from here to the yield can raise: a sync that never produces
+    # a record times out, and the tenant is not under this test's control.
+    # pytest runs no teardown for a fixture that fails before yielding, so
+    # without this the connector would be left enabled with its graph data
+    # behind, and the next run would start against a dirty tenant.
+    try:
+        pipeshub_client.toggle_sync(instance.connector_id, enable=True)
 
-    # A real tenant is slower than a container in the same network, and how much
-    # is there is not known ahead of time. Wait for the sync to produce anything
-    # at all rather than for a count this suite cannot predict.
-    async def _any_records() -> bool:
-        return await graph_provider.count_records(instance.connector_id) > 0
+        # A real tenant is slower than a container in the same network, and how much
+        # is there is not known ahead of time. Wait for the sync to produce anything
+        # at all rather than for a count this suite cannot predict.
+        async def _any_records() -> bool:
+            return await graph_provider.count_records(instance.connector_id) > 0
 
-    await wait_until_graph_condition(
-        instance.connector_id,
-        check=_any_records,
-        timeout=900,
-        poll_interval=15,
-        description="SharePoint full sync",
-    )
-    state["full_sync_count"] = await graph_provider.count_records(
-        instance.connector_id
-    )
+        await wait_until_graph_condition(
+            instance.connector_id,
+            check=_any_records,
+            timeout=900,
+            poll_interval=15,
+            description="SharePoint full sync",
+        )
+        state["full_sync_count"] = await graph_provider.count_records(
+            instance.connector_id
+        )
+    except BaseException:
+        await destructor(
+            _NoOpStorage(),
+            pipeshub_client,
+            graph_provider,
+            state,
+            connector_type="SharePointOnline",
+        )
+        raise
 
     yield state
 

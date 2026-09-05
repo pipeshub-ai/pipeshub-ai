@@ -30,10 +30,9 @@ Test cases:
 """
 
 import logging
-import os
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import pytest
 
@@ -41,7 +40,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from helper.graph_provider import GraphProviderProtocol  # noqa: E402
+from helper.graph_provider import GraphProviderProtocol
 
 logger = logging.getLogger("sharepoint-lifecycle-test")
 
@@ -55,7 +54,7 @@ class TestSharePointConnector:
     @pytest.mark.order(1)
     async def test_tc_auth_001_certificate_auth_and_sync(
         self,
-        sharepoint_connector: Dict[str, Any],
+        sharepoint_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-AUTH-001: The connector authenticates and syncs something.
@@ -82,7 +81,7 @@ class TestSharePointConnector:
     @pytest.mark.order(2)
     async def test_tc_graph_001_synced_graph_is_coherent(
         self,
-        sharepoint_connector: Dict[str, Any],
+        sharepoint_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-GRAPH-001: Records are attached to groups, with nothing orphaned.
@@ -102,7 +101,7 @@ class TestSharePointConnector:
     @pytest.mark.order(3)
     async def test_tc_perm_001_permissions_are_synced(
         self,
-        sharepoint_connector: Dict[str, Any],
+        sharepoint_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-PERM-001: Permission edges exist.
@@ -125,7 +124,7 @@ class TestSharePointConnector:
     @pytest.mark.order(4)
     async def test_tc_sites_001_configured_sites_were_synced(
         self,
-        sharepoint_connector: Dict[str, Any],
+        sharepoint_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-SITES-001: The sites named in configuration appear in the sync.
