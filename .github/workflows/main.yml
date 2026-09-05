@@ -217,6 +217,12 @@ jobs:
           actionlint --version
 
       - name: Lint workflows
+        env:
+          # actionlint runs shellcheck over every `run:` block. Info- and
+          # style-level findings are noise here (SC2086 on a git SHA, SC2001 on
+          # a sed call); gate on warning and above so this catches real
+          # breakage rather than style preferences.
+          SHELLCHECK_OPTS: -S warning
         run: actionlint -color
 
   connector-coverage:
