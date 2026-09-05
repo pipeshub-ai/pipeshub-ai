@@ -66,6 +66,11 @@ cd backend/python && source venv/bin/activate && pytest
 cd backend/nodejs/apps && npm test
 ```
 
+To check the whole tree at once, `scripts/verify.sh` runs every suite that needs
+no Docker, network or running instance — Python, Node, frontend, Electron and
+the shell suites — and prints one summary. `scripts/verify.sh --list` shows what
+would run and why anything is skipped.
+
 Style: [.gemini/styleguide.md](./.gemini/styleguide.md) (Ruff, PEP 8, ESLint, no secrets).
 
 ## Review vs implement
