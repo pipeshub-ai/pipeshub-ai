@@ -7,12 +7,12 @@ create an OAuth app with client_credentials grant, and return (client_id, client
 """
 
 import os
-from typing import Tuple
+import time
 
 import requests
 
 
-def obtain_local_oauth_credentials(base_url: str, timeout: int = 30) -> Tuple[str, str]:
+def obtain_local_oauth_credentials(base_url: str, timeout: int = 30) -> tuple[str, str]:
     """
     Log in to the backend, create an OAuth app with client_credentials, return (client_id, client_secret).
 
@@ -84,7 +84,44 @@ def _authenticate(
     return access_token
 
 
-def _create_oauth_app(base_url: str, access_token: str, timeout: int) -> Tuple[str, str]:
+def _create_oauth_app(
+    base_url: str, access_token: str, timeout: int, attempts: int = 4
+) -> tuple[str, str]:
+    """Create the OAuth app this session authenticates with.
+
+    Retries a 500, because one specific 500 is transient and self-correcting.
+    OAuth app slugs come from a shared counter whose upsert is not atomic on a
+    fresh database (see issue #3192), so two sessions starting at once can be
+    handed the same slug; the second insert then violates a unique index and the
+    API answers 500. A later attempt reads an existing counter and succeeds.
+
+    This is a workaround in the test harness, not a fix. The server should not
+    return 500 for a uniqueness conflict, and the counter should not hand out
+    duplicates — both are tracked in #3192. Without the retry, one lost race
+    fails session setup and every test in that worker errors: 826 of 839 on
+    2026-09-04.
+    """
+    last_detail = ""
+    for attempt in range(1, attempts + 1):
+        status, detail, parsed = _post_oauth_app(base_url, access_token, timeout)
+        if status < 400:
+            return parsed
+        last_detail = detail
+        # 4xx is a real rejection — bad token, missing scope, not an admin.
+        # Retrying it only wastes time and hides the reason.
+        if status < 500 or attempt == attempts:
+            break
+        time.sleep(2 * attempt)
+
+    raise RuntimeError(
+        f"create OAuth app failed after {attempt} attempt(s): {last_detail}"
+    )
+
+
+def _post_oauth_app(
+    base_url: str, access_token: str, timeout: int
+) -> tuple[int, str, tuple[str, str]]:
+    """POST the app. Returns (status, detail, (client_id, client_secret))."""
     resp = requests.post(
         f"{base_url}/api/v1/oauth-clients",
         headers={
@@ -137,9 +174,9 @@ def _create_oauth_app(base_url: str, access_token: str, timeout: int) -> Tuple[s
         timeout=timeout,
     )
     if resp.status_code >= 400:
-        raise RuntimeError(
-            f"create OAuth app failed: HTTP {resp.status_code} (user may not be org admin)"
-        )
+        # Quote the body: the previous message guessed at org-admin permissions,
+        # which sent anyone reading it away from the real cause.
+        return resp.status_code, f"HTTP {resp.status_code}: {resp.text[:300]}", ("", "")
     try:
         data = resp.json()
     except ValueError:
@@ -151,4 +188,4 @@ def _create_oauth_app(base_url: str, access_token: str, timeout: int) -> Tuple[s
         raise RuntimeError(
             f"oauth-clients response missing clientId/clientSecret: {list(app.keys())}"
         )
-    return client_id, client_secret
+    return resp.status_code, "", (client_id, client_secret)
