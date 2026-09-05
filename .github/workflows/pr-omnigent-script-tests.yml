@@ -5,8 +5,10 @@ name: Omnigent helper tests
 # the MCP tool-surface contract. No workflow ran it, so those helpers could
 # break without anything noticing.
 #
-# It needs no Docker, no network and no PipesHub instance, and finishes in under
-# a second, so it runs on every pull request that touches the integration.
+# The tests themselves need no Docker, no network and no PipesHub instance, and
+# finish in under a second, so they run on every pull request that touches the
+# integration. The shellcheck step below does need the package mirrors, and is
+# the only part of this job that does.
 
 on:
   pull_request:
@@ -30,12 +32,20 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # This job runs code from the pull request. Checkout otherwise leaves
+          # GITHUB_TOKEN in .git/config, where a modified test script could read
+          # it; `contents: read` limits what the token can do but not who can
+          # see it. Nothing here needs to talk to git afterwards.
+          persist-credentials: false
 
       - name: Run helper tests
         run: bash integrations/omnigent/tests/scripts_test.sh
 
       # The suite asserts that lib.sh, mcp-check.py and the README agree on the
       # MCP tool surface. shellcheck catches the errors that assertion cannot.
+      # This is the one step needing network; the tests above have already run,
+      # so a mirror outage costs the lint and not the test result.
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
