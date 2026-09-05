@@ -74,13 +74,25 @@ jobs:
       - name: Open or update an alert issue
         if: failure() && steps.cfg.outputs.configured == 'true'
         uses: actions/github-script@v7
+        env:
+          # The summary contains text from the probed deployment — service names
+          # out of its health JSON, and curl's error output. Interpolating that
+          # into the script with ${{ }} would splice remote text into JavaScript
+          # source: one backtick ends the template literal and the rest runs with
+          # this job's issues:write token. Pass it as data instead.
+          PROBE_SUMMARY: ${{ steps.probe.outputs.summary }}
         with:
           script: |
             const title = 'Deployment probe failing';
+            const raw = (process.env.PROBE_SUMMARY || '(no output captured)').slice(0, 8000);
+            // Fence with more backticks than the content uses, so output holding
+            // a fence cannot break out of the code block.
+            const longest = (raw.match(/`+/g) || []).reduce((n, m) => Math.max(n, m.length), 0);
+            const fence = '`'.repeat(Math.max(3, longest + 1));
             const body = [
-              '`' + '``',
-              `${{ steps.probe.outputs.summary }}`,
-              '`' + '``',
+              fence,
+              raw,
+              fence,
               '',
               `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
               '',

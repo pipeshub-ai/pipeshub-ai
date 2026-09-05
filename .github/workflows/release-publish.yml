@@ -133,20 +133,59 @@ jobs:
   # The gate. These images are on Docker Hub but no published tag points at them
   # yet, so this runs against exactly what a user would install.
   verify:
-    name: Verify ${{ matrix.deploy }} candidate
+    name: Verify ${{ matrix.deploy }} candidate (${{ matrix.arch }})
     needs: [resolve, build]
-    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # The build publishes linux/amd64 and linux/arm64. Docker resolves a
+          # multi-arch tag to the runner's own architecture, so verifying only on
+          # x64 would promote an arm64 image that nothing had ever started.
           - deploy: slim
             suffix: '-slim'
+            arch: amd64
+            runner: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
           - deploy: full
             suffix: ''
+            arch: amd64
+            runner: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+          - deploy: slim
+            suffix: '-slim'
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - deploy: full
+            suffix: ''
+            arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # The GitHub-hosted arm64 runners have a much smaller disk than the
+      # RunsOn x64 ones, and the full image is large. Reclaim what the image
+      # ships with but this job never uses.
+      - name: Reclaim disk space
+        if: matrix.arch == 'arm64'
+        run: |
+          set -uo pipefail
+          before=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune -af || true
+          after=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+          echo "free disk: ${before}G -> ${after}G"
+
+      - name: Confirm the runner is really ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          actual="$(dpkg --print-architecture)"
+          echo "runner architecture: ${actual}"
+          [ "$actual" = "${{ matrix.arch }}" ] || {
+            echo "expected ${{ matrix.arch }} — this job would silently re-test the wrong image"
+            exit 1
+          }
 
       - name: First-run smoke against the candidate image
         env:
@@ -166,7 +205,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: release-verify-${{ matrix.deploy }}
+          name: release-verify-${{ matrix.deploy }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/diag
           if-no-files-found: ignore
 

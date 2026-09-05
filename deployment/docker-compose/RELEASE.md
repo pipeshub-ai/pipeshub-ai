@@ -24,7 +24,7 @@ then does four things in order, and stops at the first failure.
 |-------|--------------|----------------|
 | Resolve | The tag is parsed as semver | A typo cannot publish `pipeshubai/pipeshub-ai:oops` |
 | Build | Both variants built for amd64 and arm64, pushed under a **candidate** tag | The image builds reproducibly from the tag |
-| Verify | First-run install, then upgrade from the previous release, on both variants | A user can install it, and an existing user can move to it |
+| Verify | First-run install, then upgrade from the previous release — both variants, on amd64 and arm64 | A user can install it, and an existing user can move to it, on either architecture |
 | Promote | Candidate copied by digest onto the release tags | `:latest` only ever points at an image that passed |
 
 Because promotion copies by digest, the image a user pulls is byte-identical to
@@ -41,6 +41,11 @@ and moves no published tag. Useful before a risky release, and for checking the
 pipeline itself after changing it.
 
 ## What the gates actually check
+
+Verification runs on both architectures the build publishes. Docker resolves a
+multi-arch tag to whatever the runner is, so testing only on x64 would promote an
+arm64 image that had never been started; each job asserts its own architecture
+first, so a runner change cannot silently turn this back into four x64 runs.
 
 **First-run smoke** (`tests/published_hub_smoke.sh`) installs from the published
 image with `install.sh --yes`, waits for the app to report healthy, confirms the

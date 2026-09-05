@@ -80,16 +80,21 @@ fi
 [[ "$TARGET" != "$CURRENT" ]] || die "already running ${CURRENT}; nothing to roll back to"
 
 IMAGE="pipeshubai/pipeshub-ai:${TARGET}"
+SANDBOX_IMAGE="pipeshubai/pipeshub-sandbox:${TARGET}"
 
 log "current : ${CURRENT}"
 log "target  : ${TARGET}"
 
 # Fail before touching the deployment if the target does not exist. Discovering
 # a typo after .env has been rewritten is a far worse place to be.
-if ! docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
-  die "${IMAGE} is not available in the registry. Check the tag with: ./rollback.sh --list"
-fi
-log "verified ${IMAGE} exists"
+# Compose starts both, so a tag that exists for one and not the other strands the
+# deployment half-rolled-back — with .env already rewritten.
+for _image in "$IMAGE" "$SANDBOX_IMAGE"; do
+  if ! docker manifest inspect "$_image" >/dev/null 2>&1; then
+    die "${_image} is not available in the registry. Check the tag with: ./rollback.sh --list"
+  fi
+done
+log "verified ${IMAGE} and ${SANDBOX_IMAGE} exist"
 
 # Warn where a rollback cannot fully undo the release.
 if [[ -n "$(env_val DATA_STORE)" ]]; then

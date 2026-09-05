@@ -99,16 +99,24 @@ echo
 echo "== upgrade_smoke: health parsing matches the real payload =="
 # The API returns services as a map of strings. A parser written for nested
 # objects passes nothing; one written too loosely passes everything.
+# Extract the parser out of upgrade_smoke.sh and run that, rather than a copy of
+# it. A copy only ever proves the copy is right: the real parser could change and
+# every case here would still pass.
+HEALTH_PARSER="$TMP_ROOT/health_parser.py"
+python3 - "$UPGRADE" "$HEALTH_PARSER" <<'PY'
+import re, sys
+src = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r'python3 - "\$WORK/health\.json" <<\'PY\'\n(.*?)\nPY\n', src, re.S)
+if not m:
+    sys.exit("could not find the health parser in upgrade_smoke.sh — update this test")
+open(sys.argv[2], "w", encoding="utf-8").write(m.group(1))
+PY
+[[ -s "$HEALTH_PARSER" ]] && pass "extracted the health parser from upgrade_smoke.sh" \
+                          || fail "extracted the health parser from upgrade_smoke.sh"
+
 health_check() { # health_check <json> -> exit status
   printf '%s' "$1" >"$TMP_ROOT/h.json"
-  python3 - "$TMP_ROOT/h.json" <<'PY'
-import json, sys
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-services = data.get("services") or {}
-required = ("query", "connector", "indexing", "docling")
-bad = [f"{k}={services.get(k)!r}" for k in required if services.get(k) != "healthy"]
-sys.exit(1 if bad else 0)
-PY
+  python3 "$HEALTH_PARSER" "$TMP_ROOT/h.json" 2>/dev/null
 }
 ALL_OK='{"status":"healthy","services":{"query":"healthy","connector":"healthy","indexing":"healthy","docling":"healthy","embedding":"unhealthy"}}'
 ONE_BAD='{"status":"unhealthy","services":{"query":"healthy","connector":"unhealthy","indexing":"healthy","docling":"healthy"}}'
@@ -198,16 +206,9 @@ import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("seed", sys.argv[1])
 mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
 payload = json.loads(sys.argv[2])
-# Mirror list_kbs' unwrapping without a live server.
-entries = payload
-if isinstance(payload, dict):
-    for key in ("knowledgeBases", "data", "items", "results"):
-        if isinstance(payload.get(key), list):
-            entries = payload[key]; break
-    else:
-        inner = payload.get("data")
-        entries = inner.get("knowledgeBases", []) if isinstance(inner, dict) else []
-print("\n".join(sorted(mod.kb_name(e) for e in entries)))
+# Stub only the transport, so the real list_kbs unwrapping is what runs.
+mod.call = lambda *a, **k: (200, payload, {})
+print("\n".join(sorted(mod.kb_name(e) for e in mod.list_kbs("http://stub", "token"))))
 PY
 }
 out="$(seed_parse '[{"kbName":"alpha"},{"kbName":"beta"}]')"

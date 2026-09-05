@@ -32,6 +32,15 @@ REQUIRED="${PROBE_SERVICES:-query,connector,indexing,docling}"
 [[ -n "$URL" ]] || { echo "PROBE_URL is not set"; exit 2; }
 URL="${URL%/}"
 
+# A bearer token on a plaintext URL is readable by anything on the path, and the
+# probe runs unattended every 30 minutes. Refuse rather than leak it. Probing
+# without a token over http is fine — there is nothing to disclose.
+if [[ -n "$TOKEN" && "$URL" != https://* ]]; then
+  echo "PROBE_TOKEN is set but PROBE_URL is not https:// — refusing to send the token in cleartext."
+  echo "Use an https URL, or unset PROBE_TOKEN if the endpoint needs no auth."
+  exit 2
+fi
+
 command -v curl >/dev/null 2>&1    || { echo "curl is required"; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required"; exit 2; }
 
