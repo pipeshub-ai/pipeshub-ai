@@ -19,6 +19,7 @@ on:
             - integration
             - s3
             - postgres
+            - mariadb
             - confluence
             - jira
             - linear
@@ -147,6 +148,13 @@ jobs:
       POSTGRES_TEST_USER: pipeshubtest
       POSTGRES_TEST_PASSWORD: pipeshubtest123
       POSTGRES_TEST_DB: pipeshub_connector_test
+      MARIADB_TEST_HOST: localhost
+      MARIADB_TEST_PORT: '3307'
+      MARIADB_CONNECTOR_HOST: mariadb-source
+      MARIADB_CONNECTOR_PORT: '3306'
+      MARIADB_TEST_USER: pipeshubtest
+      MARIADB_TEST_PASSWORD: pipeshubtest123
+      MARIADB_TEST_DB: pipeshub_connector_test
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
