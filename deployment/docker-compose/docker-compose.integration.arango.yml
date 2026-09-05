@@ -158,6 +158,11 @@ services:
 
       - ENABLE_PDFPLUMBER_PROCESSOR=${ENABLE_PDFPLUMBER_PROCESSOR:-false}
     depends_on:
+      # Blocks until the bucket exists. Without it pytest can start while
+      # minio-init is still running, and the MinIO suite fails on a bucket
+      # that is merely late rather than missing.
+      minio-init:
+        condition: service_completed_successfully
       qdrant:
         condition: service_healthy
       kafka-1:
@@ -239,8 +244,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-pipeshubtest}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-pipeshubtest123}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
