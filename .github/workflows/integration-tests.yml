@@ -159,7 +159,11 @@ jobs:
       # The Local FS connector reads a directory bind-mounted into the
       # connector container. The test writes the host path; the connector
       # is pointed at the container path.
-      LOCALFS_TEST_HOST_DIR: ../deployment/docker-compose/localfs-test-data
+      # Absolute, because this value is read from two different working
+      # directories: compose runs in deployment/docker-compose and pytest in
+      # integration-tests. A relative path resolves differently in each, so
+      # the bind mount and the test would use different directories.
+      LOCALFS_TEST_HOST_DIR: ${{ github.workspace }}/deployment/docker-compose/localfs-test-data
       LOCALFS_CONNECTOR_ROOT: /data/localfs-test
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}

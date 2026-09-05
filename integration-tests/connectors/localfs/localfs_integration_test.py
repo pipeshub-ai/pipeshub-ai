@@ -116,6 +116,12 @@ class TestLocalFsConnector:
         )
 
     @pytest.mark.order(3)
+    @pytest.mark.xfail(
+        reason="#3198: local_fs writes version=0 on every record, so an edit "
+               "cannot be distinguished from no edit. Strict, so this lights up "
+               "the moment the connector starts advancing version.",
+        strict=True,
+    )
     async def test_tc_update_001_editing_a_file_does_not_duplicate_it(
         self,
         localfs_connector: Dict[str, Any],
@@ -136,6 +142,11 @@ class TestLocalFsConnector:
         before_count = await settle_record_baseline(
             pipeshub_client, graph_provider, connector_id
         )
+        before_record = await graph_provider.get_record_by_name(connector_id, file_name)
+        assert before_record is not None, (
+            f"TC-UPDATE-001: {file_name} is not in the graph before the edit"
+        )
+        before_version = before_record.get("version")
 
         localfs_source.overwrite_file(
             rel_path, "Updated: how to set up a new workspace in 2026.\n"
@@ -151,6 +162,21 @@ class TestLocalFsConnector:
             f"{after_count} after editing one file. An edit must update the "
             "existing record, not create a second one."
         )
+
+        # The count alone cannot tell an update from an ignored edit, so this
+        # asserts the record was actually re-indexed. It fails today: local_fs
+        # sets version=0 unconditionally (connector.py:573,647), which is #3198.
+        # Marked xfail(strict) rather than dropped, so a fix turns this green
+        # and the marker has to be removed deliberately.
+        after_record = await graph_provider.get_record_by_name(connector_id, file_name)
+        assert after_record is not None, (
+            f"TC-UPDATE-001: {file_name} disappeared from the graph after the edit"
+        )
+        assert after_record.get("version") != before_version, (
+            f"TC-UPDATE-001: version stayed at {before_version} after the file "
+            "changed, so the record was never re-indexed (#3198)"
+        )
+
         await graph_provider.assert_no_orphan_records(connector_id)
         logger.info(
             "TC-UPDATE-001 passed: %s updated in place, count stable at %d",
