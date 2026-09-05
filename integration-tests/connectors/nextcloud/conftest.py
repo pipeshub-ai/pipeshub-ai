@@ -32,6 +32,18 @@ SEED_FILES = [
 ]
 
 
+
+def _unavailable(reason: str) -> None:
+    """A source that is not reachable: skip locally, fail in CI.
+
+    Skipping on any exception turns a broken stack into a green run. CI brings
+    this source up itself, so if it is not reachable there, that is a result and
+    not a reason to report success.
+    """
+    if os.getenv("CI"):
+        pytest.fail(reason)
+    pytest.skip(reason)
+
 @pytest.fixture(scope="session")
 def nextcloud_source() -> NextcloudSourceHelper:
     helper = NextcloudSourceHelper(
@@ -47,7 +59,7 @@ def nextcloud_source() -> NextcloudSourceHelper:
         helper.ensure_root()
         helper.clear_objects()
     except Exception as exc:  # noqa: BLE001 — any failure means "not available"
-        pytest.skip(f"Nextcloud not reachable: {exc}")
+        _unavailable(f"Nextcloud not reachable: {exc}")
     return helper
 
 
