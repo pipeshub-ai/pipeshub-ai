@@ -145,6 +145,17 @@ jobs:
           coverage run -m pytest tests/unit -v
           coverage report --fail-under=${{ inputs.python-coverage-threshold || 88.4 }}
 
+      # The only automated check on agent behaviour: six golden properties the
+      # prompt and loop must hold (tool choice, no placeholder write params, a
+      # single final_answer, no write without user intent, resolvable citations,
+      # confidence capped when sources are missing). Kept out of the coverage run
+      # above so a failure reads as a behaviour regression rather than a coverage
+      # change. Structural only — no model call, no network, no API key.
+      - name: Run golden agent evals
+        run: |
+          cd backend/python
+          pytest tests/evals -v
+
       - name: Generate coverage reports
         if: ${{ always() && inputs.generate-coverage-reports == true }}
         run: |
