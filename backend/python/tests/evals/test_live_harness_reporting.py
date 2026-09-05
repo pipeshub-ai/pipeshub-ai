@@ -15,12 +15,14 @@ import asyncio
 
 from tests.evals.live_harness import (
     GOLDEN_CASES,
+    EvalReport,
+    GoldenCase,
     TraceResult,
     run_golden_evals,
 )
 
 
-def _report_without_runner():
+def _report_without_runner() -> EvalReport:
     return asyncio.run(run_golden_evals(model=None))
 
 
@@ -57,7 +59,7 @@ class TestExecutedCasesStillReportNormally:
     def test_a_passing_case_is_reported_as_passed(self) -> None:
         case = GOLDEN_CASES[0]
 
-        async def _run(c, model):  # noqa: ANN001 - test double
+        async def _run(c: GoldenCase, model: object) -> TraceResult:
             del c, model
             # A trace that satisfies nothing in particular; assertions may still
             # fail, so this asserts on the bookkeeping rather than the verdict.
@@ -73,7 +75,7 @@ class TestExecutedCasesStillReportNormally:
     def test_pass_rate_is_measured_against_cases_that_ran(self) -> None:
         cases = GOLDEN_CASES[:2]
 
-        async def _run(c, model):  # noqa: ANN001 - test double
+        async def _run(c: GoldenCase, model: object) -> TraceResult:
             del c, model
             return TraceResult()
 
