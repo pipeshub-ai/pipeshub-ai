@@ -35,6 +35,18 @@ def _bucket() -> str:
     return os.getenv("MINIO_TEST_BUCKET", DEFAULT_BUCKET)
 
 
+
+def _unavailable(reason: str) -> None:
+    """A source that is not reachable: skip locally, fail in CI.
+
+    Skipping on any exception turns a broken stack into a green run. CI brings
+    this source up itself, so if it is not reachable there, that is a result and
+    not a reason to report success.
+    """
+    if os.getenv("CI"):
+        pytest.fail(reason)
+    pytest.skip(reason)
+
 @pytest.fixture(scope="session")
 def minio_storage() -> MinioStorageHelper:
     helper = MinioStorageHelper(
@@ -48,7 +60,7 @@ def minio_storage() -> MinioStorageHelper:
     try:
         helper.list_objects(_bucket())
     except Exception as exc:  # noqa: BLE001 — any failure here means "not available"
-        pytest.skip(f"MinIO not reachable at {_endpoint()}: {exc}")
+        _unavailable(f"MinIO not reachable at {_endpoint()}: {exc}")
     return helper
 
 
