@@ -16,6 +16,7 @@ from typing import (
 )
 from uuid import uuid4
 
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
@@ -25,12 +26,18 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    not_downloadable,
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -4521,12 +4528,25 @@ class LinearConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
         project_response = await datasource.project(id=record_id)
 
-        if not project_response.success:
-            raise Exception(f"Failed to fetch project content: {project_response.message}")
+        if not project_response.success or not (
+            project_response.data and project_response.data.get("project")
+        ):
+            self.logger.warning(
+                "Failed to fetch project %s for streaming: %s",
+                record_id,
+                project_response.message if not project_response.success else "empty payload",
+            )
+            raise_for_stream_fetch(
+                success=project_response.success,
+                has_payload=bool(
+                    project_response.data and project_response.data.get("project")
+                ),
+                connector=self.display_name,
+                status=project_response.status_code,
+                message=project_response.message,
+            )
 
-        project_data = project_response.data.get("project", {}) if project_response.data else {}
-        if not project_data:
-            raise Exception(f"No project data found for ID: {record_id}")
+        project_data = project_response.data.get("project", {})
 
         # Get project weburl for BlockGroup
         project_weburl = project_data.get("url") or f"https://linear.app/project/{record_id}"
@@ -4626,12 +4646,21 @@ class LinearConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
         response = await datasource.issue(id=issue_id)
 
-        if not response.success:
-            raise Exception(f"Failed to fetch issue content: {response.message}")
+        if not response.success or not (response.data and response.data.get("issue")):
+            self.logger.warning(
+                "Failed to fetch issue %s for streaming: %s",
+                issue_id,
+                response.message if not response.success else "empty payload",
+            )
+            raise_for_stream_fetch(
+                success=response.success,
+                has_payload=bool(response.data and response.data.get("issue")),
+                connector=self.display_name,
+                status=response.status_code,
+                message=response.message,
+            )
 
-        issue_data = response.data.get("issue", {}) if response.data else {}
-        if not issue_data:
-            raise Exception(f"No issue data found for ID: {issue_id}")
+        issue_data = response.data.get("issue", {})
 
         issue_weburl = issue_data.get("url")
         issue_description = issue_data.get("description", "")
@@ -4721,12 +4750,21 @@ class LinearConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
         response = await datasource.document(id=document_id)
 
-        if not response.success:
-            raise Exception(f"Failed to fetch document content: {response.message}")
+        if not response.success or not (response.data and response.data.get("document")):
+            self.logger.warning(
+                "Failed to fetch document %s for streaming: %s",
+                document_id,
+                response.message if not response.success else "empty payload",
+            )
+            raise_for_stream_fetch(
+                success=response.success,
+                has_payload=bool(response.data and response.data.get("document")),
+                connector=self.display_name,
+                status=response.status_code,
+                message=response.message,
+            )
 
-        document_data = response.data.get("document", {}) if response.data else {}
-        if not document_data:
-            raise Exception(f"No document data found for ID: {document_id}")
+        document_data = response.data.get("document", {})
 
         # Get the content field (markdown)
         content = document_data.get("content", "")
@@ -4759,9 +4797,10 @@ class LinearConnector(BaseConnector):
                 await self.init()
 
             if getattr(record, "is_placeholder", False) is True:
-                raise ValueError(
+                raise not_downloadable(
                     f"Cannot stream placeholder record {record.external_record_id}: "
-                    "it is a stub for an out-of-scope ancestor and has no content"
+                    "it is a stub for an out-of-scope ancestor and has no content",
+                    connector=self.display_name,
                 )
 
             if record.record_type == RecordType.PROJECT:
@@ -4792,7 +4831,10 @@ class LinearConnector(BaseConnector):
             elif record.record_type == RecordType.LINK:
                 # Stream attachment/link as markdown (clickable link format)
                 if not record.weburl:
-                    raise ValueError(f"LinkRecord {record.external_record_id} missing weburl")
+                    raise not_downloadable(
+                        f"LinkRecord {record.external_record_id} has no URL to open.",
+                        connector=self.display_name,
+                    )
 
                 # Return simple markdown link format (same as issue/comment descriptions)
                 link_name = record.record_name or 'Link'
@@ -4822,7 +4864,10 @@ class LinearConnector(BaseConnector):
             elif record.record_type == RecordType.FILE:
                 # Stream file content from external_record_id (file URL)
                 if not record.external_record_id:
-                    raise ValueError(f"FileRecord {record.id} missing external_record_id (file URL)")
+                    raise not_downloadable(
+                        f"FileRecord {record.id} has no source URL to download from.",
+                        connector=self.display_name,
+                    )
 
                 # Download file content and stream it with authentication
                 async def file_stream() -> AsyncGenerator[bytes, None]:
@@ -4856,11 +4901,16 @@ class LinearConnector(BaseConnector):
                 )
 
             else:
-                raise ValueError(f"Unsupported record type for streaming: {record.record_type}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=f"Unsupported record type for streaming: {record.record_type}",
+                )
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error streaming record {record.external_record_id} ({record.record_type}): {e}", exc_info=True)
-            raise
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def run_incremental_sync(self) -> None:
         """

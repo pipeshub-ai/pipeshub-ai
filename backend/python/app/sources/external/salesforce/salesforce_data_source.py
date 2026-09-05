@@ -103,14 +103,16 @@ class SalesforceDataSource:
 
                 return SalesforceResponse(
                     success=True,
-                    data=data
+                    data=data,
+                    status_code=response.status
                 )
             else:
                 error_text = response.text() if callable(response.text) else response.text
                 return SalesforceResponse(
                     success=False,
                     error=f"HTTP {response.status}",
-                    message=error_text
+                    message=error_text,
+                    status_code=response.status
                 )
         except Exception as e:
             return SalesforceResponse(

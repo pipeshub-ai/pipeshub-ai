@@ -32,6 +32,13 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_downloadable,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint
 from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO, IconPaths
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
@@ -442,7 +449,7 @@ class JiraDataCenterConnector(BaseConnector):
         run ``init()`` again to rebuild the client.
         """
         if not self.external_client:
-            raise RuntimeError("Jira client not initialized. Call init() first.")
+            raise connector_not_ready(self.display_name)
         return JiraDataSource(self.external_client)
 
     # ============================================================================
@@ -4073,9 +4080,14 @@ class JiraDataCenterConnector(BaseConnector):
                 )
                 await asyncio.sleep(backoff)
 
-        raise Exception(
-            f"Failed to fetch issue {issue_id} after {max_attempts} attempts: {last_exc}"
-        ) from last_exc
+        # Re-raised bare: to_stream_error reads the status/timeout off the SDK
+        # exception itself and does not walk __cause__, so wrapping it here would
+        # turn a 504-worthy ReadTimeout into a generic 500.
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError(
+            f"Failed to fetch issue {issue_id} after {max_attempts} attempts"
+        )
 
     async def _process_issue_blockgroups_for_streaming(self, record: Record) -> bytes:
         """
@@ -4121,11 +4133,15 @@ class JiraDataCenterConnector(BaseConnector):
             expand=["renderedFields"],
         )
         if response.status != HttpStatusCode.OK.value:
-            raise Exception(f"Failed to fetch issue content: {response.text()}")
+            self.logger.warning(
+                "Failed to fetch issue %s for streaming: HTTP %s — %s",
+                issue_id, response.status, response.text(),
+            )
+            raise map_source_status(response.status, connector=self.display_name)
 
         issue_data = response.json()
         if not issue_data:
-            raise Exception(f"No issue data found for ID: {issue_id}")
+            raise not_found_at_source(self.display_name)
 
         fields = issue_data.get("fields", {})
         rendered_fields = issue_data.get("renderedFields", {})
@@ -4684,9 +4700,10 @@ class JiraDataCenterConnector(BaseConnector):
                 await self.init()
 
             if record.is_placeholder:
-                raise ValueError(
+                raise not_downloadable(
                     f"Cannot stream placeholder record {record.external_record_id}: "
-                    "it is a stub for an out-of-scope ancestor and has no content"
+                    "it is a stub for an out-of-scope ancestor and has no content",
+                    connector=self.display_name,
                 )
 
             if record.record_type == RecordType.TICKET:
@@ -4719,7 +4736,6 @@ class JiraDataCenterConnector(BaseConnector):
 
                 if response.status != HttpStatusCode.OK.value:
                     error_body = response.text()
-                    detail = f"Failed to fetch attachment content: {error_body}"
                     if response.status == HttpStatusCode.NOT_FOUND.value:
                         self.logger.warning(
                             f"Attachment {attachment_id} not found at source "
@@ -4735,7 +4751,7 @@ class JiraDataCenterConnector(BaseConnector):
                             response.status,
                             error_body[:500],
                         )
-                    raise HTTPException(status_code=response.status, detail=detail)
+                    raise map_source_status(response.status, connector=self.display_name)
 
                 # Stream the attachment content
                 async def generate_attachment() -> AsyncGenerator[bytes, None]:
@@ -4777,8 +4793,10 @@ class JiraDataCenterConnector(BaseConnector):
             # the upstream status instead of collapsing it into a 500.
             raise
         except Exception as e:
-            self.logger.error(f"Error streaming record {record.external_record_id} ({record.record_type}): {e}")
-            raise
+            self.logger.error(
+                f"Error streaming record {record.external_record_id} ({record.record_type}): {e}"
+            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     # ============================================================================
     # Reindexing

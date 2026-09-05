@@ -597,24 +597,19 @@ class MariaDBDataSource:
             limit: Max rows; defaults to ``DEFAULT_TABLE_ROW_FETCH_LIMIT``
 
         Returns:
-            List of row dicts, or empty list on failure.
+            List of row dicts.
+
+        Raises:
+            The driver's exception. Its only caller streams the rows to the
+            user, where swallowing the failure would serve a successful
+            download of an empty table. Goes straight to the client so the
+            exception is not flattened into ``MariaDBResponse.error``.
         """
         row_limit = limit if limit is not None else DEFAULT_TABLE_ROW_FETCH_LIMIT
         safe_database = database_name.replace('`', '``')
         safe_table = table_name.replace('`', '``')
         query = f"SELECT * FROM `{safe_database}`.`{safe_table}` LIMIT {int(row_limit)}"
-        try:
-            response = await self.execute_query(query)
-            if response.success and response.data:
-                return response.data
-        except Exception as e:
-            logger.warning(
-                "🔧 [MariaDBDataSource] fetch_table_rows failed for %s.%s: %s",
-                database_name,
-                table_name,
-                e,
-            )
-        return []
+        return await self._client.execute_query(query)
 
     async def get_table_stats(
         self, databases: Optional[list[str]] = None

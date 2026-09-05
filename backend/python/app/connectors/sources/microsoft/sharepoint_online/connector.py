@@ -107,6 +107,13 @@ from app.services.notification.types import NotificationSeverity, NotificationTy
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_downloadable,
+    not_found_at_source,
+    to_stream_error,
+)
 
 # Constants for SharePoint site ID composite format
 # A composite site ID has the format: "hostname,site-id,web-id"
@@ -3910,10 +3917,15 @@ class SharePointConnector(BaseConnector):
                 # Get signed URL for file download
                 signed_url = await self.get_signed_url(record)
                 if not signed_url:
-                    raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
+                    raise not_found_at_source(self.display_name)
 
                 return create_stream_record_response(
-                    stream_content(signed_url),
+                    stream_content(
+                        signed_url,
+                        record_id=record.id,
+                        file_name=record.record_name,
+                        connector=self.display_name,
+                    ),
                     filename=record.record_name,
                     mime_type=record.mime_type,
                     fallback_filename=f"record_{record.id}"
@@ -3927,7 +3939,7 @@ class SharePointConnector(BaseConnector):
                 page_content = await self._get_page_content(site_id, page_id)
 
                 if not page_content:
-                    raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Page not found or access denied")
+                    raise not_found_at_source(self.display_name)
 
                 async def generate_page() -> AsyncGenerator[bytes, None]:
                     yield page_content.encode('utf-8')
@@ -3945,8 +3957,8 @@ class SharePointConnector(BaseConnector):
         except HTTPException:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to stream record {record.id}: {e}")
-            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Failed to stream record: {str(e)}")
+            self.logger.error(f"Failed to stream record {record.id}: {e}", exc_info=True)
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _get_page_content(self, site_id: str, page_id: str) -> str:
         """
@@ -3962,7 +3974,7 @@ class SharePointConnector(BaseConnector):
             access_token = await self._get_sharepoint_access_token()
             if not access_token:
                 self.logger.error(f"Failed to obtain SharePoint access token for page {page_id}")
-                return None
+                raise connector_not_ready(self.display_name)
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Accept": "application/json;odata=verbose"
@@ -3986,7 +3998,7 @@ class SharePointConnector(BaseConnector):
 
                 if resp.status_code != HTTPStatus.OK.value:
                     self.logger.error(f"❌ API Error: {resp.status_code} - {resp.text}")
-                    return None
+                    raise map_source_status(resp.status_code, connector=self.display_name)
 
                 data = resp.json()
                 item = data.get('d', {})
@@ -4083,8 +4095,11 @@ class SharePointConnector(BaseConnector):
 
                 return cleaned_html
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"Failed to process SharePoint page {page_id}: {e}", exc_info=True)
+            raise to_stream_error(e, connector=self.display_name) from e
 
     # Utility methods
     async def handle_webhook_notification(self, notification: Dict) -> None:
@@ -4131,15 +4146,25 @@ class SharePointConnector(BaseConnector):
 
             if not drive_id:
                 self.logger.error(f"Missing drive_id for record {record.id}")
-                return None
+                raise not_downloadable(
+                    "This item is missing the document library it belongs to and cannot "
+                    "be downloaded.",
+                    connector=self.display_name,
+                )
 
             # Get download URL
-            signed_url = await self.msgraph_client.get_signed_url(drive_id, record.external_record_id)
+            signed_url = await self.msgraph_client.get_signed_url(
+                drive_id, record.external_record_id, raise_on_error=True
+            )
             return signed_url
 
-        except Exception as e:
-            self.logger.error(f"❌ Error creating signed URL for record {record.id}: {e}")
+        except HTTPException:
             raise
+        except Exception as e:
+            self.logger.error(
+                f"❌ Error creating signed URL for record {record.id}: {e}", exc_info=True
+            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def cleanup(self) -> None:
         """Cleanup resources when shutting down the connector."""

@@ -41,6 +41,7 @@ from app.connectors.sources.snowflake.connector import (
 from app.connectors.sources.snowflake.data_fetcher import (
     ForeignKey,
     SnowflakeDatabase,
+    SnowflakeFetchError,
     SnowflakeFile,
     SnowflakeHierarchy,
     SnowflakeSchema,
@@ -62,8 +63,28 @@ from app.models.entities import (
 # ===========================================================================
 
 
-def _resp(success: bool = True, data: Any = None, error: Optional[str] = None) -> SimpleNamespace:
-    return SimpleNamespace(success=success, data=data, error=error)
+def _resp(
+    success: bool = True,
+    data: Any = None,
+    error: Optional[str] = None,
+    status_code: Optional[int] = None,
+    sql_state: Optional[str] = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        success=success,
+        data=data,
+        error=error,
+        status_code=status_code,
+        sql_state=sql_state,
+    )
+
+
+def _statement_failure(
+    sql_state: str, message: str = "Snowflake refused the statement"
+) -> SimpleNamespace:
+    """A failed execute_sql envelope as the SQL API actually returns it: HTTP 422
+    whatever went wrong, with the discriminator only in the body."""
+    return _resp(success=False, error=message, status_code=422, sql_state=sql_state)
 
 
 def _make_connector() -> SnowflakeConnector:
@@ -102,7 +123,7 @@ def _make_connector() -> SnowflakeConnector:
     data_source.list_stage_files = AsyncMock()
     data_source.get_view = AsyncMock()
     data_source.execute_sql = AsyncMock()
-    data_source.get_stage_file_stream = AsyncMock()
+    data_source.generate_presigned_url = AsyncMock()
     c.data_source = data_source
 
     fetcher = MagicMock()
@@ -922,13 +943,17 @@ class TestFetchTableRows:
     async def test_no_data_source(self) -> None:
         c = _make_connector()
         c.data_source = None
-        assert await c._fetch_table_rows("DB", "S", "T") == []
+        with pytest.raises(HTTPException) as ei:
+            await c._fetch_table_rows("DB", "S", "T")
+        assert ei.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_warehouse(self) -> None:
         c = _make_connector()
         c.warehouse = None
-        assert await c._fetch_table_rows("DB", "S", "T") == []
+        with pytest.raises(HTTPException) as ei:
+            await c._fetch_table_rows("DB", "S", "T")
+        assert ei.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_success(self) -> None:
@@ -938,10 +963,22 @@ class TestFetchTableRows:
         assert rows == [[1, 2], [3, 4]]
 
     @pytest.mark.asyncio
-    async def test_failure_returns_empty(self) -> None:
+    async def test_refused_select_is_not_an_empty_table(self) -> None:
+        c = _make_connector()
+        c.data_source.execute_sql.return_value = _statement_failure(
+            "42501", "Insufficient privileges to operate on table 'T'"
+        )
+        with pytest.raises(SnowflakeFetchError) as ei:
+            await c._fetch_table_rows("DB", "S", "T")
+        assert ei.value.sqlstate == "42501"
+        assert ei.value.status_code is None
+
+    @pytest.mark.asyncio
+    async def test_failure_propagates(self) -> None:
         c = _make_connector()
         c.data_source.execute_sql.side_effect = RuntimeError("boom")
-        assert await c._fetch_table_rows("DB", "S", "T") == []
+        with pytest.raises(RuntimeError):
+            await c._fetch_table_rows("DB", "S", "T")
 
 
 class TestFetchViewDefinition:
@@ -1084,8 +1121,22 @@ class TestCheckRecordAtSource:
         record.record_type = RecordType.FILE
         record.external_record_group_id = "DB.S.STG"
         record.external_record_id = "DB.S.STG/folder/data.csv"
+        record.path = "folder/data.csv"
         c.data_source.list_stage_files.return_value = _resp(
             success=True, data=[{"name": "folder/data.csv"}]
+        )
+        assert await c._check_record_at_source(record) is True
+
+    @pytest.mark.asyncio
+    async def test_file_without_path_falls_back_to_the_id_suffix(self) -> None:
+        c = _make_connector()
+        record = MagicMock()
+        record.record_type = RecordType.FILE
+        record.external_record_group_id = "DB.S.STG"
+        record.external_record_id = "DB.S.STG/DB.S.STG/data.csv"
+        record.path = None
+        c.data_source.list_stage_files.return_value = _resp(
+            success=True, data=[{"name": "DB.S.STG/data.csv"}]
         )
         assert await c._check_record_at_source(record) is True
 
@@ -1286,7 +1337,7 @@ class TestStreamRecord:
         record.record_type = RecordType.FILE
         with pytest.raises(HTTPException) as ei:
             await c.stream_record(record)
-        assert ei.value.status_code == 500
+        assert ei.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_unsupported_record_type(self) -> None:
@@ -2048,29 +2099,41 @@ class TestStreamRecordSuccess:
         record.record_type = RecordType.FILE
         record.external_record_group_id = "DB.S.STG"
         record.external_record_id = "DB.S.STG/a.csv"
+        record.path = "a.csv"
         record.record_name = "a.csv"
         record.mime_type = "text/csv"
 
-        resp_cm = MagicMock()
-        resp_cm.__aenter__ = AsyncMock(return_value=resp_cm)
-        resp_cm.__aexit__ = AsyncMock(return_value=None)
-        resp_cm.status = 200
+        c.data_source.generate_presigned_url.return_value = _resp(
+            data={"data": [["https://sf.example/signed"]]}, status_code=200
+        )
 
-        async def _iter():
+        async def _fake_stream(url, *a, **k):
+            assert url == "https://sf.example/signed"
             yield b"chunk1"
             yield b"chunk2"
 
-        content_mock = MagicMock()
-        content_mock.iter_any = _iter
-        resp_cm.content = content_mock
-
-        c.data_source.get_stage_file_stream.return_value = resp_cm
-        response = await c.stream_record(record)
-        # Consume the iterator to cover the yield path
-        chunks = []
-        async for chunk in response.body_iterator:
-            chunks.append(chunk)
+        with patch(
+            "app.connectors.sources.snowflake.connector.stream_content", _fake_stream
+        ):
+            response = await c.stream_record(record)
+            chunks = [chunk async for chunk in response.body_iterator]
         assert chunks == [b"chunk1", b"chunk2"]
+
+    @pytest.mark.asyncio
+    async def test_stream_record_file_presign_denied(self) -> None:
+        c = _make_connector()
+        record = MagicMock()
+        record.record_type = RecordType.FILE
+        record.external_record_group_id = "DB.S.STG"
+        record.external_record_id = "DB.S.STG/a.csv"
+        record.path = "a.csv"
+
+        c.data_source.generate_presigned_url.return_value = _statement_failure(
+            "42501", "Insufficient privileges to operate on stage 'STG'"
+        )
+        with pytest.raises(HTTPException) as ei:
+            await c.stream_record(record)
+        assert ei.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_stream_record_table(self) -> None:
@@ -2112,7 +2175,97 @@ class TestStreamRecordSuccess:
         record.external_record_id = "DB.S.T"
         with pytest.raises(HTTPException) as ei:
             await c.stream_record(record)
-        assert ei.value.status_code == 500
+        assert ei.value.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_stream_record_table_missing_at_source(self) -> None:
+        c = _make_connector()
+        record = MagicMock()
+        record.record_type = RecordType.SQL_TABLE
+        record.external_record_id = "DB.S.T"
+        c.data_fetcher._fetch_all_columns_in_schema.return_value = {"T": []}
+        c.data_fetcher._fetch_primary_keys_in_schema.return_value = []
+        c.data_fetcher._fetch_foreign_keys_in_schema.return_value = []
+        c.data_source.execute_sql.return_value = _statement_failure(
+            "42S02", "Object 'DB.S.T' does not exist or not authorized."
+        )
+        with pytest.raises(HTTPException) as ei:
+            await c.stream_record(record)
+        assert ei.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_stream_record_table_revoked_select_is_403_not_422(self) -> None:
+        c = _make_connector()
+        record = MagicMock()
+        record.record_type = RecordType.SQL_TABLE
+        record.external_record_id = "DB.S.T"
+        c.data_fetcher._fetch_all_columns_in_schema.return_value = {
+            "T": [{"name": "c", "data_type": "INT"}]
+        }
+        c.data_fetcher._fetch_primary_keys_in_schema.return_value = []
+        c.data_fetcher._fetch_foreign_keys_in_schema.return_value = []
+        c.data_source.execute_sql.return_value = _statement_failure(
+            "42501", "Insufficient privileges to operate on table 'T'"
+        )
+        with pytest.raises(HTTPException) as ei:
+            await c.stream_record(record)
+        assert ei.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_stream_record_table_suspended_warehouse_is_unavailable(self) -> None:
+        c = _make_connector()
+        record = MagicMock()
+        record.record_type = RecordType.SQL_TABLE
+        record.external_record_id = "DB.S.T"
+        c.data_fetcher._fetch_all_columns_in_schema.return_value = {"T": []}
+        c.data_fetcher._fetch_primary_keys_in_schema.return_value = []
+        c.data_fetcher._fetch_foreign_keys_in_schema.return_value = []
+        c.data_source.execute_sql.return_value = _statement_failure(
+            "57P03", "Warehouse 'WH1' cannot be resumed"
+        )
+        with pytest.raises(HTTPException) as ei:
+            await c.stream_record(record)
+        assert ei.value.status_code == 502
+
+    @pytest.mark.asyncio
+    async def test_stream_record_table_absent_from_columns_map_still_streams(self) -> None:
+        """The COLUMNS projection is read from partition 0 only, so a table past
+        the cut must not be reported as deleted while its rows fetch fine."""
+        c = _make_connector()
+        record = MagicMock()
+        record.record_type = RecordType.SQL_TABLE
+        record.external_record_id = "DB.S.T"
+        c.data_fetcher._fetch_all_columns_in_schema.return_value = {"OTHER": []}
+        c.data_fetcher._fetch_primary_keys_in_schema.return_value = []
+        c.data_fetcher._fetch_foreign_keys_in_schema.return_value = []
+        c.data_fetcher.get_table_ddl.return_value = "CREATE TABLE T"
+        c.data_source.execute_sql.return_value = _resp(data={"data": [[1], [2]]})
+
+        response = await c.stream_record(record)
+        payload = json.loads(b"".join([chunk async for chunk in response.body_iterator]))
+        assert payload["columns"] == []
+        assert payload["rows"] == [[1], [2]]
+        assert payload["ddl"] == "CREATE TABLE T"
+
+    @pytest.mark.asyncio
+    async def test_stream_record_table_ddl_refusal_does_not_discard_content(self) -> None:
+        c = _make_connector()
+        record = MagicMock()
+        record.record_type = RecordType.SQL_TABLE
+        record.external_record_id = "DB.S.T"
+        c.data_fetcher._fetch_all_columns_in_schema.return_value = {
+            "T": [{"name": "c", "data_type": "INT"}]
+        }
+        c.data_fetcher._fetch_primary_keys_in_schema.return_value = []
+        c.data_fetcher._fetch_foreign_keys_in_schema.return_value = []
+        c.data_fetcher.get_table_ddl.return_value = None
+        c.data_source.execute_sql.return_value = _resp(data={"data": [[1]]})
+
+        response = await c.stream_record(record)
+        payload = json.loads(b"".join([chunk async for chunk in response.body_iterator]))
+        assert payload["ddl"] is None
+        assert payload["rows"] == [[1]]
+        assert c.data_fetcher.get_table_ddl.await_args.kwargs["strict"] is False
 
     @pytest.mark.asyncio
     async def test_stream_record_view(self) -> None:
@@ -2133,7 +2286,7 @@ class TestStreamRecordSuccess:
         assert response is not None
 
     @pytest.mark.asyncio
-    async def test_stream_record_view_empty_definition(self) -> None:
+    async def test_stream_record_secure_view_without_definition(self) -> None:
         c = _make_connector()
         record = MagicMock()
         record.record_type = RecordType.SQL_VIEW
@@ -2143,9 +2296,52 @@ class TestStreamRecordSuccess:
             return None
 
         c._fetch_view_definition = _fake_def  # type: ignore[assignment]
-        c.data_source.get_view.return_value = _resp(success=False, error="x")
+        c.data_source.get_view.return_value = _resp(
+            success=True, data={"is_secure": True}, status_code=200
+        )
+        with pytest.raises(HTTPException) as ei:
+            await c.stream_record(record)
+        assert ei.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_stream_record_view_metadata_failure_still_streams_ddl(self) -> None:
+        """get_view only supplies is_secure and comment; its 404 must not throw
+        away a view body GET_DDL already returned."""
+        c = _make_connector()
+        record = MagicMock()
+        record.record_type = RecordType.SQL_VIEW
+        record.external_record_id = "DB.S.V"
+
+        async def _fake_def(*a, **k):
+            return "SELECT 1"
+
+        c._fetch_view_definition = _fake_def  # type: ignore[assignment]
+        c.data_source.get_view.return_value = _resp(
+            success=False, error="x", status_code=404
+        )
         response = await c.stream_record(record)
-        assert response is not None
+        payload = json.loads(b"".join([chunk async for chunk in response.body_iterator]))
+        assert payload["definition"] == "SELECT 1"
+        assert payload["is_secure"] is False
+        assert payload["comment"] == ""
+
+    @pytest.mark.asyncio
+    async def test_stream_record_view_metadata_failure_without_definition(self) -> None:
+        c = _make_connector()
+        record = MagicMock()
+        record.record_type = RecordType.SQL_VIEW
+        record.external_record_id = "DB.S.V"
+
+        async def _fake_def(*a, **k):
+            return None
+
+        c._fetch_view_definition = _fake_def  # type: ignore[assignment]
+        c.data_source.get_view.return_value = _resp(
+            success=False, error="x", status_code=404
+        )
+        with pytest.raises(HTTPException) as ei:
+            await c.stream_record(record)
+        assert ei.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_stream_record_generic_exception(self) -> None:
@@ -2154,10 +2350,13 @@ class TestStreamRecordSuccess:
         record.record_type = RecordType.FILE
         record.external_record_group_id = "DB.S.STG"
         record.external_record_id = "DB.S.STG/a.csv"
-        c.data_source.get_stage_file_stream.side_effect = RuntimeError("boom")
+        record.path = "a.csv"
+        c.data_source.generate_presigned_url.side_effect = RuntimeError("boom")
         with pytest.raises(HTTPException) as ei:
             await c.stream_record(record)
         assert ei.value.status_code == 500
+        # The raw driver text (account id, warehouse, SQL) must never reach the client.
+        assert "boom" not in str(ei.value.detail)
 
 
 # ===========================================================================
@@ -2931,34 +3130,22 @@ class TestFinalEdges:
         assert result == "CREATE VIEW V AS SELECT 1"
 
     @pytest.mark.asyncio
-    async def test_stream_record_file_http_error_status(self) -> None:
+    async def test_stream_record_file_upstream_401_is_not_forwarded(self) -> None:
+        """A Snowflake 401 must not reach the browser as a 401 — the frontend's
+        axios interceptor would log the user out of PipesHub."""
         c = _make_connector()
         record = MagicMock()
         record.record_type = RecordType.FILE
         record.external_record_group_id = "DB.S.STG"
         record.external_record_id = "DB.S.STG/a.csv"
-        record.record_name = "a.csv"
-        record.mime_type = "text/csv"
+        record.path = "a.csv"
 
-        resp_cm = MagicMock()
-        resp_cm.__aenter__ = AsyncMock(return_value=resp_cm)
-        resp_cm.__aexit__ = AsyncMock(return_value=None)
-        resp_cm.status = 403
-
-        async def _iter():
-            yield b""
-
-        content_mock = MagicMock()
-        content_mock.iter_any = _iter
-        resp_cm.content = content_mock
-        c.data_source.get_stage_file_stream.return_value = resp_cm
-        streaming_response = await c.stream_record(record)
-        # Iterate the response body to trigger the http-error path inside the iterator
-        body_iter = streaming_response.body_iterator
+        c.data_source.generate_presigned_url.return_value = _resp(
+            success=False, error="unauthorized", status_code=401
+        )
         with pytest.raises(HTTPException) as ei:
-            async for _ in body_iter:
-                pass
-        assert ei.value.status_code == 403
+            await c.stream_record(record)
+        assert ei.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_stream_record_table_iterator(self) -> None:

@@ -95,6 +95,12 @@ from app.sources.external.notion.notion import NotionDataSource
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    not_found_at_source,
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 
 # Notion OAuth URLs
 # Note: Notion OAuth doesn't use traditional scopes. Permissions are configured
@@ -655,7 +661,7 @@ class NotionConnector(BaseConnector):
         """
         try:
             if not self.data_source:
-                return None
+                raise connector_not_ready(self.display_name)
 
             external_id = record.external_record_id
             if external_id.startswith("ca_") or external_id.startswith("comment_attachment_"):
@@ -663,9 +669,11 @@ class NotionConnector(BaseConnector):
             else:
                 return await self._get_block_file_url(record)
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"Failed to get signed URL for {record.external_record_id}: {e}", exc_info=True)
-            raise e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _get_comment_attachment_url(self, record: Record) -> Optional[str]:
         """
@@ -702,8 +710,18 @@ class NotionConnector(BaseConnector):
         # Fetch comment data from Notion API
         datasource = await self._get_fresh_datasource()
         response = await datasource.retrieve_comment(comment_id)
-        if not response.success or not response.data:
+        # The stored signed_url expires in ~1h, so falling back to it turns a
+        # revoked token into an opaque 403 from Notion's file host.
+        if not response.success:
             self.logger.warning(f"Failed to fetch comment {comment_id} for attachment")
+            raise_for_stream_fetch(
+                success=False,
+                has_payload=False,
+                connector=self.display_name,
+                status=response.status_code,
+                message=response.error,
+            )
+        if not response.data:
             return record.signed_url
 
         comment_data = response.data.json() if hasattr(response.data, 'json') else {}
@@ -748,7 +766,17 @@ class NotionConnector(BaseConnector):
 
         datasource = await self._get_fresh_datasource()
         response = await datasource.retrieve_block(block_id)
-        if not response.success or not response.data:
+        # The stored signed_url expires in ~1h, so falling back to it turns a
+        # revoked token into an opaque 403 from Notion's file host.
+        if not response.success:
+            raise_for_stream_fetch(
+                success=False,
+                has_payload=False,
+                connector=self.display_name,
+                status=response.status_code,
+                message=response.error,
+            )
+        if not response.data:
             return record.signed_url
 
         block_data = response.data.json() if hasattr(response.data, 'json') else {}
@@ -782,28 +810,29 @@ class NotionConnector(BaseConnector):
             self.logger.info(f"📥 Streaming record: {record.record_name} ({record.external_record_id})")
 
             if not self.data_source:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Notion data source not initialized"
-                )
+                raise connector_not_ready(self.display_name)
 
             # Handle file records
             if record.record_type == RecordType.FILE:
                 signed_url = await self.get_signed_url(record)
 
                 if not signed_url:
-                    raise HTTPException(
-                        status_code=404,
-                        detail="File URL not available"
-                    )
+                    raise not_found_at_source(self.display_name)
 
                 # Stream file from signed URL
                 async def generate_file_stream() -> AsyncGenerator[bytes, None]:
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        async with client.stream("GET", signed_url) as response:
-                            response.raise_for_status()
-                            async for chunk in response.aiter_bytes():
-                                yield chunk
+                    try:
+                        async with httpx.AsyncClient(timeout=30.0) as client:
+                            async with client.stream("GET", signed_url) as response:
+                                response.raise_for_status()
+                                async for chunk in response.aiter_bytes():
+                                    yield chunk
+                    except Exception as e:
+                        self.logger.error(
+                            f"❌ Failed to stream file for record {record.id}: {e}",
+                            exc_info=True,
+                        )
+                        raise to_stream_error(e, connector=self.display_name) from e
 
                 # Determine content type from record
                 media_type = record.mime_type if record.mime_type else "application/octet-stream"
@@ -894,9 +923,7 @@ class NotionConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500, detail=f"Failed to stream record: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def reindex_records(self, records: List[Record]) -> None:
         """
@@ -1640,7 +1667,14 @@ class NotionConnector(BaseConnector):
 
         if not metadata_response.success:
             self.logger.error(f"Failed to fetch data source metadata: {metadata_response.error}")
-            return BlocksContainer(blocks=[], block_groups=[])
+            # An empty container here streams a 200 with no content at all.
+            raise_for_stream_fetch(
+                success=False,
+                has_payload=False,
+                connector=self.display_name,
+                status=metadata_response.status_code,
+                message=metadata_response.error,
+            )
 
         metadata = metadata_response.data.json() if metadata_response.data else {}
 
@@ -2063,42 +2097,49 @@ class NotionConnector(BaseConnector):
                     start_cursor=cursor,
                     page_size=page_size
                 )
-
-                if not response.success:
-                    self.logger.error(
-                        "recursive_flatten: retrieve_block_children failed block_id=%s error=%r",
-                        block_id,
-                        response.error if response else None,
-                    )
-                    break
-
                 # Convert response.data to dictionary (response.data is a Response object with .json() method)
-                data = response.data.json() if response.data else {}
-
-                if not isinstance(data, dict):
-                    self.logger.warning(
-                        f"Expected dictionary but got {type(data)} for block {block_id}: {data}"
-                    )
-                    break
-
-                results = data.get("results", [])
-                if not results:
-                    break
-
-                all_blocks.extend(results)
-
-                # Check for more pages
-                has_more = data.get("has_more", False)
-                cursor = data.get("next_cursor")
-
-                if not has_more or not cursor:
-                    break
-
+                data = response.data.json() if response.success and response.data else {}
             except Exception as e:
                 self.logger.error(
                     f"Error fetching block children for {block_id}: {e}",
                     exc_info=True
                 )
+                # Returning the blocks gathered so far would stream a silently
+                # truncated page with a 200. This is a streaming-only path, so
+                # there is no sync caller relying on partial results.
+                raise to_stream_error(e, connector=self.display_name) from e
+
+            if not response.success:
+                self.logger.error(
+                    "recursive_flatten: retrieve_block_children failed block_id=%s error=%r",
+                    block_id,
+                    response.error,
+                )
+                raise_for_stream_fetch(
+                    success=False,
+                    has_payload=False,
+                    connector=self.display_name,
+                    status=response.status_code,
+                    message=response.error,
+                )
+
+            if not isinstance(data, dict):
+                self.logger.warning(
+                    f"Expected dictionary but got {type(data)} for block {block_id}: {data}"
+                )
+                break
+
+            results = data.get("results", [])
+            if not results:
+                break
+
+            all_blocks.extend(results)
+
+            # Check for more pages
+            has_more = data.get("has_more", False)
+            cursor = data.get("next_cursor")
+
+            if not has_more or not cursor:
                 break
 
         return all_blocks
@@ -4264,14 +4305,14 @@ class NotionConnector(BaseConnector):
         configured token differs from what the client is currently using.
         """
         if not self.notion_client:
-            raise Exception("Notion client not initialized. Call init() first.")
+            raise connector_not_ready(self.display_name)
 
         config = await self.config_service.get_config(
             f"/services/connectors/{self.connector_id}/config"
         )
 
         if not config:
-            raise Exception("Notion configuration not found")
+            raise connector_not_ready(self.display_name)
 
         auth = config.get("auth", {}) or {}
         auth_type = auth.get("authType", "API_TOKEN")
@@ -4282,7 +4323,7 @@ class NotionConnector(BaseConnector):
             fresh_token = auth.get("apiToken", "")
 
         if not fresh_token:
-            raise Exception("No access token available")
+            raise connector_not_ready(self.display_name)
 
         internal_client = self.notion_client.get_client()
         current_token = getattr(internal_client, "access_token", None) or ""

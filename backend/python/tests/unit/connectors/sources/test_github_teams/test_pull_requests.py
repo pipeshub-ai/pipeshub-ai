@@ -14,7 +14,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.github_teams.comments import CommentsHelper
 from app.connectors.sources.github_teams.common.utils import epoch_ms_or_now
 from app.connectors.sources.github_teams.pull_requests import PullRequestsSync
@@ -389,19 +391,25 @@ class TestPrMappingAndFetchEdges:
             version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
             external_record_id="10/pull/5",
         )
-        with pytest.raises(Exception, match="Repository id not found"):
+        with pytest.raises(HTTPException) as exc:
             await PullRequestsSync(make_mock_connector()).build_pull_request_blocks(record)
+        assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
     async def test_build_blocks_repo_failure_raises(self) -> None:
         c = make_mock_connector()
-        c.runtime.ds_call.side_effect = _dispatch(c, {"get_repo_by_id": failed_response("404")})
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "get_repo_by_id": failed_response(
+                "rate limited", status_code=HttpStatusCode.TOO_MANY_REQUESTS.value
+            ),
+        })
         record = PullRequestRecord(
             id="r1", org_id="org-1", record_name="x", record_type="PULL_REQUEST",
             version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
             external_record_id="10/pull/5", external_record_group_id="10-pull-requests",
         )
-        with pytest.raises(Exception, match="Failed to resolve repo"):
+        with pytest.raises(HTTPException) as exc:
             await PullRequestsSync(c).build_pull_request_blocks(record)
+        assert exc.value.status_code == HttpStatusCode.TOO_MANY_REQUESTS.value
 
 
 class TestBuildPullRequestBlocks:

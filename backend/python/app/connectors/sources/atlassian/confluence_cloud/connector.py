@@ -119,6 +119,13 @@ from app.sources.client.confluence.confluence import (
 from app.sources.external.common.atlassian import AtlassianMultiSiteError
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 from app.utils.streaming import create_stream_record_response
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_downloadable,
+    not_found_at_source,
+    to_stream_error,
+)
 
 # Confluence Cloud OAuth URLs
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
@@ -515,13 +522,13 @@ class ConfluenceConnector(BaseConnector):
             ConfluenceDataSource with current valid token
         """
         if not self.external_client:
-            raise Exception("Confluence client not initialized. Call init() first.")
+            raise connector_not_ready(self.display_name)
 
         # Fetch current config from etcd (async I/O)
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
 
         if not config:
-            raise Exception("Confluence configuration not found")
+            raise connector_not_ready(self.display_name)
 
         # Check auth type
         auth_config = config.get("auth", {}) or {}
@@ -536,7 +543,7 @@ class ConfluenceConnector(BaseConnector):
         fresh_token = credentials_config.get("access_token", "")
 
         if not fresh_token:
-            raise Exception("No OAuth access token available")
+            raise connector_not_ready(self.display_name)
 
         # Get current token from client
         internal_client = self.external_client.get_client()
@@ -3612,9 +3619,10 @@ class ConfluenceConnector(BaseConnector):
             StreamingResponse: Streaming response with BlocksContainer JSON or file content
         """
         if record.is_placeholder:
-            raise ValueError(
+            raise not_downloadable(
                 f"Cannot stream placeholder record {record.external_record_id}: "
-                "it is a stub for an out-of-scope ancestor and has no content"
+                "it is a stub for an out-of-scope ancestor and has no content",
+                connector=self.display_name,
             )
         try:
             self.logger.info(f"📥 Streaming record: {record.record_name} ({record.external_record_id})")
@@ -3714,11 +3722,8 @@ class ConfluenceConnector(BaseConnector):
                 # Comment record - fetch comment content
                 comment_data = await self._fetch_comment_data(record)
                 if not comment_data:
-                    raise HTTPException(
-                        status_code=404,
-                        detail=f"Comment {record.external_record_id} not found"
-                    )
-                
+                    raise not_found_at_source(self.display_name)
+
                 # Extract comment content
                 body = comment_data.get("body", {})
                 storage_content = body.get("storage", {})
@@ -3741,9 +3746,7 @@ class ConfluenceConnector(BaseConnector):
             raise  # Re-raise HTTP exceptions as-is
         except Exception as e:
             self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500, detail=f"Failed to stream record: {str(e)}"
-            ) from e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _fetch_page_content(self, page_id: str, record_type: RecordType) -> str:
         """
@@ -3782,11 +3785,11 @@ class ConfluenceConnector(BaseConnector):
                     detail=f"Unsupported record type: {record_type}"
                 )
 
-            if not response or response.status != HttpStatusCode.SUCCESS.value:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Content not found: {page_id}"
-                )
+            if not response:
+                raise not_found_at_source(self.display_name)
+
+            if response.status != HttpStatusCode.SUCCESS.value:
+                raise map_source_status(response.status, connector=self.display_name)
 
             response_data = response.json()
 
@@ -3816,10 +3819,7 @@ class ConfluenceConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Failed to fetch content: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to fetch content: {str(e)}"
-            ) from e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     @staticmethod
     def _rest_attachment_id_from_linked_resource(linked_resource_id: str) -> str:
@@ -4865,8 +4865,11 @@ class ConfluenceConnector(BaseConnector):
         else:
             raise ValueError(f"Unsupported record type: {record_type}")
 
+        if not response:
+            raise not_found_at_source(self.display_name)
+
         if response.status != HttpStatusCode.SUCCESS.value:
-            raise HTTPException(status_code=404, detail=f"Content not found: {page_id}")
+            raise map_source_status(response.status, connector=self.display_name)
 
         return response.json()
 
@@ -4971,10 +4974,7 @@ class ConfluenceConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Failed to download attachment {record.external_record_id}: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to download attachment: {str(e)}"
-            ) from e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def run_incremental_sync(self) -> None:
         """Run incremental sync (delegates to full sync)."""
@@ -5638,15 +5638,26 @@ class ConfluenceConnector(BaseConnector):
                 self.logger.error(f"Unsupported comment type: {comment_type}")
                 return None
             
-            if not response or response.status != HttpStatusCode.SUCCESS.value:
+            if not response:
                 self.logger.warning(f"Comment {comment_id} not found at source")
                 return None
-            
+
+            # Only a real 404 means "gone"; anything else (expired token,
+            # revoked permission, rate limit) must keep its own status.
+            if response.status == HttpStatusCode.NOT_FOUND.value:
+                self.logger.warning(f"Comment {comment_id} not found at source")
+                return None
+
+            if response.status != HttpStatusCode.SUCCESS.value:
+                raise map_source_status(response.status, connector=self.display_name)
+
             return response.json()
-            
+
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"Failed to fetch comment {record.external_record_id}: {e}")
-            return None
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _batch_fetch_user_display_names(
         self, 

@@ -2197,6 +2197,7 @@ class DropboxDataSource:
         path: str,
         team_folder_id: Optional[str] = None,
         team_member_id: Optional[str] = None,
+        raise_on_error: bool = False,
     ) -> DropboxResponse:
         """Get a temporary link to stream content of a file. This link will expire
 
@@ -2206,6 +2207,10 @@ class DropboxDataSource:
 
         Args:
             path (str, required): Parameter for files_get_temporary_link
+            raise_on_error (bool): Propagate the SDK exception instead of flattening it
+                into ``error``. Sync treats the link as optional and must not fail a whole
+                crawl over one file; the streaming path needs HttpError's status_code so an
+                expired token isn't reported to the user as a deleted file.
 
         Returns:
             DropboxResponse: SDK response
@@ -2235,6 +2240,8 @@ class DropboxDataSource:
             response = client_to_use.files_get_temporary_link(path)
             return DropboxResponse(success=True, data=response)
         except Exception as e:
+            if raise_on_error:
+                raise
             return DropboxResponse(success=False, error=str(e))
 
     async def files_get_temporary_upload_link(

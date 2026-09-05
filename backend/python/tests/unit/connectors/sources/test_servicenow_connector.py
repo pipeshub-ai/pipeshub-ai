@@ -318,8 +318,9 @@ class TestServiceNowConnectorInit:
 
 class TestGetFreshDatasource:
     async def test_raises_when_client_not_initialized(self, servicenow_connector):
-        with pytest.raises(Exception, match="not initialized"):
+        with pytest.raises(HTTPException) as exc_info:
             await servicenow_connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     async def test_returns_datasource_with_fresh_token(self, servicenow_connector):
         servicenow_connector.servicenow_client = MagicMock()
@@ -334,16 +335,19 @@ class TestGetFreshDatasource:
     async def test_no_config_raises(self, servicenow_connector):
         servicenow_connector.servicenow_client = MagicMock()
         servicenow_connector.config_service.get_config = AsyncMock(return_value=None)
-        with pytest.raises(Exception, match="not found"):
+        with pytest.raises(HTTPException) as exc_info:
             await servicenow_connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     async def test_no_token_raises(self, servicenow_connector):
+        """A missing access token is the reconnect case, not an opaque 500."""
         servicenow_connector.servicenow_client = MagicMock()
         servicenow_connector.config_service.get_config = AsyncMock(return_value={
             "credentials": {},
         })
-        with pytest.raises(Exception, match="No access token"):
+        with pytest.raises(HTTPException) as exc_info:
             await servicenow_connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     async def test_same_token_no_update(self, servicenow_connector):
         servicenow_connector.servicenow_client = MagicMock()
@@ -546,7 +550,19 @@ class TestFetchAttachmentContent:
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         with pytest.raises(HTTPException) as exc_info:
             await servicenow_connector._fetch_attachment_content("att-1")
-        assert exc_info.value.status_code == 503
+        # ServiceNow's raw status is mapped, never forwarded: a source 401 must not
+        # reach the frontend as a 401 and log the user out of PipesHub.
+        assert exc_info.value.status_code == 502
+
+    async def test_fetch_attachment_content_401_maps_to_reconnect(self, servicenow_connector):
+        mock_ds = AsyncMock()
+        mock_ds.download_attachment = AsyncMock(
+            side_effect=ServiceNowAPIError(401, "unauthorized", None)
+        )
+        servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        with pytest.raises(HTTPException) as exc_info:
+            await servicenow_connector._fetch_attachment_content("att-1")
+        assert exc_info.value.status_code == 409
 
 
 class TestMiscMethods:

@@ -30,6 +30,10 @@ class GCSResponse:
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     message: Optional[str] = None
+    # The GCS error text embeds the bucket and object key, so it cannot be
+    # substring-matched to classify a failure without the key's own contents
+    # ("permission", "404", ...) deciding the answer.
+    status_code: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""

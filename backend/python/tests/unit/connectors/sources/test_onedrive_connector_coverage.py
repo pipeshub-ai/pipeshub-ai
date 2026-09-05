@@ -43,6 +43,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection, FilterOperator
@@ -2238,8 +2239,48 @@ class TestGetSignedUrl:
         record = MagicMock()
         record.id = "r1"
 
-        with pytest.raises(Exception, match="fail"):
+        # Bare re-raise became a mapped error so the router returns a real
+        # status instead of a blanket 500.
+        with pytest.raises(HTTPException) as exc_info:
             await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "graph_status,expected", [(401, 409), (403, 403), (429, 429), (404, 404)]
+    )
+    async def test_graph_status_reaches_the_caller(self, graph_status, expected):
+        connector = _make_connector()
+        connector._reinitialize_credential_if_needed = AsyncMock()
+        connector.msgraph_client = MagicMock()
+
+        class _ODataError(Exception):
+            response_status_code = graph_status
+
+        connector.msgraph_client.get_signed_url = AsyncMock(side_effect=_ODataError("graph"))
+
+        record = MagicMock()
+        record.id = "r1"
+
+        # The datasource used to swallow ODataError and return None, which made
+        # every one of these render as "this item no longer exists".
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == expected
+
+    @pytest.mark.asyncio
+    async def test_streaming_asks_the_datasource_to_propagate(self):
+        connector = _make_connector()
+        connector._reinitialize_credential_if_needed = AsyncMock()
+        connector.msgraph_client = MagicMock()
+        connector.msgraph_client.get_signed_url = AsyncMock(return_value="https://signed")
+
+        record = MagicMock()
+        record.external_record_group_id = "drive-1"
+        record.external_record_id = "item-1"
+
+        await connector.get_signed_url(record)
+        assert connector.msgraph_client.get_signed_url.await_args.kwargs["raise_on_error"] is True
 
 
 # ===========================================================================

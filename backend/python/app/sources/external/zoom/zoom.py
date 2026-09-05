@@ -10276,7 +10276,8 @@ class ZoomDataSource:
             return ZoomResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed report_meeting_participants" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed report_meeting_participants" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}",
+                status_code=response.status,
             )
         except Exception as e:
             return ZoomResponse(success=False, error=str(e), message="Failed to execute report_meeting_participants")
@@ -40936,6 +40937,7 @@ class ZoomDataSource:
                     if response.status < HTTP_ERROR_THRESHOLD
                     else f"Failed with status {response.status}"
                 ),
+                status_code=response.status,
             )
         except Exception as e:
             return ZoomResponse(
@@ -40968,12 +40970,14 @@ class ZoomDataSource:
                 return ZoomResponse(
                     success=False,
                     message=f"Transcript download failed with status {response.status}",
+                    status_code=response.status,
                 )
             text = response.text()
             return ZoomResponse(
                 success=True,
                 data={"transcript_text": text or ""},
                 message="Successfully downloaded transcript",
+                status_code=response.status,
             )
         except Exception as e:
             return ZoomResponse(

@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
@@ -1897,7 +1898,9 @@ class TestStreamAttachmentErrors:
         ds.download_attachment_content = MagicMock(side_effect=boom)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        with pytest.raises(RuntimeError, match="connection reset"):
+        # A statusless transport fault has no source status to report, so it
+        # maps to a generic 500 rather than escaping as a raw RuntimeError.
+        with pytest.raises(HTTPException) as exc_info:
             async for _ in connector._stream_attachment_content("123", "attachment_123"):
                 pass
 
@@ -2286,7 +2289,9 @@ class TestStreamingFailures:
         ds.download_attachment_content = MagicMock(side_effect=boom)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        with pytest.raises(RuntimeError, match="connection reset"):
+        # A statusless transport fault has no source status to report, so it
+        # maps to a generic 500 rather than escaping as a raw RuntimeError.
+        with pytest.raises(HTTPException) as exc_info:
             async for _ in connector._stream_attachment_content("123", "attachment_123"):
                 pass
 

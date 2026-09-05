@@ -1430,7 +1430,7 @@ class TestDownloadFileErrorPaths:
         with pytest.raises(HTTPException) as exc:
             await download_file(req, "org-1", "rec-1", "googledrive", "tok", handler, gp)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        assert "Error downloading file" in exc.value.detail
+        assert exc.value.detail == "Could not retrieve this item. Please try again."
 
     @pytest.mark.asyncio
     async def test_inner_http_exception_re_raised(self):
@@ -1455,7 +1455,7 @@ class TestDownloadFileErrorPaths:
         with pytest.raises(HTTPException) as exc:
             await download_file(req, "org-1", "rec-1", "googledrive", "tok", handler, AsyncMock())
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        assert "Error downloading file" in exc.value.detail
+        assert exc.value.detail == "Could not retrieve this item. Please try again."
 
     @pytest.mark.asyncio
     async def test_connector_instance_no_type_raises_404(self):

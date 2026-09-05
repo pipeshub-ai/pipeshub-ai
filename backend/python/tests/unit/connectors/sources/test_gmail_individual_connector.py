@@ -745,7 +745,7 @@ class TestStreamMailRecordEmptyContent:
 class TestStreamAttachmentRecordEdgeCases:
     @pytest.mark.asyncio
     async def test_message_not_found_on_get_re_raises_non_404(self):
-        """HttpError that is NOT 404 on message get should re-raise."""
+        """A source 5xx on message get surfaces as 502, not a doomed Drive retry."""
         connector = _make_connector()
         gmail_service = MagicMock()
         gmail_service.users().messages().get().execute.side_effect = _make_http_error(
@@ -763,17 +763,18 @@ class TestStreamAttachmentRecordEdgeCases:
         record.connector_id = "gmail-cov95"
         record.parent_external_record_id = "msg-1"
 
-        # The HttpError 500 should fall through to _stream_from_drive as fallback
         with patch.object(
             connector,
             "_stream_from_drive",
             new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_drive:
-            await connector._stream_attachment_record(
-                gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
-            )
-            mock_drive.assert_called_once()
+            with pytest.raises(HTTPException) as exc_info:
+                await connector._stream_attachment_record(
+                    gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
+                )
+            assert exc_info.value.status_code == HttpStatusCode.BAD_GATEWAY.value
+            mock_drive.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_message_payload_missing(self):
@@ -880,6 +881,50 @@ class TestStreamAttachmentRecordEdgeCases:
                     gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
                 )
             assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+
+    @pytest.mark.asyncio
+    async def test_composite_id_attachment_401_is_reconnect_not_drive_404(self):
+        """A revoked Gmail token must not read as a deleted attachment.
+
+        Drive cannot resolve a `messageId~partId` id, and its lazy response
+        defers the failure past this handler, so the fallback is skipped.
+        """
+        connector = _make_connector()
+        gmail_service = MagicMock()
+        gmail_service.users().messages().get().execute.return_value = {
+            "payload": {
+                "parts": [
+                    {"partId": "1", "body": {"attachmentId": "att-id"}}
+                ]
+            }
+        }
+        gmail_service.users().messages().attachments().get().execute.side_effect = (
+            _make_http_error(401, "Unauthorized")
+        )
+
+        parent_record = MagicMock()
+        parent_record.external_record_id = "msg-1"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
+        )
+
+        record = MagicMock()
+        record.id = "rec-1"
+        record.connector_id = "gmail-cov95"
+        record.parent_external_record_id = "msg-1"
+
+        with patch.object(
+            connector,
+            "_stream_from_drive",
+            new_callable=AsyncMock,
+            return_value=MagicMock(),
+        ) as mock_drive:
+            with pytest.raises(HTTPException) as exc_info:
+                await connector._stream_attachment_record(
+                    gmail_service, "msg-1~1", record, "f.txt", "text/plain"
+                )
+            assert exc_info.value.status_code == HttpStatusCode.CONFLICT.value
+            mock_drive.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_message_none_returned(self):

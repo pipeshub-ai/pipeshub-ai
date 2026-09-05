@@ -1354,7 +1354,7 @@ class TestSlackConnectorStreamRecord:
         rec.weburl = None
         with pytest.raises(HTTPException) as ei:
             await c.stream_record(rec)
-        assert ei.value.status_code == 500
+        assert ei.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_unsupported_record_type(self):
@@ -7781,7 +7781,7 @@ class TestStreamFileBytesEdgeCases:
         ))
         with (
             patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
-            pytest.raises(HTTPException, match="404"),
+            pytest.raises(HTTPException, match="422"),
         ):
             await anext(c._stream_file_bytes(fr))
 
@@ -7976,7 +7976,7 @@ class TestStreamFileBytesEdgeCases:
             patch("app.connectors.sources.slack.team.connector.httpx.AsyncClient", return_value=_Http()),
         ):
             ag = c._stream_file_bytes(fr)
-            with pytest.raises(HTTPException, match="403"):
+            with pytest.raises(HTTPException, match="409"):
                 await anext(ag)
 
 
@@ -8892,14 +8892,16 @@ class TestBuildMessageBlocksStreamingExtraBranches:
             success=True,
             data={"messages": []},
         ))
-        ds.conversations_replies = AsyncMock(return_value=MagicMock(success=False))
+        ds.conversations_replies = AsyncMock(
+            return_value=MagicMock(success=False, error="invalid_auth")
+        )
 
         async def fresh():
             return ds
 
         with (
             patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, side_effect=fresh),
-            pytest.raises(HTTPException, match="404"),
+            pytest.raises(HTTPException, match="409"),
         ):
             await c._build_message_blocks_for_streaming(rec)
 
@@ -8926,14 +8928,16 @@ class TestBuildMessageBlocksStreamingExtraBranches:
             mime_type=MimeTypes.BLOCKS.value,
         )
         ds = MagicMock()
-        ds.conversations_history = AsyncMock(return_value=MagicMock(success=False))
+        ds.conversations_history = AsyncMock(
+            return_value=MagicMock(success=False, error="not_in_channel")
+        )
 
         async def fresh():
             return ds
 
         with (
             patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, side_effect=fresh),
-            pytest.raises(HTTPException, match="404"),
+            pytest.raises(HTTPException, match="403"),
         ):
             await c._build_message_blocks_for_streaming(rec)
 

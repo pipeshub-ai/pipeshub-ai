@@ -54,6 +54,9 @@ class GitLabResponse(BaseModel):
     data: Any | None = None
     error: str | None = None
     message: str | None = None
+    # Preserved separately from `error`: stringifying the SDK exception loses
+    # the status, and callers need 401 (re-auth) apart from 403, 404 and 5xx.
+    status_code: int | None = None
 
     def to_dict(self) -> dict[str, Any]:  # type: ignore
         return self.model_dump()

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus, RecordRelations
 from app.connectors.sources.zammad.connector import (
@@ -272,8 +273,9 @@ class TestStreamRecord:
     async def test_stream_unsupported_type_raises(self, zammad_connector):
         record = MagicMock()
         record.record_type = RecordType.PROJECT
-        with pytest.raises(ValueError, match="Unsupported record type"):
+        with pytest.raises(HTTPException) as exc_info:
             await zammad_connector.stream_record(record)
+        assert exc_info.value.status_code == 400
 
     async def test_stream_error_raises(self, zammad_connector):
         record = MagicMock()
@@ -282,8 +284,9 @@ class TestStreamRecord:
         zammad_connector._process_ticket_blockgroups_for_streaming = AsyncMock(
             side_effect=Exception("API down")
         )
-        with pytest.raises(Exception, match="API down"):
+        with pytest.raises(HTTPException) as exc_info:
             await zammad_connector.stream_record(record)
+        assert exc_info.value.status_code == 500
 
 
 # ===========================================================================
@@ -342,7 +345,7 @@ class TestProcessFileForStreaming:
             success=False, message="Not found"
         ))
         zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        with pytest.raises(Exception, match="Failed to download KB answer attachment"):
+        with pytest.raises(RuntimeError):
             await zammad_connector._process_file_for_streaming(record)
 
     async def test_ticket_attachment_failed_response(self, zammad_connector):
@@ -353,7 +356,7 @@ class TestProcessFileForStreaming:
             success=False, message="Not found"
         ))
         zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        with pytest.raises(Exception, match="Failed to download attachment"):
+        with pytest.raises(RuntimeError):
             await zammad_connector._process_file_for_streaming(record)
 
     async def test_invalid_ticket_attachment_format(self, zammad_connector):

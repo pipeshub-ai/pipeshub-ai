@@ -704,8 +704,9 @@ class TestStreamRecord:
         ds.download_attachment_content = MagicMock(side_effect=_failing)
         c._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        with pytest.raises(HTTPException, match="Failed to fetch attachment"):
+        with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
+        assert exc_info.value.status_code == 404
 
 
 # ===========================================================================

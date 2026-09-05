@@ -10,7 +10,9 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import HTTPException
 
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.gitlab.comments import CommentsHelper
 
 from .conftest import make_mock_connector, failed_res
@@ -95,13 +97,16 @@ class TestBuildCommentBlocks:
 
     async def test_api_failure_raises_exception(self) -> None:
         c, helper = self._make_comments_helper()
-        c.runtime.ds_call = AsyncMock(return_value=failed_res("forbidden"))
+        c.runtime.ds_call = AsyncMock(
+            return_value=failed_res("forbidden", status_code=HttpStatusCode.FORBIDDEN.value)
+        )
         record = _make_record()
 
-        with pytest.raises(Exception, match="Failed to fetch comments"):
+        with pytest.raises(HTTPException) as exc_info:
             await helper.build_comment_blocks(
                 "https://gitlab.com/ns/proj/-/issues/7", 0, record
             )
+        assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     async def test_multiple_notes_creates_multiple_block_groups(self) -> None:
         c, helper = self._make_comments_helper()
@@ -154,13 +159,17 @@ class TestBuildMergeRequestCommentBlocks:
 
     async def test_mr_api_failure_raises(self) -> None:
         c, helper = self._make_mr_helper()
-        c.runtime.ds_call = AsyncMock(return_value=failed_res("error"))
+        c.runtime.ds_call = AsyncMock(
+            return_value=failed_res("error", status_code=HttpStatusCode.UNAUTHORIZED.value)
+        )
         record = _make_record()
 
-        with pytest.raises(Exception, match="Failed to fetch comments for merge request"):
+        # A revoked token must not read as "deleted" — 409 tells the user to reconnect.
+        with pytest.raises(HTTPException) as exc_info:
             await helper.build_merge_request_comment_blocks(
                 "https://gitlab.com/ns/proj/-/merge_requests/1", 0, record
             )
+        assert exc_info.value.status_code == HttpStatusCode.CONFLICT.value
 
     async def test_system_comment_includes_system_label(self) -> None:
         c, helper = self._make_mr_helper()
@@ -276,14 +285,15 @@ class TestMrCommentAdditionalPaths:
         """When list_merge_request_changes fails, exception is raised."""
         c, helper = self._make_mr_helper()
         notes_res = _ok_res([])  # empty notes
-        changes_fail = MagicMock(success=False, data=None, error="forbidden")
+        changes_fail = failed_res("forbidden", status_code=HttpStatusCode.FORBIDDEN.value)
         c.runtime.ds_call = AsyncMock(side_effect=[notes_res, changes_fail])
         record = _make_record()
 
-        with pytest.raises(Exception, match="Failed to fetch file changes"):
+        with pytest.raises(HTTPException) as exc_info:
             await helper.build_merge_request_comment_blocks(
                 "https://gitlab.com/ns/proj/-/merge_requests/1", 0, record
             )
+        assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     async def test_non_review_comment_no_username_system_naming(self) -> None:
         """System comment without username uses 'System Comment on merge request' name."""

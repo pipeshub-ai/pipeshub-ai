@@ -1786,8 +1786,10 @@ export const getRecordBuffer =
 
       // Handle any errors in the stream
       response.data.on('error', (error: any) => {
-        console.error('Stream error:', error);
-        // Only send error if headers haven't been sent yet
+        logger.error('Stream error while proxying record buffer', {
+          error: error?.message,
+          recordId,
+        });
         if (!res.headersSent) {
           try {
             res.status(500).end('Error streaming data');
@@ -1796,10 +1798,18 @@ export const getRecordBuffer =
               error: e,
             });
           }
+          return;
         }
+        // Headers are already out, so the status cannot be corrected. Destroy
+        // the socket so the client sees a truncated transfer rather than
+        // silently saving a partial file as if it were complete.
+        res.destroy(error);
       });
     } catch (error: any) {
-      console.error('Error fetching record buffer:', error);
+      logger.error('Error fetching record buffer', {
+        error: error?.message,
+        recordId: req.params.recordId,
+      });
       if (!res.headersSent) {
         if (error.response) {
           let errorMessage = 'Error from AI backend';
@@ -1819,6 +1829,12 @@ export const getRecordBuffer =
             logger.error('Failed to parse error response from AI backend', {
               error: parseError,
             });
+          }
+          // A 429 is only actionable with the source's own backoff hint, which
+          // the connector service put on the response for us to relay.
+          const retryAfter = error.response.headers?.['retry-after'];
+          if (retryAfter) {
+            res.set('Retry-After', String(retryAfter));
           }
           res.status(error.response.status).json({ error: errorMessage });
           return;

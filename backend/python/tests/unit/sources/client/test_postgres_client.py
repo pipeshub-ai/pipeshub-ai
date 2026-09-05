@@ -33,6 +33,10 @@ from app.sources.client.postgres.postgres import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
+class _DriverError(Exception):
+    """Stands in for an asyncpg exception class the stream path maps by type."""
+
+
 def _make_pool_mock():
     """Build an asyncpg-style pool mock with sensible defaults."""
     pool = MagicMock()
@@ -510,10 +514,12 @@ class TestPostgreSQLClientExecuteQuery:
     @pytest.mark.asyncio
     async def test_execute_query_failure_raises(self):
         statement = _make_statement_mock(attributes=[_make_attribute("id")])
-        statement.fetch.side_effect = Exception("syntax error")
+        statement.fetch.side_effect = _DriverError("syntax error")
         client, _, _ = self._make_pooled_client(statement=statement)
 
-        with pytest.raises(RuntimeError, match="Query execution failed"):
+        # The driver's own class must survive: the streaming path maps
+        # permission/missing-table errors by type, not by message.
+        with pytest.raises(_DriverError, match="syntax error"):
             await client.execute_query("BAD SQL")
 
 
@@ -617,10 +623,10 @@ class TestPostgreSQLClientExecuteQueryRaw:
     @pytest.mark.asyncio
     async def test_failure_raises(self):
         statement = _make_statement_mock(attributes=[_make_attribute("id")])
-        statement.fetch.side_effect = Exception("bad query")
+        statement.fetch.side_effect = _DriverError("bad query")
         client, _, _ = self._make_pooled_client(statement=statement)
 
-        with pytest.raises(RuntimeError, match="Query execution failed"):
+        with pytest.raises(_DriverError, match="bad query"):
             await client.execute_query_raw("BAD SQL")
 
 

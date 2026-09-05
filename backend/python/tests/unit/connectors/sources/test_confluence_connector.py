@@ -4709,16 +4709,19 @@ class TestGetFreshDatasource:
     async def test_raises_if_no_client(self):
         c = _mk_connector()
         c.external_client = None
-        with pytest.raises(Exception, match="not initialized"):
+        with pytest.raises(HTTPException) as exc_info:
             await c._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
+        assert "not connected" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_raises_if_no_config(self):
         c = _mk_connector()
         c.external_client = MagicMock()
         c.config_service.get_config = AsyncMock(return_value=None)
-        with pytest.raises(Exception, match="configuration not found"):
+        with pytest.raises(HTTPException) as exc_info:
             await c._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_api_token_auth_returns_datasource_directly(self):
@@ -4741,8 +4744,9 @@ class TestGetFreshDatasource:
         c.config_service.get_config = AsyncMock(
             return_value={"auth": {"authType": "OAUTH"}, "credentials": {"access_token": ""}}
         )
-        with pytest.raises(Exception, match="No OAuth access token"):
+        with pytest.raises(HTTPException) as exc_info:
             await c._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_oauth_updates_token_when_changed(self):
@@ -6054,7 +6058,7 @@ class TestStreamRecordAdditional:
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
         assert exc_info.value.status_code == 404
-        assert "321748993" in exc_info.value.detail
+        assert "no longer exists" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_comment_streaming_returns_html(self):
@@ -6092,7 +6096,7 @@ class TestStreamRecordAdditional:
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
         assert exc_info.value.status_code == 404
-        assert "321814529" in exc_info.value.detail
+        assert "no longer exists" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_unsupported_type_raises_http_exception(self):
@@ -7005,8 +7009,10 @@ class TestGetFreshDatasourceExtra:
     async def test_no_external_client_raises(self):
         c = _mk_connector()
         c.external_client = None
-        with pytest.raises(Exception, match="not initialized"):
+        with pytest.raises(HTTPException) as exc_info:
             await c._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
+        assert "not connected" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_api_token_auth_returns_datasource(self):
@@ -7028,8 +7034,9 @@ class TestGetFreshDatasourceExtra:
         c = _mk_connector()
         c.external_client = MagicMock()
         c.config_service.get_config = AsyncMock(return_value=None)
-        with pytest.raises(Exception, match="configuration not found"):
+        with pytest.raises(HTTPException) as exc_info:
             await c._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_oauth_token_raises(self):
@@ -7038,8 +7045,9 @@ class TestGetFreshDatasourceExtra:
         c.config_service.get_config = AsyncMock(
             return_value={"auth": {"authType": "OAUTH"}, "credentials": {"access_token": ""}}
         )
-        with pytest.raises(Exception, match="No OAuth access token"):
+        with pytest.raises(HTTPException) as exc_info:
             await c._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_oauth_token_same_no_update(self):
@@ -7158,7 +7166,7 @@ class TestStreamRecord:
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
         assert exc_info.value.status_code == 404
-        assert "321748993" in exc_info.value.detail
+        assert "no longer exists" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_stream_comment_returns_html(self):
@@ -7217,10 +7225,11 @@ class TestStreamRecord:
             external_record_id="p1",
         )
         record.is_placeholder = False
-        c._fetch_page_content = AsyncMock(side_effect=RuntimeError("network fail"))
+        c._fetch_page_data_with_adf = AsyncMock(side_effect=RuntimeError("network fail"))
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
         assert exc_info.value.status_code == 500
+        assert "network fail" not in exc_info.value.detail
 
 
 class TestFetchPageContent:
@@ -8554,11 +8563,25 @@ class TestFetchCommentData:
         assert await c._fetch_comment_data(record) is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_exception_propagates_as_stream_error(self):
         c = _mk_connector()
         c._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("ds fail"))
         record = MagicMock(external_record_id="101", record_type=RecordType.COMMENT)
-        assert await c._fetch_comment_data(record) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await c._fetch_comment_data(record)
+        assert exc_info.value.status_code == 500
+        assert "ds fail" not in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_auth_failure_is_not_reported_as_missing(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_footer_comment_by_id = AsyncMock(return_value=_mk_resp(401))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        record = MagicMock(external_record_id="101", record_type=RecordType.COMMENT)
+        with pytest.raises(HTTPException) as exc_info:
+            await c._fetch_comment_data(record)
+        assert exc_info.value.status_code == 409
 
 
 class TestBatchFetchUserDisplayNames:

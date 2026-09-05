@@ -21,7 +21,6 @@ from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
-from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -72,6 +71,10 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import NotificationType, NotificationSeverity
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.connectors.core.base.error.stream_errors import (
+    not_found_at_source,
+    to_stream_error,
+)
 
 def get_azure_error_payload(error: Exception) -> Dict[str, Any]:
     """Return Azure error payload JSON when present."""
@@ -1826,19 +1829,32 @@ class OneDriveConnector(BaseConnector):
             # Reinitialize credential if needed (user might be accessing files after days of inactivity)
             await self._reinitialize_credential_if_needed()
 
-            return await self.msgraph_client.get_signed_url(record.external_record_group_id, record.external_record_id)
-        except Exception as e:
-            self.logger.error(f"❌ Error creating signed URL for record {record.id}: {e}")
+            return await self.msgraph_client.get_signed_url(
+                record.external_record_group_id,
+                record.external_record_id,
+                raise_on_error=True,
+            )
+        except HTTPException:
             raise
+        except Exception as e:
+            self.logger.error(
+                f"❌ Error creating signed URL for record {record.id}: {e}", exc_info=True
+            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """Stream a record from OneDrive."""
         signed_url = await self.get_signed_url(record)
         if not signed_url:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
+            raise not_found_at_source(self.display_name)
 
         return create_stream_record_response(
-            stream_content(signed_url),
+            stream_content(
+                signed_url,
+                record_id=record.id,
+                file_name=record.record_name,
+                connector=self.display_name,
+            ),
             filename=record.record_name,
             mime_type=record.mime_type,
             fallback_filename=f"record_{record.id}"

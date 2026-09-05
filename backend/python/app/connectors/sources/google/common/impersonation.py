@@ -33,8 +33,19 @@ def is_delegation_error(error: Exception) -> bool:
     impersonated user — they belong to a different Workspace/tenant than the one this
     connector's service account can be delegated for. Any other failure (file not found,
     transient network error, etc.) is not retryable with a different user.
+
+    The chain is walked because the streaming paths convert SDK exceptions into
+    HTTPExceptions (`raise map_source_status(...) from exc`), whose user-facing
+    detail deliberately drops the underlying provider message.
     """
-    return DELEGATION_ERROR_MARKER in str(error)
+    seen: Set[int] = set()
+    current: Optional[BaseException] = error
+    while current is not None and id(current) not in seen:
+        if DELEGATION_ERROR_MARKER in str(current):
+            return True
+        seen.add(id(current))
+        current = current.__cause__
+    return False
 
 
 async def resolve_explicit_user(

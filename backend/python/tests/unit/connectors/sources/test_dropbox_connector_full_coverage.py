@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from dropbox.exceptions import ApiError
+from fastapi import HTTPException
 from dropbox.files import DeletedMetadata, FileMetadata, FolderMetadata, ListFolderResult
 from dropbox.sharing import AccessLevel
 from dropbox.team_log import EventCategory
@@ -2606,8 +2607,12 @@ class TestGetSignedUrl:
     async def test_no_data_source(self, connector):
         connector.data_source = None
         record = MagicMock(id="r1")
-        result = await connector.get_signed_url(record)
-        assert result is None
+
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 409
+        assert "not connected" in exc_info.value.detail
 
     async def test_no_user_with_permission(self, connector):
         record = MagicMock(id="r1")
@@ -2615,8 +2620,10 @@ class TestGetSignedUrl:
         connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
         connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=MagicMock(path="/file.pdf"))
 
-        result = await connector.get_signed_url(record)
-        assert result is None
+        # A local metadata gap, not a file deleted at Dropbox.
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     async def test_no_file_record(self, connector):
         record = MagicMock(id="r1")
@@ -2625,8 +2632,9 @@ class TestGetSignedUrl:
         connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
         connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
 
-        result = await connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     async def test_success(self, connector):
         record = MagicMock(id="r1", external_record_group_id="ns:1")
@@ -2677,8 +2685,11 @@ class TestGetSignedUrl:
 
         connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(side_effect=Exception("DB error"))
 
-        result = await connector.get_signed_url(record)
-        assert result is None
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == "Could not retrieve this item. Please try again."
 
 
 # ===========================================================================

@@ -764,7 +764,7 @@ class TestStreamGoogleApiRequest:
             with pytest.raises(HTTPException) as exc_info:
                 async for _ in connector._stream_google_api_request(mock_request, "download"):
                     pass
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_stream_chunk_error(self, connector):
@@ -925,7 +925,8 @@ class TestGetFileMetadataFromDrive:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector._get_file_metadata_from_drive("f1")
-        assert exc_info.value.status_code == 500
+        # Drive's own status is mapped: a 403 is a denial, not an opaque 500.
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_generic_exception(self, connector):
@@ -1116,7 +1117,9 @@ class TestStreamRecord:
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 400
+            # record-not-downloadable: Drive understood the request and refused
+            # to serve this format, which is not a malformed-request 400.
+            assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_pdf_download_http_error_other(self, connector):
@@ -1147,7 +1150,7 @@ class TestStreamRecord:
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 502
 
 
 # ===================================================================
@@ -2411,7 +2414,7 @@ class TestStreamGoogleApiRequestFullCoverage:
             with pytest.raises(HTTPException) as exc_info:
                 async for _ in connector._stream_google_api_request(mock_request, "download"):
                     pass
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_stream_chunk_error(self, connector):
@@ -2572,7 +2575,8 @@ class TestGetFileMetadataFromDriveFullCoverage:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector._get_file_metadata_from_drive("f1")
-        assert exc_info.value.status_code == 500
+        # Drive's own status is mapped: a 403 is a denial, not an opaque 500.
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_generic_exception(self, connector):
@@ -2763,7 +2767,9 @@ class TestStreamRecordFullCoverage:
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 400
+            # record-not-downloadable: Drive understood the request and refused
+            # to serve this format, which is not a malformed-request 400.
+            assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_pdf_download_http_error_other(self, connector):
@@ -2794,7 +2800,7 @@ class TestStreamRecordFullCoverage:
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 502
 
 
 # ===================================================================

@@ -12,6 +12,7 @@ Sync settings accept ``batchSize`` (preferred) or ``batch_size`` in etcd.
 """
 
 import asyncio
+import errno
 import hashlib
 import json
 import mimetypes
@@ -20,6 +21,7 @@ import unicodedata
 import uuid
 from logging import Logger
 from pathlib import Path
+from stat import S_ISREG
 from collections.abc import AsyncIterator
 from typing import Dict, List, Optional, Tuple
 
@@ -44,6 +46,11 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    internal_service_status,
+    not_found_at_source,
+)
 from app.connectors.core.interfaces.connector.apps import App
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
@@ -1921,6 +1928,25 @@ class LocalFsConnector(BaseConnector):
             detail="Storage service returned an unrecognized buffer payload shape",
         )
 
+    def _local_file_error(self, exc: OSError) -> HTTPException:
+        """Map a filesystem error onto an HTTP status.
+
+        ``OSError.__str__`` embeds the absolute server path, so the message the
+        client sees is fixed text and the real error stays in the log.
+        """
+        self.logger.error("Local FS read failed: %s", exc)
+        if exc.errno in (errno.EACCES, errno.EPERM):
+            return HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="PipesHub does not have permission to read this file.",
+            )
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return not_found_at_source(self.display_name)
+        return HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Could not read this file from the Local FS folder.",
+        )
+
     async def _stream_storage_record(
         self, record: FileRecord, storage_document_id: str
     ) -> Response:
@@ -1938,13 +1964,13 @@ class LocalFsConnector(BaseConnector):
                     headers={"Authorization": f"Bearer {storage_token}"},
                 ) as response:
                     if response.status < 200 or response.status >= 300:
-                        raise HTTPException(
-                            status_code=HttpStatusCode.BAD_GATEWAY.value,
-                            detail=(
-                                "Storage service could not return Local FS record: "
-                                f"{await response.text()}"
-                            ),
+                        # The body can carry internal paths and tokens; log it,
+                        # return only the mapped status.
+                        self.logger.error(
+                            "Storage service returned %s for Local FS record %s: %s",
+                            response.status, record.record_name, (await response.text())[:500],
                         )
+                        raise internal_service_status(response.status)
                     raw_text = await response.text()
         except asyncio.TimeoutError as exc:
             raise HTTPException(
@@ -1955,11 +1981,16 @@ class LocalFsConnector(BaseConnector):
                 ),
             ) from exc
         except aiohttp.ClientError as exc:
+            # The internal storage URL and the client error stay in the log.
+            self.logger.error(
+                "Could not reach storage service at %s for Local FS stream (%s): %s",
+                storage_url, record.record_name, exc,
+            )
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_GATEWAY.value,
                 detail=(
-                    f"Could not reach storage service at {storage_url} for Local FS "
-                    f"stream ({record.record_name}): {exc}"
+                    f"Could not reach the storage service for '{record.record_name}'. "
+                    "Please try again later."
                 ),
             ) from exc
 
@@ -2000,16 +2031,12 @@ class LocalFsConnector(BaseConnector):
         await self._reload_sync_settings()
         root_raw = self.sync_root_path.strip()
         if not root_raw:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail="Local FS sync_root_path is not configured",
-            )
+            raise connector_not_ready(self.display_name)
         ok_path, detail = _validate_sync_root_path(root_raw)
         if not ok_path:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Local FS cannot use sync_root_path: {detail}",
-            )
+            # `detail` names the configured server path — log only.
+            self.logger.error("Local FS cannot use sync_root_path: %s", detail)
+            raise connector_not_ready(self.display_name)
         root = Path(detail).resolve(strict=False)
         raw_path = Path(record.path)
         try:
@@ -2018,30 +2045,33 @@ class LocalFsConnector(BaseConnector):
             else:
                 candidate = (root / raw_path).resolve(strict=False)
         except (OSError, ValueError) as e:
+            # `record.path` comes from the stored record, not the caller, so a
+            # path we cannot resolve is our own bug, not a bad request.
+            self.logger.error("Local FS could not resolve record path: %s", e)
             raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Invalid file path: {e}",
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Could not resolve the stored path for this record",
             ) from e
         if not candidate.is_relative_to(root):
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="File path is outside the configured Local FS folder",
             )
-        if not candidate.is_file():
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail="Local file not found for this record",
-            )
+        # `Path.is_file()` swallows OSError and answers False, which reports a
+        # permission failure on a parent directory as a missing file.
+        try:
+            file_stat = await asyncio.to_thread(candidate.stat)
+        except OSError as e:
+            raise self._local_file_error(e) from e
+        if not S_ISREG(file_stat.st_mode):
+            raise not_found_at_source(self.display_name)
 
         p = candidate
 
         try:
             handle = await asyncio.to_thread(p.open, "rb")
         except OSError as e:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Cannot read file: {e}",
-            ) from e
+            raise self._local_file_error(e) from e
 
         async def _stream_chunks() -> AsyncIterator[bytes]:
             chunk_size = 1 << 20  # 1 MiB
