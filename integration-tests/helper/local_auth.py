@@ -117,8 +117,10 @@ def _create_oauth_app(
         # server committed the client and then failed, a second attempt would
         # create another one and orphan the first secret. The collision in
         # #3192 fails on a unique index, so nothing is written and retrying is
-        # safe. Any other 5xx is reported rather than repeated.
-        if not _is_duplicate_slug(detail) or attempt == attempts:
+        # safe. Any other 5xx is reported rather than repeated, and the status
+        # is checked as well as the body: a 4xx quoting the same text is a
+        # rejection to report, not a collision to retry.
+        if status != 500 or not _is_duplicate_slug(detail) or attempt == attempts:
             break
         time.sleep(2 * attempt)
 
