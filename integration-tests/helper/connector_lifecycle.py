@@ -144,6 +144,42 @@ async def constructor(
     state["update_target_key"] = update_key
     state["update_target_name"] = Path(update_key).name
 
+    await create_connector_and_await_sync(
+        pipeshub_client,
+        graph_provider,
+        state,
+        connector_type=connector_type,
+        connector_name=connector_name,
+        connector_config=connector_config,
+        scope=scope,
+        auth_type=auth_type,
+        expected_records=state["uploaded_count"],
+    )
+
+    return state
+
+
+async def create_connector_and_await_sync(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    state: Dict[str, Any],
+    *,
+    connector_type: str,
+    connector_name: str,
+    connector_config: dict,
+    expected_records: int,
+    scope: str = "personal",
+    auth_type: str | None = None,
+    timeout: int = 180,
+) -> Dict[str, Any]:
+    """Create the connector, enable sync, and wait for the records to land.
+
+    Shared by every connector fixture. What differs between connectors is how
+    the source data gets there — objects uploaded to a bucket, rows inserted
+    into a table — not what happens afterwards, which is identical.
+
+    Sets ``connector_id`` and ``full_sync_count`` on ``state``.
+    """
     instance = pipeshub_client.create_connector(
         connector_type=connector_type,
         instance_name=connector_name,
@@ -159,15 +195,13 @@ async def constructor(
     pipeshub_client.toggle_sync(connector_id, enable=True)
     logger.info("CONSTRUCTOR [%s]: Sync enabled — waiting for full sync (connector %s)", connector_type, connector_id)
 
-    uploaded = state["uploaded_count"]
-
     async def _check_full_sync() -> bool:
-        return await graph_provider.count_records(connector_id) >= uploaded
+        return await graph_provider.count_records(connector_id) >= expected_records
 
     await wait_until_graph_condition(
         connector_id,
         check=_check_full_sync,
-        timeout=180,
+        timeout=timeout,
         poll_interval=10,
         description="full sync",
     )
