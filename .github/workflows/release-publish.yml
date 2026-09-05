@@ -171,8 +171,10 @@ jobs:
         run: |
           set -uo pipefail
           before=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+          # ${VAR:-} matters here: under `set -u` an unset variable aborts the
+          # step before `|| true` can apply, which would fail the release.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+                      /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-}" || true
           sudo docker image prune -af || true
           after=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
           echo "free disk: ${before}G -> ${after}G"
