@@ -167,6 +167,12 @@ jobs:
       # services: the ones that do are written to skip when the service is
       # absent, so on a bare runner they skip cleanly and the rest execute.
       #
+      # test_npm_import_live.py is excluded because it is not offline: it pulls
+      # real tarballs from registry.npmjs.org. It skips when the registry is
+      # unreachable, but a CI runner can reach it, so leaving it in would make
+      # every Python pull request depend on the public npm registry and on the
+      # pinned packages staying published.
+      #
       # test_model_reasoning_effort_e2e.py is excluded deliberately. It asserts
       # that a model-level "defaultReasoningEffort" is honoured by
       # get_generator_model, and that key appears nowhere in app/utils/aimodels.py
@@ -179,6 +185,7 @@ jobs:
           cd backend/python
           pytest tests/integration \
             --ignore=tests/integration/redis_cluster \
+            --ignore=tests/integration/skills/test_npm_import_live.py \
             --ignore=tests/integration/test_model_reasoning_effort_e2e.py \
             -v --timeout=300
 
