@@ -378,6 +378,23 @@ class AnswerFinalizer:
         completion_data["answer"] = normalized
         completion_data["citations"] = citations
         completion_data["confidence"] = confidence
+        # Counts, not a verdict. `citationRefsAvailable` is how much citable
+        # material reached the model; `citationsUsed` is how much it attributed.
+        #
+        # Available > 0 with used == 0 is the shape worth counting: the model
+        # had sources and attributed none of them. That is not by itself a
+        # defect — a correct "the documents do not contain this" also lands
+        # there, because retrieval returns nearest neighbours whether or not
+        # anything is relevant. Deliberately reported rather than classified:
+        # nothing at this layer can separate the two, and a wrong label is
+        # worse than two honest numbers. See issue #2975.
+        completion_data["citationRefsAvailable"] = len(ref_to_url or {})
+        completion_data["citationsUsed"] = len(citations)
+        log.info(
+            "CITATION_TELEMETRY refs_available=%d citations_used=%d records_fetched=%d",
+            len(ref_to_url or {}), len(citations),
+            len(getattr(self._context, "full_records_fetched", None) or ()),
+        )
         reasoning_payload = build_reasoning_payload(reasoning_turns)
         if reasoning_payload is not None:
             completion_data["reasoning"] = reasoning_payload
