@@ -176,6 +176,20 @@ class TestAzureFilesConnector:
 
         await async_wait_for_stable_record_count(graph_provider, connector_id)
         before_count = await graph_provider.count_records(connector_id)
+
+        # The etag check below proves the *object* changed. This proves the
+        # *record* was re-indexed: the connector derives a new version from the
+        # existing record when it updates one, so a version that does not move
+        # means the change was never picked up. A stable count alone cannot tell
+        # those apart — a connector that ignored the object keeps it stable too.
+        before_record = await graph_provider.get_record_by_name(
+            connector_id, update_name
+        )
+        assert before_record is not None, (
+            f"TC-UPDATE-001: {update_name} is not in the graph before the update "
+            f"(connector {connector_id})"
+        )
+        before_version = before_record.get("version")
         logger.info(
             "TC-UPDATE-001 baseline: %d records (connector %s)",
             before_count, connector_id,
@@ -221,6 +235,19 @@ class TestAzureFilesConnector:
         assert after_count == before_count, (
             f"Record count must be stable after content update; "
             f"before={before_count}, after={after_count} (connector {connector_id})"
+        )
+
+        after_record = await graph_provider.get_record_by_name(
+            connector_id, update_name
+        )
+        assert after_record is not None, (
+            f"TC-UPDATE-001: {update_name} disappeared after the update "
+            f"(connector {connector_id})"
+        )
+        assert after_record.get("version") != before_version, (
+            f"TC-UPDATE-001: record version stayed at {before_version} after the "
+            f"object content changed, so it was never re-indexed. The ETag and "
+            f"count assertions above pass either way (connector {connector_id})"
         )
 
         logger.info(
