@@ -9,16 +9,15 @@ it directly — no account to buy, and no app password to mint first.
 
 import os
 import uuid
-from typing import Any, AsyncGenerator, Dict
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import pytest
 import pytest_asyncio
-
 from connector_lifecycle import create_connector_and_await_sync, destructor
-from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
-from helper.graph_provider import GraphProviderProtocol
-
 from connectors.nextcloud.nextcloud_source_helper import NextcloudSourceHelper
+from helper.graph_provider import GraphProviderProtocol
+from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
 # Defaults match deployment/docker-compose/docker-compose.integration.*.yml.
 DEFAULT_USER = "pipeshubtest"
@@ -68,10 +67,10 @@ async def nextcloud_connector(
     nextcloud_source: NextcloudSourceHelper,
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
-) -> AsyncGenerator[Dict[str, Any], None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     written = nextcloud_source.write_files(SEED_FILES)
 
-    state: Dict[str, Any] = {
+    state: dict[str, Any] = {
         "resource_name": TEST_ROOT,
         "seeded_names": sorted(path.split("/")[-1] for path, _ in SEED_FILES),
         "uploaded_count": written,

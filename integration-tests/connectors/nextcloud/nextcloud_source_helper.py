@@ -14,12 +14,12 @@ setup — no app password to mint, no token to bootstrap.
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from typing import List, Sequence, Tuple
+from collections.abc import Sequence
 
 import requests
 
 # (relative path, text) pairs.
-SeedFile = Tuple[str, str]
+SeedFile = tuple[str, str]
 
 
 class NextcloudSourceHelper:
@@ -91,7 +91,7 @@ class NextcloudSourceHelper:
                 f"overwrite of {rel_path} failed: {resp.status_code} {resp.text[:200]}"
             )
 
-    def list_objects(self, resource_name: str | None = None, timeout: int = 30) -> List[str]:
+    def list_objects(self, resource_name: str | None = None, timeout: int = 30) -> list[str]:
         """Paths of every file under the test root, relative to it."""
         del resource_name
         resp = requests.request(
@@ -104,7 +104,7 @@ class NextcloudSourceHelper:
             raise RuntimeError(f"PROPFIND failed: {resp.status_code} {resp.text[:200]}")
 
         prefix = f"/remote.php/dav/files/{self.username}/{self.root}/"
-        found: List[str] = []
+        found: list[str] = []
         for href in ET.fromstring(resp.content).iter(
             "{DAV:}href"
         ):
