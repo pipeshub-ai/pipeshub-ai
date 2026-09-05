@@ -4,6 +4,7 @@
 # ==============================================================================
 # Covers:
 #   - Syntax validity of both installer scripts (bash -n).
+#   - Syntax validity of bootstrap-first-run.sh (mint-to-file first-run).
 #   - Root wrapper repo mode: delegates to the in-tree installer with args.
 #   - Root wrapper standalone mode: downloads files (via a stubbed curl) into
 #     PIPESHUB_DIR and execs the downloaded installer with args.
@@ -32,6 +33,7 @@ COMPOSE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$COMPOSE_DIR/../.." && pwd)"
 ROOT_INSTALLER="$REPO_ROOT/install.sh"
 INNER_INSTALLER="$COMPOSE_DIR/install.sh"
+BOOTSTRAP="$COMPOSE_DIR/bootstrap-first-run.sh"
 
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -98,6 +100,7 @@ EOF
 echo "== Syntax checks =="
 if bash -n "$ROOT_INSTALLER" 2>/dev/null; then pass "root install.sh parses"; else fail "root install.sh parses"; fi
 if bash -n "$INNER_INSTALLER" 2>/dev/null; then pass "inner install.sh parses"; else fail "inner install.sh parses"; fi
+if bash -n "$BOOTSTRAP" 2>/dev/null; then pass "bootstrap-first-run.sh parses"; else fail "bootstrap-first-run.sh parses"; fi
 
 echo "== Root wrapper: repo mode delegates with args =="
 (
