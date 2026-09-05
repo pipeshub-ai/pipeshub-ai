@@ -129,21 +129,22 @@ run python "python service tests (no infra)" \
   "exists backend/python/tests/integration && have $PY && has_pytest $PY" \
   bash -c "cd backend/python && $PY -m pytest tests/integration \
       --ignore=tests/integration/redis_cluster \
+      --ignore=tests/integration/skills/test_npm_import_live.py \
       --ignore=tests/integration/test_model_reasoning_effort_e2e.py \
       -q -p no:warnings --timeout=300"
 
 # ── frontend ─────────────────────────────────────────────────────────────────
 run frontend "frontend unit tests (vitest)" \
-  'exists frontend/node_modules' \
+  'exists frontend/node_modules && have npm' \
   bash -c "cd frontend && npm run --silent test:unit"
 
 run frontend "electron local-sync tests" \
-  'exists frontend/node_modules' \
+  'exists frontend/node_modules && have npm' \
   bash -c "cd frontend && npm run --silent test:electron:local-sync"
 
 # ── node ─────────────────────────────────────────────────────────────────────
 run node "node backend tests (mocha)" \
-  'exists backend/nodejs/apps/node_modules' \
+  'exists backend/nodejs/apps/node_modules && have npm' \
   bash -c "cd backend/nodejs/apps && npm run --silent test"
 
 # ── summary ──────────────────────────────────────────────────────────────────
