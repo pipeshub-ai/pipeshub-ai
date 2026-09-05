@@ -1,0 +1,214 @@
+name: Release — build, publish, verify
+
+# The app images on Docker Hub are built and pushed by hand today. That is the
+# slowest and least reproducible step in a release, and it is why nothing can
+# gate on the artifact: there is no point in CI where the published image
+# exists and has not yet been announced.
+#
+# This workflow closes that. On a tag it builds both variants, pushes them under
+# a candidate tag only, runs the first-run smoke against the pushed images, and
+# promotes to the release tags only if the smoke passes. A build that cannot
+# install is never reachable as :latest or :slim.
+#
+# Manual runs are supported for rehearsal: workflow_dispatch with promote=false
+# builds and verifies without moving any published tag.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, e.g. 0.7.1 (no leading v)'
+        required: true
+        type: string
+      promote:
+        description: 'Move :latest / :slim to this build after the smoke passes'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: pipeshubai/pipeshub-ai
+  BASE_IMAGE: pipeshubai/pipeshub-ai-base
+
+jobs:
+  # ---------------------------------------------------------------------------
+  resolve:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      candidate: ${{ steps.v.outputs.candidate }}
+      promote: ${{ steps.v.outputs.promote }}
+    steps:
+      - id: v
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+            promote="${{ inputs.promote }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+            promote="true"
+          fi
+          # A tag must look like a version. Refuse anything else rather than
+          # publishing an image called ":oops".
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::'$version' is not a semver version (expected 1.2.3 or 1.2.3-beta.1)"
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "candidate=${version}-rc.${GITHUB_RUN_ID}"
+            echo "promote=$promote"
+          } >> "$GITHUB_OUTPUT"
+          echo "version=$version candidate=${version}-rc.${GITHUB_RUN_ID} promote=$promote"
+
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.variant }}
+    needs: resolve
+    runs-on: runs-on=${{ github.run_id }}/runner=8cpu-linux-x64/volume=200gb
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: full
+            python_deps: python-deps
+          - variant: slim
+            python_deps: python-deps-slim
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # The base images are rebuilt deliberately, not on every release — see the
+      # header of Dockerfile.base. Pull whatever is published and fail loudly if
+      # it is absent, rather than silently building a 40-minute base layer here.
+      - name: Pull base images
+        run: |
+          set -euo pipefail
+          for tag in ${{ matrix.python_deps }} runtime; do
+            if ! docker pull "${BASE_IMAGE}:${tag}"; then
+              echo "::error::${BASE_IMAGE}:${tag} is not published. Build it from Dockerfile.base first (see its header)."
+              exit 1
+            fi
+          done
+
+      - name: Build and push candidate
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          build-args: |
+            PYTHON_DEPS_IMAGE=${{ env.BASE_IMAGE }}:${{ matrix.python_deps }}
+            RUNTIME_BASE_IMAGE=${{ env.BASE_IMAGE }}:runtime
+          tags: |
+            ${{ env.IMAGE }}:${{ needs.resolve.outputs.candidate }}${{ matrix.variant == 'slim' && '-slim' || '' }}
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,scope=${{ matrix.variant }},mode=max
+
+  # ---------------------------------------------------------------------------
+  # The gate. These images are on Docker Hub but no published tag points at them
+  # yet, so this runs against exactly what a user would install.
+  verify:
+    name: Verify ${{ matrix.deploy }} candidate
+    needs: [resolve, build]
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deploy: slim
+            suffix: '-slim'
+          - deploy: full
+            suffix: ''
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: First-run smoke against the candidate image
+        env:
+          PIPESHUB_DEPLOY_TYPE: ${{ matrix.deploy }}
+          PIPESHUB_VERSION: ${{ needs.resolve.outputs.candidate }}${{ matrix.suffix }}
+          PUBLISHED_HUB_SMOKE_DIAG: ${{ runner.temp }}/diag
+        run: bash deployment/docker-compose/tests/published_hub_smoke.sh
+
+      - name: Upgrade from the previous release
+        env:
+          PIPESHUB_TARGET_VERSION: ${{ needs.resolve.outputs.candidate }}${{ matrix.suffix }}
+          PIPESHUB_DEPLOY_TYPE: ${{ matrix.deploy }}
+          PIPESHUB_UPGRADE_DIAG: ${{ runner.temp }}/diag
+        run: bash deployment/docker-compose/tests/upgrade_smoke.sh
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-verify-${{ matrix.deploy }}
+          path: ${{ runner.temp }}/diag
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  promote:
+    name: Promote to release tags
+    needs: [resolve, verify]
+    if: needs.resolve.outputs.promote == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Install crane
+        uses: imjasonh/setup-crane@v0.4
+
+      # Copy by digest rather than rebuilding, so the tag a user pulls is
+      # byte-identical to the image the smoke and upgrade tests just passed.
+      # A prerelease version never moves :latest or :slim.
+      - name: Point release tags at the verified image
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          CANDIDATE: ${{ needs.resolve.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          crane copy "${IMAGE}:${CANDIDATE}"       "${IMAGE}:${VERSION}"
+          crane copy "${IMAGE}:${CANDIDATE}-slim"  "${IMAGE}:${VERSION}-slim"
+          if printf '%s' "$VERSION" | grep -q -- '-'; then
+            echo "prerelease ${VERSION}: leaving :latest and :slim untouched"
+          else
+            crane copy "${IMAGE}:${CANDIDATE}"      "${IMAGE}:latest"
+            crane copy "${IMAGE}:${CANDIDATE}-slim" "${IMAGE}:slim"
+          fi
+          echo "published ${IMAGE}:${VERSION} (+slim)"
+
+      - name: Remove candidate tags
+        continue-on-error: true
+        env:
+          CANDIDATE: ${{ needs.resolve.outputs.candidate }}
+        run: |
+          crane delete "${IMAGE}:${CANDIDATE}"      || true
+          crane delete "${IMAGE}:${CANDIDATE}-slim" || true

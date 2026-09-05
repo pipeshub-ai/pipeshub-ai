@@ -182,3 +182,61 @@ jobs:
       - name: Validate MongoDB compose stability settings
         if: steps.changes.outputs.changed == 'true'
         run: bash deployment/docker-compose/tests/mongodb_stability_test.sh
+
+      # installer_test.sh has existed with ~184 assertions and was not run by
+      # any workflow. It needs neither Docker nor network, so there is no
+      # reason for it not to gate a deployment change.
+      - name: Installer unit tests
+        if: steps.changes.outputs.changed == 'true'
+        run: bash deployment/docker-compose/tests/installer_test.sh
+
+      - name: Release tooling unit tests
+        if: steps.changes.outputs.changed == 'true'
+        run: bash deployment/docker-compose/tests/release_tooling_test.sh
+
+  workflow-lint:
+    name: Lint GitHub Actions workflows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Nothing validated the workflows themselves. actionlint catches shell
+      # errors inside `run:` blocks, bad expressions, and invalid schema before
+      # a push discovers them. Pinned to a release tarball rather than an
+      # action, because actionlint does not publish one.
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.7
+        run: |
+          set -euo pipefail
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL "$url" -o /tmp/actionlint.tar.gz
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          sudo install -m 0755 /tmp/actionlint /usr/local/bin/actionlint
+          actionlint --version
+
+      - name: Lint workflows
+        run: actionlint -color
+
+  connector-coverage:
+    name: Connector integration coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Fails only when a connector is registered without an integration test
+      # that was not already recorded as a known gap. Existing gaps do not fail
+      # the build; the list can shrink freely and only grows on purpose.
+      - name: Check no new connector ships without a test
+        run: python3 scripts/connector_coverage.py --check
+
+      - name: Report coverage
+        if: always()
+        run: python3 scripts/connector_coverage.py >> "$GITHUB_STEP_SUMMARY"
