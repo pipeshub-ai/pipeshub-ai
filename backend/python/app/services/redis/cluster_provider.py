@@ -149,6 +149,7 @@ class ClusterRedisProvider(IRedisConnectionProvider):
         kwargs.pop("read_from_replicas", None)
         kwargs.pop("require_full_coverage", None)
         kwargs.pop("max_connections", None)
+        kwargs.pop("address_remap", None)
         client = Redis(host=host, port=port, **kwargs)
         with self._created_lock:
             self._pubsub_clients.append(client)

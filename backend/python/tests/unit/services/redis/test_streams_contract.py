@@ -16,13 +16,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
+
 from app.services.messaging.config import RedisStreamsConfig, StreamMessage
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 from app.services.messaging.redis_streams.producer import RedisStreamsProducer
 from tests.support.fake_cluster_redis import FakeClusterRedis
 from tests.support.redis_provider_matrix import PROVIDERS
-
-fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
 
 # record-events.0 and record-events.1 hash to different slots (see
 # `redis.crc.key_slot`); record-events.2 lands in a third slot again. A

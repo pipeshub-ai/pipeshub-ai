@@ -13,11 +13,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
+fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
+
 from app.services.cache.accessible_records_cache import AccessibleRecordsCache
 from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
 from tests.support.redis_provider_matrix import CLIENT_TRANSPORTS as TRANSPORTS
-
-fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
 
 # `TRANSPORTS` (standalone/cluster) comes from
 # `tests/support/redis_provider_matrix.py` (T4) so an EE `conftest.py` can

@@ -15,10 +15,10 @@ from logging import Logger, getLogger
 
 import pytest
 
+pytest.importorskip("fakeredis.aioredis")
+
 from app.services.messaging.retry_manager import RetryManager
 from tests.support.redis_provider_matrix import PROVIDERS
-
-pytest.importorskip("fakeredis.aioredis")
 
 # `PROVIDERS` (standalone/cluster) comes from
 # `tests/support/redis_provider_matrix.py` (T4) so an EE `conftest.py` can

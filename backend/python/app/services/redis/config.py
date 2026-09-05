@@ -216,11 +216,24 @@ def _parse_nat_map(raw: str) -> dict[str, tuple[str, int]]:
                 f"Invalid REDIS_CLUSTER_NAT_MAP entry {entry!r}; expected "
                 "'internalHost:internalPort=externalHost:externalPort'."
             )
-        ext_host, _, ext_port = external.rpartition(":")
-        if not ext_host or not ext_port.isdigit():
-            raise ValueError(
-                f"Invalid REDIS_CLUSTER_NAT_MAP entry {entry!r}; expected "
-                "'internalHost:internalPort=externalHost:externalPort'."
-            )
-        nat_map[internal.strip()] = (ext_host, int(ext_port))
+        err_msg = (
+            f"Invalid REDIS_CLUSTER_NAT_MAP entry {entry!r}; expected "
+            "'internalHost:internalPort=externalHost:externalPort'."
+        )
+
+        int_host, _, int_port_str = internal.strip().rpartition(":")
+        if not int_host or not int_port_str.isdigit():
+            raise ValueError(err_msg)
+        int_port = int(int_port_str)
+        if int_port < 1 or int_port > 65535:
+            raise ValueError(err_msg)
+
+        ext_host, _, ext_port_str = external.rpartition(":")
+        if not ext_host or not ext_port_str.isdigit():
+            raise ValueError(err_msg)
+        ext_port = int(ext_port_str)
+        if ext_port < 1 or ext_port > 65535:
+            raise ValueError(err_msg)
+
+        nat_map[internal.strip()] = (ext_host, ext_port)
     return nat_map

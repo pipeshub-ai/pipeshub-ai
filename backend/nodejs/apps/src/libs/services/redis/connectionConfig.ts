@@ -101,16 +101,32 @@ function parseNatMap(
     }
     const internal = entry.slice(0, eqIndex).trim();
     const external = entry.slice(eqIndex + 1).trim();
-    const colonIndex = external.lastIndexOf(':');
-    const externalPort = colonIndex === -1 ? '' : external.slice(colonIndex + 1);
-    const externalHost = colonIndex === -1 ? '' : external.slice(0, colonIndex);
-    if (!externalHost || !/^\d+$/.test(externalPort)) {
-      throw new Error(
-        `Invalid REDIS_CLUSTER_NAT_MAP entry '${entry}'; expected ` +
-          "'internalHost:internalPort=externalHost:externalPort'.",
-      );
+    const errMsg =
+      `Invalid REDIS_CLUSTER_NAT_MAP entry '${entry}'; expected ` +
+      "'internalHost:internalPort=externalHost:externalPort'.";
+
+    const internalColonIndex = internal.lastIndexOf(':');
+    const internalHost = internalColonIndex === -1 ? '' : internal.slice(0, internalColonIndex);
+    const internalPortStr = internalColonIndex === -1 ? '' : internal.slice(internalColonIndex + 1);
+    if (!internalHost || !/^\d+$/.test(internalPortStr)) {
+      throw new Error(errMsg);
     }
-    natMap[internal] = { host: externalHost, port: parseInt(externalPort, 10) };
+    const internalPort = parseInt(internalPortStr, 10);
+    if (internalPort < 1 || internalPort > 65535) {
+      throw new Error(errMsg);
+    }
+
+    const colonIndex = external.lastIndexOf(':');
+    const externalHost = colonIndex === -1 ? '' : external.slice(0, colonIndex);
+    const externalPortStr = colonIndex === -1 ? '' : external.slice(colonIndex + 1);
+    if (!externalHost || !/^\d+$/.test(externalPortStr)) {
+      throw new Error(errMsg);
+    }
+    const externalPort = parseInt(externalPortStr, 10);
+    if (externalPort < 1 || externalPort > 65535) {
+      throw new Error(errMsg);
+    }
+    natMap[internal] = { host: externalHost, port: externalPort };
   }
   return Object.keys(natMap).length > 0 ? natMap : undefined;
 }

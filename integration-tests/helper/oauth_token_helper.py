@@ -35,7 +35,9 @@ logger = logging.getLogger("oauth-token-helper")
 _INTEGRATION_TESTS_DIR = Path(__file__).resolve().parent.parent
 _DEFAULT_REFRESH_TOKENS_FILE = _INTEGRATION_TESTS_DIR / ".env.refresh_tokens"
 
-# Redis Pub/Sub channel the backend listens on for cache invalidation
+# Redis Pub/Sub channel the backend listens on for cache invalidation.
+# The actual channel name may be prefixed by REDIS_KEY_NAMESPACE (R9);
+# see _namespaced_channel() below.
 _CACHE_INVALIDATION_CHANNEL = "pipeshub:cache:invalidate"
 
 
@@ -110,8 +112,14 @@ async def _write_credentials_to_redis(
     )
     client = provider.create_client(ClientOptions(decode_responses=False))
 
+    # REDIS_KEY_NAMESPACE (R9): from_host_port() already reads the env var,
+    # and the provider exposes it.  Prefix key and channel the same way
+    # RedisDistributedKeyValueStore._build_key / _invalidation_channel do.
+    ns = provider.key_namespace
+    ns_prefix = f"{ns}:" if ns else ""
+
     path = _config_path(connector_id)
-    redis_key = f"{key_prefix}{path}"
+    redis_key = f"{ns_prefix}{key_prefix}{path}"
 
     try:
         # Read + decrypt existing config so we preserve auth/sync/filters blocks
@@ -147,7 +155,8 @@ async def _write_credentials_to_redis(
         await client.set(redis_key, serialized)
 
         # Publish cache-invalidation so the backend drops its in-process LRU cache
-        await client.publish(_CACHE_INVALIDATION_CHANNEL, path)
+        channel = f"{ns_prefix}{_CACHE_INVALIDATION_CHANNEL}"
+        await client.publish(channel, path)
     finally:
         # `create_client()` clients are caller-owned (T6); the provider only
         # tracks them so its own `close()` can sweep up stragglers, there is

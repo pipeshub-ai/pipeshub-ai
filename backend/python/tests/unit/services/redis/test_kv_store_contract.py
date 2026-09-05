@@ -17,11 +17,11 @@ from unittest.mock import patch
 
 import pytest
 
+pytest.importorskip("fakeredis.aioredis")
+
 from app.config.providers.redis import redis_store as redis_store_module
 from app.config.providers.redis.redis_store import RedisDistributedKeyValueStore
 from tests.support.redis_provider_matrix import PROVIDERS
-
-pytest.importorskip("fakeredis.aioredis")
 
 
 def _make_store(make_provider) -> RedisDistributedKeyValueStore:

@@ -15,12 +15,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
+
 from app.services.messaging.config import RedisConfig
 from app.services.messaging.distributed_concurrency import DistributedConcurrencyManager
 from app.services.redis.standalone_provider import StandaloneRedisProvider
 from tests.support.redis_provider_matrix import CLIENT_TRANSPORTS as TRANSPORTS
-
-fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
 
 # Pool names chosen so the cluster parametrization actually spans slots --
 # see `test_distributed_concurrency.py` for the `redis.crc.key_slot` values.
