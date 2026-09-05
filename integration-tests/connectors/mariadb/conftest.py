@@ -8,16 +8,15 @@ integration compose file runs a MariaDB server for it to sync from.
 
 import os
 import uuid
-from typing import Any, AsyncGenerator, Dict
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import pytest
 import pytest_asyncio
-
 from connector_lifecycle import create_connector_and_await_sync, destructor
-from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
-from helper.graph_provider import GraphProviderProtocol
-
 from connectors.mariadb.mariadb_source_helper import MariaDBSourceHelper
+from helper.graph_provider import GraphProviderProtocol
+from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
 # Defaults match deployment/docker-compose/docker-compose.integration.*.yml.
 DEFAULT_USER = "pipeshubtest"
@@ -72,11 +71,11 @@ async def mariadb_connector(
     mariadb_source: MariaDBSourceHelper,
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
-) -> AsyncGenerator[Dict[str, Any], None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     for table, rows in SEED_TABLES.items():
         mariadb_source.create_table_with_rows(table, rows)
 
-    state: Dict[str, Any] = {
+    state: dict[str, Any] = {
         "resource_name": mariadb_source.database,
         "seeded_tables": sorted(SEED_TABLES),
         "uploaded_count": len(SEED_TABLES),

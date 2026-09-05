@@ -11,7 +11,7 @@ uses to read the data is unaffected — that is the code under test.
 
 from __future__ import annotations
 
-from typing import List, Sequence
+from collections.abc import Sequence
 
 import pymysql
 
@@ -41,7 +41,7 @@ class MariaDBSourceHelper:
             cur.execute("SELECT 1")
             cur.fetchone()
 
-    def list_tables(self) -> List[str]:
+    def list_tables(self) -> list[str]:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT table_name FROM information_schema.tables "

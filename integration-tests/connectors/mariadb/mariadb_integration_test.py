@@ -21,7 +21,7 @@ Test cases:
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import pytest
 
@@ -29,14 +29,16 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
-from helper.graph_provider import GraphProviderProtocol  # noqa: E402
-from helper.storage_incremental import (  # noqa: E402
+from connectors.mariadb.mariadb_source_helper import (  # type: ignore[import-not-found]
+    MariaDBSourceHelper,
+)
+from helper.graph_provider import GraphProviderProtocol
+from helper.storage_incremental import (
     settle_record_baseline,
     sync_until_names_visible,
 )
-from connectors.mariadb.mariadb_source_helper import (  # type: ignore[import-not-found]  # noqa: E402
-    MariaDBSourceHelper,
+from pipeshub_client import (
+    PipeshubClient,  # type: ignore[import-not-found]
 )
 
 logger = logging.getLogger("mariadb-lifecycle-test")
@@ -51,7 +53,7 @@ class TestMariaDBConnector:
     @pytest.mark.order(1)
     async def test_tc_sync_001_full_sync_graph_validation(
         self,
-        mariadb_connector: Dict[str, Any],
+        mariadb_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-SYNC-001: Every seeded table is in the graph after a full sync."""
@@ -73,7 +75,7 @@ class TestMariaDBConnector:
     @pytest.mark.order(2)
     async def test_tc_incr_001_new_table_is_picked_up(
         self,
-        mariadb_connector: Dict[str, Any],
+        mariadb_connector: dict[str, Any],
         mariadb_source: MariaDBSourceHelper,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
@@ -117,7 +119,7 @@ class TestMariaDBConnector:
     @pytest.mark.order(3)
     async def test_tc_rows_001_adding_rows_does_not_duplicate_the_table_record(
         self,
-        mariadb_connector: Dict[str, Any],
+        mariadb_connector: dict[str, Any],
         mariadb_source: MariaDBSourceHelper,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
@@ -134,6 +136,18 @@ class TestMariaDBConnector:
         before_count = await settle_record_baseline(
             pipeshub_client, graph_provider, connector_id
         )
+
+        # The connector increments a record's version when it updates one, so
+        # comparing it is what separates "re-indexed" from "left alone". A count
+        # that holds steady proves only that nothing was duplicated — a
+        # connector that ignored the change entirely would also pass that.
+        before_record = await graph_provider.get_record_by_name(
+            connector_id, table
+        )
+        assert before_record is not None, (
+            f"TC-ROWS-001: {table} is not in the graph before the change"
+        )
+        before_version = before_record.get("version")
         rows_before = mariadb_source.row_count(table)
 
         mariadb_source.insert_rows(
@@ -150,9 +164,21 @@ class TestMariaDBConnector:
             f"after adding a row to {table}. Rows changing must update the "
             "table's record, not create another one."
         )
+        after_record = await graph_provider.get_record_by_name(
+            connector_id, table
+        )
+        assert after_record is not None, (
+            f"TC-ROWS-001: {table} disappeared from the graph after the change"
+        )
+        assert after_record.get("version") != before_version, (
+            f"TC-ROWS-001: version stayed at {before_version} after the content "
+            "changed, so the record was never re-indexed. The count assertion "
+            "above would have passed regardless."
+        )
         await graph_provider.assert_no_orphan_records(connector_id)
         logger.info(
             "TC-ROWS-001 passed: %s updated in place, count stable at %d",
             table,
             after_count,
         )
+
