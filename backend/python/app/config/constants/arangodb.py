@@ -616,6 +616,9 @@ class RecordRelations(Enum):
     IMPLEMENTS = "IMPLEMENTS"
     REVIEWS = "REVIEWS"
     CAUSES = "CAUSES"
+    # Inverse of CAUSES. A link edge always runs from the record being synced, so a
+    # source that names the cause on the effect (Zendesk's problem_id) needs this.
+    CAUSED_BY = "CAUSED_BY"
     RELATED = "RELATED"
     FOREIGN_KEY = "FOREIGN_KEY"
     # An output artifact (chart, PDF, spreadsheet, ...) was produced by

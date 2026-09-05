@@ -94,6 +94,12 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 SYNC_POINT_KEY = "zendesk_incremental"
+ARTICLES_SYNC_POINT_KEY = "zendesk_articles_incremental"
+# Users, groups, memberships and organizations are always exported from here, never
+# from a checkpoint. on_new_user_groups deletes every membership edge before re-adding
+# from the list it is given, so the list has to be the whole truth — a window cannot
+# tell "unchanged" from "removed", and guessing wrong revokes real access. Only the
+# record stages (tickets, articles) resume from a sync point.
 DEFAULT_INCREMENTAL_START_TIME = 1
 PAGE_SIZE = 100
 # Matches the Jira connectors: cap how many records go into one on_new_records call.
@@ -201,11 +207,11 @@ IMG_SRC_PATTERN = re.compile(r'(<img\b[^>]*?\bsrc=["\'])([^"\']+)(["\'])', re.IG
             default_value=True,
         ))
         .add_filter_field(FilterField(
-            name="issue_attachments",
-            display_name="Index Ticket Attachments",
+            name="attachments",
+            display_name="Index Attachments",
             filter_type=FilterType.BOOLEAN,
             category=FilterCategory.INDEXING,
-            description="Enable indexing of ticket attachments",
+            description="Enable indexing of ticket and Help Center article attachments",
             default_value=True,
         ))
         .add_filter_field(FilterField(
@@ -251,9 +257,11 @@ class ZendeskConnector(BaseConnector):
         self._user_id_to_data: Dict[str, Dict[str, Any]] = {}
         self._group_id_to_data: Dict[str, Dict[str, Any]] = {}
         self._section_id_to_data: Dict[str, Dict[str, Any]] = {}
+        self._category_id_to_data: Dict[str, Dict[str, Any]] = {}
         self._org_id_to_data: Dict[str, Dict[str, Any]] = {}
         self._user_id_to_app_user: Dict[str, AppUser] = {}
-        self._reemit_unchanged = False
+        self._rebuild_ticket_edges = False
+        self._rebuild_article_edges = False
         self.records_sync_point = SyncPoint(
             connector_id=self.connector_id,
             org_id=self.data_entities_processor.org_id,
@@ -320,13 +328,25 @@ class ZendeskConnector(BaseConnector):
             self.logger,
         )
 
-        # A full sync deletes the sync point and every BELONGS_TO edge with it. Skipping
-        # unchanged records would then leave them orphaned — unreachable from the App and
-        # counted as zero — so re-emit everything when the checkpoint is gone.
-        sync_point = await self.records_sync_point.read_sync_point(SYNC_POINT_KEY)
-        self._reemit_unchanged = not sync_point.get("lastEndTime")
-        if self._reemit_unchanged:
-            self.logger.info("Zendesk: no sync point — re-emitting every record")
+        # A full sync deletes the sync points and every edge with them, keeping the
+        # nodes. Skipping an unchanged record would leave it stranded: still in the
+        # graph, attached to nothing, and never touched again because it will never
+        # look changed. A missing checkpoint is the signal that just happened, so send
+        # everything and let the processor rebuild the edges. One flag per stage — a
+        # stage that never runs never writes a checkpoint, and would otherwise pin the
+        # other stage's flag on forever.
+        self._rebuild_ticket_edges = not (
+            await self.records_sync_point.read_sync_point(SYNC_POINT_KEY)
+        ).get("lastEndTime")
+        self._rebuild_article_edges = not (
+            await self.records_sync_point.read_sync_point(ARTICLES_SYNC_POINT_KEY)
+        ).get("lastEndTime")
+        if self._rebuild_ticket_edges or self._rebuild_article_edges:
+            self.logger.info(
+                "Zendesk: no sync point — resending unchanged records to rebuild edges "
+                "(tickets=%s, articles=%s)",
+                self._rebuild_ticket_edges, self._rebuild_article_edges,
+            )
 
         users, user_email_map, users_complete = await self._fetch_users()
         if users:
@@ -443,6 +463,8 @@ class ZendeskConnector(BaseConnector):
         List[Tuple[AppUserGroup, List[AppUser]]],
         bool,
     ]:
+        # Both lists are walked to the very end every sync, never windowed: they feed
+        # a rebuild that deletes first, so a partial answer revokes access.
         datasource = await self._get_fresh_datasource()
         groups_data, groups_complete = await self._fetch_paginated_list_checked(
             datasource.list_groups,
@@ -468,7 +490,11 @@ class ZendeskConnector(BaseConnector):
             group_name = group_data.get("name") or f"Group {group_id}"
             if not group_id:
                 continue
+            # Cached before the filter check: _ticket_to_record reads this to tell an
+            # unknown group from a deselected one, and only the former is a problem.
             self._group_id_to_data[group_id] = group_data
+            if not self._is_group_allowed_by_filter(group_id):
+                continue
 
             source_created_at = self._parse_datetime(group_data.get("created_at"))
             source_updated_at = self._parse_datetime(group_data.get("updated_at"))
@@ -571,9 +597,6 @@ class ZendeskConnector(BaseConnector):
         return user_groups, complete
 
     async def _sync_tickets(self) -> int:
-        if not self._is_indexing_enabled(IndexingFilterKey.TICKETS.value):
-            return 0
-
         synced = 0
         removed = 0
         start_time = await self._get_start_time()
@@ -618,12 +641,12 @@ class ZendeskConnector(BaseConnector):
                         records_with_permissions[start:start + BATCH_PROCESSING_SIZE]
                     )
                 synced += len(records_with_permissions)
-                # An unchanged ticket stays COMPLETED, so no index event fires and
-                # stream_record — which rebuilds the attachments — never runs.
-                if self._reemit_unchanged:
-                    await self.data_entities_processor.reindex_existing_records(
-                        [record for record, _ in records_with_permissions]
-                    )
+                # At sync time, not on the streaming path: an attachment is a record in
+                # its own right and must exist even if its ticket is never indexed. This
+                # is also what rebuilds their edges after a full sync wipes them, so an
+                # unchanged ticket needs no forced reindex to get them back.
+                for record, _ in records_with_permissions:
+                    await self._sync_ticket_attachments(record)
 
             # Cursor export returns no end_time; resume from the newest ticket seen.
             for ticket_data in tickets:
@@ -682,14 +705,13 @@ class ZendeskConnector(BaseConnector):
         removable = [t for t in tickets if t.get("id") and not self._is_ticket_in_scope(t)]
         if not removable:
             return record_ids
-        async with self.data_store_provider.transaction() as tx_store:
-            for ticket_data in removable:
-                existing = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=str(ticket_data["id"]),
-                )
-                if existing:
-                    record_ids.append(existing.id)
+        for ticket_data in removable:
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id,
+                external_record_id=str(ticket_data["id"]),
+            )
+            if existing:
+                record_ids.append(existing.id)
         return record_ids
 
     async def _ticket_to_record(self, ticket_data: Dict[str, Any]) -> Optional[Tuple[Record, List[Permission]]]:
@@ -705,17 +727,15 @@ class ZendeskConnector(BaseConnector):
         created_at = self._parse_datetime(ticket_data.get("created_at"))
         updated_at = self._parse_datetime(ticket_data.get("updated_at"))
 
-        existing_record = None
-        async with self.data_store_provider.transaction() as tx_store:
-            existing_record = await tx_store.get_record_by_external_id(
-                connector_id=self.connector_id,
-                external_id=str(ticket_id),
-            )
+        existing_record = await self.data_entities_processor.get_record_by_external_id(
+            connector_id=self.connector_id,
+            external_record_id=str(ticket_id),
+        )
 
         if (
             existing_record
             and existing_record.source_updated_at == updated_at
-            and not self._reemit_unchanged
+            and not self._rebuild_ticket_edges
         ):
             return None
 
@@ -769,9 +789,9 @@ class ZendeskConnector(BaseConnector):
             creator_source_timestamp=created_at,
             related_external_records=self._parse_ticket_links(ticket_data),
             labels=ticket_data.get("tags") or [],
-            indexing_status=ProgressStatus.NOT_STARTED.value,
             preview_renderable=False,
         )
+        self._apply_indexing_filter(record, IndexingFilterKey.TICKETS)
         permissions = self._record_permissions(
             group_id, requester, ticket_data.get("organization_id")
         )
@@ -785,7 +805,10 @@ class ZendeskConnector(BaseConnector):
         have not synced yet are fine — the processor stands up a placeholder record.
         """
         links: List[Tuple[Any, RecordRelations]] = [
-            (ticket_data.get("problem_id"), RecordRelations.CAUSES),
+            # problem_id sits on the incident and names its cause, so this edge
+            # runs incident -> problem. The incident is also the ticket Zendesk
+            # touches when the link changes, so it is the one that owns the edge.
+            (ticket_data.get("problem_id"), RecordRelations.CAUSED_BY),
             # Only populated once the source ticket is closed.
             *((fid, RecordRelations.RELATED) for fid in ticket_data.get("followup_ids") or []),
         ]
@@ -811,24 +834,21 @@ class ZendeskConnector(BaseConnector):
         return related
 
     async def _sync_help_center_articles(self) -> int:
-        if not self._is_indexing_enabled(IndexingFilterKey.KNOWLEDGE_BASE.value):
-            return 0
-
         # Sections first: a record with no record group is unreachable from the App.
         if not await self._sync_help_center_sections():
             return 0
 
-        datasource = await self._get_fresh_datasource()
-        articles, articles_complete = await self._fetch_paginated_list_checked(
-            datasource.list_articles,
-            "articles",
-            sort_by="updated_at",
-            sort_order="asc",
-            include="users,sections,categories",
+        start_time = await self._get_start_time(ARTICLES_SYNC_POINT_KEY)
+        articles, articles_complete, max_end_time = await self._fetch_incremental_articles(
+            start_time
         )
         if not articles_complete:
-            # A short list would read as "deleted" to the removal pass below.
-            self.logger.error("Zendesk: article list truncated — skipping this pass")
+            # A short list would read as "deleted" to the removal pass below, and
+            # advancing past a truncated window would skip those articles for good.
+            self.logger.error(
+                "Zendesk: article export truncated — leaving the sync point at %s so the "
+                "next run re-reads the missing window", start_time,
+            )
             return 0
         removed_ids = await self._resolve_removable_article_ids(articles)
         if removed_ids:
@@ -839,6 +859,8 @@ class ZendeskConnector(BaseConnector):
                 f"Zendesk: removed {len(removed_ids)} articles no longer published org-wide"
             )
 
+        await self._resolve_missing_sections(articles)
+
         records_with_permissions: List[Tuple[Record, List[Permission]]] = []
         for article_data in articles:
             record_tuple = await self._article_to_record(article_data)
@@ -848,48 +870,207 @@ class ZendeskConnector(BaseConnector):
             await self.data_entities_processor.on_new_records(
                 records_with_permissions[start:start + BATCH_PROCESSING_SIZE]
             )
+        # After the articles are published, so the parent exists before its children.
+        for record, _ in records_with_permissions:
+            await self._build_article_attachment_child_records(
+                record.external_record_id.removeprefix("article_"), record
+            )
+
+        now_seconds = get_epoch_timestamp_in_ms() // 1000
+        max_end_time = min(max_end_time, now_seconds - INCREMENTAL_SAFETY_LAG_SECONDS)
+        await self.records_sync_point.update_sync_point(
+            ARTICLES_SYNC_POINT_KEY,
+            {"lastEndTime": max_end_time, "updatedAt": get_epoch_timestamp_in_ms()},
+        )
         return len(records_with_permissions)
 
+    async def _fetch_incremental_articles(
+        self, start_time: int
+    ) -> Tuple[List[Dict[str, Any]], bool, int]:
+        """Walk the Help Center incremental export from ``start_time``.
+
+        Not ``list_articles``: that pages by offset and Zendesk 400s past 10,000
+        records, so a large Help Center could never finish a first sync.
+        """
+        articles: List[Dict[str, Any]] = []
+        max_end_time = start_time
+        complete = True
+        while True:
+            response = await self._call_incremental(
+                "incremental_articles", start_time=start_time
+            )
+            if response is None or not response.success:
+                error = response.error if response else "retries exhausted"
+                self.logger.error(f"Zendesk incremental_articles failed: {error}")
+                complete = False
+                break
+            if not response.data:
+                break
+            payload = response.data
+            self._cache_sideloads(payload)
+            articles.extend(self._extract_list(payload, "articles"))
+            end_time = payload.get("end_time")
+            if end_time:
+                max_end_time = max(max_end_time, int(end_time))
+            # An end_time that does not advance would page over the same window forever.
+            if payload.get("end_of_stream", True) or not end_time or end_time <= start_time:
+                break
+            start_time = end_time
+        return articles, complete, max_end_time
+
     async def _sync_help_center_sections(self) -> bool:
+        """Publish the Help Center tree: category -> section -> subsection.
+
+        Zendesk nests up to five section levels under a flat top-level category, and
+        ``parent_external_group_id`` is what turns that into RecordGroup edges. Filed
+        flat, a subsection's articles land under an invented group with no org and no
+        edge to the App: present in the graph, unreachable in the UI.
+        """
         datasource = await self._get_fresh_datasource()
+        categories, categories_complete = await self._fetch_paginated_list_checked(
+            datasource.list_categories, "categories"
+        )
+        if not categories_complete:
+            self.logger.error(
+                "Zendesk: category list truncated - sections would be filed under a "
+                "parent that does not exist yet, so skipping this pass"
+            )
+            return False
         sections, sections_complete = await self._fetch_paginated_list_checked(
             datasource.list_sections, "sections"
         )
         if not sections_complete:
             self.logger.error(
-                "Zendesk: section list truncated — articles under the missing sections "
+                "Zendesk: section list truncated - articles under the missing sections "
                 "would be filed under an invented record group, so skipping this pass"
             )
             return False
+
         record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
+        for category_data in categories:
+            category_id = category_data.get("id")
+            if not category_id:
+                continue
+            self._category_id_to_data[str(category_id)] = category_data
+            record_groups.append(self._category_record_group(category_data))
         for section_data in sections:
             section_id = section_data.get("id")
             if not section_id:
                 continue
             self._section_id_to_data[str(section_id)] = section_data
-            record_groups.append((
-                RecordGroup(
-                    org_id=self.data_entities_processor.org_id,
-                    name=section_data.get("name") or f"Section {section_id}",
-                    external_group_id=f"section_{section_id}",
-                    connector_name=Connectors.ZENDESK,
-                    connector_id=self.connector_id,
-                    group_type=RecordGroupType.KB,
-                    description=section_data.get("description") or None,
-                    source_created_at=self._parse_datetime(section_data.get("created_at")),
-                    source_updated_at=self._parse_datetime(section_data.get("updated_at")),
-                    web_url=section_data.get("html_url"),
-                ),
-                [Permission(
-                    type=PermissionType.READ,
-                    entity_type=EntityType.ORG,
-                    external_id=self.data_entities_processor.org_id,
-                )],
-            ))
+            record_groups.append(self._section_record_group(section_data))
+
         if record_groups:
             await self.data_entities_processor.on_new_record_groups(record_groups)
-        self.logger.info(f"Zendesk: synced {len(record_groups)} Help Center sections")
+        self.logger.info(
+            f"Zendesk: synced {len(categories)} Help Center categories and "
+            f"{len(sections)} sections"
+        )
         return True
+
+    def _category_record_group(
+        self, category_data: Dict[str, Any]
+    ) -> Tuple[RecordGroup, List[Permission]]:
+        category_id = category_data.get("id")
+        return (
+            RecordGroup(
+                org_id=self.data_entities_processor.org_id,
+                name=category_data.get("name") or f"Category {category_id}",
+                external_group_id=f"category_{category_id}",
+                connector_name=Connectors.ZENDESK,
+                connector_id=self.connector_id,
+                group_type=RecordGroupType.KB,
+                description=category_data.get("description") or None,
+                source_created_at=self._parse_datetime(category_data.get("created_at")),
+                source_updated_at=self._parse_datetime(category_data.get("updated_at")),
+                web_url=category_data.get("html_url"),
+            ),
+            self._kb_permissions(),
+        )
+
+    def _section_record_group(
+        self, section_data: Dict[str, Any]
+    ) -> Tuple[RecordGroup, List[Permission]]:
+        section_id = section_data.get("id")
+        # A subsection hangs off its parent section, a top-level one off its category.
+        parent_section_id = section_data.get("parent_section_id")
+        category_id = section_data.get("category_id")
+        if parent_section_id:
+            parent = f"section_{parent_section_id}"
+        elif category_id:
+            parent = f"category_{category_id}"
+        else:
+            parent = None
+        return (
+            RecordGroup(
+                org_id=self.data_entities_processor.org_id,
+                name=section_data.get("name") or f"Section {section_id}",
+                external_group_id=f"section_{section_id}",
+                parent_external_group_id=parent,
+                connector_name=Connectors.ZENDESK,
+                connector_id=self.connector_id,
+                group_type=RecordGroupType.KB,
+                description=section_data.get("description") or None,
+                source_created_at=self._parse_datetime(section_data.get("created_at")),
+                source_updated_at=self._parse_datetime(section_data.get("updated_at")),
+                web_url=section_data.get("html_url"),
+            ),
+            self._kb_permissions(),
+        )
+
+    def _kb_permissions(self) -> List[Permission]:
+        """Categories and sections carry no ACL of their own in Zendesk - visibility is
+        derived from the articles inside them, and only public articles are synced."""
+        return [Permission(
+            type=PermissionType.READ,
+            entity_type=EntityType.ORG,
+            external_id=self.data_entities_processor.org_id,
+        )]
+
+    async def _resolve_missing_sections(self, articles: List[Dict[str, Any]]) -> None:
+        """Fetch any section an article references that the section list did not return.
+
+        Zendesk does not document whether ``list_sections`` includes subsections, and
+        on some tenants it does not. Without this, those articles are filed under a
+        record group the processor invents - unnamed, org-less and with no edge to the
+        App, so the article never appears in the UI.
+        """
+        wanted = {
+            str(article["section_id"])
+            for article in articles
+            if article.get("section_id")
+            and str(article["section_id"]) not in self._section_id_to_data
+        }
+        if not wanted:
+            return
+        self.logger.info(
+            f"Zendesk: {len(wanted)} section(s) referenced by articles were missing from "
+            "the section list - resolving them individually"
+        )
+        datasource = await self._get_fresh_datasource()
+        resolved: List[Tuple[RecordGroup, List[Permission]]] = []
+        pending = list(wanted)
+        while pending:
+            section_id = pending.pop()
+            if section_id in self._section_id_to_data:
+                continue
+            response = await datasource.show_section(section_id=int(section_id))
+            if not response.success or not response.data:
+                self.logger.warning(
+                    f"Zendesk: could not resolve section {section_id}: {response.error}"
+                )
+                continue
+            section_data = self._extract_object(response.data, "section")
+            if not section_data.get("id"):
+                continue
+            self._section_id_to_data[section_id] = section_data
+            resolved.append(self._section_record_group(section_data))
+            # Walk up: an unlisted subsection's parent may be unlisted too.
+            parent_section_id = section_data.get("parent_section_id")
+            if parent_section_id and str(parent_section_id) not in self._section_id_to_data:
+                pending.append(str(parent_section_id))
+        if resolved:
+            await self.data_entities_processor.on_new_record_groups(resolved)
 
     def _is_article_in_scope(self, article_data: Dict[str, Any]) -> bool:
         """Whether this article may be published to the whole tenant.
@@ -912,14 +1093,13 @@ class ZendeskConnector(BaseConnector):
         removable = [a for a in articles if a.get("id") and not self._is_article_in_scope(a)]
         if not removable:
             return record_ids
-        async with self.data_store_provider.transaction() as tx_store:
-            for article_data in removable:
-                existing = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=f"article_{article_data['id']}",
-                )
-                if existing:
-                    record_ids.append(existing.id)
+        for article_data in removable:
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id,
+                external_record_id=f"article_{article_data['id']}",
+            )
+            if existing:
+                record_ids.append(existing.id)
         return record_ids
 
     async def _article_to_record(self, article_data: Dict[str, Any]) -> Optional[Tuple[Record, List[Permission]]]:
@@ -933,23 +1113,29 @@ class ZendeskConnector(BaseConnector):
         created_at = self._parse_datetime(article_data.get("created_at"))
         updated_at = self._parse_datetime(article_data.get("updated_at"))
 
-        existing_record = None
-        async with self.data_store_provider.transaction() as tx_store:
-            existing_record = await tx_store.get_record_by_external_id(
-                connector_id=self.connector_id,
-                external_id=f"article_{article_id}",
-            )
+        existing_record = await self.data_entities_processor.get_record_by_external_id(
+            connector_id=self.connector_id,
+            external_record_id=f"article_{article_id}",
+        )
         if (
             existing_record
             and existing_record.source_updated_at == updated_at
-            and not self._reemit_unchanged
+            and not self._rebuild_article_edges
         ):
             return None
 
         record_id = existing_record.id if existing_record else str(uuid4())
         version = 0 if existing_record is None else existing_record.version + 1
+        # Guarded like _ticket_to_record: an unknown section would be auto-created
+        # by the processor with no org and no App edge, hiding the article.
         section_id = article_data.get("section_id")
-        external_group_id = f"section_{section_id}" if section_id else None
+        known_section = section_id is not None and str(section_id) in self._section_id_to_data
+        external_group_id = f"section_{section_id}" if known_section else None
+        if section_id and not known_section:
+            self.logger.warning(
+                "Zendesk: article %s references unknown section %s - filing it "
+                "without a record group rather than inventing one", article_id, section_id,
+            )
         record = WebpageRecord(
             id=record_id,
             org_id=self.data_entities_processor.org_id,
@@ -969,9 +1155,9 @@ class ZendeskConnector(BaseConnector):
             updated_at=get_epoch_timestamp_in_ms(),
             source_created_at=created_at,
             source_updated_at=updated_at,
-            indexing_status=ProgressStatus.NOT_STARTED.value,
             preview_renderable=False,
         )
+        self._apply_indexing_filter(record, IndexingFilterKey.KNOWLEDGE_BASE)
         # Restricted articles were filtered out above, so ORG is the right grant.
         permissions = [
             Permission(
@@ -1010,18 +1196,34 @@ class ZendeskConnector(BaseConnector):
             raise ValueError(f"Unsupported Zendesk record type: {record.record_type}")
         return StreamingResponse(iter([content]), media_type=MimeTypes.BLOCKS.value)
 
-    async def _process_ticket_blockgroups_for_streaming(self, record: Record) -> bytes:
+    async def _fetch_public_comments(self, ticket_id: str) -> List[Dict[str, Any]]:
+        """A ticket's public comments, oldest first.
+
+        public=False is an internal agent note. This ticket grants the requester READ,
+        so indexing one would hand it to the customer.
+        """
         datasource = await self._get_fresh_datasource()
         comments = await self._fetch_paginated_list(
             datasource.list_comments,
             "comments",
-            ticket_id=int(record.external_record_id),
+            ticket_id=int(ticket_id),
             sort_order="asc",
             include="users",
         )
-        # public=False is an internal agent note. This record grants the requester
-        # READ, so indexing one would hand it to the customer.
-        comments = [c for c in comments if c.get("public", True)]
+        return [comment for comment in comments if comment.get("public", True)]
+
+    async def _sync_ticket_attachments(self, ticket_record: Record) -> None:
+        """Publish the ticket's comment attachments as records during the sync.
+
+        Zendesk hangs attachments off comments rather than the ticket, and the
+        incremental export cannot sideload them, so this costs one call per changed
+        ticket. Jira gets the same records for free from ``fields.attachment``.
+        """
+        for comment in await self._fetch_public_comments(ticket_record.external_record_id):
+            await self._build_attachment_child_records(comment, ticket_record)
+
+    async def _process_ticket_blockgroups_for_streaming(self, record: Record) -> bytes:
+        comments = await self._fetch_public_comments(record.external_record_id)
         block_groups: List[BlockGroup] = []
         for index, comment in enumerate(comments):
             body = comment.get("html_body") or comment.get("body") or ""
@@ -1070,19 +1272,55 @@ class ZendeskConnector(BaseConnector):
         article = self._extract_object(response.data, "article")
         body = article.get("body") or ""
         body_md = html_to_markdown(await self._inline_images_as_base64(body)) if body else ""
-        block_group = BlockGroup(
+        children_records = await self._build_article_attachment_child_records(article_id, record)
+        block_groups: List[BlockGroup] = [BlockGroup(
             id=str(uuid4()),
             index=0,
             name=article.get("title") or record.record_name,
             type=GroupType.TEXT_SECTION,
             sub_type=GroupSubType.CONTENT,
+            description="Article body",
             source_group_id=str(article_id),
             data=body_md,
             format=DataFormat.MARKDOWN,
             weburl=record.weburl,
             requires_processing=True,
+            children_records=children_records or None,
+        )]
+
+        # Comments hang off the body the way ticket comments hang off the description.
+        # An article comment has no ACL of its own: it is readable by whoever can read
+        # the article, and only org-wide-public articles are synced.
+        comments = await self._fetch_paginated_list(
+            datasource.list_article_comments,
+            "comments",
+            article_id=int(article_id),
+            sort_order="asc",
         )
-        return BlocksContainer(blocks=[], block_groups=[block_group]).model_dump_json(indent=2).encode("utf-8")
+        for index, comment in enumerate(comments, start=1):
+            comment_body = comment.get("body") or ""
+            if "<" in comment_body and ">" in comment_body:
+                comment_body = html_to_markdown(
+                    await self._inline_images_as_base64(comment_body)
+                )
+            author = self._user_id_to_data.get(str(comment.get("author_id")), {})
+            block_groups.append(BlockGroup(
+                id=str(uuid4()),
+                index=index,
+                parent_index=0,
+                name=f"Comment by {author.get('name') or comment.get('author_id') or 'Unknown'}",
+                type=GroupType.TEXT_SECTION,
+                sub_type=GroupSubType.COMMENT,
+                description="Article comment",
+                source_group_id=str(comment.get("id") or f"{article_id}_comment_{index}"),
+                data=comment_body,
+                format=DataFormat.MARKDOWN,
+                weburl=comment.get("html_url") or record.weburl,
+                requires_processing=True,
+            ))
+
+        self._populate_block_group_children(block_groups)
+        return BlocksContainer(blocks=[], block_groups=block_groups).model_dump_json(indent=2).encode("utf-8")
 
     async def _inline_images_as_base64(self, html: str) -> str:
         if not html or "<img" not in html.lower():
@@ -1093,7 +1331,10 @@ class ZendeskConnector(BaseConnector):
             url = match.group(2)
             if url in resolved or url.startswith("data:"):
                 continue
-            if not self._is_tenant_api_url(url):
+            # Same host rule as a download: tenant host gets the token, the shared CDN
+            # gets a bare client. Skipping the CDN would drop the image entirely, since
+            # an embedded image is deliberately not given a FileRecord.
+            if not self._is_safe_zendesk_asset_url(url):
                 continue
             data_uri = await self._fetch_image_as_data_uri(datasource, url)
             if data_uri:
@@ -1107,17 +1348,13 @@ class ZendeskConnector(BaseConnector):
 
     async def _fetch_image_as_data_uri(self, datasource: ZendeskDataSource, url: str) -> Optional[str]:
         try:
-            response = await datasource.http.execute(
-                HTTPRequest(url=url, method="GET", headers=datasource.http.headers.copy())
-            )
-            if response.status >= 400:
-                self.logger.warning(f"Zendesk inline image {url} returned {response.status}")
+            status, raw, mime = await self._fetch_asset(datasource, url)
+            if status >= HTTP_ERROR_STATUS:
+                self.logger.warning(f"Zendesk inline image {url} returned {status}")
                 return None
-            raw = response.bytes()
             if len(raw) > MAX_INLINE_IMAGE_BYTES:
                 self.logger.warning(f"Skipping oversized Zendesk inline image ({len(raw)} bytes): {url}")
                 return None
-            mime = response.content_type
             if not mime.startswith("image/"):
                 return None
             return f"data:{mime};base64,{base64.b64encode(raw).decode('utf-8')}"
@@ -1130,12 +1367,60 @@ class ZendeskConnector(BaseConnector):
         comment: Dict[str, Any],
         parent_record: Record,
     ) -> List[ChildRecord]:
-        if not self._is_indexing_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS.value):
-            return []
         # An attachment has no ACL of its own — it inherits its comment's.
         if not comment.get("public", True):
             return []
-        attachments = comment.get("attachments") or []
+        return await self._emit_attachment_records(
+            comment.get("attachments") or [],
+            parent_record,
+            f"ticket_{parent_record.external_record_id}_comment_{comment.get('id')}",
+            self._rebuild_ticket_edges,
+        )
+
+    async def _build_article_attachment_child_records(
+        self,
+        article_id: str,
+        parent_record: Record,
+    ) -> List[ChildRecord]:
+        """FileRecords for an article's non-inline attachments.
+
+        Inline ones are already embedded in the body as base64 by
+        ``_inline_images_as_base64``; emitting them again would index them twice.
+        """
+        datasource = await self._get_fresh_datasource()
+        attachments, complete = await self._fetch_paginated_list_checked(
+            datasource.list_article_attachments,
+            "article_attachments",
+            article_id=int(article_id),
+        )
+        if not complete:
+            self.logger.error(
+                "Zendesk: attachment list for article %s truncated — indexing the ones "
+                "that arrived rather than dropping the article", article_id,
+            )
+        return await self._emit_attachment_records(
+            attachments,
+            parent_record,
+            parent_record.external_record_id,
+            self._rebuild_article_edges,
+        )
+
+    async def _emit_attachment_records(
+        self,
+        attachments: List[Dict[str, Any]],
+        parent_record: Record,
+        external_id_prefix: str,
+        rebuild_edges: bool,
+    ) -> List[ChildRecord]:
+        """Publish FileRecords for a parent's attachments and return their child links.
+
+        One attachment has one home: an image referenced from the content is embedded
+        there as base64, everything else becomes a record. Never both.
+
+        No explicit permissions: ``inherit_permissions`` is on and the record lands in
+        the parent's record group, so it picks up that group's grants. That is the
+        Jira shape (``jira_cloud/connector.py:3596`` copies an always-empty list).
+        """
         child_records: List[ChildRecord] = []
         records_with_permissions: List[Tuple[Record, List[Permission]]] = []
         for attachment in attachments:
@@ -1143,13 +1428,14 @@ class ZendeskConnector(BaseConnector):
             content_url = attachment.get("content_url")
             if not attachment_id or not content_url:
                 continue
-            external_id = f"ticket_{parent_record.external_record_id}_comment_{comment.get('id')}_attachment_{attachment_id}"
-            existing_record = None
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=external_id,
-                )
+            if self._is_embedded_image(attachment):
+                continue
+            # _resolve_attachment_url splits on the suffix, so it has to stay last.
+            external_id = f"{external_id_prefix}_attachment_{attachment_id}"
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id,
+                external_record_id=external_id,
+            )
             record_id = existing_record.id if existing_record else str(uuid4())
             version = 0 if existing_record is None else existing_record.version
             file_name = attachment.get("file_name") or attachment.get("mapped_content_url") or f"attachment_{attachment_id}"
@@ -1169,7 +1455,7 @@ class ZendeskConnector(BaseConnector):
                 connector_name=Connectors.ZENDESK,
                 connector_id=self.connector_id,
                 mime_type=attachment.get("content_type") or MimeTypes.UNKNOWN.value,
-                # Ticket page, not content_url: that URL is a bearer capability and
+                # Parent page, not content_url: that URL is a bearer capability and
                 # weburl is readable from metadata. Re-fetched per download instead.
                 weburl=parent_record.weburl,
                 is_file=True,
@@ -1177,19 +1463,12 @@ class ZendeskConnector(BaseConnector):
                 size_in_bytes=attachment.get("size"),
                 source_created_at=parent_record.source_created_at,
                 source_updated_at=parent_record.source_updated_at,
-                indexing_status=ProgressStatus.NOT_STARTED.value,
             )
-            parent_group_id = None
-            if parent_record.external_record_group_id and parent_record.external_record_group_id.startswith("group_"):
-                parent_group_id = parent_record.external_record_group_id.removeprefix("group_")
-            # A full sync deleted this attachment's BELONGS_TO edge along with every
-            # other. Publishing only new attachments leaves the existing ones orphaned —
-            # present but unreachable — so re-emit them when the checkpoint is gone.
-            if existing_record is None or self._reemit_unchanged:
-                requester = {"email": getattr(parent_record, "reporter_email", None)}
-                records_with_permissions.append(
-                    (file_record, self._record_permissions(parent_group_id, requester))
-                )
+            self._apply_indexing_filter(file_record, IndexingFilterKey.ATTACHMENTS)
+            # Attachments lost their edges to the same wipe, so a rebuild pass has to
+            # resend the existing ones too, not just the new ones.
+            if existing_record is None or rebuild_edges:
+                records_with_permissions.append((file_record, []))
             child_records.append(ChildRecord(
                 child_type=ChildType.RECORD,
                 child_id=record_id,
@@ -1208,27 +1487,32 @@ class ZendeskConnector(BaseConnector):
                 f"Refusing to fetch Zendesk attachment from untrusted host: {urlparse(content_url).hostname}"
             )
 
-        if self._is_tenant_api_url(content_url):
-            datasource = await self._get_fresh_datasource()
-            response = await datasource.http.execute(HTTPRequest(url=content_url, method="GET"))
-            if response.status >= HTTP_ERROR_STATUS:
-                raise Exception(
-                    f"Failed to download Zendesk attachment {record.external_record_id}: {response.status}"
-                )
-            return response.bytes()
+        datasource = await self._get_fresh_datasource()
+        status, raw, _ = await self._fetch_asset(datasource, content_url)
+        if status >= HTTP_ERROR_STATUS:
+            raise Exception(
+                f"Failed to download Zendesk attachment {record.external_record_id}: {status}"
+            )
+        return raw
 
-        # Shared-tenant CDN. HTTPClient merges its own headers, so the credential can
-        # only be withheld by a client that never had it.
+    async def _fetch_asset(
+        self, datasource: ZendeskDataSource, url: str
+    ) -> Tuple[int, bytes, str]:
+        """Fetch a Zendesk asset, sending the token only to this tenant's own host.
+
+        The shared CDN is reachable by other tenants, so it gets a client that never
+        held the credential — ``HTTPClient`` merges its own headers back in, so passing
+        an empty dict cannot withhold it.
+        """
+        if self._is_tenant_api_url(url):
+            response = await datasource.http.execute(HTTPRequest(url=url, method="GET"))
+            return response.status, response.bytes(), response.content_type
         async with httpx.AsyncClient(
             follow_redirects=True, timeout=CDN_FETCH_TIMEOUT_SECONDS
         ) as cdn_client:
-            cdn_response = await cdn_client.get(content_url)
-        if cdn_response.status_code >= HTTP_ERROR_STATUS:
-            raise Exception(
-                f"Failed to download Zendesk attachment {record.external_record_id}: "
-                f"{cdn_response.status_code}"
-            )
-        return cdn_response.content
+            cdn_response = await cdn_client.get(url)
+        mime = (cdn_response.headers.get("content-type") or "").split(";")[0].strip()
+        return cdn_response.status_code, cdn_response.content, mime
 
     async def _resolve_attachment_url(self, record: Record) -> Optional[str]:
         """Ask Zendesk for the attachment's current content_url.
@@ -1236,18 +1520,25 @@ class ZendeskConnector(BaseConnector):
         Fetched per download so the capability never sits in the graph beside
         metadata that is readable more widely than the file itself.
         """
-        attachment_id = (record.external_record_id or "").rsplit("_attachment_", 1)[-1]
+        external_id = record.external_record_id or ""
+        attachment_id = external_id.rsplit("_attachment_", 1)[-1]
         if not attachment_id.isdigit():
             raise ValueError(
                 f"Unrecognised Zendesk attachment record id: {record.external_record_id}"
             )
         datasource = await self._get_fresh_datasource()
-        response = await datasource.show_attachment(attachment_id=int(attachment_id))
+        # Article attachments have their own path; /attachments/{id} 404s for those ids.
+        is_article_attachment = external_id.startswith("article_")
+        if is_article_attachment:
+            response = await datasource.show_article_attachment(attachment_id=int(attachment_id))
+        else:
+            response = await datasource.show_attachment(attachment_id=int(attachment_id))
         if not response.success or not response.data:
             raise Exception(
                 f"Failed to resolve Zendesk attachment {attachment_id}: {response.error}"
             )
-        return self._extract_object(response.data, "attachment").get("content_url")
+        key = "article_attachment" if is_article_attachment else "attachment"
+        return self._extract_object(response.data, key).get("content_url")
 
     async def get_filter_options(
         self,
@@ -1316,34 +1607,14 @@ class ZendeskConnector(BaseConnector):
             if internal_client and hasattr(internal_client, "close"):
                 await internal_client.close()
 
-    @classmethod
-    async def create_connector(
-        cls,
-        logger: Logger,
-        data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService,
-        connector_id: str,
-        scope: str,
-        created_by: str,
-        data_entities_processor,
-        **kwargs,
-    ) -> "BaseConnector":
-        """Factory method to create ZendeskConnector instance"""
-        return ZendeskConnector(
-            logger,
-            data_entities_processor,
-            data_store_provider,
-            config_service,
-            connector_id,
-            scope,
-            created_by,
-        )
-
     async def _call_api(self, api_method: Any, **kwargs: Any) -> Any:
         """Re-raise a retryable status as the exception ``call_with_retry`` acts on.
 
         The data source folds HTTP errors into a ``ZendeskResponse`` instead of
-        raising, so a 429 would otherwise never be retried.
+        raising, so a 429 would otherwise never be retried. The response headers ride
+        along on the synthesised exception because ``call_with_retry`` reads
+        ``Retry-After`` off it — the incremental exports allow 10 requests a minute,
+        far longer than the 0.5s/1.0s fallback backoff.
         """
         response = await api_method(**kwargs)
         status = response.status_code
@@ -1352,12 +1623,19 @@ class ZendeskConnector(BaseConnector):
             raise httpx.HTTPStatusError(
                 f"Zendesk HTTP {status}: {response.error}",
                 request=request,
-                response=httpx.Response(status, request=request),
+                response=httpx.Response(
+                    status, request=request, headers=response.headers or {}
+                ),
             )
         return response
 
     async def _call_page(self, api_method: Any, page: int, **kwargs: Any) -> Any:
         return await self._call_api(api_method, page=page, per_page=PAGE_SIZE, **kwargs)
+
+    async def _call_cursor_page(self, api_method: Any, after: Optional[str], **kwargs: Any) -> Any:
+        return await self._call_api(
+            api_method, page_size=PAGE_SIZE, page_after=after, **kwargs
+        )
 
     async def _call_incremental(self, method_name: str, **kwargs: Any) -> Any:
         """Incremental exports are capped at 10 req/min, so 429s are routine here.
@@ -1384,27 +1662,38 @@ class ZendeskConnector(BaseConnector):
     async def _fetch_paginated_list_checked(
         self, api_method: Any, key: str, **kwargs: Any
     ) -> Tuple[List[Dict[str, Any]], bool]:
-        """Paginate an offset-based endpoint, reporting whether it ran to the end.
+        """Walk an endpoint to the end, reporting whether it got there.
+
+        Cursor pagination (``page[size]``/``page[after]``) has no ceiling; offset
+        pagination 400s past 10,000 records, which would cap a large tenant. Zendesk
+        ignores the cursor params on endpoints that do not support them and answers
+        offset-style — the missing ``meta`` block identifies that, so the walk carries
+        on by page number instead of stopping short.
 
         Callers that rebuild state from the full result — group membership above all —
-        must not treat a truncated list as authoritative. Zendesk 400s past 10,000
-        records here rather than raising.
+        must not treat a truncated list as authoritative, hence the second value.
         """
         label = getattr(api_method, "__name__", key)
-        page = 1
         results: List[Dict[str, Any]] = []
+        after: Optional[str] = None
+        page = 1
+        by_cursor = True
         while True:
+            where = f"cursor {after}" if by_cursor else f"page {page}"
+            call = (
+                partial(self._call_cursor_page, api_method, after, **kwargs)
+                if by_cursor
+                else partial(self._call_page, api_method, page, **kwargs)
+            )
             try:
                 response = await call_with_retry(
-                    partial(self._call_page, api_method, page, **kwargs),
-                    logger=self.logger,
-                    label=f"zendesk/{label} page {page}",
+                    call, logger=self.logger, label=f"zendesk/{label} {where}"
                 )
             except httpx.HTTPStatusError as e:
-                self.logger.error(f"Zendesk {label} page {page} gave up: {e}")
+                self.logger.error(f"Zendesk {label} {where} gave up: {e}")
                 return results, False
             if not response.success:
-                self.logger.error(f"Zendesk {label} page {page} failed: {response.error}")
+                self.logger.error(f"Zendesk {label} {where} failed: {response.error}")
                 return results, False
             if not response.data:
                 break
@@ -1414,9 +1703,22 @@ class ZendeskConnector(BaseConnector):
             if not items:
                 break
             results.extend(items)
-            if len(items) < PAGE_SIZE:
-                break
-            page += 1
+
+            meta = response.data.get("meta") if isinstance(response.data, dict) else None
+            if by_cursor and not isinstance(meta, dict):
+                # The endpoint ignored the cursor params and served page 1 offset-style;
+                # that page is already collected, so just continue by number.
+                by_cursor = False
+            if by_cursor:
+                if not meta.get("has_more"):
+                    break
+                after = meta.get("after_cursor")
+                if not after:
+                    break
+            else:
+                if len(items) < PAGE_SIZE:
+                    break
+                page += 1
         return results, True
 
     def _extract_list(self, payload: Any, key: str) -> List[Dict[str, Any]]:
@@ -1446,8 +1748,8 @@ class ZendeskConnector(BaseConnector):
             if group.get("id") is not None:
                 self._group_id_to_data[str(group["id"])] = group
 
-    async def _get_start_time(self) -> int:
-        sync_point = await self.records_sync_point.read_sync_point(SYNC_POINT_KEY)
+    async def _get_start_time(self, sync_point_key: str = SYNC_POINT_KEY) -> int:
+        sync_point = await self.records_sync_point.read_sync_point(sync_point_key)
         start_time = sync_point.get("lastEndTime") or DEFAULT_INCREMENTAL_START_TIME
         modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED) if self.sync_filters else None
         if modified_filter:
@@ -1520,13 +1822,16 @@ class ZendeskConnector(BaseConnector):
         operator_value = operator.value if hasattr(operator, "value") else str(operator)
         return group_id not in filter_set if operator_value == "not_in" else group_id in filter_set
 
-    def _is_indexing_enabled(self, key: str) -> bool:
-        if not self.indexing_filters:
-            return True
-        filter_obj = self.indexing_filters.get(key)
-        if not filter_obj:
-            return True
-        return bool(filter_obj.get_value(default=True))
+    def _apply_indexing_filter(self, record: Record, key: IndexingFilterKey) -> None:
+        """Mark a record as not-to-be-indexed when its content type is switched off.
+
+        Turning a type off must not stop it syncing: the record, its edges and its
+        permissions still belong in the graph, and dropping it would strand whatever
+        already pointed at it. AUTO_INDEX_OFF is what suppresses the indexing event
+        (``data_source_entities_processor.py:1136``), and a later reindex can override.
+        """
+        if self.indexing_filters and not self.indexing_filters.is_enabled(key):
+            record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
     def _is_allowed_by_date_filters(
         self,
@@ -1618,6 +1923,19 @@ class ZendeskConnector(BaseConnector):
             (".zdusercontent.com", ".zendeskusercontent.com")
         )
 
+    @staticmethod
+    def _is_embedded_image(attachment: Dict[str, Any]) -> bool:
+        """Whether this attachment already lives in the body as a base64 data URI.
+
+        Zendesk marks an attachment referenced from the content ``inline``, and
+        ``_inline_images_as_base64`` embeds the image ones. A record for those would
+        index the same bytes twice. An inline non-image — a linked PDF — is not
+        embedded by anything, so it still needs its own record.
+        """
+        return bool(attachment.get("inline")) and str(
+            attachment.get("content_type") or ""
+        ).startswith("image/")
+
     def _extension(self, file_name: str) -> Optional[str]:
         if "." not in file_name:
             return None
@@ -1632,3 +1950,26 @@ class ZendeskConnector(BaseConnector):
             child_indices = children_by_parent.get(block_group.index)
             if child_indices:
                 block_group.children = BlockGroupChildren.from_indices(block_group_indices=sorted(child_indices))
+
+    @classmethod
+    async def create_connector(
+        cls,
+        logger: Logger,
+        data_store_provider: DataStoreProvider,
+        config_service: ConfigurationService,
+        connector_id: str,
+        scope: str,
+        created_by: str,
+        data_entities_processor,
+        **kwargs,
+    ) -> "BaseConnector":
+        """Factory method to create ZendeskConnector instance"""
+        return ZendeskConnector(
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service,
+            connector_id,
+            scope,
+            created_by,
+        )
