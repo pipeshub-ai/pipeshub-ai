@@ -17,15 +17,15 @@ from unittest.mock import patch
 
 import pytest
 
-from app.config.providers.redis import redis_store as redis_store_module
-from app.config.providers.redis.redis_store import RedisDistributedKeyValueStore
-from tests.support.fake_redis_connection_provider import FakeRedisConnectionProvider
-
 pytest.importorskip("fakeredis.aioredis")
 
+from app.config.providers.redis import redis_store as redis_store_module
+from app.config.providers.redis.redis_store import RedisDistributedKeyValueStore
+from tests.support.redis_provider_matrix import PROVIDERS
 
-def _make_store(*, is_cluster: bool) -> RedisDistributedKeyValueStore:
-    provider = FakeRedisConnectionProvider(is_cluster=is_cluster)
+
+def _make_store(make_provider) -> RedisDistributedKeyValueStore:
+    provider = make_provider()
     with patch.object(redis_store_module, "get_redis_provider", return_value=provider):
         return RedisDistributedKeyValueStore(
             serializer=lambda v: json.dumps(v).encode(),
@@ -36,10 +36,15 @@ def _make_store(*, is_cluster: bool) -> RedisDistributedKeyValueStore:
         )
 
 
-TRANSPORTS = [
-    pytest.param(lambda: _make_store(is_cluster=False), id="standalone"),
-    pytest.param(lambda: _make_store(is_cluster=True), id="cluster"),
-]
+def _transport_from_provider(provider_param):
+    (make_provider,) = provider_param.values
+    return pytest.param(lambda: _make_store(make_provider), id=provider_param.id)
+
+
+# Derived from `PROVIDERS` in `tests/support/redis_provider_matrix.py` (T4)
+# so an EE `conftest.py` appending a `memorydb` entry there runs this same
+# suite against it with no changes here.
+TRANSPORTS = [_transport_from_provider(p) for p in PROVIDERS]
 
 
 @pytest.mark.asyncio

@@ -16,13 +16,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
+
 from app.services.messaging.config import RedisStreamsConfig, StreamMessage
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 from app.services.messaging.redis_streams.producer import RedisStreamsProducer
 from tests.support.fake_cluster_redis import FakeClusterRedis
-from tests.support.fake_redis_connection_provider import FakeRedisConnectionProvider
-
-fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
+from tests.support.redis_provider_matrix import PROVIDERS
 
 # record-events.0 and record-events.1 hash to different slots (see
 # `redis.crc.key_slot`); record-events.2 lands in a third slot again. A
@@ -30,15 +30,9 @@ fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
 # subscribes to more than one of these in a single XREADGROUP.
 _LANE_TOPICS = ["record-events.0", "record-events.1", "record-events.2"]
 
-
-def _make_provider(*, is_cluster: bool) -> FakeRedisConnectionProvider:
-    return FakeRedisConnectionProvider(is_cluster=is_cluster)
-
-
-PROVIDERS = [
-    pytest.param(lambda: _make_provider(is_cluster=False), id="standalone"),
-    pytest.param(lambda: _make_provider(is_cluster=True), id="cluster"),
-]
+# `PROVIDERS` (standalone/cluster) comes from `tests/support/redis_provider_matrix.py`
+# (T4) so an EE `conftest.py` can append a `memorydb` entry and run this same
+# suite against it with no changes here.
 
 
 def _config(**overrides: object) -> RedisStreamsConfig:

@@ -53,6 +53,21 @@ from tests.unit.services.messaging.governor_test_helpers import make_test_govern
 # ---------------------------------------------------------------------------
 
 
+def _fill_gate_waiters(consumer, count: int, tier: ParseTier = ParseTier.HEAVY) -> None:
+    """Stand in for `count` spawned tasks still queued for an index gate."""
+    for _ in range(count):
+        consumer.gate_waiters.add(tier)
+
+
+def _budget(ceiling: int, *, waiters: int) -> concurrency.DispatchBudget:
+    """A broker-order (single-bucket) dispatch budget with `waiters` queued."""
+    return concurrency.DispatchBudget(
+        total_ceiling=ceiling,
+        total_waiters=waiters,
+        tiers={ParseTier.HEAVY: concurrency.TierBudget(waiters=waiters, ceiling=ceiling)},
+    )
+
+
 @pytest.fixture
 def logger():
     return logging.getLogger("test_redis_indexing_consumer")
@@ -2082,8 +2097,7 @@ class TestDrainPending:
         consumer.redis = AsyncMock()
         consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
         consumer.redis.xreadgroup = AsyncMock(return_value=None)
-        with consumer._futures_lock:
-            consumer._gate_waiters = 39
+        _fill_gate_waiters(consumer, 39)
 
         with patch.object(
             type(messaging_env),
@@ -2619,17 +2633,14 @@ class TestConsumeLoop:
 
         max_tasks = messaging_env.max_pending_indexing_tasks
 
-        task_count_values = [max_tasks, 0, 0]  # first: at capacity, rest: below
-        task_count_iter = iter(task_count_values)
+        # first turn: at capacity, every later turn: below
+        budgets = iter([_budget(max_tasks, waiters=max_tasks)])
 
-        def mock_get_count():
-            try:
-                return next(task_count_iter)
-            except StopIteration:
-                return 0
+        def mock_budget():
+            return next(budgets, _budget(max_tasks, waiters=0))
 
         with patch.object(consumer, "_drain_pending", new_callable=AsyncMock):
-            with patch.object(consumer, "_get_gate_waiter_count", side_effect=mock_get_count):
+            with patch.object(consumer, "_dispatch_budget", side_effect=mock_budget):
                 with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
                     await consumer._consume_loop()
 
@@ -2654,17 +2665,15 @@ class TestConsumeLoop:
 
         consumer.redis.xreadgroup = mock_xreadgroup
 
-        counts = [max_tasks, max_tasks, 0, 0]
-        count_iter = iter(counts)
+        budgets = iter(
+            [_budget(max_tasks, waiters=max_tasks), _budget(max_tasks, waiters=max_tasks)]
+        )
 
-        def mock_get_count():
-            try:
-                return next(count_iter)
-            except StopIteration:
-                return 0
+        def mock_budget():
+            return next(budgets, _budget(max_tasks, waiters=0))
 
         with patch.object(consumer, "_drain_pending", new_callable=AsyncMock):
-            with patch.object(consumer, "_get_gate_waiter_count", side_effect=mock_get_count):
+            with patch.object(consumer, "_dispatch_budget", side_effect=mock_budget):
                 with patch("asyncio.sleep", new_callable=AsyncMock):
                     await consumer._consume_loop()
 

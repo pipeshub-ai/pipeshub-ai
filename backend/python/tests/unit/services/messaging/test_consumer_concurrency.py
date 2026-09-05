@@ -22,6 +22,9 @@ from app.services.messaging.consumer_concurrency import (
     bridge_to_main_loop,
     clear_retry_tracking,
     effective_index_tier,
+    GateWaiters,
+    dispatch_budget,
+    dispatch_tier,
     get_gate_waiter_count,
     get_retry_count,
     increment_retry_and_check,
@@ -59,10 +62,17 @@ def _make_host(
         _distributed_log_times={},
         governor=governor,
         parsing_semaphore=parsing_semaphore,
-        _gate_waiters=gate_waiters,
+        gate_waiters=_waiters(gate_waiters),
         _futures_lock=threading.Lock(),
     )
     return host
+
+
+def _waiters(count: int, tier: ParseTier = ParseTier.HEAVY) -> GateWaiters:
+    waiters = GateWaiters()
+    for _ in range(count):
+        waiters.add(tier)
+    return waiters
 
 
 # ---------------------------------------------------------------------------
@@ -839,48 +849,110 @@ class TestAdmissionRelease:
 class TestGateWaiterToken:
     def test_init_increments(self):
         host = _make_host(gate_waiters=0)
-        GateWaiterToken(host)
-        assert host._gate_waiters == 1
+        GateWaiterToken(host, ParseTier.LIGHT)
+        assert host.gate_waiters.count() == 1
+        assert host.gate_waiters.count(ParseTier.LIGHT) == 1
+        assert host.gate_waiters.count(ParseTier.HEAVY) == 0
 
     def test_admit_decrements(self):
         host = _make_host(gate_waiters=0)
-        token = GateWaiterToken(host)
-        assert host._gate_waiters == 1
+        token = GateWaiterToken(host, ParseTier.HEAVY)
+        assert host.gate_waiters.count(ParseTier.HEAVY) == 1
         token.admit()
-        assert host._gate_waiters == 0
+        assert host.gate_waiters.count() == 0
 
     def test_admit_idempotent(self):
         host = _make_host(gate_waiters=0)
-        token = GateWaiterToken(host)
+        token = GateWaiterToken(host, ParseTier.HEAVY)
         token.admit()
         token.admit()
-        assert host._gate_waiters == 0
+        assert host.gate_waiters.count() == 0
 
     def test_release_without_admit(self):
         host = _make_host(gate_waiters=0)
-        token = GateWaiterToken(host)
-        assert host._gate_waiters == 1
+        token = GateWaiterToken(host, ParseTier.LIGHT)
+        assert host.gate_waiters.count() == 1
         token.release()
-        assert host._gate_waiters == 0
+        assert host.gate_waiters.count() == 0
 
     def test_release_after_admit_noop(self):
         host = _make_host(gate_waiters=0)
-        token = GateWaiterToken(host)
+        token = GateWaiterToken(host, ParseTier.LIGHT)
         token.admit()
-        assert host._gate_waiters == 0
+        assert host.gate_waiters.count() == 0
         token.release()
-        assert host._gate_waiters == 0
+        assert host.gate_waiters.count() == 0
 
     def test_release_idempotent(self):
         host = _make_host(gate_waiters=0)
-        token = GateWaiterToken(host)
+        token = GateWaiterToken(host, ParseTier.LIGHT)
         token.release()
         token.release()
-        assert host._gate_waiters == 0
+        assert host.gate_waiters.count() == 0
+
+    def test_token_remembers_its_tier(self):
+        host = _make_host(gate_waiters=0)
+        assert GateWaiterToken(host, ParseTier.LIGHT).tier is ParseTier.LIGHT
 
     def test_get_gate_waiter_count(self):
         host = _make_host(gate_waiters=5)
         assert get_gate_waiter_count(host) == 5
+        assert get_gate_waiter_count(host, ParseTier.HEAVY) == 5
+        assert get_gate_waiter_count(host, ParseTier.LIGHT) == 0
+
+
+class TestGateWaiters:
+    def test_counts_per_tier_and_in_total(self):
+        waiters = GateWaiters()
+        waiters.add(ParseTier.HEAVY)
+        waiters.add(ParseTier.HEAVY)
+        waiters.add(ParseTier.LIGHT)
+        assert waiters.count(ParseTier.HEAVY) == 2
+        assert waiters.count(ParseTier.LIGHT) == 1
+        assert waiters.count() == 3
+        assert waiters.snapshot() == {ParseTier.HEAVY: 2, ParseTier.LIGHT: 1}
+
+    def test_remove_is_per_tier(self):
+        waiters = GateWaiters()
+        waiters.add(ParseTier.HEAVY)
+        waiters.add(ParseTier.LIGHT)
+        waiters.remove(ParseTier.HEAVY)
+        assert waiters.snapshot() == {ParseTier.HEAVY: 0, ParseTier.LIGHT: 1}
+
+    def test_reset_forgets_everything(self):
+        waiters = _waiters(4)
+        waiters.add(ParseTier.LIGHT)
+        waiters.reset()
+        assert waiters.count() == 0
+
+    def test_snapshot_is_a_copy(self):
+        waiters = _waiters(1)
+        snapshot = waiters.snapshot()
+        snapshot[ParseTier.HEAVY] = 99
+        assert waiters.count(ParseTier.HEAVY) == 1
+
+    def test_thread_safe_under_concurrent_tokens(self):
+        waiters = GateWaiters()
+        host = SimpleNamespace(gate_waiters=waiters)
+        rounds = 2000
+
+        def churn(tier: ParseTier) -> None:
+            for i in range(rounds):
+                token = GateWaiterToken(host, tier)
+                if i % 2:
+                    token.admit()
+                else:
+                    token.release()
+
+        threads = [
+            threading.Thread(target=churn, args=(tier,))
+            for tier in (ParseTier.HEAVY, ParseTier.LIGHT, ParseTier.HEAVY)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert waiters.snapshot() == {ParseTier.HEAVY: 0, ParseTier.LIGHT: 0}
 
 
 # ---------------------------------------------------------------------------
@@ -964,3 +1036,154 @@ class TestReportMemoryIncident:
         report_memory_incident_if_applicable(host, "msg-1", MemoryError())
         gov.report_memory_incident.assert_called_once()
         assert "msg-1" in gov.report_memory_incident.call_args[0][0]
+
+
+# ---------------------------------------------------------------------------
+# dispatch_tier / dispatch_budget
+# ---------------------------------------------------------------------------
+
+
+def _governor(*, heavy_limit: int, light_limit: int, index_light_ceiling: int = 16):
+    limits = {Pool.INDEX_HEAVY: heavy_limit, Pool.INDEX_LIGHT: light_limit}
+    return SimpleNamespace(
+        ceilings=SimpleNamespace(
+            index=8 + index_light_ceiling,
+            index_heavy=8,
+            index_light=index_light_ceiling,
+            heavy=4,
+        ),
+        limit=limits.__getitem__,
+    )
+
+
+def _message(**payload):
+    from app.services.messaging.config import StreamMessage
+
+    return StreamMessage(eventType="newRecord", payload=payload)
+
+
+class TestDispatchTier:
+    def test_heavy_extension_is_heavy(self):
+        host = _make_host()
+        assert dispatch_tier(host, _message(extension="pdf")) is ParseTier.HEAVY
+
+    def test_blocks_payload_is_light(self):
+        host = _make_host()
+        assert (
+            dispatch_tier(host, _message(mimeType="application/blocks"))
+            is ParseTier.LIGHT
+        )
+
+    def test_unknown_and_missing_resolve_to_heavy(self):
+        host = _make_host()
+        assert dispatch_tier(host, _message()) is ParseTier.HEAVY
+        assert dispatch_tier(host, _message(extension=None, mimeType=None)) is ParseTier.HEAVY
+        assert dispatch_tier(host, None) is ParseTier.HEAVY
+
+    def test_collapsed_light_budget_routes_light_records_to_heavy(self):
+        host = _make_host(governor=_governor(heavy_limit=1, light_limit=0, index_light_ceiling=0))
+        assert dispatch_tier(host, _message(extension="txt")) is ParseTier.HEAVY
+
+    def test_agrees_with_effective_index_tier(self):
+        """The token, the dispatcher and the wrapper must all land on the
+        same pool; this is the one function they share."""
+        from app.services.resource_governor import classify
+
+        host = _make_host(governor=_governor(heavy_limit=4, light_limit=8))
+        for ext, mime in [("pdf", ""), ("txt", ""), ("", "application/blocks"), ("", "")]:
+            assert dispatch_tier(host, _message(extension=ext, mimeType=mime)) is (
+                effective_index_tier(host, classify(ext, mime))
+            )
+
+
+class TestDispatchBudget:
+    def _host(self, *, heavy_waiters=0, light_waiters=0, **governor_kwargs):
+        host = _make_host(governor=_governor(**governor_kwargs) if governor_kwargs else None)
+        for _ in range(heavy_waiters):
+            host.gate_waiters.add(ParseTier.HEAVY)
+        for _ in range(light_waiters):
+            host.gate_waiters.add(ParseTier.LIGHT)
+        return host
+
+    def test_heavy_is_held_to_its_own_gate_depth_light_to_the_total(self):
+        host = self._host(heavy_limit=4, light_limit=8)
+        with patch.dict("os.environ", {}, clear=True):
+            budget = dispatch_budget(host)
+        assert budget.total_ceiling == pending_task_ceiling(host) == 64
+        assert budget.tiers[ParseTier.HEAVY].ceiling == 8   # 2 x limit
+        assert budget.tiers[ParseTier.LIGHT].ceiling == 64  # the total
+
+    def test_heavy_ceiling_has_a_floor_when_the_pool_is_braked(self):
+        host = self._host(heavy_limit=1, light_limit=8)
+        with patch.dict("os.environ", {}, clear=True):
+            assert dispatch_budget(host).tiers[ParseTier.HEAVY].ceiling == 8
+
+    def test_heavy_ceiling_follows_the_current_limit(self):
+        host = self._host(heavy_limit=20, light_limit=8)
+        with patch.dict("os.environ", {}, clear=True):
+            assert dispatch_budget(host).tiers[ParseTier.HEAVY].ceiling == 40
+
+    def test_heavy_at_ceiling_still_allows_light(self):
+        """The bug: heavy waiters used to fill the shared number and stop
+        light dispatch with the light pool idle."""
+        host = self._host(heavy_limit=4, light_limit=8, heavy_waiters=8)
+        with patch.dict("os.environ", {}, clear=True):
+            budget = dispatch_budget(host)
+        assert not budget.allows(ParseTier.HEAVY)
+        assert budget.allows(ParseTier.LIGHT)
+        assert not budget.blocked
+        assert budget.remaining == 56
+
+    def test_total_bounds_every_tier(self):
+        host = self._host(heavy_limit=4, light_limit=8, heavy_waiters=4, light_waiters=60)
+        with patch.dict("os.environ", {}, clear=True):
+            budget = dispatch_budget(host)
+        assert budget.total_waiters == 64
+        assert not budget.allows(ParseTier.LIGHT)
+        assert not budget.allows(ParseTier.HEAVY)
+        assert budget.blocked
+        assert budget.remaining == 0
+
+    def test_explicit_env_cap_is_the_total_and_bounds_the_tiers(self):
+        host = self._host(heavy_limit=20, light_limit=8)
+        with patch.dict("os.environ", {"MAX_PENDING_INDEXING_TASKS": "20"}):
+            with patch("app.services.messaging.consumer_concurrency.messaging_env") as env:
+                env.max_pending_indexing_tasks = 20
+                budget = dispatch_budget(host)
+        assert budget.total_ceiling == 20
+        assert budget.tiers[ParseTier.HEAVY].ceiling == 20  # 40 derived, capped
+        assert budget.tiers[ParseTier.LIGHT].ceiling == 20
+
+    def test_collapsed_light_tier_is_absent_and_heavy_gets_the_total(self):
+        host = self._host(heavy_limit=1, light_limit=0, index_light_ceiling=0)
+        with patch.dict("os.environ", {}, clear=True):
+            budget = dispatch_budget(host)
+        assert set(budget.tiers) == {ParseTier.HEAVY}
+        assert budget.tiers[ParseTier.HEAVY].ceiling == budget.total_ceiling
+        assert not budget.allows(ParseTier.LIGHT)
+
+    def test_without_a_governor_every_tier_is_the_total(self):
+        host = self._host()
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("app.services.messaging.consumer_concurrency.messaging_env") as env:
+                env.max_pending_indexing_tasks = 28
+                budget = dispatch_budget(host)
+        assert budget.total_ceiling == 28
+        assert {b.ceiling for b in budget.tiers.values()} == {28}
+
+    def test_untiered_budget_collapses_to_the_total(self):
+        host = self._host(heavy_limit=4, light_limit=8, heavy_waiters=8)
+        with patch.dict("os.environ", {}, clear=True):
+            budget = dispatch_budget(host, tiered=False)
+        assert budget.tiers[ParseTier.HEAVY].ceiling == 64
+        assert budget.allows(ParseTier.HEAVY)
+
+    def test_describe_and_as_dict_name_every_tier(self):
+        host = self._host(heavy_limit=4, light_limit=8, heavy_waiters=3, light_waiters=2)
+        with patch.dict("os.environ", {}, clear=True):
+            budget = dispatch_budget(host)
+        assert budget.describe() == "heavy 3/8, light 2/64, total 5/64"
+        payload = budget.as_dict()
+        assert payload["total"] == {"waiters": 5, "ceiling": 64}
+        assert payload["tiers"]["heavy"] == {"waiters": 3, "ceiling": 8, "allows": True}
+        assert payload["blocked"] is False

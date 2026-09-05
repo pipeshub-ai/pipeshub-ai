@@ -231,9 +231,12 @@ class DRRScheduler(Generic[T]):
     level 1, and so on. A one-level key degenerates to flat DRR; a single
     active key degenerates to plain FIFO.
 
-    ``max_per_entity_messages`` caps the *leaf* queue: the cap is per
-    connector, not per org, so one org's many connectors each get their own
-    allowance rather than competing for a shared one.
+    ``max_per_entity_messages`` caps the *entity* prefix of a key (the
+    configured key fields): the cap is per connector, not per org, so one
+    org's many connectors each get their own allowance rather than competing
+    for a shared one. Any levels below the entity (``config.key_depth`` past
+    ``config.entity_depth``) split the entity's queue into sibling leaves that
+    share its allowance and its turns.
     """
 
     def __init__(
@@ -243,7 +246,8 @@ class DRRScheduler(Generic[T]):
     ) -> None:
         self._config = config
         self._weights = weights
-        self._depth = max(1, len(config.key_fields))
+        self._depth = max(1, config.key_depth)
+        self._entity_depth = max(1, min(config.entity_depth, self._depth))
         self._root: _Node[T] = _Node((), 0, self._depth)
 
     def _quantum_for(self, key: FairnessKey) -> int:
@@ -283,7 +287,10 @@ class DRRScheduler(Generic[T]):
             return EnqueueResult.BUFFER_FULL
 
         key = self._normalize(key)
-        if self.pending_count_for(key) >= self._config.max_per_entity_messages:
+        if (
+            self.pending_count_for(self.entity_key(key))
+            >= self._config.max_per_entity_messages
+        ):
             return EnqueueResult.ENTITY_FULL
 
         self._root.push(key, _Entry(item=item, not_before=not_before))
@@ -319,8 +326,12 @@ class DRRScheduler(Generic[T]):
 
     @property
     def active_entity_count(self) -> int:
-        """Distinct fully-qualified keys with buffered items."""
-        return self._root.leaf_count()
+        """Distinct entities with buffered items."""
+        return self.active_count_at(self._entity_depth - 1)
+
+    def entity_key(self, key: FairnessKey) -> FairnessKey:
+        """The prefix of ``key`` the per-entity cap applies to."""
+        return self._normalize(key)[: self._entity_depth]
 
     def active_count_at(self, level: int) -> int:
         """Distinct keys with buffered items at ``level`` (0 = outermost).

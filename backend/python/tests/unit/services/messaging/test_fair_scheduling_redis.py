@@ -115,7 +115,10 @@ class TestMultiOrgInterleaving:
 
         # Quantum 1 for both keys: strict alternation, not "all of org-a's
         # backlog first" -- the exact failure mode this feature fixes.
-        assert order == [("org-a", "conn-1"), ("org-b", "conn-1")] * 5
+        # Compared at entity depth: the tier level below is not what this
+        # test is about.
+        entities = [consumer._scheduler.entity_key(key) for key in order]
+        assert entities == [("org-a", "conn-1"), ("org-b", "conn-1")] * 5
 
 
 class TestFullBufferParksInsteadOfRepublishing:
@@ -890,7 +893,10 @@ class TestDeferredDrainIsPerKey:
 
         # "busy" is still capped, so its entry stays parked; nothing else is
         # stuck behind it.
-        parked_keys = [entry[4] for entry in consumer._deferred_entries]
+        parked_keys = [
+            consumer._scheduler.entity_key(entry[4])
+            for entry in consumer._deferred_entries
+        ]
         assert parked_keys == [("org-a", "busy")]
 
     async def test_a_keys_own_entries_keep_arrival_order(self, logger, config):
@@ -990,7 +996,7 @@ class TestDrainPendingRoutesThroughScheduler:
         keys = set()
         while not consumer._scheduler.is_empty:
             key, _item = consumer._scheduler.dequeue()
-            keys.add(key)
+            keys.add(consumer._scheduler.entity_key(key))
         assert keys == {("org-a", "conn-1"), ("org-b", "conn-1")}
 
 

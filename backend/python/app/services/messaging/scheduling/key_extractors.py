@@ -4,12 +4,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from app.services.messaging.config import StreamMessage
-    from app.services.messaging.scheduling.interface import FairnessKey
+    from app.services.messaging.scheduling.interface import (
+        FairnessKey,
+        FairnessKeyExtractor,
+    )
 
-__all__ = ["CompositeKeyExtractor"]
+__all__ = ["CompositeKeyExtractor", "TieredKeyExtractor"]
 
 DEFAULT_MISSING = "__default__"
 
@@ -56,3 +59,29 @@ class CompositeKeyExtractor:
             else str(value)
             for field in self._fields
         )
+
+
+class TieredKeyExtractor:
+    """Appends a document-tier level below whatever ``inner`` extracts.
+
+    The tier is not a payload field: it is derived from ``extension`` and
+    ``mimeType`` *and* from the governor's ceilings (a host with no light
+    budget routes every record to heavy), so it is supplied as a callable by
+    the consumer that knows both. Pairs with ``FairSchedulerConfig.tier_level``,
+    which adds the matching depth to the scheduler.
+    """
+
+    def __init__(
+        self,
+        inner: "FairnessKeyExtractor",
+        tier_of: "Callable[[StreamMessage], str]",
+    ) -> None:
+        self._inner = inner
+        self._tier_of = tier_of
+
+    @property
+    def inner(self) -> "FairnessKeyExtractor":
+        return self._inner
+
+    def extract(self, message: "StreamMessage") -> "FairnessKey":
+        return (*self._inner.extract(message), self._tier_of(message))

@@ -2635,7 +2635,9 @@
         "redis": {
           "label": "Redis",
           "descriptionWithKvStore": "缓存、速率限制和配置",
-          "description": "缓存和速率限制"
+          "description": "缓存和速率限制",
+          "modeCluster": "集群",
+          "modeMemorydb": "MemoryDB"
         },
         "mongodb": {
           "label": "MongoDB",

@@ -94,8 +94,14 @@ export function createHealthRouter(
       };
       const vectorDbName = vectorDbNames[deployment.vectorDbType || ''] || 'VectorDB';
 
+      const redisMode = process.env.REDIS_MODE || 'standalone';
+      const redisDisplayName =
+        redisMode === 'cluster' ? 'Redis (Cluster)'
+        : redisMode === 'memorydb' ? 'Redis (MemoryDB)'
+        : 'Redis';
+
       const serviceNames: Record<string, string> = {
-        redis: 'Redis',
+        redis: redisDisplayName,
         messageBroker: brokerName,
         mongodb: 'MongoDB',
         graphDb: graphDbName,

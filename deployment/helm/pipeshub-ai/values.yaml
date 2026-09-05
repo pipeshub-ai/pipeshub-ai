@@ -482,6 +482,11 @@ redis:
   external:
     enabled: false     # true: do not deploy the Bitnami subchart; use clusterEndpoints/host below
     clusterEndpoints: "" # comma-separated host:port list, REDIS_MODE=cluster only
+    # Remaps a cluster node's advertised CLUSTER SLOTS/SHARDS address to the
+    # address it is actually reachable at from inside this cluster (or from
+    # AWS MemoryDB's private-VPC addressing). Comma-separated
+    # internalHost:internalPort=externalHost:externalPort entries.
+    natMap: ""
   # Applied inside key builders (never a client-level prefix); required to
   # safely share one Redis/MemoryDB across multiple releases/tenants.
   # Applied by the explicit key builders (config KV + invalidation channel,
