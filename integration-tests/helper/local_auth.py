@@ -111,15 +111,31 @@ def _create_oauth_app(
         if status < 400:
             return parsed
         last_detail = detail
-        # 4xx is a real rejection — bad token, missing scope, not an admin.
-        # Retrying it only wastes time and hides the reason.
-        if status < 500 or attempt == attempts:
+        # Only the duplicate-slug collision is retried, not every 5xx.
+        #
+        # This POST creates an OAuth client, so it is not idempotent: if the
+        # server committed the client and then failed, a second attempt would
+        # create another one and orphan the first secret. The collision in
+        # #3192 fails on a unique index, so nothing is written and retrying is
+        # safe. Any other 5xx is reported rather than repeated.
+        if not _is_duplicate_slug(detail) or attempt == attempts:
             break
         time.sleep(2 * attempt)
 
     raise RuntimeError(
         f"create OAuth app failed after {attempt} attempt(s): {last_detail}"
     )
+
+
+def _is_duplicate_slug(detail: str) -> bool:
+    """True when the failure is the slug collision described in issue #3192.
+
+    Matched on the MongoDB duplicate-key signature rather than the status code,
+    because the status code alone cannot distinguish "nothing was written" from
+    "the client was created and then something else failed".
+    """
+    lowered = detail.lower()
+    return "e11000" in lowered or ("duplicate key" in lowered and "slug" in lowered)
 
 
 def _post_oauth_app(
