@@ -5382,3 +5382,48 @@ class TestPlaceholderFlag:
         assert kwargs["record_group_id"] == "rg-1"
         assert kwargs["is_placeholder"] is True
         assert kwargs["status_filters"] is None
+
+
+class TestOnRecordsMovedPromotesOnlyAckedRecords:
+    """on_records_moved discarded the publish result, so it could never mark a
+    record QUEUED -- and with new records now stored NOT_STARTED (see
+    TestNewRecordsAreStoredNotStarted in test_data_processor.py) that would
+    leave them NOT_STARTED even after a successful publish. It must mirror
+    on_new_records: CAS to QUEUED exactly the records whose event was acked.
+    """
+
+    pytestmark = pytest.mark.anyio
+
+    async def test_acked_new_records_are_swapped_to_queued(self) -> None:
+        tx_store = _make_tx_store()
+        proc = _setup_proc_for_moved(tx_store, old_record=None)
+        proc.messaging_producer.send_messages = AsyncMock(
+            side_effect=lambda topic, messages: [True, False]
+        )
+        moved = [
+            ("/old/a.py", _make_code_record(record_id="a", external_record_id="/new/a.py"), []),
+            ("/old/b.py", _make_code_record(record_id="b", external_record_id="/new/b.py"), []),
+        ]
+
+        await proc.on_records_moved(moved)
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        # Only "a" was acked; "b" stays NOT_STARTED for the stranded-record
+        # sweep to re-publish rather than being marked QUEUED with no event.
+        proc.data_store_provider.compare_and_set_indexing_status.assert_awaited_once_with(
+            ["a"],
+            ProgressStatus.NOT_STARTED.value,
+            ProgressStatus.QUEUED.value,
+        )
+
+    async def test_a_wholly_failed_publish_swaps_nothing(self) -> None:
+        tx_store = _make_tx_store()
+        proc = _setup_proc_for_moved(tx_store, old_record=None)
+        proc.messaging_producer.send_messages = AsyncMock(
+            side_effect=lambda topic, messages: [False] * len(messages)
+        )
+
+        await proc.on_records_moved([("/old/a.py", _make_code_record(record_id="a"), [])])
+
+        cas = proc.data_store_provider.compare_and_set_indexing_status
+        assert all(call.args[0] == [] for call in cas.await_args_list)

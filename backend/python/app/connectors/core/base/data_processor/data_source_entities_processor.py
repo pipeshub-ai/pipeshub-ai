@@ -975,6 +975,18 @@ class DataSourceEntitiesProcessor:
 
         if existing_record is None:
             self.logger.debug("New record: %s", record)
+            # A brand-new record must be stored NOT_STARTED, not the model's
+            # QUEUED default. `_mark_queued_after_publish` is a CAS from
+            # NOT_STARTED that runs only for records whose event was acked --
+            # that is the whole guard against "marked QUEUED for an event that
+            # never published". Persisting QUEUED here made that CAS a no-op,
+            # so a failed publish left the record QUEUED with no event behind
+            # it and nothing to ever pick it up (observed: 10 connector records
+            # stuck QUEUED for hours after a Redis outage). Only the default is
+            # remapped; a status a connector set deliberately (AUTO_INDEX_OFF,
+            # COMPLETED for KB folders, ...) is kept.
+            if record.indexing_status == ProgressStatus.QUEUED.value:
+                record.indexing_status = ProgressStatus.NOT_STARTED.value
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id
@@ -1401,7 +1413,10 @@ class DataSourceEntitiesProcessor:
 
             new_batch = _publishable(new_records_to_publish)
             if new_batch:
-                await self.messaging_producer.send_messages(
+                # `acked` is used, not discarded (it was): the CAS below is what
+                # turns NOT_STARTED into QUEUED, and only for records whose event
+                # actually landed -- see on_new_records.
+                acked = await self.messaging_producer.send_messages(
                     "record-events",
                     [
                         (
@@ -1414,6 +1429,9 @@ class DataSourceEntitiesProcessor:
                         )
                         for record in new_batch
                     ],
+                )
+                await self._mark_queued_after_publish(
+                    [r.id for r, ok in zip(new_batch, acked) if ok]
                 )
 
             reindex_batch = _publishable(records_to_reindex)

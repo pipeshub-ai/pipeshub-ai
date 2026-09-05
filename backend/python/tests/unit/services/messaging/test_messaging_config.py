@@ -317,3 +317,22 @@ class TestEmptyEnvVarsFallBackToDefaults:
         """A typo must degrade to the default, not crash the service at import."""
         monkeypatch.setenv(env_var, "not-a-number")
         assert getattr(messaging_env, attribute) == expected
+
+
+class TestStrandedRecordRepublishDefault:
+    """The sweep that rescues a record whose indexing event was lost or never
+    published is the only recovery path that covers it (the stale scan is
+    IN_PROGRESS-only). It used to default to 0 = off, so such records sat
+    QUEUED forever unless an operator knew to enable it."""
+
+    def test_is_on_by_default(self, monkeypatch) -> None:
+        monkeypatch.delenv("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", raising=False)
+        assert messaging_env.stranded_record_republish_after_seconds == 3600.0
+
+    def test_zero_still_disables_it(self, monkeypatch) -> None:
+        monkeypatch.setenv("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", "0")
+        assert messaging_env.stranded_record_republish_after_seconds == 0.0
+
+    def test_operator_override_wins(self, monkeypatch) -> None:
+        monkeypatch.setenv("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", "600")
+        assert messaging_env.stranded_record_republish_after_seconds == 600.0
