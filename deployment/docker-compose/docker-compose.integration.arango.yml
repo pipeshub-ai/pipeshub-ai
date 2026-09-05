@@ -228,7 +228,7 @@ services:
       MARIADB_PASSWORD: ${MARIADB_TEST_PASSWORD:-pipeshubtest123}
       MARIADB_DATABASE: ${MARIADB_TEST_DB:-pipeshub_connector_test}
     ports:
-      - "3307:3306"
+      - "127.0.0.1:3307:3306"
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 5s
