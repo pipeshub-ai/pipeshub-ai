@@ -240,6 +240,22 @@ services:
       timeout: 3s
       retries: 20
 
+  # Serves the RSS feed the RSS connector syncs from, so that connector can be
+  # tested without depending on a feed on the public internet — which would make
+  # the suite fail whenever that site changed or went down.
+  rss-source:
+    image: nginx:1.27-alpine
+    restart: always
+    volumes:
+      - ${RSS_TEST_HOST_DIR:-./rss-test-data}:/usr/share/nginx/html:ro
+    ports:
+      - "127.0.0.1:8099:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/feed.xml"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   redis:
     image: redis:7.4-bookworm
     restart: always

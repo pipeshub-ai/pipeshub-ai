@@ -21,6 +21,7 @@ on:
             - postgres
             - mariadb
             - localfs
+            - rss
             - confluence
             - jira
             - linear
@@ -161,6 +162,11 @@ jobs:
       # is pointed at the container path.
       LOCALFS_TEST_HOST_DIR: ../deployment/docker-compose/localfs-test-data
       LOCALFS_CONNECTOR_ROOT: /data/localfs-test
+      # The RSS feed is served by an nginx container in the stack. The test
+      # writes the feed on the host side of the bind mount; the connector
+      # fetches it by service name.
+      RSS_TEST_HOST_DIR: ../deployment/docker-compose/rss-test-data
+      RSS_CONNECTOR_FEED_URL: http://rss-source/feed.xml
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
