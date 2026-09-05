@@ -331,6 +331,18 @@ When running services locally with `make`, start **embedding** before **indexing
 - Include integration tests where appropriate
 - Document manual testing steps for complex features
 
+### Checking everything at once
+
+```bash
+scripts/verify.sh          # every suite that runs without Docker or network
+scripts/verify.sh --list   # what would run, and why anything is skipped
+```
+
+This covers the Python, Node, frontend, Electron and shell suites and prints a
+single summary. A suite that cannot run on your machine is reported as skipped
+with the reason, never as a pass. It does not run the integration tests, which
+need the full stack and take considerably longer — those run in CI.
+
 ### Running Node.js Unit Tests
 
 Tests use **Mocha** as the test runner with **c8** for code coverage. Test files are located in `backend/nodejs/apps/tests/` and follow the `*.test.ts` naming convention. See [`backend/nodejs/apps/tests/README.md`](backend/nodejs/apps/tests/README.md) for full details.
