@@ -656,33 +656,39 @@ echo "== In-tree installer: --upgrade honours --version / PIPESHUB_VERSION =="
       "$1" >"$work/.env"
   }
 
-  set +e
+  # --print-env-only must exit 0. Without this an installer that prints the
+  # right summary and then dies would still satisfy the output assertions.
+  run_installer() { # run_installer <desc> [VAR=val ...] -- <installer args...>
+    local desc="$1"; shift
+    local -a envs=() args=()
+    while [[ $# -gt 0 ]]; do
+      [[ "$1" == "--" ]] && { shift; args=("$@"); break; }
+      envs+=("$1"); shift
+    done
+    local status=0
+    out="$(cd "$work" && env "${envs[@]}" bash ./install.sh "${args[@]}" --print-env-only 2>&1)" || status=$?
+    if [[ $status -eq 0 ]]; then pass "$desc exits 0"; else fail "$desc exits 0 (got $status)"; fi
+  }
+
   seed_env "0.6.0-slim"
-  out="$(cd "$work" && bash ./install.sh --upgrade --version 0.7.0-slim --print-env-only 2>&1)"
-  set -e
+  run_installer "--upgrade --version" -- --upgrade --version 0.7.0-slim
   check "--upgrade --version reports the tag change" "$out" "0.6.0-slim -> 0.7.0-slim"
   check "--upgrade --version resolves the new tag"   "$out" "Image tag:             0.7.0-slim"
   check "--upgrade --version persists the new tag"   "$(cat "$work/.env")" "IMAGE_TAG=0.7.0-slim"
   check "--upgrade leaves SECRET_KEY alone"          "$(cat "$work/.env")" "SECRET_KEY=do-not-touch"
   check "--upgrade leaves other secrets alone"       "$(cat "$work/.env")" "MONGO_PASSWORD=keep-me"
 
-  set +e
   seed_env "0.6.0-slim"
-  out="$(cd "$work" && PIPESHUB_VERSION=0.7.0-slim bash ./install.sh --upgrade --print-env-only 2>&1)"
-  set -e
+  run_installer "--upgrade with PIPESHUB_VERSION" PIPESHUB_VERSION=0.7.0-slim -- --upgrade
   check "--upgrade honours PIPESHUB_VERSION" "$out" "Image tag:             0.7.0-slim"
 
-  set +e
   seed_env "0.6.0-slim"
-  out="$(cd "$work" && bash ./install.sh --upgrade --print-env-only 2>&1)"
-  set -e
+  run_installer "plain --upgrade" -- --upgrade
   check "plain --upgrade keeps the recorded tag" "$out" "Image tag:             0.6.0-slim"
   check "plain --upgrade does not rewrite .env"  "$(cat "$work/.env")" "IMAGE_TAG=0.6.0-slim"
 
-  set +e
   seed_env "0.7.0-slim"
-  out="$(cd "$work" && bash ./install.sh --upgrade --version 0.7.0-slim --print-env-only 2>&1)"
-  set -e
+  run_installer "--upgrade to the tag already in use" -- --upgrade --version 0.7.0-slim
   check "asking for the current tag is a no-op with a clear message" "$out" "Already on image tag 0.7.0-slim"
 )
 
