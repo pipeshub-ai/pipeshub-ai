@@ -49,6 +49,18 @@ def _port_for_tests() -> str:
     return os.getenv("POSTGRES_TEST_PORT", "5433")
 
 
+
+def _unavailable(reason: str) -> None:
+    """A source that is not reachable: skip locally, fail in CI.
+
+    Skipping on any exception turns a broken stack into a green run. CI brings
+    this source up itself, so if it is not reachable there, that is a result and
+    not a reason to report success.
+    """
+    if os.getenv("CI"):
+        pytest.fail(reason)
+    pytest.skip(reason)
+
 @pytest.fixture(scope="session")
 def postgres_source() -> PostgresSourceHelper:
     user = os.getenv("POSTGRES_TEST_USER", DEFAULT_USER)
@@ -65,7 +77,7 @@ def postgres_source() -> PostgresSourceHelper:
     try:
         helper.ensure_schema()
     except Exception as exc:  # noqa: BLE001 — any failure means "not available"
-        pytest.skip(f"PostgreSQL source not reachable at {_host_for_tests()}: {exc}")
+        _unavailable(f"PostgreSQL source not reachable at {_host_for_tests()}: {exc}")
     return helper
 
 
