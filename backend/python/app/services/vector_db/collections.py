@@ -28,6 +28,7 @@ class CollectionType(Enum):
     """
     RECORDS = "records"
     ENTITIES = "entities"
+    SEMANTIC_CACHE = "semantic_cache"
 
 
 def sanitize_collection_name(name: str) -> str:
