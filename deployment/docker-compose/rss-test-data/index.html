@@ -1,0 +1,7 @@
+<!doctype html>
+<title>RSS fixture server</title>
+<p>Document root for the RSS connector integration tests. The suite writes
+feed.xml here at runtime; this page exists so the container healthcheck has
+something to serve — an nginx root containing only .gitkeep answers 403, not
+200, and a healthcheck waiting on the feed itself could never pass before the
+tests that write it.</p>
