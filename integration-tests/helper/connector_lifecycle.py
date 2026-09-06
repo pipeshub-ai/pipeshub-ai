@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import logging
 import os
+
+import pytest
 import uuid
 from pathlib import Path
 from typing import Any, Dict
@@ -71,6 +73,23 @@ def _storage_clear_error_types() -> tuple[type[BaseException], ...]:
 
 
 STORAGE_CLEAR_ERRORS = _storage_clear_error_types()
+
+
+def source_unavailable(reason: str) -> None:
+    """A connector source that cannot be reached: skip locally, fail in CI.
+
+    Suites that sync from a self-hosted source check it is up before running.
+    Skipping on any failure there turns a broken stack into a green run, because
+    the checks catch wrong credentials and setup errors as readily as a service
+    that is not listening.
+
+    CI starts these sources itself, so being unable to reach one there is a
+    result. Locally, running against a partial stack is normal and skipping is
+    the useful behaviour.
+    """
+    if os.getenv("CI"):
+        pytest.fail(reason)
+    pytest.skip(reason)
 
 RESOURCE_NAME = "pipeshub-integration-tests"
 
