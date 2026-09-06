@@ -155,7 +155,7 @@ async def assert_incremental_new_files(
 
 
 async def wait_for_record_reindex(
-    graph_provider: "GraphProviderProtocol",
+    graph_provider: GraphProviderProtocol,
     connector_id: str,
     record_name: str,
     before_version: object,
