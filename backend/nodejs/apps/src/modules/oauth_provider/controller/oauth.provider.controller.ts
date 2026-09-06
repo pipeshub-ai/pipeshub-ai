@@ -127,6 +127,7 @@ export class OAuthProviderController {
           logoUrl: app.logoUrl,
           homepageUrl: app.homepageUrl,
           privacyPolicyUrl: app.privacyPolicyUrl,
+          isDynamic: app.isDynamic === true,
         },
         scopes: scopeDefinitions.map((s) => ({
           name: s.name,

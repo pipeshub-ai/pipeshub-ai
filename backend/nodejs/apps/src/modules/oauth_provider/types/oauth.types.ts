@@ -182,6 +182,7 @@ export interface ConsentData {
     logoUrl?: string
     homepageUrl?: string
     privacyPolicyUrl?: string
+    isDynamic?: boolean
   }
   scopes: Array<{
     name: string

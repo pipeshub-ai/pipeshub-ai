@@ -84,7 +84,7 @@ export class OAuthDeviceService {
     const verificationUri = new URL('/oauth/device', frontendUrl).toString()
     const displayCode = `${userCode.slice(0, 4)}-${userCode.slice(4)}`
 
-    this.logger.info('Device authorization created', { clientId, userCode })
+    this.logger.info('Device authorization created', { clientId })
 
     return {
       device_code: deviceCode,
@@ -109,6 +109,7 @@ export class OAuthDeviceService {
         logoUrl: app.logoUrl,
         homepageUrl: app.homepageUrl,
         privacyPolicyUrl: app.privacyPolicyUrl,
+        isDynamic: app.isDynamic === true,
       },
       scopes: scopeDefinitions,
       user: { email: '', name: undefined },
@@ -184,8 +185,6 @@ export class OAuthDeviceService {
         record.lastPolledAt &&
         now - record.lastPolledAt.getTime() < record.interval * 1000
       ) {
-        record.lastPolledAt = new Date(now)
-        await record.save()
         throw new DeviceGrantError(
           'slow_down',
           'polling too frequently',

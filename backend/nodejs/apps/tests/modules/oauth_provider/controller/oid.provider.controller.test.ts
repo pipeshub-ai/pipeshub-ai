@@ -37,7 +37,10 @@ describe('OIDCProviderController', () => {
     mockNext = sinon.stub()
   })
 
-  afterEach(() => { sinon.restore() })
+  afterEach(() => {
+    sinon.restore()
+    delete process.env.PIPESHUB_ENABLE_DCR
+  })
 
   describe('openidConfiguration', () => {
     it('should return valid OIDC configuration', async () => {
@@ -52,12 +55,19 @@ describe('OIDCProviderController', () => {
       expect(config.grant_types_supported).to.include(
         'urn:ietf:params:oauth:grant-type:device_code',
       )
-      expect(config.registration_endpoint).to.include('/register')
+      expect(config.registration_endpoint).to.equal(undefined)
       expect(config.device_authorization_endpoint).to.include(
         '/device_authorization',
       )
       expect(config.token_endpoint_auth_methods_supported).to.include('none')
       expect(config.code_challenge_methods_supported).to.deep.equal(['S256', 'plain'])
+    })
+
+    it('should advertise registration_endpoint only when DCR is enabled', async () => {
+      process.env.PIPESHUB_ENABLE_DCR = 'true'
+      await controller.openidConfiguration({} as any, mockRes, mockNext)
+      const config = mockRes.json.firstCall.args[0]
+      expect(config.registration_endpoint).to.include('/register')
     })
   })
 

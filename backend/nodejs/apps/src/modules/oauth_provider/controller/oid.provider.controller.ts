@@ -112,7 +112,9 @@ export class OIDCProviderController {
       revocation_endpoint: `${baseUrl}/revoke`,
       introspection_endpoint: `${baseUrl}/introspect`,
       jwks_uri: `${backendUrl}/.well-known/jwks.json`,
-      registration_endpoint: `${baseUrl}/register`,
+      ...(process.env.PIPESHUB_ENABLE_DCR === 'true'
+        ? { registration_endpoint: `${baseUrl}/register` }
+        : {}),
       device_authorization_endpoint: `${baseUrl}/device_authorization`,
       scopes_supported: this.scopeValidatorService
         .getAllScopes()

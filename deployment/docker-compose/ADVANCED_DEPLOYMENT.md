@@ -315,14 +315,18 @@ access token (never `client_credentials` through DCR).
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `PIPESHUB_ENABLE_DCR` | on (any value other than `false`) | `POST /api/v1/oauth2/register` |
+| `PIPESHUB_ENABLE_DCR` | off (only `true` enables it) | `POST /api/v1/oauth2/register` |
 | `PIPESHUB_ENABLE_DEVICE_GRANT` | on | `POST /api/v1/oauth2/device_authorization` and the device `grant_type` |
 
 Discovery: `GET {origin}/.well-known/openid-configuration` lists
-`registration_endpoint` and `device_authorization_endpoint`. Public clients
-register with `token_endpoint_auth_method: none`. Request
+`device_authorization_endpoint`, and `registration_endpoint` only when DCR is
+on. Public clients register with `token_endpoint_auth_method: none`. Request
 `urn:ietf:params:oauth:grant-type:device_code` in `grant_types` if the agent
 will poll the device grant. The user completes consent at `/oauth/device`.
+Unauthenticated DCR is off by default so a stock instance cannot be used for
+consent phishing. Operators who want agents to self-register set
+`PIPESHUB_ENABLE_DCR=true`. The consent screen warns when the app registered
+itself (`isDynamic`) rather than being created by an administrator.
 
 DCR refuses `client_credentials`. Tokens issued after device consent carry the
 logged-in user's `userId` and `orgId`.

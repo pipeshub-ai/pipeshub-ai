@@ -74,6 +74,28 @@ describe('OAuthDeviceService', () => {
     expect(result.interval).to.equal(5)
   })
 
+  it('should not reset lastPolledAt when rejecting a fast poll', async () => {
+    const original = new Date(Date.now() - 1000)
+    const record: any = {
+      status: OAuthDeviceCodeStatus.PENDING,
+      expiresAt: new Date(Date.now() + 60_000),
+      interval: 5,
+      lastPolledAt: original,
+      save: sinon.stub().resolves(),
+    }
+    sinon.stub(OAuthDeviceCode, 'findOne').resolves(record)
+
+    try {
+      await service.poll('cid', undefined, 'device-code')
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).to.be.instanceOf(DeviceGrantError)
+      expect((err as DeviceGrantError).oauthError).to.equal('slow_down')
+    }
+    expect(record.lastPolledAt).to.equal(original)
+    expect(record.save.called).to.be.false
+  })
+
   it('should return authorization_pending while the user has not approved', async () => {
     sinon.stub(OAuthDeviceCode, 'findOne').resolves({
       status: OAuthDeviceCodeStatus.PENDING,

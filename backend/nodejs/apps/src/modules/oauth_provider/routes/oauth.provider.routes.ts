@@ -159,6 +159,7 @@ export function createOAuthProviderRouter(container: Container): Router {
    */
   router.post(
     '/device/verify',
+    oauthTokenRateLimiter,
     authMiddleware.authenticate.bind(authMiddleware),
     ValidationMiddleware.validate(deviceUserCodeSchema),
     (req: Request, res: Response, next: NextFunction) =>
@@ -174,6 +175,7 @@ export function createOAuthProviderRouter(container: Container): Router {
    */
   router.post(
     '/device/consent',
+    oauthTokenRateLimiter,
     authMiddleware.authenticate.bind(authMiddleware),
     ValidationMiddleware.validate(deviceUserCodeSchema),
     (req: Request, res: Response, next: NextFunction) =>

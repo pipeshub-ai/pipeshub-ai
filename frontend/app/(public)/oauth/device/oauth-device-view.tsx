@@ -24,7 +24,7 @@ interface ScopeInfo {
 }
 
 interface ConsentData {
-  app: { name: string; description?: string };
+  app: { name: string; description?: string; isDynamic?: boolean };
   scopes: ScopeInfo[];
   user: { email: string; name?: string };
 }
@@ -219,6 +219,11 @@ export function OAuthDeviceView() {
         <Text size="5" weight="bold">
           {consentData.app.name}
         </Text>
+        {consentData.app.isDynamic ? (
+          <Text as="p" size="2" color="amber" mt="2">
+            {t('oauthConsent.unreviewedApp')}
+          </Text>
+        ) : null}
         <Text as="p" size="2" color="gray" mt="2">
           {t('oauthConsent.requestHeading')}
         </Text>

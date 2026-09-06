@@ -74,7 +74,17 @@ describe('OAuthDcrService', () => {
     delete process.env.PIPESHUB_ENABLE_DCR
   })
 
+  it('should refuse when DCR is unset', async () => {
+    try {
+      await service.register({ client_name: 'Cursor' })
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).to.be.instanceOf(ForbiddenError)
+    }
+  })
+
   it('should register a public client without returning a secret', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'true'
     const result = await service.register({
       client_name: 'Cursor',
       redirect_uris: ['http://127.0.0.1/cb'],
@@ -88,6 +98,7 @@ describe('OAuthDcrService', () => {
   })
 
   it('should reject client_credentials', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'true'
     try {
       await service.register({
         grant_types: ['client_credentials'],
