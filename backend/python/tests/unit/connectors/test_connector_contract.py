@@ -178,9 +178,16 @@ def test_registry_key_is_a_safe_lookup_token(key: str) -> None:
 
 
 def test_no_two_keys_share_one_class_by_accident() -> None:
-    """Several keys legitimately share a class; this records which, so a
-    copy-paste registration that points a new connector at the wrong class shows
-    up as a change rather than passing unnoticed."""
+    """No two registry keys point at the same class.
+
+    Every key maps to its own class today. A second key appearing on an existing
+    class is almost always a copy-paste registration — a new connector wired to
+    the wrong implementation, which otherwise imports and starts cleanly and only
+    misbehaves for whoever configures that source.
+
+    If two keys ever should share one, record the pair here rather than deleting
+    the check.
+    """
     by_class: dict[str, list[str]] = {}
     for key, cls in REGISTRY.items():
         by_class.setdefault(cls.__name__, []).append(key)
