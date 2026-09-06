@@ -13,7 +13,7 @@
 #   - Regression guards on the in-tree installer edits (16 GB-class RAM floor,
 #     host-side reachability check, health-gated "ready" banner, clone vs
 #     standalone command directory, TTY-aware compose progress, generous/overridable
-#     health-wait timeout).
+#     health-wait timeout, Git Bash docker.exe path conversion).
 #   - Compose app healthcheck stays reconciled with the installer's readiness
 #     check (core services only; embedding excluded).
 #   - Compose runtime robustness: HuggingFace offline mode is documented and
@@ -217,15 +217,16 @@ check "lost graph password guidance" "$inner" "cannot be recovered"
 check "summary graph DB fallback is honest" "$inner" '"${DATA_STORE:-(unset)}"'
 check ".env locked to owner-only" "$inner" 'chmod 600 "$ENV_FILE"'
 check ".env chmod failure is fatal" "$inner" "Could not restrict permissions"
-check ".env chmod is guarded" "$inner" '&& ! chmod 600 "$ENV_FILE"; then'
+check ".env chmod is guarded" "$inner" '&& ! chmod 600 "$ENV_FILE" 2>/dev/null; then'
 check ".env chmod failure calls die" "$inner" 'die "Could not restrict permissions on $ENV_FILE"'
+check ".env chmod failure is non-fatal on Git Bash" "$inner" "common on Git Bash/NTFS"
 check ".env backup locked to owner-only" "$inner" 'chmod 600 "$_backup"'
 check "crash-loop wait has 90s startup grace" "$inner" "ELAPSED >= 90"
 # Compose progress and the health spinner share one _is_tty. The mapping
-# (true→tty, false→plain) is exercised via extract_fn below — grepping for
-# both strings would stay green if the branches were swapped.
+# (true→tty, false→plain, Git Bash→plain) is exercised via extract_fn below —
+# grepping for both strings would stay green if the branches were swapped.
 check "progress flag applied to compose up/pull" "$inner" 'docker compose "${_PROGRESS[@]}"'
-check "progress decision uses the testable helper" "$inner" 'resolve_compose_progress "$_is_tty"'
+check "progress decision uses the testable helper" "$inner" 'resolve_compose_progress "$_is_tty" "$IS_WINDOWS"'
 check "one TTY flag for progress and health spinner" "$inner" '_is_tty=false; [[ -t 1 ]] && _is_tty=true'
 # First start (embedding model download + cold stack) can edge past 5 min; the
 # default must be generous and overridable so it does not falsely report failure.
@@ -252,6 +253,10 @@ if [[ "$inner" == *"almost always host memory pressure"* ]]; then
 else
   pass "crash-loop message does not over-assert OOM"
 fi
+
+echo "== Dockerfile: Windows CRLF shebang cannot reach the image =="
+dockerfile="$(cat "$REPO_ROOT/Dockerfile")"
+check "process_monitor and entrypoint CR stripped" "$dockerfile" 'sed -i '"'"'s/\r$//'"'"' /app/process_monitor.sh /usr/local/bin/docker-entrypoint.sh'
 
 echo "== Compose: app healthcheck reconciled with installer =="
 compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
@@ -569,6 +574,33 @@ eval "$(extract_fn resolve_compose_progress "$INNER_INSTALLER")"
 check "tty terminal gets in-place progress" "$(resolve_compose_progress true)" "tty"
 check "captured stdout gets append-only progress" "$(resolve_compose_progress false)" "plain"
 check "unknown TTY flag defaults to plain" "$(resolve_compose_progress '')" "plain"
+check "Git Bash TTY still uses plain compose progress" "$(resolve_compose_progress true true)" "plain"
+check "Git Bash captured stdout stays plain" "$(resolve_compose_progress false true)" "plain"
+
+echo "== In-tree installer: Git Bash docker.exe path conversion =="
+check "disables MSYS path conversion" "$inner" "MSYS_NO_PATHCONV=1"
+check "disables MSYS2 arg conversion" "$inner" "MSYS2_ARG_CONV_EXCL"
+check "applies Windows docker CLI compat after OS detect" "$inner" "apply_windows_docker_cli_compat"
+eval "$(extract_fn docker_cli_path "$INNER_INSTALLER")"
+IS_WINDOWS=false
+check "non-Windows docker_cli_path is identity" "$(docker_cli_path /tmp/pipeshub_hc.json)" "/tmp/pipeshub_hc.json"
+eval "$(extract_fn apply_windows_docker_cli_compat "$INNER_INSTALLER")"
+_saved_path="$PATH"
+_shim_dir="$(mktemp -d)"
+printf '#!/usr/bin/env bash\n[[ "$1" == -m ]] && printf "C:/win%%s" "$2"\n' > "$_shim_dir/cygpath"
+chmod +x "$_shim_dir/cygpath"
+PATH="$_shim_dir:$PATH"
+IS_WINDOWS=true
+COMPOSE_FILE=/c/pipeshub/docker-compose.yml
+ENV_FILE=/c/pipeshub/.env
+COMPOSE_FILES=(-f /c/pipeshub/docker-compose.yml -f /c/pipeshub/override.yml)
+apply_windows_docker_cli_compat
+check "Git Bash converts the compose file path" "$COMPOSE_FILE" "C:/win/c/pipeshub/docker-compose.yml"
+check "Git Bash converts the env file path" "$ENV_FILE" "C:/win/c/pipeshub/.env"
+check "Git Bash converts every -f in COMPOSE_FILES" "${COMPOSE_FILES[*]}" "-f C:/win/c/pipeshub/docker-compose.yml -f C:/win/c/pipeshub/override.yml"
+PATH="$_saved_path"; rm -rf "$_shim_dir"
+unset MSYS_NO_PATHCONV MSYS2_ARG_CONV_EXCL
+IS_WINDOWS=false
 if [[ "$(grep -Fc '_is_tty=false; [[ -t 1 ]] && _is_tty=true' "$INNER_INSTALLER")" -eq 1 ]]; then
   pass "TTY flag assigned once"
 else
