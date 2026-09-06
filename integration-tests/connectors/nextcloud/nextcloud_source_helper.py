@@ -13,6 +13,7 @@ setup — no app password to mint, no token to bootstrap.
 
 from __future__ import annotations
 
+import time
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 
@@ -37,20 +38,35 @@ class NextcloudSourceHelper:
         suffix = f"/{path.lstrip('/')}" if path else ""
         return f"{self.base_url}/remote.php/dav/files/{self.username}/{self.root}{suffix}"
 
-    def ping(self, timeout: int = 15) -> None:
-        """Raise unless WebDAV answers for this user."""
-        resp = requests.request(
-            "PROPFIND",
-            f"{self.base_url}/remote.php/dav/files/{self.username}/",
-            auth=self.auth,
-            headers={"Depth": "0"},
-            timeout=timeout,
+    def ping(self, timeout: int = 15, attempts: int = 12, delay: int = 5) -> None:
+        """Wait until WebDAV answers 207 for this user.
+
+        Retried rather than checked once. The container's healthcheck is
+        status.php, which a first boot answers before WebDAV is serving, so a
+        single PROPFIND races startup. Because an unreachable source is a hard
+        failure in CI rather than a skip, losing that race would fail the run.
+        """
+        last = ""
+        for attempt in range(1, attempts + 1):
+            try:
+                resp = requests.request(
+                    "PROPFIND",
+                    f"{self.base_url}/remote.php/dav/files/{self.username}/",
+                    auth=self.auth,
+                    headers={"Depth": "0"},
+                    timeout=timeout,
+                )
+                if resp.status_code == 207:
+                    return
+                last = f"HTTP {resp.status_code}: {resp.text[:150]}"
+            except requests.RequestException as exc:
+                last = str(exc)
+            if attempt < attempts:
+                time.sleep(delay)
+        raise RuntimeError(
+            f"Nextcloud WebDAV never returned 207 for {self.username} after "
+            f"{attempts} attempts: {last}"
         )
-        if resp.status_code != 207:
-            raise RuntimeError(
-                f"Nextcloud WebDAV returned {resp.status_code} for "
-                f"{self.username}: {resp.text[:200]}"
-            )
 
     def ensure_root(self, timeout: int = 15) -> None:
         # MKCOL answers 405 when the collection already exists, which is fine.
