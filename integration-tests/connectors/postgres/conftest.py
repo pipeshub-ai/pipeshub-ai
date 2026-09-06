@@ -15,7 +15,11 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from connector_lifecycle import create_connector_and_await_sync, destructor, source_unavailable
+from connector_lifecycle import (
+    create_connector_and_await_sync,
+    destructor,
+    source_unavailable,
+)
 from connectors.postgres.postgres_source_helper import PostgresSourceHelper
 from helper.graph_provider import GraphProviderProtocol
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]

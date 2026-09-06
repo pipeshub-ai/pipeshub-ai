@@ -6,12 +6,11 @@ from __future__ import annotations
 
 import logging
 import os
-
-import pytest
 import uuid
 from pathlib import Path
 from typing import Any, Dict
 
+import pytest
 import requests
 from neo4j.exceptions import Neo4jError
 
@@ -22,14 +21,13 @@ try:
 except ImportError:
     _GRAPH_TEARDOWN_HTTP_ERRORS = ()
 
+from helper.graph_provider import GraphProviderProtocol
+from helper.graph_provider_utils import wait_until_graph_condition
 from pipeshub_client import (  # type: ignore[import-not-found]
     PipeshubAuthError,
     PipeshubClient,
     PipeshubClientError,
 )
-
-from helper.graph_provider import GraphProviderProtocol
-from helper.graph_provider_utils import wait_until_graph_condition
 
 logger = logging.getLogger("connector-lifecycle")
 
@@ -181,7 +179,7 @@ async def constructor(
 async def create_connector_and_await_sync(
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
-    state: Dict[str, Any],
+    state: dict[str, Any],
     *,
     connector_type: str,
     connector_name: str,
@@ -190,7 +188,7 @@ async def create_connector_and_await_sync(
     scope: str = "personal",
     auth_type: str | None = None,
     timeout: int = 180,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Create the connector, enable sync, and wait for the records to land.
 
     Shared by every connector fixture. What differs between connectors is how
