@@ -37,7 +37,6 @@ from app.api.routes.agent import router as agent_router
 from app.api.routes.chatbot import router as chatbot_router
 from app.api.routes.entity import router as entity_router
 from app.api.routes.search import router as search_router
-from app.api.routes.toolsets import router as toolsets_router
 # Resolvers must be bound before importing connector_router: the router module
 # imports these symbols from edition_config (circular). Bind first so a
 # mid-load re-entry finds them on this partially initialized module.
