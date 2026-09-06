@@ -28,7 +28,7 @@ Test cases:
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import pytest
 
@@ -36,14 +36,16 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
-from helper.graph_provider import GraphProviderProtocol  # noqa: E402
-from helper.storage_incremental import (  # noqa: E402
+from connectors.web.web_source_helper import (  # type: ignore[import-not-found]
+    WebSourceHelper,
+)
+from helper.graph_provider import GraphProviderProtocol
+from helper.storage_incremental import (
     settle_record_baseline,
     sync_until_names_visible,
 )
-from connectors.web.web_source_helper import (  # type: ignore[import-not-found]  # noqa: E402
-    WebSourceHelper,
+from pipeshub_client import (
+    PipeshubClient,  # type: ignore[import-not-found]
 )
 
 logger = logging.getLogger("web-lifecycle-test")
@@ -58,7 +60,7 @@ class TestWebConnector:
     @pytest.mark.order(1)
     async def test_tc_sync_001_recursive_crawl_follows_links(
         self,
-        web_connector: Dict[str, Any],
+        web_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-SYNC-001: The crawl reaches the landing page and the pages it links to.
@@ -87,7 +89,7 @@ class TestWebConnector:
     @pytest.mark.order(2)
     async def test_tc_depth_001_pages_beyond_the_depth_limit_are_not_indexed(
         self,
-        web_connector: Dict[str, Any],
+        web_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-DEPTH-001: A page one hop past the configured depth is not indexed.
@@ -116,7 +118,7 @@ class TestWebConnector:
     @pytest.mark.order(3)
     async def test_tc_update_001_editing_a_page_does_not_duplicate_it(
         self,
-        web_connector: Dict[str, Any],
+        web_connector: dict[str, Any],
         web_source: WebSourceHelper,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
@@ -179,7 +181,7 @@ class TestWebConnector:
     )
     async def test_tc_update_002_editing_a_page_advances_the_record_version(
         self,
-        web_connector: Dict[str, Any],
+        web_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-UPDATE-002: The edit from TC-UPDATE-001 was actually re-crawled.

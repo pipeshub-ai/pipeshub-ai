@@ -11,20 +11,19 @@ Like Local FS and RSS, its settings live under a ``sync`` key rather than
 
 import os
 import uuid
-from typing import Any, AsyncGenerator, Dict
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import pytest
 import pytest_asyncio
-
 from connector_lifecycle import create_connector_and_await_sync, destructor
-from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
-from helper.graph_provider import GraphProviderProtocol
-
 from connectors.web.web_source_helper import (
     DEPTH_0_TITLES,
     DEPTH_1_TITLES,
     WebSourceHelper,
 )
+from helper.graph_provider import GraphProviderProtocol
+from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
 # Defaults match deployment/docker-compose/docker-compose.integration.*.yml.
 DEFAULT_HOST_DIR = "../deployment/docker-compose/web-test-data"
@@ -64,10 +63,10 @@ async def web_connector(
     web_source: WebSourceHelper,
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
-) -> AsyncGenerator[Dict[str, Any], None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     web_source.write_site()
 
-    state: Dict[str, Any] = {
+    state: dict[str, Any] = {
         "resource_name": str(web_source.root),
         "expected_titles": EXPECTED_TITLES,
         "beyond_depth_titles": ["Deep page"],

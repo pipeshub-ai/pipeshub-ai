@@ -20,10 +20,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, List
 
 # path -> (title, body, [links])
-PageSpec = Dict[str, tuple]
+PageSpec = dict[str, tuple]
 
 SITE: PageSpec = {
     "index.html": (
@@ -74,7 +73,7 @@ class WebSourceHelper:
         probe.unlink()
 
     @staticmethod
-    def _html(title: str, body: str, links: List[str]) -> str:
+    def _html(title: str, body: str, links: list[str]) -> str:
         anchors = "\n".join(
             f'    <li><a href="{href}">{href}</a></li>' for href in links
         )
@@ -104,14 +103,14 @@ class WebSourceHelper:
             os.chmod(target, 0o644)  # readable by the nginx user
         return len(pages)
 
-    def write_page(self, rel_path: str, title: str, body: str, links: List[str]) -> None:
+    def write_page(self, rel_path: str, title: str, body: str, links: list[str]) -> None:
         target = self.root / rel_path
         target.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(target.parent, 0o755)
         target.write_text(self._html(title, body, links), encoding="utf-8")
         os.chmod(target, 0o644)
 
-    def list_objects(self, resource_name: str | None = None) -> List[str]:
+    def list_objects(self, resource_name: str | None = None) -> list[str]:
         del resource_name
         return sorted(
             str(p.relative_to(self.root))
