@@ -152,3 +152,39 @@ async def assert_incremental_new_files(
         f"before={before_count}, after={after_count} (connector {connector_id})"
     )
     await graph_provider.assert_record_paths_or_names_contain(connector_id, new_names)
+
+
+async def wait_for_record_reindex(
+    graph_provider: "GraphProviderProtocol",
+    connector_id: str,
+    record_name: str,
+    before_version: object,
+    *,
+    timeout: int = 180,
+    poll_interval: int = 5,
+) -> dict:
+    """Wait until *record_name*'s version differs from *before_version*.
+
+    An in-place update leaves the record count unchanged, so waiting on the
+    count returns immediately and a version read straight afterwards races the
+    re-index — a connector that is merely slow looks identical to one that
+    ignored the change. This waits for the thing the caller is about to assert.
+
+    Returns the record once its version has moved; raises on timeout.
+    """
+    async def _reindexed() -> bool:
+        record = await graph_provider.get_record_by_name(connector_id, record_name)
+        return record is not None and record.get("version") != before_version
+
+    await wait_until_graph_condition(
+        connector_id,
+        check=_reindexed,
+        timeout=timeout,
+        poll_interval=poll_interval,
+        description=f"re-index of {record_name}",
+    )
+    record = await graph_provider.get_record_by_name(connector_id, record_name)
+    assert record is not None, (
+        f"{record_name} vanished between the re-index check and reading it back"
+    )
+    return record
