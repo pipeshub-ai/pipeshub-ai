@@ -116,12 +116,6 @@ class TestLocalFsConnector:
         )
 
     @pytest.mark.order(3)
-    @pytest.mark.xfail(
-        reason="#3198: local_fs writes version=0 on every record, so an edit "
-               "cannot be distinguished from no edit. Strict, so this lights up "
-               "the moment the connector starts advancing version.",
-        strict=True,
-    )
     async def test_tc_update_001_editing_a_file_does_not_duplicate_it(
         self,
         localfs_connector: Dict[str, Any],
@@ -134,6 +128,10 @@ class TestLocalFsConnector:
         A file whose contents change keeps its path, so re-indexing must update
         the existing record. A second record for the same path is a duplicate,
         which reaches users as the same document appearing twice in search.
+
+        Deliberately not xfailed. Whether the edit is re-indexed at all is
+        TC-UPDATE-002, which is expected to fail while #3198 is open — marking
+        this one would take duplicate detection down with it.
         """
         connector_id = localfs_connector["connector_id"]
         rel_path = "handbook/onboarding.txt"
@@ -146,7 +144,9 @@ class TestLocalFsConnector:
         assert before_record is not None, (
             f"TC-UPDATE-001: {file_name} is not in the graph before the edit"
         )
-        before_version = before_record.get("version")
+        # Handed to TC-UPDATE-002, which runs next against this same edit.
+        localfs_connector["update_file_name"] = file_name
+        localfs_connector["update_before_version"] = before_record.get("version")
 
         localfs_source.overwrite_file(
             rel_path, "Updated: how to set up a new workspace in 2026.\n"
@@ -162,24 +162,42 @@ class TestLocalFsConnector:
             f"{after_count} after editing one file. An edit must update the "
             "existing record, not create a second one."
         )
-
-        # The count alone cannot tell an update from an ignored edit, so this
-        # asserts the record was actually re-indexed. It fails today: local_fs
-        # sets version=0 unconditionally (connector.py:573,647), which is #3198.
-        # Marked xfail(strict) rather than dropped, so a fix turns this green
-        # and the marker has to be removed deliberately.
-        after_record = await graph_provider.get_record_by_name(connector_id, file_name)
-        assert after_record is not None, (
-            f"TC-UPDATE-001: {file_name} disappeared from the graph after the edit"
-        )
-        assert after_record.get("version") != before_version, (
-            f"TC-UPDATE-001: version stayed at {before_version} after the file "
-            "changed, so the record was never re-indexed (#3198)"
-        )
-
         await graph_provider.assert_no_orphan_records(connector_id)
         logger.info(
             "TC-UPDATE-001 passed: %s updated in place, count stable at %d",
             file_name,
             after_count,
+        )
+
+    @pytest.mark.order(4)
+    @pytest.mark.xfail(
+        reason="#3198: local_fs writes version=0 on every record, so an edited "
+               "file is indistinguishable from an untouched one. Strict, so the "
+               "day the connector advances version this XPASSes and the marker "
+               "has to be removed.",
+        strict=True,
+    )
+    async def test_tc_update_002_editing_a_file_advances_the_record_version(
+        self,
+        localfs_connector: Dict[str, Any],
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-UPDATE-002: The edit from TC-UPDATE-001 was actually re-indexed.
+
+        Split out so that the count assertion in TC-UPDATE-001 keeps running.
+        An xfail applies to the whole test, so folding this into that one would
+        have made any failure there "expected" — including a duplicated record,
+        which is the failure that test exists to catch.
+        """
+        connector_id = localfs_connector["connector_id"]
+        file_name = localfs_connector["update_file_name"]
+        before_version = localfs_connector["update_before_version"]
+
+        after_record = await graph_provider.get_record_by_name(connector_id, file_name)
+        assert after_record is not None, (
+            f"TC-UPDATE-002: {file_name} disappeared from the graph after the edit"
+        )
+        assert after_record.get("version") != before_version, (
+            f"TC-UPDATE-002: version stayed at {before_version} after the file "
+            "changed, so the record was never re-indexed (#3198)"
         )
