@@ -163,9 +163,10 @@ jobs:
           pytest tests/evals -v
 
       # backend/python/tests/integration holds 24 files and only the three under
-      # redis_cluster were run by any workflow. Despite the name they need no
+      # redis_cluster were run by any workflow. Despite the name most need no
       # services: the ones that do are written to skip when the service is
       # absent, so on a bare runner they skip cleanly and the rest execute.
+      # Three files are excluded below, leaving 20 that run here.
       #
       # test_npm_import_live.py is excluded because it is not offline: it pulls
       # real tarballs from registry.npmjs.org. It skips when the registry is
@@ -173,7 +174,8 @@ jobs:
       # every Python pull request depend on the public npm registry and on the
       # pinned packages staying published.
       #
-      # test_model_reasoning_effort_e2e.py is excluded deliberately. It asserts
+      # test_model_reasoning_effort_e2e.py is excluded and tracked in #3201 so
+      # the exclusion does not quietly become permanent. It asserts
       # that a model-level "defaultReasoningEffort" is honoured by
       # get_generator_model, and that key appears nowhere in app/utils/aimodels.py
       # — the setting is an agent-level field, applied in api/routes/agent.py.
