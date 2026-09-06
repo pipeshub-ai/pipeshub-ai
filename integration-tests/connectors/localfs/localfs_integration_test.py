@@ -30,14 +30,16 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
+from connectors.localfs.localfs_source_helper import (  # type: ignore[import-not-found]  # noqa: E402
+    LocalFsSourceHelper,
+)
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.storage_incremental import (  # noqa: E402
     settle_record_baseline,
     sync_until_names_visible,
 )
-from connectors.localfs.localfs_source_helper import (  # type: ignore[import-not-found]  # noqa: E402
-    LocalFsSourceHelper,
+from pipeshub_client import (
+    PipeshubClient,  # type: ignore[import-not-found]  # noqa: E402
 )
 
 logger = logging.getLogger("localfs-lifecycle-test")

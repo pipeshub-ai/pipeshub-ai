@@ -17,12 +17,14 @@ from typing import Any, AsyncGenerator, Dict
 
 import pytest
 import pytest_asyncio
-
-from connector_lifecycle import create_connector_and_await_sync, destructor
-from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
-from helper.graph_provider import GraphProviderProtocol
-
+from connector_lifecycle import (
+    create_connector_and_await_sync,
+    destructor,
+    source_unavailable,
+)
 from connectors.localfs.localfs_source_helper import LocalFsSourceHelper
+from helper.graph_provider import GraphProviderProtocol
+from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
 # Defaults match deployment/docker-compose/docker-compose.integration.*.yml.
 DEFAULT_HOST_DIR = "../deployment/docker-compose/localfs-test-data"
@@ -36,17 +38,6 @@ SEED_FILES = [
 
 
 
-def _unavailable(reason: str) -> None:
-    """A source that is not reachable: skip locally, fail in CI.
-
-    Skipping on any exception turns a broken stack into a green run. CI brings
-    this source up itself, so if it is not reachable there, that is a result and
-    not a reason to report success.
-    """
-    if os.getenv("CI"):
-        pytest.fail(reason)
-    pytest.skip(reason)
-
 @pytest.fixture(scope="session")
 def localfs_source() -> LocalFsSourceHelper:
     helper = LocalFsSourceHelper(os.getenv("LOCALFS_TEST_HOST_DIR", DEFAULT_HOST_DIR))
@@ -55,7 +46,7 @@ def localfs_source() -> LocalFsSourceHelper:
     try:
         helper.ensure_root()
     except OSError as exc:
-        _unavailable(f"Local FS test directory not writable at {helper.root}: {exc}")
+        source_unavailable(f"Local FS test directory not writable at {helper.root}: {exc}")
     helper.clear_objects()
     return helper
 
