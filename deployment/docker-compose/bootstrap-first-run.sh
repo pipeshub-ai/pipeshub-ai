@@ -17,6 +17,7 @@
 # Does not:
 #   - Connect Slack / Drive / Jira (browser OAuth)
 #   - Print, log, or echo the PAT, password, or LLM key
+#   - Pass those secrets on process argv (use env or a 0600 curl --config file)
 #   - Accept a token as a CLI argument
 #
 # Requires: bash, curl, python3, an empty instance (GET /api/v1/org/exists
@@ -208,7 +209,8 @@ trap cleanup EXIT
 AGENT_SCOPES='["conversation:chat","semantic:write","kb:read","user:read","connector:read"]'
 
 json_escape() {
-  python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+  # Value through the environment, not argv — /proc/<pid>/cmdline is world-readable.
+  PIPESHUB_JSON_VALUE="$1" python3 -c 'import json,os; print(json.dumps(os.environ["PIPESHUB_JSON_VALUE"]))'
 }
 
 header_value() {
@@ -252,6 +254,21 @@ print("true" if obj is True else "false" if obj is False else str(obj))
 PY
 }
 
+write_curl_config() {
+  # curl --config lives in the 0700 WORKDIR; the secret must not appear on argv.
+  local header_name="$1" header_value="$2"
+  PIPESHUB_HDR_NAME="$header_name" PIPESHUB_HDR_VALUE="$header_value" python3 - "$WORKDIR/curl.cfg" <<'PY'
+import os, sys
+path = sys.argv[1]
+name = os.environ["PIPESHUB_HDR_NAME"]
+value = os.environ["PIPESHUB_HDR_VALUE"]
+escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+with open(path, "w", encoding="utf-8") as f:
+    f.write(f'header = "{name}: {escaped}"\n')
+PY
+  chmod 600 "$WORKDIR/curl.cfg"
+}
+
 ph_request() {
   local method="$1" path="$2" body_file="${3:-}" auth="${4:-}"
   local url="${ORIGIN}${path}"
@@ -263,9 +280,11 @@ ph_request() {
     args+=(-H "Content-Type: application/json" --data-binary @"$body_file")
   fi
   if [[ "$auth" == "session" ]]; then
-    args+=(-H "x-session-token: ${SESSION_TOKEN}")
+    write_curl_config "x-session-token" "$SESSION_TOKEN"
+    args+=(--config "$WORKDIR/curl.cfg")
   elif [[ "$auth" == "bearer" ]]; then
-    args+=(-H "Authorization: Bearer ${ACCESS_TOKEN}")
+    write_curl_config "Authorization" "Bearer ${ACCESS_TOKEN}"
+    args+=(--config "$WORKDIR/curl.cfg")
   fi
   local code
   code="$("$CURL_BIN" "${args[@]}")"
@@ -303,11 +322,19 @@ ph_request POST "/api/v1/userAccount/initAuth" "$WORKDIR/init.json"
 SESSION_TOKEN="$(header_value "$WORKDIR/last.hdr" "x-session-token")"
 [[ -n "$SESSION_TOKEN" ]] || die "initAuth did not return x-session-token (CAPTCHA/Turnstile on this instance?)"
 
-python3 - "$WORKDIR/auth.json" "$ACCOUNT_EMAIL" "$ACCOUNT_PASSWORD" <<'PY'
-import json, sys
-path, email, password = sys.argv[1], sys.argv[2], sys.argv[3]
+ACCOUNT_EMAIL="$ACCOUNT_EMAIL" ACCOUNT_PASSWORD="$ACCOUNT_PASSWORD" python3 - "$WORKDIR/auth.json" <<'PY'
+import json, os, sys
+path = sys.argv[1]
 with open(path, "w", encoding="utf-8") as f:
-    json.dump({"method": "password", "email": email, "credentials": {"password": password}}, f, separators=(",", ":"))
+    json.dump(
+        {
+            "method": "password",
+            "email": os.environ["ACCOUNT_EMAIL"],
+            "credentials": {"password": os.environ["ACCOUNT_PASSWORD"]},
+        },
+        f,
+        separators=(",", ":"),
+    )
 PY
 chmod 600 "$WORKDIR/auth.json"
 ph_request POST "/api/v1/userAccount/authenticate" "$WORKDIR/auth.json" session
@@ -318,9 +345,13 @@ ACCESS_TOKEN="$(cat "$WORKDIR/access.jwt")"
 rm -f "$WORKDIR/access.jwt"
 
 # --- 4. LLM ---
-python3 - "$WORKDIR/llm.json" "$LLM_PROVIDER" "$LLM_MODEL" "$LLM_API_KEY" "$LLM_ENDPOINT" <<'PY'
-import json, sys
-path, provider, model, api_key, endpoint = sys.argv[1:6]
+LLM_PROVIDER="$LLM_PROVIDER" LLM_MODEL="$LLM_MODEL" LLM_API_KEY="$LLM_API_KEY" LLM_ENDPOINT="$LLM_ENDPOINT" python3 - "$WORKDIR/llm.json" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+provider = os.environ["LLM_PROVIDER"]
+model = os.environ["LLM_MODEL"]
+api_key = os.environ.get("LLM_API_KEY", "")
+endpoint = os.environ.get("LLM_ENDPOINT", "")
 configuration = {"model": model}
 if api_key:
     configuration["apiKey"] = api_key

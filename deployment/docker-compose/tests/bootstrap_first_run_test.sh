@@ -29,8 +29,9 @@ PIPESHUB_ACCOUNT_EMAIL=demo@example.com
 PIPESHUB_ACCOUNT_PASSWORD='ChangeMe1!'
 PIPESHUB_ACCOUNT_FULL_NAME='Demo User'
 PIPESHUB_ACCOUNT_TYPE=individual
-PIPESHUB_LLM_PROVIDER=ollama
+  PIPESHUB_LLM_PROVIDER=ollama
 PIPESHUB_LLM_MODEL=qwen3.5:2b
+PIPESHUB_LLM_API_KEY='sk_test_llm_not_for_argv'
 PIPESHUB_LLM_ENDPOINT=http://host.docker.internal:11434
 EOF
 }
@@ -74,6 +75,7 @@ fi
 mkdir -p "$(dirname "$CURL_LOG")"
 {
   echo "METHOD=$method PATH=$path"
+  echo "ARGS=${args[*]}"
   if [[ -n "$data_file" && -f "$data_file" ]]; then
     echo "BODY=$(tr -d '\n' <"$data_file")"
   fi
@@ -270,6 +272,16 @@ if grep -q '"provider":"ollama"' "$CURL_LOG"; then
 else
   fail "LLM provider ollama"
 fi
+
+echo "== secrets stay off curl argv =="
+args_only="$(grep '^ARGS=' "$CURL_LOG" || true)"
+for secret in 'ChangeMe1!' 'jwt_test_access' 'sess_test_token' 'sk_test_llm_not_for_argv'; do
+  if printf '%s\n' "$args_only" | grep -F -- "$secret" >/dev/null; then
+    fail "secret on curl argv ($secret)"
+  else
+    pass "secret off curl argv ($secret)"
+  fi
+done
 
 echo
 pass_n=$(wc -c <"$PASS_FILE" | tr -d ' ')
