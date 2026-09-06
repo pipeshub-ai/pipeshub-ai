@@ -114,12 +114,6 @@ class TestWebConnector:
         )
 
     @pytest.mark.order(3)
-    @pytest.mark.xfail(
-        reason="#3198: the web connector writes version=0 on every record, so a "
-               "re-crawl of edited content cannot be told apart from no "
-               "re-crawl. Strict, so a fix lights this up.",
-        strict=True,
-    )
     async def test_tc_update_001_editing_a_page_does_not_duplicate_it(
         self,
         web_connector: Dict[str, Any],
@@ -131,8 +125,12 @@ class TestWebConnector:
 
         A page keeps its URL when its content changes, so a re-crawl must update
         the existing record. A second record for the same URL is a duplicate,
-        which reaches users as the same page appearing twice in search — and on
-        a scheduled crawl it would accumulate on every run.
+        which reaches users as the same page appearing twice in search — and on a
+        scheduled crawl it would accumulate on every run.
+
+        Deliberately not xfailed. Whether the edit is re-crawled at all is
+        TC-UPDATE-002, which is expected to fail while #3198 is open; marking
+        this one would take duplicate detection down with it.
         """
         connector_id = web_connector["connector_id"]
         title = "Billing guide"
@@ -144,7 +142,9 @@ class TestWebConnector:
         assert before_record is not None, (
             f"TC-UPDATE-001: {title} is not in the graph before the edit"
         )
-        before_version = before_record.get("version")
+        # Handed to TC-UPDATE-002, which runs next against this same edit.
+        web_connector["update_title"] = title
+        web_connector["update_before_version"] = before_record.get("version")
 
         web_source.write_page(
             "guides/billing.html",
@@ -163,21 +163,40 @@ class TestWebConnector:
             f"{after_count} after editing one page. A re-crawl must update the "
             "existing record, not add another for the same URL."
         )
-        # A stable count cannot tell a re-crawl from an ignored edit. This fails
-        # today because the web connector sets version=0 unconditionally
-        # (connector.py:903,1720) — #3198 — hence the strict xfail above.
-        after_record = await graph_provider.get_record_by_name(connector_id, title)
-        assert after_record is not None, (
-            f"TC-UPDATE-001: {title} disappeared from the graph after the edit"
-        )
-        assert after_record.get("version") != before_version, (
-            f"TC-UPDATE-001: version stayed at {before_version} after the page "
-            "changed, so it was never re-indexed (#3198)"
-        )
-
         await graph_provider.assert_no_orphan_records(connector_id)
         logger.info(
             "TC-UPDATE-001 passed: %s updated in place, count stable at %d",
             title,
             after_count,
+        )
+
+    @pytest.mark.order(4)
+    @pytest.mark.xfail(
+        reason="#3198: the web connector writes version=0 on every record, so an "
+               "edited page is indistinguishable from an untouched one. Strict, "
+               "so a fix XPASSes and forces the marker out.",
+        strict=True,
+    )
+    async def test_tc_update_002_editing_a_page_advances_the_record_version(
+        self,
+        web_connector: Dict[str, Any],
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-UPDATE-002: The edit from TC-UPDATE-001 was actually re-crawled.
+
+        Split out so the count assertion in TC-UPDATE-001 keeps running: an
+        xfail applies to a whole test, so folding this in would have made a
+        duplicated record "expected" too.
+        """
+        connector_id = web_connector["connector_id"]
+        title = web_connector["update_title"]
+        before_version = web_connector["update_before_version"]
+
+        after_record = await graph_provider.get_record_by_name(connector_id, title)
+        assert after_record is not None, (
+            f"TC-UPDATE-002: {title} disappeared from the graph after the edit"
+        )
+        assert after_record.get("version") != before_version, (
+            f"TC-UPDATE-002: version stayed at {before_version} after the page "
+            "changed, so it was never re-indexed (#3198)"
         )

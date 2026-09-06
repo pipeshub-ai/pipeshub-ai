@@ -126,7 +126,10 @@ class WebSourceHelper:
         """
         del resource_name
         for path in sorted(self.root.rglob("*"), reverse=True):
-            if path.name == ".gitkeep":
+            # .gitkeep and the committed index.html are the container's
+            # healthcheck target; the suite overwrites index.html while running
+            # but must leave both behind.
+            if path.name in (".gitkeep", "index.html"):
                 continue
             if path.is_file():
                 path.unlink()
