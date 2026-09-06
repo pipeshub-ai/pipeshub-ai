@@ -14,7 +14,11 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from connector_lifecycle import create_connector_and_await_sync, destructor
+from connector_lifecycle import (
+    create_connector_and_await_sync,
+    destructor,
+    source_unavailable,
+)
 from connectors.nextcloud.nextcloud_source_helper import NextcloudSourceHelper
 from helper.graph_provider import GraphProviderProtocol
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
@@ -32,17 +36,6 @@ SEED_FILES = [
 
 
 
-def _unavailable(reason: str) -> None:
-    """A source that is not reachable: skip locally, fail in CI.
-
-    Skipping on any exception turns a broken stack into a green run. CI brings
-    this source up itself, so if it is not reachable there, that is a result and
-    not a reason to report success.
-    """
-    if os.getenv("CI"):
-        pytest.fail(reason)
-    pytest.skip(reason)
-
 @pytest.fixture(scope="session")
 def nextcloud_source() -> NextcloudSourceHelper:
     helper = NextcloudSourceHelper(
@@ -58,7 +51,7 @@ def nextcloud_source() -> NextcloudSourceHelper:
         helper.ensure_root()
         helper.clear_objects()
     except Exception as exc:  # noqa: BLE001 — any failure means "not available"
-        _unavailable(f"Nextcloud not reachable: {exc}")
+        source_unavailable(f"Nextcloud not reachable: {exc}")
     return helper
 
 
