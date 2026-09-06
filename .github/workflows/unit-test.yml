@@ -132,7 +132,12 @@ jobs:
         run: |
           cd backend/python
           uv pip install --system pytest pytest-asyncio pytest-timeout coverage
-          uv pip install --system -e .
+          # `.[dev]`, not a bare `.`: the dev extra already declares
+          # fakeredis[lua], which the FakeClusterRedis contract suites (the
+          # CROSSSLOT/multi-key guards for MemoryDB readiness) need. Without
+          # it those suites skip and the cluster-safety checks never actually
+          # run here.
+          uv pip install --system -e ".[dev]"
 
       - name: Run unit tests with coverage
         run: |
@@ -172,3 +177,86 @@ jobs:
           path: backend/python/python-coverage-report.zip
           retention-days: 7
           if-no-files-found: ignore
+
+  redis-cluster-integration-tests:
+    # A real 3-master Redis Cluster (grokzen/redis-cluster) is the only way to
+    # exercise CROSSSLOT/MOVED/failover behaviour for real -- the FakeClusterRedis
+    # contract suites in tests/unit/services/redis/ only approximate it. This job
+    # proves the MemoryDB-readiness refactor (R1/R17) against a live cluster on
+    # every PR, not just nightly/manual integration runs.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e ".[dev]"
+
+      - name: Start Redis Cluster
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.redis-cluster.yml up -d --wait
+
+      - name: Run Redis Cluster integration tests
+        working-directory: backend/python
+        env:
+          REDIS_MODE: cluster
+          REDIS_CLUSTER_ENDPOINTS: 127.0.0.1:17000,127.0.0.1:17001,127.0.0.1:17002
+        run: pytest tests/integration/redis_cluster -v -m integration
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Node dependencies
+        working-directory: backend/nodejs/apps
+        run: npm ci
+
+      # The Node provider has cluster-specific code the Python suite cannot
+      # cover: ioredis' `Cluster.scan()` reaches one node only, so
+      # `ClusterRedisProvider.scanKeys` fans out over `nodes('master')` by
+      # hand, and `StreamReadPlanner` groups XREADGROUP by a locally
+      # implemented CRC16 that must agree with the server's CLUSTER KEYSLOT.
+      # `clusterRedisProvider.integration.test.ts` skips itself unless
+      # REDIS_CLUSTER_ENDPOINTS is set, which is what activates it here.
+      #
+      # This runs the whole Node suite, not just the redis specs: mocha merges
+      # `spec` from .mocharc.yaml with the CLI, so the two cannot be narrowed
+      # without also dropping the `require` hooks the suite depends on. The
+      # wider run is worth having anyway — it is what catches a unit test that
+      # silently reads the ambient REDIS_MODE.
+      - name: Run Node test suite against the cluster
+        working-directory: backend/nodejs/apps
+        env:
+          REDIS_MODE: cluster
+          REDIS_CLUSTER_ENDPOINTS: 127.0.0.1:17000,127.0.0.1:17001,127.0.0.1:17002
+          TS_NODE_PROJECT: tsconfig.test.json
+        run: npx mocha --no-parallel
+
+      - name: Dump Redis Cluster logs
+        if: always()
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.redis-cluster.yml logs --no-color
+
+      - name: Tear down Redis Cluster
+        if: always()
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.redis-cluster.yml down -v

@@ -11,6 +11,11 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from app.services.resource_governor.feedback import (
+    DownstreamFeedback,
+    FeedbackWindow,
+    get_default_downstream_feedback,
+)
 from app.services.resource_governor.gate import AdmissionGate, StartRateLimiter
 from app.services.resource_governor.models import (
     Ceilings,
@@ -21,10 +26,15 @@ from app.services.resource_governor.models import (
 )
 from app.services.resource_governor.policy import (
     EMBEDDING_CPU_RESERVATION,
+    EMBEDDING_CPU_RESERVATION_MAX_FRACTION,
     HEAVY_PARSE_SLOTS_PER_CPU,
     HEAVY_PARSE_WORKING_SET_GB,
     INCIDENT_COOLDOWN_SECONDS,
-    INDEX_SLOTS_PER_PARSE_SLOT,
+    INDEX_HEADROOM,
+    INDEX_HEAVY_WORKING_SET_GB,
+    INDEX_LIGHT_WORKING_SET_GB,
+    INDEX_SLOTS_PER_CPU,
+    INDEX_TOTAL_MAX,
     LIGHT_PARSE_SLOTS_PER_CPU,
     SAMPLE_INTERVAL_SECONDS,
     SAMPLE_JITTER_SECONDS,
@@ -65,6 +75,7 @@ class ResourceGovernor:
         worker_count: int = 1,
         reserve_embedding_cpus: bool = False,
         probe: ResourceProbe | None = None,
+        feedback: DownstreamFeedback | None = None,
         sample_interval: float = SAMPLE_INTERVAL_SECONDS,
         jitter: float = SAMPLE_JITTER_SECONDS,
         clock: Callable[[], float] = time.monotonic,
@@ -73,6 +84,7 @@ class ResourceGovernor:
     ) -> None:
         self._logger = logger
         self._probe = probe or build_probe()
+        self._feedback = feedback or get_default_downstream_feedback()
         self._sample_interval = sample_interval
         self._jitter = jitter
         self._clock = clock
@@ -98,6 +110,21 @@ class ResourceGovernor:
             self._worker_count,
             reserve_embedding_cpus=reserve_embedding_cpus,
         )
+        if self._ceilings.index_light == 0:
+            # Only reachable when an explicit MAX_CONCURRENT_INDEXING is too
+            # small to split (a total of 1 cannot be two tiers each floored at
+            # 1), so resolve_ceilings collapses light away and every record
+            # routes to heavy. Worth saying out loud: on this node light
+            # records queue behind heavy ones, which the tier split otherwise
+            # prevents.
+            self._logger.warning(
+                "MAX_CONCURRENT_INDEXING=%s leaves no room to split the "
+                "in-flight budget by tier; all records share one pool of %d. "
+                "Light records will queue behind heavy ones. Raise it to at "
+                "least 2 to restore the split.",
+                env_index,
+                self._ceilings.index,
+            )
 
         self._state_lock = threading.Lock()
         self._registry = LimitRegistry(warm_start_limits(self._ceilings))
@@ -116,36 +143,53 @@ class ResourceGovernor:
         self._stats_lock = threading.Lock()
         self._last_snapshot: ResourceSnapshot = initial_snapshot
         self._last_demand: dict[Pool, PoolDemand] = {pool: PoolDemand.empty() for pool in Pool}
+        self._last_feedback: FeedbackWindow = FeedbackWindow.empty()
 
         self._running = False
 
         self._logger.info(
             "ResourceGovernor initialised: probe_source=%s cpu_quota=%.2f mem_limit=%s "
-            "ceilings(heavy_parse=%d light_parse=%d index=%d) "
-            "worker_count=%d start_limits(heavy_parse=%d light_parse=%d index=%d) "
+            "ceilings(heavy_parse=%d light_parse=%d index_heavy=%d index_light=%d) "
+            "worker_count=%d start_limits(heavy_parse=%d light_parse=%d "
+            "index_heavy=%d index_light=%d) "
             "— parse ceilings are %.2f (heavy) / %.2f (light) slots per CPU capped by "
-            "MAX_CONCURRENT_PARSING, index is %.2fx the widest parse tier capped by "
-            "MAX_CONCURRENT_INDEXING and bounds heavy and light records *together*; "
-            "the parse pools ramp from their floor toward their ceiling "
-            "and heavy_parse is additionally held to what free memory can hold "
-            "(~%.2fGiB per slot), while the index pool is fixed at its ceiling "
-            "and never adapts",
+            "MAX_CONCURRENT_PARSING; each index ceiling is %.2fx its own parse tier, "
+            "with the two together capped by MAX_CONCURRENT_INDEXING or, when unset, "
+            "by %.1f slots per CPU (at most %d) so in-flight fan-out stays within what "
+            "the downstream pools can take; heavy is sized first and light keeps a "
+            "reserve, so a queue of heavy records can never consume the budget light "
+            "records need; every "
+            "pool ramps from its floor toward its ceiling, and heavy_parse "
+            "(~%.2fGiB/slot), index_heavy (~%.2fGiB/slot) and index_light "
+            "(~%.2fGiB/slot) are additionally held to what free memory can hold",
             initial_snapshot.source,
             initial_snapshot.cpu_quota,
             _fmt_bytes(initial_snapshot.mem_limit_bytes),
             self._ceilings.heavy,
             self._ceilings.light,
-            self._ceilings.index,
+            self._ceilings.index_heavy,
+            self._ceilings.index_light,
             self._worker_count,
             self._registry.get(Pool.HEAVY_PARSE),
             self._registry.get(Pool.LIGHT_PARSE),
-            self._registry.get(Pool.INDEX),
+            self._registry.get(Pool.INDEX_HEAVY),
+            self._registry.get(Pool.INDEX_LIGHT),
             HEAVY_PARSE_SLOTS_PER_CPU,
             LIGHT_PARSE_SLOTS_PER_CPU,
-            INDEX_SLOTS_PER_PARSE_SLOT,
+            INDEX_HEADROOM,
+            INDEX_SLOTS_PER_CPU,
+            INDEX_TOTAL_MAX,
             HEAVY_PARSE_WORKING_SET_GB,
+            INDEX_HEAVY_WORKING_SET_GB,
+            INDEX_LIGHT_WORKING_SET_GB,
         )
         if reserve_embedding_cpus:
+            # Mirrors resolve_ceilings: the reservation is capped at a share of
+            # the quota so it cannot flatten heavy on a small host.
+            reservation = min(
+                EMBEDDING_CPU_RESERVATION,
+                initial_snapshot.cpu_quota * EMBEDDING_CPU_RESERVATION_MAX_FRACTION,
+            )
             self._logger.info(
                 "ResourceGovernor: local CPU embedding model configured — %.2f of "
                 "%.2f CPU held back from the heavy-parse ceiling (derived from the "
@@ -153,9 +197,9 @@ class ResourceGovernor:
                 "embed with while Docling is converting; set "
                 "GOVERNOR_EMBEDDING_CPU_RESERVATION=0 to size heavy off the full "
                 "quota, or raise it if embedding is still starved",
-                EMBEDDING_CPU_RESERVATION,
+                reservation,
                 initial_snapshot.cpu_quota,
-                max(0.0, initial_snapshot.cpu_quota - EMBEDDING_CPU_RESERVATION),
+                max(0.0, initial_snapshot.cpu_quota - reservation),
             )
         self._logger.info(
             "ResourceGovernor start-rate limiters: heavy_parse=%.1f/s (burst %d) "
@@ -211,6 +255,10 @@ class ResourceGovernor:
     def ceilings(self) -> Ceilings:
         return self._ceilings
 
+    def limit(self, pool: Pool) -> int:
+        """Current adaptive limit for *pool*. Safe from any thread."""
+        return self._registry.get(pool)
+
     # -- sampling loop -----------------------------------------------------
 
     async def run(self) -> None:
@@ -260,6 +308,7 @@ class ResourceGovernor:
         now = self._clock()
         snapshot = await asyncio.to_thread(self._probe.snapshot)
         demand = self._drain_all_demand()
+        feedback = self._feedback.drain()
 
         # Held across the registry snapshot, the limit calculation, and the
         # resulting writes so report_memory_incident() (called from another
@@ -276,6 +325,7 @@ class ResourceGovernor:
                 demand=demand,
                 now=now,
                 interval=self._sample_interval,
+                feedback=feedback,
             )
             self._state = new_state
 
@@ -288,13 +338,20 @@ class ResourceGovernor:
         with self._stats_lock:
             self._last_snapshot = snapshot
             self._last_demand = demand
+            self._last_feedback = feedback
 
+        if not feedback.is_empty:
+            self._logger.info(
+                "ResourceGovernor downstream feedback this interval: %s", feedback.describe(),
+            )
         if changed:
             self._logger.info(
-                "ResourceGovernor limits changed: %s (mem_pressure=%s cpu_util=%s source=%s)",
+                "ResourceGovernor limits changed: %s (mem_pressure=%s cpu_util=%s "
+                "downstream=%s source=%s)",
                 ", ".join(f"{pool.value}:{old}->{new}" for pool, old, new in changed),
                 _fmt_ratio(snapshot.mem_pressure),
                 _fmt_ratio(snapshot.cpu_utilisation),
+                feedback.describe(),
                 snapshot.source,
             )
             shrank = any(new_value < old_value for _, old_value, new_value in changed)
@@ -382,6 +439,7 @@ class ResourceGovernor:
         with self._stats_lock:
             snapshot = self._last_snapshot
             demand = dict(self._last_demand)
+            feedback = self._last_feedback
         with self._gates_lock:
             in_use = {pool.value: gate.in_use for pool, gate in self._gates.items()}
         return {
@@ -393,6 +451,11 @@ class ResourceGovernor:
             "cpu_pressure": snapshot.cpu_pressure,
             "cpu_throttled_ratio": snapshot.cpu_throttled_ratio,
             "mem_pressure": snapshot.mem_pressure,
+            # The value every brake actually acts on. Without it a pool pinned
+            # at its floor is unexplainable from the payload: mem_pressure is
+            # baseline-credited and can read comfortably low while
+            # mem_pressure_raw is over MEM_SOFT.
+            "mem_pressure_raw": snapshot.mem_pressure_raw,
             "mem_limit_bytes": snapshot.mem_limit_bytes,
             "mem_usable_bytes": snapshot.mem_usable_bytes,
             "mem_working_set_raw_bytes": snapshot.mem_working_set_raw_bytes,
@@ -402,9 +465,12 @@ class ResourceGovernor:
                 "heavy_parse": self._ceilings.heavy,
                 "light_parse": self._ceilings.light,
                 "index": self._ceilings.index,
+                "index_heavy": self._ceilings.index_heavy,
+                "index_light": self._ceilings.index_light,
             },
             "limits": {pool.value: limits.get(pool) for pool in Pool},
             "in_use": in_use,
+            "downstream_feedback": feedback.as_dict(),
             "demand": {
                 pool.value: {
                     "utilisation": demand[pool].utilisation(limits.get(pool), self._sample_interval),

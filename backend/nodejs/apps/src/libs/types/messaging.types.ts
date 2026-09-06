@@ -68,7 +68,6 @@ export interface RedisBrokerConfig extends MessageBrokerConfig {
   password?: string;
   db?: number;
   maxLen?: number;
-  keyPrefix?: string;
 }
 
 export interface StreamMessage<T> {

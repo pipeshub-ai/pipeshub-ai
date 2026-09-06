@@ -271,11 +271,15 @@ class TestEnrich:
 
         doc_extraction.apply.assert_awaited_once_with(ctx)
         sink_orchestrator.blob_storage.apply.assert_awaited_once_with(ctx)
+        # The record is passed too: the summary's target collection is resolved
+        # from its connector, so omitting it would strand summaries in the
+        # default collection under a multi-collection strategy.
         sink_orchestrator.vector_store.index_record_summary.assert_awaited_once_with(
             "rec-123",
             "vrid-1",
             "org-1",
             metadata,
+            ctx.record,
         )
         sink_orchestrator.enrich.assert_awaited_once_with(ctx)
 

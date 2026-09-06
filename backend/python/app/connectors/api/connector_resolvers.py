@@ -45,27 +45,6 @@ def records_user_id_arg(user: dict[str, Any], external_user_id: str) -> str:
     return user["_key"]
 
 
-def resolve_stats_org_id(request: Request, query_org_id: Optional[str]) -> str:
-    """OSS: require client-supplied org_id; enforce match unless admin."""
-    user_id = request.state.user.get("userId")
-    user_org_id = request.state.user.get("orgId")
-    is_admin = is_request_admin(request)
-
-    if not user_id or not user_org_id:
-        raise HTTPException(status_code=401, detail="User not authenticated")
-    if not query_org_id:
-        raise HTTPException(
-            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
-            detail="org_id query parameter is required",
-        )
-    if not is_admin and query_org_id != user_org_id:
-        raise HTTPException(
-            status_code=403,
-            detail="Insufficient permissions to access stats for this organization",
-        )
-    return query_org_id
-
-
 async def authorize_connector_stats(
     request: Request,
     graph_provider: Any,

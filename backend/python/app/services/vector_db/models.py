@@ -24,6 +24,31 @@ class FusionMethod(Enum):
     HARMONIC_MEAN = "harmonic_mean"
 
 
+class ScoreSemantics(Enum):
+    """What a provider's ``SearchResult.score`` actually measures.
+
+    Only matters once one search spans more than one collection. Within a
+    single result list either kind ranks correctly, so nothing depended on the
+    distinction until a multi-collection strategy made merging possible.
+
+    SIMILARITY: a distance/similarity in the embedding space. Two collections'
+        scores are directly comparable, because the same model and metric
+        produced both, so merging is an ordinary sort.
+
+    RANK_FUSED: the output of a rank fusion (RRF and friends), i.e. a function
+        of a point's *position within its own result list* rather than of how
+        well it matched. Every provider here fuses internally — Qdrant with a
+        FusionQuery, OpenSearch with a score-ranker pipeline, Redis inside
+        FT.HYBRID — even when only a dense leg is present. Comparing these
+        across collections compares ranks: the best hit in a tiny, irrelevant
+        collection scores the same as the best hit in a huge, relevant one.
+        Merging must re-fuse the rank lists instead of sorting the numbers.
+    """
+
+    SIMILARITY = "similarity"
+    RANK_FUSED = "rank_fused"
+
+
 class HealthStatus(Enum):
     HEALTHY = "healthy"
     DEGRADED = "degraded"
@@ -240,12 +265,27 @@ class VectorDBCapabilities:
     supports_server_side_text_search: provider performs lexical search
         internally when text_query is supplied (Redis FT.HYBRID / OpenSearch match).
     supported_fusion_methods: fusion algorithms the provider supports.
+    supports_multi_collection: provider can hold many independent collections
+        without a shared-infrastructure penalty (all current providers do;
+        exists so a future provider without this capability can opt out and
+        CollectionRegistry can fail fast rather than silently degrading).
+    max_recommended_collections: soft ceiling used only for a startup warning
+        when a multi-collection strategy's projected collection count exceeds
+        it (Qdrant ~1000, OpenSearch ~200, Redis ~500). None means "no known
+        practical limit for typical deployments".
+    score_semantics: what ``SearchResult.score`` measures, which decides how a
+        search spanning several collections may merge them. Defaults to
+        RANK_FUSED because every provider here fuses internally; a provider
+        returning raw similarity should say so and get a cheaper merge.
     """
     supports_sparse_vectors: bool = False
     supports_server_side_text_search: bool = False
     supported_fusion_methods: List[FusionMethod] = field(
         default_factory=lambda: [FusionMethod.RRF]
     )
+    supports_multi_collection: bool = True
+    max_recommended_collections: int | None = None
+    score_semantics: ScoreSemantics = ScoreSemantics.RANK_FUSED
 
 
 @dataclass

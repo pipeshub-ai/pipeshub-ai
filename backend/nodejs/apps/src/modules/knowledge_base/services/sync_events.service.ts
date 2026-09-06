@@ -19,6 +19,7 @@ export interface ConnectorSyncEvent {
   connector: string;
   connectorId: string;
   origin: string;
+  syncedBy?: string;
   createdAtTimestamp: string;
   updatedAtTimestamp: string;
   sourceCreatedAtTimestamp: string;
@@ -29,6 +30,7 @@ export interface BaseSyncEvent {
   connector: string;
   connectorId: string;
   origin: string;
+  syncedBy?: string;
   fullSync?: boolean;
   createdAtTimestamp: string;
   updatedAtTimestamp: string;

@@ -13,8 +13,10 @@ class TestExceptionClassificationInConsumers:
     @pytest.mark.asyncio
     async def test_kafka_simple_consumer_terminal_error_logged(self):
         """Test that terminal errors return failure tuple from process_message."""
-        from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
         from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
+        from app.services.messaging.kafka.consumer.consumer import (
+            KafkaMessagingConsumer,
+        )
 
         config = KafkaConsumerConfig(
             topics=["test-topic"],
@@ -46,8 +48,10 @@ class TestExceptionClassificationInConsumers:
     @pytest.mark.asyncio
     async def test_kafka_simple_consumer_transient_error_logged(self):
         """Test that transient errors return failure tuple from process_message."""
-        from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
         from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
+        from app.services.messaging.kafka.consumer.consumer import (
+            KafkaMessagingConsumer,
+        )
 
         config = KafkaConsumerConfig(
             topics=["test-topic"],
@@ -79,8 +83,10 @@ class TestExceptionClassificationInConsumers:
     @pytest.mark.asyncio
     async def test_error_classifier_classify_by_exception_called(self):
         """Test that classify_by_exception is called during consume_loop error handling."""
-        from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
         from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
+        from app.services.messaging.kafka.consumer.consumer import (
+            KafkaMessagingConsumer,
+        )
 
         config = KafkaConsumerConfig(
             topics=["test-topic"],
@@ -139,8 +145,8 @@ class TestExceptionClassificationInConsumers:
     @pytest.mark.asyncio
     async def test_redis_consumer_exception_classification(self):
         """Test that Redis consumer classifies handler exceptions."""
-        from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
         from app.services.messaging.config import RedisStreamsConfig
+        from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 
         config = RedisStreamsConfig(
             host="localhost",

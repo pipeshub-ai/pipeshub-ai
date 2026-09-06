@@ -7,6 +7,7 @@ export interface SmtpConfig {
 }
 
 export interface MailBody {
+  orgId?: string;
   productName?: string;
   emailTemplateType: string;
   isAutoEmail?: boolean;
@@ -27,5 +28,6 @@ export enum EmailTemplateType {
   AppuserInvite = 'appuserInvite',
   SuspiciousLoginAttempt = 'suspiciousLoginAttempt',
   DomainLimitReached = 'domainLimitReached',
-
+  JoinRequestNotify = 'joinRequestNotify',
+  JoinRequestDecision = 'joinRequestDecision',
 }

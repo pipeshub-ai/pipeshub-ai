@@ -13,7 +13,6 @@ from app.modules.retrieval.retrieval_service import (
     DEFAULT_SEARCH_LIMIT,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers to build a RetrievalService without real FastEmbedSparse / model load
 # ---------------------------------------------------------------------------
@@ -38,6 +37,14 @@ def _patch_sparse():
         yield sparse_instance
 
 
+def _make_collection_registry(collection_name="test_collection"):
+    """Mock CollectionRegistry that always resolves to ``collection_name``."""
+    registry = MagicMock()
+    registry.strategy_name = "single"
+    registry.resolve_for_query = AsyncMock(return_value=[collection_name])
+    return registry
+
+
 @pytest.fixture
 def retrieval_service(
     logger, mock_config_service, mock_vector_db_service, mock_graph_provider, mock_blob_store, _patch_sparse
@@ -47,7 +54,7 @@ def retrieval_service(
     svc = RetrievalService(
         logger=logger,
         config_service=mock_config_service,
-        collection_name="test_collection",
+        collection_registry=_make_collection_registry(),
         vector_db_service=mock_vector_db_service,
         graph_provider=mock_graph_provider,
         blob_store=mock_blob_store,
@@ -451,7 +458,7 @@ class TestExecuteParallelSearches:
     async def test_raises_without_dense_embeddings(self, retrieval_service):
         retrieval_service.get_embedding_model_instance = AsyncMock(return_value=None)
         with pytest.raises(ValueError, match="No dense embeddings"):
-            await retrieval_service._execute_parallel_searches(["q"], MagicMock(), 10)
+            await retrieval_service._execute_parallel_searches(["q"], MagicMock(), 10, "org-1")
 
     @pytest.mark.asyncio
     async def test_skips_sparse_when_provider_does_not_support_it(self, retrieval_service):
@@ -461,7 +468,7 @@ class TestExecuteParallelSearches:
         retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
         retrieval_service.vector_db_service.query_nearest_points = AsyncMock(return_value=[[]])
         # No sparse_embeddings, capabilities say no sparse: should NOT raise
-        results = await retrieval_service._execute_parallel_searches(["q"], MagicMock(), 10)
+        results = await retrieval_service._execute_parallel_searches(["q"], MagicMock(), 10, "org-1")
         assert results == []
 
     @pytest.mark.asyncio
@@ -479,7 +486,7 @@ class TestExecuteParallelSearches:
 
         qdrant_filter = models.Filter(must=[])
         results = await retrieval_service._execute_parallel_searches(
-            ["test query"], qdrant_filter, 10
+            ["test query"], qdrant_filter, 10, "org-1"
         )
         assert len(results) == 1
         assert results[0]["score"] == 0.95
@@ -500,9 +507,358 @@ class TestExecuteParallelSearches:
 
         qdrant_filter = models.Filter(must=[])
         results = await retrieval_service._execute_parallel_searches(
-            ["query"], qdrant_filter, 10
+            ["query"], qdrant_filter, 10, "org-1"
         )
         assert len(results) == 1  # deduplicated
+
+    @pytest.mark.asyncio
+    async def test_fans_out_and_merges_across_multiple_collections(
+        self, retrieval_service, mock_vector_db_service
+    ):
+        """A strategy resolving 2+ collections queries each and merges results,
+        deduping by point id across collections."""
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        retrieval_service.collection_registry.resolve_for_query = AsyncMock(
+            return_value=["google_drive_records", "slack_records"]
+        )
+
+        def _point(pid, content):
+            p = MagicMock()
+            p.id = pid
+            p.payload = {"page_content": content, "metadata": {}}
+            p.score = 0.8
+            return p
+
+        async def _query_nearest_points(collection_name, requests):
+            if collection_name == "google_drive_records":
+                return [[_point("drive-1", "from drive")]]
+            return [[_point("slack-1", "from slack")]]
+
+        mock_vector_db_service.query_nearest_points = AsyncMock(
+            side_effect=_query_nearest_points
+        )
+
+        qdrant_filter = models.Filter(must=[])
+        results = await retrieval_service._execute_parallel_searches(
+            ["query"], qdrant_filter, 10, "org-1"
+        )
+
+        assert mock_vector_db_service.query_nearest_points.await_count == 2
+        called_collections = {
+            call.kwargs["collection_name"]
+            for call in mock_vector_db_service.query_nearest_points.await_args_list
+        }
+        assert called_collections == {"google_drive_records", "slack_records"}
+        contents = {r["content"] for r in results}
+        assert contents == {"from drive", "from slack"}
+
+    @pytest.mark.asyncio
+    async def test_one_failing_collection_degrades_instead_of_failing(
+        self, retrieval_service, mock_vector_db_service
+    ):
+        """A search over N collections must not error because one is down."""
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        retrieval_service.collection_registry.resolve_for_query = AsyncMock(
+            return_value=["good_records", "broken_records"]
+        )
+
+        point = MagicMock()
+        point.id = "p1"
+        point.payload = {"page_content": "survived", "metadata": {}}
+        point.score = 0.7
+
+        async def _query_nearest_points(collection_name, requests):
+            if collection_name == "broken_records":
+                raise RuntimeError("index closed")
+            return [[point]]
+
+        mock_vector_db_service.query_nearest_points = AsyncMock(
+            side_effect=_query_nearest_points
+        )
+
+        results = await retrieval_service._execute_parallel_searches(
+            ["query"], models.Filter(must=[]), 10, "org-1"
+        )
+
+        assert [r["content"] for r in results] == ["survived"]
+
+    @pytest.mark.asyncio
+    async def test_same_block_in_two_collections_collapses_to_its_best_rank(
+        self, retrieval_service, mock_vector_db_service
+    ):
+        """The dedup matrix lets one VRID be indexed into several collections.
+
+        Identity is the *block*, not the document: point ids are fresh uuid4s
+        per write, so the same block indexed into two collections yields two
+        ids the caller's point-id dedup cannot catch.
+
+        Which copy survives is decided by rank, not by score — the providers
+        return rank-fused scores, so the numbers are not comparable across
+        collections (see result_merging).
+        """
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        retrieval_service.collection_registry.resolve_for_query = AsyncMock(
+            return_value=["a_records", "b_records"]
+        )
+
+        def _point(pid, score, block_id="blk-1"):
+            p = MagicMock()
+            p.id = pid
+            p.payload = {
+                "page_content": pid,
+                "metadata": {"virtualRecordId": "vr-shared", "blockId": block_id},
+            }
+            p.score = score
+            return p
+
+        async def _query_nearest_points(collection_name, requests):
+            if collection_name == "a_records":
+                # Rank 2 here — a filler block occupies rank 1.
+                return [[_point("filler", 0.4, block_id="blk-filler"), _point("worse-rank", 0.3)]]
+            # Rank 1 in its own collection.
+            return [[_point("better-rank", 0.9)]]
+
+        mock_vector_db_service.query_nearest_points = AsyncMock(
+            side_effect=_query_nearest_points
+        )
+
+        results = await retrieval_service._execute_parallel_searches(
+            ["query"], models.Filter(must=[]), 10, "org-1"
+        )
+
+        contents = [r["content"] for r in results]
+        # One copy of the shared block, and it is the better-ranked one.
+        assert "worse-rank" not in contents
+        assert "better-rank" in contents
+        assert len(results) == 2  # the shared block plus the filler
+
+    @pytest.mark.asyncio
+    async def test_distinct_blocks_of_one_document_all_survive(
+        self, retrieval_service, mock_vector_db_service
+    ):
+        """The regression a VRID-level merge would cause: a document
+        legitimately contributes several chunks, and collapsing on
+        virtualRecordId alone would keep exactly one of them."""
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        retrieval_service.collection_registry.resolve_for_query = AsyncMock(
+            return_value=["a_records", "b_records"]
+        )
+
+        def _point(pid, score, block_id):
+            p = MagicMock()
+            p.id = pid
+            p.payload = {
+                "page_content": pid,
+                "metadata": {"virtualRecordId": "vr-1", "blockId": block_id},
+            }
+            p.score = score
+            return p
+
+        async def _query_nearest_points(collection_name, requests):
+            if collection_name == "a_records":
+                return [[_point("blk-1", 0.9, "blk-1"), _point("blk-2", 0.8, "blk-2")]]
+            return [[_point("blk-3", 0.7, "blk-3")]]
+
+        mock_vector_db_service.query_nearest_points = AsyncMock(
+            side_effect=_query_nearest_points
+        )
+
+        results = await retrieval_service._execute_parallel_searches(
+            ["query"], models.Filter(must=[]), 10, "org-1"
+        )
+
+        assert {r["content"] for r in results} == {"blk-1", "blk-2", "blk-3"}
+
+    @pytest.mark.asyncio
+    async def test_merged_batch_is_trimmed_back_to_limit(
+        self, retrieval_service, mock_vector_db_service
+    ):
+        """Each collection is asked for the full limit to preserve recall, so
+        the merge can hold N x limit; the caller's top-K contract says trim."""
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        retrieval_service.collection_registry.resolve_for_query = AsyncMock(
+            return_value=["a_records", "b_records"]
+        )
+
+        def _point(pid, score):
+            p = MagicMock()
+            p.id = pid
+            p.payload = {
+                "page_content": pid,
+                "metadata": {"virtualRecordId": f"vr-{pid}", "blockId": pid},
+            }
+            p.score = score
+            return p
+
+        async def _query_nearest_points(collection_name, requests):
+            prefix = collection_name[0]
+            return [[_point(f"{prefix}{i}", 1.0 - i / 10) for i in range(3)]]
+
+        mock_vector_db_service.query_nearest_points = AsyncMock(
+            side_effect=_query_nearest_points
+        )
+
+        results = await retrieval_service._execute_parallel_searches(
+            ["query"], models.Filter(must=[]), 2, "org-1"
+        )
+
+        assert len(results) == 2
+
+    @pytest.mark.asyncio
+    async def test_every_collection_failing_surfaces_the_error(
+        self, retrieval_service, mock_vector_db_service
+    ):
+        """One unreachable collection degrades; all of them is an outage, and
+        reporting it as "no documents found" sends the user off to reword a
+        query that was never run."""
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        retrieval_service.collection_registry.resolve_for_query = AsyncMock(
+            return_value=["a_records", "b_records"]
+        )
+        mock_vector_db_service.query_nearest_points = AsyncMock(
+            side_effect=ConnectionError("vector db down")
+        )
+
+        with pytest.raises(ConnectionError):
+            await retrieval_service._execute_parallel_searches(
+                ["query"], models.Filter(must=[]), 10, "org-1"
+            )
+
+    @pytest.mark.asyncio
+    async def test_one_collection_failing_still_returns_the_others(
+        self, retrieval_service, mock_vector_db_service
+    ):
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        retrieval_service.collection_registry.resolve_for_query = AsyncMock(
+            return_value=["a_records", "b_records"]
+        )
+
+        def _point(pid, score):
+            p = MagicMock()
+            p.id = pid
+            p.payload = {
+                "page_content": pid,
+                "metadata": {"virtualRecordId": "vr-1", "blockId": pid},
+            }
+            p.score = score
+            return p
+
+        async def _query_nearest_points(collection_name, requests):
+            if collection_name == "a_records":
+                raise ConnectionError("that one is down")
+            return [[_point("survivor", 0.5)]]
+
+        mock_vector_db_service.query_nearest_points = AsyncMock(
+            side_effect=_query_nearest_points
+        )
+
+        results = await retrieval_service._execute_parallel_searches(
+            ["query"], models.Filter(must=[]), 10, "org-1"
+        )
+
+        assert [r["content"] for r in results] == ["survivor"]
+
+    @pytest.mark.asyncio
+    async def test_points_without_a_virtual_record_id_are_not_collapsed(
+        self, retrieval_service, mock_vector_db_service
+    ):
+        """Missing VRIDs must not all land in one bucket and vanish."""
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        retrieval_service.collection_registry.resolve_for_query = AsyncMock(
+            return_value=["a_records", "b_records"]
+        )
+
+        def _point(pid, score):
+            p = MagicMock()
+            p.id = pid
+            p.payload = {"page_content": pid, "metadata": {}}
+            p.score = score
+            return p
+
+        async def _query_nearest_points(collection_name, requests):
+            if collection_name == "a_records":
+                return [[_point("a1", 0.5)]]
+            return [[_point("b1", 0.4)]]
+
+        mock_vector_db_service.query_nearest_points = AsyncMock(
+            side_effect=_query_nearest_points
+        )
+
+        results = await retrieval_service._execute_parallel_searches(
+            ["query"], models.Filter(must=[]), 10, "org-1"
+        )
+
+        assert {r["content"] for r in results} == {"a1", "b1"}
+
+    @pytest.mark.asyncio
+    async def test_single_collection_search_is_not_vrid_deduped(
+        self, retrieval_service, mock_vector_db_service
+    ):
+        """Chunks of one document share a VRID; collapsing them inside a single
+        collection would drop every chunk but one."""
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        retrieval_service.collection_registry.resolve_for_query = AsyncMock(
+            return_value=["records"]
+        )
+
+        def _point(pid, score):
+            p = MagicMock()
+            p.id = pid
+            p.payload = {
+                "page_content": pid,
+                "metadata": {"virtualRecordId": "vr-1"},
+            }
+            p.score = score
+            return p
+
+        mock_vector_db_service.query_nearest_points = AsyncMock(
+            return_value=[[_point("chunk-1", 0.9), _point("chunk-2", 0.8)]]
+        )
+
+        results = await retrieval_service._execute_parallel_searches(
+            ["query"], models.Filter(must=[]), 10, "org-1"
+        )
+
+        assert len(results) == 2
+
+    @pytest.mark.asyncio
+    async def test_no_resolved_collections_searches_nothing(
+        self, retrieval_service, mock_vector_db_service
+    ):
+        """`resolve_for_query` already filters to collections that exist, so an
+        empty result means there is nowhere with anything to find. Falling back
+        to a fabricated name would, under a per-org or per-connector strategy,
+        query a collection belonging to nobody."""
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        retrieval_service.collection_registry.resolve_for_query = AsyncMock(return_value=[])
+        mock_vector_db_service.query_nearest_points = AsyncMock(return_value=[[]])
+
+        results = await retrieval_service._execute_parallel_searches(
+            ["query"], models.Filter(must=[]), 10, "org-1"
+        )
+
+        assert results == []
+        mock_vector_db_service.query_nearest_points.assert_not_awaited()
 
 
 class TestGetUserCached:

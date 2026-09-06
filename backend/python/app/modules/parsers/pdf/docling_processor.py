@@ -32,6 +32,7 @@ from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlocksContainer
 from app.utils.converters.docling_doc_to_blocks import DoclingDocToBlocksConverter
 from app.utils.pdf_utils import PAGE_BATCH_SIZE, get_pdf_page_count  # noqa: F401 - re-exported
+from app.utils.worker_scaling import scaled
 
 SUCCESS_STATUS = "success"
 
@@ -81,7 +82,7 @@ LOCAL_DOCLING_PARSE_WORKERS = _get_local_parse_worker_count()
 @lru_cache(maxsize=1)
 def _get_process_pool() -> ProcessPoolExecutor:
     return ProcessPoolExecutor(
-        max_workers=LOCAL_DOCLING_PARSE_WORKERS,
+        max_workers=scaled(LOCAL_DOCLING_PARSE_WORKERS),
         mp_context=multiprocessing.get_context("spawn"),
     )
 

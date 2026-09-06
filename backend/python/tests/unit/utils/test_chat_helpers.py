@@ -9,9 +9,10 @@ from urllib.parse import quote
 
 import pytest
 
-from app.services.vector_db.models import ScrollResult
-
 from app.config.constants.arangodb import Connectors, OriginTypes, RecordRelations
+from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import (
+    is_jira_ticket_record,
+)
 from app.models.blocks import BlockType, GroupType
 from app.models.entities import (
     FileRecord,
@@ -24,35 +25,43 @@ from app.models.entities import (
     RecordType,
     TicketRecord,
 )
-from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import is_jira_ticket_record
+from app.services.vector_db.models import ScrollResult
 from app.utils.chat_helpers import (
     TEXT_FRAGMENT_DIRECTIVE_PREFIX,
     _extract_text_content_recursive,
     _find_first_block_index_recursive,
     build_block_web_url,
     build_message_content_array,
-    flattened_result_sort_key,
-    build_group_blocks as _build_group_blocks,
-    get_group_label_n_first_child as _get_group_label_n_first_child,
+    build_parent_info,
+    build_record_relations_info,
+    context_includes_jira_tickets,
     count_tokens,
     count_tokens_in_messages,
     count_tokens_text,
     create_block_from_metadata,
     create_record_instance_from_dict,
-    context_includes_jira_tickets,
     enrich_records_with_graph_context,
     enrich_virtual_record_id_to_result_with_fk_children,
-    build_parent_info,
-    build_record_relations_info,
     extract_bounding_boxes,
     extract_start_end_text,
+    flattened_result_sort_key,
     generate_text_fragment_url,
     get_enhanced_metadata,
     get_flattened_results,
-    get_message_content as _get_message_content,
     get_record,
-    record_to_message_content as _record_to_message_content,
     record_to_text,
+)
+from app.utils.chat_helpers import (
+    build_group_blocks as _build_group_blocks,
+)
+from app.utils.chat_helpers import (
+    get_group_label_n_first_child as _get_group_label_n_first_child,
+)
+from app.utils.chat_helpers import (
+    get_message_content as _get_message_content,
+)
+from app.utils.chat_helpers import (
+    record_to_message_content as _record_to_message_content,
 )
 
 # ---------------------------------------------------------------------------
@@ -198,6 +207,35 @@ class TestBuildBlockWebUrl:
     def test_record_id_embedded_in_path(self):
         result = build_block_web_url("https://app.example.com", "my-uuid-abc", 1)
         assert "/record/my-uuid-abc/preview" in result
+
+
+
+def _make_config_service() -> AsyncMock:
+    """A key-aware ConfigurationService double.
+
+    Returning one canned payload for every key made the collection-strategy
+    lookup resolve to the endpoints blob — which the resolver now rejects, as
+    it should. Keys it does not know about fall through to the caller's default.
+    """
+    endpoints = {"frontend": {"publicEndpoint": "https://app.example.com"}}
+    known = {"/services/endpoint": endpoints}
+
+    async def get_config(key, default=None, **kwargs):
+        if key in known:
+            return known[key]
+        if "endpoint" in key:
+            return endpoints
+        return default
+
+    async def create_config_if_absent(key, value):
+        known.setdefault(key, value)
+        return True
+
+    svc = AsyncMock()
+    svc.get_config = AsyncMock(side_effect=get_config)
+    svc.set_config = AsyncMock(return_value=True)
+    svc.create_config_if_absent = AsyncMock(side_effect=create_config_if_absent)
+    return svc
 
 
 class TestFlattenedResultSortKey:
@@ -2611,10 +2649,7 @@ class TestGetFlattenedResults:
     def _make_blob_store(self, record_blob=None):
         blob_store = AsyncMock()
         blob_store.get_record_from_storage = AsyncMock(return_value=record_blob or _make_record_blob())
-        blob_store.config_service = AsyncMock()
-        blob_store.config_service.get_config = AsyncMock(return_value={
-            "frontend": {"publicEndpoint": "https://app.example.com"}
-        })
+        blob_store.config_service = _make_config_service()
         return blob_store
 
     @pytest.mark.asyncio
@@ -3616,10 +3651,7 @@ class TestGetFlattenedResultsBranches:
     def _make_blob_store(self, record_blob=None):
         blob_store = AsyncMock()
         blob_store.get_record_from_storage = AsyncMock(return_value=record_blob or _make_record_blob())
-        blob_store.config_service = AsyncMock()
-        blob_store.config_service.get_config = AsyncMock(return_value={
-            "frontend": {"publicEndpoint": "https://app.example.com"}
-        })
+        blob_store.config_service = _make_config_service()
         return blob_store
 
     @pytest.mark.asyncio
@@ -4451,10 +4483,7 @@ class TestGetFlattenedResultsOldType:
     def _make_blob_store(self, record_blob=None):
         blob_store = AsyncMock()
         blob_store.get_record_from_storage = AsyncMock(return_value=record_blob or _make_record_blob())
-        blob_store.config_service = AsyncMock()
-        blob_store.config_service.get_config = AsyncMock(return_value={
-            "frontend": {"publicEndpoint": "https://app.example.com"}
-        })
+        blob_store.config_service = _make_config_service()
         return blob_store
 
     @pytest.mark.asyncio
@@ -4657,10 +4686,7 @@ class TestGetFlattenedResultsNullRecordInTableProcessing:
     def _make_blob_store(self, record_blob=None):
         blob_store = AsyncMock()
         blob_store.get_record_from_storage = AsyncMock(return_value=record_blob)
-        blob_store.config_service = AsyncMock()
-        blob_store.config_service.get_config = AsyncMock(return_value={
-            "frontend": {"publicEndpoint": "https://app.example.com"}
-        })
+        blob_store.config_service = _make_config_service()
         return blob_store
 
     @pytest.mark.asyncio
@@ -4801,6 +4827,9 @@ class TestCreateRecordFromVectorMetadata:
         try:
             mock_container = mock_cls_container.return_value
             mock_container.get_vector_db_service = AsyncMock(return_value=mock_vector_service)
+            mock_registry = AsyncMock()
+            mock_registry.resolve_for_query = AsyncMock(return_value=["records"])
+            mock_container.create_collection_registry = AsyncMock(return_value=mock_registry)
 
             record, point_id_map = await create_record_from_vector_metadata(
                 metadata, "org-1", "vr-1", blob_store
@@ -4873,6 +4902,9 @@ class TestCreateRecordFromVectorMetadata:
         try:
             mock_container = mock_cls_container.return_value
             mock_container.get_vector_db_service = AsyncMock(return_value=mock_vector_service)
+            mock_registry = AsyncMock()
+            mock_registry.resolve_for_query = AsyncMock(return_value=["records"])
+            mock_container.create_collection_registry = AsyncMock(return_value=mock_registry)
 
             record, point_id_map = await create_record_from_vector_metadata(
                 {"mimeType": "text/plain"}, "org-1", "vr-1", blob_store
@@ -4898,10 +4930,7 @@ class TestEnrichVirtualRecordIdFKChildren:
         blob_store.get_record_from_storage = AsyncMock(
             return_value=record_blob or _make_record_blob()
         )
-        blob_store.config_service = AsyncMock()
-        blob_store.config_service.get_config = AsyncMock(return_value={
-            "frontend": {"publicEndpoint": "https://app.example.com"}
-        })
+        blob_store.config_service = _make_config_service()
         return blob_store
 
     def _make_graph_provider(
@@ -6604,6 +6633,9 @@ class TestCreateRecordFromVectorMetadataConnectorId:
 
         mock_container = MagicMock()
         mock_container.get_vector_db_service = AsyncMock(return_value=mock_vector_service)
+        mock_registry = AsyncMock()
+        mock_registry.resolve_for_query = AsyncMock(return_value=["records"])
+        mock_container.create_collection_registry = AsyncMock(return_value=mock_registry)
 
         with patch.dict("sys.modules", {"app.containers.utils.utils": MagicMock(ContainerUtils=lambda: mock_container)}):
             record, _ = await create_record_from_vector_metadata(
@@ -6617,8 +6649,6 @@ class TestCreateRecordFromVectorMetadataConnectorId:
 # MessageRecord support in chat_helpers (slack diff additions)
 # ============================================================================
 
-import json as _json_ch
-from app.config.constants.arangodb import OriginTypes as _CH_OriginTypes
 
 
 def _ch_record_dict(**overrides):
@@ -6666,8 +6696,8 @@ class TestCollectionMapMessage:
 
 class TestValidGroupLabelsConversation:
     def test_conversation_in_valid_labels(self):
-        from app.utils.chat_helpers import valid_group_labels
         from app.models.blocks import GroupType
+        from app.utils.chat_helpers import valid_group_labels
         assert GroupType.CONVERSATION.value in valid_group_labels
 
 

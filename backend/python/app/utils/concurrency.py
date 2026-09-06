@@ -8,6 +8,8 @@ from contextlib import asynccontextmanager
 from typing import Awaitable, List, TypeVar, cast
 from weakref import WeakKeyDictionary
 
+from app.utils.worker_scaling import scaled
+
 T = TypeVar("T")
 
 # Process-wide ceiling on in-flight indexing LLM calls. Fan-out is three levels deep
@@ -46,7 +48,7 @@ def _indexing_llm_semaphore() -> asyncio.Semaphore:
         with _sem_lock:
             sem = _sem_by_loop.get(loop)
             if sem is None:
-                sem = asyncio.Semaphore(MAX_CONCURRENT_INDEXING_LLM_CALLS)
+                sem = asyncio.Semaphore(scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS))
                 _sem_by_loop[loop] = sem
     return sem
 

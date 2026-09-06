@@ -650,7 +650,10 @@ class EntityEventService(BaseEventService):
                 await self.graph_provider.batch_create_edges([user_app_edge], CollectionNames.USER_APP_RELATION.value, transaction=txn_id)
                 await self.graph_provider.commit_transaction(txn_id)
                 txn_id = None  # mark committed so the except block below doesn't roll it back
-            except Exception:
+            except BaseException:
+                # BaseException so a cancellation also rolls back -- otherwise
+                # the transaction's session leaks a pooled Neo4j connection
+                # (see GraphDataStore.transaction for the full account).
                 if txn_id is not None:
                     try:
                         await self.graph_provider.rollback_transaction(txn_id)

@@ -105,6 +105,27 @@ class VectorDBProviderFactory:
     ) -> IVectorDBService:
         from app.services.vector_db.redis.redis_vector import RedisVectorService
 
+        # FT.HYBRID requires Redis >= 8.4, which MemoryDB does not ship and
+        # Redis Cluster mode does not support today (R20). Fail fast at
+        # startup instead of on the first search query.
+        #
+        # Gated on VECTOR_REDIS_MODE, not REDIS_MODE: the vector store keeps
+        # its own connection (REDIS_VECTOR_*), so pointing the app at
+        # MemoryDB while the vector index stays on a standalone Redis 8.4 is
+        # a valid deployment. VECTOR_REDIS_MODE defaults to REDIS_MODE so the
+        # common single-Redis install still fails fast without extra config.
+        app_mode = os.getenv("REDIS_MODE", "standalone").lower().strip()
+        vector_mode = (os.getenv("VECTOR_REDIS_MODE") or app_mode).lower().strip()
+        if vector_mode != "standalone":
+            raise ValueError(
+                f"VECTOR_DB_TYPE='redis' is incompatible with "
+                f"VECTOR_REDIS_MODE='{vector_mode}': FT.HYBRID requires Redis "
+                ">= 8.4 in standalone mode, which cluster-mode deployments "
+                "(including AWS MemoryDB) do not support. Choose 'qdrant' or "
+                "'opensearch' for VECTOR_DB_TYPE, or point REDIS_VECTOR_* at "
+                "a standalone Redis and set VECTOR_REDIS_MODE=standalone."
+            )
+
         try:
             logger.debug("Creating Redis vector provider…")
             provider = await RedisVectorService.create(config_service)

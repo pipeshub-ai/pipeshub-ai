@@ -21,11 +21,18 @@ from app.agent_loop_lib.sandbox.coding.base import (
     ErrorAnalysis,
     ErrorCategory,
     InstallResult,
+    IsolationLevel,
+    SandboxCapabilities,
+    SandboxContext,
     normalize_sandbox_path,
 )
 from app.agent_loop_lib.sandbox.coding.cleanup import (
     register_sandbox_dir,
     unregister_sandbox_dir,
+)
+from app.agent_loop_lib.sandbox.coding.docker_client import (
+    DockerClientProvider,
+    get_default_provider,
 )
 from app.agent_loop_lib.sandbox.coding.reflection import ReflectionEngine
 from app.agent_loop_lib.sandbox.coding.validation import (
@@ -130,6 +137,9 @@ class DockerCodingSandbox(CodingSandboxBackend):
     used to run every `execute()`/`install_packages()` call in a fresh,
     isolated container."""
 
+
+    backend_name = "docker"
+
     def __init__(
         self,
         *,
@@ -145,8 +155,17 @@ class DockerCodingSandbox(CodingSandboxBackend):
         package_allowlist: list[str] | None = None,
         package_denylist: list[str] | None = None,
         image_node_modules: str | None = None,
+        context: SandboxContext | None = None,
+        provider: "DockerClientProvider | None" = None,
     ) -> None:
         self._sandbox_id = str(uuid.uuid4())
+        self._context = context
+        # One shared client and one bounded executor per process. Creating
+        # a client per call re-handshakes with the daemon every time, and
+        # running the blocking docker-py calls on asyncio's DEFAULT
+        # executor lets a few concurrent container runs starve every other
+        # subsystem that shares it.
+        self._provider = provider or get_default_provider()
         short_suffix = self._sandbox_id.replace("-", "")[:10]
         self._working_dir = os.path.realpath(
             working_dir or os.path.join(tempfile.gettempdir(), f"alcs-docker-{short_suffix}")
@@ -174,6 +193,22 @@ class DockerCodingSandbox(CodingSandboxBackend):
     def sandbox_id(self) -> str:
         return self._sandbox_id
 
+    @classmethod
+    def describe_capabilities(cls, *, allow_network: bool = False) -> SandboxCapabilities:
+        """See `LocalCodingSandbox.describe_capabilities`."""
+        return SandboxCapabilities(
+            isolation=IsolationLevel.CONTAINER,
+            supports_network=allow_network,
+            supports_streaming=False,
+            supports_reconnect=False,
+            is_metered=False,
+            persistent_filesystem=True,
+        )
+
+    @property
+    def capabilities(self) -> SandboxCapabilities:
+        return self.describe_capabilities(allow_network=self._allow_network)
+
     @property
     def working_dir(self) -> str:
         return self._working_dir
@@ -183,6 +218,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
             os.makedirs(self._output_dir, exist_ok=True)
             register_sandbox_dir(self._working_dir)
             self._provisioned = True
+            self._created_at = time.time()
         return SandboxInfo(
             sandbox_id=self._sandbox_id,
             status="ready",
@@ -251,11 +287,20 @@ class DockerCodingSandbox(CodingSandboxBackend):
         )
 
         network_enabled = self._allow_network and request.allow_network
+        # Resolved here rather than inside the blocking helper: both are
+        # async, both are cached per process, and doing them once up front
+        # keeps the image pull out of the per-run critical path.
+        await self._ensure_image()
+        egress_network = (
+            await self._provider.ensure_egress_network(self._egress_network)
+            if network_enabled else None
+        )
         try:
             exit_code, stdout, stderr = await asyncio.wait_for(
-                asyncio.to_thread(
+                self._provider.run_blocking(
                     self._run_container_sync,
-                    run_cmd, src_dir, request.timeout, network_enabled, staged_inputs,
+                    run_cmd, src_dir, request.timeout, network_enabled,
+                    staged_inputs, self._provider.client, egress_network,
                 ),
                 timeout=request.timeout + 30,
             )
@@ -312,9 +357,12 @@ class DockerCodingSandbox(CodingSandboxBackend):
         if not to_install:
             return InstallResult(success=True, installed=[])
 
+        await self._ensure_image()
+        network_name = await self._provider.ensure_egress_network(self._egress_network)
         try:
-            success, stdout, stderr = await asyncio.to_thread(
+            success, stdout, stderr = await self._provider.run_blocking(
                 self._install_packages_sync, to_install, language,
+                self._provider.client, network_name,
             )
         except CodingSandboxError:
             raise
@@ -471,7 +519,8 @@ class DockerCodingSandbox(CodingSandboxBackend):
         logger.info("_list_output_artifacts: found %d file(s): %s", len(results), sorted(results))
         return sorted(results)
 
-    # -- blocking docker-py calls: only ever invoked via asyncio.to_thread --
+    # -- blocking docker-py calls: only ever invoked via
+    # -- DockerClientProvider.run_blocking, on its dedicated executor --
 
     def _run_container_sync(
         self,
@@ -480,30 +529,11 @@ class DockerCodingSandbox(CodingSandboxBackend):
         timeout: float,
         network_enabled: bool,
         staged_inputs: dict[str, bytes],
+        client: Any,
+        egress_network: str | None,
     ) -> tuple[int, str, str]:
-        try:
-            import docker
-            from docker.errors import ImageNotFound
-        except ImportError as exc:
-            raise CodingSandboxError(
-                "docker Python package is not installed. Install with: pip install docker"
-            ) from exc
-
-        client = docker.from_env()
         container = None
         try:
-            try:
-                client.images.get(self._image)
-            except ImageNotFound:
-                logger.info("Sandbox image %s not found locally, attempting pull ...", self._image)
-                try:
-                    client.images.pull(self._image)
-                except Exception as pull_err:
-                    raise CodingSandboxError(
-                        f"Sandbox image {self._image!r} is not available locally and could not "
-                        f"be pulled: {pull_err}"
-                    ) from pull_err
-
             has_py_deps = os.path.isdir(self._deps_python_dir) and bool(os.listdir(self._deps_python_dir))
             has_node_deps = os.path.isdir(self._deps_node_dir) and bool(os.listdir(self._deps_node_dir))
             env = {"OUTPUT_DIR": "/output"}
@@ -534,7 +564,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 # — real internet access for the run container, but never
                 # the caller's default Docker network, so compose sibling
                 # services (mongo/arango/redis/...) stay unreachable by name.
-                container_kwargs["network"] = self._ensure_egress_network(client)
+                container_kwargs["network"] = egress_network
                 container_kwargs["network_disabled"] = False
             else:
                 container_kwargs["network_mode"] = "none"
@@ -561,6 +591,16 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 logger.info("_run_container_sync: no staged_inputs to archive")
             container.put_archive("/src", _tar_directory(src_dir))
             container.put_archive("/", _tar_empty_dir("output", mode=0o777))
+            # Restore what earlier calls on this sandbox left in $OUTPUT_DIR.
+            # Every execute() gets a fresh container, so without this the
+            # deliverable directory silently resets between calls while the
+            # working directory persists — and a model that writes a file
+            # then reads it back to verify it (the normal pattern) gets a
+            # FileNotFoundError for a file that is right there on the host.
+            # `_tar_directory` preserves mtimes, so restored files still look
+            # unchanged to `_list_output_artifacts` and are not re-reported.
+            if os.path.isdir(self._output_dir) and os.listdir(self._output_dir):
+                container.put_archive("/output", _tar_directory(self._output_dir))
             if has_py_deps:
                 container.put_archive("/", _tar_empty_dir("deps", mode=0o755))
                 container.put_archive("/deps", _tar_directory(self._deps_python_dir))
@@ -610,126 +650,95 @@ class DockerCodingSandbox(CodingSandboxBackend):
                     container.remove(force=True)
                 except Exception:
                     pass
-            try:
-                client.close()
-            except Exception:
-                pass
+
+    async def _ensure_image(self) -> None:
+        """Pull the sandbox image if the daemon doesn't have it.
+
+        Presence is cached per process, so this is a dict lookup on every
+        run after the first — the previous code asked the daemon on every
+        single execution.
+        """
+        if await self._provider.ensure_image(self._image):
+            return
+        logger.info("Sandbox image %s not found locally, attempting pull ...", self._image)
+        try:
+            await self._provider.pull_image(self._image)
+        except Exception as exc:
+            raise CodingSandboxError(
+                f"Sandbox image {self._image!r} is not available locally and "
+                f"could not be pulled: {exc}"
+            ) from exc
 
     def _install_packages_sync(
         self, to_install: list[str], language: CodingLanguage,
+        client: Any, network_name: str,
     ) -> tuple[bool, str, str]:
-        try:
-            import docker
-        except ImportError as exc:
-            raise CodingSandboxError(
-                "docker Python package is not installed. Install with: pip install docker"
-            ) from exc
+        if language == "python":
+            cmd = [
+                "sh", "-c",
+                "pip install --quiet --no-cache-dir --target /deps "
+                f"--index-url {self._pip_index_url} " + " ".join(to_install),
+            ]
+            extract_path = "/deps"
+            host_target = self._deps_python_dir
+        else:
+            cmd = [
+                "sh", "-c",
+                "mkdir -p /install && npm install --prefix /install --no-save "
+                f"--loglevel=error --registry={self._npm_registry} "
+                + " ".join(to_install),
+            ]
+            extract_path = "/install/node_modules"
+            host_target = self._deps_node_dir
 
-        client = docker.from_env()
+        mem_bytes = self._memory_limit_mb * 1024 * 1024
+        nano_cpus = int(self._cpu_limit * 1e9)
+        logger.info(
+            "_install_packages_sync: language=%s to_install=%s image=%s "
+            "network=%s host_target=%s",
+            language, to_install, self._image, network_name, host_target,
+        )
+        container = client.containers.create(
+            image=self._image,
+            command=cmd,
+            environment={},
+            mem_limit=mem_bytes,
+            nano_cpus=nano_cpus,
+            network=network_name,
+            network_disabled=False,
+            detach=True,
+        )
         try:
-            network_name = self._ensure_egress_network(client)
-
             if language == "python":
-                cmd = [
-                    "sh", "-c",
-                    "pip install --quiet --no-cache-dir --target /deps "
-                    f"--index-url {self._pip_index_url} " + " ".join(to_install),
-                ]
-                extract_path = "/deps"
-                host_target = self._deps_python_dir
+                container.put_archive("/", _tar_empty_dir("deps", mode=0o777))
             else:
-                cmd = [
-                    "sh", "-c",
-                    "mkdir -p /install && npm install --prefix /install --no-save "
-                    f"--loglevel=error --registry={self._npm_registry} "
-                    + " ".join(to_install),
-                ]
-                extract_path = "/install/node_modules"
-                host_target = self._deps_node_dir
-
-            mem_bytes = self._memory_limit_mb * 1024 * 1024
-            nano_cpus = int(self._cpu_limit * 1e9)
+                container.put_archive("/", _tar_empty_dir("install", mode=0o777))
+            container.start()
+            exit_info = container.wait(timeout=300)
+            exit_code = exit_info.get("StatusCode", -1)
+            stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")
+            stderr = container.logs(stdout=False, stderr=True).decode(errors="replace")
             logger.info(
-                "_install_packages_sync: language=%s to_install=%s image=%s "
-                "network=%s host_target=%s",
-                language, to_install, self._image, network_name, host_target,
+                "_install_packages_sync: container %.12s exit_code=%d "
+                "stdout_len=%d stderr_preview=%.500s",
+                container.id, exit_code, len(stdout),
+                stderr[:500] if stderr else "",
             )
-            container = client.containers.create(
-                image=self._image,
-                command=cmd,
-                environment={},
-                mem_limit=mem_bytes,
-                nano_cpus=nano_cpus,
-                network=network_name,
-                network_disabled=False,
-                detach=True,
-            )
-            try:
-                if language == "python":
-                    container.put_archive("/", _tar_empty_dir("deps", mode=0o777))
-                else:
-                    container.put_archive("/", _tar_empty_dir("install", mode=0o777))
-                container.start()
-                exit_info = container.wait(timeout=300)
-                exit_code = exit_info.get("StatusCode", -1)
-                stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")
-                stderr = container.logs(stdout=False, stderr=True).decode(errors="replace")
-                logger.info(
-                    "_install_packages_sync: container %.12s exit_code=%d "
-                    "stdout_len=%d stderr_preview=%.500s",
-                    container.id, exit_code, len(stdout),
-                    stderr[:500] if stderr else "",
+            if exit_code != 0:
+                logger.warning(
+                    "_install_packages_sync: install FAILED for %s — "
+                    "exit_code=%d stderr=%.1000s",
+                    to_install, exit_code, stderr,
                 )
-                if exit_code != 0:
-                    logger.warning(
-                        "_install_packages_sync: install FAILED for %s — "
-                        "exit_code=%d stderr=%.1000s",
-                        to_install, exit_code, stderr,
-                    )
-                    return False, stdout, stderr
-                os.makedirs(host_target, exist_ok=True)
-                _extract_container_dir(container, extract_path, host_target)
-                return True, stdout, stderr
-            finally:
-                try:
-                    container.remove(force=True)
-                except Exception:
-                    pass
+                return False, stdout, stderr
+            os.makedirs(host_target, exist_ok=True)
+            _extract_container_dir(container, extract_path, host_target)
+            return True, stdout, stderr
         finally:
             try:
-                client.close()
+                container.remove(force=True)
             except Exception:
                 pass
-
-    def _ensure_egress_network(self, client: object) -> str:
-        """Create (or reuse) the dedicated install-phase network and return
-        its name. A user-defined bridge, never the caller's default Docker
-        network, so sibling services on a compose deployment stay
-        unreachable from the install container."""
-        name = self._egress_network
-        try:
-            existing = client.networks.list(names=[name])
-            if existing:
-                return name
-            client.networks.create(
-                name=name,
-                driver="bridge",
-                internal=False,
-                labels={"agent_loop.sandbox": "egress"},
-                check_duplicate=True,
-            )
-            logger.info("Created dedicated sandbox egress network: %s", name)
-        except Exception as exc:
-            # Another process may have raced us to create the network; try
-            # once more to list and fall through if that worked.
-            logger.debug("egress network creation raised %s; re-checking", exc)
-            try:
-                if client.networks.list(names=[name]):
-                    return name
-            except Exception:
-                pass
-            raise
-        return name
 
 
 # ------------------------------------------------------------------

@@ -22,55 +22,40 @@ export function omitInheritedSecrets<T extends Record<string, unknown>>(
 }
 
 /**
- * Keys inside an AI model `configuration` object that are NOT secrets and
- * should always be returned to the client as-is.
+ * User-facing GET `configuration` is an allowlist. Provider-specific keys
+ * (region, voice, credentials, …) stay out of the response; values are copied
+ * as stored. Top-level entry fields are left untouched.
  */
-const AI_CONFIG_NON_SECRET_KEYS = new Set([
+export const AI_PUBLIC_CONFIG_KEYS = [
   'model',
-  'modelname',
-  'modelfriendlyname',
-]);
+  'modelFriendlyName',
+  'dimensions',
+] as const;
 
-/**
- * Mask every string field inside an AI model entry's `configuration` object,
- * except for the model-name fields (`model`, `modelName`, `modelFriendlyName`).
- * All other top-level entry fields (provider, modelKey, isMultimodal, isDefault,
- * isReasoning, contextLength, …) are left completely untouched.
- *
- * Exported so callers that hold a single entry (e.g. update/delete responses)
- * can mask it directly without going through maskAiModelsStoredConfig.
- */
-export function maskAiModelEntry(entry: AIModelConfiguration): AIModelConfiguration {
+export function stripAiModelSecrets(entry: AIModelConfiguration): AIModelConfiguration {
   const cfg = entry.configuration;
   if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
     return entry;
   }
 
-  const maskedCfg: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(cfg as Record<string, unknown>)) {
-    if (AI_CONFIG_NON_SECRET_KEYS.has(key.toLowerCase())) {
-      maskedCfg[key] = value;
-    } else if (typeof value === 'string' && value.length > 0) {
-      maskedCfg[key] = CONFIG_SECRET_PLACEHOLDER;
-    } else {
-      maskedCfg[key] = value;
+  const src = cfg as Record<string, unknown>;
+  const safeCfg: Record<string, unknown> = {};
+  for (const key of AI_PUBLIC_CONFIG_KEYS) {
+    if (key in src) {
+      safeCfg[key] = src[key];
     }
   }
 
-  return { ...entry, configuration: maskedCfg as AIModelConfiguration['configuration'] };
+  return { ...entry, configuration: safeCfg as AIModelConfiguration['configuration'] };
 }
 
 /**
- * Mask all AI model entries in the stored config object.
+ * Apply the public `configuration` allowlist to every AI model entry.
  *
  * The stored shape is:
- *   { llm: [...entries], embedding: [...entries], ocr: [...], … }
- *
- * Each entry looks like:
- *   { provider, configuration: { model, modelFriendlyName, apiKey, … }, modelKey,
- *     isMultimodal, isDefault, isReasoning, contextLength }
+ *   { llm: [...entries], embedding: [...entries], ocr: [...], modelRoles: {…} }
  */
-export function maskAiModelsStoredConfig<T extends Record<string, unknown>>(
+export function stripAiModelsStoredConfig<T extends Record<string, unknown>>(
   config: T,
 ): T {
   if (!config || typeof config !== 'object') {
@@ -85,12 +70,37 @@ export function maskAiModelsStoredConfig<T extends Record<string, unknown>>(
     }
     result[bucket] = entries.map((entry: unknown) => {
       if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
-        return maskAiModelEntry(entry as AIModelConfiguration);
+        return stripAiModelSecrets(entry as AIModelConfiguration);
       }
       return entry;
     });
   }
   return result as T;
+}
+
+/**
+ * GET only returns the public allowlist, so an update legitimately omits
+ * credentials and other provider keys the user did not retype. Carry those
+ * forward from storage.
+ *
+ * Only *absent* keys are restored. A key present but empty is an explicit clear
+ * (e.g. dropping `awsAccessKeyId` to fall back to the EC2 IAM role) and is left
+ * alone.
+ */
+export function mergeAiModelCredentials<T extends Record<string, unknown>>(
+  incoming: T,
+  existing: Record<string, unknown> | null | undefined,
+): T {
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    return incoming;
+  }
+  const out = { ...incoming } as Record<string, unknown>;
+  for (const key of Object.keys(existing)) {
+    if (!(key in out)) {
+      out[key] = existing[key];
+    }
+  }
+  return out as T;
 }
 
 /**

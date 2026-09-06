@@ -59,8 +59,21 @@ from app.services.vector_db.models import (
 from app.services.vector_db.qdrant.config import QdrantConfig
 from app.services.vector_db.qdrant.utils import QdrantUtils
 from app.utils.logger import create_logger
+from app.services.resource_governor.feedback import get_default_downstream_feedback
 
 logger = create_logger("qdrant_service")
+
+
+def _report_upsert_failure(error: BaseException) -> None:
+    """The indexing governor narrows its pools when the vector store cannot
+    keep up; a timeout and an outright failure are told apart because one
+    slow batch is not the same signal as a store that is down."""
+    feedback = get_default_downstream_feedback()
+    if isinstance(error, asyncio.TimeoutError) or "timeout" in type(error).__name__.lower():
+        feedback.report_timeout("qdrant")
+    else:
+        feedback.report_unavailable("qdrant")
+
 
 
 def _is_not_found_error(exc: Exception) -> bool:
@@ -87,6 +100,8 @@ _QDRANT_CAPABILITIES = VectorDBCapabilities(
     supports_sparse_vectors=True,
     supports_server_side_text_search=False,
     supported_fusion_methods=[FusionMethod.RRF],
+    supports_multi_collection=True,
+    max_recommended_collections=1000,
 )
 
 
@@ -698,10 +713,14 @@ class QdrantService(IVectorDBService):
 
         for i in range(0, len(qdrant_points), batch_size):
             batch = qdrant_points[i : i + batch_size]
-            await self.client.upsert(  # type: ignore
-                collection_name=collection_name,
-                points=batch,
-            )
+            try:
+                await self.client.upsert(  # type: ignore
+                    collection_name=collection_name,
+                    points=batch,
+                )
+            except Exception as e:
+                _report_upsert_failure(e)
+                raise
 
         elapsed = time.perf_counter() - start
         logger.debug(

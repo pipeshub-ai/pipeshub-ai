@@ -242,12 +242,16 @@ class JiraClient(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
         connector_instance_id: Optional[str] = None,
+        connector_type: str = "Jira",
     ) -> "JiraClient":
         """Build JiraClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
             connector_instance_id: Optional connector instance ID to get specific instance config
+            connector_type: Registry name of the calling connector. Selects which
+                ``/services/oauth/<type>`` list the shared OAuth app is read from —
+                a Cloud Personal instance's app id is not in the workspace Jira list.
         Returns:
             JiraClient instance
         """
@@ -332,7 +336,7 @@ class JiraClient(IClient):
                         from app.edition_config import fetch_oauth_config_by_id
                         shared = await fetch_oauth_config_by_id(
                             oauth_config_id=oauth_config_id,
-                            connector_type="Jira",
+                            connector_type=connector_type,
                             config_service=config_service,
                             logger=logger,
                             org_id=auth_config.get("inheritedFromOrgId"),

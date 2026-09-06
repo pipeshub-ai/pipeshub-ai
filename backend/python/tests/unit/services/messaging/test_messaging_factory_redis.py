@@ -10,12 +10,22 @@ from unittest.mock import patch
 
 import pytest
 
-from app.services.messaging.config import ConsumerType, MessageBrokerType, RedisStreamsConfig
+from app.services.messaging.config import (
+    ConsumerType,
+    MessageBrokerType,
+    RedisStreamsConfig,
+)
 from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
 )
 from app.services.messaging.messaging_factory import MessagingFactory
+
+
+def _unwrap(producer):
+    """The broker producer behind any lane-routing decorator."""
+    return getattr(producer, "inner", producer)
+
 
 
 @pytest.fixture
@@ -61,7 +71,7 @@ class TestCreateProducerRedis:
         producer = MessagingFactory.create_producer(
             logger, config=redis_config, broker_type=MessageBrokerType.REDIS
         )
-        assert isinstance(producer, RedisStreamsProducer)
+        assert isinstance(_unwrap(producer), RedisStreamsProducer)
 
     def test_none_config_raises_value_error(self, logger):
         with pytest.raises(ValueError, match="Redis Streams config is required"):
@@ -83,7 +93,7 @@ class TestCreateProducerRedis:
             return_value=MessageBrokerType.REDIS,
         ):
             producer = MessagingFactory.create_producer(logger, config=redis_config)
-            assert isinstance(producer, RedisStreamsProducer)
+            assert isinstance(_unwrap(producer), RedisStreamsProducer)
 
 
 class TestCreateConsumerRedis:
@@ -113,6 +123,7 @@ class TestCreateConsumerRedis:
 
     def test_redis_default_consumer_type_is_simple(self, logger, redis_config):
         from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
+
 
         consumer = MessagingFactory.create_consumer(
             logger, config=redis_config, broker_type=MessageBrokerType.REDIS

@@ -28,7 +28,7 @@ class JiraApp(App):
 
 class JiraCloudPersonalApp(App):
     def __init__(self, connector_id: str) -> None:
-        super().__init__(Connectors.JIRA_PERSONAL, AppGroups.ATLASSIAN, connector_id)
+        super().__init__(Connectors.JIRA_CLOUD_PERSONAL, AppGroups.ATLASSIAN, connector_id)
 
 
 class JiraDataCenterApp(App):

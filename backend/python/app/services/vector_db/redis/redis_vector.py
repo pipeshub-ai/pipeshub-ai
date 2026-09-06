@@ -27,7 +27,8 @@ The Search index is named::
     {collection_name}_idx
 
 Multiple collections on one Redis instance are isolated by key-prefix / index.
-Future tenant separation adds a ``{tenant}_{collection}`` prefix via CollectionResolver.
+Collection names are resolved by CollectionStrategy and sanitized by
+``collections.sanitize_collection_name`` before they reach this provider.
 
 Minimum Redis version: 8.4 (FT.HYBRID command).  Health check enforces this.
 
@@ -35,12 +36,13 @@ Note: The ReJSON module is NOT required — all documents are stored as Redis Ha
 (``ON HASH``), not as JSON documents.  Only the RediSearch module must be loaded.
 """
 
+from __future__ import annotations
+
 import asyncio
 import re
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
-import redis.asyncio as aioredis
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.services.vector_db.filters import canonical_filter_key
@@ -79,12 +81,17 @@ from app.services.vector_db.redis.utils import (
 )
 from app.utils.logger import create_logger
 
+if TYPE_CHECKING:
+    import redis.asyncio as aioredis
+
 logger = create_logger("redis_vector_service")
 
 _REDIS_CAPABILITIES = VectorDBCapabilities(
     supports_sparse_vectors=False,
     supports_server_side_text_search=True,
     supported_fusion_methods=[FusionMethod.RRF],
+    supports_multi_collection=True,
+    max_recommended_collections=500,
 )
 
 # RediSearch caps offset+limit at MAXSEARCHRESULTS; the default is 10000.
@@ -153,14 +160,27 @@ class RedisVectorService(IVectorDBService):
             cfg = await self._load_config()
             self._dense_dtype = cfg.dense_dtype
             self._max_concurrent_searches = cfg.max_concurrent_searches
-            self.client = aioredis.Redis(
-                host=cfg.host,
-                port=cfg.port,
-                password=cfg.password,
-                db=cfg.db,
-                socket_timeout=cfg.timeout,
-                socket_connect_timeout=cfg.timeout,
-                decode_responses=False,  # we handle bytes ourselves for vectors
+
+            # Always the standalone provider, regardless of the process-wide
+            # REDIS_MODE: RediSearch's FT.HYBRID/FT.SEARCH have no Redis
+            # Cluster support in this implementation (VectorDBProviderFactory
+            # refuses to select this backend on a cluster/MemoryDB
+            # deployment), and `_load_config` already enforces db=0.
+            from app.services.redis.config import ClientOptions, RedisConnectionConfig
+            from app.services.redis.connection_provider_factory import get_redis_provider
+
+            provider = get_redis_provider(
+                RedisConnectionConfig.from_host_port(
+                    host=cfg.host, port=cfg.port, password=cfg.password, db=cfg.db
+                ),
+                mode="standalone",
+            )
+            self.client = provider.create_client(
+                ClientOptions(
+                    decode_responses=False,  # we handle bytes ourselves for vectors
+                    socket_timeout_seconds=cfg.timeout,
+                    socket_connect_timeout_seconds=cfg.timeout,
+                )
             )
             # Verify connectivity
             await self.client.ping()

@@ -712,14 +712,14 @@ class TestGetUserContext:
         assert ctx["user_id"] == "u1"
         assert ctx["org_id"] == "o1"
 
-    def test_fallback_to_headers(self) -> None:
+    def test_headers_are_ignored(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
         request.headers = {"X-User-Id": "u2", "X-Organization-Id": "o2"}
-        ctx = _get_user_context(request)
-        assert ctx["user_id"] == "u2"
-        assert ctx["org_id"] == "o2"
+        with pytest.raises(HTTPException) as exc:
+            _get_user_context(request)
+        assert exc.value.status_code == 401
 
     def test_missing_user_id_raises(self) -> None:
         from app.api.routes.toolsets import _get_user_context
@@ -2554,22 +2554,23 @@ class TestGetUserContextDeep:
         assert ctx["user_id"] == "state-user"
         assert ctx["org_id"] == "state-org"
 
-    def test_missing_org_id_does_not_raise(self) -> None:
+    def test_missing_org_id_raises(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {"userId": "u1"}
         request.headers = {}
-        ctx = _get_user_context(request)
-        assert ctx["user_id"] == "u1"
-        assert ctx["org_id"] is None or ctx["org_id"] == ""
+        with pytest.raises(HTTPException) as exc:
+            _get_user_context(request)
+        assert exc.value.status_code == 401
 
-    def test_state_attribute_error_falls_back_to_headers(self) -> None:
+    def test_headers_are_ignored(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
         request.headers = {"X-User-Id": "header-user", "X-Organization-Id": "header-org"}
-        ctx = _get_user_context(request)
-        assert ctx["user_id"] == "header-user"
+        with pytest.raises(HTTPException) as exc:
+            _get_user_context(request)
+        assert exc.value.status_code == 401
 
 
 # ===========================================================================
@@ -4282,13 +4283,14 @@ class TestGetUserContextToolsets:
         ctx = _get_user_context(request)
         assert ctx["user_id"] == "u1"
 
-    def test_from_headers(self) -> None:
+    def test_headers_are_ignored(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
         request.headers = {"X-User-Id": "u2", "X-Organization-Id": "o2"}
-        ctx = _get_user_context(request)
-        assert ctx["user_id"] == "u2"
+        with pytest.raises(HTTPException) as exc:
+            _get_user_context(request)
+        assert exc.value.status_code == 401
 
     def test_missing_user_id(self) -> None:
         from app.api.routes.toolsets import _get_user_context
@@ -5052,14 +5054,14 @@ class TestGetUserContext:
         assert result["user_id"] == "u1"
         assert result["org_id"] == "o1"
 
-    def test_extracts_context_from_headers(self) -> None:
+    def test_headers_are_ignored(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
         request.headers = {"X-User-Id": "u2", "X-Organization-Id": "o2"}
-        result = _get_user_context(request)
-        assert result["user_id"] == "u2"
-        assert result["org_id"] == "o2"
+        with pytest.raises(HTTPException) as exc:
+            _get_user_context(request)
+        assert exc.value.status_code == 401
 
     def test_missing_user_id_raises(self) -> None:
         from app.api.routes.toolsets import _get_user_context
@@ -7040,14 +7042,14 @@ class TestGetUserContextFullCoverage:
         assert ctx["user_id"] == "u1"
         assert ctx["org_id"] == "o1"
 
-    def test_from_headers_fallback(self) -> None:
+    def test_headers_are_ignored(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
         request.headers = {"X-User-Id": "u2", "X-Organization-Id": "o2"}
-        ctx = _get_user_context(request)
-        assert ctx["user_id"] == "u2"
-        assert ctx["org_id"] == "o2"
+        with pytest.raises(HTTPException) as exc:
+            _get_user_context(request)
+        assert exc.value.status_code == 401
 
     def test_missing_user_id_raises(self) -> None:
         from app.api.routes.toolsets import _get_user_context
@@ -8017,7 +8019,7 @@ class TestGetAuthenticatedToolsets:
         config_service.get_config.return_value = []
         registry = MagicMock()
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert result == []
 
     @pytest.mark.asyncio
@@ -8029,7 +8031,7 @@ class TestGetAuthenticatedToolsets:
         config_service.get_config.side_effect = Exception("etcd error")
         registry = MagicMock()
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert result == []
 
     @pytest.mark.asyncio
@@ -8061,7 +8063,7 @@ class TestGetAuthenticatedToolsets:
             "tools": []
         }
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert len(result) == 1
         assert result[0]["instanceId"] == "inst1"
 
@@ -8096,7 +8098,7 @@ class TestGetAuthenticatedToolsets:
             "tools": []
         }
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert len(result) == 2
         instance_ids = [t["instanceId"] for t in result]
         assert "inst1" in instance_ids
@@ -8131,7 +8133,7 @@ class TestGetAuthenticatedToolsets:
             ]
         }
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert len(result) == 1
         assert result[0]["toolCount"] == 2
         assert len(result[0]["tools"]) == 2
@@ -8158,7 +8160,7 @@ class TestGetAuthenticatedToolsets:
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = None
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert len(result) == 1
         assert result[0]["displayName"] == "unknown"
         assert result[0]["tools"] == []
@@ -8194,7 +8196,7 @@ class TestGetAuthenticatedToolsets:
             "tools": [{"name": "search", "description": "Search"}]
         }
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert len(result) == 1
         toolset = result[0]
         assert toolset["instanceId"] == "inst1"

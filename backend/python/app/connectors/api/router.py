@@ -77,7 +77,6 @@ from app.edition_config import (
     resolve_oauth_config,
     resolve_oauth_configs,
     resolve_shared_oauth_config_for_flow,
-    resolve_stats_org_id,
     schedule_token_refresh_kwargs,
     strip_redacted_fields,
     vector_store_rebuild_available,
@@ -867,28 +866,102 @@ def _trim_connector_config(config: dict[str, Any]) -> dict[str, Any]:
 
     return trimmed_config
 
+def _is_scoped_service_token(user: Any) -> bool:
+    """Internal workers mint scoped JWTs (orgId + scopes, often no userId)."""
+    token_type = str(user.get("token_type") or "").strip()
+    scopes = user.get("scopes") or user.get("oauthScopes") or []
+    if isinstance(scopes, str):
+        scopes = [part for part in scopes.replace(",", " ").split() if part]
+    return token_type == "scoped" or "connector:signedUrl" in scopes
+
+
+def _caller_org_and_user(request: Request) -> tuple[str, str, bool]:
+    user = getattr(getattr(request, "state", None), "user", None)
+    if user is None:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="Authentication required",
+        )
+    org_id = str(user.get("orgId") or "").strip()
+    if not org_id:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="Authentication required",
+        )
+    user_id = str(user.get("userId") or "").strip()
+    is_scoped = _is_scoped_service_token(user)
+    if not user_id and not is_scoped:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="Authentication required",
+        )
+    return org_id, user_id, is_scoped
+
+
 @router.get("/api/v1/{org_id}/{user_id}/{connector}/record/{record_id}/signedUrl", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_signed_url(
+    request: Request,
     org_id: str,
     user_id: str,
     connector: str,
     record_id: str,
     signed_url_handler: SignedUrlHandler = Depends(Provide[ConnectorAppContainer.signed_url_handler]),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> dict:
-    """Get signed URL for a record"""
+    """Get signed URL for a record. Session JWTs must match path org/user and
+    have ACL. Scoped service tokens only need a matching org — they mint for
+    the path user_id (indexing / Kafka signedUrlRoute)."""
     try:
-        additional_claims = {"connector": connector, "purpose": "file_processing"}
+        caller_org, caller_user, is_scoped = _caller_org_and_user(request)
+        path_org = str(org_id or "").strip()
+        path_user = str(user_id or "").strip()
+        if caller_org != path_org:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
+        if not is_scoped and (not caller_user or caller_user != path_user):
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
+
+        record = await graph_provider.get_record_by_id(record_id)
+        if not record:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
+        record_org = str(getattr(record, "org_id", "") or "").strip()
+        if record_org != caller_org:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
+
+        mint_user = caller_user or path_user
+        if not is_scoped:
+            access = await graph_provider.check_record_access_with_details(
+                mint_user, caller_org, record_id
+            )
+            if not access:
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+                )
+
+        additional_claims = {
+            "connector": connector,
+            "purpose": "file_processing",
+            "org_id": caller_org,
+        }
 
         signed_url = await signed_url_handler.get_signed_url(
             record_id,
-            org_id,
-            user_id,
+            caller_org,
+            mint_user,
             additional_claims=additional_claims,
             connector=connector,
         )
-        # Return as JSON instead of plain text
         return {"signedUrl": signed_url}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting signed URL: {repr(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)) from e
@@ -1068,6 +1141,19 @@ async def download_file(
         payload = signed_url_handler.validate_token(token)
         user_id = payload.user_id
 
+        # Auth middleware already populated request.state.user. Compare JWT
+        # org to the path when present. Tokens minted before org_id was added
+        # to additional_claims still work until expiry (~60m); ACL is not
+        # re-checked here — the signed URL remains valid until it expires.
+        caller = getattr(getattr(request, "state", None), "user", None)
+        if caller is not None:
+            raw_org = caller.get("orgId") if hasattr(caller, "get") else None
+            jwt_org = raw_org.strip() if isinstance(raw_org, str) else ""
+            if jwt_org and jwt_org != str(org_id or "").strip():
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+                )
+
         # Verify file_id matches the token
         if payload.record_id != record_id:
             logger.error(
@@ -1089,6 +1175,19 @@ async def download_file(
         )
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+
+        record_org = str(getattr(record, "org_id", "") or "").strip()
+        if not record_org or record_org != str(org_id or "").strip():
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
+        claims = getattr(payload, "additional_claims", None) or {}
+        if isinstance(claims, dict):
+            token_org = str(claims.get("org_id") or "").strip()
+            if token_org and token_org != record_org:
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+                )
 
         connector_id = record.connector_id
         # Get connector instance to check scope and existence
@@ -2149,17 +2248,13 @@ async def reindex_single_record(
 async def get_connector_stats_endpoint(
     request: Request,
     connector_id: str,
-    org_id: str | None = Query(None, description="Organization ID"),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 )-> dict[str, Any]:
     try:
         logger = request.app.container.logger()
         connector_registry = request.app.state.connector_registry
-        user_id = request.state.user.get("userId")
-        user_org_id = request.state.user.get("orgId")
-        is_admin = is_request_admin(request)
+        org_id = request.state.user.get("orgId")
 
-        org_id = resolve_stats_org_id(request, org_id)
         await authorize_connector_stats(
             request, graph_provider, connector_registry, connector_id, org_id
         )
@@ -2592,9 +2687,20 @@ def _validate_connector_deletion_permissions(
     """
     Validate that the user has permission to delete the connector instance.
 
-    Permission rules:
-    - Personal connectors: Only the owning user (creator) can delete
-    - Team connectors: Only administrators can delete
+    Permission rule, for either scope: **an administrator, or the user who
+    created it.**
+
+    Deletion is uniform where access is not. ``_can_access_connector`` still
+    keeps an administrator out of another user's personal connector for reads
+    and updates — seeing or altering someone's private data is a different act
+    from removing a connector that should no longer exist. Admins already carry
+    the authority to remove a member entirely, so withholding the narrower
+    power to clean up their connector left orphaned instances no one could
+    delete once their creator was gone.
+
+    Tenant isolation is enforced upstream in ``_can_access_connector``: the
+    instance has already been matched to the caller's organization before this
+    runs.
 
     Args:
         instance: Connector instance dictionary
@@ -2605,25 +2711,20 @@ def _validate_connector_deletion_permissions(
     Raises:
         HTTPException: 403 if user doesn't have permission to delete
     """
-    scope = instance.get("scope")
     created_by = instance.get("createdBy")
 
-    # For team connectors, only admins can delete
-    if scope == ConnectorScope.TEAM.value and not is_admin:
-        logger.error("Only administrators can delete team connectors")
-        raise HTTPException(
-            status_code=HttpStatusCode.FORBIDDEN.value,
-            detail="Only administrators can delete team connectors"
-        )
+    if is_admin or created_by == user_id:
+        return
 
-    # For personal connectors, only the creator (owning user) can delete
-    # Admins cannot delete personal connectors
-    if scope == ConnectorScope.PERSONAL.value and created_by != user_id:
-        logger.error("Only the creator can delete this personal connector")
-        raise HTTPException(
-            status_code=HttpStatusCode.FORBIDDEN.value,
-            detail="Only the creator can delete this personal connector"
-        )
+    logger.error(
+        "Only the creator or an administrator can delete this connector "
+        "(scope=%s)",
+        instance.get("scope"),
+    )
+    raise HTTPException(
+        status_code=HttpStatusCode.FORBIDDEN.value,
+        detail="Only the creator or an administrator can delete this connector"
+    )
 
 
 async def check_beta_connector_access(
@@ -6892,6 +6993,7 @@ async def _build_and_store_connector(
         scope = connector_doc.get(ConnectorRequestKeys.SCOPE, ConnectorScope.PERSONAL.value)
         created_by = connector_doc.get("createdBy", "")
         org_id = connector_doc.get("orgId") or org_id
+        connector_instance_name = connector_doc.get("name")
         config_service = resolve_config_service(container, org_id)
         data_store_provider = build_graph_data_store(logger, graph_provider, org_id)
 
@@ -6907,6 +7009,7 @@ async def _build_and_store_connector(
             org_id=org_id,
             data_entities_processor_cls=get_data_entities_processor_cls(),
             notification_service=container.connector_notification_service(),
+            connector_instance_name=connector_instance_name,
         )
 
         if not connector:
@@ -7292,8 +7395,10 @@ async def delete_connector_instance(
                 detail="User not authenticated"
             )
 
-        # 2. Fetch and validate connector instance
-        instance = await connector_registry.get_connector_instance(
+        # 2. Fetch and validate connector instance under the *deletion* gate:
+        # the read gate 404s an admin on another user's personal connector,
+        # which would make the admin allowance below unreachable.
+        instance = await connector_registry.get_connector_instance_for_deletion(
             connector_id=connector_id,
             user_id=user_id,
             org_id=org_id,

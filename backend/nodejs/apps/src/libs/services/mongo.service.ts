@@ -31,6 +31,8 @@ const REQUIRED_COLLECTIONS = [
   'authorizationCodes',
   'conversations',
   'agentconversations',
+  'chatSessions',
+  'chatSessionMessages',
   'connectorsConfig',
   'citation',
   'citations',

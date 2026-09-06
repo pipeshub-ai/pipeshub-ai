@@ -1,5 +1,6 @@
 """Unit tests for app.services.messaging.kafka.handlers.entity.EntityEventService."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -7,13 +8,9 @@ import pytest
 from app.config.constants.arangodb import (
     AccountType,
     CollectionNames,
-    Connectors,
     ConnectorScopes,
 )
-import logging
-from app.config.constants.arangodb import AccountType, Connectors
 from app.services.messaging.kafka.handlers.entity import EntityEventService
-
 
 # ---------------------------------------------------------------------------
 # Helpers

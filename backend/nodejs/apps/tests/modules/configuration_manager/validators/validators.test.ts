@@ -4,6 +4,7 @@ import { expect } from 'chai'
 import {
   baseStorageSchema,
   s3ConfigSchema,
+  s3ConfigSchemaRefined,
   azureBlobConfigSchema,
   azureBlobConfigSchemaRefined,
   localConfigSchema,
@@ -71,6 +72,25 @@ describe('CM Validators', () => {
       const result = s3ConfigSchema.safeParse({ storageType: 's3' })
       expect(result.success).to.be.false
     })
+
+    it('should accept S3 config without credentials (IAM role mode)', () => {
+      const result = s3ConfigSchema.safeParse({
+        storageType: 's3',
+        s3Region: 'us-east-1',
+        s3BucketName: 'my-bucket',
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject a half-filled credential pair', () => {
+      const result = s3ConfigSchemaRefined.safeParse({
+        storageType: 's3',
+        s3AccessKeyId: 'AKID',
+        s3Region: 'us-east-1',
+        s3BucketName: 'my-bucket',
+      })
+      expect(result.success).to.be.false
+    })
   })
 
   describe('azureBlobConfigSchemaRefined', () => {
@@ -119,6 +139,17 @@ describe('CM Validators', () => {
           storageType: 's3',
           s3AccessKeyId: 'AKID',
           s3SecretAccessKey: 'secret',
+          s3Region: 'us-east-1',
+          s3BucketName: 'bucket',
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept S3 body without credentials (IAM role mode)', () => {
+      const result = storageValidationSchema.safeParse({
+        body: {
+          storageType: 's3',
           s3Region: 'us-east-1',
           s3BucketName: 'bucket',
         },

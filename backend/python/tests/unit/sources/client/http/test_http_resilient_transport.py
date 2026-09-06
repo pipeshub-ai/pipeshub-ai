@@ -1,6 +1,7 @@
 """Unit tests for app.sources.client.http.http_resilient_transport."""
 
 import asyncio
+from contextlib import ExitStack
 from unittest.mock import patch
 
 import httpx
@@ -62,19 +63,35 @@ class _RecordingTransport(ResilientHTTPTransport):
 
 @pytest.fixture
 def transport_factory():
-    def build(policy: ResiliencePolicy, outcomes: list) -> _RecordingTransport:
-        transport = _RecordingTransport(policy, outcomes)
-        patcher = patch.object(
-            httpx.AsyncHTTPTransport, "handle_async_request", transport._send
-        )
-        patcher.start()
-        build._patchers.append(patcher)
-        return transport
+    """Scripted stand-in for the real network send.
 
-    build._patchers = []
-    yield build
-    for patcher in build._patchers:
-        patcher.stop()
+    A test may build more than once (see
+    `test_does_not_retry_success_or_client_error`), and `patch.object` captures
+    whatever is installed at `start()` — so the second patcher's "original" is
+    the first patcher's stub. Unwinding in call order therefore restores a stub
+    onto the class and leaks it into every later test in the session, where it
+    answers every async request with `200 {}`. `ExitStack` unwinds in reverse,
+    and does so even if a stop raises.
+    """
+    original = httpx.AsyncHTTPTransport.handle_async_request
+
+    with ExitStack() as stack:
+
+        def build(policy: ResiliencePolicy, outcomes: list) -> _RecordingTransport:
+            transport = _RecordingTransport(policy, outcomes)
+            stack.enter_context(
+                patch.object(
+                    httpx.AsyncHTTPTransport, "handle_async_request", transport._send
+                )
+            )
+            return transport
+
+        yield build
+
+    assert httpx.AsyncHTTPTransport.handle_async_request is original, (
+        "transport_factory left httpx.AsyncHTTPTransport patched; every later "
+        "async request in this session would be answered by a _RecordingTransport"
+    )
 
 
 async def _run(transport: ResilientHTTPTransport) -> httpx.Response:

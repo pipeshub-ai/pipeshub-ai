@@ -1710,19 +1710,21 @@ class TestFindDuplicateRecords:
         connected_provider.http_client.execute_aql = AsyncMock(
             return_value=[{"_key": "r2", "md5Checksum": "abc"}]
         )
-        result = await connected_provider.find_duplicate_records("r1", "abc")
+        result = await connected_provider.find_duplicate_records("r1", "abc", org_id="org-1")
         assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_with_filters(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        result = await connected_provider.find_duplicate_records("r1", "abc", record_type="FILE", size_in_bytes=1000)
+        result = await connected_provider.find_duplicate_records(
+            "r1", "abc", org_id="org-1", record_type="FILE", size_in_bytes=1000
+        )
         assert result == []
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.find_duplicate_records("r1", "abc")
+        result = await connected_provider.find_duplicate_records("r1", "abc", org_id="org-1")
         assert result == []
 
 

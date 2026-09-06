@@ -5,7 +5,7 @@ import mongoose, { Document, Schema, Model } from 'mongoose';
 // Define the interface for Org Document
 
 export type AccountType = 'individual' | 'business';
-interface IOrg extends Document {
+export interface IOrg extends Document {
   slug: string;
   registeredName: string;
   shortName?: string;

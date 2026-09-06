@@ -307,7 +307,7 @@ class RateLimiter:
         ]),
     ])\
     .configure(lambda b: b
-        .with_icon("/assets/icons/connectors/slackworkspace.svg")
+        .with_icon("/icons/connectors/slackworkspace.svg")
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Slack API Setup", "https://api.slack.com/authentication/basics", "setup"))

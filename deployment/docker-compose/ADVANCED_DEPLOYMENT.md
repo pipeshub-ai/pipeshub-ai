@@ -14,6 +14,7 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 - [A second instance on the same host](#a-second-instance-on-the-same-host)
 - [Manual deployment with Compose profiles](#manual-deployment-with-compose-profiles)
 - [Secrets and configuration](#secrets-and-configuration)
+- [Runtime tuning (workers and query-service flags)](#runtime-tuning-workers-and-query-service-flags)
 - [Container outbound connectivity](#container-outbound-connectivity)
 - [Developer / local build](#developer--local-build)
 - [Soak-testing adaptive concurrency](#soak-testing-adaptive-concurrency)
@@ -89,6 +90,31 @@ All variables are optional. When set, they suppress the corresponding interactiv
 | `PIPESHUB_PORT` | host port | `3000` (`3200` for a second copy) |
 | `PIPESHUB_PROJECT` | Compose project name | `pipeshub-ai` |
 | `PIPESHUB_PUBLIC_URL` | public HTTPS URL | _(none)_ |
+| `APP_MEMORY_LIMIT` | memory ceiling for the app container | derived from the machine (see below) |
+| `APP_MEMSWAP_LIMIT` | combined memory+swap ceiling | `APP_MEMORY_LIMIT` + 6G |
+
+### App container memory
+
+On a fresh install the installer sizes `APP_MEMORY_LIMIT` from what the machine
+actually has — the Docker Desktop VM's allocation on macOS/Windows, host RAM on
+Linux — less 4G reserved for the datastores and OS, floored at 6G and capped at
+32G. Setting it in the environment pins it:
+
+```bash
+APP_MEMORY_LIMIT=24G APP_MEMSWAP_LIMIT=30G ./install.sh --yes
+```
+
+An existing `.env` value always wins, so `--reconfigure` never resizes a tuned
+deployment.
+
+This is the most effective throughput knob in the stack. The resource governor
+sizes indexing and parsing concurrency from the container's cgroup limit, so a
+container sitting near its ceiling has every pool braked to its floor — a
+couple of documents in flight while the CPU reads as idle. If indexing is slow
+and CPU looks free, read `resource_governor.mem_pressure` from the indexing
+service's `/health` before tuning anything else: above `GOVERNOR_MEM_SOFT`
+(0.70) nothing grows, and above `GOVERNOR_MEM_HARD` (0.80) every pool halves
+each sample.
 
 ### Example — fully non-interactive slim install
 
@@ -171,6 +197,7 @@ $EDITOR .env
 ### Slim (Neo4j, Redis Streams, Redis KV)
 
 ```bash
+DATA_STORE=neo4j \
 COMPOSE_PROFILES=graph-neo4j \
   docker compose -p pipeshub-ai up -d
 ```
@@ -178,6 +205,7 @@ COMPOSE_PROFILES=graph-neo4j \
 ### Full (ArangoDB, Kafka, etcd)
 
 ```bash
+DATA_STORE=arangodb KV_STORE_TYPE=etcd MESSAGE_BROKER=kafka \
 COMPOSE_PROFILES=graph-arango,kv-etcd,broker-kafka \
   docker compose -p pipeshub-ai up -d
 ```
@@ -206,6 +234,26 @@ docker compose -p pipeshub-ai exec -T pipeshub-ai bash
 | `broker-kafka` | Kafka + Zookeeper | `MESSAGE_BROKER=kafka` |
 
 Always-on services (no profile needed): `redis`, `mongodb`, `qdrant`.
+
+> **A profile and its variable must be set together.** `COMPOSE_PROFILES` only decides
+> which containers start. Which backend the application talks to comes from the variable
+> in the right-hand column. Set the profile alone and you start a container the app never
+> connects to, while the app carries on using whatever the variable falls back to.
+>
+> Those fallbacks live in `docker-compose.yml` and apply **only when no `.env` supplies a
+> value**, which is the case for the manual commands above:
+>
+> | Variable | Fallback in `docker-compose.yml` |
+> |----------|----------------------------------|
+> | `DATA_STORE` | `arangodb` (line 111) |
+> | `KV_STORE_TYPE` | `redis` (line 126) |
+> | `MESSAGE_BROKER` | `redis` (line 134) |
+>
+> These are **not** the defaults you get from `install.sh`, which chooses Neo4j and writes
+> `DATA_STORE=neo4j` into `.env`. If you installed with `install.sh`, your `.env` already
+> sets all three and none of this applies. The Compose fallback for `DATA_STORE` differs
+> from the installer's choice and is due to be aligned; until then, set the variable
+> explicitly whenever you drive Compose by hand.
 
 ---
 
@@ -243,6 +291,76 @@ manager instead of `.env` — for example Docker/Swarm secrets, HashiCorp Vault,
 or your cloud provider's KMS / Secrets Manager — and inject the values into the
 containers at runtime. The Compose services read standard environment variables,
 so any tool that can populate the container environment will work.
+
+---
+
+## Runtime tuning (workers and query-service flags)
+
+These live in `.env` alongside the rest of your configuration. Every default below
+reproduces current behaviour, so an upgrade changes nothing until you opt in.
+
+Compose forwards **only** the variables it enumerates, so a name that is not listed in
+the compose file never reaches the container. All of these are wired; setting them in
+`.env` is enough.
+
+### Query-service workers
+
+The query service runs in one process by default. Raising this starts that many separate
+query processes.
+
+| Variable | Values | Default |
+|----------|--------|---------|
+| `QUERY_UVICORN_WORKERS` | integer | `1` |
+
+Two per-process budgets the query service can reach are divided by the worker count
+(`backend/python/app/utils/worker_scaling.py`), so N workers do not each claim the whole
+amount: concurrent LLM calls for chat-attachment enrichment (24, so 6 each at 4 workers)
+and the storage connection limit (100, so 25 each).
+
+Everything else still multiplies, so size the host accordingly:
+
+- The PDF rasteriser and docling process pools have a floor of one worker each, so at 4
+  query workers you get 4 rasteriser subprocesses rather than the 2 a single process uses.
+- Database and broker connection pools are not divided at all — N query workers means N
+  Neo4j, Qdrant, Mongo and Redis pools.
+
+Two things to know before raising it:
+
+- Each worker re-imports the connector SDKs at startup (~25 modules), so start-up time and
+  resident memory scale with the count. Budget against `APP_MEMORY_LIMIT`.
+- Telemetry is reported per process. Each worker's metrics carry a `processId`, so a
+  collector that ignores that field will see the workers' counters as one noisy series.
+
+The other services' `*_UVICORN_WORKERS` variables are already forwarded by Compose but are
+not documented here.
+
+### Query-service flags
+
+| Variable | Values | Default |
+|----------|--------|---------|
+| `PIPESHUB_AGENT_TRANSPORT` | `langchain` \| `direct` (`azure_direct` is a deprecated alias for `direct`) | `langchain` |
+| `PIPESHUB_ACCESSIBLE_RECORDS_CACHE` | blank (on) \| a disabled value | on |
+| `PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL` | seconds | `300` |
+| `PIPESHUB_SIGNED_URL_CACHE_SECONDS` | seconds, `0` disables, capped at `3000` | `0` |
+
+`direct` calls model providers without the LangChain layer. A provider with no direct
+transport, or with credentials it cannot use, falls back to LangChain for that turn
+rather than failing it; an unrecognised value logs a warning and falls back too.
+
+`PIPESHUB_SIGNED_URL_CACHE_SECONDS` is clamped to 3000 in code, keeping it under the
+3600-second signing lifetime so a URL handed out at the end of its cached life still has
+time left to use. A value that is not a number falls back to the default rather than
+failing to start.
+
+These are read from the container environment, so on an existing install add them to
+`.env` yourself — `install.sh --upgrade` reuses your current `.env` and does not append
+new keys. Every compose reference carries a default, so an absent key behaves exactly as
+the table says.
+
+> **Naming note.** The `PIPESHUB_*` variables in
+> [Environment overrides for CI / scripted installs](#environment-overrides-for-ci--scripted-installs)
+> are read by `install.sh` *before* `.env` is written and control the installer itself.
+> The four above are read by the running service. They share a prefix but not a purpose.
 
 ---
 
@@ -324,16 +442,45 @@ Override the base images with `PYTHON_DEPS_IMAGE` / `RUNTIME_BASE_IMAGE` environ
 
 The indexing/parsing pipeline sizes its own concurrency from the
 `pipeshub-ai` container's CPU quota — one heavy-parse slot per CPU, ten
-light-parse slots per CPU, and 100× the wider parse tier for indexing —
+light-parse slots per CPU (capped at `GOVERNOR_LIGHT_PARSE_MAX`, default
+256), and, for each tier's in-flight record budget, twice *that tier's own*
+parse ceiling (capped at `GOVERNOR_INDEX_MAX`, default 512 per tier) — all
 capped by `MAX_CONCURRENT_PARSING` / `MAX_CONCURRENT_INDEXING` when those
 are set (see [`env.template`](env.template)). Leave them unset so new
 images size from CPU. Hub slim still `int()`s empty strings; compose
 unsets blanks at start so slim uses its built-in defaults instead of
-crashing. Set an integer only if you want a hard cap. The indexing
-figure is the budget for heavy and light records *combined*, and it is
-fixed for the life of the process. Only parsing and downloads adapt at
-runtime. These two runs are a manual regression check before a release;
-they are not part of CI.
+crashing. Set an integer only if you want a hard cap;
+`MAX_CONCURRENT_INDEXING` caps the two index tiers *together* as a hard
+aggregate, scaled across them proportionally. Set it to 1 and there is no
+room to split at all, so the light tier collapses and every record shares one
+pool — light records then queue behind heavy ones, and the governor logs a
+warning saying so at startup. 2 is the smallest value that keeps the split.
+
+Heavy and light records get **separate** in-flight budgets
+(`index_heavy` / `index_light`). An index permit is held for a record's
+whole lifetime — including the time it spends queued for a parse slot — so
+a single shared budget let a bulk PDF upload hold every permit while
+Jira/Confluence records that finish in seconds never got admitted at all.
+The tier is read from the record event's own `extension`/`mimeType`;
+anything unrecognised classifies as heavy.
+
+Those budgets are node-local and apply from this release. The *cluster-wide*
+lease pool stays shared for one more release: `INDEXING_SPLIT_LEASE_POOLS`
+defaults to off, so light records take the same `indexing` lease a
+previous-build replica takes, at the same total budget. Without that, a
+rolling upgrade runs both builds at once — the old one admitting every record
+into `indexing` at the full budget while the new one also fills
+`indexing:light` — and the fleet can exceed `MAX_CONCURRENT_INDEXING` by
+`index_light` until the rollout finishes. Nothing is lost meanwhile: the
+head-of-line blocking above is prevented by the node-local per-tier gates,
+which are unaffected. Set `INDEXING_SPLIT_LEASE_POOLS=true` once every replica
+runs this build or later.
+
+Every pool now adapts at runtime, index included: each index tier is held
+against live free memory (`GOVERNOR_INDEX_*_WORKING_SET_GB`) the same way
+heavy parsing is, so one image sizes itself correctly on a 4-core/8 GiB
+host and on a 48-core/96 GiB one. These two runs are a manual regression
+check before a release; they are not part of CI.
 
 Both commands below assume the compose project is up (`docker compose -p
 pipeshub-ai up -d`) and run against the always-on `pipeshub-ai` container —
@@ -379,10 +526,16 @@ operator-pinned `MAX_CONCURRENT_INDEXING`.
    record eventually reaches a terminal status (`COMPLETED`, `EMPTY`, or
    `FAILED` — none stuck `IN_PROGRESS`/`QUEUED`).
 6. Repeat with `MAX_CONCURRENT_INDEXING=200` pinned and re-run step 2-5.
-   **Expect:** the same outcome — the governor's derived ceiling (visible in
-   `ceilings.index` from the `/health` snapshot) still caps effective
-   concurrency well under 200, so a deliberately reckless operator setting
-   does not change the result.
+   **Expect:** the same outcome — the governor's derived ceilings (visible as
+   `ceilings.index_heavy` / `ceilings.index_light` in the `/health` snapshot,
+   summed as `ceilings.index`) still cap effective concurrency well under 200,
+   so a deliberately reckless operator setting does not change the result.
+7. While the PDFs are still parsing, upload a handful of small Markdown/CSV
+   files. **Expect:** they reach a terminal status without waiting for the
+   PDF batch to drain — `limits.index_light` and `in_use.index_light` move
+   independently of `index_heavy`. This is the head-of-line blocking the
+   per-tier split exists to prevent; before it, a queue of heavy records held
+   every in-flight permit and light records were never admitted.
 
 ### 2. Small-record connector sync (Confluence/Jira shape)
 
@@ -400,8 +553,9 @@ idle-CPU host, rather than aliasing to "no demand" or capping on
    duration of the sync.
 3. **Expect:** `limits.light_parse` ramps up from its floor (half the
    ceiling) over the first several samples rather than sitting there for the
-   whole sync; `limits.index` sits at `ceilings.index` from the first
-   sample and never moves;
+   whole sync; `limits.index_light` ramps toward `ceilings.index_light`
+   rather than being held down by heavy records, and `in_use.index_heavy`
+   stays near zero because this sync has no heavy records at all;
    `resource_governor.cpu_utilisation` in the same snapshot reads as a real
    interval mean (comparable to what `top`/`docker stats` shows for the
    container), not ~0%, even though each record is milliseconds of work.

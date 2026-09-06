@@ -3,6 +3,12 @@ export interface IServiceRecord {
   _id: string;
   _rev: string;
   orgId: string;
+  /**
+   * Connector instance the record belongs to. Emitted by every record
+   * payload the Python side produces; declared here because record events
+   * are placed into their lane by this field.
+   */
+  connectorId: string;
   recordName: string;
   externalRecordId: string;
   recordType: string;

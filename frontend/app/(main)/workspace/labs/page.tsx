@@ -378,7 +378,7 @@ export default function LabsPage() {
         )}
 
         {/* ── Vector Store Section ── */}
-        {savedForm.featureFlags.ENABLE_VECTOR_STORE_REBUILD !== false && (
+        {savedForm.featureFlags.ENABLE_VECTOR_STORE_REBUILD === true && (
           <Box style={{ marginBottom: 'var(--space-5)' }}>
             <SettingsSection
               title={t('workspace.labs.vectorStore.title', 'Vector Store')}

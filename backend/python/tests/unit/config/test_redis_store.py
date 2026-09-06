@@ -24,21 +24,29 @@ def _make_store(key_prefix="pipeshub:kv:"):
     serializer = lambda v: json.dumps(v).encode("utf-8")  # noqa: E731
     deserializer = lambda b: json.loads(b.decode("utf-8"))  # noqa: E731
 
-    with patch("app.config.providers.redis.redis_store.redis.Redis"):
-        store = RedisDistributedKeyValueStore(
-            serializer=serializer,
-            deserializer=deserializer,
-            host="localhost",
-            port=6379,
-            password=None,
-            db=0,
-            key_prefix=key_prefix,
-        )
+    store = RedisDistributedKeyValueStore(
+        serializer=serializer,
+        deserializer=deserializer,
+        host="localhost",
+        port=6379,
+        password=None,
+        db=0,
+        key_prefix=key_prefix,
+    )
 
     # Replace _get_client to always return a mock
     mock_client = AsyncMock()
     store._get_client = MagicMock(return_value=mock_client)
     store._mock_client = mock_client  # expose for easy access in tests
+    # Pub/Sub goes through `provider.create_pubsub_client()` (R13), not the
+    # command client: SUBSCRIBE monopolises a connection, and async
+    # RedisCluster has no usable `.pubsub()`. Tests still reach it via
+    # `_mock_client.pubsub` because the fake provider hands back the same
+    # mock -- a regression back to `_get_client().pubsub()` is caught by
+    # `test_pubsub_uses_a_dedicated_provider_connection` below.
+    store._provider = MagicMock()
+    store._provider.create_pubsub_client = MagicMock(return_value=mock_client)
+    store._mock_provider = store._provider
     return store
 
 
@@ -62,6 +70,29 @@ class TestKeyHelpers:
     def test_build_key_custom_prefix(self):
         store = _make_store(key_prefix="custom:")
         assert store._build_key("key") == "custom:key"
+
+    def test_build_key_applies_redis_key_namespace(self, monkeypatch):
+        """REDIS_KEY_NAMESPACE (R9) is applied inside this explicit key
+        builder -- never as a client-level ioredis-style prefix."""
+        monkeypatch.setenv("REDIS_KEY_NAMESPACE", "tenant-a")
+        store = _make_store()
+        assert store._build_key("foo/bar") == "tenant-a:pipeshub:kv:foo/bar"
+
+    def test_strip_prefix_accounts_for_namespace(self, monkeypatch):
+        monkeypatch.setenv("REDIS_KEY_NAMESPACE", "tenant-a")
+        store = _make_store()
+        assert store._strip_prefix("tenant-a:pipeshub:kv:foo/bar") == "foo/bar"
+
+    def test_invalidation_channel_is_namespaced(self, monkeypatch):
+        """Two deployments sharing one Redis/MemoryDB endpoint must not
+        invalidate each other's caches (R9)."""
+        monkeypatch.setenv("REDIS_KEY_NAMESPACE", "tenant-a")
+        store = _make_store()
+        assert store._invalidation_channel() == "tenant-a:pipeshub:cache:invalidate"
+
+    def test_invalidation_channel_unnamespaced_by_default(self):
+        store = _make_store()
+        assert store._invalidation_channel() == "pipeshub:cache:invalidate"
 
 
 # ============================================================================
@@ -691,13 +722,12 @@ class TestGetClient:
         serializer = lambda v: json.dumps(v).encode("utf-8")  # noqa: E731
         deserializer = lambda b: json.loads(b.decode("utf-8"))  # noqa: E731
 
-        with patch("app.config.providers.redis.redis_store.redis.Redis"):
-            store = RedisDistributedKeyValueStore(
-                serializer=serializer,
-                deserializer=deserializer,
-                host="localhost",
-                port=6379,
-            )
+        store = RedisDistributedKeyValueStore(
+            serializer=serializer,
+            deserializer=deserializer,
+            host="localhost",
+            port=6379,
+        )
         return store
 
     def test_creates_new_client_on_first_call(self):
@@ -708,7 +738,7 @@ class TestGetClient:
         store._clients.clear()
 
         mock_client = MagicMock()
-        with patch("app.config.providers.redis.redis_store.redis.Redis", return_value=mock_client):
+        with patch.object(store._provider, "create_client", return_value=mock_client):
             result = store._get_client()
 
         assert result is mock_client
@@ -721,7 +751,7 @@ class TestGetClient:
         store._clients.clear()
 
         mock_client = MagicMock()
-        with patch("app.config.providers.redis.redis_store.redis.Redis", return_value=mock_client):
+        with patch.object(store._provider, "create_client", return_value=mock_client):
             client1 = store._get_client()
             client2 = store._get_client()
 
@@ -742,7 +772,7 @@ class TestGetClient:
         store._clients[tid] = (mock_client_old, closed_loop)
 
         mock_client_new = MagicMock()
-        with patch("app.config.providers.redis.redis_store.redis.Redis", return_value=mock_client_new):
+        with patch.object(store._provider, "create_client", return_value=mock_client_new):
             result = store._get_client()
 
         assert result is mock_client_new
@@ -764,7 +794,7 @@ class TestGetClient:
         current_loop.is_closed.return_value = False
 
         mock_client_new = MagicMock()
-        with patch("app.config.providers.redis.redis_store.redis.Redis", return_value=mock_client_new):
+        with patch.object(store._provider, "create_client", return_value=mock_client_new):
             with patch(
                 "app.config.providers.redis.redis_store.asyncio.get_running_loop",
                 return_value=current_loop,
@@ -779,7 +809,7 @@ class TestGetClient:
         store._clients.clear()
 
         mock_client = MagicMock()
-        with patch("app.config.providers.redis.redis_store.redis.Redis", return_value=mock_client):
+        with patch.object(store._provider, "create_client", return_value=mock_client):
             with patch(
                 "app.config.providers.redis.redis_store.asyncio.get_running_loop",
                 side_effect=RuntimeError("no running loop"),
@@ -1184,3 +1214,63 @@ class TestPublishCacheInvalidationEdgeCases:
             await store.publish_cache_invalidation("retry_key")
 
         assert store._mock_client.publish.call_count == 2
+
+
+class TestPubsubUsesADedicatedProviderConnection:
+    """SUBSCRIBE monopolises a connection (R13).
+
+    A connection in subscriber mode can serve nothing else, and async
+    `RedisCluster` has no usable `.pubsub()` at all, so the subscription must
+    come from `provider.create_pubsub_client()` -- a connection the provider
+    built for this purpose -- and not from the command client every other
+    read and write in this store shares.
+    """
+
+    @pytest.mark.asyncio
+    async def test_subscribe_asks_the_provider_for_a_pubsub_connection(self):
+        store = _make_store()
+        pubsub_client = AsyncMock()
+        pubsub = AsyncMock()
+        pubsub.subscribe = AsyncMock()
+        pubsub.unsubscribe = AsyncMock()
+        pubsub.close = AsyncMock()
+
+        async def _listen():
+            store._is_closing = True
+            if False:  # pragma: no cover - generator with no yields
+                yield {}
+
+        pubsub.listen = _listen
+        pubsub_client.pubsub = MagicMock(return_value=pubsub)
+        store._provider.create_pubsub_client = MagicMock(return_value=pubsub_client)
+
+        task = await store.subscribe_cache_invalidation(lambda _key: None)
+        await asyncio.wait_for(task, timeout=2)
+
+        store._provider.create_pubsub_client.assert_called_once()
+        # The command client is never put into subscriber mode.
+        store._mock_client.pubsub.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_pubsub_connection_is_closed_when_the_listener_exits(self):
+        """It is this loop's alone, so a reconnect must not leak one per attempt."""
+        store = _make_store()
+        pubsub_client = AsyncMock()
+        pubsub = AsyncMock()
+        pubsub.subscribe = AsyncMock()
+        pubsub.unsubscribe = AsyncMock()
+        pubsub.close = AsyncMock()
+
+        async def _listen():
+            store._is_closing = True
+            if False:  # pragma: no cover
+                yield {}
+
+        pubsub.listen = _listen
+        pubsub_client.pubsub = MagicMock(return_value=pubsub)
+        store._provider.create_pubsub_client = MagicMock(return_value=pubsub_client)
+
+        task = await store.subscribe_cache_invalidation(lambda _key: None)
+        await asyncio.wait_for(task, timeout=2)
+
+        pubsub_client.aclose.assert_awaited()

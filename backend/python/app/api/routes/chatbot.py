@@ -258,7 +258,9 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
         return next((config for config in configs if config.get("modelKey") == key), None)
 
     # Get initial config
-    ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value)
+    ai_models = await config_service.get_config(
+        config_node_constants.AI_MODELS.value, use_cache=True,
+    )
     llm_configs = ai_models["llm"]
 
     # Search based on provided parameters
@@ -905,6 +907,47 @@ async def delete_chat_attachment(
     )
 
 
+async def _load_user_doc(graph_provider: IGraphDBProvider, user_id: str | None) -> dict | None:
+    """Deferred so the graph call happens inside the coroutine, not when the
+    task is created — enrichment is best-effort and its failures are handled
+    by the caller's `gather(..., return_exceptions=True)`."""
+    if not user_id:
+        return None
+    return await graph_provider.get_user_by_user_id(user_id)
+
+
+async def _load_org_doc(graph_provider: IGraphDBProvider, org_id: str | None) -> dict | None:
+    """See :func:`_load_user_doc`."""
+    if not org_id:
+        return None
+    return await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+
+
+async def load_system_prompts(
+    config_service: ConfigurationService, logger_: Any,
+) -> dict[str, Any]:
+    """System prompts from the dedicated key, falling back to the legacy
+    aiModels blob for OSS deployments that haven't migrated yet."""
+    try:
+        sp_raw = await config_service.get_config(
+            config_node_constants.SYSTEM_PROMPTS.value, use_cache=True,
+        )
+        if sp_raw:
+            return sp_raw
+        ai_raw = await config_service.get_config(
+            config_node_constants.AI_MODELS.value, use_cache=True,
+        )
+        if ai_raw:
+            return {
+                k: ai_raw[k]
+                for k in ("customSystemPrompt", "customSystemPromptWebSearch", "customSystemPromptAgent")
+                if k in ai_raw
+            }
+    except Exception:
+        logger_.debug("Could not load system prompts config", exc_info=True)
+    return {}
+
+
 async def _generate_chat_stream_via_agent_loop(
     request: Request,
     query_info: "ChatQuery",
@@ -931,15 +974,28 @@ async def _generate_chat_stream_via_agent_loop(
     user_id = user.get("userId")
     protocol = resolve_protocol(query_info.protocol, request)
 
-    try:
-        llm_bundle = await get_llm_for_chat(
+    # LLM init, system prompts and user/org enrichment are independent of each
+    # other and all sit before the first streamed byte, so they run as one wave
+    # instead of four serial round trips.
+    llm_task = asyncio.ensure_future(
+        get_llm_for_chat(
             config_service, query_info.modelKey, query_info.modelName, query_info.chatMode,
             reasoning_effort=query_info.reasoningEffort,
         )
+    )
+    prompts_task = asyncio.ensure_future(load_system_prompts(config_service, logger_))
+    user_doc_task = asyncio.ensure_future(_load_user_doc(graph_provider, user_id))
+    org_doc_task = asyncio.ensure_future(_load_org_doc(graph_provider, org_id))
+
+    try:
+        llm_bundle = await llm_task
         if not llm_bundle or llm_bundle[0] is None:
             raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
         llm, model_config, ai_models_config = llm_bundle
     except Exception as exc:
+        for pending in (prompts_task, user_doc_task, org_doc_task):
+            pending.cancel()
+        await asyncio.gather(prompts_task, user_doc_task, org_doc_task, return_exceptions=True)
         logger_.error(f"Error initializing LLM for chat: {exc}", exc_info=True)
         if protocol == "agui":
             evt = frame(AGUIEventType.RUN_ERROR, message=str(exc), code="llm_initialization_failed")
@@ -948,22 +1004,7 @@ async def _generate_chat_stream_via_agent_loop(
             yield create_sse_event("error", {"error": str(exc)})
         return
 
-    # Fetch system prompts from dedicated key; fall back to legacy aiModels blob for OSS
-    # deployments that haven't migrated yet.
-    system_prompts_config: dict[str, Any] = {}
-    try:
-        sp_raw = await config_service.get_config(config_node_constants.SYSTEM_PROMPTS.value)
-        if sp_raw:
-            system_prompts_config = sp_raw
-        else:
-            ai_raw = await config_service.get_config(config_node_constants.AI_MODELS.value)
-            if ai_raw:
-                system_prompts_config = {
-                    k: ai_raw[k] for k in ("customSystemPrompt", "customSystemPromptWebSearch", "customSystemPromptAgent")
-                    if k in ai_raw
-                }
-    except Exception:
-        logger_.debug("Could not load system prompts config", exc_info=True)
+    system_prompts_config: dict[str, Any] = await prompts_task
 
     policy = resolve_chat_mode_policy(query_info.chatMode)
     is_multimodal_llm = bool(model_config.get("isMultimodal"))
@@ -1004,23 +1045,29 @@ async def _generate_chat_stream_via_agent_loop(
     }
 
     org_info: dict[str, Any] | None = None
-    try:
-        user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
-        if user_doc and isinstance(user_doc, dict):
-            for field in ("fullName", "firstName", "lastName", "displayName"):
-                if user_doc.get(field):
-                    user_info[field] = user_doc[field]
-        if org_id:
-            org_doc = await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
-            if org_doc and isinstance(org_doc, dict):
-                raw_account_type = str(org_doc.get("accountType", "")).lower()
-                org_info = {
-                    "orgId": org_id,
-                    "accountType": raw_account_type if raw_account_type in ("enterprise", "individual") else "",
-                    "name": org_doc.get("name") or "",
-                }
-    except Exception:
-        logger_.debug("Failed to enrich user/org context for prompt", exc_info=True)
+    user_doc, org_doc = await asyncio.gather(
+        user_doc_task, org_doc_task, return_exceptions=True,
+    )
+    if isinstance(user_doc, BaseException):
+        logger_.debug("Failed to load user doc for prompt enrichment", exc_info=user_doc)
+    elif user_doc and isinstance(user_doc, dict):
+        for field in ("fullName", "firstName", "lastName", "displayName"):
+            if user_doc.get(field):
+                user_info[field] = user_doc[field]
+        # Reused by `_fetch_available_connectors` (chat_modes/bridge.py) so
+        # the same user lookup is not repeated further down the request.
+        user_key = user_doc.get("_key") or user_doc.get("id")
+        if user_key:
+            user_info["userKey"] = user_key
+    if isinstance(org_doc, BaseException):
+        logger_.debug("Failed to load org doc for prompt enrichment", exc_info=org_doc)
+    elif org_doc and isinstance(org_doc, dict):
+        raw_account_type = str(org_doc.get("accountType", "")).lower()
+        org_info = {
+            "orgId": org_id,
+            "accountType": raw_account_type if raw_account_type in ("enterprise", "individual") else "",
+            "name": org_doc.get("name") or "",
+        }
 
     client_name = request.headers.get("client-name")
 

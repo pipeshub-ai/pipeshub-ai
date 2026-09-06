@@ -35,7 +35,7 @@ RECORD_SKIP_COMPARE = frozenset({
 APP_METADATA_SKIP_COMPARE = frozenset({
     "created_at_timestamp", "updated_at_timestamp", "auth_type", "is_active",
     "is_agent_active", "is_configured", "is_authenticated", "created_by",
-    "updated_by", "status", "is_locked",
+    "updated_by", "last_synced_by", "status", "is_locked",
 })
 
 

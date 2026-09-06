@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Switch the query service to N uvicorn workers and wait until it is serving.
+# Set the query service to N uvicorn workers and wait until it is serving.
+# Sets QUERY_UVICORN_WORKERS in the compose .env and recreates the container:
+# that one value drives both the worker count and the per-process budget split.
 #
 #   ./set_workers.sh <N>
-#   ./set_workers.sh restore     # put back the untouched original launcher
+#   ./set_workers.sh restore     # back to the default of 1 worker
 #
 # Regenerated from ~/lt-backup/process_monitor.sh.orig every time -- never from
 # a previously patched copy, so worker counts can't stack up. loadtest/pm.sh is
@@ -34,29 +36,43 @@ esac
 
 require_target || exit 1
 [ "$PIPESHUB_MODE" = "docker" ] || { echo "$(basename "$0") needs PIPESHUB_MODE=docker (it restarts the container)."; exit 1; }
-ORIG=${ORIG:-$HOME/lt-backup/process_monitor.sh.orig}
 SETTLE=${SETTLE:-60}
 
-[ -f "$ORIG" ] || { echo "missing $ORIG -- refusing to guess" >&2; exit 1; }
 
-TMP=$(mktemp); trap 'rm -f "$TMP"' EXIT
-cp "$ORIG" "$TMP"
+
+# QUERY_UVICORN_WORKERS is the supported knob now. Setting it beats rewriting the
+# launcher: run() reads it AND lifespan reads the same value to divide per-process
+# budgets (concurrent LLM calls, storage connections). A hand-patched command line
+# sets the worker count but not the budgets, so every worker claims the full caps
+# and the run measures a configuration nobody ships.
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+COMPOSE_DIR=${COMPOSE_DIR:-$(cd "$HERE/../deployment/docker-compose" && pwd)}
+ENV_FILE=${ENV_FILE:-$COMPOSE_DIR/.env}
+[ -f "$ENV_FILE" ] || { echo "missing $ENV_FILE -- cannot set the worker count" >&2; exit 1; }
 
 if [ "$N" = "restore" ]; then
-    echo "== Restoring original launcher (python -m app.query_main)"
+    echo "== Restoring default query workers (1)"
     want=1
+    set_to=1
 else
-    echo "== Setting query service to $N uvicorn worker(s)"
-    sed -i "s|    python -m app.query_main &|    python -m uvicorn app.query_main:app --host 0.0.0.0 --port ${PIPESHUB_QUERY_PORT} --workers $N \&|" "$TMP"
-    grep -q -- "--workers $N" "$TMP" || { echo "sed did not match the launch line" >&2; exit 1; }
+    echo "== Setting query service to $N uvicorn worker(s) via QUERY_UVICORN_WORKERS"
     want=$N
+    set_to=$N
 fi
 
-$DOCKER cp "$TMP" "$CONTAINER:/app/process_monitor.sh"
-$DOCKER exec "$CONTAINER" chmod +x /app/process_monitor.sh
+if grep -q '^#\? *QUERY_UVICORN_WORKERS=' "$ENV_FILE"; then
+    sed -i "s|^#\? *QUERY_UVICORN_WORKERS=.*|QUERY_UVICORN_WORKERS=$set_to|" "$ENV_FILE"
+else
+    echo "QUERY_UVICORN_WORKERS=$set_to" >> "$ENV_FILE"
+fi
+grep -q "^QUERY_UVICORN_WORKERS=$set_to$" "$ENV_FILE" || {
+    echo "failed to set QUERY_UVICORN_WORKERS in $ENV_FILE" >&2; exit 1; }
 
-echo "== docker restart $CONTAINER"
-$DOCKER restart "$CONTAINER" >/dev/null
+# An env change needs a recreate; `docker restart` keeps the old environment.
+echo "== recreating $CONTAINER so the new value reaches the process"
+(cd "$COMPOSE_DIR" && $DOCKER compose -p "${COMPOSE_PROJECT:-pipeshub-ai}" --env-file "$ENV_FILE"     up -d --no-deps --force-recreate "${COMPOSE_SERVICE:-pipeshub-ai}" >/dev/null) || {
+    echo "compose recreate failed" >&2; exit 1; }
+
 
 echo -n "== waiting for /health "
 for _ in $(seq 1 120); do

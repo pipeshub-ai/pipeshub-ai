@@ -63,12 +63,12 @@ brew install mariadb-connector-c # Add to path
 
 **Redis:**
 ```bash
-docker run -d --name redis --restart always -p 6379:6379 redis:bookworm
+docker run -d --name redis --restart always -p 6379:6379 redis:7.4-bookworm
 ```
 
 **Qdrant:** (API Key must match with .env)
 ```bash
-docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.13.6
+docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.15
 ```
 
 **ETCD Server:**
@@ -96,17 +96,20 @@ docker run -d --name etcd-server --restart always `
   --listen-peer-urls http://0.0.0.0:2380
 ```
 
-**ArangoDB:** (Password must match with .env)
+PipesHub supports two graph databases, selected with `DATA_STORE`. **Neo4j is the default** — it is what `install.sh`, the Helm chart and `backend/env.template` ship with, so unless you are specifically working on ArangoDB support, set up Neo4j. ArangoDB remains fully supported for existing installations.
+
+**Neo4j (default):** either run the container
+
 ```bash
-docker run -e ARANGO_ROOT_PASSWORD=your_password -p 8529:8529 --name arango --restart always -d arangodb:3.12.4
+docker run -d --name neo4j --restart always -p 7474:7474 -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/your_password neo4j:5.26.0
 ```
 
-**Neo4j Desktop (instead of ArangoDB):** PipesHub can use **Neo4j** as the graph database (`DATA_STORE=neo4j`) instead of ArangoDB. This is useful if you prefer a local GUI and do not want the ArangoDB container.
+or use Neo4j Desktop if you prefer a local GUI.
 
-1. Install [Neo4j Desktop](https://neo4j.com/download/), create a **local DBMS**, set its password, and **Start** it.
+1. If using Desktop: install [Neo4j Desktop](https://neo4j.com/download/), create a **local DBMS**, set its password, and **Start** it.
 2. Leave the default Bolt listener on **localhost:7687** (or note the host/port shown in Desktop if you changed them).
-3. **Do not** start the ArangoDB Docker container above when using Neo4j.
-4. In `backend/.env` (the template you copy into `backend/nodejs/apps/.env` and `backend/python/.env`), set at least:
+3. In `backend/.env` (the template you copy into `backend/nodejs/apps/.env` and `backend/python/.env`), set at least:
    ```bash
    DATA_STORE=neo4j
    NEO4J_URI=bolt://localhost:7687
@@ -115,9 +118,15 @@ docker run -e ARANGO_ROOT_PASSWORD=your_password -p 8529:8529 --name arango --re
    NEO4J_DATABASE=neo4j
    ```
    The Python services read `DATA_STORE` and write `dataStoreType` into the KV store (etcd/Redis) on startup; the Node.js API uses that for health checks and treats `NEO4J_*` as the live Neo4j connection.
-5. Start the **connectors** Python service (`python -m app.connectors_main`) before or with the rest of the stack so deployment metadata stays consistent. If you already bootstrapped against ArangoDB on the same etcd data, reset etcd or the deployment key in KV store before switching graph backends to avoid mismatched state.
+4. Start the **connectors** Python service (`python -m app.connectors_main`) before or with the rest of the stack so deployment metadata stays consistent. If you already bootstrapped against ArangoDB on the same etcd data, reset etcd or the deployment key in KV store before switching graph backends to avoid mismatched state.
 
-For a full stack in Docker with Neo4j instead of ArangoDB, see `docker-compose.build.neo4j.yml` in `deployment/docker-compose/` (documented in the repository `README.md`).
+To run the whole stack in Docker rather than service by service, use `./install.sh --build` from the repository root. (`deployment/docker-compose/docker-compose.build.neo4j.yml` still exists but is a legacy standalone build file: it hardcodes `DATA_STORE=neo4j` with no ArangoDB or etcd profiles, builds `pipeshub-ai:latest`, pins port 3000, does not generate a `.env`, and is not what `--build` drives.)
+
+**ArangoDB (alternative to Neo4j):** (Password must match with .env)
+```bash
+docker run -e ARANGO_ROOT_PASSWORD=your_password -p 8529:8529 --name arango --restart always -d arangodb:3.12.4
+```
+Set `DATA_STORE=arangodb` in `backend/.env`, and do not run the Neo4j container alongside it. If you already bootstrapped against one backend on the same etcd data, reset the deployment key in the KV store before switching.
 
 **MongoDB:** (Password must match with .env MONGO URI)
 
@@ -126,7 +135,7 @@ Bash:
 docker run -d --name mongodb --restart always -p 27017:27017 \
   -e MONGO_INITDB_ROOT_USERNAME=admin \
   -e MONGO_INITDB_ROOT_PASSWORD=password \
-  mongo:8.0.6
+  mongo:8.0.17
 ```
 
 Powershell:
@@ -134,7 +143,7 @@ Powershell:
 docker run -d --name mongodb --restart always -p 27017:27017 `
   -e MONGO_INITDB_ROOT_USERNAME=admin `
   -e MONGO_INITDB_ROOT_PASSWORD=password `
-  mongo:8.0.6
+  mongo:8.0.17
 ```
 
 **Zookeeper:**
@@ -229,6 +238,10 @@ python -m app.connectors_main
 python -m app.indexing_main
 python -m app.query_main
 python -m app.docling_main
+
+# Only when running with USE_PARSING_SERVICE=true
+python -m app.parsing_main
+python -m app.extraction_main
 ```
 
 ### Setting Up Frontend
@@ -268,12 +281,16 @@ Our project consists of three main components:
 
 1. **Frontend**: Next.js application for the user interface
 2. **Node.js Backend**: Handles API requests, authentication, and business logic
-3. **Python Services**: Five microservices for:
+3. **Python Services**: Seven microservices for:
    - **Embedding** (port 8002): Serves local HuggingFace / SentenceTransformer models via an OpenAI-compatible API (`app.embedding_main`). Indexing and query call this service for default dense embeddings.
    - **Connectors** (port 8088): Handles data source connections
    - **Indexing** (port 8091): Manages document indexing and processing
    - **Query** (port 8000): Processes search and retrieval requests
    - **Docling** (port 8081): Advanced PDF/document parsing for complex formats
+   - **Parsing** (port 8092): Turns file bytes into a structured block container
+   - **Extraction** (port 8093): Derives semantic metadata from those blocks
+
+   Parsing and Extraction are optional: start them only when running with `USE_PARSING_SERVICE=true`, which is also when `check_system_health.sh` checks them.
 
 When running services locally with `make`, start **embedding** before **indexing** and **query** if you rely on the built-in local embedding model (`BAAI/bge-large-en-v1.5`). Cloud/API embedding providers (OpenAI, Cohere, etc.) do not require the embedding server.
 

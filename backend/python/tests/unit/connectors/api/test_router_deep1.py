@@ -71,16 +71,14 @@ def _mock_request(
     connector_registry: Any | None = None,
     graph_provider: Any | None = None,
     query_params: dict | None = None,
+    is_admin: bool = False,
 ):
     """Build a minimal mock FastAPI request object."""
     req = MagicMock()
     _headers = headers or {}
     user_data = dict(user or {"userId": "user-1", "orgId": "org-1"})
     if "role" not in user_data:
-        admin_hdr = str(
-            _headers.get("X-Is-Admin") or _headers.get("x-is-admin") or ""
-        ).lower()
-        user_data["role"] = "admin" if admin_hdr == "true" else "member"
+        user_data["role"] = "admin" if is_admin else "member"
     req.state = MagicMock()
     req.state.user = MagicMock()
     req.state.user.get = lambda k, default=None: user_data.get(k, default)
@@ -1291,6 +1289,7 @@ class TestDownloadFileDeepPaths:
         req.app.container = container
         req.app.state = MagicMock()
         req.app.state.connector_registry = MagicMock()
+        req.state.user = {"userId": "u1", "orgId": "org-1"}
 
         return req, signed_url_handler, graph_provider, record
 

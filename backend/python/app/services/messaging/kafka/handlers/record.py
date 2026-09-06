@@ -28,6 +28,7 @@ from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
     PipelineEventData,
+    StreamMessage,
     Topic,
 )
 from app.services.messaging.error_classifier import (
@@ -36,14 +37,16 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
-from app.utils.api_call import make_api_call
-from app.utils.image_utils import get_extension_from_mimetype
-from app.utils.jwt import generate_jwt
 from app.services.vector_db.rebuild_state import (
     PHASE_FAILED,
     PHASE_READY,
     mark_cleanup_phase,
 )
+from app.services.vector_db.strategy import DeleteContext, RecordContext
+from app.services.vector_db.strategy_resolver import reset_strategy_cache
+from app.utils.api_call import make_api_call
+from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.jwt import generate_jwt
 
 
 class RecordEventHandler(BaseEventService):
@@ -58,6 +61,144 @@ class RecordEventHandler(BaseEventService):
 
         self.event_processor : EventProcessor = event_processor
         self.producer = producer
+
+    # Statuses that already describe a finished record. Abandoning a duplicate
+    # delivery of one of these must not rewrite it as a failure. FAILED is
+    # included so that when the handler ran and recorded its own specific
+    # reason, this does not overwrite it with the generic one — while a record
+    # whose handler never ran still gets marked here.
+    _SETTLED_STATUSES = frozenset({
+        ProgressStatus.COMPLETED.value,
+        ProgressStatus.EMPTY.value,
+        ProgressStatus.AUTO_INDEX_OFF.value,
+        ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+        ProgressStatus.FAILED.value,
+    })
+
+    async def on_message_abandoned(
+        self,
+        message: StreamMessage | None,
+        *,
+        reason: str,
+        attempts: int,
+    ) -> None:
+        """Put a record into a terminal state when its message is discarded.
+
+        Implements ``AbandonedMessageSink``. Without this a discarded message
+        leaves its record on whatever status it was created with — QUEUED —
+        which no recovery path revisits, so the record is stranded silently and
+        for ever.
+
+        Never raises: the caller is on its way to an acknowledgement that has to
+        happen either way.
+        """
+        if message is None:
+            self.logger.error(
+                "Discarded an unparseable message (%s); no record could be identified",
+                reason,
+            )
+            return
+
+        payload = message.payload or {}
+        record_id = payload.get("recordId")
+        if not record_id:
+            # Bulk-delete, membership-sync and collection-delete events carry no
+            # record; there is nothing to mark.
+            self.logger.warning(
+                "Discarded %s message with no recordId after %d attempt(s): %s",
+                message.eventType,
+                attempts,
+                reason,
+            )
+            return
+
+        record_id = str(record_id)
+        try:
+            record = await self.event_processor.graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.warning(
+                    "Discarded message for record %s after %d attempt(s); "
+                    "record no longer exists: %s",
+                    record_id,
+                    attempts,
+                    reason,
+                )
+                return
+
+            current_status = record.get("indexingStatus")
+            if current_status in self._SETTLED_STATUSES:
+                self.logger.info(
+                    "Discarded message for record %s after %d attempt(s); "
+                    "leaving settled status %s untouched: %s",
+                    record_id,
+                    attempts,
+                    current_status,
+                    reason,
+                )
+                return
+
+            # The check above is a read, so it cannot stand on its own: a
+            # concurrent delivery can finish the record between that read and
+            # this write, and an unconditional write would bury a COMPLETED
+            # record as FAILED. Claim the transition from the exact status we
+            # saw instead -- if anything moved it in the meantime the swap
+            # misses, and whatever it became is not ours to overwrite.
+            claimed = await self.event_processor.graph_provider.compare_and_set_indexing_status(
+                [record_id],
+                current_status,
+                ProgressStatus.FAILED.value,
+            )
+            if not claimed:
+                self.logger.info(
+                    "Discarded message for record %s after %d attempt(s); it "
+                    "moved on from %s before it could be marked, leaving it "
+                    "alone: %s",
+                    record_id,
+                    attempts,
+                    current_status,
+                    reason,
+                )
+                return
+
+            # The record is ours now (nothing else can swap out of FAILED), so
+            # fill in the remaining fields through the usual writer, which also
+            # preserves a completed extraction and mirrors parsingStatus.
+            updated = await self.__update_document_status(
+                record_id=record_id,
+                indexing_status=ProgressStatus.FAILED.value,
+                extraction_status=ProgressStatus.FAILED.value,
+                reason=f"Message discarded after {attempts} attempt(s): {reason}",
+            )
+            if updated is None:
+                # The status write is the only trace this record will ever get,
+                # so a silent failure here recreates the bug this method exists
+                # to fix.
+                self.logger.error(
+                    "Failed to mark record %s FAILED after its message was "
+                    "discarded (%s); it may remain in %s",
+                    record_id,
+                    reason,
+                    current_status,
+                )
+                return
+
+            self.logger.error(
+                "Record %s marked FAILED: message discarded after %d attempt(s): %s",
+                record_id,
+                attempts,
+                reason,
+            )
+        except Exception as e:
+            self.logger.error(
+                "Error while marking record %s FAILED after its message was "
+                "discarded (%s): %s",
+                record_id,
+                reason,
+                e,
+                exc_info=True,
+            )
 
     async def _propagate_primary_failure_to_queued_duplicates(
         self,
@@ -153,18 +294,16 @@ class RecordEventHandler(BaseEventService):
         return bool(containers.get("blocks") or containers.get("block_groups"))
 
     async def _delete_vector_collection(self, payload: dict | None = None) -> AsyncGenerator[PipelineEvent, None]:
-        sink = getattr(self.event_processor, "sink_orchestrator", None)
-        vector_store = getattr(sink, "vector_store", None) if sink is not None else None
-        if vector_store is None:
-            # The cleanup job polls for a phase and otherwise waits out its whole
-            # deadline. Nothing here recovers on redelivery — an unconfigured
-            # vector store is the same on the next attempt — so publish the
-            # failure rather than let the job time out with no explanation.
+        # The cleanup job polls for a phase and otherwise waits out its whole
+        # deadline, so every exit from here must publish one — a failure
+        # included — rather than let the job time out with no explanation.
+        try:
+            await self._recreate_managed_collections()
+        except Exception:
             await mark_cleanup_phase(
                 self.config_service, PHASE_FAILED, logger=self.logger
             )
-            raise IndexingError("Vector store is not configured; cannot drop the records collection")
-        await vector_store.recreate_records_collection()
+            raise
         await mark_cleanup_phase(self.config_service, PHASE_READY, logger=self.logger)
         yield PipelineEvent(
             event=IndexingEvent.PARSING_COMPLETE,
@@ -174,6 +313,43 @@ class RecordEventHandler(BaseEventService):
             event=IndexingEvent.INDEXING_COMPLETE,
             data=PipelineEventData(record_id="delete_vector_collection"),
         )
+
+    async def _recreate_managed_collections(self) -> list[str]:
+        """Drop and rebuild every collection the registry manages.
+
+        The embedding dimension is re-derived from the *live* model rather
+        than the manifest, because this event fires precisely when the model
+        has changed — the manifest still records the outgoing model's width.
+        """
+        sink = getattr(self.event_processor, "sink_orchestrator", None)
+        vector_store = getattr(sink, "vector_store", None) if sink is not None else None
+        if vector_store is None:
+            # Nothing here recovers on redelivery — an unconfigured vector
+            # store is the same on the next attempt.
+            raise IndexingError("Vector store is not configured; cannot drop the records collection")
+
+        await vector_store.get_embedding_model_instance()
+        embedding_size = vector_store.embedding_size
+        if not embedding_size:
+            raise IndexingError(
+                "Could not resolve the embedding dimension; refusing to recreate "
+                "collections without knowing their vector width"
+            )
+
+        registry = self.event_processor.processor.indexing_pipeline.collection_registry
+        recreated = await registry.recreate_all_collections(embedding_size)
+        # A rebuild is also the supported way to change the strategy, and the
+        # resolved one is memoised per process. Without this the collections
+        # are rebuilt but every later resolution still uses the outgoing
+        # strategy's names until the service restarts.
+        reset_strategy_cache()
+        self.logger.info(
+            "♻️ Recreated %d collection(s) at dimension %s: %s",
+            len(recreated),
+            embedding_size,
+            recreated,
+        )
+        return recreated
 
     async def _index_from_blob(
         self,
@@ -295,8 +471,11 @@ class RecordEventHandler(BaseEventService):
         # Unconditional: bulk_delete_embeddings only deletes when the VRID has no
         # remaining graph record, which is never true on a re-embed, so it would
         # leave the old points in place and the upsert below would duplicate them.
+        # Scoped to this record's own collection — the same VRID can be indexed
+        # from another connector, and re-embedding one must not wipe the other.
         await self.event_processor.processor.indexing_pipeline.delete_points_for_virtual_record(
-            virtual_record_id
+            virtual_record_id,
+            RecordContext.from_record(record_obj, record_obj.org_id),
         )
 
         try:
@@ -337,6 +516,7 @@ class RecordEventHandler(BaseEventService):
         error_occurred = False
         error_msg = None
         last_exception: Exception | None = None
+        cancelled = False
         record = None
         try:
             if not event_type:
@@ -355,16 +535,46 @@ class RecordEventHandler(BaseEventService):
             # Handle bulk delete event FIRST - for connector instance deletion (doesn't have record_id)
             if event_type == EventTypes.BULK_DELETE_RECORDS.value:
                 virtual_record_ids = payload.get("virtualRecordIds", [])
+                connector_id = payload.get("connectorId")
                 self.logger.info(f"🗑️ Bulk deleting embeddings for {len(virtual_record_ids)} records")
 
-                result = await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
-                    virtual_record_ids
-                )
+                indexing_pipeline = self.event_processor.processor.indexing_pipeline
+                if connector_id:
+                    # Routes through the active collection strategy: a
+                    # dedicated-collection strategy that confirms no other
+                    # connector writes here can drop the collection outright;
+                    # `single` (and any collection still shared with a live
+                    # connector) falls through to the membership-aware VRID
+                    # delete below, unchanged from today's behavior.
+                    delete_ctx = DeleteContext(
+                        org_id=payload.get("orgId", ""),
+                        connector_id=connector_id,
+                        connector_name=payload.get("connectorName"),
+                    )
+                    result = await indexing_pipeline.purge_connector(
+                        delete_ctx, virtual_record_ids
+                    )
+                else:
+                    result = await indexing_pipeline.bulk_delete_embeddings(virtual_record_ids)
 
                 self.logger.info(
-                    f"✅ Bulk deletion complete: embeddings deleted for "
-                    f"{result.get('virtual_record_ids_processed', 0)} virtual record IDs"
+                    f"✅ Bulk deletion complete: {result}"
                 )
+                # `bulk_delete_embeddings` reports success=False when it refused
+                # to proceed — no managed collection resolved, so nothing was
+                # deleted and the mapping rows were deliberately kept. Yielding
+                # the completion events below would ack that as done and strip
+                # the only handle a later run has on those points. Raise so the
+                # consumer redelivers; IndexingError classifies as transient,
+                # and the refusal leaves nothing half-applied to retry over.
+                # `is False` deliberately: purge_connector's drop and noop
+                # results carry no success key at all.
+                if result.get("success") is False:
+                    raise IndexingError(
+                        "Bulk deletion did not complete; no managed collection "
+                        "resolved, so nothing was purged",
+                        details={"result": result},
+                    )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
                 return
@@ -852,10 +1062,12 @@ class RecordEventHandler(BaseEventService):
             # (set by the consumer before we started) still governs whether
             # this becomes a terminal FAILED or a QUEUED retry below.
             error_occurred = True
+            cancelled = True
             error_msg = "Record processing was cancelled (handler closed)"
             raise
         except asyncio.CancelledError as ce:
             error_occurred = True
+            cancelled = True
             error_msg = "Record processing was cancelled"
             last_exception = ce
             raise
@@ -902,7 +1114,20 @@ class RecordEventHandler(BaseEventService):
                     )
                     is_final = True
                     
-                if is_final:
+                if cancelled:
+                    # Checked before is_final: a cancellation is not a verdict
+                    # on the record. The broker entry was never acknowledged
+                    # (Redis) or committed (Kafka), so it comes back regardless
+                    # of how many attempts it had used. Writing FAILED here --
+                    # which the is_final branch would do, clearing
+                    # processingStartedAt with it -- would both misreport the
+                    # record and drop the one marker the stale-record scan
+                    # needs to recover it if this process never returns.
+                    self.logger.info(
+                        f"🔄 Record {record_id} cancelled mid-flight; leaving it "
+                        f"IN_PROGRESS for redelivery or stale recovery"
+                    )
+                elif is_final:
                     # Traceback logged once here (not on every transient retry attempt)
                     # so final, unrecoverable failures remain fully debuggable.
                     self.logger.error(
@@ -1070,7 +1295,7 @@ class RecordEventHandler(BaseEventService):
                     record_id,
                 )
                 return None
-            self.logger.info(f"✅ Updated document status for record {record_id}")
+            self.logger.debug(f"✅ Updated document status for record {record_id}")
             return record
         except Exception as e:
             self.logger.error(f"❌ Failed to update document status: {str(e)}")

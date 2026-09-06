@@ -3,15 +3,14 @@ import {
   authJwtGenerator,
   fetchConfigJwtGenerator,
 } from '../../../libs/utils/createJwt';
-import { Org } from '../../user_management/schema/org.schema';
+import { findActiveOrgById } from '../../user_management/utils/org.utils';
 import { normalizeUserRole } from '../../user_management/services/user-admin.service';
 
 export async function generateAuthToken(
   user: Record<string, any>,
   jwtSecret: string,
 ) {
-  // look up for
-  const org = await Org.findOne({ orgId: user.orgId, isDeleted: false });
+  const org = await findActiveOrgById(user.orgId);
   if (!org) {
     throw new NotFoundError('Organization not found');
   }

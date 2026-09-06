@@ -1,14 +1,20 @@
 """Comprehensive unit tests for app.indexing_main module."""
 
 import asyncio
+import os
 import time
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import ANY, AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 from fastapi.responses import JSONResponse
 
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.config.constants.arangodb import (
+    CollectionNames,
+    EventTypes,
+    ProgressStatus,
+)
 from app.services.messaging.config import MessageBrokerType
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 @pytest.fixture(autouse=True)
@@ -866,7 +872,7 @@ class TestRecoverInProgressRecords:
 class TestStartKafkaConsumers:
     """Tests for start_kafka_consumers()."""
 
-    async def test_success_non_neo4j(self):
+    async def test_success_non_neo4j(self) -> None:
         """Record consumer is started successfully for non-neo4j data store."""
         from app.indexing_main import start_kafka_consumers
 
@@ -895,36 +901,25 @@ class TestStartKafkaConsumers:
         assert consumers[0][1] == mock_consumer
         assert consumers[0][2] == mock_producer
 
-    async def test_success_neo4j_with_reconnect(self):
-        """Neo4j data store triggers graph provider reconnection."""
+    async def test_success_neo4j(self) -> None:
+        """Startup under Neo4j is now ordinary.
+
+        This used to close the graph driver on the main loop and reconnect it
+        onto the consumer's worker loop, with four guard clauses around it,
+        because one driver cannot serve two loops. `Neo4jClient` keys its
+        driver by loop now, so there is nothing here to special-case.
+        """
         from app.indexing_main import start_kafka_consumers
 
         mock_container = _make_container()
-        mock_driver = MagicMock()
-        mock_driver.close = AsyncMock()
-        mock_client = MagicMock()
-        mock_client.driver = mock_driver
-        mock_client.connect = AsyncMock()
-        mock_gp = MagicMock()
-        mock_gp.client = mock_client
-        mock_container._graph_provider = mock_gp
-
-        mock_worker_loop = MagicMock()
-        mock_worker_loop.is_running.return_value = True
+        mock_container._graph_provider = MagicMock()
 
         mock_consumer = MagicMock()
         mock_consumer.start = AsyncMock()
         mock_consumer.initialize = AsyncMock()
-        mock_consumer.worker_loop = mock_worker_loop
-        
+
         mock_producer = MagicMock()
         mock_producer.initialize = AsyncMock()
-
-        def discard_reconnect(coro, _loop):
-            coro.close()
-            future = asyncio.get_event_loop().create_future()
-            future.set_result(None)
-            return future
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
@@ -936,11 +931,6 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-            patch(
-                "app.indexing_main.asyncio.run_coroutine_threadsafe",
-                side_effect=discard_reconnect,
-            ),
-            patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock),
         ):
             consumers = await start_kafka_consumers(mock_container)
 
@@ -948,117 +938,32 @@ class TestStartKafkaConsumers:
         assert consumers[0][0] == "record"
         assert consumers[0][1] == mock_consumer
         assert consumers[0][2] == mock_producer
-        mock_consumer.initialize.assert_awaited_once()
 
-    async def test_neo4j_no_graph_provider_raises(self):
-        """Neo4j without graph provider raises."""
+    async def test_distributed_concurrency_failure_aborts_startup(self) -> None:
+        """Redis is a startup requirement: an unreachable one fails the boot.
+
+        The RetryManager ping just above needs the same Redis, so degrading to
+        node-local limits here could never actually keep the service running.
+        """
         from app.indexing_main import start_kafka_consumers
 
         mock_container = _make_container()
-        mock_container._graph_provider = None
-
-        mock_consumer = MagicMock()
-        mock_producer = MagicMock()
-        mock_producer.initialize = AsyncMock()
+        mock_manager = MagicMock()
+        mock_manager.initialize = AsyncMock(side_effect=RuntimeError("redis down"))
+        mock_manager.cleanup = AsyncMock()
 
         with (
+            patch.dict("os.environ", {"DISTRIBUTED_INDEXING_CONCURRENCY": "true", "DATA_STORE": "arangodb"}),
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock(), cleanup=AsyncMock())),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
-            patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
+            patch("app.indexing_main.DistributedConcurrencyManager", return_value=mock_manager),
         ):
-            with pytest.raises(Exception, match="Neo4j Graph provider not initialized"):
+            with pytest.raises(RuntimeError, match="redis down"):
                 await start_kafka_consumers(mock_container)
 
-    async def test_neo4j_no_client_raises(self):
-        """Neo4j with graph provider but no client raises."""
-        from app.indexing_main import start_kafka_consumers
-
-        mock_container = _make_container()
-        mock_gp = MagicMock(spec=[])  # no 'client' attribute
-        mock_container._graph_provider = mock_gp
-
-        mock_consumer = MagicMock()
-        mock_producer = MagicMock()
-        mock_producer.initialize = AsyncMock()
-
-        with (
-            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
-            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
-            patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-        ):
-            with pytest.raises(Exception, match="Neo4j Graph provider not initialized"):
-                await start_kafka_consumers(mock_container)
-
-    async def test_neo4j_worker_loop_not_running_raises(self):
-        """Neo4j with non-running worker loop raises."""
-        from app.indexing_main import start_kafka_consumers
-
-        mock_container = _make_container()
-        mock_gp = MagicMock()
-        mock_gp.client = MagicMock()
-        mock_container._graph_provider = mock_gp
-
-        mock_consumer = MagicMock()
-        mock_consumer.initialize = AsyncMock()
-        mock_consumer.worker_loop = MagicMock()
-        mock_consumer.worker_loop.is_running.return_value = False
-        
-        mock_producer = MagicMock()
-        mock_producer.initialize = AsyncMock()
-
-        with (
-            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
-            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
-            patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-        ):
-            with pytest.raises(Exception, match="Worker loop not initialized"):
-                await start_kafka_consumers(mock_container)
-
-    async def test_neo4j_no_worker_loop_raises(self):
-        """Neo4j with no worker loop attribute raises."""
-        from app.indexing_main import start_kafka_consumers
-
-        mock_container = _make_container()
-        mock_gp = MagicMock()
-        mock_gp.client = MagicMock()
-        mock_container._graph_provider = mock_gp
-
-        mock_consumer = MagicMock()
-        mock_consumer.initialize = AsyncMock()
-        mock_consumer.worker_loop = None  # no worker loop
-        
-        mock_producer = MagicMock()
-        mock_producer.initialize = AsyncMock()
-
-        with (
-            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
-            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
-            patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-        ):
-            with pytest.raises(Exception, match="Worker loop not initialized"):
-                await start_kafka_consumers(mock_container)
-
-    async def test_error_cleans_up_started_consumers(self):
+    async def test_error_cleans_up_started_consumers(self) -> None:
         """Error starting consumers cleans up any already started."""
         from app.indexing_main import start_kafka_consumers
 
@@ -1085,7 +990,7 @@ class TestStartKafkaConsumers:
             with pytest.raises(RuntimeError, match="handler fail"):
                 await start_kafka_consumers(mock_container)
 
-    async def test_cleanup_error_during_consumer_cleanup(self):
+    async def test_cleanup_error_during_consumer_cleanup(self) -> None:
         """Cleanup error is logged but original error still propagated."""
         from app.indexing_main import start_kafka_consumers
 
@@ -1121,183 +1026,6 @@ class TestStartKafkaConsumers:
             with pytest.raises(RuntimeError, match="start fail"):
                 await start_kafka_consumers(mock_container)
 
-    async def test_neo4j_reconnect_with_existing_driver(self):
-        """Neo4j reconnect closes existing driver before reconnecting."""
-        from app.indexing_main import start_kafka_consumers
-
-        mock_container = _make_container()
-        mock_driver = MagicMock()
-        mock_driver.close = AsyncMock()
-        mock_client = MagicMock()
-        mock_client.driver = mock_driver
-        mock_client.connect = AsyncMock()
-        mock_gp = MagicMock()
-        mock_gp.client = mock_client
-        mock_container._graph_provider = mock_gp
-
-        mock_worker_loop = MagicMock()
-        mock_worker_loop.is_running.return_value = True
-
-        mock_consumer = MagicMock()
-        mock_consumer.start = AsyncMock()
-        mock_consumer.initialize = AsyncMock()
-        mock_consumer.worker_loop = mock_worker_loop
-        
-        mock_producer = MagicMock()
-        mock_producer.initialize = AsyncMock()
-
-        # To test the _reconnect function body, we need run_coroutine_threadsafe to
-        # actually execute the coroutine. We'll capture the coroutine and run it.
-        captured_coro = None
-
-        def capture_coro(coro, _loop):
-            nonlocal captured_coro
-            captured_coro = coro
-            future = asyncio.get_event_loop().create_future()
-            future.set_result(None)
-            return future
-
-        with (
-            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
-            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
-            patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-            patch(
-                "app.indexing_main.asyncio.run_coroutine_threadsafe",
-                side_effect=capture_coro,
-            ),
-            patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock),
-        ):
-            await start_kafka_consumers(mock_container)
-
-        # Now run the captured coroutine to exercise _reconnect
-        assert captured_coro is not None
-        await captured_coro
-        mock_driver.close.assert_awaited_once()
-        mock_client.connect.assert_awaited_once()
-        assert mock_client.driver is None  # driver was set to None
-
-    async def test_neo4j_reconnect_driver_close_fails(self):
-        """Neo4j reconnect handles driver close failure gracefully."""
-        from app.indexing_main import start_kafka_consumers
-
-        mock_container = _make_container()
-        mock_driver = MagicMock()
-        mock_driver.close = AsyncMock(side_effect=RuntimeError("close fail"))
-        mock_client = MagicMock()
-        mock_client.driver = mock_driver
-        mock_client.connect = AsyncMock()
-        mock_gp = MagicMock()
-        mock_gp.client = mock_client
-        mock_container._graph_provider = mock_gp
-
-        mock_worker_loop = MagicMock()
-        mock_worker_loop.is_running.return_value = True
-
-        mock_consumer = MagicMock()
-        mock_consumer.start = AsyncMock()
-        mock_consumer.initialize = AsyncMock()
-        mock_consumer.worker_loop = mock_worker_loop
-        
-        mock_producer = MagicMock()
-        mock_producer.initialize = AsyncMock()
-
-        captured_coro = None
-
-        def capture_coro(coro, _loop):
-            nonlocal captured_coro
-            captured_coro = coro
-            future = asyncio.get_event_loop().create_future()
-            future.set_result(None)
-            return future
-
-        with (
-            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
-            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
-            patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-            patch(
-                "app.indexing_main.asyncio.run_coroutine_threadsafe",
-                side_effect=capture_coro,
-            ),
-            patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock),
-        ):
-            await start_kafka_consumers(mock_container)
-
-        # Run the captured coroutine - close fails but connect still called
-        assert captured_coro is not None
-        await captured_coro
-        mock_client.connect.assert_awaited_once()
-
-    async def test_neo4j_reconnect_no_driver(self):
-        """Neo4j reconnect when driver is None (falsy) skips close."""
-        from app.indexing_main import start_kafka_consumers
-
-        mock_container = _make_container()
-        mock_client = MagicMock()
-        mock_client.driver = None  # No existing driver
-        mock_client.connect = AsyncMock()
-        mock_gp = MagicMock()
-        mock_gp.client = mock_client
-        mock_container._graph_provider = mock_gp
-
-        mock_worker_loop = MagicMock()
-        mock_worker_loop.is_running.return_value = True
-
-        mock_consumer = MagicMock()
-        mock_consumer.start = AsyncMock()
-        mock_consumer.initialize = AsyncMock()
-        mock_consumer.worker_loop = mock_worker_loop
-        
-        mock_producer = MagicMock()
-        mock_producer.initialize = AsyncMock()
-
-        captured_coro = None
-
-        def capture_coro(coro, _loop):
-            nonlocal captured_coro
-            captured_coro = coro
-            future = asyncio.get_event_loop().create_future()
-            future.set_result(None)
-            return future
-
-        with (
-            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
-            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
-            patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-            patch(
-                "app.indexing_main.asyncio.run_coroutine_threadsafe",
-                side_effect=capture_coro,
-            ),
-            patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock),
-        ):
-            await start_kafka_consumers(mock_container)
-
-        # Run the captured coroutine - no driver to close, just connect
-        assert captured_coro is not None
-        await captured_coro
-        mock_client.connect.assert_awaited_once()
-
-
-# ---------------------------------------------------------------------------
-# stop_kafka_consumers
-# ---------------------------------------------------------------------------
 class TestStopKafkaConsumers:
     """Tests for stop_kafka_consumers()."""
 
@@ -1638,12 +1366,8 @@ class TestStartKafkaConsumersCleanupPath:
         # but message_handler fail, which happens before start/append.
         # So we need to inject directly.
 
-        # Direct approach: create a scenario where consumers has items and error occurs.
-        # We'll achieve this by patching to use neo4j path which has more steps.
         mock_gp = MagicMock()
         mock_gp.client = MagicMock()
-        mock_gp.client.driver = None
-        mock_gp.client.connect = AsyncMock()
         mock_container._graph_provider = mock_gp
 
         mock_worker_loop = MagicMock()
@@ -2025,6 +1749,36 @@ class TestSweepOrphanedVirtualRecordMappings:
         m._orphan_sweep_cursor = 0
 
     @pytest.mark.asyncio
+    async def test_rows_left_by_an_incomplete_drop_are_reclaimed(self):
+        """The backstop `purge_connector` relies on when its scan is bounded.
+
+        A drop whose VRID scan hit the point cap forgets only the ids it read,
+        leaving the rest of the mapping rows behind. Those are not stranded:
+        this sweep enumerates the mapping collection itself, so it never needs
+        the dropped collection to find them — which is why the drop proceeds
+        rather than refusing and leaving the whole collection in place.
+        """
+        from app.indexing_main import _sweep_orphaned_virtual_record_mappings
+
+        # The connector's records went with it, so nothing references these.
+        unscanned = [{"_key": "vr-beyond-the-cap-1"}, {"_key": "vr-beyond-the-cap-2"}]
+        graph = _orphan_graph(unscanned, records_by_vrid={})
+        pipeline = AsyncMock()
+        pipeline.rewrite_or_delete_vector_membership = AsyncMock(return_value="deleted")
+
+        swept = await _sweep_orphaned_virtual_record_mappings(
+            graph_provider=graph,
+            pipeline=pipeline,
+            logger=MagicMock(),
+            page_size=100,
+        )
+
+        assert swept == 2
+        assert [
+            c.args[0] for c in pipeline.rewrite_or_delete_vector_membership.await_args_list
+        ] == ["vr-beyond-the-cap-1", "vr-beyond-the-cap-2"]
+
+    @pytest.mark.asyncio
     async def test_vrid_with_no_records_is_cleaned_up(self):
         """The abandoned side of an N:1 split.
 
@@ -2141,3 +1895,259 @@ class TestSweepOrphanedVirtualRecordMappings:
         )
 
         assert m._orphan_sweep_cursor == 0
+
+
+# ===================================================================
+# _republish_stranded_records
+# ===================================================================
+
+
+def _stranded_env(after_seconds=3600.0):
+    """Set the sweep's threshold; 0 (the default) disables it entirely.
+
+    Patches the environment rather than the property because messaging_env
+    re-reads os.getenv on every access by design.
+    """
+    return patch.dict(
+        os.environ,
+        {"STRANDED_RECORD_REPUBLISH_AFTER_SECONDS": str(after_seconds)},
+    )
+
+
+async def _run_stranded(graph, producer=None, concurrency_manager=None):
+    from app.indexing_main import _republish_stranded_records
+
+    async def run_coordination(coro):
+        return await coro
+
+    return await _republish_stranded_records(
+        graph_provider=graph,
+        logger=MagicMock(),
+        producer=producer or AsyncMock(),
+        run_coordination=run_coordination,
+        concurrency_manager=concurrency_manager,
+        page_size=100,
+    )
+
+
+class TestRepublishStrandedRecords:
+    """The net for records whose event was lost.
+
+    A row on a live connector is invisible to both other sweeps: the stale scan
+    filters on IN_PROGRESS, and the connector sweep only touches connectors that
+    are gone. That gap is how records sat in QUEUED for ever after their event
+    was discarded.
+    """
+
+    @staticmethod
+    def _old_record(**overrides):
+        record = {
+            "_key": "r1",
+            "connectorId": "live",
+            "origin": "CONNECTOR",
+            "recordName": "PA-1 Something",
+            "orgId": "org-1",
+            "version": 0,
+            "updatedAtTimestamp": 1,  # epoch ms — far older than any cutoff
+        }
+        record.update(overrides)
+        return record
+
+    @pytest.mark.asyncio
+    async def test_disabled_by_default(self):
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record()]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+
+        with _stranded_env(0.0):
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+        graph.get_documents_paginated.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_republishes_a_stranded_row_on_a_live_connector(self):
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record()]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+        kwargs = producer.send_event.await_args.kwargs
+        assert kwargs["payload"]["recordId"] == "r1"
+        assert kwargs["event_type"] == EventTypes.NEW_RECORD.value
+        assert kwargs["key"] == "r1"
+
+    @pytest.mark.asyncio
+    async def test_an_already_indexed_row_reindexes_instead(self):
+        """A record with a version and a VRID has been indexed before."""
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    self._old_record(version=2, virtualRecordId="vr-1")
+                ]
+            },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            await _run_stranded(graph, producer)
+
+        assert (
+            producer.send_event.await_args.kwargs["event_type"]
+            == EventTypes.REINDEX_RECORD.value
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_recently_touched_row_is_left_alone(self):
+        """Its event may legitimately still be queued behind a backlog."""
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    self._old_record(updatedAtTimestamp=get_epoch_timestamp_in_ms())
+                ]
+            },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_inactive_connector_rows_belong_to_the_other_sweep(self):
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record()]}, active_ids=set()
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_dedup_parked_duplicate_is_left_to_its_twin(self):
+        """A record parked behind an in-flight md5 twin is legitimately QUEUED.
+
+        It is released when the twin completes, not by re-publishing it.
+        """
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    self._old_record(md5Checksum="abc", virtualRecordId="vr-1")
+                ]
+            },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_uploads_are_not_swept(self):
+        """Only connector-origin records are re-published from here."""
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record(origin="UPLOAD")]},
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_republishing_marks_the_row(self):
+        """Publishing changes nothing about the record on its own.
+
+        Without a marker the row stays eligible and every sweep tick sends
+        another copy of the same event — worst exactly when the consumer is
+        backlogged, which is the case this sweep exists for.
+        """
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record()]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            await _run_stranded(graph, producer)
+
+        key, collection, fields = graph.update_node.await_args.args
+        assert key == "r1"
+        assert collection == CollectionNames.RECORDS.value
+        assert "lastRepublishedAt" in fields
+        # updatedAtTimestamp means "when the record last changed" and belongs
+        # to the connectors; a recovery sweep must not move it.
+        assert "updatedAtTimestamp" not in fields
+
+    @pytest.mark.asyncio
+    async def test_a_recently_republished_row_is_skipped(self):
+        """At most one republish per threshold window, per record."""
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    self._old_record(lastRepublishedAt=get_epoch_timestamp_in_ms())
+                ]
+            },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_old_republish_does_not_block_a_retry(self):
+        """A second lost event is still recoverable once the window passes."""
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record(lastRepublishedAt=1)]},
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_contended_record_lease_skips_the_row(self):
+        """Somebody is working on it after all."""
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record()]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+        manager = AsyncMock()
+        manager.try_acquire = AsyncMock(return_value=False)
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, manager) == 0
+
+        producer.send_event.assert_not_awaited()
+        manager.release.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_record_lease_is_always_released(self):
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record()]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+        producer.send_event = AsyncMock(side_effect=Exception("broker down"))
+        manager = AsyncMock()
+        manager.try_acquire = AsyncMock(return_value=True)
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, manager) == 0
+
+        manager.release.assert_awaited_once_with("record:r1", ANY)

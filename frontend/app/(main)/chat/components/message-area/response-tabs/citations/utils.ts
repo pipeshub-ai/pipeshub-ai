@@ -88,7 +88,7 @@ export function buildCitationMapsFromApi(
       citationType: data.citationType || '',
       origin: (metadata as Record<string, unknown>).origin as CitationOrigin | undefined,
       boundingBox: (metadata as Record<string, unknown>).bounding_box as Array<{ x: number; y: number }> | undefined,
-      updatedAt: data.updatedAt,
+      updatedAt: (metadata as Record<string, unknown>).updatedAt as string | undefined ?? data.updatedAt,
     };
 
     citations[citationId] = normalized;

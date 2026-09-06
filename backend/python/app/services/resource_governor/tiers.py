@@ -47,6 +47,15 @@ LIGHT_MIME_TYPES: frozenset[str] = frozenset({
     "text/csv", "text/tab-separated-values",
     "application/json", "application/yaml", "application/x-yaml",
     "application/blocks",
+    # Connector-specific types that reach a text parser, not Docling. They
+    # matter more than their obscurity suggests: the tier also picks the index
+    # pool a record holds for its whole lifetime, so a Gmail sync classifying
+    # as HEAVY would draw entirely on the small heavy budget — the head-of-line
+    # blocking the split exists to prevent.
+    "text/gmail_content",  # -> Processor.process_gmail_message
+    "text/mdx",            # -> Processor.process_mdx_document; "mdx" is
+                           #    already in LIGHT_EXTENSIONS, this closes the
+                           #    gap for records carrying only a mime type
 })
 
 # Above this size a "heavy" document is treated as extra-large: it consumes
@@ -87,3 +96,16 @@ def parse_cost(tier: ParseTier, size_bytes: int | None) -> int:
 def gate_pool(tier: ParseTier) -> Pool:
     """Which parse admission pool a tier routes to."""
     return Pool.HEAVY_PARSE if tier is ParseTier.HEAVY else Pool.LIGHT_PARSE
+
+
+def index_pool(tier: ParseTier) -> Pool:
+    """Which active-pipeline admission pool a tier routes to.
+
+    Routed by the same ``classify`` result as ``gate_pool``, but read from
+    the record event's own ``extension``/``mimeType`` — the index permit is
+    taken before the handler runs, so the tier cannot come from the handler's
+    START_PARSING event the way the parse permit's does. Unknown formats
+    classify as HEAVY, so anything unrecognisable draws on the smaller,
+    slower budget rather than the fast one.
+    """
+    return Pool.INDEX_HEAVY if tier is ParseTier.HEAVY else Pool.INDEX_LIGHT

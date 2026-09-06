@@ -624,6 +624,7 @@ class KnowledgeBaseService:
                             "payload": {
                                 "orgId": org_id,
                                 "connectorId": kb_id,
+                                "connectorName": result.get("connector_name"),
                                 "virtualRecordIds": virtual_record_ids,
                                 "totalRecords": len(virtual_record_ids),
                             },

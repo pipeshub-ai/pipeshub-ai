@@ -49,13 +49,43 @@ class TestCgroupV2Memory:
     def test_reads_limit_and_working_set(self, tmp_path: Path) -> None:
         _write(tmp_path / "memory.max", "8589934592")  # 8 GiB
         _write(tmp_path / "memory.current", "1073741824")  # 1 GiB
-        _write(tmp_path / "memory.stat", "inactive_file 104857600\nother_field 1\n")
+        # `file` is all page cache; `inactive_file` is the reclaimed-first half
+        # of it. The whole of it is discounted, because the kernel frees it on
+        # demand and braking concurrency on it pins every pool at its floor
+        # while memory is genuinely available.
+        _write(
+            tmp_path / "memory.stat",
+            "file 314572800\ninactive_file 104857600\nother_field 1\n",
+        )
 
         limit, working_set, source = probe_mod._resolve_memory()
 
         assert source == "cgroup_v2"
         assert limit == 8589934592
-        assert working_set == 1073741824 - 104857600
+        assert working_set == 1073741824 - 314572800
+
+    def test_hot_page_cache_does_not_read_as_pressure(self, tmp_path: Path) -> None:
+        """The regression this guards: a container whose cache is hot — blobs
+        read in, vectors written out — reported 9.4 GiB used of 10 when only
+        7.8 GiB was unreclaimable, tripping the hard brake and pinning every
+        pool at its floor with 2 GiB genuinely free."""
+        gib = 1024 ** 3
+        _write(tmp_path / "memory.max", str(10 * gib))
+        _write(tmp_path / "memory.current", str(int(9.43 * gib)))
+        _write(
+            tmp_path / "memory.stat",
+            f"file {int(1.38 * gib)}\ninactive_file {int(0.05 * gib)}\n",
+        )
+
+        limit, working_set, _ = probe_mod._resolve_memory()
+
+        old_convention = int(9.43 * gib) - int(0.05 * gib)  # current - inactive_file
+        assert working_set == int(9.43 * gib) - int(1.38 * gib)
+        assert working_set < old_convention, "hot cache still counted as pressure"
+        # The overstatement this removes is the whole active_file, ~13% of the
+        # cap here — the difference between a pool at its ceiling and one
+        # pinned at its floor.
+        assert (old_convention - working_set) / limit > 0.12
 
     def test_max_sentinel_falls_through(self, tmp_path: Path) -> None:
         _write(tmp_path / "memory.max", "max")
@@ -72,13 +102,17 @@ class TestCgroupV1Memory:
     def test_reads_limit_and_working_set(self, tmp_path: Path) -> None:
         _write(tmp_path / "memory" / "memory.limit_in_bytes", "4294967296")  # 4 GiB
         _write(tmp_path / "memory" / "memory.usage_in_bytes", "2147483648")  # 2 GiB
-        _write(tmp_path / "memory" / "memory.stat", "total_inactive_file 52428800\n")
+        # total_cache is v1's spelling of all page cache; see the v2 test.
+        _write(
+            tmp_path / "memory" / "memory.stat",
+            "total_cache 157286400\ntotal_inactive_file 52428800\n",
+        )
 
         limit, working_set, source = probe_mod._resolve_memory()
 
         assert source == "cgroup_v1"
         assert limit == 4294967296
-        assert working_set == 2147483648 - 52428800
+        assert working_set == 2147483648 - 157286400
 
     def test_no_limit_sentinel_treated_as_unlimited(self, tmp_path: Path) -> None:
         _write(tmp_path / "memory" / "memory.limit_in_bytes", str(9223372036854771712))

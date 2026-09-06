@@ -16,8 +16,6 @@ from langchain_core.messages import BaseMessage, HumanMessage  #type: ignore
 from langchain_core.tools import StructuredTool  #type: ignore
 from pydantic import BaseModel, Field
 
-from app.services.vector_db.const.const import ORG_ID_FIELD, VIRTUAL_RECORD_ID_FIELD
-from app.services.vector_db.models import CollectionConfig
 from app.utils.aimodels import (
     ImageGenerationProvider,
     LLMProvider,
@@ -579,9 +577,8 @@ async def handle_model_change(
 
     if points_count > 0:
         logger.error(
-            f"Rejected embedding change: collection "
-            f"'{retrieval_service.collection_name}' contains {points_count} "
-            f"point(s) indexed with the previous model."
+            f"Rejected embedding change: the managed collection(s) contain "
+            f"{points_count} point(s) indexed with the previous model."
         )
         raise HTTPException(
             status_code=400,
@@ -601,38 +598,82 @@ async def handle_model_change(
         await recreate_collection(retrieval_service, embedding_size, logger)
 
 async def recreate_collection(retrieval_service, embedding_size, logger) -> None:
-    """Recreate the collection with new parameters (provider-neutral via CollectionConfig)."""
-    try:
-        await retrieval_service.vector_db_service.delete_collection(retrieval_service.collection_name)
-        logger.info(f"Successfully deleted empty collection {retrieval_service.collection_name}")
-        caps = retrieval_service.vector_db_service.get_capabilities()
-        await retrieval_service.vector_db_service.create_collection(
-            collection_name=retrieval_service.collection_name,
-            config=CollectionConfig(
-                embedding_size=embedding_size,
-                sparse_idf=SPARSE_IDF,
-                enable_sparse=caps.supports_sparse_vectors,
-            ),
-        )
+    """Rebuild every managed collection for the new embedding dimension.
 
-        await retrieval_service.vector_db_service.create_index(
-            collection_name=retrieval_service.collection_name,
-            field_name=VIRTUAL_RECORD_ID_FIELD,
-            field_schema={
-                "type": "keyword",
-            }
+    Routed through CollectionRegistry so each rebuilt collection gets the same
+    config, payload indexes, and manifest entry as one created by the normal
+    indexing write path — and so a multi-collection strategy rebuilds all of
+    them, not just the one this service happens to name.
+    """
+    registry = retrieval_service.collection_registry
+    try:
+        recreated = await registry.recreate_all_collections(
+            embedding_size, sparse_idf=SPARSE_IDF
         )
-        await retrieval_service.vector_db_service.create_index(
-            collection_name=retrieval_service.collection_name,
-            field_name=ORG_ID_FIELD,
-            field_schema={
-                "type": "keyword",
-            }
+        if not recreated:
+            # Nothing managed yet. There is no collection to rebuild, and
+            # creating one here would have to invent a context — which under a
+            # strategy that names collections per org or connector names a
+            # collection belonging to nobody. The indexing write path pins the
+            # dimension on first use, from the record that actually needs it.
+            logger.info(
+                "No managed collections to recreate; the indexing write path "
+                "will create them at dimension %s on first use",
+                embedding_size,
+            )
+            return
+        logger.info(
+            f"Successfully recreated collection(s) {recreated} with vector size {embedding_size}"
         )
-        logger.info(f"Successfully created new collection {retrieval_service.collection_name} with vector size {embedding_size}")
     except Exception as e:
         logger.error(f"Failed to recreate collection: {str(e)}", exc_info=True)
         raise
+
+
+class CollectionSurveyError(Exception):
+    """The existing index state could not be established.
+
+    Distinct from "there is nothing indexed", and the distinction decides
+    whether an embedding-model change is allowed to drop collections. Treating
+    an unreadable survey as an empty one is a fail-open on a destructive
+    operation, so this propagates.
+    """
+
+
+async def survey_managed_collections(retrieval_service, logger) -> tuple[int, int]:
+    """Aggregate (dense dimension, total points) over every managed collection.
+
+    The embedding-model guard must reject a change while *any* managed
+    collection still holds data, so the enumeration is read fresh: a cached
+    view could miss a collection another service created since this process
+    started, and the guard would wave the change through while that collection
+    still holds vectors from the outgoing model.
+    """
+    registry = retrieval_service.collection_registry
+    try:
+        managed = await registry.list_managed_collections(fresh=True)
+        existing_vector_size = 0
+        points_count = 0
+        for entry in managed:
+            info = await retrieval_service.vector_db_service.get_collection_info(
+                entry.name
+            )
+            if not info.exists:
+                continue
+            if not existing_vector_size:
+                existing_vector_size = info.dense_dimension or 0
+            points_count += info.points_count or 0
+    except Exception as e:
+        raise CollectionSurveyError(
+            f"Could not determine what the vector store currently holds: {e}"
+        ) from e
+
+    logger.debug(
+        f"Surveyed {len(managed)} managed collection(s): "
+        f"dimension={existing_vector_size}, points={points_count}"
+    )
+    return existing_vector_size, points_count
+
 
 async def check_collection_info(
     retrieval_service,
@@ -642,12 +683,9 @@ async def check_collection_info(
 ) -> None:
     """Check and validate collection information using provider-neutral get_collection_info()."""
     try:
-        collection_info = await retrieval_service.vector_db_service.get_collection_info(
-            retrieval_service.collection_name
+        existing_vector_size, points_count = await survey_managed_collections(
+            retrieval_service, logger
         )
-        # Use normalized VectorCollectionInfo fields (works for all providers)
-        existing_vector_size = collection_info.dense_dimension or 0
-        points_count = collection_info.points_count
 
         current_model_name = await retrieval_service.get_current_embedding_model_name()
         new_model_name = retrieval_service.get_embedding_model_name(dense_embeddings)
@@ -668,6 +706,23 @@ async def check_collection_info(
 
     except HTTPException:
         raise
+    except CollectionSurveyError as e:
+        # Fail closed. Proceeding here would let an embedding-model change be
+        # accepted — and collections dropped — on the strength of a survey that
+        # never ran, which is unrecoverable; refusing costs a retry.
+        logger.error(f"Refusing to validate the embedding change: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "not healthy",
+                "error": (
+                    "Could not verify what the vector store currently holds, so "
+                    "an embedding model change cannot be validated. Check vector "
+                    "store connectivity and retry."
+                ),
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        ) from e
     except Exception as e:
         # Connectivity / not-found errors during startup are non-fatal: log and
         # let the health check proceed rather than blocking the service from starting.

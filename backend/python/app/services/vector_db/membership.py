@@ -38,13 +38,49 @@ from __future__ import annotations
 import asyncio
 import weakref
 from contextvars import ContextVar, Token
-from typing import Any, Optional, Sequence
+from dataclasses import dataclass
+from typing import Any, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 from app.config.constants.arangodb import CollectionNames
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
 )
+
+
+@runtime_checkable
+class CollectionLocator(Protocol):
+    """Where a virtual record's points live.
+
+    Declared here, by the consumer, rather than in the strategy layer: this
+    module must not depend on *how* collection names are chosen, only on being
+    told which ones to write to. ``VirtualRecordCollectionLocator`` in
+    ``collection_locator.py`` satisfies it structurally.
+    """
+
+    def collections_for_records(
+        self, records: Sequence[Mapping[str, Any]]
+    ) -> Sequence[str]:
+        """Collections holding points for these graph records. Pure and sync.
+
+        Callers pass the documents membership resolution already fetched, so
+        this costs no extra round trip.
+        """
+        ...
+
+    async def all_collections(self, *, fresh: bool = False) -> Sequence[str]:
+        """Every managed collection.
+
+        ``fresh=True`` asks for an uncached view; delete paths use it, because
+        acting on a stale enumeration leaves points in collections it missed.
+
+        The only correct target when a VRID has no graph record left to
+        resolve from — which is exactly when deleting everywhere is safe: a
+        VRID still shared with a live record would have taken the per-record
+        path instead.
+        """
+        ...
+
 
 _cv_connector_ids: ContextVar[tuple[str, ...]] = ContextVar(
     "vector_connector_ids", default=()
@@ -200,12 +236,50 @@ def _record_group_id_from_edge(edge: dict) -> Optional[str]:
     return None
 
 
+@dataclass(frozen=True)
+class VirtualRecordState:
+    """Everything the graph knows about one VRID, resolved in a single pass.
+
+    ``records`` is carried alongside the two id arrays because resolving them
+    already fetches every record document. A caller that needs to know which
+    collections a VRID occupies maps these through the active strategy — a pure
+    function over data already in hand, rather than a second graph walk.
+    """
+
+    connector_ids: list[str]
+    record_group_ids: list[str]
+    records: list[Any]
+    #: False when the graph did not return a document for every record key it
+    #: reported for this VRID. Both providers' ``get_document`` swallow every
+    #: exception and return ``None``, so a dropped connection is otherwise
+    #: indistinguishable from "this record does not exist" — and a shorter
+    #: ``records`` list makes a collection look abandoned when it is not.
+    #: Destructive callers must refuse to act on an incomplete read.
+    complete: bool = True
+
+
 async def resolve_vector_membership(
     graph_provider,
     virtual_record_id: str,
     current_record: Any = None,
 ) -> tuple[list[str], list[str]]:
     """Return unique ``connectorIds`` and ``recordGroupIds`` for a VRID.
+
+    Thin view over :func:`resolve_virtual_record_state` for callers that only
+    need the membership arrays.
+    """
+    state = await resolve_virtual_record_state(
+        graph_provider, virtual_record_id, current_record
+    )
+    return state.connector_ids, state.record_group_ids
+
+
+async def resolve_virtual_record_state(
+    graph_provider,
+    virtual_record_id: str,
+    current_record: Any = None,
+) -> VirtualRecordState:
+    """Resolve a VRID's membership arrays and the records they came from.
 
     ``recordGroupIds`` come from ``belongsTo`` → ``recordGroups`` (primary plus
     shared-with-me), not the scalar ``recordGroupId`` alone.
@@ -216,6 +290,7 @@ async def resolve_vector_membership(
     seen_groups: set[str] = set()
 
     record_keys: list[str] = []
+    docs: list[Any] = []
     if virtual_record_id:
         raw = await graph_provider.get_records_by_virtual_record_id(virtual_record_id)
         record_keys = remaining_record_keys(raw)
@@ -268,38 +343,53 @@ async def resolve_vector_membership(
             record_group_ids, seen_groups, _record_group_id_from_record(current_record)
         )
 
-    return connector_ids, record_group_ids
+    # Only documents the graph actually returned: a None from a failed
+    # get_document must not reach a strategy as if it were a record.
+    resolved = [doc for doc in docs if isinstance(doc, dict)]
+    return VirtualRecordState(
+        connector_ids=connector_ids,
+        record_group_ids=record_group_ids,
+        records=resolved,
+        # A key that resolved to nothing is either a read that failed or a
+        # record deleted mid-flight. Neither is safe to read as "no record
+        # here" on a destructive path, so both count as incomplete.
+        complete=len(resolved) == len(record_keys),
+    )
 
 
 async def sync_vector_membership(
     vector_db,
-    collection_name: str,
+    locator: CollectionLocator,
     graph_provider,
     virtual_record_id: str,
     logger,
 ) -> None:
     """Recompute both arrays from graph and merge them onto all chunks of a VRID."""
-    if not virtual_record_id or vector_db is None or not collection_name:
+    if not virtual_record_id or vector_db is None or locator is None:
         return
     lock = _vrid_lock(virtual_record_id)
     async with asyncio.timeout(MEMBERSHIP_LOCK_TIMEOUT_SECONDS):
         async with lock:
             await _sync_vector_membership_locked(
-                vector_db, collection_name, graph_provider, virtual_record_id, logger
+                vector_db, locator, graph_provider, virtual_record_id, logger
             )
 
 
 async def _sync_vector_membership_locked(
     vector_db,
-    collection_name: str,
+    locator: CollectionLocator,
     graph_provider,
     virtual_record_id: str,
     logger,
-) -> None:
-    """Body of :func:`sync_vector_membership`; caller already holds the VRID lock."""
-    connector_ids, record_group_ids = await resolve_vector_membership(
-        graph_provider, virtual_record_id
-    )
+) -> Optional[list[str]]:
+    """Body of :func:`sync_vector_membership`; caller already holds the VRID lock.
+
+    Returns the collections written, or None when it declined to write — the
+    delete-aware caller uses that to tell "this VRID now lives here and nowhere
+    else" apart from "the graph did not give me a usable answer".
+    """
+    state = await resolve_virtual_record_state(graph_provider, virtual_record_id)
+    connector_ids, record_group_ids = state.connector_ids, state.record_group_ids
 
     # Every record carries a connectorId, so an empty result means the graph
     # returned nothing for this VRID — a lagging read or a record mid-delete, not
@@ -314,58 +404,165 @@ async def _sync_vector_membership_locked(
                 "connectorIds, which would blank existing membership",
                 virtual_record_id,
             )
+        return None
+
+    # Derived from the records just fetched, so under a strategy that splits by
+    # org or connector type this rewrites every collection the VRID occupies.
+    # Writing only one would leave the others advertising membership the graph
+    # no longer agrees with.
+    collections = locator.collections_for_records(state.records)
+    if not collections:
+        if logger is not None:
+            logger.warning(
+                "Skipping vector membership write for %s: resolved no collections",
+                virtual_record_id,
+            )
+        return None
+
+    filt = await vector_db.filter_collection(
+        must={"virtualRecordId": virtual_record_id}
+    )
+    for collection_name in collections:
+        await vector_db.set_payload(
+            collection_name,
+            {
+                CONNECTOR_IDS_FIELD: connector_ids,
+                RECORD_GROUP_IDS_FIELD: record_group_ids,
+            },
+            filt,
+        )
+    if logger is not None:
+        # Counts at info, contents at debug: the backfill runs this for every
+        # VRID in the corpus, and full arrays at info would drown the log.
+        logger.debug(
+            "Rewrote vector membership for virtual_record_id %s across %d "
+            "collection(s) (%d connectorIds, %d recordGroupIds)",
+            virtual_record_id,
+            len(collections),
+            len(connector_ids),
+            len(record_group_ids),
+        )
+        logger.debug(
+            "virtual_record_id %s collections=%s connectorIds=%s recordGroupIds=%s",
+            virtual_record_id,
+            collections,
+            connector_ids,
+            record_group_ids,
+        )
+    return list(collections)
+
+
+async def _drop_points_where_no_record_remains(
+    vector_db,
+    locator: CollectionLocator,
+    graph_provider,
+    virtual_record_id: str,
+    live_collections: Sequence[str],
+    logger,
+) -> None:
+    """Remove a VRID's points from collections nothing references any more.
+
+    Only reachable under a multi-collection strategy, and only because
+    deduplication lets one VRID be indexed into several collections: the same
+    file reaching PipesHub through Drive and through Slack shares a content
+    identity but gets vectors in each connector type's own collection.
+
+    When the Drive record is then deleted, the VRID still has a Slack record,
+    so the rewrite branch above runs rather than the delete branch — and
+    without this, the Drive collection would keep points for a record that no
+    longer exists. They stay searchable, their membership stops matching the
+    graph, and their metadata cites a deleted record.
+
+    Deleting is irreversible, so a *non-empty* stale set is confirmed against a
+    second graph read before acting. The re-read costs nothing in the common
+    case because the set is empty — always, under ``single``, and under any
+    strategy until a VRID's collections actually shrink.
+
+    The sweep cannot tell a collection the VRID *left* from one it was never
+    in, so under a multi-collection strategy it issues a filtered delete
+    against each — a no-op where nothing matches. That is bounded by the number
+    of managed collections (a handful in practice, ~30 at the ceiling for
+    per-connector-type) and only happens on the rewrite path, so it is paid per
+    departing record rather than per search. Narrowing it would need the VRID's
+    previous collection set, which nothing records.
+    """
+    managed = set(await locator.all_collections(fresh=True))
+    stale = managed - set(live_collections)
+    if not stale:
+        return
+
+    # A partial read would name collections as stale that still have records.
+    # Confirming costs one query on a path that is already rare.
+    confirmed_state = await resolve_virtual_record_state(
+        graph_provider, virtual_record_id
+    )
+    if not confirmed_state.complete:
+        # Fail closed: an unresolved record document would drop its collection
+        # out of `still_live` and leave it in `stale`, deleting points a live
+        # record still needs. Keeping them is recoverable — the sweep runs
+        # again on the next rewrite, and the orphan sweeper is the backstop.
+        if logger is not None:
+            logger.warning(
+                "Skipping stale-collection cleanup for virtual record %s: the "
+                "graph did not return every record document, so a collection "
+                "that still holds records could look abandoned",
+                virtual_record_id,
+            )
+        return
+
+    still_live = set(locator.collections_for_records(confirmed_state.records))
+    stale &= managed - still_live
+    if not stale:
+        if logger is not None:
+            logger.info(
+                "Virtual record %s looked stale in some collections but the "
+                "re-read disagreed — keeping their points",
+                virtual_record_id,
+            )
         return
 
     filt = await vector_db.filter_collection(
         must={"virtualRecordId": virtual_record_id}
     )
-    await vector_db.set_payload(
-        collection_name,
-        {
-            CONNECTOR_IDS_FIELD: connector_ids,
-            RECORD_GROUP_IDS_FIELD: record_group_ids,
-        },
-        filt,
-    )
+    for collection_name in sorted(stale):
+        await vector_db.delete_points(collection_name=collection_name, filter=filt)
     if logger is not None:
-        # Counts at info, contents at debug: the backfill runs this for every
-        # VRID in the corpus, and full arrays at info would drown the log.
+        # Deliberately describes the *action*, not an effect it cannot observe:
+        # `delete_points` reports no count, and most of these collections never
+        # held the VRID at all, so the filtered delete matches nothing. Saying
+        # "removed from N collections" reads as data loss on what is usually a
+        # no-op. Debug rather than info because it fires per rewritten VRID —
+        # one line per shared record on a large connector delete — and the
+        # caller already logs the aggregate.
         logger.debug(
-            "Rewrote vector membership for virtual_record_id %s "
-            "(%d connectorIds, %d recordGroupIds)",
+            "Cleared virtual_record_id %s from collection(s) it no longer "
+            "belongs to: %s (a no-op in any it never had points in)",
             virtual_record_id,
-            len(connector_ids),
-            len(record_group_ids),
-        )
-        logger.debug(
-            "virtual_record_id %s connectorIds=%s recordGroupIds=%s",
-            virtual_record_id,
-            connector_ids,
-            record_group_ids,
+            sorted(stale),
         )
 
 
 async def rewrite_or_delete_virtual_record(
     vector_db,
-    collection_name: str,
+    locator: CollectionLocator,
     graph_provider,
     virtual_record_id: str,
     logger,
 ) -> str:
     """Delete points if no graph records remain; otherwise rewrite both arrays."""
-    if not virtual_record_id or vector_db is None or not collection_name:
+    if not virtual_record_id or vector_db is None or locator is None:
         return "skipped"
     lock = _vrid_lock(virtual_record_id)
     async with asyncio.timeout(MEMBERSHIP_LOCK_TIMEOUT_SECONDS):
         async with lock:
             return await _rewrite_or_delete_locked(
-                vector_db, collection_name, graph_provider, virtual_record_id, logger
+                vector_db, locator, graph_provider, virtual_record_id, logger
             )
 
 
 async def _rewrite_or_delete_locked(
     vector_db,
-    collection_name: str,
+    locator: CollectionLocator,
     graph_provider,
     virtual_record_id: str,
     logger,
@@ -386,10 +583,26 @@ async def _rewrite_or_delete_locked(
             )
 
     if remaining:
-        await _sync_vector_membership_locked(
-            vector_db, collection_name, graph_provider, virtual_record_id, logger
+        live_collections = await _sync_vector_membership_locked(
+            vector_db, locator, graph_provider, virtual_record_id, logger
         )
+        if live_collections is not None:
+            await _drop_points_where_no_record_remains(
+                vector_db,
+                locator,
+                graph_provider,
+                virtual_record_id,
+                live_collections,
+                logger,
+            )
         return "rewritten"
+
+    # No record anywhere references this VRID, so there is nothing left to
+    # resolve a collection from — and nothing that could still want these
+    # points. A VRID shared with a live record would have taken the rewrite
+    # branch above, which is what makes deleting across every managed
+    # collection the correct scope here rather than an overreach.
+    collections = await locator.all_collections(fresh=True)
 
     # Points first: the mapping is how an orphaned point set is found again, so it
     # must outlive the delete it describes. Dropping it first would strand the
@@ -397,9 +610,14 @@ async def _rewrite_or_delete_locked(
     filt = await vector_db.filter_collection(
         must={"virtualRecordId": virtual_record_id}
     )
-    await vector_db.delete_points(collection_name=collection_name, filter=filt)
+    for collection_name in collections:
+        await vector_db.delete_points(collection_name=collection_name, filter=filt)
     if logger is not None:
-        logger.info("Deleted vector points for virtual_record_id %s", virtual_record_id)
+        logger.info(
+            "Deleted vector points for virtual_record_id %s from %d collection(s)",
+            virtual_record_id,
+            len(collections),
+        )
 
     try:
         await graph_provider.delete_nodes(

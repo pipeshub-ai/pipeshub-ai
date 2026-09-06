@@ -647,7 +647,7 @@ class TestRootCauseExtraction:
         original = ValueError("original")
         wrapped = RuntimeError("wrapped")
         wrapped.__cause__ = original
-        
+
         root = _get_root_cause(wrapped)
         assert root is original
 
@@ -658,7 +658,7 @@ class TestRootCauseExtraction:
         middle.__cause__ = deepest
         outer = Exception("outer")
         outer.__cause__ = middle
-        
+
         root = _get_root_cause(outer)
         assert root is deepest
 
@@ -667,7 +667,7 @@ class TestRootCauseExtraction:
         original = ValueError("original")
         wrapped = RuntimeError("wrapped")
         wrapped.__context__ = original
-        
+
         root = _get_root_cause(wrapped)
         assert root is original
 
@@ -678,7 +678,7 @@ class TestRootCauseExtraction:
         wrapped = Exception("wrapped")
         wrapped.__cause__ = cause_exc
         wrapped.__context__ = context_exc
-        
+
         root = _get_root_cause(wrapped)
         assert root is cause_exc
 
@@ -688,7 +688,7 @@ class TestRootCauseExtraction:
         exc2 = RuntimeError("exc2")
         exc1.__cause__ = exc2
         exc2.__cause__ = exc1  # Circular reference
-        
+
         # Should not hang and should return one of them
         root = _get_root_cause(exc1)
         assert root in (exc1, exc2)

@@ -33,10 +33,15 @@ import json
 import os
 import time
 import zlib
-from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from redis.asyncio import Redis
+from app.services.cache.interface import (
+    IAccessibleRecordsCache,
+    Loader,
+    NoopAccessibleRecordsCache,
+)
+from app.services.redis.config import ClientOptions, RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -44,10 +49,9 @@ if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
     from app.config.constants.arangodb import Connectors
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+    from app.services.redis.connection_provider import RedisClient
 
 __all__ = ["AccessibleRecordsCache", "AccessibleRecordsInvalidator"]
-
-Loader = Callable[[], Awaitable[dict[str, str]]]
 
 _DISABLED_VALUES = {"0", "off", "false", "no"}
 
@@ -67,7 +71,7 @@ def _ttl_from_env(default: int) -> int:
         return default
 
 
-class AccessibleRecordsCache:
+class AccessibleRecordsCache(IAccessibleRecordsCache):
     """Read-through cache of accessible-record maps, shared across workers."""
 
     KEY_PREFIX = "pipeshub:accessible_records:v1"
@@ -86,15 +90,20 @@ class AccessibleRecordsCache:
     def __init__(
         self,
         logger: "Logger",
-        redis_client: Redis | None,
+        redis_client: "RedisClient | None",
         ttl_seconds: int,
         enabled: bool,  # noqa: FBT001 - positional keeps the test fakes terse
+        key_namespace: str = "",
     ) -> None:
         self.logger = logger
         self._redis = redis_client
         self._ttl = ttl_seconds
         self._enabled = enabled and redis_client is not None
         self._down_until = 0.0
+        # REDIS_KEY_NAMESPACE (R9): set by `create()` from the provider;
+        # stays empty when a raw `redis_client` is injected directly without
+        # a namespace (mostly tests), same as an unset namespace.
+        self._key_namespace = key_namespace
         self._locks: tuple[asyncio.Lock, ...] = tuple(
             asyncio.Lock() for _ in range(self.LOCK_STRIPES)
         )
@@ -102,33 +111,59 @@ class AccessibleRecordsCache:
     @classmethod
     async def create(
         cls, logger: "Logger", config_service: "ConfigurationService"
-    ) -> "AccessibleRecordsCache":
-        """Build a cache client. Never raises — a failure yields a disabled cache."""
+    ) -> IAccessibleRecordsCache:
+        """Build a cache. Never raises — a failure yields a disabled cache.
+
+        Returns ``NoopAccessibleRecordsCache`` rather than a
+        ``redis_client=None`` instance of this class when the cache is off:
+        the disabled behaviour (every read falls through to ``loader()``) has
+        nothing to do with Redis, and callers depend on
+        ``IAccessibleRecordsCache``, not this implementation.
+        """
         ttl = _ttl_from_env(cls.DEFAULT_TTL_SECONDS)
         if not _cache_enabled_from_env():
             logger.info("Accessible-records cache disabled via %s", cls.ENV_ENABLED)
-            return cls(logger, None, ttl, enabled=False)
+            return NoopAccessibleRecordsCache()
 
+        client = None
         try:
             redis_config = await config_service.get_redis_config()
-            client = Redis(
-                host=redis_config.host,
-                port=redis_config.port,
-                password=redis_config.password,
-                db=redis_config.db,
-                decode_responses=True,
-                socket_timeout=cls.OP_TIMEOUT_SECONDS,
-                socket_connect_timeout=cls.OP_TIMEOUT_SECONDS,
+            provider = get_redis_provider(
+                RedisConnectionConfig.from_host_port(
+                    host=redis_config.host,
+                    port=redis_config.port,
+                    password=redis_config.password,
+                    db=redis_config.db,
+                    tls=redis_config.tls,
+                )
+            )
+            client = provider.create_client(
+                ClientOptions(
+                    decode_responses=True,
+                    socket_timeout_seconds=cls.OP_TIMEOUT_SECONDS,
+                    socket_connect_timeout_seconds=cls.OP_TIMEOUT_SECONDS,
+                )
             )
             await client.ping()
         except Exception as e:
             logger.warning(
                 "Accessible-records cache unavailable (%s); falling back to live queries", str(e)
             )
-            return cls(logger, None, ttl, enabled=False)
+            # `create_client()` hands out a caller-owned client (not the
+            # provider's shared one) -- release it ourselves on failure, or
+            # the ping-that-never-succeeded connection leaks for good.
+            if client is not None:
+                try:
+                    await client.aclose()
+                except Exception as close_error:
+                    logger.debug(
+                        "Error closing accessible-records cache client after setup failure: %s",
+                        str(close_error),
+                    )
+            return NoopAccessibleRecordsCache()
 
         logger.info("Accessible-records cache ready (ttl=%ss)", ttl)
-        return cls(logger, client, ttl, enabled=True)
+        return cls(logger, client, ttl, enabled=True, key_namespace=provider.key_namespace)
 
     @property
     def enabled(self) -> bool:
@@ -152,14 +187,17 @@ class AccessibleRecordsCache:
 
     # ---- keys ---------------------------------------------------------
 
+    def _namespaced_prefix(self) -> str:
+        return f"{self._key_namespace}:{self.KEY_PREFIX}" if self._key_namespace else self.KEY_PREFIX
+
     def _kb_key(self, org_id: str, kb_id: str) -> str:
-        return f"{self.KEY_PREFIX}:kb:{org_id}:{kb_id}"
+        return f"{self._namespaced_prefix()}:kb:{org_id}:{kb_id}"
 
     def _app_connector_key(self, org_id: str, connector_id: str) -> str:
-        return f"{self.KEY_PREFIX}:capp:{org_id}:{connector_id}"
+        return f"{self._namespaced_prefix()}:capp:{org_id}:{connector_id}"
 
     def _user_connector_key(self, org_id: str, connector_id: str) -> str:
-        return f"{self.KEY_PREFIX}:cusr:{org_id}:{connector_id}"
+        return f"{self._namespaced_prefix()}:cusr:{org_id}:{connector_id}"
 
     # ---- read-through -------------------------------------------------
 
@@ -275,10 +313,19 @@ class AccessibleRecordsCache:
         await self._delete(self._kb_key(org_id, kb_id))
 
     async def _delete(self, *keys: str) -> None:
+        """Delete every key. Pipelined, one command per key (R5): a single
+        multi-key ``DEL`` raises CROSSSLOT on a Redis Cluster/MemoryDB
+        whenever the keys land in different hash slots, which
+        ``invalidate_connector``'s two keys (``capp:`` and ``cusr:``) do.
+        redis-py's ``ClusterPipeline`` routes each command to the right
+        node; on standalone this is one round trip either way."""
         if not self.enabled:
             return
         try:
-            await self._redis.delete(*keys)
+            async with self._redis.pipeline(transaction=False) as pipe:
+                for key in keys:
+                    pipe.delete(key)
+                await pipe.execute()
         except Exception as e:
             self._mark_down("delete", e)
 

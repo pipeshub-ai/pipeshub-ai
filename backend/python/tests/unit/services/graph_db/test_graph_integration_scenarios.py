@@ -725,6 +725,7 @@ class FakeGraphProvider:
         self,
         record_key: str,
         md5_checksum: str,
+        org_id: str,
         record_type: str | None = None,
         size_in_bytes: int | None = None,
         transaction: str | None = None,
@@ -735,6 +736,8 @@ class FakeGraphProvider:
             if key == record_key:
                 continue
             if rec.get("md5Checksum") != md5_checksum:
+                continue
+            if rec.get("orgId") != org_id:
                 continue
             if record_type and rec.get("recordType") != record_type:
                 continue
@@ -755,8 +758,11 @@ class FakeGraphProvider:
         md5 = source.get("md5Checksum")
         if not md5:
             return None
+        org_id = source.get("orgId")
         for key, rec in records.items():
             if key == record_id:
+                continue
+            if org_id and rec.get("orgId") != org_id:
                 continue
             if rec.get("md5Checksum") == md5 and rec.get("indexingStatus") == "QUEUED":
                 return rec
@@ -1882,7 +1888,7 @@ class TestRecordDeduplication:
     @pytest.mark.asyncio
     async def test_find_duplicates_by_md5(self) -> None:
         p, ids = self._build_scenario()
-        dups = await p.find_duplicate_records(ids["orig_id"], "abc123hash")
+        dups = await p.find_duplicate_records(ids["orig_id"], "abc123hash", ids["org_id"])
         dup_ids = {d["id"] for d in dups}
         assert ids["dup1_id"] in dup_ids
         assert ids["dup2_id"] in dup_ids
@@ -1891,22 +1897,45 @@ class TestRecordDeduplication:
     @pytest.mark.asyncio
     async def test_find_duplicates_excludes_self(self) -> None:
         p, ids = self._build_scenario()
-        dups = await p.find_duplicate_records(ids["orig_id"], "abc123hash")
+        dups = await p.find_duplicate_records(ids["orig_id"], "abc123hash", ids["org_id"])
         assert ids["orig_id"] not in {d["id"] for d in dups}
 
     @pytest.mark.asyncio
     async def test_find_duplicates_excludes_different_hash(self) -> None:
         p, ids = self._build_scenario()
-        dups = await p.find_duplicate_records(ids["orig_id"], "abc123hash")
+        dups = await p.find_duplicate_records(ids["orig_id"], "abc123hash", ids["org_id"])
         assert ids["diff_id"] not in {d["id"] for d in dups}
 
     @pytest.mark.asyncio
     async def test_find_duplicates_with_type_filter(self) -> None:
         p, ids = self._build_scenario()
-        dups = await p.find_duplicate_records(ids["orig_id"], "abc123hash", record_type="FILE")
+        dups = await p.find_duplicate_records(
+            ids["orig_id"], "abc123hash", ids["org_id"], record_type="FILE"
+        )
         dup_ids = {d["id"] for d in dups}
         assert ids["dup1_id"] in dup_ids
         assert ids["same_hash_diff_type"] not in dup_ids
+
+    @pytest.mark.asyncio
+    async def test_find_duplicates_excludes_different_org(self) -> None:
+        """The core cross-tenant guarantee: identical MD5 content in another
+        org must never surface as a duplicate."""
+        p, ids = self._build_scenario()
+        rec_col = p._ensure_collection(RECORDS)
+        other_org_dup_id = "rec-other-org-dup"
+        rec_col[other_org_dup_id] = make_record(
+            other_org_dup_id,
+            "org-different",
+            ids["app_id"],
+            "Copy in another org.pdf",
+            indexing_status="QUEUED",
+            md5_checksum="abc123hash",
+            size_in_bytes=1024,
+        )
+
+        dups = await p.find_duplicate_records(ids["orig_id"], "abc123hash", ids["org_id"])
+
+        assert other_org_dup_id not in {d["id"] for d in dups}
 
     @pytest.mark.asyncio
     async def test_find_next_queued_duplicate(self) -> None:
@@ -1944,7 +1973,7 @@ class TestRecordDeduplication:
     @pytest.mark.asyncio
     async def test_duplicate_count_for_md5(self) -> None:
         p, ids = self._build_scenario()
-        dups = await p.find_duplicate_records(ids["orig_id"], "abc123hash")
+        dups = await p.find_duplicate_records(ids["orig_id"], "abc123hash", ids["org_id"])
         assert len(dups) == 3
 
 

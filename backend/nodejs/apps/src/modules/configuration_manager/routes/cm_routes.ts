@@ -7,6 +7,7 @@ import {
   createSmtpConfig,
   createStorageConfig,
   getAIModelsConfig,
+  getInternalAIModelsConfig,
   getAzureAdAuthConfig,
   getGoogleAuthConfig,
   getGoogleWorkspaceOauthConfig,
@@ -750,8 +751,9 @@ export function createConfigurationManagerRouter(container: Container): Router {
 
   /**
    * GET /aiModelsConfig
-   * Retrieves the current ai models configuration from key-value store
-   * Requires authentication
+   * Retrieves the current ai models configuration from key-value store. Each
+   * entry's configuration includes only model, modelFriendlyName, and
+   * dimensions when stored. Requires authentication.
    * @returns {Object} The stored configuration object or null if not found
    */
   router.get(
@@ -765,7 +767,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/aiModelsConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getAIModelsConfig(keyValueStoreService, false),
+    getInternalAIModelsConfig(keyValueStoreService),
   );
 
   /**

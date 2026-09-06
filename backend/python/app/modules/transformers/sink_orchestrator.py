@@ -196,7 +196,7 @@ class SinkOrchestrator(Transformer):
                     record_id=record_id,
                 )
 
-            self.logger.info(f"✅ Vector store indexing succeeded for record {record_id}")
+            self.logger.debug(f"✅ Vector store indexing succeeded for record {record_id}")
             # Per-record indexing success counter (powers the Ingestion dashboard).
             record_service_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type or "none")
             self.logger.debug(f"Saving reconciliation metadata for record {record_id}")

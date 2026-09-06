@@ -4,7 +4,7 @@ import ssl
 
 import aiohttp  # type: ignore
 from aiokafka import AIOKafkaConsumer  #type: ignore
-from redis.asyncio import Redis, RedisError  #type: ignore
+from redis.exceptions import RedisError  #type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
@@ -13,7 +13,8 @@ from app.config.constants.service import (
     HealthCheckConfig,
     config_node_constants,
 )
-from app.utils.redis_util import build_redis_url
+from app.services.redis.config import RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
 
 
 class Health:
@@ -129,23 +130,23 @@ class Health:
         last_error_msg = None
 
         for attempt in range(1, max_retries + 1):
-            redis_client = None
             try:
                 logger.debug(
                     f"Checking Redis KV store at: {redis_host}:{redis_port}, db={redis_db} "
                     f"(attempt {attempt}/{max_retries})"
                 )
 
-                # Create Redis client and attempt to ping
-                redis_client = Redis(
-                    host=redis_host,
-                    port=redis_port,
-                    password=redis_password,
-                    db=redis_db,
-                    socket_timeout=5.0,
+                provider = get_redis_provider(
+                    RedisConnectionConfig.from_host_port(
+                        host=redis_host, port=redis_port, password=redis_password, db=redis_db
+                    )
                 )
-
-                await redis_client.ping()
+                # `get_client().ping()`, not `provider.ping()`: the provider
+                # swallows the exception and returns False, which would make
+                # every failure here read as the same useless message instead
+                # of the connection error an operator needs.
+                if not await provider.get_client().ping():
+                    raise RedisError("Redis PING returned a falsy reply")
                 logger.info("✅ Redis KV store health check passed")
                 return
 
@@ -155,12 +156,6 @@ class Health:
             except Exception as e:
                 last_error_msg = f"Redis KV store health check failed: {str(e)}"
                 logger.warning(f"⚠️ {last_error_msg}")
-            finally:
-                if redis_client:
-                    try:
-                        await redis_client.close()
-                    except Exception:
-                        pass
 
             # If not the last attempt, wait before retrying with linear backoff
             if attempt < max_retries:
@@ -287,31 +282,27 @@ class Health:
     @staticmethod
     async def _health_check_redis_streams(container) -> None:
         """Health check for Redis Streams message broker"""
-        from redis.asyncio import Redis as AsyncRedis
         logger = container.logger()
-        redis_client = None
         try:
-            config_service = container.config_service()
-            redis_config = await config_service.get_config(
-                config_node_constants.REDIS.value
-            )
-            host = redis_config.get("host", os.getenv("REDIS_HOST", "localhost"))
-            port = int(redis_config.get("port", os.getenv("REDIS_PORT", "6379")))
-            password = redis_config.get("password", os.getenv("REDIS_PASSWORD")) or None
+            config_service: ConfigurationService = container.config_service()
+            redis_config = await config_service.get_redis_config()
 
-            redis_client = AsyncRedis(host=host, port=port, password=password, socket_timeout=5.0)
-            await redis_client.ping()
+            provider = get_redis_provider(
+                RedisConnectionConfig.from_host_port(
+                    host=redis_config.host,
+                    port=redis_config.port,
+                    password=redis_config.password,
+                    db=redis_config.db,
+                    tls=redis_config.tls,
+                )
+            )
+            if not await provider.get_client().ping():
+                raise RedisError("Redis PING returned a falsy reply")
             logger.info("✅ Redis Streams message broker health check passed")
         except Exception as e:
             error_msg = f"Redis Streams health check failed: {str(e)}"
             logger.error(f"❌ {error_msg}")
             raise Exception(error_msg)
-        finally:
-            if redis_client:
-                try:
-                    await redis_client.close()
-                except Exception:
-                    pass
 
     @staticmethod
     async def _health_check_kafka(container) -> None:
@@ -384,22 +375,25 @@ class Health:
         last_error_msg = None
 
         for attempt in range(1, max_retries + 1):
-            redis_client = None
             try:
                 config_service: ConfigurationService = container.config_service()
-                redis_config = await config_service.get_config(
-                    config_node_constants.REDIS.value
-                )
-                # Build Redis URL with password if provided
-                redis_url = build_redis_url(redis_config)
+                redis_config = await config_service.get_redis_config()
                 logger.debug(
-                    f"Checking Redis connection at: {redis_url} "
+                    f"Checking Redis connection at: {redis_config.host}:{redis_config.port} "
                     f"(attempt {attempt}/{max_retries})"
                 )
 
-                # Create Redis client and attempt to ping
-                redis_client = Redis.from_url(redis_url, socket_timeout=5.0)
-                await redis_client.ping()
+                provider = get_redis_provider(
+                    RedisConnectionConfig.from_host_port(
+                        host=redis_config.host,
+                        port=redis_config.port,
+                        password=redis_config.password,
+                        db=redis_config.db,
+                        tls=redis_config.tls,
+                    )
+                )
+                if not await provider.get_client().ping():
+                    raise RedisError("Redis PING returned a falsy reply")
                 logger.info("✅ Redis health check passed")
                 return
 
@@ -409,12 +403,6 @@ class Health:
             except Exception as e:
                 last_error_msg = f"Redis health check failed: {str(e)}"
                 logger.warning(f"⚠️ {last_error_msg}")
-            finally:
-                if redis_client:
-                    try:
-                        await redis_client.close()
-                    except Exception:
-                        pass
 
             # If not the last attempt, wait before retrying with linear backoff
             if attempt < max_retries:

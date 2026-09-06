@@ -15,23 +15,32 @@ Targets specific uncovered lines:
 import asyncio
 import json
 import logging
-import threading
-from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData, StreamMessage, messaging_env
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+    messaging_env,
+)
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
-    FUTURE_CLEANUP_INTERVAL,
     IndexingKafkaConsumer,
 )
-
+from app.services.resource_governor.models import ParseTier
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+def _fill_gate_waiters(consumer, count: int, tier: ParseTier = ParseTier.HEAVY) -> None:
+    """Stand in for `count` spawned tasks still queued for an index gate."""
+    for _ in range(count):
+        consumer.gate_waiters.add(tier)
+
 
 @pytest.fixture
 def logger():
@@ -266,7 +275,7 @@ class TestConsumeLoopNotRunningInner:
 
         process_call_count = 0
 
-        async def mock_process(msg):
+        async def mock_process(msg, parsed=None):
             nonlocal process_call_count
             process_call_count += 1
             # Stop running after first message
@@ -312,7 +321,7 @@ class TestConsumeLoopMessageException:
 
         process_call_count = 0
 
-        async def mock_process(msg):
+        async def mock_process(msg, parsed=None):
             nonlocal process_call_count
             process_call_count += 1
             if process_call_count == 1:
@@ -642,8 +651,7 @@ class TestBackpressureAlreadyLogged:
         consumer._backpressure_logged = True
 
         # Simulate reaching capacity via gate waiters
-        with consumer._futures_lock:
-            consumer._gate_waiters = messaging_env.max_pending_indexing_tasks + 1
+        _fill_gate_waiters(consumer, messaging_env.max_pending_indexing_tasks + 1)
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         # Pause not called because assigned - paused = empty set

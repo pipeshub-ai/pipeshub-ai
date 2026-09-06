@@ -56,6 +56,7 @@ import {
   createWorkspaceAuthRouter,
   createFeatureFlagRouter,
   createOrgConfigRouter,
+  createRequestRouter,
   OAuthAppsContainer,
   createOAuthAppsRouter,
 } from './config';
@@ -95,6 +96,11 @@ import { createSkillsRouter } from './modules/skills/routes/skills.routes';
 import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
 import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
+import {
+  RedisConnectionProviderFactory,
+  closeAllRedisProviders,
+  getPreparedRedisProvider,
+} from './libs/services/redis/connectionProviderFactory';
 
 const loggerConfig = {
   service: 'Application',
@@ -135,6 +141,23 @@ export class Application {
     try {
       // Initialize Logger
       this.logger = new Logger(loggerConfig);
+
+      // Import REDIS_PROVIDER_MODULE (R10) before any container -- and
+      // therefore any RedisService/RedisDistributedKeyValueStore/streams
+      // client -- resolves REDIS_MODE against the provider registry. An EE
+      // `memorydb` module that self-registers on import is otherwise never
+      // loaded, since nothing else in this process imports it.
+      await RedisConnectionProviderFactory.ensureProviderModuleLoaded();
+
+      // Resolve rotating credentials (F1) -- e.g. an EE MemoryDB provider's
+      // IAM token -- before `loadConfigurationManagerConfig()` below builds
+      // the bootstrap KV store's Redis client. Node ends up with two
+      // fingerprints (env config for the KV store, KV-stored config for
+      // services), so `prepare()` on the EE provider must prime a
+      // process-level credential cache rather than per-instance state for
+      // one call to cover both.
+      await getPreparedRedisProvider();
+
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();
       const appConfig = await loadAppConfig();
@@ -469,6 +492,11 @@ export class Application {
     );
 
     this.app.use(
+      '/api/v1/requests',
+      createRequestRouter(this.entityManagerContainer),
+    );
+
+    this.app.use(
       '/api/v1/featureFlags',
       createFeatureFlagRouter(this.entityManagerContainer),
     );
@@ -703,6 +731,12 @@ export class Application {
       await DesktopProxyContainer.dispose();
       await ApiDocsContainer.dispose();
       await OAuthProviderContainer.dispose();
+
+      // Last: the containers above still hand back Redis-backed services
+      // while they dispose. Nothing else closes these -- the provider owns
+      // every client it handed out (R11), and on cluster that is a socket to
+      // every node.
+      await closeAllRedisProviders();
 
       this.logger.info('Application stopped successfully');
     } catch (error) {

@@ -11,6 +11,7 @@ import { NotFoundError } from '../../../../src/libs/errors/http.errors';
 
 describe('generateAuthToken', () => {
   const jwtSecret = 'test-jwt-secret';
+  const validOrgId = '507f1f77bcf86cd799439011';
 
   afterEach(() => {
     sinon.restore();
@@ -18,7 +19,7 @@ describe('generateAuthToken', () => {
 
   it('should generate a valid JWT token when org is found', async () => {
     const user = {
-      orgId: 'org123',
+      orgId: validOrgId,
       email: 'test@example.com',
       _id: 'user123',
       fullName: 'Test User',
@@ -49,24 +50,24 @@ describe('generateAuthToken', () => {
     const decoded = jwt.decode(token) as Record<string, any>;
     expect(decoded.email).to.equal('test@example.com');
     expect(decoded.userId).to.equal('user123');
-    expect(decoded.orgId).to.equal('org123');
+    expect(decoded.orgId).to.equal(validOrgId);
 
     expect(findOneStub.calledOnce).to.be.true;
     expect(findOneStub.firstCall.args[0]).to.deep.include({
-      orgId: 'org123',
+      _id: validOrgId,
       isDeleted: false,
     });
   });
 
   it('should throw NotFoundError when org is not found', async () => {
     const user = {
-      orgId: 'nonexistent',
+      orgId: '507f1f77bcf86cd799439099',
       email: 'test@example.com',
       _id: 'user123',
       fullName: 'Test User',
     };
 
-    sinon.stub(Org, 'findOne').resolves(null);
+    const findOneStub = sinon.stub(Org, 'findOne').resolves(null);
 
     try {
       await generateAuthToken(user, jwtSecret);
@@ -77,6 +78,32 @@ describe('generateAuthToken', () => {
         'Organization not found',
       );
     }
+    // Confirms this test actually exercises the "not found in DB" path,
+    // not the format guard below.
+    expect(findOneStub.calledOnce).to.be.true;
+  });
+
+  it('should throw NotFoundError instead of an unhandled cast error when orgId is malformed', async () => {
+    const user = {
+      orgId: 'not-a-valid-object-id',
+      email: 'test@example.com',
+      _id: 'user123',
+      fullName: 'Test User',
+    };
+
+    const findOneStub = sinon.stub(Org, 'findOne').resolves(null);
+
+    try {
+      await generateAuthToken(user, jwtSecret);
+      expect.fail('Should have thrown NotFoundError');
+    } catch (error) {
+      expect(error).to.be.instanceOf(NotFoundError);
+      expect((error as NotFoundError).message).to.equal(
+        'Organization not found',
+      );
+    }
+    // The format guard must reject before ever querying the database.
+    expect(findOneStub.called).to.be.false;
   });
 });
 

@@ -743,11 +743,28 @@ class TestValidationExceptionHandler:
 class TestRun:
     """Tests for the run function."""
 
+    @pytest.fixture(autouse=True)
+    def _never_really_exec(self):
+        """run() execs the uvicorn CLI when workers>1, which REPLACES the pytest
+        process. A stray WEB_CONCURRENCY in the environment is enough to reach that
+        path, so no test here is allowed near the real call."""
+        with patch("app.query_main.os.execvp") as m:
+            yield m
+
     def test_run_calls_uvicorn(self):
         """run() delegates to uvicorn.run with correct arguments."""
+        import os as _os
+
         from app.query_main import run
 
-        with patch("app.query_main.uvicorn.run") as mock_uvicorn:
+        env = _os.environ.copy()
+        env.pop("QUERY_UVICORN_WORKERS", None)
+        env.pop("WEB_CONCURRENCY", None)
+
+        with (
+            patch("app.query_main.uvicorn.run") as mock_uvicorn,
+            patch.dict("os.environ", env, clear=True),
+        ):
             run(host="127.0.0.1", port=9000, reload=False)
 
         mock_uvicorn.assert_called_once_with(
@@ -756,13 +773,23 @@ class TestRun:
             port=9000,
             log_level="info",
             reload=False,
+            workers=1,
         )
 
     def test_run_defaults(self):
         """run() uses default arguments."""
+        import os as _os
+
         from app.query_main import run
 
-        with patch("app.query_main.uvicorn.run") as mock_uvicorn:
+        env = _os.environ.copy()
+        env.pop("QUERY_UVICORN_WORKERS", None)
+        env.pop("WEB_CONCURRENCY", None)
+
+        with (
+            patch("app.query_main.uvicorn.run") as mock_uvicorn,
+            patch.dict("os.environ", env, clear=True),
+        ):
             run()
 
         mock_uvicorn.assert_called_once_with(
@@ -771,7 +798,237 @@ class TestRun:
             port=8000,
             log_level="info",
             reload=True,
+            workers=1,
         )
+
+
+class TestRunWorkersWarning:
+    """QUERY_UVICORN_WORKERS handling, including the reload incompatibility."""
+
+    @pytest.fixture(autouse=True)
+    def _never_really_exec(self):
+        with patch("app.query_main.os.execvp") as m:
+            yield m
+
+    def test_workers_gt_one_with_reload_warns(self) -> None:
+        """reload=True with workers>1 warns and falls back to a single worker."""
+        import warnings
+
+        from app.query_main import run
+
+        with (
+            patch("app.query_main.uvicorn.run") as mock_uvicorn,
+            patch.dict("os.environ", {"QUERY_UVICORN_WORKERS": "4"}),
+        ):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                run(reload=True)
+
+            runtime_warnings = [x for x in w if issubclass(x.category, RuntimeWarning)]
+            assert len(runtime_warnings) >= 1
+            assert "not compatible with reload=True" in str(runtime_warnings[0].message)
+
+            mock_uvicorn.assert_called_once_with(
+                "app.query_main:app",
+                host="0.0.0.0",
+                port=8000,
+                log_level="info",
+                reload=True,
+                workers=1,
+            )
+
+    def test_falls_back_to_one_worker_when_exec_fails(self) -> None:
+        """A failed exec must still serve, on one worker, rather than not serve."""
+        import os as _os
+
+        from app.query_main import run
+
+        with (
+            patch("app.query_main.uvicorn.run") as mock_uvicorn,
+            patch("app.query_main.os.execvp", side_effect=OSError("boom")),
+            patch.dict("os.environ", {"QUERY_UVICORN_WORKERS": "4"}),
+        ):
+            run(reload=False)
+            # The sentinel must not survive, or a later retry would skip the exec.
+            assert "QUERY_UVICORN_EXECED" not in _os.environ
+            assert _os.environ["QUERY_UVICORN_WORKERS"] == "1"
+
+        assert mock_uvicorn.call_args.kwargs["workers"] == 1
+
+    def test_frozen_build_refuses_multiple_workers(self) -> None:
+        """A PyInstaller build can do neither half of the multi-worker path.
+
+        sys.executable is the app binary (its bootloader ignores "-m uvicorn") and
+        uvicorn.run(workers=N) would need multiprocessing.freeze_support(). Refusing
+        beats crash-looping. backend/python/Dockerfile produces such a build.
+        """
+        import os as _os
+
+        from app.query_main import run
+
+        with (
+            patch("app.query_main.uvicorn.run") as mock_uvicorn,
+            patch("app.query_main.os.execvp") as mock_execvp,
+            patch("app.query_main.sys") as mock_sys,
+            patch.dict("os.environ", {"QUERY_UVICORN_WORKERS": "4"}),
+        ):
+            mock_sys.frozen = True
+            run(reload=False)
+
+            mock_execvp.assert_not_called()
+            assert mock_uvicorn.call_args.kwargs["workers"] == 1
+            assert _os.environ["QUERY_UVICORN_WORKERS"] == "1"
+
+    def test_exec_sentinel_prevents_a_second_exec(self) -> None:
+        """Re-entering with the sentinel set must serve in-process, not exec again.
+
+        In a frozen build sys.executable is the app binary, so an unguarded exec would
+        re-enter run() forever.
+        """
+        from app.query_main import run
+
+        with (
+            patch("app.query_main.uvicorn.run") as mock_uvicorn,
+            patch("app.query_main.os.execvp") as mock_execvp,
+            patch.dict(
+                "os.environ",
+                {"QUERY_UVICORN_WORKERS": "4", "QUERY_UVICORN_EXECED": "1"},
+            ),
+        ):
+            run(reload=False)
+
+        mock_execvp.assert_not_called()
+        mock_uvicorn.assert_called_once()
+        assert mock_uvicorn.call_args.kwargs["workers"] == 4
+
+    def test_multi_worker_hands_off_to_the_uvicorn_cli(self) -> None:
+        """workers>1 must exec the uvicorn CLI instead of calling uvicorn.run here.
+
+        Reached via `python -m app.query_main`, this module is __main__, and a spawned
+        worker re-imports its parent's __main__ -- so each child would import the whole
+        app twice and die before serving, leaving the supervisor respawning forever.
+        Verified against a real container: without this, 4 workers crash-loop.
+        """
+        from app.query_main import run
+
+        with (
+            patch("app.query_main.uvicorn.run") as mock_uvicorn,
+            patch("app.query_main.os.execvp") as mock_execvp,
+            patch.dict("os.environ", {"QUERY_UVICORN_WORKERS": "4"}),
+        ):
+            run(reload=False)
+
+        mock_uvicorn.assert_not_called()
+        mock_execvp.assert_called_once()
+        argv = mock_execvp.call_args[0][1]
+        assert argv[1:4] == ["-m", "uvicorn", "app.query_main:app"]
+        assert argv[-2:] == ["--workers", "4"]
+
+    def test_single_worker_does_not_exec(self) -> None:
+        """The default path must stay in-process -- no exec, no behaviour change."""
+        import os as _os
+
+        from app.query_main import run
+
+        env = _os.environ.copy()
+        env.pop("QUERY_UVICORN_WORKERS", None)
+        env.pop("WEB_CONCURRENCY", None)
+
+        with (
+            patch("app.query_main.uvicorn.run") as mock_uvicorn,
+            patch("app.query_main.os.execvp") as mock_execvp,
+            patch.dict("os.environ", env, clear=True),
+        ):
+            run(reload=False)
+
+        mock_execvp.assert_not_called()
+        mock_uvicorn.assert_called_once()
+        assert mock_uvicorn.call_args.kwargs["workers"] == 1
+
+    def test_effective_worker_count_is_published_to_the_environment(self) -> None:
+        """Workers re-import this module in their own process and size budgets from the
+        env var, so run() must publish the count it actually used."""
+        import os as _os
+
+        from app.query_main import run
+
+        with (
+            patch("app.query_main.uvicorn.run"),
+            patch("app.query_main.os.execvp"),
+            patch.dict("os.environ", {"QUERY_UVICORN_WORKERS": "4"}),
+        ):
+            # reload forces the count back to 1; children must see 1, not 4.
+            run(reload=True)
+            assert _os.environ["QUERY_UVICORN_WORKERS"] == "1"
+
+        with (
+            patch("app.query_main.uvicorn.run"),
+            # Without this the exec is real and replaces the test runner.
+            patch("app.query_main.os.execvp"),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            run(workers=3, reload=False)
+            assert _os.environ["QUERY_UVICORN_WORKERS"] == "3"
+
+    def test_malformed_worker_count_does_not_raise(self) -> None:
+        """A bad value must degrade to 1, not crash-loop the service.
+
+        lifespan reads this too, so raising here would kill the app before it serves.
+        Helm renders `value: ""` when the chart key is left blank.
+        """
+        import os as _os
+
+        from app.query_main import configured_worker_count
+
+        # WEB_CONCURRENCY must be out of the way: blank/absent QUERY_UVICORN_WORKERS
+        # legitimately falls through to it, which would mask the degradation here.
+        env = _os.environ.copy()
+        env.pop("WEB_CONCURRENCY", None)
+
+        for bad in ("", "   ", "abc", "4.5", "-", "1e3"):
+            with patch.dict("os.environ", {**env, "QUERY_UVICORN_WORKERS": bad}, clear=True):
+                assert configured_worker_count() == 1, f"{bad!r} should degrade to 1"
+
+        for good, want in (("4", 4), (" 8 ", 8), ("0", 1), ("-3", 1)):
+            with patch.dict("os.environ", {**env, "QUERY_UVICORN_WORKERS": good}, clear=True):
+                assert configured_worker_count() == want
+
+    def test_web_concurrency_is_still_honoured(self) -> None:
+        """uvicorn reads WEB_CONCURRENCY when workers is unset; passing an explicit
+        count would have silently dropped such deployments to a single process."""
+        import os as _os
+
+        from app.query_main import configured_worker_count
+
+        env = _os.environ.copy()
+        env.pop("QUERY_UVICORN_WORKERS", None)
+        env.pop("WEB_CONCURRENCY", None)
+        env["WEB_CONCURRENCY"] = "6"
+        with patch.dict("os.environ", env, clear=True):
+            assert configured_worker_count() == 6
+
+        # An explicit QUERY_UVICORN_WORKERS wins over it.
+        env["QUERY_UVICORN_WORKERS"] = "2"
+        with patch.dict("os.environ", env, clear=True):
+            assert configured_worker_count() == 2
+
+    def test_workers_from_env_default(self) -> None:
+        """An unset QUERY_UVICORN_WORKERS defaults to a single worker."""
+        import os as _os
+
+        from app.query_main import run
+
+        env = _os.environ.copy()
+        env.pop("QUERY_UVICORN_WORKERS", None)
+        env.pop("WEB_CONCURRENCY", None)
+
+        with (
+            patch("app.query_main.uvicorn.run") as mock_uvicorn,
+            patch.dict("os.environ", env, clear=True),
+        ):
+            run(reload=False)
+
+        assert mock_uvicorn.call_args.kwargs["workers"] == 1
 
 
 # ===========================================================================

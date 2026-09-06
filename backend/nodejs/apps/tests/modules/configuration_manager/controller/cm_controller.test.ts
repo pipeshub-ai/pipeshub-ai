@@ -191,6 +191,7 @@ describe('ConfigurationManager Controller', () => {
           { capability: 'bucketAccess', passed: true },
           { capability: 'upload', passed: true },
           { capability: 'read', passed: true },
+          { capability: 'getContent', passed: true },
           { capability: 'signedUrlGet', passed: true },
           { capability: 'signedUrlPut', passed: true },
         ],
@@ -285,6 +286,81 @@ describe('ConfigurationManager Controller', () => {
       expect(res.status.calledWith(200)).to.be.true
     })
 
+    it('should save S3 storage config in IAM role mode (no credentials provided)', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = createStorageConfig(kvs, { endpoint: 'http://localhost:3003' } as any)
+      const req = createMockRequest({
+        body: {
+          storageType: 's3',
+          s3Region: 'us-east-1',
+          s3BucketName: 'my-bucket',
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(validateS3Stub.calledOnce).to.be.true
+      expect(validateS3Stub.firstCall.args[0]).to.deep.include({
+        accessKeyId: undefined,
+        secretAccessKey: undefined,
+        region: 'us-east-1',
+        bucketName: 'my-bucket',
+      })
+      expect(kvs.set.calledOnce).to.be.true
+      const savedConfig = JSON.parse(mockEncService.encrypt.firstCall.args[0])
+      expect(savedConfig).to.not.have.property('accessKeyId')
+      expect(savedConfig).to.not.have.property('secretAccessKey')
+      expect(res.status.calledWith(200)).to.be.true
+      expect(next.called).to.be.false
+    })
+
+    it('should treat whitespace-only S3 credentials as IAM role mode', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = createStorageConfig(kvs, { endpoint: 'http://localhost:3003' } as any)
+      const req = createMockRequest({
+        body: {
+          storageType: 's3',
+          s3AccessKeyId: '   ',
+          s3SecretAccessKey: '   ',
+          s3Region: 'us-east-1',
+          s3BucketName: 'my-bucket',
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(validateS3Stub.firstCall.args[0].accessKeyId).to.be.undefined
+      expect(validateS3Stub.firstCall.args[0].secretAccessKey).to.be.undefined
+      expect(kvs.set.calledOnce).to.be.true
+    })
+
+    it('should reject S3 config with only one credential instead of falling back to the IAM role', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = createStorageConfig(kvs, { endpoint: 'http://localhost:3003' } as any)
+      const req = createMockRequest({
+        body: {
+          storageType: 's3',
+          s3AccessKeyId: 'AKIA...',
+          s3SecretAccessKey: '   ',
+          s3Region: 'us-east-1',
+          s3BucketName: 'my-bucket',
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(validateS3Stub.called).to.be.false
+      expect(kvs.set.called).to.be.false
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.include('must be provided together')
+    })
+
     it('should reject S3 config when health check fails', async () => {
       validateS3Stub.resolves({
         success: false,
@@ -344,7 +420,7 @@ describe('ConfigurationManager Controller', () => {
         get: sinon.stub().resolves(JSON.stringify({ storageType: 's3', s3: 'encrypted:data' })),
       })
       const handler = getStorageConfig(kvs)
-      const req = createMockRequest()
+      const req = createMockRequest({ user: undefined })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -356,9 +432,51 @@ describe('ConfigurationManager Controller', () => {
         storageType: 's3',
         accessKeyId: 'AK',
         secretAccessKey: 'SK',
+        useIamRole: false,
         region: 'us-east-1',
         bucketName: 'b',
       })
+    })
+
+    it('should return S3 config with useIamRole true when no credentials were stored', async () => {
+      const s3Data = JSON.stringify({ region: 'us-east-1', bucketName: 'b' })
+      mockEncService.decrypt.returns(s3Data)
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(JSON.stringify({ storageType: 's3', s3: 'encrypted:data' })),
+      })
+      const handler = getStorageConfig(kvs)
+      const req = createMockRequest({ user: undefined })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        storageType: 's3',
+        accessKeyId: undefined,
+        secretAccessKey: undefined,
+        useIamRole: true,
+        region: 'us-east-1',
+        bucketName: 'b',
+      })
+    })
+
+    it('should omit storage credentials when the caller is an authenticated user', async () => {
+      const s3Data = JSON.stringify({ accessKeyId: 'AK', secretAccessKey: 'SK', region: 'us-east-1', bucketName: 'b' })
+      mockEncService.decrypt.returns(s3Data)
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(JSON.stringify({ storageType: 's3', s3: 'encrypted:data' })),
+      })
+      const handler = getStorageConfig(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({})
     })
 
     it('should call next with error when storageType is missing', async () => {
@@ -2559,7 +2677,7 @@ describe('ConfigurationManager Controller', () => {
         get: sinon.stub().resolves(JSON.stringify({ storageType: 'azureBlob', azureBlob: 'encrypted:azure' })),
       })
       const handler = getStorageConfig(kvs)
-      const req = createMockRequest()
+      const req = createMockRequest({ user: undefined })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -5217,7 +5335,7 @@ describe('ConfigurationManager Controller', () => {
 
       const kvs = createMockKeyValueStore()
       const eventService = createMockEventService()
-      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', 'org-1', eventService)
+      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011', eventService)
       const req = createMockRequest({
         body: {
           access_token: 'at-1',
@@ -5245,7 +5363,7 @@ describe('ConfigurationManager Controller', () => {
 
       const kvs = createMockKeyValueStore()
       const eventService = createMockEventService()
-      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', 'org-1', eventService)
+      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011', eventService)
       const req = createMockRequest({
         body: {
           access_token: 'at-1',
@@ -5270,7 +5388,7 @@ describe('ConfigurationManager Controller', () => {
 
       const kvs = createMockKeyValueStore()
       const eventService = createMockEventService()
-      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', 'org-1', eventService)
+      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011', eventService)
       const req = createMockRequest({ body: {} })
       const res = createMockResponse()
       const next = createMockNext()
@@ -5289,7 +5407,7 @@ describe('ConfigurationManager Controller', () => {
 
       const kvs = createMockKeyValueStore()
       const eventService = createMockEventService()
-      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', 'org-1', eventService)
+      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011', eventService)
       const req = createMockRequest({ body: {} })
       const res = createMockResponse()
       const next = createMockNext()
@@ -5313,7 +5431,7 @@ describe('ConfigurationManager Controller', () => {
 
       const kvs = createMockKeyValueStore()
       const eventService = createMockEventService()
-      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', 'org-1', eventService)
+      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011', eventService)
       const req = createMockRequest({
         body: {
           fileChanged: true,
@@ -5352,7 +5470,7 @@ describe('ConfigurationManager Controller', () => {
 
       const kvs = createMockKeyValueStore()
       const eventService = createMockEventService()
-      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', 'org-1', eventService)
+      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011', eventService)
       const req = createMockRequest({
         body: {
           fileChanged: true,
@@ -5377,7 +5495,7 @@ describe('ConfigurationManager Controller', () => {
 
       const kvs = createMockKeyValueStore()
       const eventService = createMockEventService()
-      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', 'org-1', eventService)
+      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011', eventService)
       const req = createMockRequest({
         body: {
           fileChanged: true,
@@ -5443,7 +5561,7 @@ describe('ConfigurationManager Controller', () => {
         set: sinon.stub().resolves(),
       })
       const eventService = createMockEventService()
-      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', 'org-1', eventService)
+      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011', eventService)
       const req = createMockRequest({
         body: {
           fileChanged: false,
@@ -5470,7 +5588,7 @@ describe('ConfigurationManager Controller', () => {
         get: sinon.stub().resolves(null),
       })
       const eventService = createMockEventService()
-      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', 'org-1', eventService)
+      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011', eventService)
       const req = createMockRequest({
         body: {
           fileChanged: false,
@@ -5508,7 +5626,7 @@ describe('ConfigurationManager Controller', () => {
       getStub.onSecondCall().resolves(encOauth)
 
       const kvs = createMockKeyValueStore({ get: getStub })
-      const handler = getGoogleWorkspaceCredentials(kvs, 'user-1', 'org-1')
+      const handler = getGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011')
       const req = createMockRequest()
       const res = createMockResponse()
       const next = createMockNext()
@@ -5532,7 +5650,7 @@ describe('ConfigurationManager Controller', () => {
       getStub.onSecondCall().resolves(encOauth)
 
       const kvs = createMockKeyValueStore({ get: getStub })
-      const handler = getGoogleWorkspaceCredentials(kvs, 'user-1', 'org-1')
+      const handler = getGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011')
       const req = createMockRequest()
       const res = createMockResponse()
       const next = createMockNext()
@@ -5554,7 +5672,7 @@ describe('ConfigurationManager Controller', () => {
       getStub.onSecondCall().resolves(null)
 
       const kvs = createMockKeyValueStore({ get: getStub })
-      const handler = getGoogleWorkspaceCredentials(kvs, 'user-1', 'org-1')
+      const handler = getGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011')
       const req = createMockRequest()
       const res = createMockResponse()
       const next = createMockNext()
@@ -5575,7 +5693,7 @@ describe('ConfigurationManager Controller', () => {
       const encCreds = mockEncService.encrypt(JSON.stringify(creds))
 
       const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(encCreds) })
-      const handler = getGoogleWorkspaceCredentials(kvs, 'user-1', 'org-1')
+      const handler = getGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011')
       const req = createMockRequest()
       const res = createMockResponse()
       const next = createMockNext()
@@ -5593,7 +5711,7 @@ describe('ConfigurationManager Controller', () => {
       } as any)
 
       const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(null) })
-      const handler = getGoogleWorkspaceCredentials(kvs, 'user-1', 'org-1')
+      const handler = getGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011')
       const req = createMockRequest()
       const res = createMockResponse()
       const next = createMockNext()
@@ -5611,7 +5729,7 @@ describe('ConfigurationManager Controller', () => {
       } as any)
 
       const kvs = createMockKeyValueStore()
-      const handler = getGoogleWorkspaceCredentials(kvs, 'user-1', 'org-1')
+      const handler = getGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011')
       const req = createMockRequest()
       const res = createMockResponse()
       const next = createMockNext()
@@ -5626,7 +5744,7 @@ describe('ConfigurationManager Controller', () => {
       const orgStub = sinon.stub(Org, 'findOne').resolves(null)
 
       const kvs = createMockKeyValueStore()
-      const handler = getGoogleWorkspaceCredentials(kvs, 'user-1', 'org-1')
+      const handler = getGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011')
       const req = createMockRequest()
       const res = createMockResponse()
       const next = createMockNext()
@@ -5681,7 +5799,7 @@ describe('ConfigurationManager Controller', () => {
       } as any)
 
       const kvs = createMockKeyValueStore()
-      const handler = deleteGoogleWorkspaceCredentials(kvs, 'org-1')
+      const handler = deleteGoogleWorkspaceCredentials(kvs, '507f1f77bcf86cd799439011')
       const req = createMockRequest()
       const res = createMockResponse()
       const next = createMockNext()
@@ -5700,7 +5818,7 @@ describe('ConfigurationManager Controller', () => {
       } as any)
 
       const kvs = createMockKeyValueStore()
-      const handler = deleteGoogleWorkspaceCredentials(kvs, 'org-1')
+      const handler = deleteGoogleWorkspaceCredentials(kvs, '507f1f77bcf86cd799439011')
       const req = createMockRequest()
       const res = createMockResponse()
       const next = createMockNext()
@@ -5715,7 +5833,7 @@ describe('ConfigurationManager Controller', () => {
       const orgStub = sinon.stub(Org, 'findOne').resolves(null)
 
       const kvs = createMockKeyValueStore()
-      const handler = deleteGoogleWorkspaceCredentials(kvs, 'org-1')
+      const handler = deleteGoogleWorkspaceCredentials(kvs, '507f1f77bcf86cd799439011')
       const req = createMockRequest()
       const res = createMockResponse()
       const next = createMockNext()
@@ -5733,7 +5851,7 @@ describe('ConfigurationManager Controller', () => {
       } as any)
 
       const kvs = createMockKeyValueStore()
-      const handler = deleteGoogleWorkspaceCredentials(kvs, 'org-1')
+      const handler = deleteGoogleWorkspaceCredentials(kvs, '507f1f77bcf86cd799439011')
       const req = createMockRequest()
       const res = createMockResponse()
       const next = createMockNext()

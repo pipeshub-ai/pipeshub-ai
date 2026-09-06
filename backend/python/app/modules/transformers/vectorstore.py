@@ -17,7 +17,7 @@ import asyncio
 import os
 import time
 import uuid
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from langchain_core.documents import Document
 
@@ -29,7 +29,7 @@ from app.exceptions.indexing_exceptions import (
     IndexingError,
     VectorStoreError,
 )
-from app.models.blocks import Block, BlockType, BlocksContainer, SemanticMetadata
+from app.models.blocks import Block, BlocksContainer, BlockType, SemanticMetadata
 from app.models.entities import Record
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
 from app.modules.transformers.transformer import TransformContext, Transformer
@@ -37,7 +37,10 @@ from app.services.embeddings.multimodal.config import MultimodalProviderConfig
 from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
 from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.vector_db.const.const import PAYLOAD_KEYWORD_INDEXES
+from app.services.messaging.backpressure import get_default_backpressure_coordinator
+from app.services.resource_governor.feedback import get_default_downstream_feedback
+from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
+from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
     reset_membership_context,
@@ -47,17 +50,20 @@ from app.services.vector_db.membership import (
     sync_vector_membership,
     vector_point_payload,
 )
-from app.services.vector_db.models import (
-    CollectionConfig,
-    SparseVector,
-    VectorPoint,
-)
+from app.services.vector_db.models import SparseVector, VectorPoint
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
+from app.services.vector_db.strategy import RecordContext
 from app.utils.aimodels import (
     EmbeddingProvider,
+    embedding_config_hash,
     get_default_embedding_model,
     get_embedding_model,
     is_local_cpu_embedding_provider,
+)
+from app.utils.embedding_retry import (
+    is_retriable_embedding_error,
+    retry_delay_seconds,
+    signal_backpressure_if_rate_limited,
 )
 from app.utils.image_utils import normalize_image_to_base64
 
@@ -86,6 +92,17 @@ def _resolve_batch_concurrency(env_value: str | None, *, default: int = 5) -> in
 _DEFAULT_CONCURRENCY_LIMIT = _resolve_batch_concurrency(os.getenv("EMBEDDING_BATCH_CONCURRENCY"))
 _LOCAL_CPU_DOCUMENT_BATCH_SIZE = 20
 
+# A batch is bounded by characters as well as document count: one Document is
+# anywhere from a single sentence to a whole text block capped only by
+# text_splitting.MAX_TEXT_BLOCK_CHARS (50k), or an uncapped code symbol. Sized
+# by count alone, the same "batch of 50" carries ~2KB on one record and
+# megabytes on the next, and no fixed per-batch timeout can hold for both.
+# The remote budget also keeps a batch under langchain_openai's
+# MAX_TOKENS_PER_REQUEST, above which it silently splits one aembed_documents
+# call into several *sequential* HTTP requests inside that one timeout.
+_DEFAULT_DOCUMENT_BATCH_CHARS = 100_000
+_LOCAL_CPU_DOCUMENT_BATCH_CHARS = 40_000
+
 # Blocks are already capped at this size by the parsers (text_splitting.MAX_TEXT_BLOCK_CHARS),
 # but connector-authored blocks can bypass that path — guard defensively here too.
 _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT = 50_000
@@ -104,6 +121,44 @@ _TEXT_PROCESSING_TIMEOUT_S = 300  # 5 min for sentence-splitting a full record
 # batch than hosted API embedding providers, so they get a much longer allowance.
 _LOCAL_EMBEDDING_BATCH_TIMEOUT_S = 600  # 10 min per embedding batch on local CPU
 _REMOTE_EMBEDDING_BATCH_TIMEOUT_S = 120  # 2 min per embedding batch via hosted API
+
+# Attempts per batch. Bounds the blast radius of a transient provider failure to
+# the batch rather than the record: without this one 429 or dropped connection
+# discards the embeddings of every other batch already upserted for the record,
+# which only a full re-index restores.
+_EMBEDDING_BATCH_MAX_ATTEMPTS = 3
+
+
+def _batch_documents_by_size(
+    documents: List[Document], max_documents: int, max_chars: int
+) -> List[Tuple[int, List[Document]]]:
+    """Pack *documents* into ``(start_index, batch)`` pairs bounded by both limits.
+
+    A single document over *max_chars* gets a batch to itself rather than being
+    split or dropped — the provider's own context handling decides what to do
+    with it, but it must not drag a batch of ordinary documents past the budget.
+    ``start_index`` indexes into *documents* so batch failures stay locatable.
+    """
+    batches: List[Tuple[int, List[Document]]] = []
+    current: List[Document] = []
+    current_start = 0
+    current_chars = 0
+
+    for index, document in enumerate(documents):
+        size = len(document.page_content)
+        if current and (
+            len(current) >= max_documents or current_chars + size > max_chars
+        ):
+            batches.append((current_start, current))
+            current = []
+            current_start = index
+            current_chars = 0
+        current.append(document)
+        current_chars += size
+
+    if current:
+        batches.append((current_start, current))
+    return batches
 
 
 def _detect_record_language(text_blocks: List) -> str:
@@ -306,7 +361,7 @@ class VectorStore(Transformer):
         logger,
         config_service,
         graph_provider: IGraphDBProvider,
-        collection_name: str,
+        collection_registry: CollectionRegistry,
         vector_db_service: IVectorDBService,
     ) -> None:
         super().__init__()
@@ -314,32 +369,39 @@ class VectorStore(Transformer):
         self.config_service = config_service
         self.graph_provider = graph_provider
         self.vector_db_service = vector_db_service
-        self.collection_name = collection_name
+        self.collection_registry = collection_registry
+        self.collection_locator = VirtualRecordCollectionLocator(
+            strategy=collection_registry.strategy,
+            manifest_store=collection_registry.manifest_store,
+            logger=logger,
+        )
 
         self.dense_embeddings = None
+        self._embedding_config_hash: str | None = None
+        self._embedding_model_lock = asyncio.Lock()
         self.api_key = None
         self.embedding_endpoint = None
         self.model_name = None
         self.embedding_provider = None
-        self.embedding_size: Optional[int] = None
+        self.embedding_size: int | None = None
         self.is_multimodal_embedding = False
         self.region_name = None
         self.aws_access_key_id = None
         self.aws_secret_access_key = None
-        self.base_url: Optional[str] = None
+        self.base_url: str | None = None
 
         self._capabilities = self.vector_db_service.get_capabilities()
 
         # Sparse embeddings — only for providers that store client-side sparse vectors.
         # SparseEmbedder lazy-initialises in a worker thread on first use.
-        self._sparse_embedder: Optional[SparseEmbedder] = None
-        self._sparse_embedder_lock: Optional[asyncio.Lock] = None
+        self._sparse_embedder: SparseEmbedder | None = None
+        self._sparse_embedder_lock: asyncio.Lock | None = None
 
     # ------------------------------------------------------------------
     # Sparse embedding lazy initialisation
     # ------------------------------------------------------------------
 
-    async def _ensure_sparse_embeddings(self) -> Optional[SparseEmbedder]:
+    async def _ensure_sparse_embeddings(self) -> SparseEmbedder | None:
         """Return the SparseEmbedder if this provider uses client-side sparse vectors."""
         if not self._capabilities.supports_sparse_vectors:
             return None
@@ -500,6 +562,7 @@ class VectorStore(Transformer):
         virtual_record_id: str,
         org_id: str,
         semantic_metadata: SemanticMetadata,
+        record: Optional["Record"] = None,
     ) -> None:
         """Embed the record-level summary after extraction completes."""
         summary_doc = self._build_record_summary_document(
@@ -523,95 +586,71 @@ class VectorStore(Transformer):
                     details={"error": str(e)},
                 )
 
+        collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
+
         summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
-        await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id)
+        await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
         tokens = await self._bind_membership(virtual_record_id)
         try:
-            await self._process_document_chunks([summary_doc], record_id)
+            await self._process_document_chunks([summary_doc], record_id, collection_name)
         finally:
             reset_membership_context(tokens)
         self.logger.debug("✅ Indexed record summary for record %s", record_id)
 
     # ------------------------------------------------------------------
-    # Collection initialisation
+    # Collection resolution (delegates lifecycle to CollectionRegistry so a
+    # future non-default CollectionStrategy needs no VectorStore changes)
     # ------------------------------------------------------------------
 
-    async def _get_existing_vector_dimension(self, collection_name: str) -> Optional[int]:
-        info = await self.vector_db_service.get_collection_info(collection_name)
-        if info.exists:
-            return info.dense_dimension
-        return None
+    def _record_context(self, org_id: str, record: Optional["Record"]) -> RecordContext:
+        """Build the context this record's collection is resolved from.
 
-    async def _initialize_collection(
-        self, embedding_size: int = 1024, sparse_idf: bool = False
-    ) -> None:
-        existing_dim = await self._get_existing_vector_dimension(self.collection_name)
-        if existing_dim is not None:
-            if existing_dim != embedding_size:
-                raise VectorStoreError(
-                    f"Embedding model dimension mismatch: collection "
-                    f"'{self.collection_name}' was created with dimension {existing_dim} "
-                    f"but the current model produces dimension {embedding_size}. "
-                    f"Re-index by deleting the collection and re-running indexing, "
-                    f"or switch back to the original embedding model.",
-                    details={
-                        "collection": self.collection_name,
-                        "existing_dim": existing_dim,
-                        "required_dim": embedding_size,
-                    },
-                )
-            else:
-                self.logger.debug(
-                    f"Collection '{self.collection_name}' exists with correct dimension {embedding_size}."
-                )
-                await self._ensure_payload_indexes()
-                await self._reconcile_storage_layout(embedding_size, sparse_idf)
-                return
+        Goes through ``RecordContext.from_record`` rather than reading the
+        fields here, because the dedup path builds the same context from a
+        graph document and the two are compared to decide whether to skip
+        indexing. One normalisation, two entry points.
 
-        try:
-            await self.vector_db_service.create_collection(
-                collection_name=self.collection_name,
-                config=self._collection_config(embedding_size, sparse_idf),
+        The embedding model is carried too: it is not on the record, and
+        without it a per-embedding-model strategy would map every model onto
+        one collection.
+        """
+        if record is None:
+            return RecordContext(
+                org_id=org_id,
+                embedding_model=self.model_name,
+                embedding_dimension=self.embedding_size,
             )
-            self.logger.info(f"✅ Created collection '{self.collection_name}'")
-            await self._ensure_payload_indexes()
-        except Exception as e:
-            err_msg = str(e).lower()
-            if "already exists" in err_msg:
-                self.logger.info(
-                    f"Collection '{self.collection_name}' was created concurrently; verifying dimension."
-                )
-                existing_dim = await self._get_existing_vector_dimension(self.collection_name)
-                if existing_dim is not None and existing_dim != embedding_size:
-                    raise VectorStoreError(
-                        f"Embedding model dimension mismatch: collection "
-                        f"'{self.collection_name}' was created with dimension {existing_dim} "
-                        f"but the current model produces dimension {embedding_size}.",
-                        details={
-                            "collection": self.collection_name,
-                            "existing_dim": existing_dim,
-                            "required_dim": embedding_size,
-                        },
-                    )
-                await self._ensure_payload_indexes()
-                return
-            self.logger.error(f"❌ Error creating collection '{self.collection_name}': {e}")
-            raise VectorStoreError(
-                "Failed to create collection",
-                details={"collection": self.collection_name, "error": str(e)},
-            )
-
-    def _collection_config(
-        self, embedding_size: int, sparse_idf: bool
-    ) -> CollectionConfig:
-        return CollectionConfig(
-            embedding_size=embedding_size,
-            sparse_idf=sparse_idf,
-            enable_sparse=self._capabilities.supports_sparse_vectors,
+        return RecordContext.from_record(
+            record,
+            org_id,
+            embedding_model=self.model_name,
+            embedding_dimension=self.embedding_size,
         )
 
+    async def _ensure_collection(
+        self,
+        org_id: str,
+        record: Optional["Record"],
+        embedding_size: int,
+        sparse_idf: bool = False,
+    ) -> str:
+        """Resolve + create (if needed) the collection this record's points belong in.
+
+        Returned name is threaded explicitly through every downstream call in
+        this indexing pass rather than stored on ``self`` — a future
+        multi-collection strategy can vary this per record, and concurrent
+        records processed by the same VectorStore instance must not race on
+        shared mutable state.
+        """
+        ctx = self._record_context(org_id, record)
+        collection_name = await self.collection_registry.ensure_collection(
+            ctx, embedding_size, sparse_idf
+        )
+        await self._reconcile_storage_layout(collection_name, embedding_size, sparse_idf)
+        return collection_name
+
     async def _reconcile_storage_layout(
-        self, embedding_size: int, sparse_idf: bool
+        self, collection_name: str, embedding_size: int, sparse_idf: bool
     ) -> None:
         """Nudge a pre-existing collection toward the current storage layout.
 
@@ -630,74 +669,22 @@ class VectorStore(Transformer):
             return
         try:
             await self.vector_db_service.reconcile_storage_layout(
-                collection_name=self.collection_name,
-                config=self._collection_config(embedding_size, sparse_idf),
+                collection_name=collection_name,
+                config=self.collection_registry.build_collection_config(
+                    embedding_size, sparse_idf
+                ),
             )
         except Exception as e:
             self.logger.warning(
                 "Storage-layout reconcile skipped for %s: %s",
-                self.collection_name,
+                collection_name,
                 e,
             )
 
-    async def _ensure_payload_indexes(self) -> None:
-        for field_name, schema in PAYLOAD_KEYWORD_INDEXES:
-            try:
-                await self.vector_db_service.create_index(
-                    collection_name=self.collection_name,
-                    field_name=field_name,
-                    field_schema=schema,
-                )
-            except Exception as e:
-                err = str(e).lower()
-                if "already exists" in err or "already exist" in err or "conflict" in err:
-                    continue
-                self.logger.warning(
-                    "Failed to create payload index %s on %s: %s",
-                    field_name,
-                    self.collection_name,
-                    e,
-                )
-
-    @staticmethod
-    def _is_collection_missing(error: Exception) -> bool:
-        err = str(error).lower()
-        return any(
-            token in err
-            for token in (
-                "not found",
-                "not exist",
-                "doesn't exist",
-                "does not exist",
-                "unknown collection",
-                "404",
-            )
-        )
-
-    async def recreate_records_collection(self) -> None:
-        """Drop the records collection and rebuild it for the current model.
-
-        Drop first, then initialise. ``get_embedding_model_instance`` ends by
-        calling ``_initialize_collection``, which *raises* on an embedding
-        dimension mismatch — so initialising before the drop would fail exactly
-        when the model has changed, which is the main reason to recreate at all.
-        Dropping first also avoids creating the collection twice.
-        """
-        try:
-            await self.vector_db_service.delete_collection(self.collection_name)
-        except Exception as e:
-            if not self._is_collection_missing(e):
-                raise
-            self.logger.info(
-                "Vector collection %s already absent; creating it",
-                self.collection_name,
-            )
-        # Re-derives the dimension from the live model and creates the collection
-        # with the current payload indexes and storage layout.
-        await self.get_embedding_model_instance()
-
     async def _resync_membership_after_write(
-        self, virtual_record_id: str, record_id: Optional[str] = None
+        self,
+        virtual_record_id: str,
+        record_id: str | None = None,
     ) -> None:
         """Re-apply membership from graph once the points for this VRID exist.
 
@@ -733,7 +720,7 @@ class VectorStore(Transformer):
                 # confirming re-read.
                 await rewrite_or_delete_virtual_record(
                     self.vector_db_service,
-                    self.collection_name,
+                    self.collection_locator,
                     self.graph_provider,
                     virtual_record_id,
                     self.logger,
@@ -742,7 +729,7 @@ class VectorStore(Transformer):
 
             await sync_vector_membership(
                 self.vector_db_service,
-                self.collection_name,
+                self.collection_locator,
                 self.graph_provider,
                 virtual_record_id,
                 self.logger,
@@ -817,7 +804,11 @@ class VectorStore(Transformer):
     # ------------------------------------------------------------------
 
     async def get_embedding_model_instance(self) -> bool:
-        """Initialise dense embeddings and ensure collection exists.
+        """Initialise dense embeddings.
+
+        Collection creation is deferred to ``_ensure_collection`` at the point
+        a record is actually indexed, since the target collection can depend
+        on that record's org/connector under a non-default CollectionStrategy.
 
         Returns True if multimodal embedding is active.
         """
@@ -827,6 +818,24 @@ class VectorStore(Transformer):
             config_node_constants.AI_MODELS.value, use_cache=False
         )
         embedding_configs = ai_models["embedding"]
+        config_hash = embedding_config_hash(embedding_configs)
+
+        # The config is re-read every record so an admin-UI change takes effect
+        # immediately, but rebuilding the client is not free: it opens a fresh
+        # HTTP connection pool that the previous one never gets to reuse, and
+        # the dimension probe costs an extra embed round trip per record.
+        if self.dense_embeddings is not None and self._embedding_config_hash == config_hash:
+            return self.is_multimodal_embedding
+
+        async with self._embedding_model_lock:
+            if self.dense_embeddings is not None and self._embedding_config_hash == config_hash:
+                return self.is_multimodal_embedding
+            return await self._build_embedding_model(embedding_configs, config_hash)
+
+    async def _build_embedding_model(
+        self, embedding_configs: List[dict] | None, config_hash: str
+    ) -> bool:
+        """Construct the dense embedding client and publish it on ``self``."""
         is_multimodal = False
         provider = None
         configuration = None
@@ -861,7 +870,6 @@ class VectorStore(Transformer):
         self.logger.debug(f"Using embedding model: {model_name}, size: {embedding_size}")
 
         await self._ensure_sparse_embeddings()
-        await self._initialize_collection(embedding_size=embedding_size)
 
         self.dense_embeddings = dense_embeddings
         self.embedding_provider = provider
@@ -883,6 +891,7 @@ class VectorStore(Transformer):
             self.aws_access_key_id = configuration.get("awsAccessKeyId")
             self.aws_secret_access_key = configuration.get("awsAccessSecretKey")
         self.is_multimodal_embedding = bool(is_multimodal)
+        self._embedding_config_hash = config_hash
         return self.is_multimodal_embedding
 
     # ------------------------------------------------------------------
@@ -893,6 +902,7 @@ class VectorStore(Transformer):
         self,
         record_id: str,
         virtual_record_id: str,
+        org_id: str,
         record: Optional["Record"] = None,
     ) -> None:
         """Remove embeddings when the record was deleted and no MD5 duplicate remains."""
@@ -914,9 +924,11 @@ class VectorStore(Transformer):
                 )
                 size_in_bytes = record.size_in_bytes
 
+            # Dedup must never cross org boundaries — see find_duplicate_records.
             duplicate_records = await self.graph_provider.find_duplicate_records(
                 record_key=record_id,
                 md5_checksum=md5_checksum,
+                org_id=org_id,
                 record_type=record_type,
                 size_in_bytes=size_in_bytes,
             )
@@ -930,13 +942,25 @@ class VectorStore(Transformer):
                 return
 
         self.logger.info(
-            f"Record {record_id} not found and no MD5 duplicates; "
-            f"deleting embeddings for virtual_record_id {virtual_record_id}"
+            f"Record {record_id} not found and no MD5 duplicates in org {org_id}; "
+            f"releasing virtual_record_id {virtual_record_id}"
         )
-        await self.delete_embeddings(virtual_record_id)
+        # Not a raw delete: the MD5 lookup above is org-scoped, so it cannot
+        # see a sibling record in another org that shares this VRID (dedup was
+        # global before it was scoped, so such pairs exist on upgraded
+        # deployments). rewrite_or_delete_virtual_record re-checks the graph
+        # for *any* remaining record on this VRID and only deletes when none
+        # is left, rewriting membership otherwise.
+        await rewrite_or_delete_virtual_record(
+            self.vector_db_service,
+            self.collection_locator,
+            self.graph_provider,
+            virtual_record_id,
+            self.logger,
+        )
 
     async def delete_blocks_by_ids(
-        self, block_ids: set, virtual_record_id: str
+        self, block_ids: set, virtual_record_id: str, collection_name: str
     ) -> None:
         """Delete embeddings for specific block IDs scoped to a virtual record."""
         if not block_ids:
@@ -945,7 +969,7 @@ class VectorStore(Transformer):
             filter_dict = await self.vector_db_service.filter_collection(
                 must={"blockId": list(block_ids), "virtualRecordId": virtual_record_id}
             )
-            await self.vector_db_service.delete_points(self.collection_name, filter_dict)
+            await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.info(
                 f"✅ Deleted {len(block_ids)} blocks from vector store "
                 f"for virtual_record_id {virtual_record_id}"
@@ -958,18 +982,26 @@ class VectorStore(Transformer):
     # Embeddings deletion (full record)
     # ------------------------------------------------------------------
 
-    async def delete_embeddings(self, virtual_record_id: str) -> None:
+    async def delete_embeddings(self, virtual_record_id: str, collection_name: str) -> None:
         try:
             filter_dict = await self.vector_db_service.filter_collection(
                 must={"virtualRecordId": virtual_record_id}
             )
-            await self.vector_db_service.delete_points(self.collection_name, filter_dict)
+            await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.debug(
                 f"✅ Deleted embeddings for virtual record '{virtual_record_id}'"
             )
         except Exception as e:
             self.logger.error(f"Error deleting embeddings: {e}")
             raise EmbeddingError(f"Failed to delete embeddings: {e}")
+
+    async def purge_record_vectors(
+        self, org_id: str, virtual_record_id: str, record: Optional["Record"] = None
+    ) -> None:
+        """Delete all vector points for a record, resolving the collection internally."""
+        ctx = self._record_context(org_id, record)
+        collection_name = self.collection_registry.resolve_write_collection(ctx)
+        await self.delete_embeddings(virtual_record_id, collection_name)
 
     # ------------------------------------------------------------------
     # Image embedding (provider dispatch via MultimodalEmbeddingFactory)
@@ -1066,7 +1098,9 @@ class VectorStore(Transformer):
         results = await provider.embed_images(image_base64s)
         return self._build_image_points(image_chunks, results)
 
-    async def _store_image_points(self, points: List[VectorPoint]) -> None:
+    async def _store_image_points(
+        self, points: List[VectorPoint], collection_name: str
+    ) -> None:
         if not points:
             self.logger.info("No image embeddings to upsert.")
             return
@@ -1075,7 +1109,7 @@ class VectorStore(Transformer):
         batch_size = 500
         for i in range(0, len(points), batch_size):
             await self.vector_db_service.upsert_points(
-                collection_name=self.collection_name, points=points[i:i + batch_size]
+                collection_name=collection_name, points=points[i:i + batch_size]
             )
         self.logger.info(
             f"✅ Stored {len(points)} image points in {time.perf_counter() - start:.2f}s"
@@ -1086,19 +1120,77 @@ class VectorStore(Transformer):
     # ------------------------------------------------------------------
 
     def _is_local_cpu_embedding(self) -> bool:
-        return is_local_cpu_embedding_provider(self.embedding_provider)
+        return is_local_cpu_embedding_provider(
+            self.embedding_provider, self.embedding_endpoint
+        )
 
     async def _compute_sparse_embeddings(
         self, texts: List[str]
-    ) -> List[Optional[SparseVector]]:
+    ) -> List[SparseVector | None]:
         """Compute BM25 sparse vectors; returns list of None when not supported."""
         embedder = await self._ensure_sparse_embeddings()
         if embedder is None:
             return [None] * len(texts)
         return await embedder.embed_documents(texts)
 
+    async def _embed_documents_with_retry(
+        self, texts: List[str], record_id: str
+    ) -> List[List[float]]:
+        """Dense-embed one batch, retrying transient provider failures.
+
+        Each attempt is bounded separately rather than the sequence as a whole:
+        the timeout exists to stop one batch blocking the pipeline, and a budget
+        shared across attempts would let a slow first attempt leave the retry no
+        time to run. A 429 also pauses the whole consumer through the shared
+        coordinator, since retrying a saturated provider harder is what made it
+        rate-limit us in the first place.
+        """
+        attempt_timeout = (
+            _LOCAL_EMBEDDING_BATCH_TIMEOUT_S
+            if self._is_local_cpu_embedding()
+            else _REMOTE_EMBEDDING_BATCH_TIMEOUT_S
+        )
+        service_name = self.embedding_provider or EmbeddingProvider.DEFAULT.value
+        total_chars = sum(len(text) for text in texts)
+        last_error: BaseException | None = None
+
+        for attempt in range(1, _EMBEDDING_BATCH_MAX_ATTEMPTS + 1):
+            try:
+                return await asyncio.wait_for(
+                    self.dense_embeddings.aembed_documents(texts),
+                    timeout=attempt_timeout,
+                )
+            except asyncio.TimeoutError as e:
+                last_error = e
+                get_default_downstream_feedback().report_timeout(service_name)
+            except Exception as e:
+                signal_backpressure_if_rate_limited(
+                    e,
+                    service_name=service_name,
+                    coordinator=get_default_backpressure_coordinator(),
+                )
+                if not is_retriable_embedding_error(e):
+                    raise
+                last_error = e
+
+            if attempt >= _EMBEDDING_BATCH_MAX_ATTEMPTS:
+                break
+            delay = retry_delay_seconds(attempt)
+            self.logger.warning(
+                f"Dense embedding attempt {attempt}/{_EMBEDDING_BATCH_MAX_ATTEMPTS} "
+                f"failed for batch of {len(texts)} texts / {total_chars} chars "
+                f"(record {record_id}): {last_error}; retrying in {delay:.1f}s"
+            )
+            await asyncio.sleep(delay)
+
+        raise EmbeddingError(
+            f"Dense embedding failed after {_EMBEDDING_BATCH_MAX_ATTEMPTS} attempts "
+            f"({attempt_timeout}s each) for batch of {len(texts)} texts / "
+            f"{total_chars} chars (record {record_id}): {last_error}"
+        ) from last_error
+
     async def _embed_and_upsert_documents(
-        self, documents: List[Document], record_id: str
+        self, documents: List[Document], record_id: str, collection_name: str
     ) -> None:
         """Embed a batch of LangChain Documents and upsert to the vector DB.
 
@@ -1117,21 +1209,7 @@ class VectorStore(Transformer):
 
         texts = [doc.page_content for doc in documents]
 
-        embedding_timeout = (
-            _LOCAL_EMBEDDING_BATCH_TIMEOUT_S
-            if self._is_local_cpu_embedding()
-            else _REMOTE_EMBEDDING_BATCH_TIMEOUT_S
-        )
-        try:
-            dense_embeddings = await asyncio.wait_for(
-                self.dense_embeddings.aembed_documents(texts),
-                timeout=embedding_timeout,
-            )
-        except asyncio.TimeoutError:
-            raise EmbeddingError(
-                f"Dense embedding timed out after {embedding_timeout}s "
-                f"for batch of {len(texts)} texts (record {record_id})"
-            )
+        dense_embeddings = await self._embed_documents_with_retry(texts, record_id)
 
         # Sparse embeddings (provider-dependent)
         sparse_embeddings = await self._compute_sparse_embeddings(texts)
@@ -1146,32 +1224,36 @@ class VectorStore(Transformer):
             for doc, dense, sparse in zip(documents, dense_embeddings, sparse_embeddings)
         ]
         await self.vector_db_service.upsert_points(
-            collection_name=self.collection_name, points=points
+            collection_name=collection_name, points=points
         )
 
     async def _process_document_chunks(
-        self, langchain_document_chunks: List[Document], record_id: str = ""
+        self,
+        langchain_document_chunks: List[Document],
+        record_id: str,
+        collection_name: str,
     ) -> None:
         self.logger.debug(
             f"⏱️ Embedding {len(langchain_document_chunks)} document chunks"
         )
         use_local_sequential = self._is_local_cpu_embedding()
-        batch_size = (
-            _LOCAL_CPU_DOCUMENT_BATCH_SIZE if use_local_sequential else _DEFAULT_DOCUMENT_BATCH_SIZE
+        max_documents, max_chars = (
+            (_LOCAL_CPU_DOCUMENT_BATCH_SIZE, _LOCAL_CPU_DOCUMENT_BATCH_CHARS)
+            if use_local_sequential
+            else (_DEFAULT_DOCUMENT_BATCH_SIZE, _DEFAULT_DOCUMENT_BATCH_CHARS)
         )
 
         async def process_batch(batch_start: int, batch: List[Document]) -> int:
             try:
-                await self._embed_and_upsert_documents(batch, record_id)
+                await self._embed_and_upsert_documents(batch, record_id, collection_name)
                 return len(batch)
             except Exception as e:
                 self.logger.warning(f"Batch at {batch_start} failed: {e}")
                 raise
 
-        batches = [
-            (i, langchain_document_chunks[i:i + batch_size])
-            for i in range(0, len(langchain_document_chunks), batch_size)
-        ]
+        batches = _batch_documents_by_size(
+            langchain_document_chunks, max_documents, max_chars
+        )
 
         if use_local_sequential:
             for idx, (start, batch) in enumerate(batches):
@@ -1208,6 +1290,7 @@ class VectorStore(Transformer):
         chunks: List,
         record_id: str,
         virtual_record_id: str,
+        collection_name: str,
     ) -> None:
         if not chunks:
             raise EmbeddingError("No chunks provided for embedding creation")
@@ -1222,20 +1305,20 @@ class VectorStore(Transformer):
                 image_chunks.append(chunk)
 
         # Delete existing embeddings first (full replace, non-reconciliation path)
-        await self.delete_embeddings(virtual_record_id)
+        await self.delete_embeddings(virtual_record_id, collection_name)
 
-        self.logger.info(
+        self.logger.debug(
             f"📊 Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
         )
 
         if image_chunks:
             image_base64s = [c.get("image_uri") for c in image_chunks]
             points = await self._process_image_embeddings(image_chunks, image_base64s, record_id)
-            await self._store_image_points(points)
+            await self._store_image_points(points, collection_name)
 
         if langchain_docs:
             try:
-                await self._process_document_chunks(langchain_docs, record_id)
+                await self._process_document_chunks(langchain_docs, record_id, collection_name)
             except Exception as e:
                 raise VectorStoreError(
                     "Failed to store documents in vector store: " + str(e),
@@ -1254,12 +1337,13 @@ class VectorStore(Transformer):
         org_id: str,
         record_id: str,
         virtual_record_id: str,
-        block_ids_to_delete: Optional[set] = None,
+        block_ids_to_delete: set | None = None,
         is_reconciliation: bool = False,
         record: Optional["Record"] = None,
     ) -> bool | None:
         try:
             is_multimodal_embedding = await self.get_embedding_model_instance()
+            collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
         except Exception as e:
             raise IndexingError(
                 "Failed to get embedding model instance: " + str(e),
@@ -1280,7 +1364,7 @@ class VectorStore(Transformer):
                 summary_block_id_set = {
                     f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"
                 }
-                await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id)
+                await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
 
                 if record is not None:
                     semantic_metadata = getattr(record, "semantic_metadata", None)
@@ -1289,13 +1373,13 @@ class VectorStore(Transformer):
                             record_id, virtual_record_id, org_id, semantic_metadata
                         )
                         if summary_doc:
-                            await self._process_document_chunks([summary_doc], record_id)
+                            await self._process_document_chunks([summary_doc], record_id, collection_name)
 
             if not blocks and not block_groups:
                 if block_ids_to_delete:
-                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id)
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
                 await self._cleanup_orphaned_embeddings_if_needed(
-                    record_id, virtual_record_id, record
+                    record_id, virtual_record_id, org_id, record
                 )
                 return None
 
@@ -1607,9 +1691,9 @@ class VectorStore(Transformer):
             if not documents_to_embed:
                 self.logger.warning("⚠️ No documents to embed after filtering by block type")
                 if block_ids_to_delete:
-                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id)
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
                 await self._cleanup_orphaned_embeddings_if_needed(
-                    record_id, virtual_record_id, record
+                    record_id, virtual_record_id, org_id, record
                 )
                 return True
 
@@ -1619,19 +1703,19 @@ class VectorStore(Transformer):
                 langchain_docs = [d for d in documents_to_embed if isinstance(d, Document)]
                 image_chunks = [d for d in documents_to_embed if not isinstance(d, Document)]
                 if langchain_docs:
-                    await self._process_document_chunks(langchain_docs, record_id)
+                    await self._process_document_chunks(langchain_docs, record_id, collection_name)
                 if image_chunks:
                     image_base64s = [c.get("image_uri") for c in image_chunks]
                     points = await self._process_image_embeddings(
                         image_chunks, image_base64s, record_id
                     )
-                    await self._store_image_points(points)
+                    await self._store_image_points(points, collection_name)
             else:
-                await self._create_embeddings(documents_to_embed, record_id, virtual_record_id)
+                await self._create_embeddings(documents_to_embed, record_id, virtual_record_id, collection_name)
 
             if block_ids_to_delete:
                 self.logger.debug(f"📊 Deleting {len(block_ids_to_delete)} removed blocks")
-                await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id)
+                await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
 
             self.logger.debug(
                 f"✅ Indexing complete for record {record_id}: "
@@ -1639,7 +1723,7 @@ class VectorStore(Transformer):
             )
 
             await self._cleanup_orphaned_embeddings_if_needed(
-                record_id, virtual_record_id, record
+                record_id, virtual_record_id, org_id, record
             )
             await self._resync_membership_after_write(virtual_record_id, record_id)
             return True

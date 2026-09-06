@@ -49,10 +49,7 @@ class TestInitialize:
         mock_redis = AsyncMock()
         mock_redis.ping = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.producer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(p._provider, "create_client", return_value=mock_redis):
             await p.initialize()
 
         mock_redis.ping.assert_awaited_once()
@@ -62,9 +59,9 @@ class TestInitialize:
     async def test_skips_if_already_initialized(self, producer):
         producer.redis = MagicMock()
 
-        with patch("app.services.messaging.redis_streams.producer.Redis") as MockRedis:
+        with patch.object(producer._provider, "create_client") as mock_create:
             await producer.initialize()
-            MockRedis.assert_not_called()
+            mock_create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_double_check_after_lock(self, logger, config):
@@ -73,15 +70,12 @@ class TestInitialize:
         mock_redis.ping = AsyncMock()
         call_count = 0
 
-        def redis_factory(**kwargs):
+        def redis_factory(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             return mock_redis
 
-        with patch(
-            "app.services.messaging.redis_streams.producer.Redis",
-            side_effect=redis_factory,
-        ):
+        with patch.object(p._provider, "create_client", side_effect=redis_factory):
             await asyncio.gather(p.initialize(), p.initialize())
 
         assert call_count == 1
@@ -92,10 +86,7 @@ class TestInitialize:
         mock_redis = AsyncMock()
         mock_redis.ping = AsyncMock(side_effect=Exception("unreachable"))
 
-        with patch(
-            "app.services.messaging.redis_streams.producer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(p._provider, "create_client", return_value=mock_redis):
             with pytest.raises(Exception, match="unreachable"):
                 await p.initialize()
 
@@ -178,10 +169,7 @@ class TestSendMessage:
         mock_redis.ping = AsyncMock()
         mock_redis.xadd = AsyncMock(return_value="1-0")
 
-        with patch(
-            "app.services.messaging.redis_streams.producer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(p._provider, "create_client", return_value=mock_redis):
             result = await p.send_message("t", {"d": 1})
 
         assert result is True
@@ -236,10 +224,7 @@ class TestStartStop:
         mock_redis = AsyncMock()
         mock_redis.ping = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.producer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(p._provider, "create_client", return_value=mock_redis):
             await p.start()
 
         assert p.redis is mock_redis
@@ -248,12 +233,86 @@ class TestStartStop:
     async def test_start_skips_when_redis_exists(self, producer):
         producer.redis = MagicMock()
 
-        with patch("app.services.messaging.redis_streams.producer.Redis") as MockRedis:
+        with patch.object(producer._provider, "create_client") as mock_create:
             await producer.start()
-            MockRedis.assert_not_called()
+            mock_create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stop_calls_cleanup(self, producer):
         producer.cleanup = AsyncMock()
         await producer.stop()
         producer.cleanup.assert_awaited_once()
+
+
+class TestPipelinedSendMessages:
+    """A connector sync flushes batches of 50-100. The base implementation
+    awaits one round trip per message; this override pipelines them."""
+
+    @pytest.fixture
+    def producer(self):
+        from app.services.messaging.config import RedisStreamsConfig
+        from app.services.messaging.redis_streams.producer import (
+            RedisStreamsProducer,
+        )
+
+        producer = RedisStreamsProducer(
+            logging.getLogger("test_pipelined"),
+            RedisStreamsConfig(host="localhost", port=6379),
+        )
+        producer.redis = MagicMock()
+        return producer
+
+    async def test_one_pipeline_for_the_whole_batch(self, producer):
+        pipeline = MagicMock()
+        pipeline.execute = AsyncMock(return_value=[b"1-0", b"2-0", b"3-0"])
+        producer.redis.pipeline = MagicMock(return_value=pipeline)
+
+        results = await producer.send_messages(
+            "record-events",
+            [(None, {"a": 1}), ("k", {"b": 2}), (None, {"c": 3})],
+        )
+
+        assert results == [True, True, True]
+        assert pipeline.xadd.call_count == 3
+        pipeline.execute.assert_awaited_once()
+
+    async def test_per_message_results_not_all_or_nothing(self, producer):
+        """Callers use the result list to record which records were
+        accepted, so one bad entry must not mark the batch failed."""
+        pipeline = MagicMock()
+        pipeline.execute = AsyncMock(
+            return_value=[b"1-0", RuntimeError("nope"), b"3-0"]
+        )
+        producer.redis.pipeline = MagicMock(return_value=pipeline)
+
+        results = await producer.send_messages(
+            "record-events", [(None, {"a": 1}), (None, {"b": 2}), (None, {"c": 3})]
+        )
+
+        assert results == [True, False, True]
+
+    async def test_key_is_stored_as_a_field_when_provided(self, producer):
+        pipeline = MagicMock()
+        pipeline.execute = AsyncMock(return_value=[b"1-0"])
+        producer.redis.pipeline = MagicMock(return_value=pipeline)
+
+        await producer.send_messages("record-events", [("conn-1", {"a": 1})])
+
+        _args, kwargs = pipeline.xadd.call_args
+        fields = pipeline.xadd.call_args[0][1]
+        assert fields["key"] == "conn-1"
+        assert kwargs["approximate"] is True
+
+    async def test_connection_failure_marks_every_message_failed(self, producer):
+        producer.redis.pipeline = MagicMock(side_effect=RuntimeError("down"))
+
+        results = await producer.send_messages(
+            "record-events", [(None, {"a": 1}), (None, {"b": 2})]
+        )
+
+        assert results == [False, False]
+
+    async def test_empty_batch_does_no_work(self, producer):
+        producer.redis.pipeline = MagicMock()
+        assert await producer.send_messages("record-events", []) == []
+        producer.redis.pipeline.assert_not_called()

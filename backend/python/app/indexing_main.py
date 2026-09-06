@@ -149,13 +149,11 @@ async def recover_in_progress_records(
             return
 
         if concurrency_manager is not None:
-            recovery_lock_held = await run_coordination(
-                concurrency_manager.try_acquire(
-                    "recovery",
-                    recovery_owner,
-                    1,
-                    recovery_lease_seconds,
-                )
+            recovery_lock_held = await concurrency_manager.try_acquire(
+                "recovery",
+                recovery_owner,
+                1,
+                recovery_lease_seconds,
             )
             if not recovery_lock_held:
                 logger.debug(
@@ -166,12 +164,10 @@ async def recover_in_progress_records(
             async def renew_recovery_lock() -> None:
                 while True:
                     await asyncio.sleep(min(30.0, recovery_lease_seconds / 3))
-                    renewed = await run_coordination(
-                        concurrency_manager.renew(
-                            "recovery",
-                            recovery_owner,
-                            recovery_lease_seconds,
-                        )
+                    renewed = await concurrency_manager.renew(
+                        "recovery",
+                        recovery_owner,
+                        recovery_lease_seconds,
                     )
                     if not renewed:
                         raise RuntimeError("Lost stale-record recovery lease")
@@ -208,13 +204,11 @@ async def recover_in_progress_records(
 
                     if concurrency_manager is not None:
                         record_pool = f"record:{record_id}"
-                        record_lock_held = await run_coordination(
-                            concurrency_manager.try_acquire(
-                                record_pool,
-                                record_owner,
-                                1,
-                                recovery_lease_seconds,
-                            )
+                        record_lock_held = await concurrency_manager.try_acquire(
+                            record_pool,
+                            record_owner,
+                            1,
+                            recovery_lease_seconds,
                         )
                         if not record_lock_held:
                             return None
@@ -396,11 +390,9 @@ async def recover_in_progress_records(
                         and concurrency_manager is not None
                     ):
                         try:
-                            await run_coordination(
-                                concurrency_manager.release(
-                                    record_pool,
-                                    record_owner,
-                                )
+                            await concurrency_manager.release(
+                                record_pool,
+                                record_owner,
                             )
                         except Exception as release_exc:
                             logger.warning(
@@ -508,6 +500,18 @@ async def recover_in_progress_records(
         )
         total_records += queued_swept
 
+        # The counterpart for *live* connectors: a row whose event was lost or
+        # never published is invisible to both the scan above and the sweep.
+        # Off unless STRANDED_RECORD_REPUBLISH_AFTER_SECONDS is set.
+        total_records += await _republish_stranded_records(
+            graph_provider=graph_provider,
+            logger=logger,
+            producer=retry_producer,
+            run_coordination=run_coordination,
+            concurrency_manager=concurrency_manager,
+            page_size=page_size,
+        )
+
         # Vectors whose last referencing record was repointed elsewhere are
         # reachable from neither the record scan above nor the membership
         # backfill (both walk records, and this VRID has none). Left alone they
@@ -550,9 +554,7 @@ async def recover_in_progress_records(
             )
         if recovery_lock_held and concurrency_manager is not None:
             try:
-                await run_coordination(
-                    concurrency_manager.release("recovery", recovery_owner)
-                )
+                await concurrency_manager.release("recovery", recovery_owner)
             except Exception as release_exc:
                 logger.warning(
                     "Failed to release stale-record recovery lease: %s",
@@ -776,6 +778,214 @@ async def _sweep_queued_records_for_inactive_connectors(
     return swept
 
 
+async def _republish_stranded_records(
+    *,
+    graph_provider,
+    logger,
+    producer,
+    run_coordination,
+    concurrency_manager,
+    page_size: int,
+) -> int:
+    """Re-publish records that have been waiting on an event that never came.
+
+    The sweep above only rescues rows on connectors that are gone; the main
+    stale scan only looks at IN_PROGRESS. A row on a *live* connector whose
+    event was lost — dropped by the broker, discarded by a consumer, or never
+    published because the send failed after the transaction committed — is
+    reachable by neither, so it waits for ever.
+
+    Keyed on age rather than on what QUEUED is supposed to mean. That status is
+    written both by the upsert that precedes publishing and by the publish
+    itself, so it cannot distinguish "the event is on the broker" from "the
+    event was never sent"; age can, and it recovers the row either way.
+
+    Off by default. Enable with STRANDED_RECORD_REPUBLISH_AFTER_SECONDS, set
+    comfortably longer than the worst backlog the broker is expected to carry,
+    or healthy records still queued behind it will be re-sent.
+
+    Re-publishing is safe to repeat: the handler skips a record that is already
+    COMPLETED, and the per-record exclusivity lease stops a republished event
+    racing one already in flight.
+    """
+    after_seconds = messaging_env.stranded_record_republish_after_seconds
+    if after_seconds <= 0:
+        return 0
+
+    cutoff_ms = get_epoch_timestamp_in_ms() - int(after_seconds * 1000)
+    connector_active: dict[str, bool] = {}
+    republished = 0
+
+    async def _is_active(connector_id: str) -> bool:
+        if connector_id not in connector_active:
+            instance = await graph_provider.get_document(
+                connector_id, CollectionNames.APPS.value
+            )
+            connector_active[connector_id] = bool(
+                instance and instance.get("isActive", False)
+            )
+        return connector_active[connector_id]
+
+    for status_value in (
+        ProgressStatus.QUEUED.value,
+        ProgressStatus.NOT_STARTED.value,
+    ):
+        offset = 0
+        while True:
+            page = await graph_provider.get_documents_paginated(
+                CollectionNames.RECORDS.value,
+                skip=offset,
+                limit=page_size,
+                filters={"indexingStatus": status_value},
+                sort_field="_key",
+                raise_on_error=False,
+            )
+            if not page:
+                break
+
+            for record in page:
+                record_key = record.get("_key") or record.get("id")
+                connector_id = record.get("connectorId")
+                if (
+                    not record_key
+                    or not connector_id
+                    or record.get("origin") != OriginTypes.CONNECTOR.value
+                ):
+                    continue
+
+                # Two clocks, both of which must be older than the cutoff.
+                # updatedAt moves on every write to the row, so a record still
+                # being touched by a sync is never old enough to qualify.
+                # lastRepublishedAt is our own: publishing changes nothing about
+                # the row, so without it a record stays eligible and every tick
+                # sends another copy of the same event -- worst precisely when
+                # the consumer is backlogged, which is the case this sweep
+                # exists for.
+                updated_at = record.get("updatedAtTimestamp") or record.get(
+                    "createdAtTimestamp"
+                )
+                last_republished_at = record.get("lastRepublishedAt")
+                try:
+                    if updated_at is None or float(updated_at) > cutoff_ms:
+                        continue
+                    if (
+                        last_republished_at is not None
+                        and float(last_republished_at) > cutoff_ms
+                    ):
+                        continue
+                except (TypeError, ValueError):
+                    continue
+
+                if not await _is_active(connector_id):
+                    # The sweep above owns these; moving them here would race it.
+                    continue
+
+                # A duplicate parked behind an in-flight twin is legitimately
+                # QUEUED with its message already acked — it is released by the
+                # twin's completion, not by us.
+                if record.get("md5Checksum") and record.get("virtualRecordId"):
+                    continue
+
+                record_owner = f"stranded:{uuid4().hex}"
+                record_pool = f"record:{record_key}"
+                lock_held = False
+                try:
+                    if concurrency_manager is not None:
+                        lock_held = await concurrency_manager.try_acquire(
+                            record_pool,
+                            record_owner,
+                            1,
+                            messaging_env.concurrency_lease_seconds,
+                        )
+                        if not lock_held:
+                            # Someone is working on it after all.
+                            continue
+
+                    payload = {
+                        "recordId": record_key,
+                        "recordName": record.get("recordName"),
+                        "orgId": record.get("orgId"),
+                        "version": record.get("version", 0),
+                        "connectorName": record.get("connectorName"),
+                        "connectorId": connector_id,
+                        "extension": record.get("extension"),
+                        "mimeType": record.get("mimeType"),
+                        "origin": record.get("origin"),
+                        "recordType": record.get("recordType"),
+                        "virtualRecordId": record.get("virtualRecordId"),
+                    }
+                    version = int(payload.get("version", 0) or 0)
+                    event_type = (
+                        EventTypes.REINDEX_RECORD.value
+                        if version > 0 and payload.get("virtualRecordId")
+                        else EventTypes.NEW_RECORD.value
+                    )
+                    await run_coordination(
+                        producer.send_event(
+                            topic=Topic.RECORD_EVENTS.value,
+                            event_type=event_type,
+                            payload=payload,
+                            key=str(record_key),
+                        )
+                    )
+                    republished += 1
+                    # Recorded before the lease is released, so the cutoff above
+                    # excludes this record until another full interval passes.
+                    # Deliberately not updatedAtTimestamp: that field means "when
+                    # the record last changed" and connectors write it, so a
+                    # recovery sweep must not move it.
+                    marked = await graph_provider.update_node(
+                        record_key,
+                        CollectionNames.RECORDS.value,
+                        {"lastRepublishedAt": get_epoch_timestamp_in_ms()},
+                    )
+                    if not marked:
+                        logger.error(
+                            "Re-published stranded record %s but could not mark "
+                            "it; it will be re-published again next tick",
+                            record_key,
+                        )
+                    logger.warning(
+                        "Re-published stranded record %s (%s, status %s, "
+                        "untouched for %.0fs)",
+                        record_key,
+                        record.get("recordName"),
+                        status_value,
+                        (get_epoch_timestamp_in_ms() - float(updated_at)) / 1000,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to re-publish stranded record %s: %s",
+                        record_key,
+                        exc,
+                    )
+                finally:
+                    if lock_held and concurrency_manager is not None:
+                        try:
+                            await concurrency_manager.release(
+                                record_pool, record_owner
+                            )
+                        except Exception as release_exc:
+                            logger.warning(
+                                "Failed to release stranded-record lease for %s: %s",
+                                record_key,
+                                release_exc,
+                            )
+
+            if len(page) < page_size:
+                break
+            # Republished rows keep their status, so the filtered result does
+            # not shrink under the cursor — advance over the whole page.
+            offset += len(page)
+
+    if republished:
+        logger.warning(
+            "Re-published %d stranded record(s) whose events never arrived",
+            republished,
+        )
+    return republished
+
+
 async def run_stale_recovery_loop(
     app_container: IndexingAppContainer,
     graph_provider: IGraphDBProvider,
@@ -830,7 +1040,14 @@ async def start_kafka_consumers(
                 operation_timeout_seconds=(
                     messaging_env.concurrency_redis_timeout_seconds
                 ),
+                max_connections=messaging_env.concurrency_redis_max_connections,
             )
+            # Fails the startup, like the RetryManager ping above: Redis is a
+            # hard requirement for this service on either broker, so degrading
+            # here would only mask a Redis that the line above already proved
+            # reachable. The in-flight fail-open (see LeaseKind) is unaffected —
+            # a Redis that dies *after* startup still leaves capacity leases
+            # running under node-local limits.
             await concurrency_manager.initialize()
             logger.info(
                 "✅ Distributed indexing concurrency initialized "
@@ -852,6 +1069,14 @@ async def start_kafka_consumers(
         await retry_producer.initialize()
         logger.info("✅ Retry producer initialized for %s", broker_type.value)
 
+        # Built before the consumer because it is both the message handler and
+        # the consumer's abandonment sink: when a message is discarded without
+        # being processed, this is what puts the record into a terminal status
+        # instead of leaving it on one no recovery sweep revisits.
+        record_event_handler = await KafkaUtils.create_record_event_handler(
+            app_container, producer=retry_producer
+        )
+
         # Same process-wide singleton the ParsingClient/DoclingClient/
         # EmbeddingServerEmbeddings instances used by this consumer's
         # pipeline default to (see app.services.messaging.backpressure) —
@@ -867,51 +1092,14 @@ async def start_kafka_consumers(
             concurrency_manager=concurrency_manager,
             governor=governor,
             backpressure_coordinator=get_default_backpressure_coordinator(),
+            disposition_sink=record_event_handler,
         )
         consumers.append(("record", record_kafka_consumer, retry_producer))
 
-        # TODO: Remove this once the graph provider is fixed
-        # This is a temporary hack to reconnect the graph provider in worker thread event loop
-        # because it is in main event loop, but indexing in in worker thread loop
-
-        data_store = os.getenv("DATA_STORE", "arangodb").lower()
-        if data_store == "neo4j":
-            graph_provider = getattr(app_container, '_graph_provider', None)
-            if not graph_provider or not hasattr(graph_provider, 'client') or not graph_provider.client:
-                raise Exception("Neo4j Graph provider not initialized")
-
-            await record_kafka_consumer.initialize()
-            worker_loop = getattr(record_kafka_consumer, 'worker_loop', None)
-            if not worker_loop or not worker_loop.is_running():
-                raise Exception("Worker loop not initialized")
-
-            async def _reconnect() -> None:
-                if graph_provider.client.driver:
-                    try:
-                        await graph_provider.client.driver.close()
-                    except Exception as e:
-                        logger.warning("Failed to close existing Neo4j driver, proceeding with reconnection: %s", e)
-                    graph_provider.client.driver = None
-                await graph_provider.client.connect()
-
-            reconnect_coro = _reconnect()
-            try:
-                future = asyncio.run_coroutine_threadsafe(
-                    reconnect_coro,
-                    worker_loop,
-                )
-            except BaseException:
-                reconnect_coro.close()
-                raise
-            try:
-                await asyncio.wrap_future(future)
-            except BaseException:
-                future.cancel()
-                raise
-            logger.info("✅Neo4j Graph provider reconnected in worker thread event loop")
-
         record_message_handler = await KafkaUtils.create_record_message_handler(
-            app_container, producer=retry_producer
+            app_container,
+            producer=retry_producer,
+            record_event_service=record_event_handler,
         )
         await record_kafka_consumer.start(record_message_handler)  # type: ignore[arg-type]
         logger.info("✅ Record message consumer started")
@@ -1249,6 +1437,21 @@ async def health_check(request: Request) -> JSONResponse:
                 # Observability failure must not fail the liveness probe —
                 # the service itself is still healthy.
                 content["resource_governor"] = {"error": str(stats_error)}
+        # Per-tier dispatch admission: a heavy tier pinned at its ceiling with
+        # light idle is attachments queueing on heavy parse, which is fine as
+        # long as light keeps moving; both pinned means the node is full.
+        dispatch: dict[str, Any] = {}
+        for entry in getattr(container, "kafka_consumers", None) or []:
+            consumer = entry[1] if len(entry) > 1 else None
+            stats = getattr(consumer, "dispatch_stats", None)
+            if not callable(stats):
+                continue
+            try:
+                dispatch[str(entry[0])] = stats()
+            except Exception as stats_error:
+                dispatch[str(entry[0])] = {"error": str(stats_error)}
+        if dispatch:
+            content["dispatch"] = dispatch
         return JSONResponse(
             status_code=200,
             content=content,

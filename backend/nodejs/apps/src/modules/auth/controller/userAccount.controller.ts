@@ -238,6 +238,7 @@ export class UserAccountController {
           emailTemplateType: 'suspiciousLoginAttempt',
           initiator: {
             jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+            orgId: orgId?.toString(),
           },
           usersMails: [email],
           subject: 'Alert : Suspicious Login Attempt Detected',
@@ -363,7 +364,6 @@ export class UserAccountController {
               authProviders[mapping.key === 'azuread' ? 'azuread' : mapping.key] = configData;
             }
 
-            // Only add to JIT lists if enableJit is strictly true
             if (configData?.enableJit === true) {
               jitEnabledMethods.push(method);
               jitConfig[mapping.key] = true;
@@ -416,7 +416,7 @@ export class UserAccountController {
       const org = await Org.findOne({ _id: user.orgId, isDeleted: false });
       await this.mailService.sendMail({
         emailTemplateType: 'resetPassword',
-        initiator: { jwtAuthToken: mailAuthToken },
+        initiator: { jwtAuthToken: mailAuthToken, orgId: user.orgId?.toString() },
         usersMails: [user.email],
         subject: 'PipesHub | Reset your password!',
         templateData: {
@@ -895,6 +895,7 @@ export class UserAccountController {
         emailTemplateType: 'loginWithOTP',
         initiator: {
           jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+          orgId: orgId?.toString(),
         },
 
         usersMails: [email],
@@ -1136,6 +1137,7 @@ export class UserAccountController {
           emailTemplateType: 'suspiciousLoginAttempt',
           initiator: {
             jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+            orgId: orgId?.toString(),
           },
           usersMails: [email],
           subject: 'Alert : Suspicious Login Attempt Detected',

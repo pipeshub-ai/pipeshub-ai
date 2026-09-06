@@ -301,7 +301,7 @@ class RateLimiter:
                 CommonFields.client_id("Slack App Console"),
                 CommonFields.client_secret("Slack App Console"),
             ],
-            icon_path="/assets/icons/connectors/slack.svg",
+            icon_path="/icons/connectors/slack.svg",
             app_group="Communication",
             app_description="OAuth application for accessing Slack workspace data",
             app_categories=["Messaging"],
@@ -313,7 +313,7 @@ class RateLimiter:
         ]),
     ])\
     .configure(lambda b: b
-        .with_icon("/assets/icons/connectors/slack.svg")
+        .with_icon("/icons/connectors/slack.svg")
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Slack API Setup", "https://api.slack.com/authentication/basics", "setup"))

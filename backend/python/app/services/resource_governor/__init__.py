@@ -11,6 +11,12 @@ from __future__ import annotations
 
 from app.services.resource_governor.admission import acquire_gate_with_backpressure
 from app.services.resource_governor.controller import ResourceGovernor
+from app.services.resource_governor.feedback import (
+    DownstreamFeedback,
+    FeedbackWindow,
+    get_default_downstream_feedback,
+    set_default_downstream_feedback,
+)
 from app.services.resource_governor.gate import AdmissionGate, StartRateLimiter
 from app.services.resource_governor.models import (
     Ceilings,
@@ -23,12 +29,21 @@ from app.services.resource_governor.models import (
     ResourceSnapshot,
 )
 from app.services.resource_governor.probe import ResourceProbe, build_probe
-from app.services.resource_governor.tiers import classify, gate_pool, parse_cost
+from app.services.resource_governor.tiers import (
+    classify,
+    gate_pool,
+    index_pool,
+    parse_cost,
+)
 
 __all__ = [
     "AdmissionGate",
     "Ceilings",
     "ControllerState",
+    "DownstreamFeedback",
+    "FeedbackWindow",
+    "get_default_downstream_feedback",
+    "set_default_downstream_feedback",
     "Limits",
     "ParseTier",
     "Pool",
@@ -42,5 +57,6 @@ __all__ = [
     "build_probe",
     "classify",
     "gate_pool",
+    "index_pool",
     "parse_cost",
 ]

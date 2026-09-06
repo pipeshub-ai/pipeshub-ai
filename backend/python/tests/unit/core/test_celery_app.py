@@ -6,22 +6,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.core.celery_app import CeleryApp
+from app.services.messaging.config import RedisConfig
 
 
-_SENTINEL = object()
-
-
-def _make_config_service(redis_config=_SENTINEL):
-    """Create a mock config_service.
-
-    Pass explicit None to make get_config return None.
-    Omit argument to get a default valid Redis config.
-    """
+def _make_config_service(host="redis-host", port=6380, password=None, db=1):
+    """Mock config_service whose `get_redis_config()` resolves to a typed
+    `RedisConfig` -- the shape `configure_app()` actually consumes now that
+    Celery's broker URL is built from the connection provider (R7)."""
     config_service = MagicMock()
-    config_service.get_config = AsyncMock(
-        return_value=redis_config
-        if redis_config is not _SENTINEL
-        else {"host": "localhost", "port": 6379}
+    config_service.get_redis_config = AsyncMock(
+        return_value=RedisConfig(host=host, port=port, password=password, db=db)
     )
     return config_service
 
@@ -75,21 +69,29 @@ class TestTask:
 
 # ---------------------------------------------------------------------------
 # CeleryApp.configure_app
+#
+# kombu has no Redis Cluster transport (R7): `configure_app()` either honours
+# an explicit CELERY_BROKER_URL / CELERY_RESULT_BACKEND override, or derives
+# the broker URL from the standalone connection provider and fails fast when
+# the provider is cluster-mode and no override was given.
 # ---------------------------------------------------------------------------
 class TestConfigureApp:
     """Tests for configure_app()."""
 
     @pytest.mark.asyncio
-    async def test_configure_app_success(self):
+    async def test_configure_app_success_from_redis_config(self, monkeypatch):
+        monkeypatch.delenv("CELERY_BROKER_URL", raising=False)
+        monkeypatch.delenv("CELERY_RESULT_BACKEND", raising=False)
+        monkeypatch.delenv("REDIS_MODE", raising=False)
+
         config_service = _make_config_service(
-            {"host": "redis-host", "port": 6380, "db": 1}
+            host="redis-host", port=6380, password=None, db=1
         )
         logger = MagicMock()
         celery_app = CeleryApp(logger=logger, config_service=config_service)
         celery_app.app = MagicMock()
 
         with (
-            patch("app.core.celery_app.build_redis_url", return_value="redis://redis-host:6380/1"),
             patch.object(celery_app, "start_worker") as mock_worker,
             patch.object(celery_app, "start_beat") as mock_beat,
         ):
@@ -106,27 +108,103 @@ class TestConfigureApp:
         mock_beat.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_configure_app_raises_on_none_config(self):
-        config_service = _make_config_service(None)
-        logger = MagicMock()
-        celery_app = CeleryApp(logger=logger, config_service=config_service)
+    async def test_configure_app_applies_redis_key_namespace(self, monkeypatch):
+        """REDIS_KEY_NAMESPACE (R9) becomes kombu's `global_keyprefix` --
+        never a client-level ioredis-style prefix, which kombu's Redis
+        transport does not support."""
+        monkeypatch.delenv("CELERY_BROKER_URL", raising=False)
+        monkeypatch.delenv("CELERY_RESULT_BACKEND", raising=False)
+        monkeypatch.delenv("REDIS_MODE", raising=False)
+        monkeypatch.setenv("REDIS_KEY_NAMESPACE", "tenant-a")
 
-        with pytest.raises(ValueError, match="Redis configuration not found"):
+        config_service = _make_config_service(
+            host="redis-host", port=6380, password=None, db=1
+        )
+        celery_app = CeleryApp(logger=MagicMock(), config_service=config_service)
+        celery_app.app = MagicMock()
+
+        with (
+            patch.object(celery_app, "start_worker"),
+            patch.object(celery_app, "start_beat"),
+        ):
             await celery_app.configure_app()
 
-    @pytest.mark.asyncio
-    async def test_configure_app_raises_on_non_dict_config(self):
-        config_service = _make_config_service("not-a-dict")
-        logger = MagicMock()
-        celery_app = CeleryApp(logger=logger, config_service=config_service)
+        conf_dict = celery_app.app.conf.update.call_args[0][0]
+        assert conf_dict["broker_transport_options"] == {
+            "global_keyprefix": "tenant-a:"
+        }
+        assert conf_dict["result_backend_transport_options"] == {
+            "global_keyprefix": "tenant-a:"
+        }
 
-        with pytest.raises(ValueError, match="Redis configuration not found"):
+    @pytest.mark.asyncio
+    async def test_configure_app_no_namespace_omits_transport_options(self, monkeypatch):
+        monkeypatch.delenv("CELERY_BROKER_URL", raising=False)
+        monkeypatch.delenv("CELERY_RESULT_BACKEND", raising=False)
+        monkeypatch.delenv("REDIS_MODE", raising=False)
+        monkeypatch.delenv("REDIS_KEY_NAMESPACE", raising=False)
+
+        config_service = _make_config_service()
+        celery_app = CeleryApp(logger=MagicMock(), config_service=config_service)
+        celery_app.app = MagicMock()
+
+        with (
+            patch.object(celery_app, "start_worker"),
+            patch.object(celery_app, "start_beat"),
+        ):
             await celery_app.configure_app()
 
+        conf_dict = celery_app.app.conf.update.call_args[0][0]
+        assert "broker_transport_options" not in conf_dict
+        assert "result_backend_transport_options" not in conf_dict
+
     @pytest.mark.asyncio
-    async def test_configure_app_propagates_exception(self):
+    async def test_configure_app_prefers_explicit_broker_overrides(self, monkeypatch):
+        """An explicit override must win, and must skip the config lookup
+        entirely -- this is the escape hatch for REDIS_MODE=cluster."""
+        monkeypatch.setenv("CELERY_BROKER_URL", "redis://standalone-broker:6379/0")
+        monkeypatch.setenv("CELERY_RESULT_BACKEND", "redis://standalone-broker:6379/1")
+
         config_service = MagicMock()
-        config_service.get_config = AsyncMock(side_effect=RuntimeError("config error"))
+        config_service.get_redis_config = AsyncMock(
+            side_effect=AssertionError("must not be called when overrides are set")
+        )
+        celery_app = CeleryApp(logger=MagicMock(), config_service=config_service)
+        celery_app.app = MagicMock()
+
+        with (
+            patch.object(celery_app, "start_worker"),
+            patch.object(celery_app, "start_beat"),
+        ):
+            await celery_app.configure_app()
+
+        conf_dict = celery_app.app.conf.update.call_args[0][0]
+        assert conf_dict["broker_url"] == "redis://standalone-broker:6379/0"
+        assert conf_dict["result_backend"] == "redis://standalone-broker:6379/1"
+        config_service.get_redis_config.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_configure_app_cluster_mode_without_override_raises(self, monkeypatch):
+        monkeypatch.delenv("CELERY_BROKER_URL", raising=False)
+        monkeypatch.delenv("CELERY_RESULT_BACKEND", raising=False)
+        monkeypatch.setenv("REDIS_MODE", "cluster")
+
+        config_service = _make_config_service()
+        celery_app = CeleryApp(logger=MagicMock(), config_service=config_service)
+        celery_app.app = MagicMock()
+
+        with pytest.raises(ValueError, match="REDIS_MODE=cluster"):
+            await celery_app.configure_app()
+
+    @pytest.mark.asyncio
+    async def test_configure_app_propagates_exception(self, monkeypatch):
+        monkeypatch.delenv("CELERY_BROKER_URL", raising=False)
+        monkeypatch.delenv("CELERY_RESULT_BACKEND", raising=False)
+
+        config_service = MagicMock()
+        config_service.get_redis_config = AsyncMock(
+            side_effect=RuntimeError("config error")
+        )
         logger = MagicMock()
         celery_app = CeleryApp(logger=logger, config_service=config_service)
 

@@ -908,20 +908,40 @@ export class UserController {
         await user.save();
       }
 
-      // Role change: invalidate prior JWTs (like password change) + force logout.
+      // Role change: same as password change — invalidate every workspace
+      // session for this email, then push force_logout to each connected tab.
       if (roleChanging && id && orgId) {
         try {
-          await UserActivities.create({
-            userId: id,
-            orgId,
-            email: user.email,
-            activityType: userActivitiesType.ROLE_CHANGED,
-            ipAddress: req.ip || '',
-          });
-          NotificationContainer.getNotificationService()?.emitForceLogout(
-            String(id),
-            'role_changed',
+          const email = user.email;
+          const allMemberships = email
+            ? await Users.find({ email, isDeleted: false })
+                .select('_id orgId')
+                .lean()
+                .exec()
+            : [];
+          const memberships =
+            allMemberships.length > 0
+              ? allMemberships
+              : [{ _id: id, orgId }];
+
+          await UserActivities.insertMany(
+            memberships.map((member) => ({
+              orgId: member.orgId,
+              userId: member._id,
+              email,
+              activityType: userActivitiesType.ROLE_CHANGED,
+              ipAddress: req.ip || '',
+            })),
           );
+
+          const notificationService =
+            NotificationContainer.getNotificationService();
+          for (const member of memberships) {
+            notificationService?.emitForceLogout(
+              String(member._id),
+              'role_changed',
+            );
+          }
         } catch (invalidateError) {
           this.logger.error('Failed to invalidate session after role change', {
             userId: id,
@@ -1491,6 +1511,7 @@ export class UserController {
           emailTemplateType: 'appuserInvite',
           initiator: {
             jwtAuthToken: mailAuthToken,
+            orgId: orgId?.toString(),
           },
           usersMails: [email],
           subject: `You are invited to join ${org?.registeredName} `,
@@ -1508,6 +1529,7 @@ export class UserController {
           emailTemplateType: 'appuserInvite',
           initiator: {
             jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+            orgId: orgId?.toString(),
           },
           usersMails: [email],
           subject: `You are invited to join ${org?.registeredName} `,
@@ -2058,7 +2080,7 @@ export class UserController {
           );
         result = await this.mailService.sendMail({
           emailTemplateType: 'appuserInvite',
-          initiator: { jwtAuthToken: mailAuthToken },
+          initiator: { jwtAuthToken: mailAuthToken, orgId: orgId?.toString() },
           usersMails: [email],
           subject,
           templateData: {
@@ -2072,6 +2094,7 @@ export class UserController {
           emailTemplateType: 'appuserInvite',
           initiator: {
             jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+            orgId: orgId?.toString(),
           },
           usersMails: [email],
           subject,
@@ -2407,7 +2430,7 @@ export class UserController {
       const org = await Org.findOne({ _id: user.orgId, isDeleted: false });
       const emailSentResponse = await this.mailService.sendMail({
         emailTemplateType: 'resetEmail',
-        initiator: { jwtAuthToken: mailAuthToken },
+        initiator: { jwtAuthToken: mailAuthToken, orgId: user.orgId?.toString() },
         usersMails: [newEmail],
         subject: 'PipesHub | Verify your email !',
         templateData: {

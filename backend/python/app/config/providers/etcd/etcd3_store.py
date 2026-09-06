@@ -284,6 +284,41 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         client = await self._get_client()
         await asyncio.to_thread(client.cancel_watch, watch_id)
 
+    # -- KeyValueStore cross-process notification interface (R15) -----------
+    #
+    # etcd already has a native, cross-process watch mechanism (unlike
+    # Redis, which needs Pub/Sub bolted on) -- this just exposes it through
+    # the same three methods every store implements, so callers never check
+    # `hasattr(self.store, 'client')` / branch on KV_STORE_TYPE to reach it.
+
+    async def subscribe_changes(self, callback: Callable[[str], None]) -> int:
+        client = await self._get_client()
+
+        def _prefix_watch_adapter(event: Any) -> None:  # noqa: ANN401
+            try:
+                for evt in event.events:
+                    callback(evt.key.decode("utf-8"))
+            except Exception as e:
+                logger.error("Error in etcd prefix-watch adapter: %s", str(e))
+
+        watch_id = await asyncio.to_thread(
+            client.add_watch_prefix_callback, "/", _prefix_watch_adapter
+        )
+        self._active_watchers.append(watch_id)
+        return watch_id
+
+    async def publish_change(self, key: str) -> None:  # noqa: ARG002
+        """No-op: etcd's own watch above already notifies other processes."""
+        return None
+
+    async def unsubscribe_changes(self, handle: object) -> None:
+        if handle is None:
+            return
+        client = await self._get_client()
+        await asyncio.to_thread(client.cancel_watch, handle)
+        if handle in self._active_watchers:
+            self._active_watchers.remove(handle)
+
     async def close(self) -> None:
         """Clean up resources and close connection."""
         logger.debug("🔄 Closing ETCD3 store")

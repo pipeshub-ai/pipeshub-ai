@@ -391,7 +391,7 @@ export function McpInstanceConfigPanel({
 
   const apiTokenLabel = resolvedTemplate?.authHint?.label || t('workspace.mcpServers.form.apiToken');
   const apiTokenPlaceholder = resolvedTemplate?.authHint?.placeholder ?? undefined;
-  const credentialsPlaceholder = mode === 'edit' ? t('workspace.mcpServers.form.leaveBlankToKeep') : undefined;
+  const credentialsPlaceholder = mode === 'edit' ? t('form.leaveBlankToKeep') : undefined;
 
   const showFooter = mode === 'create' || (activeTab === 'configuration' && !isReadOnly);
 

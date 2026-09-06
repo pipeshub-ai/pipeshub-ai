@@ -21,6 +21,8 @@ on:
             - confluence
             - jira
             - linear
+            - github_teams
+            - gitlab
             - notion
             - google_drive_workspace
             - google_drive_individual
@@ -158,6 +160,22 @@ jobs:
       JIRA_TEST_PROJECT_KEYS: ${{ secrets.JIRA_TEST_PROJECT_KEYS }}
       LINEAR_TEST_API_TOKEN: ${{ secrets.LINEAR_TEST_API_TOKEN }}
       LINEAR_TEST_TEAM_IDS: ${{ secrets.LINEAR_TEST_TEAM_IDS }}
+      # GitHub Teams. Secret names may not start with GITHUB_ (reserved by Actions),
+      # hence the GH_ prefix. The token is a classic PAT — not fine-grained, which
+      # cannot reach GraphQL, used by the code-file timestamp backfill.
+      GH_TEAMS_TEST_TOKEN: ${{ secrets.GH_TEAMS_TEST_TOKEN }}
+      GH_TEAMS_TEST_ORG: ${{ secrets.GH_TEAMS_TEST_ORG }}
+      GH_TEAMS_TEST_PRIMARY_REPO: ${{ secrets.GH_TEAMS_TEST_PRIMARY_REPO }}
+      GH_TEAMS_TEST_PUBLIC_REPO: ${{ secrets.GH_TEAMS_TEST_PUBLIC_REPO }}
+      GH_TEAMS_TEST_MUTATION_REPO: ${{ secrets.GH_TEAMS_TEST_MUTATION_REPO }}
+      # GitLab. INSTANCE_URL is blank/https://gitlab.com for cloud, or the
+      # self-managed host for EE.
+      GITLAB_TEST_TOKEN: ${{ secrets.GITLAB_TEST_TOKEN }}
+      GITLAB_TEST_INSTANCE_URL: ${{ secrets.GITLAB_TEST_INSTANCE_URL }}
+      GITLAB_TEST_GROUP: ${{ secrets.GITLAB_TEST_GROUP }}
+      GITLAB_TEST_SUBGROUP: ${{ secrets.GITLAB_TEST_SUBGROUP }}
+      GITLAB_TEST_PRIMARY_PROJECT: ${{ secrets.GITLAB_TEST_PRIMARY_PROJECT }}
+      GITLAB_TEST_MUTATION_PROJECT: ${{ secrets.GITLAB_TEST_MUTATION_PROJECT }}
       NOTION_TEST_API_TOKEN: ${{ secrets.NOTION_TEST_API_TOKEN }}
       NOTION_TEST_ROOT_PAGE_ID: ${{ secrets.NOTION_TEST_ROOT_PAGE_ID }}
       NOTION_TEST_ROOT_DATABASE_ID: ${{ secrets.NOTION_TEST_ROOT_DATABASE_ID }}

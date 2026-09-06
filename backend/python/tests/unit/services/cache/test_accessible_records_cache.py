@@ -6,16 +6,43 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.cache.accessible_records_cache import AccessibleRecordsCache
+from app.services.cache.accessible_records_cache import (
+    AccessibleRecordsCache,
+    _ttl_from_env,
+)
+from app.services.cache.interface import NoopAccessibleRecordsCache
+from app.services.redis.standalone_provider import StandaloneRedisProvider
 
 ORG = "org-1"
 KB = "kb-1"
 CONNECTOR = "conn-1"
 USER = "user-1"
+
+
+class _FakePipeline:
+    """Matches redis-py: queueing (``delete``) is synchronous, only
+    ``execute()`` is awaited, and it is used as an async context manager."""
+
+    def __init__(self, redis: "FakeRedis") -> None:
+        self._redis = redis
+        self._deletes: list[str] = []
+
+    def delete(self, key):
+        self._deletes.append(key)
+        return self
+
+    async def execute(self):
+        return [await self._redis.delete(key) for key in self._deletes]
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return None
 
 
 class FakeRedis:
@@ -26,6 +53,10 @@ class FakeRedis:
         self.hashes: dict[str, dict[str, str]] = {}
         self.expires: dict[str, int] = {}
         self.calls: list[tuple] = []
+
+    def pipeline(self, transaction=False):
+        self.calls.append(("pipeline",))
+        return _FakePipeline(self)
 
     async def get(self, key):
         self.calls.append(("get", key))
@@ -82,6 +113,9 @@ class BrokenRedis(FakeRedis):
         raise ConnectionError("redis down")
 
     async def delete(self, *keys):
+        raise ConnectionError("redis down")
+
+    def pipeline(self, transaction=False):
         raise ConnectionError("redis down")
 
 
@@ -321,6 +355,10 @@ class TestOutageCost:
         async def delete(self, *a, **k) -> None:
             await self._fail("delete")
 
+        def pipeline(self, transaction=False):
+            self.ops.append("pipeline")
+            raise ConnectionError("connection refused")
+
     async def test_one_redis_op_per_call_when_down(self) -> None:
         dead = self.DeadRedis()
         cache = _cache(dead)
@@ -383,17 +421,62 @@ class TestKillSwitch:
         assert cache.enabled is False
         assert await cache.get_or_compute_kb(ORG, KB, _loader({"a": "b"})) == {"a": "b"}
 
-    async def test_ttl_env_override(self, monkeypatch) -> None:
+    async def test_disabled_create_returns_the_noop_cache(self, monkeypatch) -> None:
+        """The disabled path has nothing to do with Redis, so it returns the
+        storage-neutral no-op implementation rather than an
+        ``AccessibleRecordsCache`` holding a ``None`` client."""
         monkeypatch.setenv(AccessibleRecordsCache.ENV_ENABLED, "off")
-        monkeypatch.setenv(AccessibleRecordsCache.ENV_TTL, "45")
         cache = await AccessibleRecordsCache.create(MagicMock(), MagicMock())
-        assert cache.ttl_seconds == 45
+        assert isinstance(cache, NoopAccessibleRecordsCache)
+        assert cache.enabled is False
+        assert await cache.get_or_compute_kb(ORG, KB, _loader({"a": "b"})) == {"a": "b"}
 
-    async def test_invalid_ttl_env_falls_back(self, monkeypatch) -> None:
-        monkeypatch.setenv(AccessibleRecordsCache.ENV_ENABLED, "off")
+    def test_ttl_env_override(self, monkeypatch) -> None:
+        monkeypatch.setenv(AccessibleRecordsCache.ENV_TTL, "45")
+        assert _ttl_from_env(AccessibleRecordsCache.DEFAULT_TTL_SECONDS) == 45
+
+    def test_invalid_ttl_env_falls_back(self, monkeypatch) -> None:
         monkeypatch.setenv(AccessibleRecordsCache.ENV_TTL, "soon")
-        cache = await AccessibleRecordsCache.create(MagicMock(), MagicMock())
-        assert cache.ttl_seconds == AccessibleRecordsCache.DEFAULT_TTL_SECONDS
+        assert (
+            _ttl_from_env(AccessibleRecordsCache.DEFAULT_TTL_SECONDS)
+            == AccessibleRecordsCache.DEFAULT_TTL_SECONDS
+        )
+
+    async def test_create_closes_the_client_when_ping_fails(self, monkeypatch) -> None:
+        """`create_client()` hands out a caller-owned client -- a failed
+        setup ping must not leak that connection."""
+        monkeypatch.delenv(AccessibleRecordsCache.ENV_ENABLED, raising=False)
+        config = MagicMock()
+        config.get_redis_config = AsyncMock(
+            return_value=MagicMock(host="localhost", port=6379, password=None, db=0)
+        )
+        client = AsyncMock()
+        client.ping = AsyncMock(side_effect=ConnectionError("down"))
+
+        with patch.object(StandaloneRedisProvider, "create_client", lambda self, *a, **k: client):
+            cache = await AccessibleRecordsCache.create(MagicMock(), config)
+
+        assert isinstance(cache, NoopAccessibleRecordsCache)
+        client.aclose.assert_awaited_once()
+
+    async def test_create_picks_up_redis_key_namespace(self, monkeypatch) -> None:
+        """REDIS_KEY_NAMESPACE (R9) is read from the provider `create()`
+        builds and applied by the key builders -- never as a client-level
+        prefix."""
+        monkeypatch.delenv(AccessibleRecordsCache.ENV_ENABLED, raising=False)
+        monkeypatch.setenv("REDIS_KEY_NAMESPACE", "tenant-a")
+        config = MagicMock()
+        config.get_redis_config = AsyncMock(
+            return_value=MagicMock(host="localhost", port=6379, password=None, db=0)
+        )
+        client = AsyncMock()
+        client.ping = AsyncMock()
+
+        with patch.object(StandaloneRedisProvider, "create_client", lambda self, *a, **k: client):
+            cache = await AccessibleRecordsCache.create(MagicMock(), config)
+
+        assert cache.enabled is True
+        assert cache._kb_key(ORG, KB) == f"tenant-a:{AccessibleRecordsCache.KEY_PREFIX}:kb:{ORG}:{KB}"
 
 
 class TestRedisDown:
@@ -473,6 +556,29 @@ class TestInvalidation:
         cache = _cache(redis, enabled=False)
         await cache.invalidate_kb(ORG, KB)
         assert not redis.calls
+
+
+class TestCrossSlotSafety:
+    """Regression test for R5: `invalidate_connector` deletes two keys
+    (`capp:` and `cusr:`) that land in different Redis Cluster hash slots
+    for the same org/connector. `FakeClusterRedis` enforces the CROSSSLOT
+    rule `fakeredis` does not, so this fails if `_delete` regresses back to
+    a single multi-key `DEL`."""
+
+    async def test_invalidate_connector_survives_cross_slot_keys(self) -> None:
+        from tests.support.fake_cluster_redis import FakeClusterRedis
+
+        fake = FakeClusterRedis()
+        cache = _cache(fake)
+        await cache.get_or_compute_app_connector(ORG, CONNECTOR, _loader({"a": "1"}))
+        await cache.get_or_compute_user_connector(ORG, CONNECTOR, USER, _loader({"b": "2"}))
+
+        # Must not raise ClusterCrossSlotError even though the two keys
+        # (`capp:`/`cusr:`) land in different hash slots.
+        await cache.invalidate_connector(ORG, CONNECTOR)
+
+        assert await fake.get(cache._app_connector_key(ORG, CONNECTOR)) is None
+        assert await fake.hget(cache._user_connector_key(ORG, CONNECTOR), USER) is None
 
 
 class TestClose:
