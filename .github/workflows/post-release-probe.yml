@@ -30,7 +30,10 @@ permissions:
 
 concurrency:
   group: post-release-probe
-  cancel-in-progress: true
+  # Not cancel-in-progress: a scheduled run that passes would otherwise cancel a
+  # failing one before it opened the issue, so an outage that recovered between
+  # two probes would leave no trace.
+  cancel-in-progress: false
 
 jobs:
   probe:

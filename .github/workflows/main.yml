@@ -208,10 +208,15 @@ jobs:
       - name: Install actionlint
         env:
           ACTIONLINT_VERSION: 1.7.7
+          # Checksum of the pinned release tarball. Without it this step trusts
+          # whatever the URL returns, which is a release asset a third party can
+          # replace — and it runs on every pull request.
+          ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
         run: |
           set -euo pipefail
           url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           curl -fsSL "$url" -o /tmp/actionlint.tar.gz
+          echo "${ACTIONLINT_SHA256}  /tmp/actionlint.tar.gz" | sha256sum -c -
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           sudo install -m 0755 /tmp/actionlint /usr/local/bin/actionlint
           actionlint --version

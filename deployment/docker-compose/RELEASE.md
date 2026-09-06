@@ -64,6 +64,28 @@ Seeding goes through the API rather than writing to the databases, so the test
 exercises the same path a user does and does not break every time a migration
 renames a collection.
 
+### The very first automated release
+
+The upgrade gate installs the previous release and moves to the candidate, so it
+needs a previous release to exist. It finds one by listing published tags and
+taking the newest that parses as semver.
+
+If no published semver tag exists yet — a first release, or a registry that has
+only rolling tags such as `latest` and `slim` — that lookup fails with:
+
+```
+could not resolve the newest published release; set PIPESHUB_BASE_VERSION
+```
+
+Name the version to upgrade from explicitly in that case:
+
+```bash
+PIPESHUB_BASE_VERSION=0.6.0 bash deployment/docker-compose/tests/upgrade_smoke.sh
+```
+
+or set `PIPESHUB_BASE_VERSION` on the workflow run. It is not needed once one
+semver tag has been published, which is why it is not set by default.
+
 ## When a gate fails
 
 The release is not published. `:latest` still points at the previous image, and

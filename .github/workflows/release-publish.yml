@@ -225,7 +225,9 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Install crane
-        uses: imjasonh/setup-crane@v0.4
+        # Pinned by commit: a tag can be moved, and this step is what
+        # promotes images to the tags users pull.
+        uses: imjasonh/setup-crane@31b88efe9de28ae0ffa220711af4b60be9435f6e # v0.4
 
       # Copy by digest rather than rebuilding, so the tag a user pulls is
       # byte-identical to the image the smoke and upgrade tests just passed.
