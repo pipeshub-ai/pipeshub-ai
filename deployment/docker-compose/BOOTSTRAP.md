@@ -48,7 +48,7 @@ cp bootstrap-first-run.env.example bootstrap-first-run.env
   --token-file "$HOME/.config/pipeshub/token"
 ```
 
-The script refuses a public DNS origin unless `PIPESHUB_ALLOW_NONLOCAL=1`. Keep first-run on localhost: `POST /api/v1/org` is whoever-reaches-it-first.
+The script refuses a public DNS origin unless `PIPESHUB_ALLOW_NONLOCAL=1`, and that override still requires `https://`. Keep first-run on localhost: `POST /api/v1/org` is whoever-reaches-it-first.
 
 ## Tests
 

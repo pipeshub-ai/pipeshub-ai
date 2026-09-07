@@ -172,6 +172,27 @@ else
   pass "no PAT on origin-reject stderr/stdout"
 fi
 
+echo "== refuses non-local HTTP even with ALLOW_NONLOCAL =="
+envf="$TMP_ROOT/nonlocal-http.env"
+make_env "$envf"
+printf '\nPIPESHUB_ORIGIN=http://example.com\nPIPESHUB_ALLOW_NONLOCAL=1\n' >>"$envf"
+out="$TMP_ROOT/nonlocal-http.out"
+if "$BOOTSTRAP" --env-file "$envf" --token-file "$TMP_ROOT/should-not-exist-http" >"$out" 2>&1; then
+  fail "non-local HTTP should fail"
+else
+  if grep -q "must use https" "$out"; then
+    pass "non-local HTTP refused"
+  else
+    fail "non-local HTTP error message"
+    cat "$out"
+  fi
+fi
+if [[ -e "$TMP_ROOT/should-not-exist-http" ]]; then
+  fail "token file must not be created on non-local HTTP reject"
+else
+  pass "no token file on non-local HTTP reject"
+fi
+
 echo "== refuses existing org =="
 bindir="$TMP_ROOT/bin-exists"
 CURL_LOG="$TMP_ROOT/exists.log"; export CURL_LOG

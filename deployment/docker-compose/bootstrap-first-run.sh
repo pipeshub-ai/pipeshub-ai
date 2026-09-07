@@ -172,27 +172,39 @@ if [[ "$LLM_PROVIDER" != "ollama" && -z "$LLM_API_KEY" ]]; then
   die "PIPESHUB_LLM_API_KEY is required for provider $LLM_PROVIDER"
 fi
 
-python3 - "$ORIGIN" "$ALLOW_NONLOCAL" <<'PY' || die "origin is not loopback/private; set PIPESHUB_ALLOW_NONLOCAL=1 if you intend a remote empty instance (first-claimer-wins)"
+origin_rc=0
+python3 - "$ORIGIN" "$ALLOW_NONLOCAL" <<'PY' || origin_rc=$?
 import ipaddress, sys, urllib.parse
 origin, allow = sys.argv[1], sys.argv[2]
-if allow == "1":
-    sys.exit(0)
 u = urllib.parse.urlparse(origin)
 if u.scheme not in ("http", "https") or not u.netloc:
     sys.exit(1)
 host = (u.hostname or "").lower()
+local = False
 if host in ("localhost", "host.docker.internal"):
+    local = True
+elif host.endswith((".local", ".internal", ".svc")) or "." not in host:
+    local = True
+else:
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is not None and (ip.is_loopback or ip.is_private or ip.is_link_local):
+        local = True
+if local:
     sys.exit(0)
-if host.endswith((".local", ".internal", ".svc")) or "." not in host:
-    sys.exit(0)
-try:
-    ip = ipaddress.ip_address(host)
-except ValueError:
+if allow != "1":
     sys.exit(1)
-if ip.is_loopback or ip.is_private or ip.is_link_local:
-    sys.exit(0)
-sys.exit(1)
+if u.scheme != "https":
+    sys.exit(2)
+sys.exit(0)
 PY
+if [[ "$origin_rc" -eq 2 ]]; then
+  die "non-local origin must use https"
+elif [[ "$origin_rc" -ne 0 ]]; then
+  die "origin is not loopback/private; set PIPESHUB_ALLOW_NONLOCAL=1 if you intend a remote empty instance (first-claimer-wins)"
+fi
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/pipeshub-bootstrap.XXXXXX")"
 chmod 700 "$WORKDIR"
