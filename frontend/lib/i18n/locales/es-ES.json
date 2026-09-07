@@ -2403,7 +2403,9 @@
         "redis": {
           "label": "Redis",
           "descriptionWithKvStore": "Caché, limitación de velocidad y configuración",
-          "description": "Caché y limitación de velocidad"
+          "description": "Caché y limitación de velocidad",
+          "modeCluster": "Clúster",
+          "modeMemorydb": "MemoryDB"
         },
         "mongodb": {
           "label": "MongoDB",

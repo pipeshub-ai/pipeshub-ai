@@ -13,25 +13,16 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.services.cache.accessible_records_cache import AccessibleRecordsCache
-from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
-from tests.support.fake_cluster_redis import FakeClusterRedis
-
 fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
 
+from app.services.cache.accessible_records_cache import AccessibleRecordsCache
+from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
+from tests.support.redis_provider_matrix import CLIENT_TRANSPORTS as TRANSPORTS
 
-def _standalone_client() -> "fakeredis_aioredis.FakeRedis":
-    return fakeredis_aioredis.FakeRedis(decode_responses=True)
-
-
-def _cluster_client() -> FakeClusterRedis:
-    return FakeClusterRedis()
-
-
-TRANSPORTS = [
-    pytest.param(_standalone_client, id="standalone"),
-    pytest.param(_cluster_client, id="cluster"),
-]
+# `TRANSPORTS` (standalone/cluster) comes from
+# `tests/support/redis_provider_matrix.py` (T4) so an EE `conftest.py` can
+# append a `memorydb` entry and run this same suite against it with no
+# changes here.
 
 
 @pytest.mark.asyncio

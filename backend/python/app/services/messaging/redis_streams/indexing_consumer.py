@@ -48,10 +48,13 @@ from app.services.messaging.scheduling.interface import (
     FairSchedulerConfig,
     WeightProvider,
 )
-from app.services.messaging.scheduling.key_extractors import CompositeKeyExtractor
+from app.services.messaging.scheduling.key_extractors import (
+    CompositeKeyExtractor,
+    TieredKeyExtractor,
+)
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
-from app.services.resource_governor import ParseTier, Pool, classify
+from app.services.resource_governor import ParseTier, Pool
 from app.telemetry.modules import scheduling_metrics as metrics
 from app.utils.cpu_offload import offload_if_large
 from app.utils.request_context import (
@@ -170,7 +173,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self.message_handler: IndexingMessageHandler | None = None
         self._active_futures: set[Future[bool]] = set()
         self._futures_lock = threading.Lock()
-        self._gate_waiters = 0
+        self.gate_waiters = concurrency.GateWaiters()
         self._backpressure_active = False
         self._consecutive_empty_polls = 0
         self._idle_threshold = 3  # Drain pending after N consecutive empty polls
@@ -189,8 +192,16 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self.fair_scheduler_config = fair_scheduler_config or FairSchedulerConfig(
             enabled=False
         )
-        self.key_extractor: FairnessKeyExtractor = key_extractor or CompositeKeyExtractor(
+        entity_extractor: FairnessKeyExtractor = key_extractor or CompositeKeyExtractor(
             fields=self.fair_scheduler_config.key_fields
+        )
+        # The tier level is appended here rather than by the factory because
+        # it depends on this consumer's governor (a collapsed light budget
+        # routes every record to heavy) -- see consumer_concurrency.dispatch_tier.
+        self.key_extractor: FairnessKeyExtractor = (
+            TieredKeyExtractor(entity_extractor, tier_of=self._dispatch_tier_name)
+            if self.fair_scheduler_config.tier_level
+            else entity_extractor
         )
         self.weight_provider = weight_provider
         self._scheduler: (
@@ -484,6 +495,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.worker_loop = None
         with self._futures_lock:
             self._active_futures.clear()
+        # After the loop is gone no token can admit or release, so any count
+        # left is a phantom that would throttle the next start().
+        self.gate_waiters.reset()
         with self._in_flight_lock:
             self._in_flight_message_ids.clear()
             self._in_flight_record_ids.clear()
@@ -525,8 +539,21 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         with self._futures_lock:
             return len(self._active_futures)
 
-    def _get_gate_waiter_count(self) -> int:
-        return concurrency.get_gate_waiter_count(self)
+    def _get_gate_waiter_count(self, tier: ParseTier | None = None) -> int:
+        return concurrency.get_gate_waiter_count(self, tier)
+
+    def _dispatch_budget(self) -> concurrency.DispatchBudget:
+        """Room to spawn tasks this turn. Per tier only with a scheduler:
+        the broker-order path cannot pass over a record to reach another
+        tier's, so a tier ceiling there would just stall the stream head."""
+        return concurrency.dispatch_budget(self, tiered=self._scheduler is not None)
+
+    def _dispatch_tier_name(self, message: StreamMessage) -> str:
+        return concurrency.dispatch_tier(self, message).value
+
+    def dispatch_stats(self) -> dict[str, Any]:
+        """Dispatch admission state for the health endpoint."""
+        return self._dispatch_budget().as_dict()
 
     def _is_in_flight(self, message_id: str) -> bool:
         with self._in_flight_lock:
@@ -819,14 +846,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # Phase 1: claim idle messages from other (possibly crashed) consumers
             start_id = "0-0"
             while self.running:
-                waiter_count = self._get_gate_waiter_count()
-                pending_ceiling = concurrency.pending_task_ceiling(self)
-                if waiter_count >= pending_ceiling:
+                budget = self._dispatch_budget()
+                if budget.blocked:
                     await asyncio.sleep(0.5)
                     continue
-                claim_budget = self.__recovery_claim_budget(
-                    pending_ceiling - waiter_count
-                )
+                claim_budget = self.__recovery_claim_budget(budget.remaining)
                 if claim_budget <= 0:
                     break
                 try:
@@ -846,10 +870,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                             return processed_any
                         if self._is_in_flight(message_id):
                             continue
-                        if (
-                            self._get_gate_waiter_count()
-                            >= concurrency.pending_task_ceiling(self)
-                        ):
+                        if self._dispatch_budget().blocked:
                             break
                         try:
                             parsed_message = await self._parse_message(message_id, fields)
@@ -898,13 +919,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 continue
             last_pending_id = "0"
             while self.running:
-                waiter_count = self._get_gate_waiter_count()
-                pending_ceiling = concurrency.pending_task_ceiling(self)
-                if waiter_count >= pending_ceiling:
+                budget = self._dispatch_budget()
+                if budget.blocked:
                     await asyncio.sleep(0.5)
                     continue
                 try:
-                    available_capacity = pending_ceiling - waiter_count
+                    available_capacity = budget.remaining
                     results = await self.redis.xreadgroup(  # type: ignore
                         groupname=self.config.group_id,
                         consumername=self.consumer_name,
@@ -929,10 +949,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                 drained_any = True
                                 last_pending_id = message_id
                                 continue
-                            if (
-                                self._get_gate_waiter_count()
-                                >= concurrency.pending_task_ceiling(self)
-                            ):
+                            if self._dispatch_budget().blocked:
                                 break
                             drained_any = True
                             last_pending_id = message_id
@@ -1145,6 +1162,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             metrics.record_lanes_paused(
                 "redis", len({stream for stream, *_r in self._deferred_entries})
             )
+            for tier, count in self.gate_waiters.snapshot().items():
+                metrics.record_gate_waiters("redis", tier.value, count)
         except Exception as e:
             self.logger.debug("Failed to publish scheduler metrics: %s", e)
 
@@ -1159,20 +1178,24 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         entries in arrival order.
         """
         parked = self._deferred_entries
-        if not parked:
+        scheduler = self._scheduler
+        if not parked or scheduler is None:
             return
+        # Keyed by entity, not by leaf: the per-entity cap is what refused
+        # these, and it spans every tier leaf of one connector.
         still_full: set[FairnessKey] = set()
         kept: deque[
             tuple[str, str, dict[str, str], StreamMessage, FairnessKey, float]
         ] = deque()
         for entry in parked:
             stream_name, message_id, fields, parsed, key, _parked_at = entry
-            if key in still_full:
+            entity = scheduler.entity_key(key)
+            if entity in still_full:
                 kept.append(entry)
                 continue
             if self.__try_enqueue(stream_name, message_id, fields, parsed):
                 continue
-            still_full.add(key)
+            still_full.add(entity)
             kept.append(entry)
         self._deferred_entries = kept
 
@@ -1422,8 +1445,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
     async def __read_phase(self) -> None:
         """Read a batch and enqueue each entry into the DRR scheduler."""
-        waiter_count = self._get_gate_waiter_count()
-        pending_ceiling = concurrency.pending_task_ceiling(self)
+        budget = self._dispatch_budget()
         saturated = concurrency.index_gates_saturated(self)
         scheduler = self._scheduler
         if scheduler is None:
@@ -1437,13 +1459,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             >= self.fair_scheduler_config.max_buffered_messages
         )
 
-        if waiter_count >= pending_ceiling or saturated or scheduler_full:
+        if budget.blocked or saturated or scheduler_full:
             if not self._backpressure_active:
                 self.logger.warning(
-                    "Backpressure engaged: %d tasks waiting for indexing "
-                    "admission (index gates saturated: %s, scheduler buffer "
-                    "full: %s)",
-                    waiter_count,
+                    "Backpressure engaged: tasks waiting for indexing "
+                    "admission %s (index gates saturated: %s, scheduler "
+                    "buffer full: %s)",
+                    budget.describe(),
                     saturated,
                     scheduler_full,
                 )
@@ -1451,9 +1473,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             await asyncio.sleep(0.5)
             return
         elif self._backpressure_active:
-            self.logger.info(
-                "Backpressure cleared: %d/%d", waiter_count, pending_ceiling
-            )
+            self.logger.info("Backpressure cleared: %s", budget.describe())
             self._backpressure_active = False
 
         # Skip lanes holding parked entries, so the shared buffer budget goes
@@ -1546,12 +1566,18 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         scheduler = self._scheduler
         if scheduler is None:
             return
+        budget = self._dispatch_budget()
 
         def can_dispatch(
             item: tuple[str, str, dict[str, str], StreamMessage, float],
         ) -> bool:
-            _stream_name, message_id, _fields, _parsed, _buffered_at = item
-            return not self._is_in_flight(message_id)
+            _stream_name, message_id, _fields, parsed, _buffered_at = item
+            # A tier at its ceiling is passed over, not waited on: DRR skips
+            # the leaf without charging it and moves to the entity's other
+            # tier or the next entity.
+            return not self._is_in_flight(message_id) and budget.allows(
+                concurrency.dispatch_tier(self, parsed)
+            )
 
         while self.running:
             # Re-checked inside the loop, not just once per iteration in
@@ -1559,12 +1585,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # downstream 429 arriving part-way through must stop the rest of
             # them rather than being honoured only on the next poll. Mirrors
             # the Kafka dispatch phase.
+            budget = self._dispatch_budget()
             downstream_paused = (
                 self.backpressure_coordinator is not None
                 and self.backpressure_coordinator.is_paused()
             )
             if (
-                self._get_gate_waiter_count() >= concurrency.pending_task_ceiling(self)
+                budget.blocked
                 or downstream_paused
                 or concurrency.index_gates_saturated(self)
             ):
@@ -1610,20 +1637,19 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         self.__publish_scheduler_metrics()
                         continue
 
-                    waiter_count = self._get_gate_waiter_count()
-                    pending_ceiling = concurrency.pending_task_ceiling(self)
+                    budget = self._dispatch_budget()
                     # Saturation matters as much as queue depth: with both
                     # index pools full and nothing queued behind them, the
                     # waiter count reads zero while the node cannot start a
                     # single further record. Claiming more entries then only
                     # grows this consumer's PEL.
                     saturated = concurrency.index_gates_saturated(self)
-                    if waiter_count >= pending_ceiling or saturated:
+                    if budget.blocked or saturated:
                         if not self._backpressure_active:
                             self.logger.warning(
-                                "Backpressure engaged: %d tasks waiting for "
-                                "indexing admission (index gates saturated: %s)",
-                                waiter_count,
+                                "Backpressure engaged: tasks waiting for "
+                                "indexing admission %s (index gates saturated: %s)",
+                                budget.describe(),
                                 saturated,
                             )
                             self._backpressure_active = True
@@ -1631,14 +1657,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         continue
                     elif self._backpressure_active:
                         self.logger.info(
-                            "Backpressure cleared: %d/%d",
-                            waiter_count,
-                            pending_ceiling,
+                            "Backpressure cleared: %s", budget.describe()
                         )
                         self._backpressure_active = False
 
                     streams = dict.fromkeys(self.config.topics, ">")
-                    available_capacity = pending_ceiling - waiter_count
+                    available_capacity = budget.remaining
                     results = await self._xreadgroup_grouped(
                         streams,
                         count=min(
@@ -1669,10 +1693,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         for message_id, fields in messages:
                             if not self.running:
                                 break
-                            if (
-                                self._get_gate_waiter_count()
-                                >= concurrency.pending_task_ceiling(self)
-                            ):
+                            if self._dispatch_budget().blocked:
                                 break
                             try:
                                 self.logger.debug(
@@ -1749,7 +1770,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return
 
         self._mark_in_flight(message_id)
-        waiter_token = concurrency.GateWaiterToken(self)
+        if parsed_message is None:
+            # The broker-order path spawns from raw fields; the tier has to
+            # be known before the token exists. The wrapper reuses this parse.
+            parsed_message = await self._parse_message(message_id, fields)
+        waiter_token = concurrency.GateWaiterToken(
+            self, concurrency.dispatch_tier(self, parsed_message)
+        )
         processing_coro = self._process_message_wrapper(
             stream_name,
             message_id,
@@ -2124,13 +2151,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # too small to split, the light tier is collapsed away and every
         # record routes to heavy (see effective_index_tier). The gate, the
         # lease limit and the lease pool name all have to agree on that.
-        index_tier = concurrency.effective_index_tier(
-            self,
-            classify(
-                str(parsed_message.payload.get("extension") or ""),
-                str(parsed_message.payload.get("mimeType") or ""),
-            ),
-        )
+        index_tier = concurrency.dispatch_tier(self, parsed_message)
         index_lease_pool = concurrency.index_lease_pool(index_tier)
 
         try:

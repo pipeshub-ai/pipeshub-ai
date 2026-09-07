@@ -49,6 +49,7 @@ function setupIoredisMock(mockClient: MockRedisClient) {
     getClient: sinon.stub().returns(mockClient),
     createClient: sinon.stub().returns(mockClient),
     createPubSubClient: sinon.stub().returns(mockClient),
+    prepare: sinon.stub().resolves(),
     release: sinon.stub(),
     keySlot: sinon.stub().returns(0),
     loadScript: sinon.stub().resolves('fakesha'),

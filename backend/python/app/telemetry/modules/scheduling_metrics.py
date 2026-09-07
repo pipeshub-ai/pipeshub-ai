@@ -66,6 +66,15 @@ MISSING_KEY = METRICS_BACKEND.counter(
     ["broker", "field"],
 )
 
+# Bounded: one series per index tier. A heavy tier pinned at its ceiling
+# while light reads zero is the signature of attachments queueing on the
+# heavy-parse slots -- healthy, as long as light keeps moving.
+GATE_WAITERS = METRICS_BACKEND.gauge(
+    "pipeshub_indexing_gate_waiters",
+    "Tasks spawned but not yet admitted through their index gate, by tier",
+    ["broker", "tier"],
+)
+
 
 def record_watermark_lag(topic: str, partition: int, lag: int) -> None:
     WATERMARK_LAG.set(topic, str(partition), value=lag)
@@ -97,3 +106,7 @@ def record_dwell_exceeded(broker: str, count: int = 1) -> None:
 
 def record_missing_key(broker: str, field: str) -> None:
     MISSING_KEY.inc(broker, field)
+
+
+def record_gate_waiters(broker: str, tier: str, count: int) -> None:
+    GATE_WAITERS.set(broker, tier, value=count)

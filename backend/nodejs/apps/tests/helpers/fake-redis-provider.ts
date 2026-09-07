@@ -111,6 +111,7 @@ export interface FakeRedisProvider extends IRedisConnectionProvider {
   getClient: sinon.SinonStub;
   createClient: sinon.SinonStub;
   createPubSubClient: sinon.SinonStub;
+  prepare: sinon.SinonStub;
   release: sinon.SinonStub;
   scanKeys: sinon.SinonStub;
   /**
@@ -128,6 +129,15 @@ export interface FakeRedisProvider extends IRedisConnectionProvider {
   createdClients: FakeRedisClient[];
 }
 
+/** Toggle the topology a fake provider reports (T4) -- the same shape a
+ * real `StandaloneRedisProvider` / `ClusterRedisProvider` (or an
+ * EE `memorydb` provider) exposes via `isCluster`/`mode`, without changing
+ * how commands behave underneath. */
+export interface FakeRedisProviderOptions {
+  isCluster?: boolean;
+  mode?: string;
+}
+
 /**
  * Build a fake provider. `createClient()` returns a fresh client each call
  * (from `clientFactory`, defaulting to `makeFakeRedisClient`); `getClient()`
@@ -136,14 +146,16 @@ export interface FakeRedisProvider extends IRedisConnectionProvider {
 export function createFakeRedisProvider(
   clientFactory: () => FakeRedisClient = makeFakeRedisClient,
   keyNamespace = '',
+  options: FakeRedisProviderOptions = {},
 ): FakeRedisProvider {
   const createdClients: FakeRedisClient[] = [];
   const sharedClient = clientFactory();
   let scanResults: string[] = [];
+  const isCluster = options.isCluster ?? false;
 
   const provider: FakeRedisProvider = {
-    isCluster: false,
-    mode: 'standalone',
+    isCluster,
+    mode: options.mode ?? (isCluster ? 'cluster' : 'standalone'),
     keyNamespace,
     getClient: sinon.stub().callsFake(() => sharedClient),
     createClient: sinon.stub().callsFake(() => {
@@ -152,6 +164,7 @@ export function createFakeRedisProvider(
       return client;
     }),
     createPubSubClient: sinon.stub().callsFake(() => clientFactory()),
+    prepare: sinon.stub().resolves(),
     release: sinon.stub(),
     scanKeys: sinon.stub().callsFake(async function* (): AsyncIterable<string> {
       yield* scanResults;

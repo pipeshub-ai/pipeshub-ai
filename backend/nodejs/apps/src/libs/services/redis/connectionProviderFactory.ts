@@ -167,6 +167,30 @@ export function getRedisProvider(
   return provider;
 }
 
+const preparedProviders = new WeakSet<IRedisConnectionProvider>();
+
+/**
+ * `getRedisProvider()` plus a one-time `await provider.prepare()` (F1).
+ *
+ * Use this from any async startup path -- `app.ts` calls it immediately
+ * after `ensureProviderModuleLoaded()` and before
+ * `loadConfigurationManagerConfig()` builds the KV store, so an EE provider
+ * with rotating credentials (MemoryDB IAM tokens -- R21) resolves them
+ * before the first client is built. Sync call sites can keep using
+ * `getRedisProvider()`; both share the same cached instance either way.
+ */
+export async function getPreparedRedisProvider(
+  config?: RedisConnectionConfig,
+  mode?: string,
+): Promise<IRedisConnectionProvider> {
+  const provider = getRedisProvider(config, mode);
+  if (!preparedProviders.has(provider)) {
+    await provider.prepare();
+    preparedProviders.add(provider);
+  }
+  return provider;
+}
+
 /**
  * Close every provider this process built, releasing their connections.
  * Call once from application shutdown -- without it the shared clients (and,

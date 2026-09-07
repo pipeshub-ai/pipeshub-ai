@@ -14,7 +14,10 @@ from app.services.messaging.scheduling.interface import (
     FairSchedulerConfig,
     WeightProvider,
 )
-from app.services.messaging.scheduling.key_extractors import CompositeKeyExtractor
+from app.services.messaging.scheduling.key_extractors import (
+    CompositeKeyExtractor,
+    TieredKeyExtractor,
+)
 from app.services.messaging.scheduling.offset_tracker import PartitionOffsetTracker
 
 __all__ = [
@@ -25,5 +28,6 @@ __all__ = [
     "FairSchedulerConfig",
     "WeightProvider",
     "CompositeKeyExtractor",
+    "TieredKeyExtractor",
     "PartitionOffsetTracker",
 ]

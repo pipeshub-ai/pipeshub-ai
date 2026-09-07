@@ -85,3 +85,39 @@ class TestConfigurableFields:
         disabling fairness -- fail at construction instead."""
         with pytest.raises(ValueError):
             CompositeKeyExtractor(fields=())
+
+
+class TestTieredKeyExtractor:
+    def test_appends_the_tier_below_the_entity_levels(self):
+        from app.services.messaging.scheduling.key_extractors import TieredKeyExtractor
+
+        extractor = TieredKeyExtractor(
+            CompositeKeyExtractor(), tier_of=lambda m: "heavy"
+        )
+        key = extractor.extract(_message({"orgId": "org-1", "connectorId": "c1"}))
+        assert key == ("org-1", "c1", "heavy")
+        assert extractor.inner.fields == ("orgId", "connectorId")
+
+    def test_tier_comes_from_the_callable_not_the_payload(self):
+        from app.services.messaging.scheduling.key_extractors import TieredKeyExtractor
+
+        seen = []
+
+        def tier_of(message):
+            seen.append(message.payload.get("extension"))
+            return "light"
+
+        extractor = TieredKeyExtractor(CompositeKeyExtractor(), tier_of=tier_of)
+        assert extractor.extract(_message({"extension": "txt"})) == (
+            "__default__",
+            "__default__",
+            "light",
+        )
+        assert seen == ["txt"]
+
+    def test_satisfies_the_extractor_protocol(self):
+        from app.services.messaging.scheduling.interface import FairnessKeyExtractor
+        from app.services.messaging.scheduling.key_extractors import TieredKeyExtractor
+
+        extractor = TieredKeyExtractor(CompositeKeyExtractor(), tier_of=lambda m: "light")
+        assert isinstance(extractor, FairnessKeyExtractor)

@@ -59,6 +59,7 @@ describe('Redis Streams reconnect after disconnect', () => {
         clients.push(c);
         return c;
       }),
+      prepare: sinon.stub().resolves(),
       createPubSubClient: sinon.stub().callsFake(() => makeClient()),
       keySlot: sinon.stub().returns(0),
       loadScript: sinon.stub().resolves('fakesha'),
