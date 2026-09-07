@@ -28,6 +28,7 @@ from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
     PipelineEventData,
+    StreamMessage,
     Topic,
 )
 from app.services.messaging.error_classifier import (
@@ -60,6 +61,144 @@ class RecordEventHandler(BaseEventService):
 
         self.event_processor : EventProcessor = event_processor
         self.producer = producer
+
+    # Statuses that already describe a finished record. Abandoning a duplicate
+    # delivery of one of these must not rewrite it as a failure. FAILED is
+    # included so that when the handler ran and recorded its own specific
+    # reason, this does not overwrite it with the generic one — while a record
+    # whose handler never ran still gets marked here.
+    _SETTLED_STATUSES = frozenset({
+        ProgressStatus.COMPLETED.value,
+        ProgressStatus.EMPTY.value,
+        ProgressStatus.AUTO_INDEX_OFF.value,
+        ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+        ProgressStatus.FAILED.value,
+    })
+
+    async def on_message_abandoned(
+        self,
+        message: StreamMessage | None,
+        *,
+        reason: str,
+        attempts: int,
+    ) -> None:
+        """Put a record into a terminal state when its message is discarded.
+
+        Implements ``AbandonedMessageSink``. Without this a discarded message
+        leaves its record on whatever status it was created with — QUEUED —
+        which no recovery path revisits, so the record is stranded silently and
+        for ever.
+
+        Never raises: the caller is on its way to an acknowledgement that has to
+        happen either way.
+        """
+        if message is None:
+            self.logger.error(
+                "Discarded an unparseable message (%s); no record could be identified",
+                reason,
+            )
+            return
+
+        payload = message.payload or {}
+        record_id = payload.get("recordId")
+        if not record_id:
+            # Bulk-delete, membership-sync and collection-delete events carry no
+            # record; there is nothing to mark.
+            self.logger.warning(
+                "Discarded %s message with no recordId after %d attempt(s): %s",
+                message.eventType,
+                attempts,
+                reason,
+            )
+            return
+
+        record_id = str(record_id)
+        try:
+            record = await self.event_processor.graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.warning(
+                    "Discarded message for record %s after %d attempt(s); "
+                    "record no longer exists: %s",
+                    record_id,
+                    attempts,
+                    reason,
+                )
+                return
+
+            current_status = record.get("indexingStatus")
+            if current_status in self._SETTLED_STATUSES:
+                self.logger.info(
+                    "Discarded message for record %s after %d attempt(s); "
+                    "leaving settled status %s untouched: %s",
+                    record_id,
+                    attempts,
+                    current_status,
+                    reason,
+                )
+                return
+
+            # The check above is a read, so it cannot stand on its own: a
+            # concurrent delivery can finish the record between that read and
+            # this write, and an unconditional write would bury a COMPLETED
+            # record as FAILED. Claim the transition from the exact status we
+            # saw instead -- if anything moved it in the meantime the swap
+            # misses, and whatever it became is not ours to overwrite.
+            claimed = await self.event_processor.graph_provider.compare_and_set_indexing_status(
+                [record_id],
+                current_status,
+                ProgressStatus.FAILED.value,
+            )
+            if not claimed:
+                self.logger.info(
+                    "Discarded message for record %s after %d attempt(s); it "
+                    "moved on from %s before it could be marked, leaving it "
+                    "alone: %s",
+                    record_id,
+                    attempts,
+                    current_status,
+                    reason,
+                )
+                return
+
+            # The record is ours now (nothing else can swap out of FAILED), so
+            # fill in the remaining fields through the usual writer, which also
+            # preserves a completed extraction and mirrors parsingStatus.
+            updated = await self.__update_document_status(
+                record_id=record_id,
+                indexing_status=ProgressStatus.FAILED.value,
+                extraction_status=ProgressStatus.FAILED.value,
+                reason=f"Message discarded after {attempts} attempt(s): {reason}",
+            )
+            if updated is None:
+                # The status write is the only trace this record will ever get,
+                # so a silent failure here recreates the bug this method exists
+                # to fix.
+                self.logger.error(
+                    "Failed to mark record %s FAILED after its message was "
+                    "discarded (%s); it may remain in %s",
+                    record_id,
+                    reason,
+                    current_status,
+                )
+                return
+
+            self.logger.error(
+                "Record %s marked FAILED: message discarded after %d attempt(s): %s",
+                record_id,
+                attempts,
+                reason,
+            )
+        except Exception as e:
+            self.logger.error(
+                "Error while marking record %s FAILED after its message was "
+                "discarded (%s): %s",
+                record_id,
+                reason,
+                e,
+                exc_info=True,
+            )
 
     async def _propagate_primary_failure_to_queued_duplicates(
         self,
@@ -377,6 +516,7 @@ class RecordEventHandler(BaseEventService):
         error_occurred = False
         error_msg = None
         last_exception: Exception | None = None
+        cancelled = False
         record = None
         try:
             if not event_type:
@@ -922,10 +1062,12 @@ class RecordEventHandler(BaseEventService):
             # (set by the consumer before we started) still governs whether
             # this becomes a terminal FAILED or a QUEUED retry below.
             error_occurred = True
+            cancelled = True
             error_msg = "Record processing was cancelled (handler closed)"
             raise
         except asyncio.CancelledError as ce:
             error_occurred = True
+            cancelled = True
             error_msg = "Record processing was cancelled"
             last_exception = ce
             raise
@@ -972,7 +1114,20 @@ class RecordEventHandler(BaseEventService):
                     )
                     is_final = True
                     
-                if is_final:
+                if cancelled:
+                    # Checked before is_final: a cancellation is not a verdict
+                    # on the record. The broker entry was never acknowledged
+                    # (Redis) or committed (Kafka), so it comes back regardless
+                    # of how many attempts it had used. Writing FAILED here --
+                    # which the is_final branch would do, clearing
+                    # processingStartedAt with it -- would both misreport the
+                    # record and drop the one marker the stale-record scan
+                    # needs to recover it if this process never returns.
+                    self.logger.info(
+                        f"🔄 Record {record_id} cancelled mid-flight; leaving it "
+                        f"IN_PROGRESS for redelivery or stale recovery"
+                    )
+                elif is_final:
                     # Traceback logged once here (not on every transient retry attempt)
                     # so final, unrecoverable failures remain fully debuggable.
                     self.logger.error(

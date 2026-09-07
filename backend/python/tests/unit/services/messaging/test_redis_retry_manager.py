@@ -5,14 +5,13 @@ Tests for RedisStreamsConsumer with RetryManager integration:
   - RetryManager increment and clear on different outcomes
 """
 
-import asyncio
 import json
 import logging
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.services.messaging.config import RedisStreamsConfig, StreamMessage, messaging_env
+from app.services.messaging.config import RedisStreamsConfig, messaging_env
 from app.services.messaging.error_classifier import MessageErrorType
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 from app.services.messaging.retry_manager import RetryManager

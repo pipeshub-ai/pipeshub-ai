@@ -602,6 +602,8 @@ interface ChatState {
    * when a context's model selector mounts.
    */
   hydrateReasoningEffortForCtx: (ctxKey: string) => void;
+  /** Store the agent-configured default reasoning effort for a context. */
+  setAgentDefaultReasoningEffort: (ctxKey: string, effort: import('./types').ReasoningEffort | null) => void;
   /** Update universal agent mode capability toggles and persist to localStorage. */
   setAgentCapabilities: (caps: Partial<import('./types').AgentCapabilities>) => void;
   /**
@@ -722,6 +724,7 @@ const initialState = {
     defaultModels: {} as Record<string, import('./types').ModelOverride | null>,
     availableModels: {} as Record<string, { models: import('./types').AvailableLlmModel[]; fetchedAt: number }>,
     reasoningEffort: {} as Record<string, import('./types').ReasoningEffort | null>,
+    agentDefaultReasoningEffort: {} as Record<string, import('./types').ReasoningEffort | null>,
   },
 
   scopedAgentCapabilities: {} as Record<string, AgentCapabilities>,
@@ -1328,7 +1331,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   })),
 
   setReasoningEffortForCtx: (ctxKey, effort) => set((state) => {
-    lsSetReasoningEffort(ctxKey, effort);
+    // Only persist for the universal assistant. Agent-scoped contexts use the
+    // agent's configured default as baseline — persisting would let a stale
+    // user override mask admin changes to the agent's default.
+    if (ctxKey === ASSISTANT_CTX) {
+      lsSetReasoningEffort(ctxKey, effort);
+    }
     return {
       settings: {
         ...state.settings,
@@ -1344,11 +1352,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ...state.settings,
         reasoningEffort: {
           ...state.settings.reasoningEffort,
-          [ctxKey]: lsGetReasoningEffort(ctxKey),
+          // Agent contexts skip localStorage — their default comes from the
+          // agent's config (agentDefaultReasoningEffort), not from a stale
+          // persisted override that would hide admin changes.
+          [ctxKey]: ctxKey === ASSISTANT_CTX ? lsGetReasoningEffort(ctxKey) : null,
         },
       },
     };
   }),
+
+  setAgentDefaultReasoningEffort: (ctxKey: string, effort: import('./types').ReasoningEffort | null) => set((state) => ({
+    settings: {
+      ...state.settings,
+      agentDefaultReasoningEffort: {
+        ...state.settings.agentDefaultReasoningEffort,
+        [ctxKey]: effort,
+      },
+    },
+  })),
 
   setAgentCapabilities: (caps) => set((state) => {
     const next: AgentCapabilities = { ...state.settings.agentCapabilities, ...caps };
@@ -1440,6 +1461,17 @@ export function isModelReasoningCapable(
     models.find((m) => m.modelKey === model.modelKey && m.modelName === model.modelName)
       ?.isReasoning,
   );
+}
+
+/**
+ * The agent-configured default reasoning effort for `ctxKey`, populated when
+ * `fetchModelsForContext` loads an agent's config. Returns `null` when the
+ * context is the universal assistant or the agent has no default configured.
+ */
+export function getAgentDefaultReasoningEffort(
+  ctxKey: string,
+): import('./types').ReasoningEffort | null {
+  return useChatStore.getState().settings.agentDefaultReasoningEffort[ctxKey] ?? null;
 }
 
 /**

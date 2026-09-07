@@ -195,10 +195,41 @@ export function createNotificationMessageConsumer(
   );
 }
 
+/**
+ * Refuse `REDIS_KEY_NAMESPACE` + `MESSAGE_BROKER=redis` (R9).
+ *
+ * The namespace isolates KV keys, the cache-invalidation channel, and the
+ * BullMQ queue prefix -- but NOT Redis Streams. Stream names round-trip
+ * through `XREADGROUP` into `XACK`, and the indexing consumer derives lane
+ * numbers from them, so prefixing them is a change with real message-loss
+ * risk that has to land on its own.
+ *
+ * Until it does, two releases pointed at one endpoint share every stream
+ * *and* consumer group, so a message produced by release A can be delivered
+ * to release B's consumer and acked there -- A never sees it. Setting the
+ * namespace is an explicit request for isolation, so failing fast is the
+ * honest answer; silently not isolating routes work to the wrong deployment.
+ *
+ * Mirrors `_reject_namespaced_redis_streams` in
+ * `backend/python/app/services/messaging/messaging_factory.py`.
+ */
+function rejectNamespacedRedisStreams(): void {
+  const namespace = (process.env.REDIS_KEY_NAMESPACE ?? '').trim();
+  if (namespace) {
+    throw new Error(
+      `REDIS_KEY_NAMESPACE='${namespace}' does not isolate Redis Streams, so ` +
+        "two deployments sharing this endpoint would consume each other's " +
+        'messages. Use a separate Redis/Valkey instance per deployment for ' +
+        'MESSAGE_BROKER=redis, or switch to MESSAGE_BROKER=kafka.',
+    );
+  }
+}
+
 export function buildRedisBrokerConfig(
   redisConfig: RedisConfig,
   options?: { clientId?: string; groupId?: string },
 ): RedisBrokerConfig {
+  rejectNamespacedRedisStreams();
   const env = loadMessagingEnv();
   return {
     type: MessageBrokerType.REDIS,
@@ -207,7 +238,6 @@ export function buildRedisBrokerConfig(
     password: redisConfig.password,
     db: redisConfig.db,
     maxLen: env.redisStreamsMaxLen,
-    keyPrefix: env.redisStreamsKeyPrefix,
     clientId: options?.clientId,
     groupId: options?.groupId,
   };

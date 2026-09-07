@@ -51,6 +51,7 @@ from app.connectors.sources.microsoft.onedrive.connector import (
     OneDriveConnector,
     OneDriveCredentials,
     OneDriveSubscriptionManager,
+    OneDriveUserStatus,
 )
 from app.models.entities import (
     AppUser,
@@ -1653,7 +1654,7 @@ class TestUserHasOneDriveCoverage:
         connector.msgraph_client.get_user_drive = AsyncMock(side_effect=error)
 
         result = await connector._user_has_onedrive("user-1")
-        assert result is False
+        assert result is OneDriveUserStatus.NOT_PROVISIONED
 
     @pytest.mark.asyncio
     async def test_404_response_status(self):
@@ -1665,7 +1666,7 @@ class TestUserHasOneDriveCoverage:
         connector.msgraph_client.get_user_drive = AsyncMock(side_effect=error)
 
         result = await connector._user_has_onedrive("user-1")
-        assert result is False
+        assert result is OneDriveUserStatus.NOT_PROVISIONED
 
     @pytest.mark.asyncio
     async def test_unknown_error_raises(self):
@@ -1687,7 +1688,7 @@ class TestUserHasOneDriveCoverage:
         connector.msgraph_client.get_user_drive = AsyncMock(side_effect=error)
 
         result = await connector._user_has_onedrive("user-1")
-        assert result is False
+        assert result is OneDriveUserStatus.NOT_PROVISIONED
 
 
 # ===========================================================================

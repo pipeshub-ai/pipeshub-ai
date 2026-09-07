@@ -5,6 +5,7 @@ import { RedisConfig } from '../../../libs/types/redis.types';
 import { CrawlingJobData } from '../schema/interface';
 import { ConnectorsCrawlingService } from './connectors/connectors';
 import { ICrawlingTaskService } from './task/crawling_task_service';
+import { crawlingQueuePrefix, crawlingRedisProvider } from './crawling_queue';
 import {
   runWithRequestContext,
   newSystemRoot,
@@ -21,14 +22,13 @@ export class CrawlingWorkerService {
   ) { 
     this.logger = Logger.getInstance({ service: 'CrawlingWorkerService' });
 
+    const provider = crawlingRedisProvider(redisConfig);
+
     const workerOptions: WorkerOptions = {
-      connection: {
-        host: redisConfig.host,
-        port: redisConfig.port,
-        password: redisConfig.password,
-        db: redisConfig.db || 0,
-        username: redisConfig.username,
-      },
+      // Dedicated blocking-capable connection; BullMQ workers block on it
+      // for job availability and must not share the provider's pooled client.
+      connection: provider.createClient({ blocking: true }),
+      prefix: crawlingQueuePrefix(provider),
       concurrency: 5, // Process up to 5 jobs concurrently
       maxStalledCount: 3,
       stalledInterval: 30000, // 30 seconds

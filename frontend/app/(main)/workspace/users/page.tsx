@@ -1103,7 +1103,7 @@ function UsersPageContent() {
         ctaLabel={t('workspace.users.inviteButton')}
         ctaIcon="person_add_alt"
         onCtaClick={navigateToInvitePanel}
-        additionalActions={<UsersPageHeaderActions />}
+        additionalActions={<UsersPageHeaderActions onMemberChanged={fetchUsers} />}
       />
 
       {/* Content: filter bar + table + pagination */}

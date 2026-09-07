@@ -4679,6 +4679,108 @@ class TestDeleteRecordsRecursive:
         assert result["success"] is True
         assert result["eventData"] is None
 
+    @pytest.mark.asyncio
+    async def test_clears_orphan_parent_when_cascade_children_false(self, connected_provider):
+        inventory = {
+            "valid_root_keys": ["epic-1"],
+            "records_with_type": [{
+                "record": {
+                    "_key": "epic-1",
+                    "recordName": "Epic",
+                    "externalRecordId": "jira-epic-99",
+                    "connectorId": "conn-1",
+                },
+                "type_target": None,
+            }],
+        }
+        queries: list[str] = []
+        bind_vars_list: list[dict] = []
+
+        async def exec_query(query, bind_vars=None, transaction=None):
+            queries.append(query)
+            bind_vars_list.append(bind_vars or {})
+            if "valid_root_keys" in query and "records_with_type" in query:
+                return [inventory]
+            return []
+
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(side_effect=exec_query)), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()):
+            result = await connected_provider.delete_records_recursive(
+                ["epic-1"], "conn-1", cascade_children=False
+            )
+
+        assert result["success"] is True
+        clear_indexes = [
+            i for i, q in enumerate(queries)
+            if "externalParentId: null" in q
+        ]
+        assert len(clear_indexes) == 1
+        clear_q = queries[clear_indexes[0]]
+        clear_vars = bind_vars_list[clear_indexes[0]]
+        assert "belongs_to" in clear_q or "@belongs_to" in clear_q
+        assert "recordGroups" in clear_q
+        assert clear_vars["parent_external_ids"] == ["jira-epic-99"]
+        assert clear_vars["connector_id"] == "conn-1"
+        assert clear_vars["deleted_keys"] == ["epic-1"]
+
+    @pytest.mark.asyncio
+    async def test_skips_orphan_clear_when_cascade_children_true(self, connected_provider):
+        inventory = {
+            "valid_root_keys": ["epic-1"],
+            "records_with_type": [{
+                "record": {
+                    "_key": "epic-1",
+                    "recordName": "Epic",
+                    "externalRecordId": "jira-epic-99",
+                },
+                "type_target": None,
+            }],
+        }
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])) as mock_exec, \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()):
+            await connected_provider.delete_records_recursive(
+                ["epic-1"], "conn-1", cascade_children=True
+            )
+
+        assert mock_exec.await_count == 1
+        query = mock_exec.await_args.args[0] if mock_exec.await_args.args else ""
+        assert "externalParentId: null" not in query
+
+    @pytest.mark.asyncio
+    async def test_skips_orphan_clear_when_root_has_no_external_record_id(self, connected_provider):
+        inventory = {
+            "valid_root_keys": ["epic-1"],
+            "records_with_type": [{
+                "record": {"_key": "epic-1", "recordName": "Epic"},
+                "type_target": None,
+            }],
+        }
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])) as mock_exec, \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()):
+            await connected_provider.delete_records_recursive(
+                ["epic-1"], "conn-1", cascade_children=False
+            )
+
+        assert mock_exec.await_count == 1
+        for call in mock_exec.await_args_list:
+            query = call.args[0] if call.args else ""
+            assert "externalParentId: null" not in query
+
 
 # ---------------------------------------------------------------------------
 # delete_single_record
@@ -13834,6 +13936,14 @@ class TestGetTeamWithUsers:
         result = await connected_provider.get_team_with_users("t1", "uk1")
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_members_exclude_inactive_users(self, connected_provider) -> None:
+        """Removed users (isActive == false) must not be listed as team members."""
+        connected_provider.execute_query = AsyncMock(return_value=[{"id": "t1", "members": []}])
+        await connected_provider.get_team_with_users("t1", "uk1")
+        query = connected_provider.execute_query.call_args.args[0]
+        assert "FILTER user != null AND user.isActive == true" in query
+
 
 # ---------------------------------------------------------------------------
 # get_user_teams
@@ -13866,6 +13976,17 @@ class TestGetUserTeams:
         assert teams == []
         assert total == 0
 
+    @pytest.mark.asyncio
+    async def test_members_exclude_inactive_users(self, connected_provider) -> None:
+        """Member lists inside each team must skip removed users; the team
+        count itself is unaffected (it counts teams, not members)."""
+        connected_provider.execute_query = AsyncMock(side_effect=[[1], [{"id": "t1"}]])
+        await connected_provider.get_user_teams("uk1")
+        count_query = connected_provider.execute_query.call_args_list[0].args[0]
+        teams_query = connected_provider.execute_query.call_args_list[1].args[0]
+        assert "member_user.isActive == true" in teams_query
+        assert "isActive" not in count_query
+
 
 # ---------------------------------------------------------------------------
 # get_team_users
@@ -13893,6 +14014,16 @@ class TestGetTeamUsersExtended:
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
         result = await connected_provider.get_team_users("t1", "org1", "uk1")
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_members_exclude_inactive_users(self, connected_provider) -> None:
+        """Removed users (isActive == false) must not be listed or counted."""
+        connected_provider.execute_query = AsyncMock(
+            return_value=[{"id": "t1", "members": [], "memberCount": 0}]
+        )
+        await connected_provider.get_team_users("t1", "org1", "uk1")
+        query = connected_provider.execute_query.call_args.args[0]
+        assert "FILTER user != null AND user.isActive == true" in query
 
 
 # ---------------------------------------------------------------------------
@@ -14603,6 +14734,74 @@ class TestGetKnowledgeHubSearch:
         assert result is not None
 
     @pytest.mark.asyncio
+    async def test_app_scope_omits_unused_parent_doc_id(self, connected_provider):
+        connected_provider._build_knowledge_hub_filter_conditions = MagicMock(
+            return_value=([], {})
+        )
+        connected_provider._build_scope_filters = MagicMock(
+            return_value=("", "", "true", "true")
+        )
+        connected_provider._build_children_intersection_aql = MagicMock(return_value="")
+        connected_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"total": 0, "paginated_refs": []}]
+        )
+        await connected_provider.get_knowledge_hub_search(
+            "org1", "uk1", skip=0, limit=10,
+            sort_field="name", sort_dir="ASC",
+            parent_id="app1", parent_type="app",
+        )
+        bind_vars = connected_provider.http_client.execute_aql.await_args_list[0].kwargs["bind_vars"]
+        assert bind_vars["parent_id"] == "app1"
+        assert "parent_doc_id" not in bind_vars
+
+    @pytest.mark.asyncio
+    async def test_app_scope_depth_1_omits_parent_doc_id(self, connected_provider):
+        connected_provider._build_knowledge_hub_filter_conditions = MagicMock(
+            return_value=([], {})
+        )
+        connected_provider._build_scope_filters = MagicMock(
+            return_value=("", "", "true", "true")
+        )
+        connected_provider._build_children_intersection_aql = MagicMock(return_value="")
+        connected_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"total": 0, "paginated_refs": []}]
+        )
+        await connected_provider.get_knowledge_hub_search(
+            "org1", "uk1", skip=0, limit=10,
+            sort_field="name", sort_dir="ASC",
+            parent_id="app1", parent_type="app",
+            depth=1,
+        )
+        bind_vars = connected_provider.http_client.execute_aql.await_args_list[0].kwargs["bind_vars"]
+        assert bind_vars["parent_id"] == "app1"
+        assert "parent_doc_id" not in bind_vars
+
+    @pytest.mark.asyncio
+    async def test_app_scope_depth_2_binds_parent_doc_id(self, connected_provider):
+        connected_provider._build_knowledge_hub_filter_conditions = MagicMock(
+            return_value=([], {})
+        )
+        connected_provider._build_scope_filters = MagicMock(
+            return_value=("", "", "true", "true")
+        )
+        connected_provider._build_children_intersection_aql = MagicMock(return_value="")
+        connected_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"total": 0, "paginated_refs": []}]
+        )
+        await connected_provider.get_knowledge_hub_search(
+            "org1", "uk1", skip=0, limit=10,
+            sort_field="name", sort_dir="ASC",
+            parent_id="app1", parent_type="app",
+            depth=2,
+        )
+        bind_vars = connected_provider.http_client.execute_aql.await_args_list[0].kwargs["bind_vars"]
+        assert bind_vars["parent_id"] == "app1"
+        assert bind_vars["parent_doc_id"] == "app1"
+
+    @pytest.mark.asyncio
     async def test_empty_result(self, connected_provider):
         connected_provider._build_knowledge_hub_filter_conditions = MagicMock(
             return_value=([], {})
@@ -15102,6 +15301,15 @@ class TestBuildChildrenIntersectionAql:
     def test_other(self, connected_provider):
         result = connected_provider._build_children_intersection_aql("x", "app")
         assert "final_accessible_rgs = accessible_rgs" in result
+        assert "@parent_doc_id" not in result
+
+    def test_app_depth_1_omits_parent_doc_id(self, connected_provider):
+        result = connected_provider._build_children_intersection_aql("x", "app", depth=1)
+        assert "@parent_doc_id" not in result
+
+    def test_app_depth_2_uses_parent_doc_id(self, connected_provider):
+        result = connected_provider._build_children_intersection_aql("x", "app", depth=2)
+        assert "@parent_doc_id" in result
 
     def test_none(self, connected_provider):
         result = connected_provider._build_children_intersection_aql(None, None)

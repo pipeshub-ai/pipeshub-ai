@@ -1,10 +1,17 @@
 from logging import Logger
-from typing import Optional, override
+from typing import TYPE_CHECKING, override
 
-from redis.asyncio import Redis
-
-from app.services.messaging.config import REQUIRED_TOPICS, RedisStreamsConfig
+from app.services.messaging.config import (
+    REQUIRED_TOPICS,
+    MessageBrokerType,
+    RedisStreamsConfig,
+)
 from app.services.messaging.interface.admin import IMessageAdmin
+from app.services.redis.config import ClientOptions, RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
+
+if TYPE_CHECKING:
+    from app.services.redis.connection_provider import IRedisConnectionProvider, RedisClient
 
 _ADMIN_INIT_GROUP = "admin_init"
 _STREAM_TYPE = "stream"
@@ -13,24 +20,34 @@ _STREAM_TYPE = "stream"
 class RedisStreamsAdmin(IMessageAdmin):
     """Redis Streams implementation of message broker administration"""
 
-    def __init__(self, logger: Logger, config: RedisStreamsConfig) -> None:
+    def __init__(
+        self, logger: Logger, config: RedisStreamsConfig, provider: "IRedisConnectionProvider | None" = None
+    ) -> None:
         self.logger = logger
         self.config = config
+        self._provider: "IRedisConnectionProvider" = provider or get_redis_provider(
+            RedisConnectionConfig.from_redis_config(config)
+        )
 
     @override
     async def ensure_topics_exist(
-        self, topics: Optional[list[str]] = None
+        self, topics: list[str] | None = None
     ) -> None:
-        topic_list = topics or REQUIRED_TOPICS
-        redis: Optional[Redis] = None
+        # Lanes are separate streams, so a laned install needs each
+        # record-events.N pre-created -- not for correctness (XGROUP CREATE
+        # MKSTREAM would make them lazily) but so lag dashboards and the
+        # consumer's own subscription see them from t=0 rather than after the
+        # first message lands on each.
+        from app.services.messaging.messaging_factory import lane_topics_for
+
+        topic_list = topics or [
+            lane
+            for topic in REQUIRED_TOPICS
+            for lane in lane_topics_for(topic, MessageBrokerType.REDIS)
+        ]
+        redis: "RedisClient | None" = None
         try:
-            redis = Redis(
-                host=self.config.host,
-                port=self.config.port,
-                password=self.config.password,
-                db=self.config.db,
-                decode_responses=True,
-            )
+            redis = self._provider.create_client(ClientOptions(decode_responses=True))
 
             failures: list[str] = []
             for topic in topic_list:
@@ -68,21 +85,13 @@ class RedisStreamsAdmin(IMessageAdmin):
 
     @override
     async def list_topics(self) -> list[str]:
-        redis: Optional[Redis] = None
-        try:
-            redis = Redis(
-                host=self.config.host,
-                port=self.config.port,
-                password=self.config.password,
-                db=self.config.db,
-                decode_responses=True,
-            )
-            streams = []
-            async for key in redis.scan_iter():
-                key_type = await redis.type(key)  # type: ignore
-                if key_type == _STREAM_TYPE:
-                    streams.append(key)
-            return streams
-        finally:
-            if redis:
-                await redis.close()
+        # provider.scan_keys(), not a raw scan_iter() (R2): ioredis-style
+        # Cluster.scan() only reaches one random node, and this must see
+        # every stream regardless of which shard it lives on.
+        redis = self._provider.get_client()
+        streams = []
+        async for key in self._provider.scan_keys("*"):
+            key_type = await redis.type(key)  # type: ignore
+            if key_type == _STREAM_TYPE:
+                streams.append(key)
+        return streams

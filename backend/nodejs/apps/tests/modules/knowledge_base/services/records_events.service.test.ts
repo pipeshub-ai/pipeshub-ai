@@ -232,9 +232,74 @@ describe('RecordsEventProducer - coverage', () => {
       expect(mockProducer.publish.calledOnce).to.be.true
       const [topic, message] = mockProducer.publish.firstCall.args
       expect(topic).to.equal('record-events')
-      expect(message.key).to.equal(EventType.NewRecordEvent)
-      expect(JSON.parse(message.value)).to.deep.include({ eventType: EventType.NewRecordEvent })
+      // Keyed by the fairness key, not the event type: keying every
+      // newRecord identically would put them all on one partition the
+      // moment record-events has more than one.
+      expect(message.key).to.equal('org-1')
+    })
+
+    it('keys by connectorId in preference to orgId', async () => {
+      // orgId separates customers but not the connectors inside one, so
+      // falling back to it would put every connector in an org on the same
+      // lane and undo fair scheduling between them.
+      const instance = Object.create(RecordsEventProducer.prototype)
+      ;(instance as any).recordsTopic = 'record-events'
+      const mockProducer = {
+        isConnected: sinon.stub().returns(true),
+        connect: sinon.stub().resolves(),
+        publish: sinon.stub().resolves(),
+      }
+      ;(instance as any).producer = mockProducer
+      instance.logger = { info: sinon.stub(), error: sinon.stub() }
+
+      await instance.publishEvent({
+        eventType: EventType.NewRecordEvent,
+        timestamp: Date.now(),
+        payload: { orgId: 'org-1', connectorId: 'conn-9' },
+      } as any)
+
+      const [, message] = mockProducer.publish.firstCall.args
+      expect(message.key).to.equal('conn-9')
+      expect(JSON.parse(message.value)).to.deep.include({
+        eventType: EventType.NewRecordEvent,
+      })
       expect(message.headers.eventType).to.equal(EventType.NewRecordEvent)
+    })
+
+    it('publishes to the connector lane stream on Redis', async () => {
+      // On Redis the key is only stored as a field and selects nothing, so
+      // the lane has to be the stream name or every connector goes back to
+      // sharing one queue.
+      const previousBroker = process.env.MESSAGE_BROKER
+      const previousLanes = process.env.FAIR_SCHEDULING_LANE_COUNT
+      process.env.MESSAGE_BROKER = 'redis'
+      process.env.FAIR_SCHEDULING_LANE_COUNT = '8'
+      try {
+        const instance = Object.create(RecordsEventProducer.prototype)
+        ;(instance as any).recordsTopic = 'record-events'
+        const mockProducer = {
+          isConnected: sinon.stub().returns(true),
+          connect: sinon.stub().resolves(),
+          publish: sinon.stub().resolves(),
+        }
+        ;(instance as any).producer = mockProducer
+        instance.logger = { info: sinon.stub(), error: sinon.stub() }
+
+        await instance.publishEvent({
+          eventType: EventType.NewRecordEvent,
+          timestamp: Date.now(),
+          payload: { orgId: 'org-1', connectorId: 'conn-1' },
+        } as any)
+
+        const [topic] = mockProducer.publish.firstCall.args
+        expect(topic).to.equal('record-events.5')
+      } finally {
+        if (previousBroker === undefined) delete process.env.MESSAGE_BROKER
+        else process.env.MESSAGE_BROKER = previousBroker
+        if (previousLanes === undefined)
+          delete process.env.FAIR_SCHEDULING_LANE_COUNT
+        else process.env.FAIR_SCHEDULING_LANE_COUNT = previousLanes
+      }
     })
 
     it('should log error when publish fails', async () => {

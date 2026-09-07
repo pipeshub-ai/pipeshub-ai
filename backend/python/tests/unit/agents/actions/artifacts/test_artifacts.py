@@ -239,3 +239,192 @@ class TestListArtifacts:
         assert success is True
         assert body["count"] == 0
         assert body["artifacts"] == []
+
+
+_PROGRAM = (
+    "import PptxGenJS from 'pptxgenjs';\n"
+    "const BRAND = { font: 'Georgia', accent: '#5B2C6F' };\n"
+    "// ... styling the model must be able to see to preserve it ...\n"
+)
+
+
+class TestGetArtifactContent:
+    """The tool that makes "update this / keep the same style" possible.
+
+    Before it existed, a code artifact could be staged into the sandbox as a
+    FILE but never read by the model, so a follow-up turn had nothing to edit
+    and rewrote the program from scratch — losing the original's styling.
+    """
+
+    def _manager_with(self, content: bytes, **meta):
+        fields = {
+            "artifact_id": "code-1", "name": "code_abc123.ts",
+            "artifact_type": ArtifactType.CODE,
+            "mime_type": "application/typescript",
+        }
+        fields.update(meta)
+        metadata = _make_metadata(**fields)
+        registry = MagicMock()
+        registry.resolve = AsyncMock(return_value=metadata)
+        registry.get_content = AsyncMock(return_value=content)
+        return _make_manager(registry=registry)
+
+    async def test_returns_the_full_source(self) -> None:
+        manager, _ = self._manager_with(_PROGRAM.encode())
+        success, payload = await manager.get_artifact_content(artifact_id="code-1")
+
+        assert success is True
+        body = json.loads(payload)
+        assert body["content"] == _PROGRAM
+        assert body["truncated"] is False
+        assert body["total_chars"] == len(_PROGRAM)
+        assert body["name"] == "code_abc123.ts"
+
+    async def test_accepts_a_derived_from_code_artifact_id(self) -> None:
+        """The reminder hands the model an ID, not a name — `resolve` takes
+        either, and the tool must pass the ref through untouched."""
+        manager, registry = self._manager_with(_PROGRAM.encode())
+        await manager.get_artifact_content(artifact_id="4bc1ae97-derived-id")
+
+        assert registry.resolve.await_args.kwargs["ref"] == "4bc1ae97-derived-id"
+        assert registry.resolve.await_args.kwargs["conversation_id"] == "conv-1"
+
+    async def test_truncates_long_content_and_says_so(self) -> None:
+        manager, _ = self._manager_with(("x" * 5000).encode())
+        success, payload = await manager.get_artifact_content(
+            artifact_id="code-1", max_chars=1000,
+        )
+
+        body = json.loads(payload)
+        assert success is True
+        assert len(body["content"]) == 1000
+        assert body["truncated"] is True
+        assert body["total_chars"] == 5000
+        # A prefix silently presented as the whole file is the failure mode
+        # this tool exists to avoid, so the response must be explicit.
+        assert "1000" in body["note"] and "5000" in body["note"]
+
+    async def test_offset_pages_through_a_long_file(self) -> None:
+        manager, _ = self._manager_with(b"ABCDEFGHIJ")
+        _, payload = await manager.get_artifact_content(
+            artifact_id="code-1", max_chars=4, offset=4,
+        )
+        body = json.loads(payload)
+        assert body["content"] == "EFGH"
+        assert body["offset"] == 4
+        assert body["truncated"] is True
+
+    async def test_reading_to_the_end_is_not_marked_truncated(self) -> None:
+        manager, _ = self._manager_with(b"ABCDEFGHIJ")
+        _, payload = await manager.get_artifact_content(
+            artifact_id="code-1", max_chars=6, offset=4,
+        )
+        assert json.loads(payload)["truncated"] is False
+
+    async def test_binary_is_refused_with_a_usable_alternative(self) -> None:
+        """A PDF in the context window is wasted tokens and can wedge the
+        turn; the model needs to be told where to go instead."""
+        manager, _ = self._manager_with(
+            b"%PDF-1.4\x00\xff\xfe binary", mime_type="application/pdf", name="deck.pdf",
+        )
+        success, payload = await manager.get_artifact_content(artifact_id="code-1")
+
+        assert success is False
+        body = json.loads(payload)
+        assert "binary" in body["error"]
+        assert "get_artifact_download_url" in body["error"]
+        assert "content" not in body
+
+    async def test_missing_artifact_reports_the_ref(self) -> None:
+        registry = MagicMock()
+        registry.resolve = AsyncMock(side_effect=ArtifactNotFoundError("nope"))
+        manager, _ = _make_manager(registry=registry)
+
+        success, payload = await manager.get_artifact_content(artifact_id="ghost")
+        assert success is False
+        assert "ghost" in json.loads(payload)["error"]
+
+    async def test_access_denied_is_not_swallowed(self) -> None:
+        registry = MagicMock()
+        registry.resolve = AsyncMock(side_effect=AccessDeniedError("denied"))
+        manager, _ = _make_manager(registry=registry)
+
+        success, payload = await manager.get_artifact_content(artifact_id="someone-elses")
+        assert success is False
+        assert "permission" in json.loads(payload)["error"].lower()
+
+    async def test_max_chars_cannot_exceed_the_ceiling(self) -> None:
+        """A caller asking for 10 million characters must not be able to
+        blow the context window."""
+        from app.agents.actions.artifacts.artifacts import _MAX_ARTIFACT_CONTENT_CHARS
+
+        manager, _ = self._manager_with(("x" * 100_000).encode())
+        _, payload = await manager.get_artifact_content(
+            artifact_id="code-1", max_chars=10_000_000,
+        )
+        assert len(json.loads(payload)["content"]) == _MAX_ARTIFACT_CONTENT_CHARS
+
+    async def test_unavailable_registry_degrades_cleanly(self) -> None:
+        manager, _ = _make_manager()
+        manager._registry = lambda: None
+        success, payload = await manager.get_artifact_content(artifact_id="code-1")
+        assert success is False
+        assert "unavailable" in json.loads(payload)["error"]
+
+
+class TestGetArtifactContentBoundsTheFetch:
+    """`registry.get_content()` pulls the WHOLE blob into memory before
+    anything is decoded or sliced, so `max_chars` bounds the response but not
+    the read. A multi-hundred-MB artifact would be fetched and decoded in
+    full just to return 40 000 characters of it.
+
+    `ArtifactMetadata.size_bytes` is known before the fetch, so the check
+    belongs there — no blob retrieved and no decode attempted.
+    """
+
+    def _manager_for(self, size_bytes: int):
+        metadata = _make_metadata(
+            artifact_id="big-1", name="huge.csv", mime_type="text/csv",
+            size_bytes=size_bytes,
+        )
+        registry = MagicMock()
+        registry.resolve = AsyncMock(return_value=metadata)
+        registry.get_content = AsyncMock(return_value=b"x" * 10)
+        return _make_manager(registry=registry)
+
+    async def test_oversized_artifact_is_refused_without_fetching(self) -> None:
+        from app.agents.actions.artifacts.artifacts import _MAX_ARTIFACT_FETCH_BYTES
+
+        manager, registry = self._manager_for(_MAX_ARTIFACT_FETCH_BYTES + 1)
+        success, payload = await manager.get_artifact_content(artifact_id="big-1")
+
+        assert success is False
+        registry.get_content.assert_not_awaited(), "the blob must never be read"
+        body = json.loads(payload)
+        assert "too large" in body["error"].lower()
+        assert "get_artifact_download_url" in body["error"]
+
+    async def test_normal_sized_artifact_is_unaffected(self) -> None:
+        manager, registry = self._manager_for(10)
+        success, _ = await manager.get_artifact_content(artifact_id="big-1")
+        assert success is True
+        registry.get_content.assert_awaited_once()
+
+    async def test_unknown_size_still_reads(self) -> None:
+        """Artifacts written before `size_bytes` was recorded report 0. A
+        missing size is not evidence of a large file, and refusing on it
+        would make old artifacts permanently unreadable."""
+        manager, registry = self._manager_for(0)
+        success, _ = await manager.get_artifact_content(artifact_id="big-1")
+        assert success is True
+        registry.get_content.assert_awaited_once()
+
+    async def test_paging_a_large_but_allowed_file_still_works(self) -> None:
+        """The fetch ceiling has to sit well above `max_chars`, or `offset`
+        paging through a legitimately long program would be impossible."""
+        from app.agents.actions.artifacts.artifacts import (
+            _MAX_ARTIFACT_CONTENT_CHARS,
+            _MAX_ARTIFACT_FETCH_BYTES,
+        )
+
+        assert _MAX_ARTIFACT_FETCH_BYTES > _MAX_ARTIFACT_CONTENT_CHARS * 4

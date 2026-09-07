@@ -1,14 +1,20 @@
 """Comprehensive unit tests for app.indexing_main module."""
 
 import asyncio
+import os
 import time
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import ANY, AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 from fastapi.responses import JSONResponse
 
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.config.constants.arangodb import (
+    CollectionNames,
+    EventTypes,
+    ProgressStatus,
+)
 from app.services.messaging.config import MessageBrokerType
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 @pytest.fixture(autouse=True)
@@ -1889,3 +1895,259 @@ class TestSweepOrphanedVirtualRecordMappings:
         )
 
         assert m._orphan_sweep_cursor == 0
+
+
+# ===================================================================
+# _republish_stranded_records
+# ===================================================================
+
+
+def _stranded_env(after_seconds=3600.0):
+    """Set the sweep's threshold; 0 (the default) disables it entirely.
+
+    Patches the environment rather than the property because messaging_env
+    re-reads os.getenv on every access by design.
+    """
+    return patch.dict(
+        os.environ,
+        {"STRANDED_RECORD_REPUBLISH_AFTER_SECONDS": str(after_seconds)},
+    )
+
+
+async def _run_stranded(graph, producer=None, concurrency_manager=None):
+    from app.indexing_main import _republish_stranded_records
+
+    async def run_coordination(coro):
+        return await coro
+
+    return await _republish_stranded_records(
+        graph_provider=graph,
+        logger=MagicMock(),
+        producer=producer or AsyncMock(),
+        run_coordination=run_coordination,
+        concurrency_manager=concurrency_manager,
+        page_size=100,
+    )
+
+
+class TestRepublishStrandedRecords:
+    """The net for records whose event was lost.
+
+    A row on a live connector is invisible to both other sweeps: the stale scan
+    filters on IN_PROGRESS, and the connector sweep only touches connectors that
+    are gone. That gap is how records sat in QUEUED for ever after their event
+    was discarded.
+    """
+
+    @staticmethod
+    def _old_record(**overrides):
+        record = {
+            "_key": "r1",
+            "connectorId": "live",
+            "origin": "CONNECTOR",
+            "recordName": "PA-1 Something",
+            "orgId": "org-1",
+            "version": 0,
+            "updatedAtTimestamp": 1,  # epoch ms — far older than any cutoff
+        }
+        record.update(overrides)
+        return record
+
+    @pytest.mark.asyncio
+    async def test_disabled_by_default(self):
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record()]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+
+        with _stranded_env(0.0):
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+        graph.get_documents_paginated.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_republishes_a_stranded_row_on_a_live_connector(self):
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record()]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+        kwargs = producer.send_event.await_args.kwargs
+        assert kwargs["payload"]["recordId"] == "r1"
+        assert kwargs["event_type"] == EventTypes.NEW_RECORD.value
+        assert kwargs["key"] == "r1"
+
+    @pytest.mark.asyncio
+    async def test_an_already_indexed_row_reindexes_instead(self):
+        """A record with a version and a VRID has been indexed before."""
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    self._old_record(version=2, virtualRecordId="vr-1")
+                ]
+            },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            await _run_stranded(graph, producer)
+
+        assert (
+            producer.send_event.await_args.kwargs["event_type"]
+            == EventTypes.REINDEX_RECORD.value
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_recently_touched_row_is_left_alone(self):
+        """Its event may legitimately still be queued behind a backlog."""
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    self._old_record(updatedAtTimestamp=get_epoch_timestamp_in_ms())
+                ]
+            },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_inactive_connector_rows_belong_to_the_other_sweep(self):
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record()]}, active_ids=set()
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_dedup_parked_duplicate_is_left_to_its_twin(self):
+        """A record parked behind an in-flight md5 twin is legitimately QUEUED.
+
+        It is released when the twin completes, not by re-publishing it.
+        """
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    self._old_record(md5Checksum="abc", virtualRecordId="vr-1")
+                ]
+            },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_uploads_are_not_swept(self):
+        """Only connector-origin records are re-published from here."""
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record(origin="UPLOAD")]},
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_republishing_marks_the_row(self):
+        """Publishing changes nothing about the record on its own.
+
+        Without a marker the row stays eligible and every sweep tick sends
+        another copy of the same event — worst exactly when the consumer is
+        backlogged, which is the case this sweep exists for.
+        """
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record()]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            await _run_stranded(graph, producer)
+
+        key, collection, fields = graph.update_node.await_args.args
+        assert key == "r1"
+        assert collection == CollectionNames.RECORDS.value
+        assert "lastRepublishedAt" in fields
+        # updatedAtTimestamp means "when the record last changed" and belongs
+        # to the connectors; a recovery sweep must not move it.
+        assert "updatedAtTimestamp" not in fields
+
+    @pytest.mark.asyncio
+    async def test_a_recently_republished_row_is_skipped(self):
+        """At most one republish per threshold window, per record."""
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    self._old_record(lastRepublishedAt=get_epoch_timestamp_in_ms())
+                ]
+            },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_old_republish_does_not_block_a_retry(self):
+        """A second lost event is still recoverable once the window passes."""
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record(lastRepublishedAt=1)]},
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_contended_record_lease_skips_the_row(self):
+        """Somebody is working on it after all."""
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record()]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+        manager = AsyncMock()
+        manager.try_acquire = AsyncMock(return_value=False)
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, manager) == 0
+
+        producer.send_event.assert_not_awaited()
+        manager.release.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_record_lease_is_always_released(self):
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record()]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+        producer.send_event = AsyncMock(side_effect=Exception("broker down"))
+        manager = AsyncMock()
+        manager.try_acquire = AsyncMock(return_value=True)
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, manager) == 0
+
+        manager.release.assert_awaited_once_with("record:r1", ANY)

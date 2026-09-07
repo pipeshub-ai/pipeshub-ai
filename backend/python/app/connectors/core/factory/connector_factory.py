@@ -74,7 +74,6 @@ from app.connectors.sources.notion_personal.connector import NotionPersonalConne
 from app.connectors.sources.rss.connector import RSSConnector
 from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
-from app.connectors.sources.slack.team.connector import SlackConnector
 from app.connectors.sources.web.connector import WebConnector
 from app.connectors.sources.zammad.connector import ZammadConnector
 from app.connectors.sources.zoom.connector import ZoomConnector
@@ -161,6 +160,13 @@ class ConnectorFactory:
         """Register a new connector type"""
         cls._connector_registry[name.lower()] = connector_class
 
+
+    @classmethod
+    def unregister_connectors(cls, names: list[str]) -> None:
+        """Remove multiple connectors from the registry."""
+        for name in names:
+            cls._connector_registry.pop(name.lower(), None)
+
     @classmethod
     def initialize_beta_connector_registry(cls) -> None:
         """Initialize connectors based on feature flags"""
@@ -220,6 +226,8 @@ class ConnectorFactory:
 
         try:
             notification_service = kwargs.pop("notification_service", None)
+            connector_instance_name = kwargs.pop("connector_instance_name", None)
+            last_synced_by = kwargs.pop("last_synced_by", None)
             from app.connectors.core.base.data_processor.data_source_entities_processor import DataSourceEntitiesProcessor
             processor_cls = data_entities_processor_cls or DataSourceEntitiesProcessor
             data_entities_processor = processor_cls(logger, data_store_provider, config_service)
@@ -237,6 +245,7 @@ class ConnectorFactory:
                 scope=scope,
                 created_by=created_by,
                 data_entities_processor=data_entities_processor,
+                org_id=org_id,
                 **kwargs,
             )
             if connector is not None:
@@ -248,6 +257,10 @@ class ConnectorFactory:
                 connector._shared_thread_pool = (
                     thread_pool or get_shared_connector_thread_pool()
                 )
+                if connector_instance_name:
+                    connector.connector_instance_name = connector_instance_name
+                if last_synced_by:
+                    connector.last_synced_by = last_synced_by
             logger.info(f"Created {name} {connector_id} connector successfully")
             return connector
         except Exception as e:

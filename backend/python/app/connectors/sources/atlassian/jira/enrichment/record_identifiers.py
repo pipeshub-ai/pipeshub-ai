@@ -9,7 +9,10 @@ from app.models.entities import RecordType
 
 JIRA_CONNECTORS: frozenset[Connectors] = frozenset({
     Connectors.JIRA,
+    # JIRA_PERSONAL is the pre-rename value still stored on records synced before
+    # Jira Cloud Personal moved to JIRA_CLOUD_PERSONAL; both must match.
     Connectors.JIRA_PERSONAL,
+    Connectors.JIRA_CLOUD_PERSONAL,
     Connectors.JIRA_DATA_CENTER,
     Connectors.JIRA_DATA_CENTER_PERSONAL,
 })

@@ -67,6 +67,7 @@ describe('MigrationService', () => {
       // Stub migrations so they don't make real HTTP calls or DB queries
       const connectorStub = sinon.stub(service, 'connectorSyncScheduleMigration' as any).resolves()
       const chatStub = sinon.stub(service, 'chatKbFiltersMigration' as any).resolves()
+      const chatSessionsStub = sinon.stub(service, 'chatSessionsMigration' as any).resolves()
       const adminStub = sinon.stub(service, 'adminRoleMigration' as any).resolves()
       const documentOrgIdStub = sinon.stub(service, 'documentOrgIdMigration' as any).resolves()
 
@@ -75,6 +76,8 @@ describe('MigrationService', () => {
       expect(mockLogger.info.calledWith('Running migration...')).to.be.true
       expect(connectorStub.calledOnce).to.be.true
       expect(chatStub.calledOnce).to.be.true
+      expect(chatSessionsStub.calledOnce).to.be.true
+      expect(chatStub.calledBefore(chatSessionsStub)).to.be.true
       expect(adminStub.calledOnce).to.be.true
       expect(documentOrgIdStub.calledOnce).to.be.true
       expect(mockLogger.info.calledWith('✅ Migration completed')).to.be.true
@@ -200,6 +203,122 @@ describe('MigrationService', () => {
 
       const service = new MigrationService(mockLogger, mockKeyValueStore)
       await service.adminRoleMigration()
+
+      expect(mockLogger.error.calledOnce).to.be.true
+      expect(mockLogger.error.firstCall.args[1].error).to.equal('Unknown error')
+    })
+  })
+
+  describe('chatSessionsMigration', () => {
+    let chatSessionsMigrationStub: sinon.SinonStub
+    let originalBatchSizeEnv: string | undefined
+
+    beforeEach(() => {
+      const ChatSessionsMigration = require('../../../../src/modules/configuration_manager/services/migrations/chat_sessions.migration').ChatSessionsMigration
+      chatSessionsMigrationStub = sinon.stub(ChatSessionsMigration.prototype, 'run')
+      originalBatchSizeEnv = process.env.CHAT_SESSIONS_MIGRATION_BATCH_SIZE
+      delete process.env.CHAT_SESSIONS_MIGRATION_BATCH_SIZE
+    })
+
+    afterEach(() => {
+      chatSessionsMigrationStub.restore()
+      if (originalBatchSizeEnv === undefined) {
+        delete process.env.CHAT_SESSIONS_MIGRATION_BATCH_SIZE
+      } else {
+        process.env.CHAT_SESSIONS_MIGRATION_BATCH_SIZE = originalBatchSizeEnv
+      }
+    })
+
+    it('should run chat sessions migration successfully with the default batch size', async () => {
+      chatSessionsMigrationStub.resolves({
+        sessionsMigrated: 5,
+        messagesMigrated: 12,
+        errored: 0,
+      })
+
+      const service = new MigrationService(mockLogger, mockKeyValueStore)
+      await service.chatSessionsMigration()
+
+      expect(chatSessionsMigrationStub.calledOnce).to.be.true
+      expect(mockLogger.info.calledWith('Migrating legacy conversations into chatSessions')).to.be.true
+      expect(mockLogger.info.calledWith('✅ Chat sessions migrated', sinon.match.object)).to.be.true
+    })
+
+    it('should read the batch size from CHAT_SESSIONS_MIGRATION_BATCH_SIZE', async () => {
+      process.env.CHAT_SESSIONS_MIGRATION_BATCH_SIZE = '42'
+      let capturedBatchSize: number | undefined
+      chatSessionsMigrationStub.callsFake(function (this: any) {
+        capturedBatchSize = this.batchSize
+        return Promise.resolve({ sessionsMigrated: 0, messagesMigrated: 0, errored: 0 })
+      })
+
+      const service = new MigrationService(mockLogger, mockKeyValueStore)
+      await service.chatSessionsMigration()
+
+      expect(capturedBatchSize).to.equal(42)
+    })
+
+    it('should fall back to the default batch size when the env var is unset', async () => {
+      let capturedBatchSize: number | undefined
+      chatSessionsMigrationStub.callsFake(function (this: any) {
+        capturedBatchSize = this.batchSize
+        return Promise.resolve({ sessionsMigrated: 0, messagesMigrated: 0, errored: 0 })
+      })
+
+      const service = new MigrationService(mockLogger, mockKeyValueStore)
+      await service.chatSessionsMigration()
+
+      expect(capturedBatchSize).to.equal(10)
+    })
+
+    it('should fall back to the default batch size when the env var is not a positive integer', async () => {
+      let capturedBatchSize: number | undefined
+      chatSessionsMigrationStub.callsFake(function (this: any) {
+        capturedBatchSize = this.batchSize
+        return Promise.resolve({ sessionsMigrated: 0, messagesMigrated: 0, errored: 0 })
+      })
+
+      for (const value of ['not-a-number', '0', '-5', '']) {
+        capturedBatchSize = undefined
+        process.env.CHAT_SESSIONS_MIGRATION_BATCH_SIZE = value
+
+        const service = new MigrationService(mockLogger, mockKeyValueStore)
+        await service.chatSessionsMigration()
+
+        expect(capturedBatchSize, `env value ${JSON.stringify(value)}`).to.equal(10)
+      }
+    })
+
+    it('should warn when migration finishes with errors', async () => {
+      chatSessionsMigrationStub.resolves({
+        sessionsMigrated: 3,
+        messagesMigrated: 8,
+        errored: 2,
+      })
+
+      const service = new MigrationService(mockLogger, mockKeyValueStore)
+      await service.chatSessionsMigration()
+
+      expect(mockLogger.warn.calledWith(
+        '⚠️  Chat sessions migration finished with errors — will retry unmigrated documents on next boot',
+        sinon.match.object,
+      )).to.be.true
+    })
+
+    it('should catch and log migration errors', async () => {
+      chatSessionsMigrationStub.rejects(new Error('DB connection failed'))
+
+      const service = new MigrationService(mockLogger, mockKeyValueStore)
+      await service.chatSessionsMigration()
+
+      expect(mockLogger.error.calledWith('Chat sessions migration failed', sinon.match.object)).to.be.true
+    })
+
+    it('should handle non-Error exceptions', async () => {
+      chatSessionsMigrationStub.rejects(42)
+
+      const service = new MigrationService(mockLogger, mockKeyValueStore)
+      await service.chatSessionsMigration()
 
       expect(mockLogger.error.calledOnce).to.be.true
       expect(mockLogger.error.firstCall.args[1].error).to.equal('Unknown error')

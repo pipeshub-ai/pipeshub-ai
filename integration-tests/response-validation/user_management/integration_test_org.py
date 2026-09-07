@@ -767,43 +767,44 @@ class TestGetOrgLogo(OrgTestBase):
 class TestCreateOrganization(OrgTestBase):
     """POST /api/v1/org — org already exists in the test environment.
 
-    Valid request bodies exercise the controller path and always return 500
-    because the ``BadRequestError('There is already an organization')`` thrown
-    inside ``createOrg`` is caught by its own ``catch`` block and re-thrown as
-    ``InternalServerError``, which the error middleware serialises as
-    ``HTTP_INTERNAL_SERVER_ERROR`` / 500.
+    Valid request bodies exercise the controller path and return 400 because
+    ``createOrg`` throws ``BadRequestError('There is already an organization')``,
+    which its own ``catch`` block now rethrows unchanged (see commit
+    8225b2eab558a56c22e5647e213d35179d2a31f7) instead of wrapping it in
+    ``InternalServerError``. The error middleware serialises that as
+    ``HTTP_BAD_REQUEST`` / 400.
 
     Invalid bodies are rejected by ``ValidationMiddleware`` before the
-    controller runs, so they return 400 ``VALIDATION_ERROR``.
+    controller runs, so they also return 400 ``VALIDATION_ERROR``.
     """
 
     def _post_org(self, body: dict[str, object]) -> requests.Response:
         return self.org.post("/", json=body, auth=False)
 
     def test_create_org_individual_account_already_exists(self) -> None:
-        """Valid individual-account body → 500 because org already exists."""
+        """Valid individual-account body → 400 because org already exists."""
         resp = self._post_org({
             "accountType": "individual",
             "contactEmail": "test@example.com",
             "adminFullName": "Test Admin",
             "password": "TestPass123!",
         })
-        assert resp.status_code == 500, (
-            f"Expected 500 (org exists), got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 400, (
+            f"Expected 400 (org exists), got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
         assert_response_matches_openapi_operation(
-            body, "createOrganization", status_code="500"
+            body, "createOrganization", status_code="400"
         )
-        assert body["error"]["code"] == "HTTP_INTERNAL_SERVER_ERROR", (
-            f"Expected 'HTTP_INTERNAL_SERVER_ERROR', got {body['error']['code']!r}"
+        assert body["error"]["code"] == "HTTP_BAD_REQUEST", (
+            f"Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
         )
         assert body["error"]["message"] == "There is already an organization", (
             f"Unexpected message: {body['error']['message']!r}"
         )
 
     def test_create_org_business_account_already_exists(self) -> None:
-        """Valid business-account body (with registeredName) → 500 because org already exists."""
+        """Valid business-account body (with registeredName) → 400 because org already exists."""
         resp = self._post_org({
             "accountType": "business",
             "registeredName": "Test Corp Inc.",
@@ -812,15 +813,15 @@ class TestCreateOrganization(OrgTestBase):
             "adminFullName": "Corp Admin",
             "password": "CorpPass123!",
         })
-        assert resp.status_code == 500, (
-            f"Expected 500 (org exists), got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 400, (
+            f"Expected 400 (org exists), got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
         assert_response_matches_openapi_operation(
-            body, "createOrganization", status_code="500"
+            body, "createOrganization", status_code="400"
         )
-        assert body["error"]["code"] == "HTTP_INTERNAL_SERVER_ERROR", (
-            f"Expected 'HTTP_INTERNAL_SERVER_ERROR', got {body['error']['code']!r}"
+        assert body["error"]["code"] == "HTTP_BAD_REQUEST", (
+            f"Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
         )
         assert body["error"]["message"] == "There is already an organization", (
             f"Unexpected message: {body['error']['message']!r}"

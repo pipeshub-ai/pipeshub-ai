@@ -98,28 +98,28 @@ class TestMessagingEnvConfig:
     def test_max_delivery_attempts_default(self, monkeypatch):
         """Test max_delivery_attempts defaults to 3."""
         from app.services.messaging.config import messaging_env
-        
+
         monkeypatch.delenv("MAX_DELIVERY_ATTEMPTS", raising=False)
         assert messaging_env.max_delivery_attempts == 3
 
     def test_max_delivery_attempts_from_env(self, monkeypatch):
         """Test max_delivery_attempts can be overridden via env var."""
         from app.services.messaging.config import messaging_env
-        
+
         monkeypatch.setenv("MAX_DELIVERY_ATTEMPTS", "5")
         assert messaging_env.max_delivery_attempts == 5
 
     def test_message_batch_size_simple_default(self, monkeypatch):
         """Test message_batch_size_simple defaults to 10."""
         from app.services.messaging.config import messaging_env
-        
+
         monkeypatch.delenv("MESSAGE_BATCH_SIZE_SIMPLE", raising=False)
         assert messaging_env.message_batch_size_simple == 10
 
     def test_message_batch_size_simple_from_env(self, monkeypatch):
         """Test message_batch_size_simple can be overridden."""
         from app.services.messaging.config import messaging_env
-        
+
         monkeypatch.setenv("MESSAGE_BATCH_SIZE_SIMPLE", "20")
         assert messaging_env.message_batch_size_simple == 20
 
@@ -137,21 +137,21 @@ class TestMessagingEnvConfig:
     def test_message_batch_size_indexing_from_env(self, monkeypatch):
         """Test message_batch_size_indexing can be overridden."""
         from app.services.messaging.config import messaging_env
-        
+
         monkeypatch.setenv("MESSAGE_BATCH_SIZE_INDEXING", "5")
         assert messaging_env.message_batch_size_indexing == 5
 
     def test_message_timeout_ms_default(self, monkeypatch):
         """Test message_timeout_ms defaults to 2000."""
         from app.services.messaging.config import messaging_env
-        
+
         monkeypatch.delenv("MESSAGE_TIMEOUT_MS", raising=False)
         assert messaging_env.message_timeout_ms == 2000
 
     def test_message_timeout_ms_from_env(self, monkeypatch):
         """Test message_timeout_ms can be overridden."""
         from app.services.messaging.config import messaging_env
-        
+
         monkeypatch.setenv("MESSAGE_TIMEOUT_MS", "5000")
         assert messaging_env.message_timeout_ms == 5000
 

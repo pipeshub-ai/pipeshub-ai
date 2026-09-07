@@ -12080,19 +12080,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_ids: list[str],
         connector_id: str,
         transaction: str | None = None,
+        cascade_children: bool = True,
     ) -> dict:
-        """Delete records (files, folders, or any type) and ALL their containment
-        descendants — the single generic recursive delete for KB and connectors.
+        """Delete records and their owned descendants, scoped by connector_id.
 
-        A folder is just a record with PARENT_CHILD children, so there is no folder/file
-        special-casing: each root id is deleted together with its whole containment subtree
-        (reached via PARENT_CHILD + ATTACHMENT edges; reference edges like BLOCKS/RELATED
-        are cleaned but never traversed). Roots are scoped by ``connectorId == @connector_id``
-        (for a KB, connector_id == kb_id). All edges touching the deleted records are swept
-        dynamically (so inheritPermissions/permissions/entityRelations go too), the isOfType
-        type docs are removed from whatever collection they live in, and a ``deleteRecord``
-        event is emitted per record that carries a ``virtualRecordId`` (Qdrant cleanup),
-        with connectorName/origin taken from the record.
+        When *cascade_children* is True (default), traverses both PARENT_CHILD and
+        ATTACHMENT edges — deleting an entire containment subtree.  When False, only
+        ATTACHMENT edges are traversed so child records linked via PARENT_CHILD
+        survive (e.g. stories under a deleted epic). Survivors that still point at a
+        deleted root via ``externalParentId`` have that field cleared to null, but
+        only when they already ``BELONGS_TO`` a RecordGroup (required browse guard).
+
+        All edges touching the deleted nodes are swept regardless of
+        *cascade_children*, type docs removed, and a deleteRecord event emitted per
+        record that carries a virtualRecordId (Qdrant cleanup).
         """
         try:
             if not record_ids:
@@ -12110,6 +12111,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     write=edge_collections + node_collections,
                 )
             try:
+                traversal_types = "['PARENT_CHILD', 'ATTACHMENT']" if cascade_children else "['ATTACHMENT']"
                 inventory_query = """
                 LET valid_roots = (
                     FOR rid IN @record_ids
@@ -12121,7 +12123,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 LET all_records = (
                     FOR root IN valid_roots
                         FOR v, e, p IN 0..20 OUTBOUND root._id @@record_relations
-                            FILTER LENGTH(p.edges) == 0 OR p.edges[-1].relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+                            FILTER LENGTH(p.edges) == 0 OR p.edges[-1].relationshipType IN """ + traversal_types + """
                             RETURN DISTINCT v
                 )
                 LET records_with_type = (
@@ -12159,6 +12161,46 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     {"record_id": rid, "reason": "Validation failed"}
                     for rid in record_ids if rid not in valid_root_keys
                 ]
+
+                if not cascade_children and valid_root_keys:
+                    valid_root_key_set = set(valid_root_keys)
+                    parent_external_ids: list[str] = []
+                    seen_parent_ids: set[str] = set()
+                    for rt in records_with_type:
+                        rec = rt.get("record") or {}
+                        if rec.get("_key") not in valid_root_key_set:
+                            continue
+                        peid = rec.get("externalRecordId")
+                        if not peid or peid in seen_parent_ids:
+                            continue
+                        seen_parent_ids.add(peid)
+                        parent_external_ids.append(peid)
+                    if parent_external_ids:
+                        clear_orphan_parent_query = f"""
+                        FOR rec IN @@records
+                            FILTER rec.connectorId == @connector_id
+                            FILTER rec.externalParentId != null
+                            FILTER rec.externalParentId IN @parent_external_ids
+                            FILTER rec._key NOT IN @deleted_keys
+                            FILTER LENGTH(
+                                FOR rg IN 1..1 OUTBOUND rec._id @@belongs_to
+                                    FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", rg)
+                                    LIMIT 1
+                                    RETURN 1
+                            ) > 0
+                            UPDATE rec WITH {{ externalParentId: null }} IN @@records
+                        """
+                        await self.execute_query(
+                            clear_orphan_parent_query,
+                            bind_vars={
+                                "connector_id": connector_id,
+                                "parent_external_ids": parent_external_ids,
+                                "deleted_keys": record_keys,
+                                "@records": CollectionNames.RECORDS.value,
+                                "@belongs_to": CollectionNames.BELONGS_TO.value,
+                            },
+                            transaction=txn_id,
+                        )
 
                 node_ids = [f"records/{k}" for k in record_keys]
                 if node_ids:
@@ -14853,7 +14895,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars["parent_doc_id"] = parent_doc_id
             elif parent_type == "app":
                 bind_vars["parent_id"] = parent_id
-                bind_vars["parent_doc_id"] = parent_id
+                # @parent_doc_id is only referenced when depth >= 2
+                # (_build_children_intersection_aql). Binding it otherwise is
+                # Arango 1552 (undeclared bind parameter).
+                if depth is not None and depth >= 2:
+                    bind_vars["parent_doc_id"] = parent_id
 
         # Merge filter params
         bind_vars.update(filter_params)
@@ -19400,6 +19446,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR permission IN {CollectionNames.PERMISSION.value}
                 FILTER permission._to == team._id
                 LET user = DOCUMENT(permission._from)
+                FILTER user != null AND user.isActive == true
                 RETURN {{
                     "id": user._key,
                     "userId": user.userId,
@@ -19489,7 +19536,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR member_permission IN @@permission_collection
                 FILTER member_permission._to == team._id
                 LET member_user = DOCUMENT(member_permission._from)
-                FILTER member_user != null
+                FILTER member_user != null AND member_user.isActive == true
                 RETURN {{
                     "id": member_user._key,
                     "userId": member_user.userId,
@@ -19602,7 +19649,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR permission IN {CollectionNames.PERMISSION.value}
                 FILTER permission._to == team._id
                 LET user = DOCUMENT(permission._from)
-                FILTER user != null
+                FILTER user != null AND user.isActive == true
                 {search_filter}
                 RETURN {{
                     "id": user._key,
@@ -21852,8 +21899,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
             # Soft delete the template using update_node
-            template_path = f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}"
-            result = await self.update_node(template_path, update_data, transaction=transaction)
+            result = await self.update_node(
+                template_id,
+                CollectionNames.AGENT_TEMPLATES.value,
+                update_data,
+                transaction=transaction,
+            )
 
             if not result:
                 self.logger.error(f"Failed to delete template {template_id}")

@@ -1,9 +1,7 @@
 import asyncio
 import json
 from logging import Logger
-from typing import Optional
-
-from redis.asyncio import Redis
+from typing import TYPE_CHECKING, Optional
 
 from app.services.messaging.config import (
     MessageHandler,
@@ -13,12 +11,18 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
 from app.services.messaging.interface.consumer import IMessagingConsumer
-from app.services.messaging.retry_manager import RetryManager
+from app.services.messaging.redis_streams.stream_read_planner import StreamReadPlanner
+from app.services.distributed.interface import IRetryTracker
+from app.services.redis.config import ClientOptions, RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
 from app.utils.request_context import (
     context_from_envelope,
     reset_context,
     set_context,
 )
+
+if TYPE_CHECKING:
+    from app.services.redis.connection_provider import IRedisConnectionProvider, RedisClient as Redis
 
 MAX_CONCURRENT_TASKS = 5
 
@@ -39,11 +43,20 @@ class RedisStreamsConsumer(IMessagingConsumer):
         self,
         logger: Logger,
         config: RedisStreamsConfig,
-        retry_manager: Optional[RetryManager] = None,
+        retry_manager: Optional[IRetryTracker] = None,
+        provider: "Optional[IRedisConnectionProvider]" = None,
     ) -> None:
         self.logger = logger
         self.config = config
         self.retry_manager = retry_manager
+        # Constructor accepts an explicit provider so callers sharing one
+        # connection provider process-wide can inject it (R11); otherwise
+        # one is looked up/created from this config, so behaviour for
+        # existing callers is unchanged.
+        self._provider: "IRedisConnectionProvider" = provider or get_redis_provider(
+            RedisConnectionConfig.from_redis_config(config)
+        )
+        self._planner = StreamReadPlanner(self._provider)
         self.redis: Optional[Redis] = None
         self.running = False
         self.consume_task: Optional[asyncio.Task] = None
@@ -53,12 +66,20 @@ class RedisStreamsConsumer(IMessagingConsumer):
 
     async def initialize(self) -> None:
         try:
-            self.redis = Redis(
-                host=self.config.host,
-                port=self.config.port,
-                password=self.config.password,
-                db=self.config.db,
-                decode_responses=True,
+            # Dedicated (non-shared) client: XREADGROUP BLOCK holds the
+            # connection for up to `block_ms`, which would starve any other
+            # caller of a pooled/shared client.
+            self.redis = self._provider.create_client(
+                ClientOptions(
+                    decode_responses=True,
+                    blocking=True,
+                    # One connection is parked in XREADGROUP BLOCK for up to
+                    # `block_ms` at a time; XACK/XAUTOCLAIM run on the same
+                    # client and must not queue behind it. Sized off the same
+                    # knob the lease/retry pools use rather than ClientOptions'
+                    # conservative default.
+                    max_connections=messaging_env.concurrency_redis_max_connections,
+                )
             )
             await self.redis.ping()
 
@@ -393,6 +414,97 @@ class RedisStreamsConsumer(IMessagingConsumer):
             self.logger.info("Processed pending messages from PEL")
         return processed_any
 
+    async def _read_new_messages(self) -> list:
+        """One ``XREADGROUP`` per hash-slot group of subscribed topics (R1).
+
+        On standalone every topic is in one group, so this is exactly the
+        single call this replaced, with the full ``BLOCK`` budget. On a
+        Redis Cluster / MemoryDB, topics can span slots (lane streams
+        especially), so each group gets its own call with a fair share of
+        the overall block budget -- an empty poll still costs at most
+        ``block_ms`` total, not once per group.
+
+        Each group's call is isolated with :func:`asyncio.wait_for` and its
+        own try/except: while one slot's node is mid-failover/reconnect, a
+        ``ClusterDownError`` (or a client that hangs retrying past its
+        stated ``BLOCK`` budget) must not stop *other*, perfectly healthy
+        groups from being polled -- seen live on a 3-master cluster where a
+        restarted node's group blocked for tens of seconds while the other
+        two groups' streams sat fully caught-up and unread. A group that
+        fails alongside others that succeed does not lose those successful
+        reads: once ``XREADGROUP >`` claims a message it will never be
+        handed out again by ``>``, only by an own-PEL read, so silently
+        discarding a mixed batch here would strand the successful groups'
+        messages until the next idle-triggered `_drain_pending` pass (or
+        forever, if new messages keep arriving often enough that the idle
+        threshold is never reached). The error from the failing group is
+        only re-raised -- so the caller's existing backoff kicks in -- when
+        no group produced anything at all.
+        """
+        groups = self._planner.group(self.config.topics)
+        if not groups:
+            # Sleep, don't return straight into the caller's `continue`: with no
+            # topics subscribed this path does no I/O at all, so returning
+            # immediately spins the consume loop at 100% CPU. The inline
+            # XREADGROUP this replaced blocked for `block_ms` in the same
+            # state, and the Node consumer keeps an explicit idle sleep here.
+            await asyncio.sleep(self.config.block_ms / 1000.0)
+            return []
+
+        per_group_block_ms = (
+            self.config.block_ms
+            if len(groups) == 1
+            else max(1, self.config.block_ms // len(groups))
+        )
+        # Generous upper bound over the BLOCK budget so a genuinely wedged
+        # node can't hold up other groups' turn in this poll; the group is
+        # simply retried on the next call to `_read_new_messages`.
+        per_group_timeout_seconds = (per_group_block_ms / 1000.0) + 5.0
+
+        combined: list = []
+        first_error: Optional[Exception] = None
+        for group in groups:
+            streams = dict.fromkeys(group, ">")
+            try:
+                read = self.redis.xreadgroup(  # type: ignore
+                    groupname=self.config.group_id,
+                    consumername=self.config.client_id,
+                    streams=streams,
+                    count=self.config.batch_size,
+                    block=per_group_block_ms,
+                )
+                # The deadline exists only to stop one wedged slot starving the
+                # *other* groups of their turn. With a single group -- every
+                # standalone deployment, since key_slot() is 0 for all keys --
+                # there is no other group to protect, and wrapping the call
+                # only invents a failure: under a saturated event loop the
+                # timeout fires on a perfectly healthy BLOCK, the read is
+                # abandoned, and the caller busy-loops on the error path.
+                results = (
+                    await read
+                    if len(groups) == 1
+                    else await asyncio.wait_for(read, timeout=per_group_timeout_seconds)
+                )
+            except Exception as e:
+                # `type(e).__name__` because the message alone is often empty:
+                # `str(asyncio.TimeoutError())` is '', which logged as a bare
+                # "XREADGROUP failed for slot group X (1 streams): " with
+                # nothing to diagnose from.
+                self.logger.warning(
+                    "XREADGROUP failed for slot group %s (%d streams): %s: %s",
+                    group[0],
+                    len(group),
+                    type(e).__name__,
+                    e,
+                )
+                first_error = first_error or e
+                continue
+            if results:
+                combined.extend(results)
+        if first_error is not None and not combined:
+            raise first_error
+        return combined
+
     async def _consume_loop(self) -> None:
         """Main consumption loop with idle-based pending drain.
 
@@ -406,15 +518,7 @@ class RedisStreamsConsumer(IMessagingConsumer):
             await self._drain_pending()
             while self.running:
                 try:
-                    streams = dict.fromkeys(self.config.topics, ">")
-
-                    results = await self.redis.xreadgroup(  # type: ignore
-                        groupname=self.config.group_id,
-                        consumername=self.config.client_id,
-                        streams=streams,
-                        count=self.config.batch_size,
-                        block=self.config.block_ms,
-                    )
+                    results = await self._read_new_messages()
 
                     if not results:
                         # No new messages - increment idle counter
@@ -452,11 +556,15 @@ class RedisStreamsConsumer(IMessagingConsumer):
                     self.logger.info("Redis Streams consumer task cancelled")
                     break
                 except Exception as e:
-                    self.logger.error("Error in consume_messages loop: %s", e)
+                    self.logger.error(
+                        "Error in consume_messages loop: %s: %s", type(e).__name__, e
+                    )
                     await asyncio.sleep(1)
 
         except Exception as e:
-            self.logger.error("Fatal error in consume_messages: %s", e)
+            self.logger.error(
+                "Fatal error in consume_messages: %s: %s", type(e).__name__, e
+            )
         finally:
             await self.cleanup()
 

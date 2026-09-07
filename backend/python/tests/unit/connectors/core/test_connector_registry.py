@@ -31,7 +31,8 @@ def _make_registry(container=None):
     """Create a ConnectorRegistry with mocked container."""
     if container is None:
         container = _make_container()
-    return ConnectorRegistry(container), container
+    registry = ConnectorRegistry(container)
+    return registry, container
 
 
 def _make_connector_class(
@@ -279,7 +280,7 @@ class TestCanAccessConnector:
     async def test_team_scope_admin_has_access(self):
         """Admin can access team-scoped connectors."""
         registry, _ = _make_registry()
-        instance = {"scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
+        instance = {"_key": "conn-1", "scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
 
         result = await registry._can_access_connector(instance, "admin-1", "org-1", is_admin=True)
 
@@ -289,7 +290,7 @@ class TestCanAccessConnector:
     async def test_team_scope_creator_has_access(self):
         """Creator can access their own team-scoped connector."""
         registry, _ = _make_registry()
-        instance = {"scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
+        instance = {"_key": "conn-1", "scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
 
         result = await registry._can_access_connector(instance, "user-1", "org-1", is_admin=False)
 
@@ -299,7 +300,7 @@ class TestCanAccessConnector:
     async def test_team_scope_other_user_no_access(self):
         """Non-admin, non-creator cannot access team-scoped connector."""
         registry, _ = _make_registry()
-        instance = {"scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
+        instance = {"_key": "conn-1", "scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
 
         result = await registry._can_access_connector(instance, "user-2", "org-1", is_admin=False)
 
@@ -309,7 +310,7 @@ class TestCanAccessConnector:
     async def test_personal_scope_creator_has_access(self):
         """Creator can access their personal connector."""
         registry, _ = _make_registry()
-        instance = {"scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1"}
+        instance = {"_key": "conn-1", "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1"}
 
         result = await registry._can_access_connector(instance, "user-1", "org-1", is_admin=False)
 
@@ -319,7 +320,7 @@ class TestCanAccessConnector:
     async def test_personal_scope_other_user_no_access(self):
         """Non-creator cannot access someone's personal connector."""
         registry, _ = _make_registry()
-        instance = {"scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1"}
+        instance = {"_key": "conn-1", "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1"}
 
         result = await registry._can_access_connector(instance, "user-2", "org-1", is_admin=False)
 
@@ -329,7 +330,7 @@ class TestCanAccessConnector:
     async def test_personal_scope_admin_no_access(self):
         """Admin cannot access someone else's personal connector."""
         registry, _ = _make_registry()
-        instance = {"scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1"}
+        instance = {"_key": "conn-1", "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1"}
 
         result = await registry._can_access_connector(instance, "admin-1", "org-1", is_admin=True)
 
@@ -339,7 +340,7 @@ class TestCanAccessConnector:
     async def test_unknown_scope_returns_false(self):
         """Unknown scope returns False."""
         registry, _ = _make_registry()
-        instance = {"scope": "unknown", "createdBy": "user-1"}
+        instance = {"_key": "conn-1", "scope": "unknown", "createdBy": "user-1"}
 
         result = await registry._can_access_connector(instance, "user-1", "org-1", is_admin=True)
 
@@ -349,7 +350,7 @@ class TestCanAccessConnector:
     async def test_default_scope_is_personal(self):
         """Missing scope defaults to personal."""
         registry, _ = _make_registry()
-        instance = {"createdBy": "user-1"}  # No scope key
+        instance = {"_key": "conn-1", "createdBy": "user-1"}  # No scope key
 
         result = await registry._can_access_connector(instance, "user-1", "org-1", is_admin=False)
 

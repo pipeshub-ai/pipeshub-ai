@@ -126,7 +126,7 @@ def _mock_record(**overrides):
 def _mock_request(
     *,
     user: dict | None = None,
-    headers: dict | None = None,
+    is_admin: bool = False,
     body: dict | None = None,
     container: Any | None = None,
     connector_registry: Any | None = None,
@@ -134,19 +134,15 @@ def _mock_request(
     query_params: dict | None = None,
 ):
     req = MagicMock()
-    _headers = headers or {}
     user_data = dict(user or {"userId": "user-1", "orgId": "org-1"})
     if "role" not in user_data:
-        admin_hdr = str(
-            _headers.get("X-Is-Admin") or _headers.get("x-is-admin") or ""
-        ).lower()
-        user_data["role"] = "admin" if admin_hdr == "true" else "member"
+        user_data["role"] = "admin" if is_admin else "member"
     req.state = MagicMock()
     req.state.user = MagicMock()
     req.state.user.get = lambda k, default=None: user_data.get(k, default)
 
     req.headers = MagicMock()
-    req.headers.get = lambda k, default=None: _headers.get(k, default)
+    req.headers.get = lambda k, default=None: None
 
     if body is not None:
         req.json = AsyncMock(return_value=body)
@@ -903,7 +899,7 @@ class TestGetConnectorStatsGaps:
         registry.can_user_view_connector = AsyncMock(return_value=True)
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
-        result = await get_connector_stats_endpoint(req, connector_id="c1", org_id="org-1", graph_provider=gp)
+        result = await get_connector_stats_endpoint(req, connector_id="c1", graph_provider=gp)
         assert result["success"] is True
 
     @pytest.mark.asyncio
@@ -916,7 +912,7 @@ class TestGetConnectorStatsGaps:
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, connector_id="c1", org_id="org-1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="c1", graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
@@ -930,7 +926,7 @@ class TestGetConnectorStatsGaps:
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, connector_id="c1", org_id="org-1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="c1", graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
 
@@ -1496,7 +1492,6 @@ class TestUpdateConnectorInstanceNameGaps:
         req = _mock_request(
             connector_registry=registry,
             body={"instanceName": "New Name"},
-            headers={"X-Is-Admin": "false"},
         )
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
@@ -1518,7 +1513,7 @@ class TestUpdateConnectorInstanceNameGaps:
         req = _mock_request(
             connector_registry=registry,
             body={"instanceName": "New Name"},
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
         )
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
@@ -1674,7 +1669,7 @@ class TestGetValidatedConnectorInstanceGaps:
         })
         req = _mock_request(
             connector_registry=registry,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
         )
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
@@ -1754,7 +1749,7 @@ class TestCreateConnectorInstanceBetaGaps:
                 "instanceName": "Beta Conn",
                 "scope": "team",
             },
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -1789,7 +1784,7 @@ class TestCreateConnectorInstanceBetaGaps:
                 "instanceName": "My Drive",
                 "scope": "team",
             },
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
         )
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
@@ -1841,7 +1836,7 @@ class TestCreateConnectorInstanceConfigAuthMissing:
                 "oauthConfigId": "oid-1",
                 "authType": "OAUTH",
             },
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
         )
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
@@ -2260,7 +2255,7 @@ class TestValidateConnectorDeletionPermissions:
 class TestGetUserContext:
     def test_valid_user(self):
         from app.connectors.api.router import _get_user_context
-        req = _mock_request(headers={"X-Is-Admin": "true"})
+        req = _mock_request(is_admin=True)
         ctx = _get_user_context(req)
         assert ctx["user_id"] == "user-1"
         assert ctx["org_id"] == "org-1"
@@ -2464,7 +2459,7 @@ class TestGetValidatedConnectorInstanceAdditional:
             "scope": ConnectorScope.TEAM.value,
             "createdBy": "user-1",
         })
-        req = _mock_request(connector_registry=registry, headers={"X-Is-Admin": "false"})
+        req = _mock_request(connector_registry=registry)
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
             with pytest.raises(HTTPException) as exc_info:
@@ -2479,7 +2474,7 @@ class TestGetValidatedConnectorInstanceAdditional:
             "scope": "custom",
             "createdBy": "other-user",
         })
-        req = _mock_request(connector_registry=registry, headers={"X-Is-Admin": "false"})
+        req = _mock_request(connector_registry=registry)
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
             with pytest.raises(HTTPException) as exc_info:
@@ -2495,7 +2490,7 @@ class TestGetValidatedConnectorInstanceAdditional:
             "createdBy": "user-1",
         }
         registry.get_connector_instance = AsyncMock(return_value=instance)
-        req = _mock_request(connector_registry=registry, headers={"X-Is-Admin": "false"})
+        req = _mock_request(connector_registry=registry)
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
             result = await get_validated_connector_instance("c1", req)
@@ -3481,7 +3476,7 @@ def _mock_record(**overrides):
 def _mock_request(
     *,
     user: dict | None = None,
-    headers: dict | None = None,
+    is_admin: bool = False,
     body: dict | None = None,
     container: Any | None = None,
     connector_registry: Any | None = None,
@@ -3489,19 +3484,15 @@ def _mock_request(
     query_params: dict | None = None,
 ):
     req = MagicMock()
-    _headers = headers or {}
     user_data = dict(user or {"userId": "user-1", "orgId": "org-1"})
     if "role" not in user_data:
-        admin_hdr = str(
-            _headers.get("X-Is-Admin") or _headers.get("x-is-admin") or ""
-        ).lower()
-        user_data["role"] = "admin" if admin_hdr == "true" else "member"
+        user_data["role"] = "admin" if is_admin else "member"
     req.state = MagicMock()
     req.state.user = MagicMock()
     req.state.user.get = lambda k, default=None: user_data.get(k, default)
 
     req.headers = MagicMock()
-    req.headers.get = lambda k, default=None: _headers.get(k, default)
+    req.headers.get = lambda k, default=None: None
 
     if body is not None:
         req.json = AsyncMock(return_value=body)
@@ -4258,7 +4249,7 @@ class TestGetConnectorStatsGapsCoverage:
         registry.can_user_view_connector = AsyncMock(return_value=True)
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
-        result = await get_connector_stats_endpoint(req, connector_id="c1", org_id="org-1", graph_provider=gp)
+        result = await get_connector_stats_endpoint(req, connector_id="c1", graph_provider=gp)
         assert result["success"] is True
 
     @pytest.mark.asyncio
@@ -4271,7 +4262,7 @@ class TestGetConnectorStatsGapsCoverage:
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, connector_id="c1", org_id="org-1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="c1", graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
@@ -4285,7 +4276,7 @@ class TestGetConnectorStatsGapsCoverage:
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, connector_id="c1", org_id="org-1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="c1", graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
 
@@ -4851,7 +4842,6 @@ class TestUpdateConnectorInstanceNameGapsCoverage:
         req = _mock_request(
             connector_registry=registry,
             body={"instanceName": "New Name"},
-            headers={"X-Is-Admin": "false"},
         )
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
@@ -4873,7 +4863,7 @@ class TestUpdateConnectorInstanceNameGapsCoverage:
         req = _mock_request(
             connector_registry=registry,
             body={"instanceName": "New Name"},
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
         )
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
@@ -5029,7 +5019,7 @@ class TestGetValidatedConnectorInstanceGapsCoverage:
         })
         req = _mock_request(
             connector_registry=registry,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
         )
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
@@ -5109,7 +5099,7 @@ class TestCreateConnectorInstanceBetaGapsCoverage:
                 "instanceName": "Beta Conn",
                 "scope": "team",
             },
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -5144,7 +5134,7 @@ class TestCreateConnectorInstanceBetaGapsCoverage:
                 "instanceName": "My Drive",
                 "scope": "team",
             },
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
         )
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
@@ -5196,7 +5186,7 @@ class TestCreateConnectorInstanceConfigAuthMissingCoverage:
                 "oauthConfigId": "oid-1",
                 "authType": "OAUTH",
             },
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
         )
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
@@ -5615,7 +5605,7 @@ class TestValidateConnectorDeletionPermissionsCoverage:
 class TestGetUserContextCoverage:
     def test_valid_user(self):
         from app.connectors.api.router import _get_user_context
-        req = _mock_request(headers={"X-Is-Admin": "true"})
+        req = _mock_request(is_admin=True)
         ctx = _get_user_context(req)
         assert ctx["user_id"] == "user-1"
         assert ctx["org_id"] == "org-1"
@@ -5819,7 +5809,7 @@ class TestGetValidatedConnectorInstanceAdditionalCoverage:
             "scope": ConnectorScope.TEAM.value,
             "createdBy": "user-1",
         })
-        req = _mock_request(connector_registry=registry, headers={"X-Is-Admin": "false"})
+        req = _mock_request(connector_registry=registry)
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
             with pytest.raises(HTTPException) as exc_info:
@@ -5834,7 +5824,7 @@ class TestGetValidatedConnectorInstanceAdditionalCoverage:
             "scope": "custom",
             "createdBy": "other-user",
         })
-        req = _mock_request(connector_registry=registry, headers={"X-Is-Admin": "false"})
+        req = _mock_request(connector_registry=registry)
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
             with pytest.raises(HTTPException) as exc_info:
@@ -5850,7 +5840,7 @@ class TestGetValidatedConnectorInstanceAdditionalCoverage:
             "createdBy": "user-1",
         }
         registry.get_connector_instance = AsyncMock(return_value=instance)
-        req = _mock_request(connector_registry=registry, headers={"X-Is-Admin": "false"})
+        req = _mock_request(connector_registry=registry)
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
             result = await get_validated_connector_instance("c1", req)
@@ -6821,7 +6811,7 @@ class TestGetConnectorStatsPermissions:
         req.app.state.connector_registry = connector_registry
         req.state.user = {"userId": "ext-user-1", "orgId": "org1"}
         
-        result = await get_connector_stats_endpoint(req, connector_id="kb1", org_id="org1", graph_provider=gp)
+        result = await get_connector_stats_endpoint(req, connector_id="kb1", graph_provider=gp)
         assert result["success"] is True
         gp.get_connector_stats.assert_called_once_with("org1", "kb1")
 
@@ -6846,23 +6836,7 @@ class TestGetConnectorStatsPermissions:
         req.state.user = {"userId": "ext-user-1", "orgId": "org1"}
         
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, connector_id="kb1", org_id="org1", graph_provider=gp)
-        assert exc_info.value.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_org_mismatch_returns_403(self):
-        """User requesting stats for different org gets 403."""
-        gp = AsyncMock()
-        
-        container = MagicMock()
-        container.logger = MagicMock(return_value=logging.getLogger("test"))
-        
-        req = _mock_request(graph_provider=gp, container=container)
-        req.app.state.connector_registry = AsyncMock()
-        req.state.user = {"userId": "ext-user-1", "orgId": "org1"}
-        
-        with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, connector_id="kb1", org_id="org2", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="kb1", graph_provider=gp)
         assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
@@ -6887,7 +6861,7 @@ class TestGetConnectorStatsPermissions:
         req.app.state.connector_registry = connector_registry
         req.state.user = {"userId": "ext-user-1", "orgId": "org1"}
 
-        result = await get_connector_stats_endpoint(req, connector_id="conn1", org_id="org1", graph_provider=gp)
+        result = await get_connector_stats_endpoint(req, connector_id="conn1", graph_provider=gp)
         assert result["success"] is True
         connector_registry.can_user_view_connector.assert_awaited_once()
 
@@ -6913,7 +6887,7 @@ class TestGetConnectorStatsPermissions:
         req.state.user = {"userId": "ext-user-1", "orgId": "org1"}
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, connector_id="conn1", org_id="org1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="conn1", graph_provider=gp)
         assert exc_info.value.status_code == 403
         gp.get_connector_stats.assert_not_called()
 
@@ -6931,21 +6905,6 @@ class TestGetConnectorStatsPermissions:
         req.state.user = {"userId": "ext-user-1", "orgId": "org1"}
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, connector_id="conn1", org_id="org1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, connector_id="conn1", graph_provider=gp)
         assert exc_info.value.status_code == 404
 
-    @pytest.mark.asyncio
-    async def test_user_not_authenticated_returns_401(self):
-        """Request without user credentials gets 401."""
-        gp = AsyncMock()
-        
-        container = MagicMock()
-        container.logger = MagicMock(return_value=logging.getLogger("test"))
-        
-        req = _mock_request(graph_provider=gp, container=container)
-        req.app.state.connector_registry = AsyncMock()
-        req.state.user = {}
-        
-        with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, connector_id="kb1", org_id="org1", graph_provider=gp)
-        assert exc_info.value.status_code == 401

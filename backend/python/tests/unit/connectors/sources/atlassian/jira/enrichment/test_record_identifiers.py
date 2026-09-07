@@ -14,7 +14,11 @@ class TestIsJiraConnector:
 
     def test_jira_variants(self):
         assert is_jira_connector(Connectors.JIRA) is True
+        # Both the pre-rename value still on old records and the current one must match.
         assert is_jira_connector(Connectors.JIRA_PERSONAL) is True
+        assert is_jira_connector(Connectors.JIRA_CLOUD_PERSONAL) is True
+        assert is_jira_connector("JIRA PERSONAL") is True
+        assert is_jira_connector("JIRA CLOUD PERSONAL") is True
         assert is_jira_connector(Connectors.JIRA_DATA_CENTER) is True
         assert is_jira_connector(Connectors.JIRA_DATA_CENTER_PERSONAL) is True
 

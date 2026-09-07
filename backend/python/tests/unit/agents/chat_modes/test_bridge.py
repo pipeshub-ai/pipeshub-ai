@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agents.chat_modes.bridge import (
     _apply_policy_to_chat_state,
+    _fetch_available_connectors,
     _resolve_custom_instructions,
     _resolve_web_search_config,
     _with_mode_instructions,
@@ -27,6 +28,7 @@ from app.agents.chat_modes.policy import (
     WEB_SEARCH_POLICY,
 )
 from app.agents.chat_modes.prefetch import PrefetchResult
+from app.config.constants.arangodb import Connectors
 from app.utils.chat_helpers import CitationRefMapper
 
 
@@ -46,14 +48,27 @@ def _stream_agent(result: Any) -> MagicMock:
 
 
 def _patch_connectors(has_sql: bool = False, has_slack: bool = False):
+    """Stub the single connector-instance query `run_chat_stream` issues, and
+    the connector prefetch beside it.
+
+    Returns instance dicts rather than booleans so the real
+    `connector_instances_have_sql`/`_have_slack` predicates run over them —
+    the two flags used to come from two separate queries, and this is what
+    pins them to one.
+    """
+    instances = []
+    if has_sql:
+        instances.append({"type": Connectors.POSTGRESQL.value, "isConfigured": True})
+    if has_slack:
+        instances.append({"type": Connectors.SLACK.value, "isConfigured": True})
     return (
         patch(
-            "app.utils.execute_query.has_sql_connector_configured",
-            new=AsyncMock(return_value=has_sql),
+            "app.agents.chat_modes.bridge.fetch_user_connector_instances",
+            new=AsyncMock(return_value=instances),
         ),
         patch(
-            "app.utils.fetch_slack_thread.has_slack_connector_configured",
-            new=AsyncMock(return_value=has_slack),
+            "app.agents.chat_modes.bridge._fetch_available_connectors",
+            new=AsyncMock(return_value=[]),
         ),
     )
 
@@ -253,6 +268,65 @@ class TestRunChatStream:
         assert len(events) == 1
         assert events[0].startswith("event: complete\n")
         assert json.loads(events[0].split("data: ", 1)[1].strip()) == {"answer": "42"}
+
+    async def test_sql_and_slack_flags_come_from_one_connector_query(self) -> None:
+        """Both flags are derived from a single `get_user_connector_instances`
+        call — they used to be two identical queries."""
+        captured_kwargs: dict[str, Any] = {}
+
+        def _capture_state(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return {"org_id": "org-1", "user_id": "user-1", "query": "hello"}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None):
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        kwargs = self._base_kwargs(policy=AGENT_POLICY)
+        graph_provider = kwargs["graph_provider"]
+        graph_provider.get_user_connector_instances = AsyncMock(
+            return_value=[
+                {"type": Connectors.POSTGRESQL.value, "isConfigured": True},
+                {"type": Connectors.SLACK.value, "isConfigured": True},
+            ]
+        )
+
+        with (
+            patch("app.modules.agents.qna.chat_state.build_initial_state", new=_capture_state),
+            patch(
+                "app.agents.chat_modes.bridge._fetch_available_connectors",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            [chunk async for chunk in run_chat_stream(**kwargs)]
+
+        assert graph_provider.get_user_connector_instances.await_count == 1
+        assert captured_kwargs["has_sql_connector"] is True
+        assert captured_kwargs["has_slack_connector"] is True
+
+    async def test_available_connectors_reuses_user_key_from_route(self) -> None:
+        """`user_info["userKey"]` (resolved by `chatbot.py`) skips the repeat
+        `get_user_by_user_id` lookup the prefetch used to make."""
+        graph_provider = MagicMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "should-not-be-used"})
+        graph_provider.get_knowledge_hub_filter_options = AsyncMock(
+            return_value={"apps": [{"id": "a1", "name": "Drive", "type": "DRIVE"}]}
+        )
+
+        result = await _fetch_available_connectors(
+            graph_provider=graph_provider, user_key="user-key-1",
+            user_id="user-1", org_id="org-1", log=MagicMock(),
+        )
+
+        assert result == [{"id": "a1", "name": "Drive", "type": "DRIVE"}]
+        graph_provider.get_user_by_user_id.assert_not_awaited()
+        assert graph_provider.get_knowledge_hub_filter_options.await_args.kwargs["user_key"] == "user-key-1"
 
     async def test_web_search_mode_resolves_provider_config_before_run(self) -> None:
         """`WEB_SEARCH_POLICY.include_web_search=True` must trigger the

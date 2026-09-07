@@ -37,16 +37,14 @@ def _mock_request(
     body: dict = None,
     config_service: Any = None,
     connector_registry: Any = None,
+    is_admin: bool = False,
 ):
     """Build a minimal mock FastAPI request object for create_connector_instance."""
     req = MagicMock()
     _headers = headers or {}
     user_data = dict(user or {"userId": "user-1", "orgId": "org-1"})
     if "role" not in user_data:
-        admin_hdr = str(
-            _headers.get("X-Is-Admin") or _headers.get("x-is-admin") or ""
-        ).lower()
-        user_data["role"] = "admin" if admin_hdr == "true" else "member"
+        user_data["role"] = "admin" if is_admin else "member"
     req.state = MagicMock()
     req.state.user = MagicMock()
     req.state.user.get = lambda k, default=None: user_data.get(k, default)
@@ -156,7 +154,7 @@ class TestAuthTypeAutoSelection:
         registry = _default_registry()
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
         )
         gp = _default_graph_provider()
@@ -176,7 +174,7 @@ class TestAuthTypeAutoSelection:
         registry = _default_registry(metadata=metadata)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
         )
         gp = _default_graph_provider()
@@ -200,7 +198,7 @@ class TestAuthTypeValidation:
         registry = _default_registry(metadata=metadata)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
         )
         gp = _default_graph_provider()
@@ -218,7 +216,7 @@ class TestAuthTypeValidation:
         registry = _default_registry()
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
         )
         gp = _default_graph_provider()
@@ -245,7 +243,7 @@ class TestPreValidateOAuthConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -298,7 +296,7 @@ class TestPreValidateOAuthConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -348,7 +346,7 @@ class TestPreValidateOAuthConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -390,7 +388,7 @@ class TestPreValidateOAuthConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -431,7 +429,7 @@ class TestPreValidateOAuthConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -475,7 +473,7 @@ class TestPreValidateOAuthConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -517,7 +515,7 @@ class TestCreateInstanceInDB:
         )
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
         )
         gp = _default_graph_provider()
@@ -538,7 +536,7 @@ class TestCreateInstanceInDB:
         )
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
         )
         gp = _default_graph_provider()
@@ -566,7 +564,7 @@ class TestStoreInitialConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -609,7 +607,7 @@ class TestStoreInitialConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -654,7 +652,6 @@ class TestStoreInitialConfig:
         ])
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "false"},
             connector_registry=registry,
             config_service=config_service,
         )
@@ -686,7 +683,7 @@ class TestStoreInitialConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -714,7 +711,7 @@ class TestStoreInitialConfig:
         config_service = AsyncMock()
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -739,7 +736,7 @@ class TestStoreInitialConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -771,7 +768,7 @@ class TestSuccessResponse:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -803,7 +800,7 @@ class TestSuccessResponse:
         registry = _default_registry()
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
         )
         gp = _default_graph_provider()
@@ -834,7 +831,7 @@ class TestOAuthBodyLevelConfigId:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -876,7 +873,7 @@ class TestGenericExceptionHandling:
         )
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
         )
         gp = _default_graph_provider()

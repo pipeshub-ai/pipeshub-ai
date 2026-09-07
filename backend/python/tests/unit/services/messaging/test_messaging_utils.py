@@ -30,8 +30,8 @@ from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
 )
+from app.services.messaging.messaging_factory import lane_topics_for
 from app.services.messaging.utils import MessagingUtils
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -369,6 +369,11 @@ class TestConvenienceConsumerConfigs:
         assert isinstance(config, KafkaConsumerConfig)
         assert config.client_id == "records_consumer_client"
         assert config.group_id == "records_consumer_group"
+        # On Kafka a fair-scheduling lane is a partition, so the subscription
+        # stays a single topic however many lanes are configured.
+        assert config.topics == lane_topics_for(
+            Topic.RECORD_EVENTS.value, MessageBrokerType.KAFKA
+        )
         assert config.topics == [Topic.RECORD_EVENTS.value]
 
     @pytest.mark.asyncio
@@ -444,7 +449,15 @@ class TestConvenienceConsumerConfigs:
         config = await MessagingUtils.create_record_consumer_config(container)
         assert isinstance(config, RedisStreamsConfig)
         assert config.client_id == "records_consumer_client"
-        assert config.topics == [Topic.RECORD_EVENTS.value]
+        # A Redis lane is its own stream, so the consumer has to subscribe to
+        # every one of them -- records on an unsubscribed lane are never read.
+        # The base stream stays first so anything published before laning was
+        # turned on still drains.
+        expected = lane_topics_for(
+            Topic.RECORD_EVENTS.value, MessageBrokerType.REDIS
+        )
+        assert config.topics == expected
+        assert expected[0] == Topic.RECORD_EVENTS.value
 
     @pytest.mark.asyncio
     @patch("app.services.messaging.utils.get_message_broker_type",

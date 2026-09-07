@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { injectable, inject } from 'inversify';
-import { RedisService } from '../../../libs/services/redis.service';
+import { ICacheService } from '../../../libs/services/cache/cacheService.interface';
 import { RedisServiceNotInitializedError } from '../../../libs/errors/redis.errors';
 
 export interface SessionData {
@@ -15,7 +15,7 @@ const SESSION_EXPIRY = 3600; // 1 hour in seconds
 @injectable()
 export class SessionService {
   constructor(
-    @inject('RedisService') private redisService: RedisService,
+    @inject('RedisService') private redisService: ICacheService,
   ) {}
 
   async createSession(

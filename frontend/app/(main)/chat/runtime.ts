@@ -12,7 +12,7 @@
 
 import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
-import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
 import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
 import { toast } from '@/lib/store/toast-store';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
@@ -217,13 +217,15 @@ export function buildStreamChatRequestForSlot(
     });
   }
   const effectiveModel = rawModel ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
-  // No explicit user choice → still forward DEFAULT_REASONING_EFFORT
-  // explicitly for reasoning-capable models, matching the badge shown in the
-  // composer, rather than relying solely on the backend's own default.
+  // No explicit user choice → prefer the agent's configured default, then
+  // fall back to DEFAULT_REASONING_EFFORT for reasoning-capable models.
   const reasoningEffortOverride = currentState.settings.reasoningEffort[modelCtxKey] ?? null;
+  const agentDefault = getAgentDefaultReasoningEffort(modelCtxKey);
   const reasoningEffort =
     reasoningEffortOverride ??
-    (isModelReasoningCapable(modelCtxKey, effectiveModel) ? DEFAULT_REASONING_EFFORT : null);
+    (isModelReasoningCapable(modelCtxKey, effectiveModel)
+      ? (agentDefault ?? DEFAULT_REASONING_EFFORT)
+      : null);
 
   const isAgent = Boolean(effectiveAgentId);
   const knowledgeScope = currentState.agentKnowledgeScope;

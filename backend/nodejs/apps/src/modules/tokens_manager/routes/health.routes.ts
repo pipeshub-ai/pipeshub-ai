@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { Container } from 'inversify';
 import { MongoService } from '../../../libs/services/mongo.service';
-import { RedisService } from '../../../libs/services/redis.service';
+import { ICacheService } from '../../../libs/services/cache/cacheService.interface';
 import { TokenEventProducer } from '../services/token-event.producer';
 import { Logger }  from '../../../libs/services/logger.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
@@ -30,6 +30,10 @@ export interface HealthStatus {
     messageBrokerType: string;
     graphDbType: string;
     vectorDbType: string;
+    // Not written to the KV deployment config -- REDIS_MODE is a
+    // process-env setting (R21/R22), so it is read directly rather than
+    // via getDeploymentConfig()'s KV-store fresh/fallback path.
+    redisMode: string;
   };
 }
 
@@ -38,7 +42,7 @@ export function createHealthRouter(
   configurationManagerContainer: Container
 ): Router {
   const router = Router();
-  const redis = container.get<RedisService>(TYPES.RedisService);
+  const redis = container.get<ICacheService>(TYPES.RedisService);
   const tokenEventProducer = container.get<TokenEventProducer>(TYPES.TokenEventProducer);
   const mongooseService = container.get<MongoService>(TYPES.MongoService);
   const keyValueStoreService = configurationManagerContainer.get<KeyValueStoreService>(
@@ -90,8 +94,14 @@ export function createHealthRouter(
       };
       const vectorDbName = vectorDbNames[deployment.vectorDbType || ''] || 'VectorDB';
 
+      const redisMode = process.env.REDIS_MODE || 'standalone';
+      const redisDisplayName =
+        redisMode === 'cluster' ? 'Redis (Cluster)'
+        : redisMode === 'memorydb' ? 'Redis (MemoryDB)'
+        : 'Redis';
+
       const serviceNames: Record<string, string> = {
-        redis: 'Redis',
+        redis: redisDisplayName,
         messageBroker: brokerName,
         mongodb: 'MongoDB',
         graphDb: graphDbName,
@@ -197,6 +207,7 @@ export function createHealthRouter(
           messageBrokerType: deployment.messageBrokerType,
           graphDbType: deployment.dataStoreType || 'pending',
           vectorDbType: deployment.vectorDbType || 'pending',
+          redisMode: process.env.REDIS_MODE || 'standalone',
         },
       };
 

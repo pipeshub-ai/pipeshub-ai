@@ -58,7 +58,6 @@ from app.connectors.api.connector_resolvers import (
     resolve_oauth_config,
     resolve_oauth_configs,
     resolve_shared_oauth_config_for_flow,
-    resolve_stats_org_id,
     schedule_token_refresh_kwargs,
     strip_redacted_fields,
 )

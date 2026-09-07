@@ -69,6 +69,7 @@ def _mock_request(
     connector_registry: Any | None = None,
     graph_provider: Any | None = None,
     query_params: dict | None = None,
+    is_admin: bool = False,
 ):
     """Build a minimal mock FastAPI request object."""
     req = MagicMock()
@@ -76,10 +77,7 @@ def _mock_request(
     _headers = headers or {}
     user_data = dict(user or {"userId": "user-1", "orgId": "org-1"})
     if "role" not in user_data:
-        admin_hdr = str(
-            _headers.get("X-Is-Admin") or _headers.get("x-is-admin") or ""
-        ).lower()
-        user_data["role"] = "admin" if admin_hdr == "true" else "member"
+        user_data["role"] = "admin" if is_admin else "member"
     req.state = MagicMock()
     req.state.user = MagicMock()
     req.state.user.get = lambda k, default=None: user_data.get(k, default)
@@ -930,7 +928,6 @@ class TestGetValidatedConnectorInstance:
         request = _mock_request(
             container=container,
             connector_registry=registry,
-            headers={"X-Is-Admin": "false"},
         )
 
         with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock):
@@ -952,7 +949,6 @@ class TestGetValidatedConnectorInstance:
         request = _mock_request(
             container=container,
             connector_registry=registry,
-            headers={"X-Is-Admin": "false"},
         )
 
         with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock):
@@ -974,7 +970,7 @@ class TestGetValidatedConnectorInstance:
         request = _mock_request(
             container=container,
             connector_registry=registry,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
         )
 
         with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock):
@@ -1564,7 +1560,7 @@ class TestGetConnectorStatsEndpoint:
         request.headers = MagicMock()
         request.headers.get = lambda k, default=None: default
 
-        result = await get_connector_stats_endpoint(request, connector_id="conn-1", org_id="org-1", graph_provider=gp)
+        result = await get_connector_stats_endpoint(request, connector_id="conn-1", graph_provider=gp)
         assert result["success"] is True
         assert result["data"]["totalRecords"] == 100
 
@@ -1593,7 +1589,7 @@ class TestGetConnectorStatsEndpoint:
         request.headers.get = lambda k, default=None: default
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(request, connector_id="conn-1", org_id="org-1", graph_provider=gp)
+            await get_connector_stats_endpoint(request, connector_id="conn-1", graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
 
@@ -2080,7 +2076,6 @@ class TestUpdateConnectorInstanceName:
         request = _mock_request(
             container=container,
             connector_registry=registry,
-            headers={"X-Is-Admin": "false"},
             body={"instanceName": "New Name"},
         )
 
@@ -2659,7 +2654,7 @@ class TestGetUserContext:
 
         request = _mock_request(
             user={"userId": "u1", "orgId": "o1"},
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
         )
         ctx = _get_user_context(request)
         assert ctx["user_id"] == "u1"
@@ -3463,7 +3458,6 @@ class TestCreateConnectorInstance:
         request = _mock_request(
             container=container,
             connector_registry=registry,
-            headers={"X-Is-Admin": "false"},
             body={
                 "connectorType": "slack",
                 "instanceName": "Team Slack",

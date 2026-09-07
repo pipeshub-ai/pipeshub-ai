@@ -11,6 +11,8 @@ const resetEmailTemplate = loadTemplate('src/modules/mail/views/layouts/user/res
 const accountCreationTemplate = loadTemplate('src/modules/mail/views/layouts/org/accountCreation.hbs');
 const domainLimitReachedTemplate = loadTemplate('src/modules/mail/views/layouts/org/domainLimitReached.hbs');
 const appUsersInviteTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/invite.hbs');
+const joinRequestNotifyTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/joinRequestNotify.hbs');
+const joinRequestDecisionTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/joinRequestDecision.hbs');
 const orgEmailVerificationTemplate = loadTemplate('src/modules/mail/views/layouts/org/orgEmailVerification.hbs');
 const headerTemplate = loadTemplate('src/modules/mail/views/partials/header.hbs');
 const footerTemplate = loadTemplate('src/modules/mail/views/partials/footer.hbs');
@@ -67,5 +69,7 @@ export const accountCreation = (templateData: Record<string,any>): string => com
 export const appUserInvite = (templateData: Record<string,any>): string => compileTemplate(appUsersInviteTemplate, templateData);
 export const orgEmailVerification = (templateData: Record<string,any>): string => compileTemplate(orgEmailVerificationTemplate, templateData);
 export const domainLimitReached = (templateData: Record<string,any>): string => compileTemplate(domainLimitReachedTemplate, templateData);
+export const joinRequestNotify = (templateData: Record<string,any>): string => compileTemplate(joinRequestNotifyTemplate, templateData);
+export const joinRequestDecision = (templateData: Record<string,any>): string => compileTemplate(joinRequestDecisionTemplate, templateData);
 
 

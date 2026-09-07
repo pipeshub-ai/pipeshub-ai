@@ -30,7 +30,7 @@ from app.config.constants.arangodb import (
     normalize_file_extension,
 )
 from app.events.processor import Processor
-from app.exceptions.indexing_exceptions import IndexingError
+from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.events.dedup import DedupDecision, select_duplicate
@@ -51,6 +51,7 @@ from app.services.vector_db.strategy import (
     resolve_write_collection_name,
 )
 from app.utils.cpu_offload import offload_if_large
+from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.libreoffice_convert import convert_with_libreoffice
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -537,7 +538,10 @@ class EventProcessor:
                 else None
             ),
         }
-        await self.update_record_fields(doc, fields)
+        success = await self.update_record_fields(doc, fields)
+        self._require_persisted(
+            success, f"Failed to persist status {status.value} for record", doc
+        )
         self.logger.debug(
             f"🔍 Record {record_id}: Successfully updated status to {status.value}"
         )
@@ -857,10 +861,20 @@ class EventProcessor:
             event_type = event_data.get(
                 "eventType", EventTypes.NEW_RECORD.value
             )  # default to create
+            # The three guards below used to `return` bare, yielding neither
+            # PARSING_COMPLETE nor INDEXING_COMPLETE. The consumers read that as
+            # a handler that failed for an unknown reason and retried it to the
+            # dead-letter ceiling — three deliveries, no diagnosis, and on Kafka
+            # not even a status write, because the handler took its no-error
+            # path on the way out. A malformed envelope cannot come good on a
+            # retry, so the first two raise a TERMINAL error and are reported
+            # once; the third is a real race and drains instead.
             payload = event_data.get("payload")
             if payload is None:
-                self.logger.error("❌ No payload in event data")
-                return
+                raise ProcessingError(
+                    "Event has no payload",
+                    details={"event_type": event_type},
+                )
             event_data = payload
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
@@ -868,15 +882,28 @@ class EventProcessor:
             self.logger.debug(f"📥 Processing event: {event_type}: for record {record_id} with virtual_record_id {virtual_record_id}")
 
             if not record_id:
-                self.logger.error("❌ No record ID provided in event data")
-                return
+                raise ProcessingError(
+                    "Event has no recordId",
+                    details={"event_type": event_type},
+                )
 
             record = await self.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
 
             if record is None:
+                # Legitimately reachable: a record can be deleted between an
+                # event being published and consumed. There is nothing to index
+                # and nothing to fail, so drain the message rather than retry it.
                 self.logger.error("❌ Record %s not found", record_id)
+                yield PipelineEvent(
+                    event=IndexingEvent.PARSING_COMPLETE,
+                    data=PipelineEventData(record_id=record_id),
+                )
+                yield PipelineEvent(
+                    event=IndexingEvent.INDEXING_COMPLETE,
+                    data=PipelineEventData(record_id=record_id),
+                )
                 return
 
             if virtual_record_id is None:
@@ -946,6 +973,18 @@ class EventProcessor:
 
             if not file_content or file_content == b"":
                 await self.mark_record_status(doc, ProgressStatus.EMPTY)
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                return
+
+            metadata_file_match = match_metadata_file_signature(file_content)
+            if metadata_file_match:
+                self.logger.info(
+                    "❌ Skipping OS metadata file (%s): %s",
+                    metadata_file_match,
+                    record_name,
+                )
+                await self.mark_record_status(doc, ProgressStatus.FILE_TYPE_NOT_SUPPORTED)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return

@@ -9,16 +9,17 @@ from __future__ import annotations
 import asyncio
 import inspect
 from logging import Logger
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
-
-from redis.asyncio import Redis
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import RedisConfig, messaging_env
 from app.services.messaging.utils import MessagingUtils
+
+if TYPE_CHECKING:
+    from app.services.redis.connection_provider import RedisClient as Redis
 
 LEADER_KEY = "vector_membership_backfill:leader"
 
@@ -74,14 +75,18 @@ class VectorMembershipBackfillLeaderLock:
     async def _client(self) -> Redis | None:
         if self._redis is not None:
             return self._redis
-        client = Redis(
-            host=self.redis_config.host,
-            port=self.redis_config.port,
-            password=self.redis_config.password,
-            db=self.redis_config.db,
-            decode_responses=True,
-            socket_timeout=5.0,
-            socket_connect_timeout=5.0,
+        from app.services.redis.config import ClientOptions, RedisConnectionConfig
+        from app.services.redis.connection_provider_factory import get_redis_provider
+
+        provider = get_redis_provider(
+            RedisConnectionConfig.from_redis_config(self.redis_config)
+        )
+        client = provider.create_client(
+            ClientOptions(
+                decode_responses=True,
+                socket_timeout_seconds=5.0,
+                socket_connect_timeout_seconds=5.0,
+            )
         )
         try:
             await client.ping()

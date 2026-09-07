@@ -1409,3 +1409,204 @@ class TestToolImageRelocationRespectsTheCap:
 
         assert t._tool_image_fallback(RuntimeError(self.CONFLICT), self._messages(), None) is None
         assert self._image_count(t._to_langchain(self._messages(), None)) == 2
+
+
+class _FailsMidStreamModel(_FakeModel):
+    """Yields `emit_before_failing` chunks, then raises.
+
+    The distinction the transport has to make: a failure with nothing yet
+    sent is safe to retry, while a failure after deltas have reached the
+    client is not — retrying replays text the user already saw.
+    """
+
+    def __init__(self, exc: Exception, *, emit_before_failing: int) -> None:
+        super().__init__()
+        self._exc = exc
+        self._emit = emit_before_failing
+        self.stream_attempts = 0
+
+    async def astream(self, messages: list, config: Any = None) -> "AsyncIterator[AIMessageChunk]":
+        self.stream_attempts += 1
+        for i in range(self._emit):
+            yield AIMessageChunk(content=f"chunk{i} ")
+        raise self._exc
+
+
+class TestTransientStreamDisconnectIsRetryable:
+    """`httpx.RemoteProtocolError: peer closed connection without sending a
+    complete message body` is a transient disconnect seen in production
+    against Azure OpenAI. It carries no HTTP status and is not an `OSError`,
+    so it fell through `_is_network_error` and was marked non-retryable —
+    `retry_model_call` skipped it and the turn died on a blip.
+    """
+
+    def _protocol_error(self) -> Exception:
+        import httpx
+
+        return httpx.RemoteProtocolError(
+            "peer closed connection without sending complete message body "
+            "(incomplete chunked read)"
+        )
+
+    async def test_disconnect_before_any_output_is_retryable(self) -> None:
+        transport = LangChainTransport(_FakeModel(raise_on_stream=self._protocol_error()))
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        assert exc_info.value.retryable is True
+
+    async def test_same_error_on_a_non_streaming_call_is_retryable(self) -> None:
+        transport = LangChainTransport(_FakeModel(raise_on_invoke=self._protocol_error()))
+        with pytest.raises(TransportError) as exc_info:
+            await transport.complete([UserMessage(content="hi")])
+        assert exc_info.value.retryable is True
+
+    async def test_generic_protocol_errors_are_covered_too(self) -> None:
+        class LocalProtocolError(Exception):
+            pass
+
+        transport = LangChainTransport(_FakeModel(raise_on_invoke=LocalProtocolError("bad frame")))
+        with pytest.raises(TransportError) as exc_info:
+            await transport.complete([UserMessage(content="hi")])
+        assert exc_info.value.retryable is True
+
+
+class TestPartialStreamIsNeverReplayed:
+    """`stream()` already refuses to retry internally once chunks have been
+    emitted, but the retry decision the OUTER `retry_model_call` middleware
+    reads is `TransportError.retryable`, which was computed from the
+    exception type alone. A retryable-looking error arriving mid-stream
+    therefore let the middleware re-run the whole call and stream the same
+    text to the user twice.
+    """
+
+    async def test_mid_stream_failure_is_marked_non_retryable(self) -> None:
+        import httpx
+
+        model = _FailsMidStreamModel(
+            httpx.RemoteProtocolError("incomplete chunked read"), emit_before_failing=2,
+        )
+        transport = LangChainTransport(model)
+
+        deltas: list[str] = []
+        with pytest.raises(TransportError) as exc_info:
+            async for event in transport.stream([UserMessage(content="hi")]):
+                if isinstance(event, TextDeltaEvent):
+                    deltas.append(event.delta)
+
+        assert deltas, "precondition: the client must have received output"
+        assert exc_info.value.retryable is False, (
+            "retrying after partial output would replay it to the user"
+        )
+
+    async def test_a_timeout_mid_stream_is_also_not_replayed(self) -> None:
+        """`readtimeout` IS in the network hints, so this is the case that
+        was already reachable before protocol errors were added."""
+        model = _FailsMidStreamModel(TimeoutError("read timed out"), emit_before_failing=3)
+        transport = LangChainTransport(model)
+
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        assert exc_info.value.retryable is False
+
+    async def test_transport_does_not_re_stream_on_its_own(self) -> None:
+        model = _FailsMidStreamModel(TimeoutError("read timed out"), emit_before_failing=1)
+        transport = LangChainTransport(model)
+        with pytest.raises(TransportError):
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        assert model.stream_attempts == 1
+
+
+class _EmitsThenFailsModel(_FakeModel):
+    """Yields the given chunks, then raises.
+
+    Lets a test distinguish "the provider sent us something" from "the client
+    saw something" — an empty or metadata-only chunk is the former but not the
+    latter.
+    """
+
+    def __init__(self, exc: Exception, chunks: list[AIMessageChunk]) -> None:
+        super().__init__()
+        self._exc = exc
+        self._chunks = chunks
+
+    async def astream(self, messages: list, config: Any = None) -> "AsyncIterator[AIMessageChunk]":
+        for chunk in self._chunks:
+            yield chunk
+        raise self._exc
+
+
+class TestRetryabilityFollowsWhatTheClientSaw:
+    """The reason a mid-stream failure is non-retryable is that retrying would
+    replay text the user already read. That turns on whether a StreamEvent was
+    YIELDED, not on whether the provider sent a chunk.
+
+    OpenAI-family providers open a stream with a role-only chunk carrying empty
+    content, so a disconnect in the first moments — exactly the transient case
+    worth retrying — arrives with a chunk already buffered and nothing shown.
+    """
+
+    def _protocol_error(self) -> Exception:
+        import httpx
+
+        return httpx.RemoteProtocolError("incomplete chunked read")
+
+    async def _stream_error(self, model: _FakeModel) -> TransportError:
+        transport = LangChainTransport(model)
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        return exc_info.value
+
+    async def test_empty_chunk_then_disconnect_is_still_retryable(self) -> None:
+        model = _EmitsThenFailsModel(
+            self._protocol_error(), [AIMessageChunk(content="")],
+        )
+        assert (await self._stream_error(model)).retryable is True
+
+    async def test_several_empty_chunks_then_disconnect_is_retryable(self) -> None:
+        model = _EmitsThenFailsModel(
+            self._protocol_error(), [AIMessageChunk(content="") for _ in range(3)],
+        )
+        assert (await self._stream_error(model)).retryable is True
+
+    async def test_metadata_only_chunk_then_disconnect_is_retryable(self) -> None:
+        chunk = AIMessageChunk(content="", response_metadata={"model_name": "gpt-4"})
+        model = _EmitsThenFailsModel(self._protocol_error(), [chunk])
+        assert (await self._stream_error(model)).retryable is True
+
+    async def test_empty_content_list_then_disconnect_is_retryable(self) -> None:
+        """Anthropic-shaped content: a list whose blocks carry no text."""
+        chunk = AIMessageChunk(content=[{"type": "text", "text": ""}])
+        model = _EmitsThenFailsModel(self._protocol_error(), [chunk])
+        assert (await self._stream_error(model)).retryable is True
+
+    async def test_real_text_then_disconnect_is_not_retryable(self) -> None:
+        """The case the gate exists for: the user has read this."""
+        model = _EmitsThenFailsModel(
+            self._protocol_error(),
+            [AIMessageChunk(content="Here is your answer")],
+        )
+        assert (await self._stream_error(model)).retryable is False
+
+    async def test_empty_then_real_text_then_disconnect_is_not_retryable(self) -> None:
+        model = _EmitsThenFailsModel(
+            self._protocol_error(),
+            [AIMessageChunk(content=""), AIMessageChunk(content="visible")],
+        )
+        assert (await self._stream_error(model)).retryable is False
+
+    async def test_the_client_really_saw_nothing_in_the_retryable_case(self) -> None:
+        """Guards the premise: if these chunks did produce events, the test
+        above would be asserting the wrong thing."""
+        model = _EmitsThenFailsModel(
+            self._protocol_error(), [AIMessageChunk(content="")],
+        )
+        transport = LangChainTransport(model)
+        seen: list[Any] = []
+        with pytest.raises(TransportError):
+            async for event in transport.stream([UserMessage(content="hi")]):
+                seen.append(event)
+        assert seen == []

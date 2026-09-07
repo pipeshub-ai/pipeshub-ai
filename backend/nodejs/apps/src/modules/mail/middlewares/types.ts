@@ -28,5 +28,6 @@ export enum EmailTemplateType {
   AppuserInvite = 'appuserInvite',
   SuspiciousLoginAttempt = 'suspiciousLoginAttempt',
   DomainLimitReached = 'domainLimitReached',
-
+  JoinRequestNotify = 'joinRequestNotify',
+  JoinRequestDecision = 'joinRequestDecision',
 }

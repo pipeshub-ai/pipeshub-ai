@@ -5,6 +5,11 @@ config read and an S3 signing call, and a chat turn does ~120 of them. The URLs
 are signed for 3600s, so caching them well inside that window removes almost all
 of those hops. These pin the behaviour that makes it safe: off by default, keyed
 per org, and never fatal when Redis or a stale URL misbehaves.
+
+The cache is exercised at the `IRedisConnectionProvider` seam (R18): tests stub
+`get_redis_provider`, never `redis.asyncio.Redis` directly, since `blob_storage`
+builds its client through the connection provider (R12) rather than
+constructing one itself.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,13 +18,19 @@ import asyncio
 
 import pytest
 
+from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
+
+fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
+
 from app.modules.transformers import blob_storage as bs
 from app.modules.transformers.blob_storage import BlobStorage, signed_url_cache_seconds
+from app.services.cache.interface import NoopSignedUrlCache
+from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
 
 
 @pytest.fixture(autouse=True)
 def _reset_shared_redis():
-    """The client is cached per event loop at module scope; clear it between
+    """The cache is cached per event loop at module scope; clear it between
     tests so one test's verdict does not leak into the next."""
     bs._shared_redis.clear()
     yield
@@ -28,6 +39,12 @@ def _reset_shared_redis():
 
 def _blob() -> BlobStorage:
     return BlobStorage(logger=MagicMock(), config_service=MagicMock(), graph_provider=MagicMock())
+
+
+def _fake_provider(client: AsyncMock) -> MagicMock:
+    provider = MagicMock()
+    provider.create_client.return_value = client
+    return provider
 
 
 class TestTTLConfig:
@@ -61,9 +78,10 @@ class TestKeying:
 
 class TestCacheDisabled:
     @pytest.mark.asyncio
-    async def test_no_redis_client_when_ttl_is_zero(self, monkeypatch) -> None:
+    async def test_noop_cache_when_ttl_is_zero(self, monkeypatch) -> None:
         monkeypatch.delenv("PIPESHUB_SIGNED_URL_CACHE_SECONDS", raising=False)
-        assert await _blob()._signed_url_client() is None
+        cache = await _blob()._signed_url_client()
+        assert isinstance(cache, NoopSignedUrlCache)
 
     @pytest.mark.asyncio
     async def test_reads_and_writes_are_noops_when_disabled(self, monkeypatch) -> None:
@@ -80,7 +98,7 @@ class TestFailureIsNeverFatal:
         b = _blob()
         client = MagicMock()
         client.get = AsyncMock(side_effect=RuntimeError("redis down"))
-        bs._shared_redis[asyncio.get_running_loop()] = client
+        bs._shared_redis[asyncio.get_running_loop()] = RedisSignedUrlCache(client)
 
         assert await b._cached_signed_url("org", "doc") is None
 
@@ -90,7 +108,7 @@ class TestFailureIsNeverFatal:
         b = _blob()
         client = MagicMock()
         client.set = AsyncMock(side_effect=RuntimeError("redis down"))
-        bs._shared_redis[asyncio.get_running_loop()] = client
+        bs._shared_redis[asyncio.get_running_loop()] = RedisSignedUrlCache(client)
 
         await b._store_signed_url("org", "doc", "https://s3/x")  # must not raise
 
@@ -99,7 +117,8 @@ class TestFailureIsNeverFatal:
         monkeypatch.setenv("PIPESHUB_SIGNED_URL_CACHE_SECONDS", "600")
         b = _blob()
         b.config_service.get_redis_config = AsyncMock(side_effect=RuntimeError("no config"))
-        assert await b._signed_url_client() is None
+        cache = await b._signed_url_client()
+        assert isinstance(cache, NoopSignedUrlCache)
 
     @pytest.mark.asyncio
     async def test_ttl_is_passed_to_redis(self, monkeypatch) -> None:
@@ -107,7 +126,7 @@ class TestFailureIsNeverFatal:
         b = _blob()
         client = MagicMock()
         client.set = AsyncMock()
-        bs._shared_redis[asyncio.get_running_loop()] = client
+        bs._shared_redis[asyncio.get_running_loop()] = RedisSignedUrlCache(client)
 
         await b._store_signed_url("org", "doc", "https://s3/x")
 
@@ -125,13 +144,23 @@ class TestClientConstruction:
         cfg = MagicMock(host="r", port=6379, password="pw", db=0)
         b.config_service.get_redis_config = AsyncMock(return_value=cfg)
 
-        with patch("redis.asyncio.Redis") as R:
-            R.return_value.ping = AsyncMock()
-            client = await b._signed_url_client()
+        fake_client = AsyncMock()
+        with patch(
+            "app.modules.transformers.blob_storage.get_redis_provider",
+            return_value=_fake_provider(fake_client),
+        ) as get_provider:
+            cache = await b._signed_url_client()
 
-        assert client is not None
-        kw = R.call_args.kwargs
-        assert (kw["host"], kw["port"], kw["password"], kw["db"]) == ("r", 6379, "pw", 0)
+        assert isinstance(cache, RedisSignedUrlCache)
+        get_provider.assert_called_once()
+        conn_config = get_provider.call_args[0][0]
+        assert (conn_config.host, conn_config.port, conn_config.password, conn_config.db) == (
+            "r",
+            6379,
+            "pw",
+            0,
+        )
+        fake_client.ping.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_unreachable_redis_disables_rather_than_raising(self, monkeypatch) -> None:
@@ -142,9 +171,16 @@ class TestClientConstruction:
             return_value=MagicMock(host="r", port=6379, password=None, db=0)
         )
 
-        with patch("redis.asyncio.Redis") as R:
-            R.return_value.ping = AsyncMock(side_effect=RuntimeError("NOAUTH"))
-            assert await b._signed_url_client() is None
+        fake_client = AsyncMock()
+        fake_client.ping = AsyncMock(side_effect=RuntimeError("NOAUTH"))
+        with patch(
+            "app.modules.transformers.blob_storage.get_redis_provider",
+            return_value=_fake_provider(fake_client),
+        ):
+            cache = await b._signed_url_client()
+
+        assert isinstance(cache, NoopSignedUrlCache)
+        fake_client.aclose.assert_awaited_once()
 
 
 class TestClientIsSharedNotPerInstance:
@@ -153,34 +189,74 @@ class TestClientIsSharedNotPerInstance:
     connection pool per request -- the same trap get_shared_session documents."""
 
     @pytest.mark.asyncio
-    async def test_many_instances_share_one_client(self, monkeypatch) -> None:
+    async def test_many_instances_share_one_cache(self, monkeypatch) -> None:
         monkeypatch.setenv("PIPESHUB_SIGNED_URL_CACHE_SECONDS", "600")
         cfg = MagicMock(host="r", port=6379, password=None, db=0)
+        fake_client = AsyncMock()
 
-        with patch("redis.asyncio.Redis") as R:
-            R.return_value.ping = AsyncMock()
-            clients = []
+        with patch(
+            "app.modules.transformers.blob_storage.get_redis_provider",
+            return_value=_fake_provider(fake_client),
+        ) as get_provider:
+            caches = []
             for _ in range(5):
                 b = _blob()
                 b.config_service.get_redis_config = AsyncMock(return_value=cfg)
-                clients.append(await b._signed_url_client())
+                caches.append(await b._signed_url_client())
 
-        assert R.call_count == 1, "one pool for the process, not one per instance"
-        assert all(c is clients[0] for c in clients)
+        assert get_provider.call_count == 1, "one pool for the process, not one per instance"
+        assert all(c is caches[0] for c in caches)
 
     @pytest.mark.asyncio
     async def test_unreachable_redis_is_only_attempted_once(self, monkeypatch) -> None:
         """An outage must not cost a 2s connect per record fetch."""
         monkeypatch.setenv("PIPESHUB_SIGNED_URL_CACHE_SECONDS", "600")
         cfg = MagicMock(host="r", port=6379, password=None, db=0)
+        fake_client = AsyncMock()
+        fake_client.ping = AsyncMock(side_effect=RuntimeError("down"))
 
-        with patch("redis.asyncio.Redis") as R:
-            R.return_value.ping = AsyncMock(side_effect=RuntimeError("down"))
-            R.return_value.aclose = AsyncMock()
+        with patch(
+            "app.modules.transformers.blob_storage.get_redis_provider",
+            return_value=_fake_provider(fake_client),
+        ) as get_provider:
             for _ in range(4):
                 b = _blob()
                 b.config_service.get_redis_config = AsyncMock(return_value=cfg)
-                assert await b._signed_url_client() is None
+                cache = await b._signed_url_client()
+                assert isinstance(cache, NoopSignedUrlCache)
 
-        assert R.call_count == 1, "the failure verdict must be cached"
-        R.return_value.aclose.assert_awaited()
+        assert get_provider.call_count == 1, "the failure verdict must be cached"
+        fake_client.aclose.assert_awaited_once()
+
+
+class TestSignedUrlKeyNamespacing:
+    """`REDIS_KEY_NAMESPACE` has to reach these keys too (R9).
+
+    Every signed-URL key is `sigurl:<org>:<doc>`, and org ids do not differ
+    between a staging and a production copy of the same tenant -- so two
+    deployments sharing one Redis would serve each other's signed URLs, which
+    are bearer credentials for blob content.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_value_written_under_one_namespace_misses_under_another(
+        self,
+    ) -> None:
+        fake = fakeredis_aioredis.FakeRedis(decode_responses=True)
+        cache_a = RedisSignedUrlCache(fake, "tenant-a")
+        cache_b = RedisSignedUrlCache(fake, "tenant-b")
+
+        await cache_a.set("sigurl:org1:doc1", "https://a.example/signed", 60)
+
+        assert await cache_a.get("sigurl:org1:doc1") == "https://a.example/signed"
+        assert await cache_b.get("sigurl:org1:doc1") is None
+
+    @pytest.mark.asyncio
+    async def test_an_unset_namespace_leaves_the_key_unchanged(self) -> None:
+        """Existing deployments keep their current keys; the namespace is opt-in."""
+        fake = fakeredis_aioredis.FakeRedis(decode_responses=True)
+        cache = RedisSignedUrlCache(fake)
+
+        await cache.set("sigurl:org1:doc1", "https://example/signed", 60)
+
+        assert await fake.get("sigurl:org1:doc1") == "https://example/signed"

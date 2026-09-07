@@ -71,9 +71,8 @@ class IndexingPipeline:
                     f"purging stale vectors and indexing all blocks (first reconciliation pass)"
                 )
                 try:
-                    # backwa
-                    await sink_orchestrator.vector_store.delete_embeddings(
-                        record.virtual_record_id
+                    await sink_orchestrator.vector_store.purge_record_vectors(
+                        record.org_id, record.virtual_record_id, record
                     )
                 except Exception as e:
                     logger.warning(
@@ -130,8 +129,8 @@ class IndexingPipeline:
                     and ctx.prev_virtual_record_id == record.virtual_record_id
                 ):
                     try:
-                        await self.sink_orchestrator.vector_store.delete_embeddings(
-                            record.virtual_record_id
+                        await self.sink_orchestrator.vector_store.purge_record_vectors(
+                            record.org_id, record.virtual_record_id, record
                         )
                         self.logger.info(
                             f"🗑️ Deleted old embeddings for empty document update (1:1): "

@@ -46,7 +46,8 @@ def _make_container():
 def _make_registry(container=None):
     if container is None:
         container = _make_container()
-    return ConnectorRegistry(container), container
+    registry = ConnectorRegistry(container)
+    return registry, container
 
 
 def _make_connector_class(
@@ -115,37 +116,37 @@ class TestCanAccessConnector:
     @pytest.mark.asyncio
     async def test_team_scope_admin_can_access(self):
         registry, _ = _make_registry()
-        instance = {"scope": "team", "createdBy": "other_user"}
+        instance = {"_key": "conn-1", "scope": "team", "createdBy": "other_user"}
         assert await registry._can_access_connector(instance, "admin_user", "org-1", is_admin=True) is True
 
     @pytest.mark.asyncio
     async def test_team_scope_creator_can_access(self):
         registry, _ = _make_registry()
-        instance = {"scope": "team", "createdBy": "user1"}
+        instance = {"_key": "conn-1", "scope": "team", "createdBy": "user1"}
         assert await registry._can_access_connector(instance, "user1", "org-1", is_admin=False) is True
 
     @pytest.mark.asyncio
     async def test_team_scope_non_admin_non_creator_denied(self):
         registry, _ = _make_registry()
-        instance = {"scope": "team", "createdBy": "other_user"}
+        instance = {"_key": "conn-1", "scope": "team", "createdBy": "other_user"}
         assert await registry._can_access_connector(instance, "user1", "org-1", is_admin=False) is False
 
     @pytest.mark.asyncio
     async def test_personal_scope_creator_can_access(self):
         registry, _ = _make_registry()
-        instance = {"scope": "personal", "createdBy": "user1"}
+        instance = {"_key": "conn-1", "scope": "personal", "createdBy": "user1"}
         assert await registry._can_access_connector(instance, "user1", "org-1", is_admin=False) is True
 
     @pytest.mark.asyncio
     async def test_personal_scope_non_creator_denied(self):
         registry, _ = _make_registry()
-        instance = {"scope": "personal", "createdBy": "other_user"}
+        instance = {"_key": "conn-1", "scope": "personal", "createdBy": "other_user"}
         assert await registry._can_access_connector(instance, "user1", "org-1", is_admin=True) is False
 
     @pytest.mark.asyncio
     async def test_unknown_scope_denied(self):
         registry, _ = _make_registry()
-        instance = {"scope": "unknown", "createdBy": "user1"}
+        instance = {"_key": "conn-1", "scope": "unknown", "createdBy": "user1"}
         assert await registry._can_access_connector(instance, "user1", "org-1", is_admin=True) is False
 
     @pytest.mark.asyncio

@@ -52,6 +52,9 @@ fields:
   updated_by:
     required: false
     type: string
+  last_synced_by:
+    required: false
+    type: string
   vector_membership_backfilled:
     required: false
     type: boolean

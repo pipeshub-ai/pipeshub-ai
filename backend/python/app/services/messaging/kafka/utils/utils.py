@@ -178,9 +178,33 @@ class KafkaUtils:
         return handle_entity_message
 
     @staticmethod
+    async def create_record_event_handler(
+        app_container: IndexingAppContainer,
+        producer: Any = None,
+    ) -> RecordEventHandler:
+        """Build the record event handler.
+
+        Separate from ``create_record_message_handler`` because the consumer
+        needs this same instance as its ``AbandonedMessageSink`` — it is what
+        puts a record into a terminal status when its message is discarded — and
+        two instances would mean two graph clients for one job.
+        """
+        logger = app_container.logger()
+        event_processor = getattr(app_container, '_event_processor', None)
+        if not event_processor:
+            event_processor = await app_container.event_processor()
+        return RecordEventHandler(
+            logger=logger,
+            config_service=app_container.config_service(),
+            event_processor=event_processor,
+            producer=producer,
+        )
+
+    @staticmethod
     async def create_record_message_handler(
         app_container: IndexingAppContainer,
         producer: Any = None,
+        record_event_service: RecordEventHandler | None = None,
     ) -> IndexingMessageHandler:
         """Create a message handler for record events.
 
@@ -188,19 +212,16 @@ class KafkaUtils:
         next queued duplicate); pass the same producer used for retries so we
         don't spin up a second Kafka connection.
 
+        Pass `record_event_service` to reuse an instance already built for the
+        consumer's abandonment sink.
+
         Returns an async generator function that yields PipelineEvent during processing.
         """
         logger = app_container.logger()
-        event_processor = getattr(app_container, '_event_processor', None)
-        if not event_processor:
-            event_processor = await app_container.event_processor()
-        config_service = app_container.config_service()
-        record_event_service = RecordEventHandler(
-            logger=logger,
-            config_service=config_service,
-            event_processor=event_processor,
-            producer=producer,
-        )
+        if record_event_service is None:
+            record_event_service = await KafkaUtils.create_record_event_handler(
+                app_container, producer
+            )
 
         async def handle_record_message(message: StreamMessage) -> AsyncGenerator[PipelineEvent, None]:
             try:

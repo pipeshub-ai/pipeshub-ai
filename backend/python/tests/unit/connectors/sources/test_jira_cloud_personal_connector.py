@@ -72,7 +72,7 @@ def _make_connector(
 class TestJiraCloudPersonalAppIdentity:
     def test_app_class_returns_personal_enum(self) -> None:
         app = JiraCloudPersonalApp("cid-x")
-        assert app.get_app_name() == Connectors.JIRA_PERSONAL
+        assert app.get_app_name() == Connectors.JIRA_CLOUD_PERSONAL
         assert app.get_app_group_name() == AppGroups.ATLASSIAN
 
     def test_connector_overrides_app_and_name_after_super_init(self) -> None:
@@ -82,7 +82,7 @@ class TestJiraCloudPersonalAppIdentity:
         # construction (which now goes through self.connector_name in the
         # refactored parent) gets stamped with JIRA_PERSONAL instead of JIRA.
         assert isinstance(conn.app, JiraCloudPersonalApp)
-        assert conn.connector_name == Connectors.JIRA_PERSONAL
+        assert conn.connector_name == Connectors.JIRA_CLOUD_PERSONAL
         # The pre-refactor regression: parent's __init__ used to hardcode
         # ``self.connector_name = Connectors.JIRA`` after super(). Confirm the
         # personal override wins.
@@ -127,7 +127,7 @@ class TestEnsureConnectorGroupPermission:
 
         assert isinstance(group, AppUserGroup)
         assert group.name == "ConnectorGroup"
-        assert group.app_name == Connectors.JIRA_PERSONAL
+        assert group.app_name == Connectors.JIRA_CLOUD_PERSONAL
         assert group.connector_id == "cid-42"
         assert group.source_user_group_id == "internal-cid-42"
         assert group.org_id == "org-personal-cloud-1"
@@ -138,7 +138,7 @@ class TestEnsureConnectorGroupPermission:
         # Member lookup in on_new_user_groups is by email; the email is the
         # only field that has to be correct.
         assert member.email == "owner@example.com"
-        assert member.app_name == Connectors.JIRA_PERSONAL
+        assert member.app_name == Connectors.JIRA_CLOUD_PERSONAL
         assert member.connector_id == "cid-42"
         assert member.is_active is True
 
@@ -228,7 +228,7 @@ class TestFetchProjectsEmitsGroupPermission:
         assert rg_alpha.external_group_id == "10001"
         assert rg_alpha.short_name == "ALPHA"
         assert rg_alpha.group_type == RecordGroupType.PROJECT
-        assert rg_alpha.connector_name == Connectors.JIRA_PERSONAL
+        assert rg_alpha.connector_name == Connectors.JIRA_CLOUD_PERSONAL
         assert rg_alpha.web_url == "https://a.atlassian.net/ALPHA"
 
         # Workspace permission resolution must remain untouched.
@@ -378,34 +378,19 @@ class TestPersonalRunSyncOrchestration:
 
 
 class TestPersonalRunSyncEdgeCases:
-    async def test_run_sync_raises_when_init_fails(self) -> None:
-        conn = _make_connector()
-        conn.data_source = None
-        conn.init = AsyncMock(return_value=False)
-
-        with pytest.raises(RuntimeError, match="init failed"):
-            await conn.run_sync()
-
-    async def test_run_sync_calls_init_when_data_source_missing(self) -> None:
+    async def test_run_sync_raises_when_not_initialized(self) -> None:
+        """Mirrors Confluence: run_sync must not call init(); fail if data_source is missing."""
         conn = _make_connector()
         conn.data_source = None
         conn.init = AsyncMock(return_value=True)
-        conn.creator_email = "owner@example.com"
-        conn._fetch_projects = AsyncMock(return_value=([], []))
-        conn._sync_all_project_issues = AsyncMock(
-            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0},
-        )
-        conn._get_issues_sync_checkpoint = AsyncMock(return_value=None)
-        conn._update_issues_sync_checkpoint = AsyncMock()
+        conn.notify = AsyncMock()
 
-        with patch(
-            "app.connectors.sources.atlassian.jira_cloud_personal.connector.load_connector_filters",
-            new_callable=AsyncMock,
-            return_value=(None, None),
-        ):
+        with pytest.raises(RuntimeError, match="not initialized") as exc_info:
             await conn.run_sync()
 
-        conn.init.assert_awaited_once()
+        conn.init.assert_not_awaited()
+        assert getattr(exc_info.value, "_notification_sent", False) is True
+        conn.notify.assert_not_awaited()
 
     async def test_run_sync_creator_lookup_exception_is_logged(self) -> None:
         conn = _make_connector(created_by="creator-id")
@@ -589,7 +574,7 @@ class TestFetchProjectsDescriptionParsing:
 
         record_groups, _ = await conn._fetch_projects()
 
-        assert record_groups[0][0].description == "Project summary"
+        assert record_groups[0][0].description is None
 
     async def test_empty_description_becomes_none(self) -> None:
         conn = _make_connector()
@@ -623,7 +608,7 @@ class TestFetchProjectsDescriptionParsing:
 
         record_groups, _ = await conn._fetch_projects()
 
-        assert record_groups[0][0].description == "Plain text summary"
+        assert record_groups[0][0].description is None
 
     async def test_logs_debug_when_project_permissions_present(self) -> None:
         conn = _make_connector()
@@ -668,4 +653,4 @@ class TestPersonalCreateConnector:
 
         assert isinstance(instance, JiraCloudPersonalConnector)
         assert instance.connector_id == "cid-create"
-        assert instance.connector_name == Connectors.JIRA_PERSONAL
+        assert instance.connector_name == Connectors.JIRA_CLOUD_PERSONAL

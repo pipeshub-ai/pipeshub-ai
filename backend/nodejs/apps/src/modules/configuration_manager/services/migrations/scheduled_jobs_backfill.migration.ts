@@ -6,6 +6,8 @@ import { configPaths } from '../../paths/paths';
 import { fetchConfigJwtGenerator } from '../../../../libs/utils/createJwt';
 import { executeConnectorCommand } from '../../../tokens_manager/utils/connector.utils';
 import { HttpMethod } from '../../../../libs/enums/http-methods.enum';
+import { getRedisProvider } from '../../../../libs/services/redis/connectionProviderFactory';
+import { redisConnectionConfigFromHostPort } from '../../../../libs/services/redis/connectionConfig';
 import {
   ConnectorSyncBlock,
   buildCrawlingScheduleFromSync,
@@ -71,7 +73,7 @@ export class ScheduledJobsBackfillMigration {
     // Guard: skip if a previous successful run already set the flag.
     try {
       const flag = await this.kvStore.get<string>(
-        configPaths.connectorSyncScheduledJobsMigration,
+        configPaths.connectorSyncScheduledJobsMigrationV2,
       );
       if (flag === MIGRATION_FLAG_DONE) {
         this.logger.info(
@@ -87,6 +89,12 @@ export class ScheduledJobsBackfillMigration {
     }
 
     this.logger.info('Starting connector-sync scheduled-jobs backfill migration');
+
+    // Drop the pre-`{crawling}`-prefix keys first. Nothing can reach them any
+    // more -- the queue and the worker both look under the hash-tagged prefix
+    // now -- so leaving them behind means the old repeatable-job schedules sit
+    // in Redis forever, invisible and un-removable through the BullMQ API.
+    await this.sweepLegacyQueueKeys();
 
     // Fetch the first batch with exponential backoff — the connector service
     // may still be starting up on the first boot.
@@ -223,7 +231,7 @@ export class ScheduledJobsBackfillMigration {
     // this migration does not run again on subsequent boots.
     try {
       await this.kvStore.set(
-        configPaths.connectorSyncScheduledJobsMigration,
+        configPaths.connectorSyncScheduledJobsMigrationV2,
         MIGRATION_FLAG_DONE,
       );
       this.logger.info('Connector-sync scheduled-jobs backfill migration finished', {
@@ -239,6 +247,72 @@ export class ScheduledJobsBackfillMigration {
     }
 
     return { scheduled, skipped, errored };
+  }
+
+  /**
+   * Delete every `bull:*` key left over from before the queue prefix became
+   * `{crawling}`. Best-effort: a failure here costs disk, not correctness, so
+   * it must never block the backfill that actually restores the schedules.
+   */
+  private async sweepLegacyQueueKeys(): Promise<void> {
+    // Scoped to this one queue, never a bare `bull:*`: that default prefix is
+    // shared by every BullMQ queue in the database, so a wildcard sweep would
+    // delete another service's jobs, delayed work, and queue metadata if it
+    // shares this Redis.
+    const LEGACY_PREFIX = 'bull:crawling-scheduler:';
+    const DELETE_CHUNK = 200;
+    try {
+      const provider = getRedisProvider(
+        redisConnectionConfigFromHostPort({
+          host: this.appConfig.redis.host,
+          port: this.appConfig.redis.port,
+          username: this.appConfig.redis.username,
+          password: this.appConfig.redis.password,
+          db: this.appConfig.redis.db,
+          tls: this.appConfig.redis.tls,
+        }),
+      );
+      const client = provider.getClient();
+      let batch: string[] = [];
+      let deleted = 0;
+
+      // Per-key DEL in a pipeline, never `DEL k1 k2 …` (R5): the legacy keys
+      // are spread across slots and a multi-key DEL is a CROSSSLOT error on a
+      // cluster. Chunked so a large leftover queue does not build one huge
+      // pipeline in memory.
+      const flush = async (): Promise<void> => {
+        if (batch.length === 0) {
+          return;
+        }
+        const pipeline = client.pipeline();
+        for (const key of batch) {
+          pipeline.del(key);
+        }
+        await pipeline.exec();
+        deleted += batch.length;
+        batch = [];
+      };
+
+      for await (const key of provider.scanKeys(`${LEGACY_PREFIX}*`)) {
+        batch.push(key);
+        if (batch.length >= DELETE_CHUNK) {
+          await flush();
+        }
+      }
+      await flush();
+
+      if (deleted > 0) {
+        this.logger.info(
+          'Removed BullMQ keys stranded by the queue-prefix change',
+          { deleted },
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        'Failed to sweep legacy BullMQ keys; continuing with the backfill',
+        { error: error instanceof Error ? error.message : 'Unknown error' },
+      );
+    }
   }
 
   /**

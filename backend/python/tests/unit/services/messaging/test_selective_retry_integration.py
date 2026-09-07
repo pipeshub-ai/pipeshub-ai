@@ -1,14 +1,11 @@
 """Integration tests for selective retry behavior in Kafka consumer."""
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock
 
 import pytest
-from aiokafka.structs import ConsumerRecord, TopicPartition
 
-from app.config.constants.arangodb import ProgressStatus
 from app.services.messaging.config import messaging_env
-from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
+from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
 
 
 @pytest.fixture

@@ -8,8 +8,11 @@
   read-only, waits once for sync, snapshots ``expected_*`` from BELONGS_TO-guarded graph
   counts, then tears down the connector only.
 
-No project/issue/group is created or deleted during fixture setup/teardown. Scope comes
-from ``JIRA_TEST_PROJECT_KEYS`` (env); fixture issue keys come from ``constants.py``.
+No project/group is created or deleted here. The only Jira writes are hygiene: setup
+sweeps IT artifacts leaked by crashed runs (age-gated, see ``sweep_stale_jira_artifacts``)
+and teardown deletes whatever this run created and did not get to delete itself. Scope
+comes from ``JIRA_TEST_PROJECT_KEYS`` (env); fixture issue keys come from ``constants.py``.
+See ``README.md`` for the shared-site contract every test follows.
 """
 
 import logging
@@ -31,16 +34,22 @@ from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-n
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
 from connectors.jira.constants import (  # type: ignore[import-not-found]
     JIRA_BLOCKS_ISSUE_KEY,
+    JIRA_IT_RUN_ID,
     JIRA_LINK_SOURCE_ISSUE_KEY,
     JIRA_REFERENCE_ISSUE_KEY,
 )
 from connectors.jira.jira_test_utils import (  # type: ignore[import-not-found]
+    can_delete_issues_in,
     derive_jira_scope_counts,
     discover_attachment,
     discover_epic_and_child,
     discover_task_and_subtask,
     issue_exists_in_project,
+    jira_api_call_with_retry,
+    pick_mutation_project,
     preview_jira_user_group_and_role_permission_edge_totals,
+    reap_own_artifacts,
+    sweep_stale_jira_artifacts,
 )
 
 logger = logging.getLogger("jira-conftest")
@@ -77,11 +86,14 @@ def _parse_project_keys() -> list[str]:
 
 async def _resolve_default_issue_type(
     jira_datasource: JiraDataSource, project_key: str
-) -> str:
-    """Return a createable non-subtask issue type for INCR (prefer 'Task')."""
+) -> Optional[str]:
+    """Return a createable non-subtask issue type (prefer 'Task'), or None if the account
+    cannot create issues in ``project_key`` (createmeta lists no project / no types)."""
     try:
-        meta_resp = await jira_datasource.get_create_issue_meta(
+        meta_resp = await jira_api_call_with_retry(
+            jira_datasource.get_create_issue_meta,
             projectKeys=[project_key], expand="projects.issuetypes",
+            context=f"createmeta {project_key}",
         )
         if meta_resp.status == 200:
             for project in (meta_resp.json() or {}).get("projects") or []:
@@ -96,8 +108,8 @@ async def _resolve_default_issue_type(
                 if names:
                     return names[0]
     except Exception as e:
-        logger.warning("SETUP: createmeta fetch failed (%s); defaulting to 'Task'", e)
-    return "Task"
+        logger.warning("SETUP: createmeta fetch failed for %s (%s)", project_key, e)
+    return None
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
@@ -131,8 +143,12 @@ async def jira_connector(
         "primary_project_id": None,
         "connector_name": connector_name,
         "connector_id": None,
+        "run_id": JIRA_IT_RUN_ID,
         "lead_account_id": None,
         "default_issue_type": None,
+        "mutation_key": None,
+        "mutation_project_id": None,
+        "mutation_issue_type": None,
         "reference_issue_key": None,
         "reference_issue_id": None,
         "blocks_issue_key": None,
@@ -145,13 +161,18 @@ async def jira_connector(
         "attachment_id": None, "attachment_meta": None,
     }
 
-    # ========== SETUP (read-only against Jira) ==========
-    logger.info("SETUP: Jira IT projects=%s (primary=%s)", project_keys, primary_key)
+    # ========== SETUP (read-only against Jira, plus artifact hygiene) ==========
+    logger.info(
+        "SETUP: Jira IT projects=%s (primary=%s, run_id=%s)", project_keys, primary_key, JIRA_IT_RUN_ID,
+    )
 
     # 1. Resolve each project id (with lead expanded); fail if a configured project is missing.
     project_id_by_key: dict[str, str] = {}
     for key in project_keys:
-        resp = await jira_datasource.get_project(projectIdOrKey=key, expand="lead")
+        resp = await jira_api_call_with_retry(
+            jira_datasource.get_project, projectIdOrKey=key, expand="lead",
+            context=f"get_project {key}",
+        )
         if resp.status != 200:
             raise RuntimeError(
                 f"SETUP: project {key!r} not resolvable (HTTP {resp.status}); "
@@ -170,16 +191,53 @@ async def jira_connector(
     if not state["lead_account_id"]:
         logger.warning("SETUP: primary project %s has no lead.accountId", primary_key)
 
-    # 2. Default issue type on primary (for INCR).
-    state["default_issue_type"] = await _resolve_default_issue_type(jira_datasource, primary_key)
+    # 2. Where the mutation tests write. Prefer the secondary project so the primary stays
+    #    read-only for the whole suite; it must be create+delete-able (see pick_mutation_project).
+    issue_type_by_key = {
+        key: await _resolve_default_issue_type(jira_datasource, key) for key in project_keys
+    }
+    can_delete_by_key = {key: await can_delete_issues_in(jira_datasource, key) for key in project_keys}
+    state["default_issue_type"] = issue_type_by_key.get(primary_key) or "Task"
+    mutation_key, mutation_issue_type = pick_mutation_project(
+        project_keys, issue_type_by_key, can_delete_by_key,
+    )
+    state["mutation_key"] = mutation_key
+    state["mutation_project_id"] = project_id_by_key[mutation_key]
+    state["mutation_issue_type"] = mutation_issue_type
+    if not can_delete_by_key.get(mutation_key):
+        raise RuntimeError(
+            f"SETUP: the IT account cannot delete issues in {mutation_key!r} (nor in any "
+            f"secondary project) — mutation tests would leak tickets. DELETE_ISSUES by project: "
+            f"{can_delete_by_key}"
+        )
+    if mutation_key == primary_key:
+        logger.warning(
+            "SETUP: no secondary project is create+delete-able (%s) — mutation tests will "
+            "write to the primary %s (artifact exclusion still applies)",
+            can_delete_by_key, primary_key,
+        )
+    else:
+        logger.info("SETUP: mutation tests write to %s (%s)", mutation_key, mutation_issue_type)
+
+    # 2b. Reap tickets leaked by earlier cancelled/crashed runs — only where the account can
+    #     delete. A project without DELETE_ISSUES can hold nothing this suite created (the
+    #     picker above never writes there), so it is not scanned and never logged; anything
+    #     stranded in such a project by an earlier configuration is simply invisible here.
+    #     Age-gated so a run still going on this shared site is never touched; best-effort.
+    deletable_keys = [key for key in project_keys if can_delete_by_key.get(key)]
+    state["deletable_keys"] = deletable_keys
+    swept = await sweep_stale_jira_artifacts(jira_datasource, deletable_keys)
+    if swept:
+        logger.warning("SETUP: swept %d leaked IT artifact(s) from earlier runs", swept)
 
     # 3. Resolve the pinned reference issue + discover hierarchy/attachment shapes on primary (read-only).
     if JIRA_REFERENCE_ISSUE_KEY and await issue_exists_in_project(
         jira_datasource, JIRA_REFERENCE_ISSUE_KEY, primary_key
     ):
         state["reference_issue_key"] = JIRA_REFERENCE_ISSUE_KEY
-        ref_resp = await jira_datasource.get_issue(
-            issueIdOrKey=JIRA_REFERENCE_ISSUE_KEY, fields="summary",
+        ref_resp = await jira_api_call_with_retry(
+            jira_datasource.get_issue, issueIdOrKey=JIRA_REFERENCE_ISSUE_KEY, fields="summary",
+            context=f"get_issue {JIRA_REFERENCE_ISSUE_KEY}",
         )
         if ref_resp.status == 200:
             state["reference_issue_id"] = str(ref_resp.json()["id"])
@@ -202,8 +260,9 @@ async def jira_connector(
         jira_datasource, JIRA_BLOCKS_ISSUE_KEY, primary_key
     ):
         state["blocks_issue_key"] = JIRA_BLOCKS_ISSUE_KEY
-        blocks_resp = await jira_datasource.get_issue(
-            issueIdOrKey=JIRA_BLOCKS_ISSUE_KEY, fields="summary",
+        blocks_resp = await jira_api_call_with_retry(
+            jira_datasource.get_issue, issueIdOrKey=JIRA_BLOCKS_ISSUE_KEY, fields="summary",
+            context=f"get_issue {JIRA_BLOCKS_ISSUE_KEY}",
         )
         if blocks_resp.status == 200:
             state["blocks_issue_external_id"] = str(blocks_resp.json()["id"])
@@ -258,22 +317,40 @@ async def jira_connector(
     scope = await derive_jira_scope_counts(jira_datasource, primary_key)
     state["expected_ticket_count"] = scope["ticket"]
     state["expected_file_count"] = scope["file"]
-    state["expected_total_records"] = scope["ticket"] + scope["file"]
     state["expected_parent_child_edges"] = scope["parent_child"]
     state["expected_attachment_edges"] = scope["file"]  # one ATTACHMENT edge per attachment/FILE
     state["expected_record_groups"] = 1  # only the primary project is in scope
 
     # Permission edges: reconcile the Jira API preview against the graph (independent gate), then
     # store the PREVIEW totals so TC-JIRA-ROLE-001 validates graph vs an independent source.
-    graph_ug = await graph_provider.count_user_to_group_permission_edges(connector_id)
-    graph_ur = await graph_provider.count_user_to_role_permission_edges(connector_id)
+    #
+    # One retry: the connector writes a group with empty members when its member fetch is
+    # throttled, and on this shared site a 429 during the first sync is exactly what a
+    # concurrent run causes. A second sync refreshes the membership; only a repeat
+    # mismatch is a real defect.
     ug_exp, ur_exp = await preview_jira_user_group_and_role_permission_edge_totals(
         jira_datasource, project_key=primary_key, lead_account_id=state["lead_account_id"],
     )
-    if ug_exp != graph_ug or ur_exp != graph_ur:
+    readings: list[tuple[int, int]] = []
+    for attempt in range(2):
+        graph_ug = await graph_provider.count_user_to_group_permission_edges(connector_id)
+        graph_ur = await graph_provider.count_user_to_role_permission_edges(connector_id)
+        readings.append((graph_ug, graph_ur))
+        if (ug_exp, ur_exp) == (graph_ug, graph_ur):
+            break
+        if attempt == 0:
+            logger.warning(
+                "SETUP: permission preview != graph on first sync "
+                "(user→group %d vs %d; user→role %d vs %d) — resyncing once",
+                ug_exp, graph_ug, ur_exp, graph_ur,
+            )
+            pipeshub_client.resync_connector(connector_id, full_sync=False)
+            await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=240)
+    else:
         raise RuntimeError(
-            "SETUP: Jira permission preview != graph — "
-            f"user→group preview={ug_exp} graph={graph_ug}; user→role preview={ur_exp} graph={graph_ur}."
+            "SETUP: Jira permission preview != graph after a resync — "
+            f"user→group preview={ug_exp} graph={readings[-1][0]}; "
+            f"user→role preview={ur_exp} graph={readings[-1][1]} (first reading {readings[0]})."
         )
     state["expected_permission_user_group_edges"] = ug_exp
     state["expected_permission_user_role_edges"] = ur_exp
@@ -288,8 +365,14 @@ async def jira_connector(
     try:
         yield state
     finally:
-        # ========== TEARDOWN (connector + graph only — never the project) ==========
+        # ========== TEARDOWN (own artifacts, then connector + graph — never the project) ==========
         connector_id = state.get("connector_id")
+        try:
+            reaped = await reap_own_artifacts(jira_datasource, state.get("deletable_keys") or [])
+            if reaped:
+                logger.warning("TEARDOWN: reaped %d artifact(s) this run left behind", reaped)
+        except Exception as e:
+            logger.warning("TEARDOWN: artifact reap failed (run %s): %s", JIRA_IT_RUN_ID, e)
         logger.info("TEARDOWN: cleaning connector %s", connector_id)
         if connector_id:
             try:

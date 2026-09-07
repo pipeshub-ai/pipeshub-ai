@@ -1,9 +1,11 @@
 import asyncio
+import contextlib
 import json
 import os
+import random
 import threading
 import time
-from typing import Any, Dict, TypedDict
+from typing import TYPE_CHECKING, Any, Dict, TypedDict
 
 import aiohttp
 import jwt
@@ -19,10 +21,18 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.modules.transformers.transformer import TransformContext, Transformer
+from app.services.cache.interface import ISignedUrlCache, NoopSignedUrlCache
+from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.redis.config import ClientOptions, RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
+from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.utils.request_context import inject_request_headers
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.worker_scaling import scaled
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
 COMPRESSION_THRESHOLD_BYTES_DEFAULT = 20 * 1024 * 1024
 DOWNLOAD_CONNECTION_LIMIT_DEFAULT = 100
@@ -88,6 +98,46 @@ def signed_url_cache_seconds() -> int:
 # gateway has already closed.
 NODE_KEEPALIVE_MARGIN_SECONDS = 4.0
 
+# Per-read stall bound on every request the shared session makes. No total
+# bound: a multi-GB upload to blob storage is legitimately long, but a socket
+# that goes this long without delivering a byte is a hung gateway, and
+# aiohttp's default (a 5-minute total, applied per call) let each one of
+# those sit on a record's processing budget.
+BLOB_HTTP_SOCK_CONNECT_TIMEOUT_SECONDS = 10.0
+BLOB_HTTP_SOCK_READ_TIMEOUT_SECONDS = 120.0
+
+# A storage request that fails transiently is retried a few times, quickly.
+# Without this, one reset connection or one gateway 503 on a 200ms request
+# failed the whole record, which the consumer then re-downloaded, re-parsed
+# and re-embedded to redo that request. Bounded to a few seconds in total: a
+# storage service that is genuinely down is the record-level retry's job,
+# and the governor's, once told.
+_STORAGE_RETRY_ATTEMPTS = 3
+_STORAGE_RETRY_BASE_SECONDS = 0.5
+_STORAGE_RETRY_CAP_SECONDS = 4.0
+_TRANSIENT_STORAGE_STATUSES = frozenset({502, 503, 504})
+_STORAGE_SERVICE_NAME = "storage"
+
+
+class TransientStorageError(aiohttp.ClientError):
+    """A storage response (502/503/504) that a retry can reasonably fix."""
+
+
+def _storage_status_error(status: int, message: str) -> aiohttp.ClientError:
+    if status in _TRANSIENT_STORAGE_STATUSES:
+        return TransientStorageError(message)
+    return aiohttp.ClientError(message)
+
+
+# Failures that can be retried only when the request is idempotent: the
+# request may have reached the server before the connection died.
+_RETRY_AFTER_SEND = (
+    TransientStorageError,
+    aiohttp.ServerDisconnectedError,
+    aiohttp.ClientOSError,
+    asyncio.TimeoutError,
+)
+
 _shared_sessions: "dict[asyncio.AbstractEventLoop, aiohttp.ClientSession]" = {}
 
 
@@ -141,10 +191,27 @@ def get_shared_session() -> aiohttp.ClientSession:
             # session was shared process-wide and connections started living
             # long enough to go idle.
             keepalive_timeout=NODE_KEEPALIVE_MARGIN_SECONDS,
-        )
+        ),
+        timeout=aiohttp.ClientTimeout(
+            total=None,
+            sock_connect=BLOB_HTTP_SOCK_CONNECT_TIMEOUT_SECONDS,
+            sock_read=BLOB_HTTP_SOCK_READ_TIMEOUT_SECONDS,
+        ),
     )
     _shared_sessions[loop] = session
     return session
+
+
+@contextlib.asynccontextmanager
+async def _borrowed_session() -> "AsyncIterator[aiohttp.ClientSession]":
+    """The shared session for one call's worth of requests.
+
+    Replaces the throwaway session these upload paths used to open per call
+    -- each of those built its own connector with no timeout and no
+    connection limit, sidestepping the pooled session this module exists to
+    provide. Never closes the session: it is shared.
+    """
+    yield get_shared_session()
 
 
 async def close_shared_session() -> None:
@@ -155,10 +222,10 @@ async def close_shared_session() -> None:
         await session.close()
 
 
-# Same reasoning as _shared_sessions: one client per loop, not per BlobStorage.
-# `None` is a cached "unavailable" verdict, so an outage costs one failed
-# connect per loop instead of one per record fetch.
-_shared_redis: "dict[asyncio.AbstractEventLoop, Any]" = {}
+# Same reasoning as _shared_sessions: one cache per loop, not per BlobStorage.
+# A cached `NoopSignedUrlCache` is the "unavailable" verdict, so an outage
+# costs one failed connect per loop instead of one per record fetch.
+_shared_redis: "dict[asyncio.AbstractEventLoop, ISignedUrlCache]" = {}
 # One lock per loop, not one shared lock: agent action tools run background loops
 # in this process (see agents/actions/*, asyncio.new_event_loop in a thread), and
 # a single asyncio.Lock contended from two loops parks a waiter on one loop that
@@ -178,14 +245,15 @@ def _redis_lock_for(loop: "asyncio.AbstractEventLoop") -> asyncio.Lock:
         return lock
 
 
-async def get_shared_redis(config_service: Any, logger: Any) -> Any:  # noqa: ANN401
-    """Process-wide Redis client for the signed-URL cache, one per event loop.
+async def get_shared_signed_url_cache(config_service: Any, logger: Any) -> ISignedUrlCache:  # noqa: ANN401
+    """Process-wide `ISignedUrlCache`, one per event loop.
 
-    Returns None when the cache is disabled or Redis is unreachable; callers
-    then use the uncached path, which is what they did before it existed.
+    Returns a `NoopSignedUrlCache` when the cache is disabled or Redis is
+    unreachable, so callers never need a None check -- they get the same
+    uncached behaviour they had before this cache existed.
     """
     if not signed_url_cache_seconds():
-        return None
+        return NoopSignedUrlCache()
     loop = asyncio.get_running_loop()
     if loop in _shared_redis:
         return _shared_redis[loop]
@@ -196,35 +264,42 @@ async def get_shared_redis(config_service: Any, logger: Any) -> Any:  # noqa: AN
         for stale_loop in [lp for lp in _shared_redis if lp.is_closed()]:
             _shared_redis.pop(stale_loop, None)
 
+        cache: ISignedUrlCache
         client = None
         try:
-            from redis.asyncio import Redis
-
             cfg = await config_service.get_redis_config()
-            client = Redis(
-                host=cfg.host, port=cfg.port, password=cfg.password,
-                db=cfg.db, decode_responses=True,
-                socket_timeout=2.0, socket_connect_timeout=2.0,
+            provider = get_redis_provider(
+                RedisConnectionConfig.from_host_port(
+                    host=cfg.host, port=cfg.port, password=cfg.password, db=cfg.db, tls=cfg.tls
+                )
+            )
+            client = provider.create_client(
+                ClientOptions(
+                    decode_responses=True,
+                    socket_timeout_seconds=2.0,
+                    socket_connect_timeout_seconds=2.0,
+                )
             )
             await client.ping()
+            cache = RedisSignedUrlCache(client, provider.key_namespace)
         except Exception as e:
             if client is not None:
                 try:
                     await client.aclose()
                 except Exception:
                     pass
-            client = None
+            cache = NoopSignedUrlCache()
             logger.warning("Signed-URL cache unavailable, disabled: %s", str(e))
-        _shared_redis[loop] = client
-        return client
+        _shared_redis[loop] = cache
+        return cache
 
 
 async def close_shared_redis() -> None:
-    """Close the pooled Redis client for the running loop; call from shutdown."""
+    """Close the pooled signed-URL cache for the running loop; call from shutdown."""
     loop = asyncio.get_running_loop()
-    client = _shared_redis.pop(loop, None)
-    if client is not None:
-        await client.aclose()
+    cache = _shared_redis.pop(loop, None)
+    if cache is not None:
+        await cache.close()
 
 
 class CustomMetadataEntry(TypedDict):
@@ -256,8 +331,8 @@ class BlobStorage(Transformer):
         self.config_service = config_service
         self.graph_provider = graph_provider
 
-    async def _signed_url_client(self):
-        """Redis client for the signed-URL cache, or None when it is disabled.
+    async def _signed_url_client(self) -> ISignedUrlCache:
+        """`ISignedUrlCache` for this loop; a `NoopSignedUrlCache` when disabled.
 
         Shared per event loop rather than per instance: BlobStorage is built ad
         hoc at ~20 call sites (per request, per tool call), so a per-instance
@@ -265,7 +340,7 @@ class BlobStorage(Transformer):
         reason get_shared_session exists. Failures are never fatal; the caller
         falls back to asking the gateway.
         """
-        return await get_shared_redis(self.config_service, self.logger)
+        return await get_shared_signed_url_cache(self.config_service, self.logger)
 
     async def _record_from_signed_url(
         self,
@@ -329,22 +404,20 @@ class BlobStorage(Transformer):
         return f"sigurl:{org_id}:{document_id}"
 
     async def _cached_signed_url(self, org_id: str, document_id: str) -> str | None:
-        client = await self._signed_url_client()
-        if client is None:
-            return None
+        cache = await self._signed_url_client()
         try:
-            return await client.get(self._signed_url_key(org_id, document_id))
+            return await cache.get(self._signed_url_key(org_id, document_id))
         except Exception as e:
             self.logger.debug("Signed-URL cache read failed: %s", str(e))
             return None
 
     async def _store_signed_url(self, org_id: str, document_id: str, url: str) -> None:
-        client = await self._signed_url_client()
-        if client is None or not url:
+        if not url:
             return
+        cache = await self._signed_url_client()
         try:
-            await client.set(
-                self._signed_url_key(org_id, document_id), url, ex=signed_url_cache_seconds()
+            await cache.set(
+                self._signed_url_key(org_id, document_id), url, signed_url_cache_seconds()
             )
         except Exception as e:
             self.logger.debug("Signed-URL cache write failed: %s", str(e))
@@ -771,45 +844,92 @@ class BlobStorage(Transformer):
         ctx.record = record
         return ctx
 
-    async def _get_signed_url(self, session, url, data, headers) -> dict | None:
-        """Helper method to get signed URL with retry logic"""
-        try:
-            async with session.post(url, json=data, headers=headers) as response:
-                if response.status != HttpStatusCode.SUCCESS.value:
-                    error_detail = ""
-                    try:
-                        error_response = await response.json()
-                        self.logger.error("❌ Failed to get signed URL. Status: %d, Error: %s",
-                                        response.status, error_response)
-                        if isinstance(error_response, dict):
-                            error_obj = error_response.get("error")
-                            if isinstance(error_obj, dict):
-                                error_detail = str(error_obj.get("message", "")).strip()
-                            elif error_obj is not None:
-                                error_detail = str(error_obj).strip()
-                            if not error_detail:
-                                error_detail = str(error_response)
-                        else:
-                            error_detail = str(error_response)
-                        if "cannot be versioned" in error_detail.lower():
-                            self.logger.warning("⚠️ Signed URL request indicates legacy non-versioned document")
-                    except aiohttp.ContentTypeError:
-                        error_text = await response.text()
-                        error_detail = error_text[:200].strip()
-                        self.logger.error("❌ Failed to get signed URL. Status: %d, Response: %s",
-                                        response.status, error_text[:200])
-                    if error_detail:
-                        raise aiohttp.ClientError(f"Failed with status {response.status}: {error_detail}")
-                    raise aiohttp.ClientError(f"Failed with status {response.status}")
+    async def _with_storage_retry(
+        self,
+        what: str,
+        attempt: "Callable[[], Awaitable[Any]]",
+        *,
+        idempotent: bool = True,
+    ) -> Any:  # noqa: ANN401 - returns whatever the attempt returns
+        """Run *attempt* again on a transient failure, with jittered backoff.
 
-                response_data = await response.json()
-                return response_data
+        A non-idempotent request (creating a placeholder document) is retried
+        only when it provably never reached the server -- the connection could
+        not be established. Anything after that point may already have been
+        processed, and a repeat would create a duplicate.
+        """
+        for number in range(1, _STORAGE_RETRY_ATTEMPTS + 1):
+            try:
+                return await attempt()
+            except Exception as error:
+                timed_out = isinstance(error, asyncio.TimeoutError)
+                if timed_out:
+                    get_default_downstream_feedback().report_timeout(_STORAGE_SERVICE_NAME)
+                retryable = isinstance(error, aiohttp.ClientConnectorError) or (
+                    idempotent and isinstance(error, _RETRY_AFTER_SEND)
+                )
+                if not retryable:
+                    raise
+                if number >= _STORAGE_RETRY_ATTEMPTS:
+                    if not timed_out:
+                        get_default_downstream_feedback().report_unavailable(_STORAGE_SERVICE_NAME)
+                    raise
+                delay = random.uniform(
+                    0.0, min(_STORAGE_RETRY_CAP_SECONDS, _STORAGE_RETRY_BASE_SECONDS * 2 ** (number - 1))
+                )
+                self.logger.warning(
+                    "%s failed (attempt %d/%d): %s; retrying in %.1fs",
+                    what, number, _STORAGE_RETRY_ATTEMPTS, error, delay,
+                )
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable")
+
+    async def _get_signed_url(self, session, url, data, headers) -> dict | None:
+        """Ask the gateway for a signed URL; transient failures are retried."""
+        try:
+            return await self._with_storage_retry(
+                "signed URL request", lambda: self._request_signed_url(session, url, data, headers),
+            )
         except aiohttp.ClientError as e:
             self.logger.error("❌ Network error getting signed URL: %s", str(e))
             raise
         except Exception as e:
             self.logger.error("❌ Unexpected error getting signed URL: %s", str(e))
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
+
+    async def _request_signed_url(self, session, url, data, headers) -> dict | None:
+        async with session.post(url, json=data, headers=headers) as response:
+            if response.status != HttpStatusCode.SUCCESS.value:
+                error_detail = ""
+                try:
+                    error_response = await response.json()
+                    self.logger.error("❌ Failed to get signed URL. Status: %d, Error: %s",
+                                    response.status, error_response)
+                    if isinstance(error_response, dict):
+                        error_obj = error_response.get("error")
+                        if isinstance(error_obj, dict):
+                            error_detail = str(error_obj.get("message", "")).strip()
+                        elif error_obj is not None:
+                            error_detail = str(error_obj).strip()
+                        if not error_detail:
+                            error_detail = str(error_response)
+                    else:
+                        error_detail = str(error_response)
+                    if "cannot be versioned" in error_detail.lower():
+                        self.logger.warning("⚠️ Signed URL request indicates legacy non-versioned document")
+                except aiohttp.ContentTypeError:
+                    error_text = await response.text()
+                    error_detail = error_text[:200].strip()
+                    self.logger.error("❌ Failed to get signed URL. Status: %d, Response: %s",
+                                    response.status, error_text[:200])
+                if error_detail:
+                    raise _storage_status_error(
+                        response.status, f"Failed with status {response.status}: {error_detail}"
+                    )
+                raise _storage_status_error(response.status, f"Failed with status {response.status}")
+
+            response_data = await response.json()
+            return response_data
 
     # async def _upload_to_signed_url(self, session, signed_url, data) -> int | None:
     #     """Upload data to a pre-signed URL using httpx.
@@ -874,8 +994,9 @@ class BlobStorage(Transformer):
     #         raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
     async def _upload_to_signed_url(self, session, signed_url, data) -> int | None:
-        """Helper method to upload to signed URL with retry logic"""
-        try:
+        """PUT JSON to a signed URL; transient failures are retried (same
+        key, so a repeat is harmless)."""
+        async def _attempt() -> int:
             async with session.put(
                 URL(signed_url, encoded=True),
                 json=data,
@@ -890,9 +1011,14 @@ class BlobStorage(Transformer):
                         error_text = await response.text()
                         self.logger.error("❌ Failed to upload to signed URL. Status: %d, Response: %s",
                                         response.status, error_text[:200])
-                    raise aiohttp.ClientError(f"Failed to upload with status {response.status}")
+                    raise _storage_status_error(
+                        response.status, f"Failed to upload with status {response.status}"
+                    )
 
                 return response.status
+
+        try:
+            return await self._with_storage_retry("signed URL upload", _attempt)
         except aiohttp.ClientError as e:
             self.logger.error("❌ Network error uploading to signed URL: %s", str(e))
             raise
@@ -908,7 +1034,7 @@ class BlobStorage(Transformer):
         content_type: str,
     ) -> None:
         """Upload raw bytes to a pre-signed URL (for CSV, images, etc.)."""
-        try:
+        async def _attempt() -> None:
             async with session.put(
                 URL(signed_url, encoded=True),
                 data=content,
@@ -921,9 +1047,12 @@ class BlobStorage(Transformer):
                         response.status,
                         response_text,
                     )
-                    raise aiohttp.ClientError(
-                        f"Failed to upload with status {response.status}"
+                    raise _storage_status_error(
+                        response.status, f"Failed to upload with status {response.status}"
                     )
+
+        try:
+            await self._with_storage_retry("raw upload", _attempt)
         except aiohttp.ClientError:
             raise
         except Exception as e:
@@ -931,8 +1060,9 @@ class BlobStorage(Transformer):
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
     async def _create_placeholder(self, session, url, data, headers) -> dict | None:
-        """Helper method to create placeholder with retry logic"""
-        try:
+        """Create the placeholder document. Not idempotent, so it is retried
+        only when the connection could not be established at all."""
+        async def _attempt() -> dict | None:
             async with session.post(url, json=data, headers=headers) as response:
                 if response.status != HttpStatusCode.SUCCESS.value:
                     try:
@@ -947,6 +1077,9 @@ class BlobStorage(Transformer):
 
                 response_data = await response.json()
                 return response_data
+
+        try:
+            return await self._with_storage_retry("placeholder creation", _attempt, idempotent=False)
         except aiohttp.ClientError as e:
             self.logger.error("❌ Network error creating placeholder: %s", str(e))
             raise
@@ -967,7 +1100,7 @@ class BlobStorage(Transformer):
 
             if storage_type == "local":
                 try:
-                    async with aiohttp.ClientSession() as session:
+                    async with _borrowed_session() as session:
                         # Use compressed data if available
                         upload_data = {
                             "isCompressed": use_compression,
@@ -1071,7 +1204,7 @@ class BlobStorage(Transformer):
                     }
 
                 try:
-                    async with aiohttp.ClientSession() as session:
+                    async with _borrowed_session() as session:
                         placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
                         document = await self._create_placeholder(session, placeholder_url, placeholder_data, headers)
 
@@ -1136,7 +1269,7 @@ class BlobStorage(Transformer):
             doc_name_no_ext = os.path.splitext(file_name)[0]
 
             # Single session for all HTTP steps in this upload (local: one POST; cloud: placeholder + signed URL + PUT).
-            async with aiohttp.ClientSession() as session:
+            async with _borrowed_session() as session:
                 if storage_type == "local":
                     form_data = aiohttp.FormData()
                     form_data.add_field(
@@ -1386,38 +1519,48 @@ class BlobStorage(Transformer):
                         "Cached signed URL failed for %s, re-signing: %s", document_id, str(e)
                     )
 
-            async with session.get(download_url, headers=headers) as resp:
-                if resp.status == HttpStatusCode.SUCCESS.value:
-                    data = await resp.json(loads=_decode_json)
+            data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id)
+            if data.get("signedUrl"):
+                await self._store_signed_url(org_id, document_id, data["signedUrl"])
 
-                    if data.get("signedUrl"):
-                        await self._store_signed_url(org_id, document_id, data["signedUrl"])
-
-                    if data.get("record"):
-                        record = self._process_downloaded_record(data)
-                        record_name = record.get("record_name")
-                        self.logger.debug("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
-                        return record
-                    elif data.get("signedUrl"):
-                        record = await self._record_from_signed_url(
-                            session, data["signedUrl"], file_size_bytes, virtual_record_id
-                        )
-                        if record is not None:
-                            return record
-                        self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
-                        raise Exception("No record found for virtual_record_id")
-                    else:
-                        self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
-                        raise Exception("No record found for virtual_record_id")
-                else:
-                    self.logger.error("❌ Failed to retrieve record: status %s, virtual_record_id: %s", resp.status, virtual_record_id)
-                    raise Exception("Failed to retrieve record from storage")
+            if data.get("record"):
+                record = self._process_downloaded_record(data)
+                record_name = record.get("record_name")
+                self.logger.debug("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
+                return record
+            elif data.get("signedUrl"):
+                record = await self._record_from_signed_url(
+                    session, data["signedUrl"], file_size_bytes, virtual_record_id
+                )
+                if record is not None:
+                    return record
+                self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+                raise Exception("No record found for virtual_record_id")
+            else:
+                self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+                raise Exception("No record found for virtual_record_id")
         except Exception as e:
             self.logger.exception(
                 "❌ Error retrieving record from storage (virtual_record_id=%s)",
                 virtual_record_id,
             )
             raise e
+
+    async def _fetch_record_envelope(
+        self, session: aiohttp.ClientSession, download_url: str, headers: dict, virtual_record_id: str
+    ) -> dict:
+        """GET the record envelope from the gateway; transient failures retried."""
+        async def _attempt() -> dict:
+            async with session.get(download_url, headers=headers) as resp:
+                if resp.status != HttpStatusCode.SUCCESS.value:
+                    self.logger.error(
+                        "❌ Failed to retrieve record: status %s, virtual_record_id: %s",
+                        resp.status, virtual_record_id,
+                    )
+                    raise _storage_status_error(resp.status, "Failed to retrieve record from storage")
+                return await resp.json(loads=_decode_json)
+
+        return await self._with_storage_retry(f"record fetch {virtual_record_id}", _attempt)
 
     async def store_virtual_record_mapping(self, org_id: str, virtual_record_id: str, document_id: str, file_size_bytes: int | None = None) -> bool:
         """
@@ -1501,7 +1644,7 @@ class BlobStorage(Transformer):
             file_size_bytes = len(json_data)
 
             if storage_type == "local":
-                async with aiohttp.ClientSession() as session:
+                async with _borrowed_session() as session:
                     form_data = aiohttp.FormData()
                     form_data.add_field('file',
                                     json_data,
@@ -1536,7 +1679,7 @@ class BlobStorage(Transformer):
                     self.logger.debug("✅ Successfully uploaded next version for document: %s", document_id)
                     return document_id, file_size_bytes
             else:
-                async with aiohttp.ClientSession() as session:
+                async with _borrowed_session() as session:
                     upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
                     upload_result = await self._get_signed_url(session, upload_url, {}, headers)
 
@@ -1649,7 +1792,7 @@ class BlobStorage(Transformer):
             json_data = json.dumps(upload_data).encode('utf-8')
 
             if storage_type == "local":
-                async with aiohttp.ClientSession() as session:
+                async with _borrowed_session() as session:
                     form_data = aiohttp.FormData()
                     form_data.add_field('file',
                                     json_data,
@@ -1736,7 +1879,7 @@ class BlobStorage(Transformer):
                         "recordId": record_id,
                     }
 
-                async with aiohttp.ClientSession() as session:
+                async with _borrowed_session() as session:
                     placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
                     document = await self._create_placeholder(session, placeholder_url, placeholder_data, headers)
 
@@ -1797,7 +1940,7 @@ class BlobStorage(Transformer):
             extension = os.path.splitext(file_name)[1].lstrip(".")
 
             if storage_type == "local":
-                async with aiohttp.ClientSession() as session:
+                async with _borrowed_session() as session:
                     form_data = aiohttp.FormData()
                     form_data.add_field(
                         "file", file_bytes,
@@ -1851,7 +1994,7 @@ class BlobStorage(Transformer):
                 if custom_metadata:
                     placeholder_data["customMetadata"] = custom_metadata
 
-                async with aiohttp.ClientSession() as session:
+                async with _borrowed_session() as session:
                     placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
                     document = await self._create_placeholder(
                         session, placeholder_url, placeholder_data, headers,
@@ -1942,7 +2085,7 @@ class BlobStorage(Transformer):
         extension = _os.path.splitext(file_name)[1].lstrip(".")
 
         if storage_type == "local":
-            async with aiohttp.ClientSession() as session:
+            async with _borrowed_session() as session:
                 form_data = aiohttp.FormData()
                 form_data.add_field(
                     "file", file_bytes, filename=file_name, content_type=content_type,
@@ -1978,7 +2121,7 @@ class BlobStorage(Transformer):
                 "extension": extension,
                 "isVersionedFile": True,
             }
-            async with aiohttp.ClientSession() as session:
+            async with _borrowed_session() as session:
                 placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
                 document = await self._create_placeholder(session, placeholder_url, placeholder_data, headers)
                 document_id = document.get("_id") if document else None
@@ -2037,7 +2180,7 @@ class BlobStorage(Transformer):
                 f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
                 f"{version_query}"
             )
-            async with aiohttp.ClientSession() as session:
+            async with _borrowed_session() as session:
                 async with session.get(download_api, headers=headers) as resp:
                     # Content-type guard: any storage vendor that streams the
                     # file on this route (rather than returning JSON) falls
@@ -2068,7 +2211,7 @@ class BlobStorage(Transformer):
         headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
         if storage_type == "local":
             raise Exception("Direct signed upload URLs are not supported for local storage")
-        async with aiohttp.ClientSession() as session:
+        async with _borrowed_session() as session:
             upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
             upload_result = await self._get_signed_url(session, upload_url, {}, headers)
             signed_url = (upload_result or {}).get("signedUrl")
@@ -2110,7 +2253,7 @@ class BlobStorage(Transformer):
         headers, nodejs_endpoint, _storage_type = await self._get_auth_and_config(org_id)
         file_size_bytes = len(file_bytes)
 
-        async with aiohttp.ClientSession() as session:
+        async with _borrowed_session() as session:
             form_data = aiohttp.FormData()
             form_data.add_field(
                 "file", file_bytes, filename=file_name, content_type=content_type,
@@ -2158,7 +2301,7 @@ class BlobStorage(Transformer):
         the ground truth to reconcile FROM."""
         headers, nodejs_endpoint, _storage_type = await self._get_auth_and_config(org_id)
         url = f"{nodejs_endpoint}{Routes.STORAGE_DOCUMENT.value.format(documentId=document_id)}"
-        async with aiohttp.ClientSession() as session:
+        async with _borrowed_session() as session:
             async with session.get(url, headers=headers) as response:
                 if response.status != HttpStatusCode.SUCCESS.value:
                     error_text = (await response.text())[:500]

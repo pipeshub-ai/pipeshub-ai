@@ -3013,6 +3013,7 @@ class AppMetadata(BaseModel):
     is_authenticated: bool = Field(default=False, description="Whether the app is authenticated")
     created_by: str | None = Field(default=None, description="User ID who created the app")
     updated_by: str | None = Field(default=None, description="User ID who last updated the app")
+    last_synced_by: str | None = Field(default=None, description="User ID who last triggered a sync")
     created_at_timestamp: int = Field(description="Epoch timestamp in milliseconds of app creation")
     updated_at_timestamp: int = Field(description="Epoch timestamp in milliseconds of app update")
     status: str | None = Field(default=None, description="Current sync status")
@@ -3043,6 +3044,7 @@ class AppMetadata(BaseModel):
             is_authenticated=doc.get("isAuthenticated", False),
             created_by=doc.get("createdBy"),
             updated_by=doc.get("updatedBy"),
+            last_synced_by=doc.get("lastSyncedBy"),
             created_at_timestamp=doc.get("createdAtTimestamp", 0),
             updated_at_timestamp=doc.get("updatedAtTimestamp", 0),
             status=doc.get("status"),

@@ -1,6 +1,8 @@
 import { Etcd3 } from 'etcd3';
-import { Redis } from 'ioredis';
 import { Logger } from '../../services/logger.service';
+import { getRedisProvider } from '../../services/redis/connectionProviderFactory';
+import { redisConnectionConfigFromHostPort } from '../../services/redis/connectionConfig';
+import type { IRedisConnectionProvider, RedisClient } from '../../services/redis/connectionProvider.interface';
 
 export interface MigrationConfig {
   etcd: {
@@ -37,25 +39,33 @@ const MIGRATION_FLAG_KEY = '/migrations/etcd_to_redis';
 export class KVStoreMigrationService {
   private logger = Logger.getInstance({ service: 'KVStoreMigrationService' });
   private etcdClient: Etcd3 | null = null;
-  private redisClient: Redis | null = null;
+  private redisClient: RedisClient | null = null;
   private config: MigrationConfig;
 
   constructor(config: MigrationConfig) {
     this.config = config;
   }
 
+  private redisProvider(): IRedisConnectionProvider {
+    return getRedisProvider(
+      redisConnectionConfigFromHostPort({
+        host: this.config.redis.host,
+        port: this.config.redis.port,
+        username: this.config.redis.username,
+        password: this.config.redis.password,
+        db: this.config.redis.db,
+        tls: this.config.redis.tls,
+      }),
+    );
+  }
+
   /**
    * Check if migration has already been completed
    */
   async isMigrationCompleted(): Promise<boolean> {
-    let redis: Redis | null = null;
+    let redis: RedisClient | null = null;
     try {
-      redis = new Redis({
-        host: this.config.redis.host,
-        port: this.config.redis.port,
-        password: this.config.redis.password,
-        db: this.config.redis.db || 0,
-      });
+      redis = this.redisProvider().createClient();
 
       const keyPrefix = this.config.redis.keyPrefix || 'pipeshub:kv:';
       const flagKey = `${keyPrefix}${MIGRATION_FLAG_KEY}`;
@@ -126,18 +136,17 @@ export class KVStoreMigrationService {
    */
   async hasRedisData(): Promise<boolean> {
     try {
-      const redis = new Redis({
-        host: this.config.redis.host,
-        port: this.config.redis.port,
-        password: this.config.redis.password,
-        db: this.config.redis.db || 0,
-      });
-
+      const provider = this.redisProvider();
       const keyPrefix = this.config.redis.keyPrefix || 'pipeshub:kv:';
-      const keys = await redis.keys(`${keyPrefix}*`);
-      await redis.quit();
-
-      return keys.length > 0;
+      // `provider.scanKeys()`, not a raw KEYS/single-client SCAN (R2): KEYS
+      // blocks the whole server and, on Redis Cluster / MemoryDB, only
+      // reaches whichever single node the client happens to be routed to.
+      // One match answers the question, so stop there rather than walking
+      // the whole prefix.
+      for await (const _key of provider.scanKeys(`${keyPrefix}*`)) {
+        return true;
+      }
+      return false;
     } catch (error) {
       this.logger.error('Failed to check Redis data', { error });
       return false;
@@ -230,12 +239,7 @@ export class KVStoreMigrationService {
     });
 
     // Connect to Redis
-    this.redisClient = new Redis({
-      host: this.config.redis.host,
-      port: this.config.redis.port,
-      password: this.config.redis.password,
-      db: this.config.redis.db || 0,
-    });
+    this.redisClient = this.redisProvider().createClient();
   }
 
   private async disconnect(): Promise<void> {

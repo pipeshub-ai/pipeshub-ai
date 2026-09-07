@@ -902,6 +902,8 @@ class TestGetFileMetadataFromDrive:
 
         result = await connector._get_file_metadata_from_drive("f1")
         assert result["id"] == "f1"
+        assert mock_files.get.call_args.kwargs["supportsAllDrives"] is True
+        assert mock_files.get.call_args.kwargs["fileId"] == "f1"
 
     @pytest.mark.asyncio
     async def test_not_found_error(self, connector):
@@ -1045,6 +1047,10 @@ class TestStreamRecord:
 
             result = await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
             mock_stream.assert_called_once()
+            mock_service.files.return_value.get_media.assert_called_once_with(
+                fileId=record.external_record_id,
+                supportsAllDrives=True,
+            )
 
     @pytest.mark.asyncio
     async def test_regular_file_download(self, connector):
@@ -1062,6 +1068,10 @@ class TestStreamRecord:
             mock_stream.return_value = MagicMock()
             result = await connector.stream_record(record)
             mock_stream.assert_called_once()
+            mock_service.files.return_value.get_media.assert_called_once_with(
+                fileId=record.external_record_id,
+                supportsAllDrives=True,
+            )
 
     @pytest.mark.asyncio
     async def test_stream_record_http_exception_passthrough(self, connector):

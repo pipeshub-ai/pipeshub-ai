@@ -14,13 +14,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData, StreamMessage, messaging_env
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+    StreamMessage,
+    messaging_env,
+)
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
     FUTURE_CLEANUP_INTERVAL,
     IndexingKafkaConsumer,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -547,7 +552,7 @@ class TestProcessMessageWrapper:
 
         async def handler(msg):
             raise RuntimeError("handler error")
-            yield  # noqa - needed for generator
+            yield
 
         consumer.message_handler = handler
 
