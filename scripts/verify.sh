@@ -98,6 +98,11 @@ exists() { [[ -e "$1" ]] || { echo "$1 not present in this tree"; return 1; }; }
 has_pytest() {
   "$1" -c 'import pytest' >/dev/null 2>&1 \
     || { echo "$1 cannot import pytest (activate the venv, or set PYTHON=)"; return 1; }
+  # The service-test command passes --timeout, which pytest rejects outright
+  # without this plugin — that would be reported as a failing suite rather than
+  # a missing prerequisite.
+  "$1" -c 'import pytest_timeout' >/dev/null 2>&1 \
+    || { echo "$1 lacks pytest-timeout (pip install pytest-timeout)"; return 1; }
 }
 
 printf '\n%sVerifying %s%s\n\n' "$BOLD" "$ROOT" "$RESET"
