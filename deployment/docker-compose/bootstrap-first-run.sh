@@ -299,7 +299,7 @@ ph_request() {
 # --- 0. instance must be empty ---
 ph_request GET "/api/v1/org/exists"
 exists="$(json_bool "$WORKDIR/last.body" "exists")"
-[[ "$exists" == "false" ]] || die "instance already has an org (GET /api/v1/org/exists is true). This script is first-run only. Use a throwaway stack, not a corpus you care about."
+[[ "$exists" == "false" ]] || die "instance already has an org (GET /api/v1/org/exists is true). This script is first-run only. Use a fresh empty instance, not one that already has data."
 
 # --- 1. create org ---
 {
