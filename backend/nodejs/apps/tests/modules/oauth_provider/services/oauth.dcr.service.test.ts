@@ -98,6 +98,40 @@ describe('OAuthDcrService', () => {
     expect(mockOAuthAppService.createDynamicClient.firstCall.args[0].isConfidential).to.be.false
   })
 
+  it('should omit response_types code when authorization_code is not granted', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'true'
+    mockOAuthAppService.createDynamicClient.resolves({
+      clientId: 'cid',
+      clientSecret: 'secret',
+      name: 'CLI',
+      redirectUris: [],
+      allowedGrantTypes: [OAuthGrantType.REFRESH_TOKEN],
+      allowedScopes: ['user:read'],
+    })
+    const result = await service.register({
+      client_name: 'CLI',
+      grant_types: ['refresh_token'],
+      token_endpoint_auth_method: 'none',
+      scope: 'user:read',
+    })
+    expect(result.response_types).to.deep.equal([])
+    expect(result.grant_types).to.deep.equal([OAuthGrantType.REFRESH_TOKEN])
+  })
+
+  it('should reject response_type code without authorization_code', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'true'
+    try {
+      await service.register({
+        client_name: 'CLI',
+        grant_types: ['refresh_token'],
+        response_types: ['code'],
+      })
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).to.be.instanceOf(BadRequestError)
+    }
+  })
+
   it('should reject unsupported response_types', async () => {
     process.env.PIPESHUB_ENABLE_DCR = 'true'
     try {

@@ -206,6 +206,7 @@ export class OAuthDeviceService {
     const claimed = await OAuthDeviceCode.findOneAndDelete({
       _id: record._id,
       status: OAuthDeviceCodeStatus.APPROVED,
+      expiresAt: { $gt: new Date() },
     })
     if (!claimed || !claimed.userId || !claimed.orgId) {
       throw new InvalidGrantError('device_code has already been used')

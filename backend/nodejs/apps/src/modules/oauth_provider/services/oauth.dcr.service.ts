@@ -58,7 +58,10 @@ export class OAuthDcrService {
       )
     }
 
-    const responseTypes = this.parseResponseTypes(body.response_types)
+    const responseTypes = this.parseResponseTypes(
+      body.response_types,
+      grantTypes,
+    )
 
     const redirectUris = body.redirect_uris ?? []
     const needsRedirect = grantTypes.includes(OAuthGrantType.AUTHORIZATION_CODE)
@@ -122,12 +125,23 @@ export class OAuthDcrService {
     return parsed
   }
 
-  private parseResponseTypes(raw?: string[]): string[] {
-    const requested = raw && raw.length > 0 ? raw : ['code']
-    for (const t of requested) {
+  private parseResponseTypes(
+    raw: string[] | undefined,
+    grantTypes: OAuthGrantType[],
+  ): string[] {
+    const hasAuthCode = grantTypes.includes(OAuthGrantType.AUTHORIZATION_CODE)
+    if (!raw || raw.length === 0) {
+      return hasAuthCode ? ['code'] : []
+    }
+    for (const t of raw) {
       if (t !== 'code') {
         throw new BadRequestError(`unsupported response_type: ${t}`)
       }
+    }
+    if (!hasAuthCode) {
+      throw new BadRequestError(
+        'response_type code requires the authorization_code grant',
+      )
     }
     return ['code']
   }
