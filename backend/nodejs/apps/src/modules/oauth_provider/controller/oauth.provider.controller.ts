@@ -493,7 +493,10 @@ export class OAuthProviderController {
   ): Promise<void> {
     try {
       const user = req.user!
-      const consent = req.body.consent === 'denied' ? 'denied' : 'granted'
+      if (req.body.consent !== 'granted' && req.body.consent !== 'denied') {
+        throw new BadRequestError('consent must be granted or denied')
+      }
+      const consent = req.body.consent
       await this.oauthDeviceService.approve(
         req.body.user_code,
         user.userId,

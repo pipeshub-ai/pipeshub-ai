@@ -8,7 +8,7 @@ import {
   OAuthDeviceCodeStatus,
 } from '../../../../src/modules/oauth_provider/schema/oauth.device_code.schema'
 import { OAuthGrantType } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema'
-import { DeviceGrantError } from '../../../../src/libs/errors/oauth.errors'
+import { DeviceGrantError, InvalidGrantError } from '../../../../src/libs/errors/oauth.errors'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { createMockLogger } from '../../../helpers/mock-logger'
@@ -136,7 +136,14 @@ describe('OAuthDeviceService', () => {
     }
     sinon.stub(Users, 'findOne').returns(chainable as any)
     sinon.stub(Org, 'findOne').returns(chainable as any)
-    sinon.stub(OAuthDeviceCode, 'deleteOne').resolves({} as any)
+    sinon.stub(OAuthDeviceCode, 'findOneAndDelete').resolves({
+      _id: recordId,
+      status: OAuthDeviceCodeStatus.APPROVED,
+      userId,
+      orgId,
+      scopes: ['user:read'],
+      clientId: 'cid',
+    } as any)
 
     const tokens = await service.poll('cid', undefined, 'device-code')
     expect(tokens.access_token).to.equal('at')
@@ -146,5 +153,29 @@ describe('OAuthDeviceService', () => {
     expect(mockOAuthTokenService.generateTokens.firstCall.args[1]).to.not.equal(
       null,
     )
+  })
+
+  it('should not mint tokens when a concurrent poll already claimed the code', async () => {
+    const userId = new Types.ObjectId()
+    const orgId = new Types.ObjectId()
+    const recordId = new Types.ObjectId()
+    sinon.stub(OAuthDeviceCode, 'findOne').resolves({
+      _id: recordId,
+      status: OAuthDeviceCodeStatus.APPROVED,
+      expiresAt: new Date(Date.now() + 60_000),
+      userId,
+      orgId,
+      scopes: ['user:read'],
+      clientId: 'cid',
+    } as any)
+    sinon.stub(OAuthDeviceCode, 'findOneAndDelete').resolves(null)
+
+    try {
+      await service.poll('cid', undefined, 'device-code')
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).to.be.instanceOf(InvalidGrantError)
+    }
+    expect(mockOAuthTokenService.generateTokens.called).to.be.false
   })
 })

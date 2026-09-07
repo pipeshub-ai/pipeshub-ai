@@ -198,18 +198,27 @@ export class OAuthDeviceService {
       )
     }
 
-    if (!record.userId || !record.orgId) {
-      throw new InvalidGrantError('device authorization is incomplete')
+    if (record.status !== OAuthDeviceCodeStatus.APPROVED) {
+      throw new InvalidGrantError('device_code is not approved')
     }
 
-    const userId = record.userId.toString()
-    const orgId = record.orgId.toString()
+    // Claim before minting so two concurrent polls cannot both issue tokens.
+    const claimed = await OAuthDeviceCode.findOneAndDelete({
+      _id: record._id,
+      status: OAuthDeviceCodeStatus.APPROVED,
+    })
+    if (!claimed || !claimed.userId || !claimed.orgId) {
+      throw new InvalidGrantError('device_code has already been used')
+    }
+
+    const userId = claimed.userId.toString()
+    const orgId = claimed.orgId.toString()
 
     let fullName: string | undefined
     let accountType: string | undefined
     const user = await Users.findOne({
-      _id: record.userId,
-      orgId: record.orgId,
+      _id: claimed.userId,
+      orgId: claimed.orgId,
       isDeleted: false,
     })
       .select('fullName')
@@ -219,7 +228,7 @@ export class OAuthDeviceService {
       fullName = user.fullName
     }
     const org = await Org.findOne({
-      _id: record.orgId,
+      _id: claimed.orgId,
       isDeleted: false,
     })
       .select('accountType')
@@ -233,13 +242,11 @@ export class OAuthDeviceService {
       app,
       userId,
       orgId,
-      record.scopes,
+      claimed.scopes,
       true,
       fullName,
       accountType,
     )
-
-    await OAuthDeviceCode.deleteOne({ _id: record._id })
 
     return {
       access_token: tokens.accessToken,
@@ -269,10 +276,16 @@ export class OAuthDeviceService {
   }
 
   private generateUserCode(): string {
-    const bytes = crypto.randomBytes(USER_CODE_LENGTH)
+    const alphabet = USER_CODE_ALPHABET
+    const alphabetLen = alphabet.length
+    const rejectAbove = Math.floor(256 / alphabetLen) * alphabetLen
     let code = ''
-    for (let i = 0; i < USER_CODE_LENGTH; i++) {
-      code += USER_CODE_ALPHABET[bytes[i] % USER_CODE_ALPHABET.length]
+    while (code.length < USER_CODE_LENGTH) {
+      const byte = crypto.randomBytes(1)[0]
+      if (byte >= rejectAbove) {
+        continue
+      }
+      code += alphabet[byte % alphabetLen]
     }
     return code
   }

@@ -97,6 +97,13 @@ export const deviceUserCodeSchema = z.object({
   }),
 })
 
+export const deviceConsentSchema = z.object({
+  body: z.object({
+    user_code: z.string().min(1).max(32),
+    consent: z.enum(['granted', 'denied']),
+  }),
+})
+
 export const revokeSchema = z.object({
   body: z.object({
     token: z.string().min(1),

@@ -921,6 +921,11 @@ if ! ${SKIP_WIZARD:-false}; then
     DEFAULT_KV="etcd"; info "Defaulting KV store to etcd to reuse existing data volume."
   fi
 
+  if [[ "$DEPLOY_TYPE" == "eval" && "$DEFAULT_GRAPH" != "neo4j" ]]; then
+    warn "Eval requires Neo4j (search ACLs live in the graph). Using neo4j instead of $DEFAULT_GRAPH."
+    DEFAULT_GRAPH="neo4j"
+  fi
+
   # ── 7. IMAGE SOURCE & VERSION ───────────────────────────────────────────────
   header "Image source & version"
 

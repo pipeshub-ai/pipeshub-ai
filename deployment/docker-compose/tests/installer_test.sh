@@ -242,6 +242,7 @@ check "crash loop reported as the failure cause" "$inner" "keeps restarting"
 check "crash loop guidance is cause-neutral (137 vs 139)" "$inner" "exit 137"
 check "crash loop guidance covers segfault/corruption" "$inner" "exit 139"
 check "eval is a deploy type" "$inner" 'prompt_choice DEPLOY_TYPE "Deployment type?" "slim" "slim" "full" "eval"'
+check "eval forces Neo4j even if an Arango volume exists" "$inner" 'Eval requires Neo4j'
 # Must not revert to asserting OOM as the definitive cause.
 if [[ "$inner" == *"almost always host memory pressure"* ]]; then
   fail "crash-loop message must not assert OOM as the certain cause"

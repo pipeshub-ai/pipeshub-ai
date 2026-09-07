@@ -191,6 +191,7 @@ export function OAuthDeviceView() {
             placeholder={t('oauthDevice.codePlaceholder')}
             value={userCode}
             onChange={(e) => setUserCode(e.target.value)}
+            aria-label={t('oauthDevice.codeLabel')}
           />
           {error ? (
             <Text as="p" size="2" color="red" mt="2">

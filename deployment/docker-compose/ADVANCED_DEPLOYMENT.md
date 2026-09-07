@@ -245,6 +245,7 @@ docker compose -p pipeshub-ai exec -T pipeshub-ai bash
 | `graph-neo4j` | Neo4j | `DATA_STORE=neo4j` |
 | `kv-etcd` | etcd | `KV_STORE_TYPE=etcd` |
 | `broker-kafka` | Kafka + Zookeeper | `MESSAGE_BROKER=kafka` |
+| `sandbox` | coding-sandbox image pull | slim/full; **eval omits this** |
 
 Always-on services (no profile needed): `redis`, `mongodb`, `qdrant`.
 
@@ -319,8 +320,9 @@ access token (never `client_credentials` through DCR).
 | `PIPESHUB_ENABLE_DEVICE_GRANT` | on | `POST /api/v1/oauth2/device_authorization` and the device `grant_type` |
 
 Discovery: `GET {origin}/.well-known/openid-configuration` lists
-`device_authorization_endpoint`, and `registration_endpoint` only when DCR is
-on. Public clients register with `token_endpoint_auth_method: none`. Request
+`device_authorization_endpoint` and the device grant type only while the
+device grant is on, and `registration_endpoint` only when DCR is on. Public
+clients register with `token_endpoint_auth_method: none`. Request
 `urn:ietf:params:oauth:grant-type:device_code` in `grant_types` if the agent
 will poll the device grant. The user completes consent at `/oauth/device`.
 Unauthenticated DCR is off by default so a stock instance cannot be used for

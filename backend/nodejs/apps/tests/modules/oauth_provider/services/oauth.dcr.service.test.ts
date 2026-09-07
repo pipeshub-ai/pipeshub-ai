@@ -94,7 +94,21 @@ describe('OAuthDcrService', () => {
     expect(result.client_id).to.equal('cid')
     expect(result.client_secret).to.equal(undefined)
     expect(result.token_endpoint_auth_method).to.equal('none')
+    expect(result.response_types).to.deep.equal(['code'])
     expect(mockOAuthAppService.createDynamicClient.firstCall.args[0].isConfidential).to.be.false
+  })
+
+  it('should reject unsupported response_types', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'true'
+    try {
+      await service.register({
+        client_name: 'Cursor',
+        response_types: ['token'],
+      })
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).to.be.instanceOf(BadRequestError)
+    }
   })
 
   it('should reject client_credentials', async () => {

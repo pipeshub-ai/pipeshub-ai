@@ -19,6 +19,7 @@ import {
   dcrRequestSchema,
   deviceAuthorizationSchema,
   deviceUserCodeSchema,
+  deviceConsentSchema,
 } from '../validators/oauth.validators'
 
 export function createOAuthProviderRouter(container: Container): Router {
@@ -177,7 +178,7 @@ export function createOAuthProviderRouter(container: Container): Router {
     '/device/consent',
     oauthTokenRateLimiter,
     authMiddleware.authenticate.bind(authMiddleware),
-    ValidationMiddleware.validate(deviceUserCodeSchema),
+    ValidationMiddleware.validate(deviceConsentSchema),
     (req: Request, res: Response, next: NextFunction) =>
       controller.deviceConsent(
         req as Parameters<typeof controller.deviceConsent>[0],

@@ -13,6 +13,8 @@ describe('OIDCProviderController', () => {
   let mockNext: any
 
   beforeEach(() => {
+    delete process.env.PIPESHUB_ENABLE_DCR
+    delete process.env.PIPESHUB_ENABLE_DEVICE_GRANT
     mockOAuthTokenService = {
       getAlgorithm: sinon.stub().returns('HS256'),
       getPublicKey: sinon.stub().returns(undefined),
@@ -40,6 +42,7 @@ describe('OIDCProviderController', () => {
   afterEach(() => {
     sinon.restore()
     delete process.env.PIPESHUB_ENABLE_DCR
+    delete process.env.PIPESHUB_ENABLE_DEVICE_GRANT
   })
 
   describe('openidConfiguration', () => {
@@ -68,6 +71,16 @@ describe('OIDCProviderController', () => {
       await controller.openidConfiguration({} as any, mockRes, mockNext)
       const config = mockRes.json.firstCall.args[0]
       expect(config.registration_endpoint).to.include('/register')
+    })
+
+    it('should omit device grant metadata when the device grant is disabled', async () => {
+      process.env.PIPESHUB_ENABLE_DEVICE_GRANT = 'false'
+      await controller.openidConfiguration({} as any, mockRes, mockNext)
+      const config = mockRes.json.firstCall.args[0]
+      expect(config.device_authorization_endpoint).to.equal(undefined)
+      expect(config.grant_types_supported).to.not.include(
+        'urn:ietf:params:oauth:grant-type:device_code',
+      )
     })
   })
 

@@ -103,6 +103,8 @@ export class OIDCProviderController {
   ): Promise<void> {
     const backendUrl = this.appConfig.oauthIssuer;
     const baseUrl = `${backendUrl}/api/v1/oauth2`;
+    const dcrEnabled = process.env.PIPESHUB_ENABLE_DCR === 'true';
+    const deviceEnabled = process.env.PIPESHUB_ENABLE_DEVICE_GRANT !== 'false';
 
     const config: OpenIDConfiguration = {
       issuer: this.appConfig.oauthIssuer,
@@ -112,10 +114,10 @@ export class OIDCProviderController {
       revocation_endpoint: `${baseUrl}/revoke`,
       introspection_endpoint: `${baseUrl}/introspect`,
       jwks_uri: `${backendUrl}/.well-known/jwks.json`,
-      ...(process.env.PIPESHUB_ENABLE_DCR === 'true'
-        ? { registration_endpoint: `${baseUrl}/register` }
+      ...(dcrEnabled ? { registration_endpoint: `${baseUrl}/register` } : {}),
+      ...(deviceEnabled
+        ? { device_authorization_endpoint: `${baseUrl}/device_authorization` }
         : {}),
-      device_authorization_endpoint: `${baseUrl}/device_authorization`,
       scopes_supported: this.scopeValidatorService
         .getAllScopes()
         .map((s) => s.name),
@@ -124,7 +126,9 @@ export class OIDCProviderController {
         'authorization_code',
         'client_credentials',
         'refresh_token',
-        'urn:ietf:params:oauth:grant-type:device_code',
+        ...(deviceEnabled
+          ? ['urn:ietf:params:oauth:grant-type:device_code']
+          : []),
       ],
       token_endpoint_auth_methods_supported: [
         'none',

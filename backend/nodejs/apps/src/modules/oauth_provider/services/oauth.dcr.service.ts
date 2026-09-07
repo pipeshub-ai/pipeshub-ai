@@ -30,6 +30,7 @@ export interface DcrResponse {
   client_secret_expires_at: number
   redirect_uris: string[]
   grant_types: string[]
+  response_types: string[]
   token_endpoint_auth_method: string
   client_name: string
   scope: string
@@ -56,6 +57,8 @@ export class OAuthDcrService {
         'client_credentials is not allowed for dynamically registered clients',
       )
     }
+
+    const responseTypes = this.parseResponseTypes(body.response_types)
 
     const redirectUris = body.redirect_uris ?? []
     const needsRedirect = grantTypes.includes(OAuthGrantType.AUTHORIZATION_CODE)
@@ -93,6 +96,7 @@ export class OAuthDcrService {
       client_secret_expires_at: 0,
       redirect_uris: created.redirectUris,
       grant_types: created.allowedGrantTypes,
+      response_types: responseTypes,
       token_endpoint_auth_method: tokenEndpointAuthMethod,
       client_name: created.name,
       scope: created.allowedScopes.join(' '),
@@ -116,6 +120,16 @@ export class OAuthDcrService {
       parsed.push(g as OAuthGrantType)
     }
     return parsed
+  }
+
+  private parseResponseTypes(raw?: string[]): string[] {
+    const requested = raw && raw.length > 0 ? raw : ['code']
+    for (const t of requested) {
+      if (t !== 'code') {
+        throw new BadRequestError(`unsupported response_type: ${t}`)
+      }
+    }
+    return ['code']
   }
 
   private resolveScopes(scope?: string): string[] {
