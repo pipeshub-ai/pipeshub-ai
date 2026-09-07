@@ -172,10 +172,16 @@ class TestNextcloudConnector:
         assert after_record is not None, (
             f"TC-UPDATE-001: {file_name} disappeared from the graph after the change"
         )
-        assert after_record.get("version") != before_version, (
-            f"TC-UPDATE-001: version stayed at {before_version} after the content "
-            "changed, so the record was never re-indexed. The count assertion "
-            "above would have passed regardless."
+        after_version = after_record.get("version")
+        assert isinstance(before_version, int) and isinstance(after_version, int), (
+            f"TC-UPDATE-001: version should be an int on both reads, got "
+            f"{before_version!r} then {after_version!r}"
+        )
+        assert after_version > before_version, (
+            f"TC-UPDATE-001: version went from {before_version} to {after_version} "
+            "after the content changed. It must increase — an unchanged value "
+            "means the record was never re-indexed, and a lower one means it was "
+            "reset, which loses the change history just as badly."
         )
         await graph_provider.assert_no_orphan_records(connector_id)
         logger.info(
