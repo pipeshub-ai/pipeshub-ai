@@ -20,12 +20,21 @@ import psycopg
 class PostgresSourceHelper:
     """Creates and tears down the tables a connector test syncs from."""
 
-    def __init__(self, dsn: str, schema: str = "pipeshub_test") -> None:
+    def __init__(
+        self, dsn: str, schema: str = "pipeshub_test", connect_timeout: int = 10
+    ) -> None:
         self._dsn = dsn
         self.schema = schema
+        self._connect_timeout = connect_timeout
 
     def _connect(self) -> psycopg.Connection:
-        return psycopg.connect(self._dsn, autocommit=True)
+        # Bounded on purpose. The fixture catches connection errors to decide
+        # between skipping locally and failing in CI; without a timeout, a host
+        # that accepts the TCP connection but never answers would hang here
+        # instead of reaching that decision.
+        return psycopg.connect(
+            self._dsn, autocommit=True, connect_timeout=self._connect_timeout
+        )
 
     def ensure_schema(self) -> None:
         with self._connect() as conn:
