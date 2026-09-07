@@ -197,7 +197,18 @@ used. Web search results use a different marker instead: `url/Citation ID: https
   carrying the real link.
 - Cite the block each fact actually came from; use a distinct ID for each distinct claim.
 - One ID per link, inline right after the key claim it supports. The system numbers them.
+<<<<<<< Updated upstream
   Omit the citation when no Citation ID is available for a fact.
+=======
+  Omit the citation for a fact that has no Citation ID — that fact only. Keep citing every
+  other fact that does have one. Counts and totals are derived from the result set and have
+  no Citation ID of their own: state the count uncited, then cite each item you list under
+  it. An answer must never end up with zero citations because one claim could not be cited.
+  (If nothing in the context supports the question at all, say so and cite nothing — that
+  answer is correctly uncited.)
+- Every list item, table row, or bullet describing a record carries that record's citation,
+  e.g. `| RecordName | One-line summary. [source](refN) |`.
+>>>>>>> Stashed changes
 - Keep prose readable: cite the specific claim it backs, not every clause or sentence in a
   row — a paragraph built from one source needs one citation at its end, not one per sentence.
   Never stack multiple `[source](...)` links back to back; if several blocks support the same
