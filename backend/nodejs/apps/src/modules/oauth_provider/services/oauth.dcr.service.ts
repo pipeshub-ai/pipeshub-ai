@@ -179,18 +179,19 @@ export class OAuthDcrService {
       .sort({ createdAt: 1 })
       .select('_id')
       .lean()
-    if (orgs.length === 0) {
+    const org = orgs[0]
+    if (!org) {
       throw new BadRequestError('Instance is not initialized')
     }
-    const orgId = orgs[0]._id.toString()
+    const orgId = org._id.toString()
     const user = await Users.findOne({
-      orgId: orgs[0]._id,
+      orgId: org._id,
       isDeleted: { $ne: true },
     })
       .sort({ createdAt: 1 })
       .select('_id')
       .lean()
-    if (!user) {
+    if (!user?._id) {
       throw new BadRequestError('Instance has no users')
     }
     this.logger.info('DCR bound to instance org', { orgId })

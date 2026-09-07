@@ -431,7 +431,7 @@ export class OAuthProviderController {
   async deviceAuthorization(
     req: Request,
     res: Response,
-    next: NextFunction,
+    _next: NextFunction,
   ): Promise<void> {
     try {
       const { client_id, scope } = req.body

@@ -168,8 +168,8 @@ export class OAuthDeviceService {
     }
 
     const record = await OAuthDeviceCode.findOne({
-      deviceCodeHash: this.hashDeviceCode(deviceCode),
-      clientId,
+      deviceCodeHash: { $eq: this.hashDeviceCode(deviceCode) },
+      clientId: { $eq: app.clientId },
     })
     if (!record || record.expiresAt.getTime() <= Date.now()) {
       throw new DeviceGrantError('expired_token', 'device_code has expired')
@@ -283,10 +283,14 @@ export class OAuthDeviceService {
     let code = ''
     while (code.length < USER_CODE_LENGTH) {
       const byte = crypto.randomBytes(1)[0]
-      if (byte >= rejectAbove) {
+      if (byte === undefined || byte >= rejectAbove) {
         continue
       }
-      code += alphabet[byte % alphabetLen]
+      const char = alphabet[byte % alphabetLen]
+      if (char === undefined) {
+        continue
+      }
+      code += char
     }
     return code
   }
