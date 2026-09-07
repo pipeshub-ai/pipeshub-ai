@@ -73,7 +73,7 @@ taking the newest that parses as semver.
 If no published semver tag exists yet — a first release, or a registry that has
 only rolling tags such as `latest` and `slim` — that lookup fails with:
 
-```
+```text
 could not resolve the newest published release; set PIPESHUB_BASE_VERSION
 ```
 

@@ -80,7 +80,19 @@ fi
 [[ "$TARGET" != "$CURRENT" ]] || die "already running ${CURRENT}; nothing to roll back to"
 
 IMAGE="pipeshubai/pipeshub-ai:${TARGET}"
-SANDBOX_IMAGE="pipeshubai/pipeshub-sandbox:${TARGET}"
+# Compose derives the sandbox image from IMAGE_TAG unless .env pins
+# SANDBOX_DOCKER_IMAGE, which local builds do. Honour that override, retagged to
+# the rollback target — validating the default when the deployment will start a
+# pinned image checks the wrong thing.
+# `|| true`: env_val greps, and grep exits 1 when the key is absent, which
+# under `set -e` aborts the script inside a plain assignment. The existing
+# env_val calls survive only because they sit inside [[ ]].
+_sandbox_override="$(env_val SANDBOX_DOCKER_IMAGE || true)"
+if [[ -n "$_sandbox_override" ]]; then
+  SANDBOX_IMAGE="${_sandbox_override%:*}:${TARGET}"
+else
+  SANDBOX_IMAGE="pipeshubai/pipeshub-sandbox:${TARGET}"
+fi
 
 log "current : ${CURRENT}"
 log "target  : ${TARGET}"

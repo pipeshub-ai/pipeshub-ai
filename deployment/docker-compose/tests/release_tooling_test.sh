@@ -176,6 +176,16 @@ out="$(bash "$RB/rollback.sh" --dry-run 0.6.0 2>&1)"
 check "warns that data is not rolled back" "$out" "Rolling back changes the code, not the data"
 check "verifies the target image before acting" "$(cat "$MANIFEST_LOG")" "pipeshubai/pipeshub-ai:0.6.0"
 
+# A .env pinning SANDBOX_DOCKER_IMAGE (local builds do) must be honoured and
+# retagged to the target — validating the default image while the deployment
+# starts a pinned one checks something nobody will run.
+: >"$MANIFEST_LOG"
+printf 'IMAGE_TAG=0.7.0\nAPP_PORT=3000\nDATA_STORE=neo4j\nSANDBOX_DOCKER_IMAGE=myreg.example/custom-sandbox:0.7.0\n' >"$RB/.env"
+out="$(bash "$RB/rollback.sh" --dry-run 0.6.0 2>&1)"
+check "honours a pinned SANDBOX_DOCKER_IMAGE" "$(cat "$MANIFEST_LOG")" "myreg.example/custom-sandbox:0.6.0"
+check_not "does not check the default sandbox image when one is pinned" "$(cat "$MANIFEST_LOG")" "pipeshubai/pipeshub-sandbox:0.6.0"
+printf 'IMAGE_TAG=0.7.0\nAPP_PORT=3000\nDATA_STORE=neo4j\n' >"$RB/.env"
+
 # A tag that is not published must be refused before .env is touched.
 env_before_missing="$(cat "$RB/.env")"
 out="$(MANIFEST_OK=0 bash "$RB/rollback.sh" 0.6.0 2>&1)"; rc=$?
