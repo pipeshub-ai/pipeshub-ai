@@ -152,6 +152,12 @@ jobs:
       # above so a failure reads as a behaviour regression rather than a coverage
       # change. Structural only — no model call, no network, no API key.
       - name: Run golden agent evals
+        # Runs even when the coverage step above failed. A step's implicit
+        # condition is success(), so a coverage regression would otherwise skip
+        # this and hide whether agent behaviour also changed — two separate
+        # questions, and the second is the more expensive one to discover late.
+        # A failure here still fails the job.
+        if: ${{ !cancelled() }}
         run: |
           cd backend/python
           pytest tests/evals -v
