@@ -190,7 +190,7 @@ else
   fi
 fi
 
-echo "== happy path, mint-to-file =="
+echo "== happy path writes PAT to a file =="
 bindir="$TMP_ROOT/bin-ok"
 CURL_LOG="$TMP_ROOT/ok.log"; export CURL_LOG
 : >"$CURL_LOG"

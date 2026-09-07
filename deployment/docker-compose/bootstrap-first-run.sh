@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# PipesHub — scripted first-run (mint-to-file)
+# PipesHub — first-run from a terminal
 # ==============================================================================
-# Supported bootstrap for an *empty* instance. This is the Path C contract:
-# mint the PAT to a file, never to stdout. Do not curl these APIs from an
-# agent transcript — run this script instead.
+# For an *empty* instance only. Creates the first org, logs in, configures
+# an LLM, mints a PAT, and writes that PAT to --token-file. Never prints
+# the secret. Run this script instead of curling the same APIs from an
+# agent transcript (PAT create returns the token in JSON).
 #
 # Does:
 #   1. POST /api/v1/org                         (first org; first-claimer-wins)

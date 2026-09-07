@@ -4,7 +4,7 @@
 # ==============================================================================
 # Covers:
 #   - Syntax validity of both installer scripts (bash -n).
-#   - Syntax validity of bootstrap-first-run.sh (mint-to-file first-run).
+#   - Syntax validity of bootstrap-first-run.sh (first-run; writes PAT to a file).
 #   - Root wrapper repo mode: delegates to the in-tree installer with args.
 #   - Root wrapper standalone mode: downloads files (via a stubbed curl) into
 #     PIPESHUB_DIR and execs the downloaded installer with args.

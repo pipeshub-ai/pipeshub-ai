@@ -1,31 +1,31 @@
-# Scripted first-run (mint-to-file)
+# First-run without a browser
 
-This is the **supported** way to finish first-run without the browser. Discovering that the settings panel is a client of existing APIs is **not** the same as the work being done. Agents must run `bootstrap-first-run.sh`, not invent curls.
+After Docker is up, someone still has to create the first organization, configure an LLM, and mint a personal access token so an agent can call `/mcp`.
 
-## Headline
+Those APIs already exist. This script is the supported way to call them from a terminal. Do not curl them from a coding-agent chat: `POST /api/v1/personal-access-tokens` returns the secret in JSON, so the token would land in the transcript.
 
-`POST /api/v1/personal-access-tokens` returns the secret in JSON (`pat.controller.ts` `createToken` → `token.accessToken`). If an agent calls that endpoint, the PAT lands in the model transcript. This script writes the secret to `--token-file` (mode `0600`) and never prints it.
+The script writes the token to `--token-file` (mode `0600`) and never prints it.
 
-## Four bullets (do not "fix" these away)
+## Rules
 
-1. **Mint-to-file / mint-to-keychain, never mint-to-stdout.** There is no `auth set`, no `--print-token`, and no token CLI argument.
-2. **Flip onboarding status** with `PUT /api/v1/org/onboarding-status` `{ "status": "configured" }`. Scripted bootstrap otherwise leaves `notConfigured` and the first dashboard visit is the wizard. This field is a UI gate, not an authorization check.
-3. **Stable payloads** are what this script sends. Do not reverse-engineer the UI in a chat.
-4. **Connector OAuth stays human.** Slack / Drive / Jira still need a browser. This is not "answered from Drive in one session."
+1. **Write the token to a file, never to stdout.** There is no `--print-token`, and the script will not accept a token as an argument.
+2. **Mark onboarding complete** with `PUT /api/v1/org/onboarding-status` `{ "status": "configured" }`. Otherwise the first dashboard visit is still the wizard. That field is a UI gate, not an authorization check.
+3. **Use this script's payloads.** Do not reverse-engineer the settings UI from a browser session.
+4. **Connector OAuth stays in a browser.** Slack, Drive, and Jira still need a human. This script does not connect them.
 
 ## What the script calls
 
 | Step | Method | Path | Notes |
 | --- | --- | --- | --- |
-| Empty check | `GET` | `/api/v1/org/exists` | Public. `{exists:true}` is "org claimed", not "search works". Script **refuses** if true. |
-| First org | `POST` | `/api/v1/org` | Unauthenticated. Requires `accountType`. First-claimer-wins. |
+| Empty check | `GET` | `/api/v1/org/exists` | Public. `{exists:true}` means an org already exists, not that search works. The script **exits** if true. |
+| First org | `POST` | `/api/v1/org` | Unauthenticated. Requires `accountType`. Whoever reaches a fresh instance first owns it. |
 | Login | `POST` | `/api/v1/userAccount/initAuth` | `x-session-token` is a **response header**. |
 | | `POST` | `/api/v1/userAccount/authenticate` | Needs that header. Body: `method` + `credentials`. Turnstile if `TURNSTILE_SECRET_KEY` is set. |
 | LLM | `POST` | `/api/v1/configurationManager/ai-models/providers` | Session JWT + admin. Provider-shaped `configuration`. |
 | PAT | `POST` | `/api/v1/personal-access-tokens` | Not `/api/v1/pat`. **Always send `scopes`.** Omitting them grants the full `mcpScopes` set. |
 | Wizard | `PUT` | `/api/v1/org/onboarding-status` | `{ "status": "configured" }` |
 
-PAT scopes (agent preset, mintable on stock `MCP_SCOPES`):
+PAT scopes the script mints (valid on the stock `MCP_SCOPES` list):
 
 ```
 conversation:chat
@@ -35,30 +35,29 @@ user:read
 connector:read
 ```
 
-`semantic:write` is what *runs* a search. `config:read` is deliberately omitted (`llmModels` on sources empties without it).
+`semantic:write` is what *runs* a search. `config:read` is omitted on purpose (`llmModels` on sources comes back empty without it).
 
 ## Usage
 
-Instance must already be up (`GET /api/v1/health/services` — that is the installer, not this script). Origin default `http://localhost:3000`.
+The instance must already be up (`GET /api/v1/health/services` — that is the installer, not this script). Origin default `http://localhost:3000`.
 
 ```bash
 cp bootstrap-first-run.env.example bootstrap-first-run.env
-# edit the env file in an editor — do not paste secrets into chat
+# edit the env file in an editor — do not paste secrets into a chat
 ./bootstrap-first-run.sh --env-file ./bootstrap-first-run.env \
   --token-file "$HOME/.config/pipeshub/token"
 ```
 
 The script refuses a public DNS origin unless `PIPESHUB_ALLOW_NONLOCAL=1`. Keep first-run on localhost: `POST /api/v1/org` is whoever-reaches-it-first.
 
-## Live proof
+## Tests
 
-A **throwaway empty** stack. Do not run this against an instance that already has an org (it 400s on `POST /org`). Do not mint a PAT into a chat log.
+Do not run this against an instance that already has an organization (it 400s on `POST /org`). Do not print the token file.
 
-Tests without Docker: `bash deployment/docker-compose/tests/bootstrap_first_run_test.sh`.
+Without Docker: `bash deployment/docker-compose/tests/bootstrap_first_run_test.sh`.
 
-## Not this track
+## What this script does not do
 
-- Thin/eval image (RAM/time of Docker).
-- Hosted SaaS trial / shared `https://app.pipeshub.com/mcp`.
-- OAuth device grant / dynamic client registration.
-- Unattended connector OAuth.
+- Install or start Docker (the instance must already be running)
+- Connect Slack, Drive, or Jira (those need a browser)
+- Log in with a device code (that is a separate OAuth flow)
