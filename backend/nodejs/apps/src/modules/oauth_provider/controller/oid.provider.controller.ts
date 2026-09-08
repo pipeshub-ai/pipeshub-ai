@@ -16,6 +16,7 @@ import {
   OAuthRequest,
   buildWwwAuthenticateHeader,
 } from '../middlewares/oauth.auth.middleware';
+import { FirstPartyDeviceAppService } from '../services/oauth.first_party_device.service';
 
 /**
  * OpenID Connect Provider Controller
@@ -35,6 +36,8 @@ export class OIDCProviderController {
     @inject('ScopeValidatorService')
     private scopeValidatorService: ScopeValidatorService,
     @inject('AppConfig') private appConfig: AppConfig,
+    @inject('FirstPartyDeviceAppService')
+    private firstPartyDeviceAppService: FirstPartyDeviceAppService,
   ) {}
 
   /**
@@ -105,6 +108,9 @@ export class OIDCProviderController {
     const baseUrl = `${backendUrl}/api/v1/oauth2`;
     const dcrEnabled = process.env.PIPESHUB_ENABLE_DCR === 'true';
     const deviceEnabled = process.env.PIPESHUB_ENABLE_DEVICE_GRANT !== 'false';
+    const deviceClientId = deviceEnabled
+      ? await this.firstPartyDeviceAppService.getOrCreate()
+      : null;
 
     const config: OpenIDConfiguration = {
       issuer: this.appConfig.oauthIssuer,
@@ -117,6 +123,9 @@ export class OIDCProviderController {
       ...(dcrEnabled ? { registration_endpoint: `${baseUrl}/register` } : {}),
       ...(deviceEnabled
         ? { device_authorization_endpoint: `${baseUrl}/device_authorization` }
+        : {}),
+      ...(deviceClientId
+        ? { pipeshub_device_client_id: deviceClientId }
         : {}),
       scopes_supported: this.scopeValidatorService
         .getAllScopes()
@@ -170,6 +179,10 @@ export class OIDCProviderController {
     _next: NextFunction,
   ): Promise<void> {
     const backendUrl = this.appConfig.oauthIssuer;
+    const deviceEnabled = process.env.PIPESHUB_ENABLE_DEVICE_GRANT !== 'false';
+    const deviceClientId = deviceEnabled
+      ? await this.firstPartyDeviceAppService.getOrCreate()
+      : null;
 
     const metadata: OAuthProtectedResourceMetadata = {
       resource: `${backendUrl}/mcp`,
@@ -177,6 +190,9 @@ export class OIDCProviderController {
       scopes_supported: this.appConfig.mcpScopes,
       bearer_methods_supported: ['header'],
       resource_documentation: `${backendUrl}/api/v1/docs`,
+      ...(deviceClientId
+        ? { pipeshub_device_client_id: deviceClientId }
+        : {}),
     };
 
     res.json(metadata);

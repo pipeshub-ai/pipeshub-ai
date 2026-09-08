@@ -321,14 +321,20 @@ access token (never `client_credentials` through DCR).
 
 Discovery: `GET {origin}/.well-known/openid-configuration` lists
 `device_authorization_endpoint` and the device grant type only while the
-device grant is on, and `registration_endpoint` only when DCR is on. Public
-clients register with `token_endpoint_auth_method: none`. Request
-`urn:ietf:params:oauth:grant-type:device_code` in `grant_types` if the agent
-will poll the device grant. The user completes consent at `/oauth/device`.
-Unauthenticated DCR is off by default so a stock instance cannot be used for
-consent phishing. Operators who want agents to self-register set
-`PIPESHUB_ENABLE_DCR=true`. The consent screen warns when the app registered
-itself (`isDynamic`) rather than being created by an administrator.
+device grant is on, and `registration_endpoint` only when DCR is on. When
+the instance has an organization, discovery also includes
+`pipeshub_device_client_id` (`pipeshub-agent`): the official public device
+client, created automatically, device_code + refresh_token only, never
+`client_credentials`. Agents use that `client_id` to start the TV-code
+flow. It is hidden from Developer Settings. Public clients that
+self-register still use `token_endpoint_auth_method: none`. Request
+`urn:ietf:params:oauth:grant-type:device_code` in `grant_types` if a
+*self-registered* agent will poll the device grant. The user completes
+consent at `/oauth/device`. Unauthenticated DCR is off by default so a
+stock instance cannot be used for consent phishing. Operators who want
+agents to self-register set `PIPESHUB_ENABLE_DCR=true`. The consent screen
+warns when the app registered itself (`isDynamic`) rather than being the
+official agent app or created by an administrator.
 
 DCR refuses `client_credentials`. Tokens issued after device consent carry the
 logged-in user's `userId` and `orgId`.

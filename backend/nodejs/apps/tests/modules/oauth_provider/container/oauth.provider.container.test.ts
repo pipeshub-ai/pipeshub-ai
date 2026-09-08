@@ -150,6 +150,7 @@ describe('OAuthProviderContainer', () => {
         expect(container.isBound('OAuthAppController')).to.be.true
         expect(container.isBound('OAuthProviderController')).to.be.true
         expect(container.isBound('OAuthDcrService')).to.be.true
+        expect(container.isBound('FirstPartyDeviceAppService')).to.be.true
         expect(container.isBound('OAuthDeviceService')).to.be.true
         expect(container.isBound('OIDCProviderController')).to.be.true
 
@@ -290,6 +291,7 @@ describe('OAuthProviderContainer - coverage', () => {
       expect(container.isBound('OAuthAppController')).to.be.true
       expect(container.isBound('OAuthProviderController')).to.be.true
       expect(container.isBound('OAuthDcrService')).to.be.true
+      expect(container.isBound('FirstPartyDeviceAppService')).to.be.true
       expect(container.isBound('OAuthDeviceService')).to.be.true
       expect(container.isBound('OIDCProviderController')).to.be.true
 

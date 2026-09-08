@@ -300,9 +300,11 @@ export const DefaultMcpScopes = [
 ];
 
 /**
- * Scopes the CLI/agent preset mints. Dynamic Client Registration defaults to
- * this set (intersected with instance MCP_SCOPES). Never grant
- * `client_credentials` through DCR — that grant has no user identity.
+ * Scopes the CLI/agent preset mints. The first-party device app
+ * (`pipeshub-agent`) and Dynamic Client Registration default to this set
+ * (intersected with instance MCP_SCOPES). Never grant
+ * `client_credentials` through DCR or the first-party device app — that
+ * grant has no user identity.
  */
 export const AgentMcpScopes = [
   'conversation:chat',

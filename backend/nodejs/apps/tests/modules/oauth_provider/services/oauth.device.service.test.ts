@@ -8,7 +8,7 @@ import {
   OAuthDeviceCodeStatus,
 } from '../../../../src/modules/oauth_provider/schema/oauth.device_code.schema'
 import { OAuthGrantType } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema'
-import { DeviceGrantError, InvalidGrantError } from '../../../../src/libs/errors/oauth.errors'
+import { DeviceGrantError, InvalidGrantError, InvalidClientError } from '../../../../src/libs/errors/oauth.errors'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { createMockLogger } from '../../../helpers/mock-logger'
@@ -18,6 +18,7 @@ describe('OAuthDeviceService', () => {
   let mockOAuthAppService: any
   let mockOAuthTokenService: any
   let mockScopeValidatorService: any
+  let mockFirstPartyDeviceAppService: any
 
   const app = {
     clientId: 'cid',
@@ -48,11 +49,15 @@ describe('OAuthDeviceService', () => {
       validateScopesForApp: sinon.stub(),
       getScopeDefinitions: sinon.stub().returns([{ name: 'user:read' }]),
     }
+    mockFirstPartyDeviceAppService = {
+      getOrCreate: sinon.stub().resolves('pipeshub-agent'),
+    }
     service = new OAuthDeviceService(
       createMockLogger(),
       mockOAuthAppService,
       mockOAuthTokenService,
       mockScopeValidatorService,
+      mockFirstPartyDeviceAppService,
     )
   })
 
@@ -205,5 +210,42 @@ describe('OAuthDeviceService', () => {
       expect(err).to.be.instanceOf(InvalidGrantError)
     }
     expect(mockOAuthTokenService.generateTokens.called).to.be.false
+  })
+
+  it('should ensure the first-party device app before starting login', async () => {
+    sinon.stub(OAuthDeviceCode, 'create').resolves({} as any)
+    await service.createAuthorization(
+      'pipeshub-agent',
+      'user:read',
+      'http://localhost:3000',
+    )
+    expect(mockFirstPartyDeviceAppService.getOrCreate.calledOnce).to.be.true
+    expect(mockOAuthAppService.getAppByClientId.calledWith('pipeshub-agent')).to.be
+      .true
+  })
+
+  it('should not ensure the first-party app for other client_ids', async () => {
+    sinon.stub(OAuthDeviceCode, 'create').resolves({} as any)
+    await service.createAuthorization(
+      'cid',
+      'user:read',
+      'http://localhost:3000',
+    )
+    expect(mockFirstPartyDeviceAppService.getOrCreate.called).to.be.false
+  })
+
+  it('should reject first-party login when the instance has no org', async () => {
+    mockFirstPartyDeviceAppService.getOrCreate.resolves(null)
+    try {
+      await service.createAuthorization(
+        'pipeshub-agent',
+        'user:read',
+        'http://localhost:3000',
+      )
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).to.be.instanceOf(InvalidClientError)
+    }
+    expect(mockOAuthAppService.getAppByClientId.called).to.be.false
   })
 })

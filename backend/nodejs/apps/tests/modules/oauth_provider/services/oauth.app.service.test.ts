@@ -14,7 +14,7 @@ import {
   InvalidRedirectUriError,
 } from '../../../../src/libs/errors/oauth.errors'
 import { NotFoundError, BadRequestError } from '../../../../src/libs/errors/http.errors'
-import { PAT_APP_CLIENT_ID_PREFIX } from '../../../../src/modules/oauth_provider/constants/constants'
+import { PAT_APP_CLIENT_ID_PREFIX, FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
 import { createMockLogger } from '../../../helpers/mock-logger'
 
 describe('OAuthAppService', () => {
@@ -311,10 +311,11 @@ describe('OAuthAppService', () => {
         // expected NotFoundError
       }
       const filter = findStub.firstCall.args[0] as Record<string, unknown>
-      const clientIdFilter = filter.clientId as { $not: RegExp }
+      const clientIdFilter = filter.clientId as { $not: RegExp; $nin: string[] }
       expect(clientIdFilter.$not.source).to.equal(`^${PAT_APP_CLIENT_ID_PREFIX}`)
       expect(clientIdFilter.$not.test(`${PAT_APP_CLIENT_ID_PREFIX}${fakeOrgId}`)).to.be.true
       expect(clientIdFilter.$not.test('some-other-client-id')).to.be.false
+      expect(clientIdFilter.$nin).to.deep.equal([FIRST_PARTY_DEVICE_CLIENT_ID])
     })
 
     it('should throw NotFoundError when app is not visible to caller (e.g. different creator in same org)', async () => {

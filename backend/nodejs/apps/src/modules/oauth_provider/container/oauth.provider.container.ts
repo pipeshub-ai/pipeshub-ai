@@ -14,6 +14,7 @@ import { ScopeValidatorService } from '../services/scope.validator.service'
 import { PatService } from '../services/pat.service'
 import { OAuthDcrService } from '../services/oauth.dcr.service'
 import { OAuthDeviceService } from '../services/oauth.device.service'
+import { FirstPartyDeviceAppService } from '../services/oauth.first_party_device.service'
 import { OAuthAppController } from '../controller/oauth.app.controller'
 import { OAuthProviderController } from '../controller/oauth.provider.controller'
 import { OIDCProviderController } from '../controller/oid.provider.controller'
@@ -164,11 +165,22 @@ export class OAuthProviderContainer {
         .bind<OAuthDcrService>('OAuthDcrService')
         .toConstantValue(oauthDcrService)
 
+      const firstPartyDeviceAppService = new FirstPartyDeviceAppService(
+        logger,
+        encryptionService,
+        scopeValidatorService,
+        appConfig,
+      )
+      container
+        .bind<FirstPartyDeviceAppService>('FirstPartyDeviceAppService')
+        .toConstantValue(firstPartyDeviceAppService)
+
       const oauthDeviceService = new OAuthDeviceService(
         logger,
         oauthAppService,
         oauthTokenService,
         scopeValidatorService,
+        firstPartyDeviceAppService,
       )
       container
         .bind<OAuthDeviceService>('OAuthDeviceService')
@@ -211,6 +223,7 @@ export class OAuthProviderContainer {
             oauthTokenService,
             scopeValidatorService,
             appConfig,
+            firstPartyDeviceAppService,
           )
         })
 

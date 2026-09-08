@@ -9,6 +9,7 @@ describe('OIDCProviderController', () => {
   let mockOAuthTokenService: any
   let mockScopeValidatorService: any
   let mockAppConfig: any
+  let mockFirstPartyDeviceAppService: any
   let mockRes: any
   let mockNext: any
 
@@ -30,10 +31,14 @@ describe('OIDCProviderController', () => {
       oauthIssuer: 'http://localhost:3000',
       mcpScopes: ['org:read'],
     }
+    mockFirstPartyDeviceAppService = {
+      getOrCreate: sinon.stub().resolves('pipeshub-agent'),
+    }
     controller = new OIDCProviderController(
       mockOAuthTokenService,
       mockScopeValidatorService,
       mockAppConfig,
+      mockFirstPartyDeviceAppService,
     )
     mockRes = { json: sinon.stub(), status: sinon.stub().returnsThis(), setHeader: sinon.stub() }
     mockNext = sinon.stub()
@@ -64,6 +69,17 @@ describe('OIDCProviderController', () => {
       )
       expect(config.token_endpoint_auth_methods_supported).to.include('none')
       expect(config.code_challenge_methods_supported).to.deep.equal(['S256', 'plain'])
+      expect(config.pipeshub_device_client_id).to.equal('pipeshub-agent')
+    })
+
+    it('should omit pipeshub_device_client_id when the instance has no org yet', async () => {
+      mockFirstPartyDeviceAppService.getOrCreate.resolves(null)
+      await controller.openidConfiguration({} as any, mockRes, mockNext)
+      const config = mockRes.json.firstCall.args[0]
+      expect(config.pipeshub_device_client_id).to.equal(undefined)
+      expect(config.device_authorization_endpoint).to.include(
+        '/device_authorization',
+      )
     })
 
     it('should advertise registration_endpoint only when DCR is enabled', async () => {
@@ -81,6 +97,8 @@ describe('OIDCProviderController', () => {
       expect(config.grant_types_supported).to.not.include(
         'urn:ietf:params:oauth:grant-type:device_code',
       )
+      expect(config.pipeshub_device_client_id).to.equal(undefined)
+      expect(mockFirstPartyDeviceAppService.getOrCreate.called).to.be.false
     })
   })
 
@@ -91,6 +109,7 @@ describe('OIDCProviderController', () => {
       expect(meta.resource).to.include('/mcp')
       expect(meta.authorization_servers).to.deep.equal(['http://localhost:3000'])
       expect(meta.bearer_methods_supported).to.deep.equal(['header'])
+      expect(meta.pipeshub_device_client_id).to.equal('pipeshub-agent')
     })
   })
 

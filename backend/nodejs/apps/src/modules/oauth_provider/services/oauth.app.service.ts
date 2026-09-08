@@ -26,6 +26,7 @@ import {
 } from '../types/oauth.types'
 import {
   ALLOWED_CUSTOM_REDIRECT_URIS,
+  FIRST_PARTY_DEVICE_CLIENT_ID,
   PAT_APP_CLIENT_ID_PREFIX,
 } from '../constants/constants'
 
@@ -45,16 +46,20 @@ export class OAuthAppService {
    * Matches compound index `{ orgId, createdBy, isDeleted, createdAt }` on `OAuthApp` for list queries.
    *
    * Excludes the per-org synthetic PAT app (`pat-system:<orgId>`, see
-   * {@link PatService}) — it's an internal pseudo-client, not something
-   * its creator should be able to view, edit, suspend, delete, or pull a
-   * working secret for through this CRUD surface.
+   * {@link PatService}) and the instance-wide first-party device app
+   * (`pipeshub-agent`) — internal clients, not something their creator
+   * should be able to view, edit, suspend, delete, or pull a working
+   * secret for through this CRUD surface.
    */
   private buildAppFilter(orgId: string, userId: string): Record<string, unknown> {
     return {
       orgId: new Types.ObjectId(orgId),
       isDeleted: false,
       createdBy: new Types.ObjectId(userId),
-      clientId: { $not: new RegExp(`^${PAT_APP_CLIENT_ID_PREFIX}`) },
+      clientId: {
+        $nin: [FIRST_PARTY_DEVICE_CLIENT_ID],
+        $not: new RegExp(`^${PAT_APP_CLIENT_ID_PREFIX}`),
+      },
       isDynamic: { $ne: true },
     }
   }

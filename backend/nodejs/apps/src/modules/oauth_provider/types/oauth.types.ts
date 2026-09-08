@@ -219,6 +219,8 @@ export interface OAuthProtectedResourceMetadata {
   scopes_supported: string[]
   bearer_methods_supported: string[]
   resource_documentation?: string
+  /** PipesHub first-party device client. Present when device grant is on and the instance has an org. */
+  pipeshub_device_client_id?: string
 }
 
 // OIDC Discovery Response
@@ -232,6 +234,8 @@ export interface OpenIDConfiguration {
   jwks_uri: string
   registration_endpoint?: string
   device_authorization_endpoint?: string
+  /** PipesHub first-party device client. Present when device grant is on and the instance has an org. */
+  pipeshub_device_client_id?: string
   scopes_supported: string[]
   response_types_supported: string[]
   grant_types_supported: string[]

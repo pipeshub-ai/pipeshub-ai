@@ -20,6 +20,8 @@ import { ScopeValidatorService } from './scope.validator.service'
 import { Users } from '../../user_management/schema/users.schema'
 import { Org } from '../../user_management/schema/org.schema'
 import { TokenResponse, ConsentData } from '../types/oauth.types'
+import { FirstPartyDeviceAppService } from './oauth.first_party_device.service'
+import { FIRST_PARTY_DEVICE_CLIENT_ID } from '../constants/constants'
 
 const DEVICE_CODE_BYTES = 32
 const USER_CODE_LENGTH = 8
@@ -44,6 +46,8 @@ export class OAuthDeviceService {
     @inject('OAuthTokenService') private oauthTokenService: OAuthTokenService,
     @inject('ScopeValidatorService')
     private scopeValidatorService: ScopeValidatorService,
+    @inject('FirstPartyDeviceAppService')
+    private firstPartyDeviceAppService: FirstPartyDeviceAppService,
   ) {}
 
   async createAuthorization(
@@ -53,6 +57,13 @@ export class OAuthDeviceService {
   ): Promise<DeviceAuthorizationResponse> {
     if (process.env.PIPESHUB_ENABLE_DEVICE_GRANT === 'false') {
       throw new UnsupportedGrantTypeError('device grant is disabled')
+    }
+
+    if (clientId === FIRST_PARTY_DEVICE_CLIENT_ID) {
+      const ensured = await this.firstPartyDeviceAppService.getOrCreate()
+      if (!ensured) {
+        throw new InvalidClientError('Invalid client_id')
+      }
     }
 
     const app = await this.oauthAppService.getAppByClientId(clientId)
