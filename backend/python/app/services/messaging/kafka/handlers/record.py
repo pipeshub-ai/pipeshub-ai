@@ -24,7 +24,7 @@ from app.events.events import EventProcessor
 from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.models.blocks import BlocksContainer, SemanticMetadata
-from app.modules.code_graph.auto_edge_build import EdgeBuildScheduler
+from app.modules.code_graph import edge_build_trigger
 from app.modules.code_graph.edge_builder import build_code_graph_edges
 from app.modules.transformers.transformer import TransformContext
 from app.services.cache.invalidation_hooks import notify_record_indexed
@@ -54,21 +54,6 @@ from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
 
-_CODE_EDGE_BUILD_LOCK_PREFIX = "pipeshub:code-edge-build:"
-_CODE_EDGE_BUILD_LOCK_TTL_SECONDS = 600
-_CODE_EDGE_BUILD_SYNC_POINT_SUFFIX = "code-edge-build"
-_CODE_EDGE_BUILD_BLOCKING_STATUSES = (
-    ProgressStatus.NOT_STARTED.value,
-    ProgressStatus.QUEUED.value,
-    ProgressStatus.IN_PROGRESS.value,
-)
-_RELEASE_CODE_EDGE_LOCK_IF_OWNER_LUA = """
-if redis.call('get', KEYS[1]) == ARGV[1] then
-    return redis.call('del', KEYS[1])
-end
-return 0
-"""
-
 
 class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
@@ -93,7 +78,6 @@ class RecordEventHandler(BaseEventService):
             )
         except RuntimeError:
             self._producer_loop = None
-        self._edge_builds = EdgeBuildScheduler(self._build_code_edges, logger)
 
     async def _build_code_edges(
         self,
@@ -103,7 +87,7 @@ class RecordEventHandler(BaseEventService):
         record_group_id: str,
     ) -> None:
         redis = await redis_from_config_service(self.config_service)
-        lock_key = f"{_CODE_EDGE_BUILD_LOCK_PREFIX}{org_id}:{record_group_id}"
+        lock_key = f"{edge_build_trigger.BUILD_LOCK_PREFIX}{org_id}:{record_group_id}"
         lock_token = str(uuid4())
         lock_acquired = False
         try:
@@ -112,45 +96,30 @@ class RecordEventHandler(BaseEventService):
                     lock_key,
                     lock_token,
                     nx=True,
-                    ex=_CODE_EDGE_BUILD_LOCK_TTL_SECONDS,
+                    ex=edge_build_trigger.BUILD_LOCK_TTL_SECONDS,
                 )
             )
             if not lock_acquired:
                 return
 
-            has_unfinished = await self.event_processor.graph_provider.has_nodes_by_filters(
-                collection=CollectionNames.RECORDS.value,
-                filters={"orgId": org_id, "recordGroupId": record_group_id},
-                in_filters={
-                    "indexingStatus": list(_CODE_EDGE_BUILD_BLOCKING_STATUSES)
-                },
-            )
-            if has_unfinished:
+            graph_provider = self.event_processor.graph_provider
+            # Re-checked rather than trusted from the request: records can
+            # arrive between the drain that asked for this build and its
+            # delivery. Returning is safe -- whichever one lands last asks again.
+            if await edge_build_trigger.group_has_unfinished_records(
+                graph_provider, org_id, record_group_id
+            ):
                 return
 
-            sync_point_key = (
-                f"{record_group_id}/{_CODE_EDGE_BUILD_SYNC_POINT_SUFFIX}"
+            sync_point_key = edge_build_trigger.sync_point_key_for(record_group_id)
+            last_build, _ = await edge_build_trigger.read_build_state(
+                graph_provider, org_id, record_group_id
             )
-            sync_points = (
-                await self.event_processor.graph_provider.get_nodes_by_filters(
-                    collection=CollectionNames.SYNC_POINTS.value,
-                    filters={
-                        "orgId": org_id,
-                        "syncPointKey": sync_point_key,
-                    },
-                    return_fields=["lastEdgeBuildAt"],
-                )
-            )
-            last_build = None
-            if sync_points:
-                value = sync_points[0].get("lastEdgeBuildAt")
-                if isinstance(value, (int, float)):
-                    last_build = int(value)
 
             touched_record_ids = None
             if last_build is not None:
                 rows = (
-                    await self.event_processor.graph_provider.get_nodes_updated_since(
+                    await graph_provider.get_nodes_updated_since(
                         collection=CollectionNames.RECORDS.value,
                         timestamp_field="updatedAtTimestamp",
                         since=last_build,
@@ -183,19 +152,20 @@ class RecordEventHandler(BaseEventService):
                 ),
             )
             result = await build_code_graph_edges(
-                graph_provider=self.event_processor.graph_provider,
+                graph_provider=graph_provider,
                 org_id=org_id,
                 record_group_id=record_group_id,
                 touched_record_ids=touched_record_ids,
                 log=self.logger,
             )
-            await self.event_processor.graph_provider.upsert_sync_point(
+            await graph_provider.upsert_sync_point(
                 sync_point_key=sync_point_key,
                 sync_point_data={
                     "orgId": org_id,
                     "connectorId": connector_id,
                     "syncDataPointType": "codeEdgeBuild",
                     "lastEdgeBuildAt": started_at_ms,
+                    "edgeBuildPending": False,
                 },
                 collection=CollectionNames.SYNC_POINTS.value,
             )
@@ -213,7 +183,7 @@ class RecordEventHandler(BaseEventService):
             if lock_acquired:
                 try:
                     await redis.eval(
-                        _RELEASE_CODE_EDGE_LOCK_IF_OWNER_LUA,
+                        edge_build_trigger.RELEASE_LOCK_IF_OWNER_LUA,
                         1,
                         lock_key,
                         lock_token,
@@ -273,6 +243,12 @@ class RecordEventHandler(BaseEventService):
             return
 
         payload = message.payload or {}
+        if message.eventType == EventTypes.BUILD_CODE_EDGES.value:
+            await self._mark_code_edges_pending(
+                payload, reason=reason, attempts=attempts
+            )
+            return
+
         record_id = payload.get("recordId")
         if not record_id:
             # Bulk-delete, membership-sync and collection-delete events carry no
@@ -426,6 +402,151 @@ class RecordEventHandler(BaseEventService):
             ),
             self._producer_loop,
         )
+
+    async def _publish_code_edges_event(
+        self, *, org_id: str, connector_id: str, record_group_id: str
+    ) -> None:
+        await bridge_to_loop(
+            self.producer.send_event(
+                topic=Topic.RECORD_EVENTS.value,
+                event_type=EventTypes.BUILD_CODE_EDGES.value,
+                payload={
+                    "orgId": org_id,
+                    "connectorId": connector_id,
+                    "recordGroupId": record_group_id,
+                },
+                key=record_group_id,
+            ),
+            self._producer_loop,
+        )
+
+    async def _mark_code_edges_pending(
+        self, payload: dict, *, reason: str, attempts: int
+    ) -> None:
+        """Note that a repo is still owed an edge build after its request died.
+
+        The request was a moment that does not come back, so without this the
+        repo keeps its stale edges and nothing anywhere records that it is
+        owed a pass. Never raises: the caller is on its way to an
+        acknowledgement it cannot skip.
+        """
+        org_id = payload.get("orgId")
+        record_group_id = payload.get("recordGroupId")
+        self.logger.error(
+            "Discarded a code edge build request for org=%s record_group=%s "
+            "after %d attempt(s); the repo keeps its previous edges until the "
+            "next record indexed for it asks again: %s",
+            org_id,
+            record_group_id,
+            attempts,
+            reason,
+        )
+        if not isinstance(org_id, str) or not isinstance(record_group_id, str):
+            return
+        try:
+            await self.event_processor.graph_provider.upsert_sync_point(
+                sync_point_key=edge_build_trigger.sync_point_key_for(
+                    record_group_id
+                ),
+                sync_point_data={
+                    "orgId": org_id,
+                    "connectorId": payload.get("connectorId"),
+                    "syncDataPointType": "codeEdgeBuild",
+                    "edgeBuildPending": True,
+                },
+                collection=CollectionNames.SYNC_POINTS.value,
+            )
+        except Exception:
+            self.logger.exception(
+                "Failed to mark org=%s record_group=%s as owing a code edge build",
+                org_id,
+                record_group_id,
+            )
+
+    async def _request_code_edge_build_if_repo_drained(
+        self, record_id: str | None, record: dict | None = None
+    ) -> None:
+        """Ask for this repo's edge build once its records stop arriving.
+
+        Never raises. This runs on the way out of a record that has already
+        reached a terminal state, and a repo whose edges are late is a smaller
+        problem than a record reported as failed because asking went wrong.
+        """
+        if not record_id or self.producer is None:
+            return
+        # Gate on the copy already in hand before reading anything:
+        # connectorName does not change between reads, so this costs every
+        # non-code record on the platform nothing. The re-read below is still
+        # needed for the ones that pass, because on the failure path that copy
+        # predates the status write that made the record terminal.
+        if record is not None and not edge_build_trigger.is_code_record(record):
+            return
+        redis = None
+        try:
+            graph_provider = self.event_processor.graph_provider
+            record = await graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+            scope = edge_build_trigger.publishable_scope(record)
+            if scope is None:
+                return
+            org_id, connector_id, record_group_id = scope
+
+            if await edge_build_trigger.group_has_unfinished_records(
+                graph_provider, org_id, record_group_id
+            ):
+                return
+
+            _, pending = await edge_build_trigger.read_build_state(
+                graph_provider, org_id, record_group_id
+            )
+            redis = await redis_from_config_service(self.config_service)
+            # A build already known to be owed skips the dedupe window: it is
+            # owed because the last request was lost, and waiting the window
+            # out would only delay the record that noticed.
+            if not pending and not await edge_build_trigger.claim_publish(
+                redis, org_id, record_group_id
+            ):
+                return
+
+            # Written before the request, so a request that dies in the broker
+            # leaves the repo marked as owing a build rather than leaving
+            # nothing at all.
+            await graph_provider.upsert_sync_point(
+                sync_point_key=edge_build_trigger.sync_point_key_for(
+                    record_group_id
+                ),
+                sync_point_data={
+                    "orgId": org_id,
+                    "connectorId": connector_id,
+                    "syncDataPointType": "codeEdgeBuild",
+                    "edgeBuildPending": True,
+                },
+                collection=CollectionNames.SYNC_POINTS.value,
+            )
+            await self._publish_code_edges_event(
+                org_id=org_id,
+                connector_id=connector_id,
+                record_group_id=record_group_id,
+            )
+            self.logger.info(
+                "Requested code edge build for org=%s record_group=%s",
+                org_id,
+                record_group_id,
+            )
+        except Exception:
+            self.logger.exception(
+                "Failed to request a code edge build after record %s", record_id
+            )
+        finally:
+            if redis is not None:
+                try:
+                    await redis.aclose()
+                except Exception:
+                    self.logger.exception(
+                        "Failed to close Redis client after a code edge "
+                        "build request"
+                    )
 
     async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id) -> None:
         try:
@@ -772,6 +893,34 @@ class RecordEventHandler(BaseEventService):
             if event_type == EventTypes.DELETE_VECTOR_COLLECTION.value:
                 async for event in self._delete_vector_collection(payload):
                     yield event
+                return
+
+            if event_type == EventTypes.BUILD_CODE_EDGES.value:
+                scope = (
+                    payload.get("orgId"),
+                    payload.get("connectorId"),
+                    payload.get("recordGroupId"),
+                )
+                if not all(isinstance(v, str) and v for v in scope):
+                    # Producer bug, not a transient one: TERMINAL so it
+                    # dead-letters in one attempt rather than three.
+                    raise ProcessingError(
+                        "buildCodeEdges message is missing scope identifiers",
+                        details={"payload_keys": sorted(payload.keys())},
+                    )
+                await self._build_code_edges(
+                    org_id=str(scope[0]),
+                    connector_id=str(scope[1]),
+                    record_group_id=str(scope[2]),
+                )
+                yield PipelineEvent(
+                    event=IndexingEvent.PARSING_COMPLETE,
+                    data=PipelineEventData(record_id="build_code_edges"),
+                )
+                yield PipelineEvent(
+                    event=IndexingEvent.INDEXING_COMPLETE,
+                    data=PipelineEventData(record_id="build_code_edges"),
+                )
                 return
 
             # For all other event types, require record_id
@@ -1422,13 +1571,20 @@ class RecordEventHandler(BaseEventService):
                                 external_record_group_id=record.get("externalGroupId"),
                                 org_id=record.get("orgId"),
                             )
-                            self._edge_builds.schedule(record)
                     elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
                         # Find and trigger indexing for the next queued duplicate
                         self.logger.info(f"🔄 Current record {record_id} has status {indexing_status}, triggering next queued duplicate")
                         await self._trigger_next_queued_duplicate(record_id, virtual_record_id)
                 else:
                     self.logger.warning(f"Record {record_id} not found in database")
+
+            # Outside both branches above, because a repo's last file is as
+            # likely to end FAILED or EMPTY as COMPLETED and only the success
+            # branch is reached from there. Skipped on cancellation: the record
+            # stays IN_PROGRESS for redelivery, so the repo is not drained and
+            # this would be graph I/O during an unwind.
+            if not cancelled:
+                await self._request_code_edge_build_if_repo_drained(record_id, record)
 
     async def __update_document_status(
         self,

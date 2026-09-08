@@ -1889,15 +1889,12 @@ class Processor:
 
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            record.block_containers = block_containers
-            record.virtual_record_id = virtual_record_id
-
-            ctx = self._create_transform_context(
-                record, event_type, prev_virtual_record_id, is_code=True
-            )
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
-            await pipeline.apply(ctx)
-
+            # Before the pipeline, which marks the record COMPLETED. That status
+            # is what tells the edge builder the repo has drained, so a file
+            # carrying it while its blocks are still missing gets the whole repo
+            # resolved against a symbol table it does not appear in -- wrong
+            # edges, not missing ones. Everything between the two used to run in
+            # that gap: extraction, re-upload, re-embed, graph enrichment.
             await self.project_code_blocks_to_graph(
                 record_id=recordId,
                 org_id=record.org_id,
@@ -1908,6 +1905,15 @@ class Processor:
                 language=language,
                 block_containers=block_containers,
             )
+
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+
+            ctx = self._create_transform_context(
+                record, event_type, prev_virtual_record_id, is_code=True
+            )
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
 
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
             self.logger.info("✅ Code processing completed successfully")

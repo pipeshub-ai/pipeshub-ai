@@ -5358,7 +5358,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 27
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 28
 
     @pytest.mark.asyncio
     async def test_block_indexes_cover_every_query_shape(self, connected_provider):
@@ -7968,7 +7968,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 27
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 28
 
 
 # ---------------------------------------------------------------------------

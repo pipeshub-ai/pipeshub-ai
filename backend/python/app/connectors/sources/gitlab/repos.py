@@ -36,6 +36,7 @@ from app.connectors.core.constants import (
 )
 from app.models.entities import CodeFileRecord, FileRecord, RecordGroupType, RecordType
 from app.modules.parsers.code_parser.file_role import (
+    FileRole,
     classify_file_role,
     should_index_code_file,
 )
@@ -534,6 +535,7 @@ class ReposSync:
 
         external_group_id = f"{project_id}-code-repository"
         code_files_enabled = self._code_files_indexing_enabled()
+        test_files_enabled = self._test_files_indexing_enabled()
 
         moves: list[tuple[str, Any, list[Any]]] = []
         for old_path, new_path in renames:
@@ -562,6 +564,7 @@ class ReposSync:
                 external_group_id=external_group_id,
                 parent_external_record_id=parent_external_record_id,
                 code_files_enabled=code_files_enabled,
+                test_files_enabled=test_files_enabled,
             )
             old_external_id = _code_blob_web_path(project_path, old_path)
             moves.append((old_external_id, new_record, []))
@@ -781,6 +784,7 @@ class ReposSync:
         external_group_id: str,
         parent_external_record_id: str | None,
         code_files_enabled: bool,
+        test_files_enabled: bool,
         source_created_at: int | None = None,
         source_updated_at: int | None = None,
     ) -> CodeFileRecord:
@@ -831,6 +835,8 @@ class ReposSync:
 
         if not code_files_enabled:
             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        elif file_role is FileRole.TEST and not test_files_enabled:
+            record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         return record
 
     async def build_code_file_records(
@@ -841,6 +847,7 @@ class ReposSync:
         files_skipped = 0
         external_group_id = f"{project_id}-code-repository"
         code_files_enabled = self._code_files_indexing_enabled()
+        test_files_enabled = self._test_files_indexing_enabled()
 
         for file in code_file_list:
             file_path = file.get("path") or ""
@@ -873,6 +880,7 @@ class ReposSync:
                 external_group_id=external_group_id,
                 parent_external_record_id=parent_external_record_id,
                 code_files_enabled=code_files_enabled,
+                test_files_enabled=test_files_enabled,
             )
             list_records_new.append(RecordUpdate(
                 record=blob_record, is_new=True, is_updated=False, is_deleted=False,
@@ -1088,6 +1096,19 @@ class ReposSync:
             return True
         from app.connectors.core.registry.filters import IndexingFilterKey
         return c.indexing_filters.is_enabled(IndexingFilterKey.CODE_FILES)
+
+    def _test_files_indexing_enabled(self) -> bool:
+        """Whether test files get their content indexed. Off unless opted in.
+
+        Unlike ``_code_files_indexing_enabled``, an absent filter means False:
+        a connector configured before this filter existed must not start
+        indexing tests just because its config has no row for them.
+        """
+        c = self.c
+        if not c.indexing_filters:
+            return False
+        from app.connectors.core.registry.filters import IndexingFilterKey
+        return c.indexing_filters.is_enabled(IndexingFilterKey.TEST_FILES, default=False)
 
     # ------------------------------------------------------------------
     # Record persistence helper

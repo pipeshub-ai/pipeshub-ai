@@ -447,13 +447,12 @@ class EventProcessor:
             ctx, self.logger, self.sink_orchestrator
         )
 
-        # ── Step 2: Index (VectorStore + BlobStorage) ────────────────────────
-        self.logger.debug("📥 Indexing record %s (making searchable)", record_id)
-        await self.sink_orchestrator.index(ctx)
-        self.logger.debug("✅ Record %s is now searchable (indexingStatus=COMPLETED)", record_id)
-
-        # Before enrichment, so a deferred or failing extraction still leaves the
-        # code graph populated.
+        # Before indexing, which marks the record COMPLETED, and so also before
+        # enrichment. COMPLETED is what tells the edge builder the repo has
+        # drained; a file carrying it while its blocks are still missing gets
+        # the whole repo resolved against a symbol table it does not appear in.
+        # Being ahead of enrichment additionally means a deferred or failing
+        # extraction still leaves the code graph populated.
         if is_code:
             await self.processor.project_code_blocks_to_graph(
                 record_id=record_id,
@@ -464,6 +463,11 @@ class EventProcessor:
                 file_path=file_path,
                 block_containers=block_container,
             )
+
+        # ── Step 2: Index (VectorStore + BlobStorage) ────────────────────────
+        self.logger.debug("📥 Indexing record %s (making searchable)", record_id)
+        await self.sink_orchestrator.index(ctx)
+        self.logger.debug("✅ Record %s is now searchable (indexingStatus=COMPLETED)", record_id)
 
         # ── Step 3: Enrich (Extraction Service → GraphDB) ────────────────────
         defer_extraction = (

@@ -428,6 +428,15 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Record) ON (n.indexingStatus)"
         )
 
+        # COMPOSITE: "is every record of this repo indexed yet?", asked once per
+        # code file that finishes. A repo connector also syncs issues and merge
+        # requests into record groups of their own, so the connector-leading
+        # indexes above do not answer it.
+        indexes.append(
+            "CREATE INDEX record_org_group_indexing_status IF NOT EXISTS "
+            "FOR (n:Record) ON (n.orgId, n.recordGroupId, n.indexingStatus)"
+        )
+
         # SINGLE: origin (heavily used in permission WHERE clauses)
         indexes.append(
             "CREATE INDEX record_origin IF NOT EXISTS "

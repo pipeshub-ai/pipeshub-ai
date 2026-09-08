@@ -241,8 +241,9 @@ class CodeGraph:
             "Call this whenever you are following something THROUGH the codebase: "
             "tracing a flow end to end, finding every caller before changing a "
             "signature, asking where a thing is used, or working out which layers "
-            "touch a module. If your next thought is \"and then what happens\", this "
-            "is the tool.\n\n"
+            "touch a module. Two trigger thoughts, and they need opposite "
+            "directions: \"and then what happens?\" is outbound; \"who uses this, "
+            "and is that all of them?\" is inbound.\n\n"
             "Reading a symbol shows you `self.orchestrator.index(ctx)` — an "
             "expression, not an address. It does not tell you WHICH file that lands "
             "in, and you cannot read a symbol you cannot address. This returns the "
@@ -253,9 +254,13 @@ class CodeGraph:
             "exports, which never appear in the body you read.\n\n"
             "`direction='inbound'` — what reaches this symbol. There is NO other way "
             "to get this: callers leave no trace in the code you are reading, and a "
-            "knowledge search cannot find them because nothing names them. Use it "
-            "before you conclude you have seen a whole flow.\n\n"
-            "`direction='outbound'` — what this symbol reaches. 'any' for both.\n\n"
+            "knowledge search cannot find them because nothing names them. An "
+            "outbound-only walk shows what a symbol uses and never who depends on "
+            "it, so it cannot tell you whether you have seen a whole flow — you "
+            "will map one branch and believe it is the system.\n\n"
+            "`direction='outbound'` — what this symbol reaches.\n\n"
+            "`direction='any'` — both at once. The default, and the right choice "
+            "when you are mapping a flow rather than chasing one specific edge.\n\n"
             "`edge_types` picks the relationships: ['CALLS'] for callers and callees, "
             "['INHERITS','EXTENDS'] for a type hierarchy, ['IMPORTS_FROM'] for module "
             "dependencies. Omit it for every cross-file relation at once.\n\n"
@@ -283,7 +288,11 @@ class CodeGraph:
             ),
             ToolParameter(
                 name="direction", type=ParameterType.STRING, required=False, default="any",
-                description="'outbound' (what it reaches), 'inbound' (what reaches it), or 'any'",
+                description=(
+                    "'any' (both directions — the default, and usually what you "
+                    "want), 'inbound' (what reaches it), or 'outbound' (what it "
+                    "reaches)"
+                ),
             ),
             ToolParameter(
                 name="edge_types", type=ParameterType.ARRAY, required=False, default=None,

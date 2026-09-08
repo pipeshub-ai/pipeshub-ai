@@ -702,6 +702,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ["orgId", "connectorId", "indexingStatus", "_key"],
         )
 
+        # COMPOUND: "is every record of this repo indexed yet?", asked once per
+        # code file that finishes. The connector-leading index above does not
+        # serve it -- a repo connector also syncs issues and merge requests,
+        # which live in record groups of their own.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["orgId", "recordGroupId", "indexingStatus"],
+        )
+
         # SINGLE: origin (heavily used in permission WHERE clauses)
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
