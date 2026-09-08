@@ -99,6 +99,19 @@ describe('FirstPartyDeviceAppService', () => {
     expect(create.called).to.be.false
   })
 
+  it('should return null when the org has no users yet', async () => {
+    ;(Users.findOne as sinon.SinonStub).returns({
+      sort: sinon.stub().returnsThis(),
+      select: sinon.stub().returnsThis(),
+      lean: sinon.stub().resolves(null),
+    })
+    sinon.stub(OAuthApp, 'findOne').resolves(null)
+    const create = sinon.stub(OAuthApp, 'create')
+
+    expect(await service.getOrCreate()).to.equal(null)
+    expect(create.called).to.be.false
+  })
+
   it('should return the winner when two creates race on clientId', async () => {
     const findOne = sinon.stub(OAuthApp, 'findOne')
     findOne.onFirstCall().resolves(null)

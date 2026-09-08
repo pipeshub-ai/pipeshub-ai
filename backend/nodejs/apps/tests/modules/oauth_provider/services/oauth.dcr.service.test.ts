@@ -167,4 +167,17 @@ describe('OAuthDcrService', () => {
       expect(err).to.be.instanceOf(ForbiddenError)
     }
   })
+
+  it('should refuse when DCR is a truthy string other than true', async () => {
+    for (const value of ['TRUE', '1', 'yes']) {
+      process.env.PIPESHUB_ENABLE_DCR = value
+      try {
+        await service.register({ client_name: 'Cursor' })
+        expect.fail(`should have thrown for ${value}`)
+      } catch (err) {
+        expect(err).to.be.instanceOf(ForbiddenError)
+      }
+    }
+    expect(mockOAuthAppService.createDynamicClient.called).to.be.false
+  })
 })

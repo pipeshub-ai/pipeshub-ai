@@ -365,6 +365,25 @@ else
   pass "env.template does not pin pending indexing tasks 28"
 fi
 
+echo "== OAuth device / DCR launch defaults =="
+envtmpl="$(cat "$COMPOSE_DIR/env.template")"
+compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
+check "env.template documents PIPESHUB_ENABLE_DCR" "$envtmpl" "PIPESHUB_ENABLE_DCR"
+check "env.template documents PIPESHUB_ENABLE_DEVICE_GRANT" "$envtmpl" "PIPESHUB_ENABLE_DEVICE_GRANT"
+check "env.template names pipeshub_device_client_id" "$envtmpl" "pipeshub_device_client_id"
+if grep -qE '^PIPESHUB_ENABLE_DCR=true' "$COMPOSE_DIR/env.template"; then
+  fail "env.template must not enable DCR by default"
+else
+  pass "env.template does not enable DCR by default"
+fi
+if grep -qE '^PIPESHUB_ENABLE_DEVICE_GRANT=false' "$COMPOSE_DIR/env.template"; then
+  fail "env.template must not disable device grant by default"
+else
+  pass "env.template does not disable device grant by default"
+fi
+check "compose wires PIPESHUB_ENABLE_DCR" "$compose" 'PIPESHUB_ENABLE_DCR=${PIPESHUB_ENABLE_DCR:-}'
+check "compose wires PIPESHUB_ENABLE_DEVICE_GRANT" "$compose" 'PIPESHUB_ENABLE_DEVICE_GRANT=${PIPESHUB_ENABLE_DEVICE_GRANT:-}'
+
 echo "== In-tree installer: crash-loop detection (real function) =="
 eval "$(extract_fn crash_looping_containers "$INNER_INSTALLER")"
 (
