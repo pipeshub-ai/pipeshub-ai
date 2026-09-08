@@ -3354,6 +3354,7 @@
   "oauthDevice": {
     "title": "Connect a device",
     "codeLabel": "Enter the code shown in your terminal",
+    "phishingWarning": "Only continue if you started this yourself on a device you control. If someone sent you this code, close this page.",
     "codePlaceholder": "ABCD-EFGH",
     "continue": "Continue",
     "loading": "Looking up this device…",

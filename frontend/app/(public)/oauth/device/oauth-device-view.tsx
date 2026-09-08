@@ -185,6 +185,9 @@ export function OAuthDeviceView() {
           <Text as="p" size="2" color="gray" mt="2">
             {t('oauthDevice.codeLabel')}
           </Text>
+          <Text as="p" size="2" color="amber" mt="2">
+            {t('oauthDevice.phishingWarning')}
+          </Text>
           <TextField.Root
             mt="3"
             size="3"
@@ -225,6 +228,9 @@ export function OAuthDeviceView() {
             {t('oauthConsent.unreviewedApp')}
           </Text>
         ) : null}
+        <Text as="p" size="2" color="amber" mt="2">
+          {t('oauthDevice.phishingWarning')}
+        </Text>
         <Text as="p" size="2" color="gray" mt="2">
           {t('oauthConsent.requestHeading')}
         </Text>
