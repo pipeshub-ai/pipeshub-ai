@@ -40,6 +40,7 @@ from app.utils.chat_helpers import (
 from app.utils.image_admission import admission_from_state
 from app.utils.pattern_match import (
     DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
+    cancel_task_if_running,
     cap_pattern_match_blocks,
     execute_pattern_match_pipeline,
     merge_pattern_match_results,
@@ -497,6 +498,7 @@ class Retrieval:
                       virtual_to_record_map.update(raw.get("virtual_to_record_map", {}))
 
                   if not any_success:
+                      await cancel_task_if_running(pattern_match_task)
                       if error_status is not None:
                           return json.dumps({
                               "status": "error",
@@ -514,6 +516,7 @@ class Retrieval:
                   results = await _search_with_filter_groups(filter_groups)
 
                   if results is None:
+                      await cancel_task_if_running(pattern_match_task)
                       logger_instance.warning("Retrieval service returned None")
                       return json.dumps({
                           "status": "error",
@@ -522,6 +525,7 @@ class Retrieval:
 
                   status_code = results.get("status_code", 200)
                   if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
+                      await cancel_task_if_running(pattern_match_task)
                       return json.dumps({
                           "status": "error",
                           "status_code": status_code,

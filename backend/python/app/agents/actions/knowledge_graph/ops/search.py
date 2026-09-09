@@ -19,6 +19,7 @@ from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.pattern_match import (
     DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
+    cancel_task_if_running,
     cap_pattern_match_blocks,
     execute_pattern_match_pipeline,
     merge_pattern_match_results,
@@ -237,6 +238,7 @@ async def execute_search(
                     virtual_to_record_map.update(raw.get("virtual_to_record_map", {}))
 
                 if not any_success:
+                    await cancel_task_if_running(pattern_match_task)
                     if error_status is not None:
                         return json.dumps({
                             "status": "error",
@@ -252,9 +254,11 @@ async def execute_search(
             else:
                 results = await _search_one(filter_groups)
                 if results is None:
+                    await cancel_task_if_running(pattern_match_task)
                     return json.dumps({"status": "error", "message": "Retrieval service returned no results"})
                 status_code = results.get("status_code", 200)
                 if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
+                    await cancel_task_if_running(pattern_match_task)
                     return json.dumps({
                         "status": "error",
                         "status_code": status_code,
@@ -338,6 +342,7 @@ async def execute_search(
                     graph_provider=graph_provider,
                     is_multimodal_llm=is_multimodal_llm,
                     logger_instance=logger_instance,
+                    time_range=time_range,
                 )
                 if pm_blocks:
                     pm_blocks = cap_pattern_match_blocks(

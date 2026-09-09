@@ -219,6 +219,50 @@ async def run_pattern_match(
     return all_records
 
 
+async def cancel_task_if_running(task: asyncio.Task | None) -> None:
+    """Cancel an asyncio task if it hasn't finished yet and suppress errors."""
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+def _record_in_time_range(
+    record: dict[str, Any],
+    time_range: dict[str, int] | None,
+) -> bool:
+    """Return True when *record* satisfies every bound in *time_range*."""
+    if not time_range:
+        return True
+
+    def _ts(key: str) -> int | None:
+        v = record.get(key)
+        if v is None:
+            return None
+        try:
+            return int(v)
+        except (ValueError, TypeError):
+            return None
+
+    created = _ts("source_created_at")
+    modified = _ts("source_updated_at")
+    if "source_created_after_ms" in time_range:
+        if created is None or created < time_range["source_created_after_ms"]:
+            return False
+    if "source_created_before_ms" in time_range:
+        if created is None or created > time_range["source_created_before_ms"]:
+            return False
+    if "source_updated_after_ms" in time_range:
+        if modified is None or modified < time_range["source_updated_after_ms"]:
+            return False
+    if "source_updated_before_ms" in time_range:
+        if modified is None or modified > time_range["source_updated_before_ms"]:
+            return False
+    return True
+
+
 async def merge_pattern_match_results(
     *,
     raw_records: list[dict],
@@ -230,8 +274,9 @@ async def merge_pattern_match_results(
     is_multimodal_llm: bool,
     logger_instance: logging.Logger,
     max_records: int = _MAX_PATTERN_MATCH_RECORDS,
+    time_range: dict[str, int] | None = None,
 ) -> list[dict]:
-    """Dedup → permission check → fetch blob → flatten.
+    """Dedup → permission check → fetch blob → time-range filter → flatten.
 
     Returns enriched block entries compatible with final_results.
     """
@@ -294,6 +339,22 @@ async def merge_pattern_match_results(
             )
         )
     await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+    if time_range:
+        before_count = len(accessible_records)
+        accessible_records = [
+            r for r in accessible_records
+            if _record_in_time_range(
+                virtual_record_id_to_result.get(r.get("virtual_record_id", ""), {}),
+                time_range,
+            )
+        ]
+        if len(accessible_records) < before_count:
+            logger_instance.info(
+                "Pattern match: %d of %d records filtered by time range",
+                before_count - len(accessible_records),
+                before_count,
+            )
 
     synthetic = _build_synthetic_search_results(
         accessible_records, virtual_record_id_to_result, org_id, logger_instance
