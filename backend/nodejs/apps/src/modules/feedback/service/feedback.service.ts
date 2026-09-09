@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
+import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { MailController } from '../../mail/controller/mail.controller';
 import { EmailTemplateType } from '../../mail/middlewares/types';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -15,6 +16,10 @@ import {
   IFeedbackAttachment,
 } from '../schema/feedback.schema';
 import { createZipBuffer } from '../utils/create-zip';
+import {
+  readFeedbackAttachmentBuffer,
+  uploadFeedbackAttachment,
+} from '../utils/feedback-storage';
 
 const SUPPORT_EMAIL_ENV = 'FEEDBACK_SUPPORT_EMAIL';
 
@@ -43,7 +48,12 @@ export class FeedbackService {
   constructor(
     private readonly appConfig: AppConfig,
     private readonly logger: Logger,
+    private readonly kvStore: KeyValueStoreService,
   ) {}
+
+  async isSmtpConfigured(): Promise<boolean> {
+    return isSmtpReady(await this.resolveSmtp());
+  }
 
   async createFeedback(input: {
     orgId: string;
@@ -52,21 +62,33 @@ export class FeedbackService {
     description: string;
     files: FileBufferInfo[];
   }): Promise<{ id: string }> {
+    const feedbackId = new mongoose.Types.ObjectId();
     const attachments: IFeedbackAttachment[] = [];
+
     for (const file of input.files) {
       const mimeType = normalizeMimeType(file.mimetype);
       if (!mimeType) {
         continue;
       }
-      attachments.push({
-        fileName: file.originalname,
+      const stored = await uploadFeedbackAttachment({
+        kvStore: this.kvStore,
+        appConfig: this.appConfig,
+        orgId: input.orgId,
+        userId: input.userId,
+        feedbackId: String(feedbackId),
+        file,
         mimeType,
-        sizeInBytes: file.size,
-        data: file.buffer,
+      });
+      attachments.push({
+        fileName: stored.fileName,
+        mimeType,
+        sizeInBytes: stored.sizeInBytes,
+        documentId: stored.documentId,
       });
     }
 
     const doc = await Feedbacks.create({
+      _id: feedbackId,
       kind: input.kind,
       description: input.description,
       orgId: new mongoose.Types.ObjectId(input.orgId),
@@ -118,20 +140,33 @@ export class FeedbackService {
 
     const orgName = org?.shortName || org?.registeredName || input.orgId;
     const userName = user?.fullName || user?.email || input.userId;
-    const kindLabel = input.kind === 'issue' ? 'Issue' : 'Feedback';
+    const kindLabel = input.kind === 'issue' ? 'Feedback' : 'Feature request';
     const snippet = input.description.replace(/\s+/g, ' ').slice(0, 80);
 
+    const zipEntries: { name: string; data: Buffer }[] = [];
+    for (const attachment of input.attachments) {
+      const data = await readFeedbackAttachmentBuffer({
+        kvStore: this.kvStore,
+        appConfig: this.appConfig,
+        orgId: input.orgId,
+        documentId: String(attachment.documentId),
+      });
+      if (!data) {
+        this.logger.warn('Skipping missing feedback attachment in email zip', {
+          feedbackId: input.feedbackId,
+          documentId: String(attachment.documentId),
+        });
+        continue;
+      }
+      zipEntries.push({ name: attachment.fileName, data });
+    }
+
     const mailAttachments =
-      input.attachments.length > 0
+      zipEntries.length > 0
         ? [
             {
               filename: `feedback-${input.feedbackId}.zip`,
-              content: createZipBuffer(
-                input.attachments.map((file) => ({
-                  name: file.fileName,
-                  data: file.data,
-                })),
-              ),
+              content: createZipBuffer(zipEntries),
               contentType: 'application/zip',
             },
           ]

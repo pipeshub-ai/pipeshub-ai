@@ -22,7 +22,7 @@ export interface IFeedbackAttachment {
   fileName: string;
   mimeType: FeedbackMimeType;
   sizeInBytes: number;
-  data: Buffer;
+  documentId: Types.ObjectId;
 }
 
 export interface IFeedback extends Document {
@@ -40,7 +40,7 @@ const attachmentSchema = new Schema<IFeedbackAttachment>(
     fileName: { type: String, required: true, trim: true },
     mimeType: { type: String, required: true, enum: feedbackMimeTypes },
     sizeInBytes: { type: Number, required: true, min: 1 },
-    data: { type: Buffer, required: true },
+    documentId: { type: Schema.Types.ObjectId, ref: 'Document', required: true },
   },
   { _id: false },
 );

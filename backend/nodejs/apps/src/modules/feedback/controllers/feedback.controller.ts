@@ -6,6 +6,23 @@ import { BadRequestError, UnauthorizedError } from '../../../libs/errors/http.er
 import { FeedbackKind } from '../schema/feedback.schema';
 import { FeedbackService } from '../service/feedback.service';
 
+export async function getSmtpStatus(
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+  service: FeedbackService,
+): Promise<void> {
+  try {
+    if (!req.user?.userId || !req.user?.orgId) {
+      throw new UnauthorizedError('Unauthorized');
+    }
+    const configured = await service.isSmtpConfigured();
+    res.status(200).json({ configured });
+  } catch (error) {
+    next(error);
+  }
+}
+
 export async function createFeedback(
   req: AuthenticatedUserRequest,
   res: Response,
