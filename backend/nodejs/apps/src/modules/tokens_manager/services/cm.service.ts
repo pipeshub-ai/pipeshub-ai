@@ -217,11 +217,18 @@ export class ConfigService {
 
   // Qdrant Configuration
   public async getQdrantConfig(): Promise<QdrantConfig> {
+    // https + prefer_grpc required for managed Qdrant Cloud (TLS on 6333/6334).
+    const qdrantHttps = (process.env.QDRANT_HTTPS || 'false').toLowerCase() === 'true';
+    const qdrantPreferGrpc =
+      (process.env.QDRANT_PREFER_GRPC || 'true').toLowerCase() === 'true';
+
     await this.saveConfigToEtcd(configPaths.db.qdrant, {
       apiKey: process.env.QDRANT_API_KEY!,
       host: process.env.QDRANT_HOST || 'localhost',
       port: parseInt(process.env.QDRANT_PORT || '6333', 10),
       grpcPort: parseInt(process.env.QDRANT_GRPC_PORT || '6334', 10),
+      https: qdrantHttps,
+      prefer_grpc: qdrantPreferGrpc,
     });
 
     return this.getEncryptedConfig<QdrantConfig>(configPaths.db.qdrant, {
@@ -229,6 +236,8 @@ export class ConfigService {
       host: process.env.QDRANT_HOST || 'localhost',
       port: parseInt(process.env.QDRANT_PORT || '6333', 10),
       grpcPort: parseInt(process.env.QDRANT_GRPC_PORT || '6334', 10),
+      https: qdrantHttps,
+      prefer_grpc: qdrantPreferGrpc,
     });
   }
 
