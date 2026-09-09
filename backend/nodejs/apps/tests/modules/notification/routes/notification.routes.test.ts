@@ -11,6 +11,33 @@ import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware
 import { Notifications } from '../../../../src/modules/notification/schema/notification.schema';
 import { encodeCursor } from '../../../../src/modules/notification/utils/notification-api.utils';
 
+// Mimics the subset of Mongo query semantics buildRetentionFilter relies on
+// ($ne, $gte, plain equality) so tests can assert that mismatched docs are
+// actually excluded, not just that the filter object has the right shape.
+function matchesFilter(
+  doc: Record<string, unknown>,
+  filter: Record<string, unknown>,
+): boolean {
+  return Object.entries(filter).every(([key, condition]) => {
+    const value = doc[key];
+    const isPlainOperatorObject =
+      condition !== null &&
+      typeof condition === 'object' &&
+      !(condition instanceof Date) &&
+      !(condition instanceof mongoose.Types.ObjectId);
+    if (isPlainOperatorObject) {
+      if ('$ne' in condition) {
+        return String(value) !== String((condition as { $ne: unknown }).$ne);
+      }
+      if ('$gte' in condition) {
+        return (value as Date) >= (condition as { $gte: Date }).$gte;
+      }
+      return true;
+    }
+    return String(value) === String(condition);
+  });
+}
+
 describe('notification/routes/notification.routes', () => {
   let container: Container;
   let userId: string;
@@ -104,6 +131,68 @@ describe('notification/routes/notification.routes', () => {
       { createdAt: { $lt: createdAt } },
       { createdAt, _id: { $lt: id } },
     ]);
+  });
+
+  it('GET / filters out notifications belonging to a different org', async () => {
+    const mine = {
+      _id: new mongoose.Types.ObjectId().toString(),
+      orgId,
+      assignedTo: userId,
+      isDeleted: false,
+      status: 'unread',
+      createdAt: new Date(),
+    };
+    const otherOrg = {
+      ...mine,
+      _id: new mongoose.Types.ObjectId().toString(),
+      orgId: new mongoose.Types.ObjectId().toString(),
+    };
+    sinon.stub(Notifications, 'find').callsFake((filter: any) => {
+      const results = [mine, otherOrg].filter((doc) => matchesFilter(doc, filter));
+      return {
+        sort: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves(results),
+      } as any;
+    });
+
+    const port = await listen();
+    const res = await fetch(`http://127.0.0.1:${port}/api/v1/notifications/`);
+    expect(res.status).to.equal(200);
+    const body = await res.json();
+    expect(body.notifications).to.have.lengthOf(1);
+    expect(body.notifications[0]._id).to.equal(mine._id);
+  });
+
+  it('GET / filters out notifications assigned to a different user', async () => {
+    const mine = {
+      _id: new mongoose.Types.ObjectId().toString(),
+      orgId,
+      assignedTo: userId,
+      isDeleted: false,
+      status: 'unread',
+      createdAt: new Date(),
+    };
+    const otherUser = {
+      ...mine,
+      _id: new mongoose.Types.ObjectId().toString(),
+      assignedTo: new mongoose.Types.ObjectId().toString(),
+    };
+    sinon.stub(Notifications, 'find').callsFake((filter: any) => {
+      const results = [mine, otherUser].filter((doc) => matchesFilter(doc, filter));
+      return {
+        sort: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves(results),
+      } as any;
+    });
+
+    const port = await listen();
+    const res = await fetch(`http://127.0.0.1:${port}/api/v1/notifications/`);
+    expect(res.status).to.equal(200);
+    const body = await res.json();
+    expect(body.notifications).to.have.lengthOf(1);
+    expect(body.notifications[0]._id).to.equal(mine._id);
   });
 
   it('GET / returns 401 when userId missing', async () => {

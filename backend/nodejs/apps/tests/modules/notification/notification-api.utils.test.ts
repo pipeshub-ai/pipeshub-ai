@@ -60,9 +60,11 @@ describe('notification/notification-api.utils', () => {
     const userId = new mongoose.Types.ObjectId().toString();
     const orgId = new mongoose.Types.ObjectId().toString();
     const context = resolveNotificationAuthContext({ userId, orgId });
-    expect(context).to.not.be.null;
-    expect(context!.userOid.toString()).to.equal(userId);
-    expect(context!.orgOid.toString()).to.equal(orgId);
+    if (!context) {
+      throw new Error('expected resolveNotificationAuthContext to return a context');
+    }
+    expect(context.userOid.toString()).to.equal(userId);
+    expect(context.orgOid.toString()).to.equal(orgId);
   });
 
   it('resolveNotificationAuthContext returns null when userId is missing or invalid', () => {
