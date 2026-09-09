@@ -31,6 +31,14 @@ ENV_SA_JSON = "GOOGLE_DRIVE_WORKSPACE_SERVICE_ACCOUNT_JSON"
 ENV_ADMIN_EMAIL = "GOOGLE_DRIVE_WORKSPACE_ADMIN_EMAIL"
 ENV_TEST_USER = "GOOGLE_DRIVE_WORKSPACE_TEST_USER_EMAIL"
 
+# A freshly created Shared Drive lags its create call twice over: in the member
+# drives.list the connector discovers drives through, and in the drive-wide
+# files.list index it enumerates their contents from. Both have exceeded 60s in
+# CI, so this matches the suite's sync budget instead of undercutting it.
+PROPAGATION_TIMEOUT_SEC = float(
+    os.getenv("GOOGLE_DRIVE_WORKSPACE_PROPAGATION_TIMEOUT", "300")
+)
+
 
 def require_drive_workspace_env() -> tuple[str, str, str]:
     """Return (sa_json, admin_email, test_user_email) or raise for pytest.skip callers."""
@@ -217,7 +225,7 @@ async def wait_until_shared_drives_listed(
     drive: GoogleDriveDataSource,
     drive_ids: list[str],
     *,
-    timeout: float = 60.0,
+    timeout: float = PROPAGATION_TIMEOUT_SEC,
     interval: float = 2.0,
 ) -> None:
     """Poll member ``drives.list`` until every id is visible.
@@ -251,6 +259,145 @@ async def wait_until_shared_drives_listed(
         description=f"Shared Drives visible in drives.list: {sorted(wanted)}",
     )
     logger.info("Shared Drives visible in drives.list: %s", sorted(wanted))
+
+
+async def list_shared_drive_file_ids(
+    drive: GoogleDriveDataSource,
+    drive_id: str,
+) -> set[str]:
+    """Return every file id a drive-wide ``files.list`` reports for ``drive_id``.
+
+    Mirrors the connector's Shared Drive enumeration (``corpora=drive``, no ``q``)
+    on purpose: that call reads the drive's search index, which lags well behind
+    both ``files.get`` and ``'<parent>' in parents`` queries on new items.
+    """
+    found: set[str] = set()
+    page_token: Optional[str] = None
+    while True:
+        resp = await drive.files_list(
+            driveId=drive_id,
+            corpora="drive",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+            pageSize=1000,
+            pageToken=page_token,
+            fields="nextPageToken, files(id)",
+        )
+        for entry in resp.get("files") or []:
+            file_id = entry.get("id")
+            if file_id:
+                found.add(str(file_id))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+    return found
+
+
+async def wait_until_shared_drive_files_listed(
+    drive: GoogleDriveDataSource,
+    drive_id: str,
+    file_ids: list[str],
+    *,
+    timeout: float = PROPAGATION_TIMEOUT_SEC,
+    interval: float = 5.0,
+) -> None:
+    """Poll the drive-wide ``files.list`` until every id is visible.
+
+    A sync started before this settles enumerates an empty (or partial) drive,
+    saves its start page token anyway and reports success with no records. The
+    missing items never arrive after that: the incremental path only carries
+    changes made *after* that token, so a fixture can only poll the graph until
+    it times out.
+    """
+    from helper.graph_provider_utils import async_poll_until  # type: ignore[import-not-found]
+
+    wanted = {str(f) for f in file_ids if f}
+    if not wanted:
+        return
+
+    async def _all_visible() -> set[str] | None:
+        found = await list_shared_drive_file_ids(drive, drive_id)
+        missing = wanted - found
+        if missing:
+            logger.info(
+                "Waiting for items in drive-wide files.list for %s; missing=%s (listed=%d)",
+                drive_id,
+                sorted(missing),
+                len(found),
+            )
+            return None
+        return found & wanted
+
+    await async_poll_until(
+        _all_visible,
+        timeout=timeout,
+        interval=interval,
+        description=f"items visible in files.list for Shared Drive {drive_id}: {sorted(wanted)}",
+    )
+    logger.info("Items visible in files.list for Shared Drive %s: %s", drive_id, sorted(wanted))
+
+
+async def _user_corpus_ids_present(
+    drive: GoogleDriveDataSource,
+    wanted: set[str],
+) -> set[str]:
+    """Ids from ``wanted`` visible in the user-corpus listing; stops once all are found."""
+    found: set[str] = set()
+    page_token: Optional[str] = None
+    while True:
+        resp = await drive.files_list(
+            pageSize=1000,
+            pageToken=page_token,
+            fields="nextPageToken, files(id)",
+        )
+        for entry in resp.get("files") or []:
+            file_id = entry.get("id")
+            if file_id and str(file_id) in wanted:
+                found.add(str(file_id))
+        if found == wanted:
+            return found
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            return found
+
+
+async def wait_until_drive_files_listed(
+    drive: GoogleDriveDataSource,
+    file_ids: list[str],
+    *,
+    timeout: float = PROPAGATION_TIMEOUT_SEC,
+    interval: float = 5.0,
+) -> None:
+    """Poll the user-corpus ``files.list`` until every id is visible.
+
+    Both Drive connectors walk My Drive through this listing — the workspace one
+    unfiltered, the personal one with ``trashed=false``, which cannot hide a file the
+    fixtures just created. It reads the search index, so a sync started before that
+    settles never sees the fixture tree, and the graph poll after it can only time out.
+    """
+    from helper.graph_provider_utils import async_poll_until  # type: ignore[import-not-found]
+
+    wanted = {str(f) for f in file_ids if f}
+    if not wanted:
+        return
+
+    async def _all_visible() -> set[str] | None:
+        found = await _user_corpus_ids_present(drive, wanted)
+        missing = wanted - found
+        if missing:
+            logger.info(
+                "Waiting for items in user-corpus files.list; missing=%s", sorted(missing)
+            )
+            return None
+        return found
+
+    await async_poll_until(
+        _all_visible,
+        timeout=timeout,
+        interval=interval,
+        description=f"items visible in user files.list: {sorted(wanted)}",
+    )
+    logger.info("Items visible in user files.list: %s", sorted(wanted))
 
 
 async def delete_shared_drive(

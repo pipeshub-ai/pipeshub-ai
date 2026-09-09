@@ -48,6 +48,8 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (  # ty
     ensure_pipeshub_user_exists,
     load_service_account_info,
     require_drive_workspace_env,
+    wait_until_drive_files_listed,
+    wait_until_shared_drive_files_listed,
     wait_until_shared_drives_listed,
 )
 
@@ -190,6 +192,15 @@ async def drive_workspace_connector(
             test_user,
         )
 
+        child_file_id = fixtures["child_file_id"]
+
+        # My Drive is enumerated through the user-corpus files.list, whose index lags the
+        # fixture creates above; sync before it settles and the tree is simply absent.
+        await wait_until_drive_files_listed(
+            drive_workspace_datasource,
+            [seed_folder_id, fixtures["nested_folder_id"], child_file_id],
+        )
+
         pipeshub_client.toggle_sync(connector_id, enable=True)
         await wait_for_sync_completion(
             pipeshub_client,
@@ -197,8 +208,6 @@ async def drive_workspace_connector(
             connector_id,
             timeout=_SYNC_TIMEOUT_SEC,
         )
-
-        child_file_id = fixtures["child_file_id"]
 
         async def _seed_and_child_present() -> bool:
             seed = await graph_provider.get_record_by_external_id(
@@ -442,6 +451,17 @@ async def drive_workspace_shared_drive_connector(
             drive_workspace_datasource, [drive_a_id]
         )
 
+        child_file_id = fixtures["child_file_id"]
+
+        # The connector enumerates a Shared Drive with a drive-wide files.list whose
+        # index lags the create calls above. Without this the single sync this fixture
+        # triggers finds no files, and the graph poll below can only time out.
+        await wait_until_shared_drive_files_listed(
+            drive_workspace_datasource,
+            drive_a_id,
+            [seed_folder_id, fixtures["nested_folder_id"], child_file_id],
+        )
+
         pipeshub_client.toggle_sync(connector_id, enable=True)
         await wait_for_sync_completion(
             pipeshub_client,
@@ -449,8 +469,6 @@ async def drive_workspace_shared_drive_connector(
             connector_id,
             timeout=_SYNC_TIMEOUT_SEC,
         )
-
-        child_file_id = fixtures["child_file_id"]
 
         async def _seed_and_child_present() -> bool:
             seed = await graph_provider.get_record_by_external_id(
@@ -568,6 +586,12 @@ async def drive_workspace_shared_drive_root_connector(
 
         await wait_until_shared_drives_listed(
             drive_workspace_datasource, [drive_a_id]
+        )
+
+        await wait_until_shared_drive_files_listed(
+            drive_workspace_datasource,
+            drive_a_id,
+            [root_folder_id, root_file_id],
         )
 
         pipeshub_client.toggle_sync(connector_id, enable=True)

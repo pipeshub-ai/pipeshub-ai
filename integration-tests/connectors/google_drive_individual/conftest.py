@@ -47,6 +47,7 @@ from connectors.google_drive_individual.drive_individual_test_utils import (  # 
 from connectors.google_drive_workspace.drive_workspace_test_utils import (  # type: ignore[import-not-found]
     delete_drive_folder,
     ensure_pipeshub_user_exists,
+    wait_until_drive_files_listed,
 )
 
 logger = logging.getLogger("drive-individual-conftest")
@@ -183,6 +184,15 @@ async def drive_individual_connector(
         except Exception as e:
             pytest.fail(f"Failed to authenticate connector with refresh token: {e}")
 
+        child_file_id = fixtures["child_file_id"]
+
+        # My Drive is enumerated through the user-corpus files.list, whose index lags the
+        # fixture creates above; sync before it settles and the tree is simply absent.
+        await wait_until_drive_files_listed(
+            drive_individual_datasource,
+            [seed_folder_id, fixtures["nested_folder_id"], child_file_id],
+        )
+
         pipeshub_client.toggle_sync(connector_id, enable=True)
         await wait_for_sync_completion(
             pipeshub_client,
@@ -190,8 +200,6 @@ async def drive_individual_connector(
             connector_id,
             timeout=_SYNC_TIMEOUT_SEC,
         )
-
-        child_file_id = fixtures["child_file_id"]
 
         async def _seed_and_child_present() -> bool:
             seed = await graph_provider.get_record_by_external_id(
