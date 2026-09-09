@@ -310,6 +310,9 @@ config:
   # reach a daemon you run yourself, e.g. "tcp://docker-daemon.svc:2375".
   dockerHost: ""
 
+  # Recipient for in-product Send feedback emails. Empty means store only.
+  feedbackSupportEmail: "support@pipeshub.com"
+
 # --- Coding sandbox execution ------------------------------------------------
 sandbox:
   # Docker-in-Docker sidecar, so SANDBOX_MODE=docker has a daemon to talk to.
