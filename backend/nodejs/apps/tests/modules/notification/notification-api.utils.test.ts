@@ -9,6 +9,7 @@ import {
   encodeCursor,
   InvalidNotificationCursorError,
   paginateResults,
+  resolveNotificationAuthContext,
   retentionCutoff,
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
@@ -53,6 +54,28 @@ describe('notification/notification-api.utils', () => {
     const userOid = new mongoose.Types.ObjectId();
     const filter = buildRetentionFilter(orgOid, userOid, 'unread');
     expect(filter.status).to.equal('unread');
+  });
+
+  it('resolveNotificationAuthContext returns ObjectIds for a valid user', () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const orgId = new mongoose.Types.ObjectId().toString();
+    const context = resolveNotificationAuthContext({ userId, orgId });
+    expect(context).to.not.be.null;
+    expect(context!.userOid.toString()).to.equal(userId);
+    expect(context!.orgOid.toString()).to.equal(orgId);
+  });
+
+  it('resolveNotificationAuthContext returns null when userId is missing or invalid', () => {
+    const orgId = new mongoose.Types.ObjectId().toString();
+    expect(resolveNotificationAuthContext(undefined)).to.be.null;
+    expect(resolveNotificationAuthContext({ orgId })).to.be.null;
+    expect(resolveNotificationAuthContext({ userId: 'not-an-id', orgId })).to.be.null;
+  });
+
+  it('resolveNotificationAuthContext returns null when orgId is missing or invalid', () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    expect(resolveNotificationAuthContext({ userId })).to.be.null;
+    expect(resolveNotificationAuthContext({ userId, orgId: 'not-an-id' })).to.be.null;
   });
 
   it('clampPageSize defaults and caps', () => {

@@ -9,6 +9,7 @@ import {
   decodeCursor,
   InvalidNotificationCursorError,
   paginateResults,
+  resolveNotificationAuthContext,
 } from '../utils/notification-api.utils';
 
 export async function listNotifications(
@@ -17,24 +18,21 @@ export async function listNotifications(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
-    if (
-      !userId ||
-      !mongoose.isValidObjectId(userId) ||
-      !orgId ||
-      !mongoose.isValidObjectId(orgId)
-    ) {
+    const authContext = resolveNotificationAuthContext(req.user);
+    if (!authContext) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
+    const { userOid, orgOid } = authContext;
 
     const notificationStatus =
       typeof req.query.status === 'string' ? req.query.status : null;
-    const userOid = new mongoose.Types.ObjectId(userId);
-    const orgOid = new mongoose.Types.ObjectId(orgId);
     const limit = clampPageSize(req.query.limit);
-    const baseFilter = buildRetentionFilter(orgOid, userOid, notificationStatus);
+    const baseFilter = buildRetentionFilter(
+      orgOid,
+      userOid,
+      notificationStatus,
+    );
 
     let cursorFilter: Record<string, unknown> = {};
     const rawCursor = req.query.cursor;
@@ -69,19 +67,12 @@ export async function getNotificationStats(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
-    if (
-      !userId ||
-      !mongoose.isValidObjectId(userId) ||
-      !orgId ||
-      !mongoose.isValidObjectId(orgId)
-    ) {
+    const authContext = resolveNotificationAuthContext(req.user);
+    if (!authContext) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
-    const userOid = new mongoose.Types.ObjectId(userId);
-    const orgOid = new mongoose.Types.ObjectId(orgId);
+    const { userOid, orgOid } = authContext;
     const base = buildRetentionFilter(orgOid, userOid, null);
     const [unreadCount, readCount, archivedCount] = await Promise.all([
       Notifications.countDocuments({ ...base, status: 'unread' }),
@@ -100,19 +91,12 @@ export async function markAllRead(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
-    if (
-      !userId ||
-      !mongoose.isValidObjectId(userId) ||
-      !orgId ||
-      !mongoose.isValidObjectId(orgId)
-    ) {
+    const authContext = resolveNotificationAuthContext(req.user);
+    if (!authContext) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
-    const userOid = new mongoose.Types.ObjectId(userId);
-    const orgOid = new mongoose.Types.ObjectId(orgId);
+    const { userOid, orgOid } = authContext;
     const filter = buildRetentionFilter(orgOid, userOid, 'unread');
     const result = await Notifications.updateMany(filter, { $set: { status: 'read' } });
     res.json({ success: true, modifiedCount: result.modifiedCount });
@@ -127,19 +111,12 @@ export async function markRead(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
-    if (
-      !userId ||
-      !mongoose.isValidObjectId(userId) ||
-      !orgId ||
-      !mongoose.isValidObjectId(orgId)
-    ) {
+    const authContext = resolveNotificationAuthContext(req.user);
+    if (!authContext) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
-    const userOid = new mongoose.Types.ObjectId(userId);
-    const orgOid = new mongoose.Types.ObjectId(orgId);
+    const { userOid, orgOid } = authContext;
     const doc = await Notifications.findOneAndUpdate(
       {
         _id: new mongoose.Types.ObjectId(req.params.id),
@@ -164,19 +141,12 @@ export async function markUnread(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
-    if (
-      !userId ||
-      !mongoose.isValidObjectId(userId) ||
-      !orgId ||
-      !mongoose.isValidObjectId(orgId)
-    ) {
+    const authContext = resolveNotificationAuthContext(req.user);
+    if (!authContext) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
-    const userOid = new mongoose.Types.ObjectId(userId);
-    const orgOid = new mongoose.Types.ObjectId(orgId);
+    const { userOid, orgOid } = authContext;
     const doc = await Notifications.findOneAndUpdate(
       {
         _id: new mongoose.Types.ObjectId(req.params.id),
@@ -201,19 +171,12 @@ export async function archiveNotification(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
-    if (
-      !userId ||
-      !mongoose.isValidObjectId(userId) ||
-      !orgId ||
-      !mongoose.isValidObjectId(orgId)
-    ) {
+    const authContext = resolveNotificationAuthContext(req.user);
+    if (!authContext) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
-    const userOid = new mongoose.Types.ObjectId(userId);
-    const orgOid = new mongoose.Types.ObjectId(orgId);
+    const { userOid, orgOid } = authContext;
     const doc = await Notifications.findOneAndUpdate(
       {
         _id: new mongoose.Types.ObjectId(req.params.id),
@@ -238,19 +201,12 @@ export async function unarchiveNotification(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
-    if (
-      !userId ||
-      !mongoose.isValidObjectId(userId) ||
-      !orgId ||
-      !mongoose.isValidObjectId(orgId)
-    ) {
+    const authContext = resolveNotificationAuthContext(req.user);
+    if (!authContext) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
-    const userOid = new mongoose.Types.ObjectId(userId);
-    const orgOid = new mongoose.Types.ObjectId(orgId);
+    const { userOid, orgOid } = authContext;
     const doc = await Notifications.findOneAndUpdate(
       {
         _id: new mongoose.Types.ObjectId(req.params.id),
@@ -275,19 +231,12 @@ export async function deleteNotification(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
-    if (
-      !userId ||
-      !mongoose.isValidObjectId(userId) ||
-      !orgId ||
-      !mongoose.isValidObjectId(orgId)
-    ) {
+    const authContext = resolveNotificationAuthContext(req.user);
+    if (!authContext) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
-    const userOid = new mongoose.Types.ObjectId(userId);
-    const orgOid = new mongoose.Types.ObjectId(orgId);
+    const { userOid, orgOid } = authContext;
     const doc = await Notifications.findOneAndUpdate(
       {
         _id: new mongoose.Types.ObjectId(req.params.id),
