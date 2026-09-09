@@ -771,15 +771,21 @@ function ModelConfigFormBody({
           {boolValue(values.isMultimodal) && modelConfigFields
             .filter((field) => field.name === 'multimodalRequestFormat')
             .map((field) => (
-              <details key={field.name}>
-                <summary>{field.displayName}</summary>
-                <SchemaFormField
-                  field={toSchemaField(field)}
-                  value={values[field.name]}
-                  onChange={onFieldChange}
-                  disabled={saving}
-                />
-              </details>
+              <Box key={field.name} asChild>
+                <details>
+                  <Text asChild size="2" weight="medium" color="gray">
+                    <summary>{t('workspace.oauth2.manageApplication.advancedSectionTitle')}</summary>
+                  </Text>
+                  <Box pt="2">
+                    <SchemaFormField
+                      field={toSchemaField(field)}
+                      value={values[field.name]}
+                      onChange={onFieldChange}
+                      disabled={saving}
+                    />
+                  </Box>
+                </details>
+              </Box>
             ))}
         </Flex>
       </Box>

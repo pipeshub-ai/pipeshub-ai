@@ -263,12 +263,13 @@ class TestImageEmbeddingProbe:
         assert resp.status_code == 400
         assert "no image-embedding support" in body
 
-    async def test_a_working_multimodal_model_passes(self, mock_request) -> None:
+    @pytest.mark.parametrize("request_format", [None, "", "auto", "input", "vllm_messages"])
+    async def test_a_working_multimodal_model_passes(self, mock_request, request_format) -> None:
         provider = MagicMock()
         provider.supports_multimodal.return_value = True
         provider.embed_images = AsyncMock(return_value=[MagicMock(embedding=[0.2] * 1024)])
         config = _embedding_config(isMultimodal=True)
-        config["configuration"]["multimodalRequestFormat"] = "input"
+        config["configuration"]["multimodalRequestFormat"] = request_format
 
         with self._patch_text_embedding(), \
              patch(FACTORY) as factory:
@@ -279,7 +280,7 @@ class TestImageEmbeddingProbe:
             )
 
         assert resp.status_code == 200
-        assert factory.create.call_args.args[0].multimodal_request_format == "input"
+        assert factory.create.call_args.args[0].multimodal_request_format == (request_format or "auto")
         assert '"multimodal":true' in resp.body.decode().replace(" ", "")
 
     async def test_image_and_text_vectors_must_share_a_width(self, mock_request) -> None:

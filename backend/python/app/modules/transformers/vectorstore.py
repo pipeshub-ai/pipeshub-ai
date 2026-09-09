@@ -889,7 +889,7 @@ class VectorStore(Transformer):
         # configured endpoint to reach the right server.
         self.base_url = configuration.get("endpoint") if configuration else None
         self.multimodal_request_format = (
-            configuration.get("multimodalRequestFormat", "auto")
+            configuration.get("multimodalRequestFormat") or "auto"
             if configuration
             else "auto"
         )
