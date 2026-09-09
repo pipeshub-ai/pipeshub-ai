@@ -758,7 +758,7 @@ function ModelConfigFormBody({
               </Box>
             </Flex>
           ) : null}
-          {modelConfigFields.map((field) => (
+          {modelConfigFields.filter((field) => field.name !== 'multimodalRequestFormat').map((field) => (
             <SchemaFormField
               key={field.name}
               field={toSchemaField(field, placeholderFor(field))}
@@ -768,6 +768,19 @@ function ModelConfigFormBody({
               startAdornment={fieldStartAdornment(field.name)}
             />
           ))}
+          {boolValue(values.isMultimodal) && modelConfigFields
+            .filter((field) => field.name === 'multimodalRequestFormat')
+            .map((field) => (
+              <details key={field.name}>
+                <summary>{field.displayName}</summary>
+                <SchemaFormField
+                  field={toSchemaField(field)}
+                  value={values[field.name]}
+                  onChange={onFieldChange}
+                  disabled={saving}
+                />
+              </details>
+            ))}
         </Flex>
       </Box>
 

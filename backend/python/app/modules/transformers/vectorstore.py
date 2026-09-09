@@ -389,6 +389,7 @@ class VectorStore(Transformer):
         self.aws_access_key_id = None
         self.aws_secret_access_key = None
         self.base_url: str | None = None
+        self.multimodal_request_format = "auto"
 
         self._capabilities = self.vector_db_service.get_capabilities()
 
@@ -887,6 +888,11 @@ class VectorStore(Transformer):
         # Ollama / OpenAI-compatible / LM Studio multimodal providers need the
         # configured endpoint to reach the right server.
         self.base_url = configuration.get("endpoint") if configuration else None
+        self.multimodal_request_format = (
+            configuration.get("multimodalRequestFormat", "auto")
+            if configuration
+            else "auto"
+        )
         if provider == EmbeddingProvider.AWS_BEDROCK.value and configuration:
             self.aws_access_key_id = configuration.get("awsAccessKeyId")
             self.aws_secret_access_key = configuration.get("awsAccessSecretKey")
@@ -1023,6 +1029,7 @@ class VectorStore(Transformer):
             aws_access_key_id=self.aws_access_key_id,
             aws_secret_access_key=self.aws_secret_access_key,
             base_url=getattr(self, "base_url", None),
+            multimodal_request_format=self.multimodal_request_format,
             embedding_size=self.embedding_size,
             dense_embeddings=self.dense_embeddings,
             normalize_fn=self._normalize_image_to_base64,

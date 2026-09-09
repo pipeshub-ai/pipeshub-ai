@@ -21,6 +21,20 @@ _COMPAT_ENDPOINT_EMB = AIModelField(
     placeholder="e.g., https://api.openai.com/v1",
 )
 
+_MULTIMODAL_REQUEST_FORMAT = AIModelField(
+    name="multimodalRequestFormat",
+    display_name="Advanced: Image Embedding Format",
+    field_type="SELECT",
+    required=False,
+    default_value="auto",
+    description="Leave Auto selected. Override only if your endpoint documentation specifies an image embedding format.",
+    options=[
+        {"value": "auto", "label": "Auto (recommended)"},
+        {"value": "input", "label": "Input (batched)"},
+        {"value": "vllm_messages", "label": "vLLM Messages"},
+    ],
+)
+
 
 @AIModelProviderBuilder("OpenAI Compatible", "openAICompatible") \
     .with_description("OpenAI-compatible models") \
@@ -40,6 +54,7 @@ _COMPAT_ENDPOINT_EMB = AIModelField(
     .add_field(EMBEDDING_COMMON_TAIL[0], ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[1], ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[2], ModelCapability.EMBEDDING) \
+    .add_field(_MULTIMODAL_REQUEST_FORMAT, ModelCapability.EMBEDDING) \
     .build_decorator()
 class OpenAICompatibleProvider:
     pass

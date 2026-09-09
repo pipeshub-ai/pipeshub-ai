@@ -267,16 +267,19 @@ class TestImageEmbeddingProbe:
         provider = MagicMock()
         provider.supports_multimodal.return_value = True
         provider.embed_images = AsyncMock(return_value=[MagicMock(embedding=[0.2] * 1024)])
+        config = _embedding_config(isMultimodal=True)
+        config["configuration"]["multimodalRequestFormat"] = "input"
 
         with self._patch_text_embedding(), \
              patch(FACTORY) as factory:
             factory.create.return_value = provider
             from app.api.routes.health import perform_embedding_health_check
             resp = await perform_embedding_health_check(
-                mock_request, _embedding_config(isMultimodal=True), MagicMock(),
+                mock_request, config, MagicMock(),
             )
 
         assert resp.status_code == 200
+        assert factory.create.call_args.args[0].multimodal_request_format == "input"
         assert '"multimodal":true' in resp.body.decode().replace(" ", "")
 
     async def test_image_and_text_vectors_must_share_a_width(self, mock_request) -> None:

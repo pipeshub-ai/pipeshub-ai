@@ -1193,6 +1193,7 @@ async def _probe_image_embedding(
                 aws_access_key_id=configuration.get("awsAccessKeyId"),
                 aws_secret_access_key=configuration.get("awsSecretAccessKey"),
                 embedding_size=text_dimension,
+                multimodal_request_format=configuration.get("multimodalRequestFormat", "auto"),
                 logger=logger,
             )
         )
@@ -1898,4 +1899,3 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
-
