@@ -34,7 +34,14 @@ function normalizeMimeType(mimeType: string): FeedbackMimeType | null {
 }
 
 function isSmtpReady(smtp: AppConfig['smtp']): smtp is NonNullable<AppConfig['smtp']> {
-  return Boolean(smtp?.host && smtp.port && smtp.fromEmail);
+  return (
+    typeof smtp?.host === 'string' &&
+    smtp.host.length > 0 &&
+    typeof smtp.port === 'number' &&
+    smtp.port > 0 &&
+    typeof smtp.fromEmail === 'string' &&
+    smtp.fromEmail.length > 0
+  );
 }
 
 function supportEmails(): string[] {

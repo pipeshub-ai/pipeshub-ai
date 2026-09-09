@@ -25,23 +25,15 @@ describe('feedback/validators', () => {
   });
 
   it('rejects attachments that exceed the total size cap', () => {
+    const chunk = Math.floor(MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES / 3) + 1;
     const result = parseBody({
       kind: 'issue',
       description: 'The connector sync fails halfway through a large folder.',
-      fileBuffers: [
-        {
-          buffer: Buffer.alloc(1),
-          originalname: 'a.png',
-          mimetype: 'image/png',
-          size: MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES - 1,
-        },
-        {
-          buffer: Buffer.alloc(1),
-          originalname: 'b.png',
-          mimetype: 'image/png',
-          size: 2,
-        },
-      ],
+      fileBuffers: ['a.png', 'b.png', 'c.png'].map((name) => ({
+        buffer: Buffer.alloc(chunk),
+        originalname: name,
+        mimetype: 'image/png',
+      })),
     });
     expect(result.success).to.equal(false);
   });

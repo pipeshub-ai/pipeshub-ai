@@ -21,15 +21,14 @@ export function createFeedbackRouter(container: Container): Router {
   const logger = container.get<Logger>('Logger');
   const auth = authMiddleware.authenticate.bind(authMiddleware);
 
-  const feedbackService = () =>
-    new FeedbackService(
-      container.get<AppConfig>('AppConfig'),
-      logger,
-      container.get<KeyValueStoreService>('KeyValueStoreService'),
-    );
+  const feedbackService = new FeedbackService(
+    container.get<AppConfig>('AppConfig'),
+    logger,
+    container.get<KeyValueStoreService>('KeyValueStoreService'),
+  );
 
   router.get('/smtp-status', auth, (req, res, next) => {
-    return getSmtpStatus(req, res, next, feedbackService());
+    return getSmtpStatus(req, res, next, feedbackService);
   });
 
   router.post(
@@ -70,7 +69,7 @@ export function createFeedbackRouter(container: Container): Router {
     }).getMiddleware,
     ValidationMiddleware.validate(createFeedbackSchema),
     (req, res, next) => {
-      return createFeedback(req, res, next, feedbackService());
+      return createFeedback(req, res, next, feedbackService);
     },
   );
 

@@ -14171,9 +14171,12 @@ paths:
       summary: Submit product issue or feedback
       description: |
         Authenticated users submit an issue or feedback with an optional set of
-        attachments (images, PDF, text, CSV). The submission is stored in Mongo.
-        If SMTP and `FEEDBACK_SUPPORT_EMAIL` are configured, attachments are
-        zipped in memory and emailed. Missing SMTP does not fail the request.
+        up to 5 attachments. Allowed types: JPEG, PNG, WebP, GIF, PDF, text, and
+        CSV. Each file may be at most 5 MiB; all files together may be at most
+        12 MiB. The text submission is stored in Mongo. File bytes go to the
+        workspace storage backend; Mongo keeps only the document IDs. If SMTP
+        and `FEEDBACK_SUPPORT_EMAIL` are configured, those documents are read
+        back and emailed as a zip. Missing SMTP does not fail the request.
       operationId: createFeedback
       security:
         - bearerAuth: []

@@ -326,6 +326,7 @@ export function SendFeedbackDialog() {
                   if (error) setError(undefined);
                 }}
                 placeholder={t('feedback.descriptionPlaceholder')}
+                aria-label={t('feedback.descriptionPlaceholder')}
                 disabled={isSubmitting}
                 rows={7}
                 style={{ paddingBottom: 28 }}
@@ -354,25 +355,7 @@ export function SendFeedbackDialog() {
             />
 
             <Box
-              onDragOver={(event) => {
-                event.preventDefault();
-                if (!isSubmitting && files.length < MAX_FILES) {
-                  setIsDragging(true);
-                }
-              }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={(event) => {
-                event.preventDefault();
-                setIsDragging(false);
-                if (!isSubmitting) {
-                  addFiles(event.dataTransfer.files);
-                }
-              }}
-              onClick={() => {
-                if (!isSubmitting && files.length < MAX_FILES) {
-                  inputRef.current?.click();
-                }
-              }}
+              asChild
               style={{
                 padding: '14px 12px',
                 borderRadius: 'var(--radius-3)',
@@ -382,6 +365,37 @@ export function SendFeedbackDialog() {
                 transition: 'background-color 140ms ease, border-color 140ms ease',
               }}
             >
+              <button
+                type="button"
+                disabled={isSubmitting || files.length >= MAX_FILES}
+                aria-label={t('feedback.addFiles')}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  if (!isSubmitting && files.length < MAX_FILES) {
+                    setIsDragging(true);
+                  }
+                }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  setIsDragging(false);
+                  if (!isSubmitting) {
+                    addFiles(event.dataTransfer.files);
+                  }
+                }}
+                onClick={() => {
+                  if (!isSubmitting && files.length < MAX_FILES) {
+                    inputRef.current?.click();
+                  }
+                }}
+                style={{
+                  appearance: 'none',
+                  font: 'inherit',
+                  width: '100%',
+                  background: 'transparent',
+                  color: 'inherit',
+                }}
+              >
               <Flex direction="column" align="center" gap="1">
                 <MaterialIcon
                   name="attach_file"
@@ -395,6 +409,7 @@ export function SendFeedbackDialog() {
                   {t('feedback.fileHint')}
                 </Text>
               </Flex>
+              </button>
             </Box>
 
             {files.length > 0 && (
