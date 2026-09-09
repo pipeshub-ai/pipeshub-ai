@@ -38,6 +38,25 @@ function matchesFilter(
   });
 }
 
+interface FakeNotificationsFindQuery {
+  sort: sinon.SinonStub;
+  limit: sinon.SinonStub;
+  lean: sinon.SinonStub;
+}
+
+// Mongoose's real Model.find overloads don't line up with this simplified
+// mock, so the cast is isolated to the stub itself; the callback below stays
+// fully typed (no any).
+function stubNotificationsFind(
+  callsFake: (filter: Record<string, unknown>) => FakeNotificationsFindQuery,
+): sinon.SinonStub<[filter: Record<string, unknown>], FakeNotificationsFindQuery> {
+  const stub = sinon.stub(Notifications, 'find') as unknown as sinon.SinonStub<
+    [filter: Record<string, unknown>],
+    FakeNotificationsFindQuery
+  >;
+  return stub.callsFake(callsFake);
+}
+
 describe('notification/routes/notification.routes', () => {
   let container: Container;
   let userId: string;
@@ -147,13 +166,13 @@ describe('notification/routes/notification.routes', () => {
       _id: new mongoose.Types.ObjectId().toString(),
       orgId: new mongoose.Types.ObjectId().toString(),
     };
-    sinon.stub(Notifications, 'find').callsFake((filter: any) => {
+    stubNotificationsFind((filter) => {
       const results = [mine, otherOrg].filter((doc) => matchesFilter(doc, filter));
       return {
         sort: sinon.stub().returnsThis(),
         limit: sinon.stub().returnsThis(),
         lean: sinon.stub().resolves(results),
-      } as any;
+      };
     });
 
     const port = await listen();
@@ -178,13 +197,13 @@ describe('notification/routes/notification.routes', () => {
       _id: new mongoose.Types.ObjectId().toString(),
       assignedTo: new mongoose.Types.ObjectId().toString(),
     };
-    sinon.stub(Notifications, 'find').callsFake((filter: any) => {
+    stubNotificationsFind((filter) => {
       const results = [mine, otherUser].filter((doc) => matchesFilter(doc, filter));
       return {
         sort: sinon.stub().returnsThis(),
         limit: sinon.stub().returnsThis(),
         lean: sinon.stub().resolves(results),
-      } as any;
+      };
     });
 
     const port = await listen();
