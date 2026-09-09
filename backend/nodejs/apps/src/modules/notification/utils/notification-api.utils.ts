@@ -29,11 +29,13 @@ export function retentionCutoff(now: Date = new Date()): Date {
 }
 
 export function buildRetentionFilter(
+  orgOid: mongoose.Types.ObjectId,
   userOid: mongoose.Types.ObjectId,
   notificationStatus: string | null,
-  includeArchived = false,   // <-- new
+  includeArchived = false,
 ): Record<string, unknown> {
   return {
+    orgId: orgOid,
     assignedTo: userOid,
     isDeleted: false,
     createdAt: { $gte: retentionCutoff() },

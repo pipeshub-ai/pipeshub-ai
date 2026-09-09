@@ -14,15 +14,17 @@ import { encodeCursor } from '../../../../src/modules/notification/utils/notific
 describe('notification/routes/notification.routes', () => {
   let container: Container;
   let userId: string;
+  let orgId: string;
   let app: express.Express;
   let server: Server | undefined;
 
   beforeEach(() => {
     userId = new mongoose.Types.ObjectId().toString();
+    orgId = new mongoose.Types.ObjectId().toString();
     container = new Container();
     const authMiddleware = {
       authenticate: sinon.stub().callsFake((req: any, _res: any, next: any) => {
-        req.user = { userId };
+        req.user = { userId, orgId };
         next();
       }),
     };
@@ -151,6 +153,7 @@ describe('notification/routes/notification.routes', () => {
     const filterArg = updateManyStub.firstCall.args[0] as Record<string, unknown>;
     expect(filterArg.status).to.equal('unread');
     expect(String(filterArg.assignedTo)).to.equal(userId);
+    expect(String(filterArg.orgId)).to.equal(orgId);
     expect(filterArg.isDeleted).to.equal(false);
   });
 

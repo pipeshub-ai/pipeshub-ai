@@ -18,7 +18,13 @@ export async function listNotifications(
 ): Promise<void> {
   try {
     const userId = req.user?.userId;
-    if (!userId || !mongoose.isValidObjectId(userId)) {
+    const orgId = req.user?.orgId;
+    if (
+      !userId ||
+      !mongoose.isValidObjectId(userId) ||
+      !orgId ||
+      !mongoose.isValidObjectId(orgId)
+    ) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
@@ -26,8 +32,9 @@ export async function listNotifications(
     const notificationStatus =
       typeof req.query.status === 'string' ? req.query.status : null;
     const userOid = new mongoose.Types.ObjectId(userId);
+    const orgOid = new mongoose.Types.ObjectId(orgId);
     const limit = clampPageSize(req.query.limit);
-    const baseFilter = buildRetentionFilter(userOid, notificationStatus);
+    const baseFilter = buildRetentionFilter(orgOid, userOid, notificationStatus);
 
     let cursorFilter: Record<string, unknown> = {};
     const rawCursor = req.query.cursor;
@@ -63,12 +70,19 @@ export async function getNotificationStats(
 ): Promise<void> {
   try {
     const userId = req.user?.userId;
-    if (!userId || !mongoose.isValidObjectId(userId)) {
+    const orgId = req.user?.orgId;
+    if (
+      !userId ||
+      !mongoose.isValidObjectId(userId) ||
+      !orgId ||
+      !mongoose.isValidObjectId(orgId)
+    ) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
     const userOid = new mongoose.Types.ObjectId(userId);
-    const base = buildRetentionFilter(userOid, null);
+    const orgOid = new mongoose.Types.ObjectId(orgId);
+    const base = buildRetentionFilter(orgOid, userOid, null);
     const [unreadCount, readCount, archivedCount] = await Promise.all([
       Notifications.countDocuments({ ...base, status: 'unread' }),
       Notifications.countDocuments({ ...base, status: 'read' }),
@@ -87,12 +101,19 @@ export async function markAllRead(
 ): Promise<void> {
   try {
     const userId = req.user?.userId;
-    if (!userId || !mongoose.isValidObjectId(userId)) {
+    const orgId = req.user?.orgId;
+    if (
+      !userId ||
+      !mongoose.isValidObjectId(userId) ||
+      !orgId ||
+      !mongoose.isValidObjectId(orgId)
+    ) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
     const userOid = new mongoose.Types.ObjectId(userId);
-    const filter = buildRetentionFilter(userOid, 'unread');
+    const orgOid = new mongoose.Types.ObjectId(orgId);
+    const filter = buildRetentionFilter(orgOid, userOid, 'unread');
     const result = await Notifications.updateMany(filter, { $set: { status: 'read' } });
     res.json({ success: true, modifiedCount: result.modifiedCount });
   } catch (err) {
@@ -107,15 +128,22 @@ export async function markRead(
 ): Promise<void> {
   try {
     const userId = req.user?.userId;
-    if (!userId || !mongoose.isValidObjectId(userId)) {
+    const orgId = req.user?.orgId;
+    if (
+      !userId ||
+      !mongoose.isValidObjectId(userId) ||
+      !orgId ||
+      !mongoose.isValidObjectId(orgId)
+    ) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
     const userOid = new mongoose.Types.ObjectId(userId);
+    const orgOid = new mongoose.Types.ObjectId(orgId);
     const doc = await Notifications.findOneAndUpdate(
       {
         _id: new mongoose.Types.ObjectId(req.params.id),
-        ...buildRetentionFilter(userOid, null),
+        ...buildRetentionFilter(orgOid, userOid, null),
       },
       { $set: { status: 'read' } },
       { new: true },
@@ -137,15 +165,22 @@ export async function markUnread(
 ): Promise<void> {
   try {
     const userId = req.user?.userId;
-    if (!userId || !mongoose.isValidObjectId(userId)) {
+    const orgId = req.user?.orgId;
+    if (
+      !userId ||
+      !mongoose.isValidObjectId(userId) ||
+      !orgId ||
+      !mongoose.isValidObjectId(orgId)
+    ) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
     const userOid = new mongoose.Types.ObjectId(userId);
+    const orgOid = new mongoose.Types.ObjectId(orgId);
     const doc = await Notifications.findOneAndUpdate(
       {
         _id: new mongoose.Types.ObjectId(req.params.id),
-        ...buildRetentionFilter(userOid, null),
+        ...buildRetentionFilter(orgOid, userOid, null),
       },
       { $set: { status: 'unread' } },
       { new: true },
@@ -167,15 +202,22 @@ export async function archiveNotification(
 ): Promise<void> {
   try {
     const userId = req.user?.userId;
-    if (!userId || !mongoose.isValidObjectId(userId)) {
+    const orgId = req.user?.orgId;
+    if (
+      !userId ||
+      !mongoose.isValidObjectId(userId) ||
+      !orgId ||
+      !mongoose.isValidObjectId(orgId)
+    ) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
     const userOid = new mongoose.Types.ObjectId(userId);
+    const orgOid = new mongoose.Types.ObjectId(orgId);
     const doc = await Notifications.findOneAndUpdate(
       {
         _id: new mongoose.Types.ObjectId(req.params.id),
-        ...buildRetentionFilter(userOid, null),
+        ...buildRetentionFilter(orgOid, userOid, null),
       },
       { $set: { status: 'archived' } },
       { new: true },
@@ -197,15 +239,22 @@ export async function unarchiveNotification(
 ): Promise<void> {
   try {
     const userId = req.user?.userId;
-    if (!userId || !mongoose.isValidObjectId(userId)) {
+    const orgId = req.user?.orgId;
+    if (
+      !userId ||
+      !mongoose.isValidObjectId(userId) ||
+      !orgId ||
+      !mongoose.isValidObjectId(orgId)
+    ) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
     const userOid = new mongoose.Types.ObjectId(userId);
+    const orgOid = new mongoose.Types.ObjectId(orgId);
     const doc = await Notifications.findOneAndUpdate(
       {
         _id: new mongoose.Types.ObjectId(req.params.id),
-        ...buildRetentionFilter(userOid, 'archived'),
+        ...buildRetentionFilter(orgOid, userOid, 'archived'),
       },
       { $set: { status: 'read' } },
       { new: true },
@@ -227,15 +276,22 @@ export async function deleteNotification(
 ): Promise<void> {
   try {
     const userId = req.user?.userId;
-    if (!userId || !mongoose.isValidObjectId(userId)) {
+    const orgId = req.user?.orgId;
+    if (
+      !userId ||
+      !mongoose.isValidObjectId(userId) ||
+      !orgId ||
+      !mongoose.isValidObjectId(orgId)
+    ) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
     const userOid = new mongoose.Types.ObjectId(userId);
+    const orgOid = new mongoose.Types.ObjectId(orgId);
     const doc = await Notifications.findOneAndUpdate(
       {
         _id: new mongoose.Types.ObjectId(req.params.id),
-        ...buildRetentionFilter(userOid, null, true),
+        ...buildRetentionFilter(orgOid, userOid, null, true),
       },
       { $set: { isDeleted: true, deletedBy: userOid } },
       { new: true },

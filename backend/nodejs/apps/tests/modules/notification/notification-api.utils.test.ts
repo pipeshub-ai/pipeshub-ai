@@ -23,11 +23,13 @@ describe('notification/notification-api.utils', () => {
     expect(cutoff.toISOString()).to.equal(expected.toISOString());
   });
 
-  it('buildRetentionFilter scopes to user and retention window', () => {
+  it('buildRetentionFilter scopes to org, user and retention window', () => {
+    const orgOid = new mongoose.Types.ObjectId();
     const userOid = new mongoose.Types.ObjectId();
     const before = retentionCutoff().getTime();
-    const filter = buildRetentionFilter(userOid, null);
+    const filter = buildRetentionFilter(orgOid, userOid, null);
     const after = retentionCutoff().getTime();
+    expect(filter.orgId).to.equal(orgOid);
     expect(filter.assignedTo).to.equal(userOid);
     expect(filter.isDeleted).to.equal(false);
     const createdAtFilter = filter.createdAt as { $gte: Date };
@@ -40,14 +42,16 @@ describe('notification/notification-api.utils', () => {
   });
 
   it('buildRetentionFilter includes all statuses when includeArchived=true', () => {
+    const orgOid = new mongoose.Types.ObjectId();
     const userOid = new mongoose.Types.ObjectId();
-    const filter = buildRetentionFilter(userOid, null, true);
+    const filter = buildRetentionFilter(orgOid, userOid, null, true);
     expect(filter.status).to.be.undefined;
   });
 
   it('buildRetentionFilter includes status when provided', () => {
+    const orgOid = new mongoose.Types.ObjectId();
     const userOid = new mongoose.Types.ObjectId();
-    const filter = buildRetentionFilter(userOid, 'unread');
+    const filter = buildRetentionFilter(orgOid, userOid, 'unread');
     expect(filter.status).to.equal('unread');
   });
 
