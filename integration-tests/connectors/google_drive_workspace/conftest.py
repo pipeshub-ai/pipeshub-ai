@@ -206,6 +206,7 @@ async def drive_workspace_connector(
             pipeshub_client,
             graph_provider,
             connector_id,
+            min_records=1,
             timeout=_SYNC_TIMEOUT_SEC,
         )
 
@@ -467,6 +468,7 @@ async def drive_workspace_shared_drive_connector(
             pipeshub_client,
             graph_provider,
             connector_id,
+            min_records=1,
             timeout=_SYNC_TIMEOUT_SEC,
         )
 
@@ -599,6 +601,7 @@ async def drive_workspace_shared_drive_root_connector(
             pipeshub_client,
             graph_provider,
             connector_id,
+            min_records=1,
             timeout=_SYNC_TIMEOUT_SEC,
         )
 

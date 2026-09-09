@@ -198,6 +198,7 @@ async def drive_individual_connector(
             pipeshub_client,
             graph_provider,
             connector_id,
+            min_records=1,
             timeout=_SYNC_TIMEOUT_SEC,
         )
 
