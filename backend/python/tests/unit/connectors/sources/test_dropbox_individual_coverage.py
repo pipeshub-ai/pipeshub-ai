@@ -578,7 +578,7 @@ class TestProcessDropboxEntry:
         )
 
         result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     @pytest.mark.asyncio
     async def test_shared_link_unexpected_first_error(self):
@@ -590,7 +590,7 @@ class TestProcessDropboxEntry:
         )
 
         result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     @pytest.mark.asyncio
     async def test_shared_link_regex_miss_logs_error(self):
@@ -604,7 +604,7 @@ class TestProcessDropboxEntry:
         )
 
         result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     @pytest.mark.asyncio
     async def test_parent_metadata_lookup(self):

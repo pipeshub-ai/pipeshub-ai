@@ -2185,7 +2185,7 @@ class TestProcessDropboxEntryBranches:
             entry, "user1", "user@test.com", "rg1", False
         )
         assert result is not None
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     async def test_shared_link_second_call_unexpected_error(self, connector):
         entry = _make_file_entry()
@@ -2209,7 +2209,7 @@ class TestProcessDropboxEntryBranches:
             entry, "user1", "user@test.com", "rg1", False
         )
         assert result is not None
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     async def test_first_shared_link_call_unexpected_error(self, connector):
         entry = _make_file_entry()
@@ -2227,7 +2227,7 @@ class TestProcessDropboxEntryBranches:
             entry, "user1", "user@test.com", "rg1", False
         )
         assert result is not None
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     async def test_parent_path_resolution(self, connector):
         entry = _make_file_entry(path="/a/b/file.pdf")

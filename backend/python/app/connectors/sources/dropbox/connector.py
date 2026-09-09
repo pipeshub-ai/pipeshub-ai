@@ -444,9 +444,7 @@ class DropboxConnector(BaseConnector):
                     signed_url = temp_link_result.data.link
 
             #5.5 Get preview URL
-            self.logger.info("=" * 50)
-            self.logger.info("Processing weburl for path: %s", entry.path_lower)
-            self.logger.info("=" * 50)
+            self.logger.debug("Processing weburl for path: %s", entry.path_lower)
 
             preview_url = None
             link_settings = SharedLinkSettings(
@@ -462,19 +460,19 @@ class DropboxConnector(BaseConnector):
                 settings=link_settings
             )
 
-            self.logger.info("Result 1: %s", shared_link_result)
+            self.logger.debug("Result 1: %s", shared_link_result)
 
             if shared_link_result.success:
                 # Successfully created new link
                 preview_url = shared_link_result.data.url
-                self.logger.info("Successfully created new link: %s", preview_url)
+                self.logger.debug("Successfully created new link: %s", preview_url)
             else:
                 # First call failed - check if link already exists
                 error_str = str(shared_link_result.error)
-                self.logger.info("First call failed with error type")
+                self.logger.debug("First call failed with error type: %s", error_str)
 
                 if 'shared_link_already_exists' in error_str:
-                    self.logger.info("Link already exists, making second call to retrieve it")
+                    self.logger.debug("Link already exists, making second call to retrieve it")
 
                     # Make second call with settings=None to get the existing link
                     second_result = await self.data_source.sharing_create_shared_link_with_settings(
@@ -484,12 +482,12 @@ class DropboxConnector(BaseConnector):
                         settings=None
                     )
 
-                    self.logger.info("Result 2 received")
+                    self.logger.debug("Result 2 received")
 
                     if second_result.success:
                         # Unexpectedly succeeded
                         preview_url = second_result.data.url
-                        self.logger.info("Second call succeeded: %s", preview_url)
+                        self.logger.debug("Second call succeeded: %s", preview_url)
                     else:
                         # Expected to fail - extract URL from error string
                         second_error_str = str(second_result.error)
@@ -503,20 +501,26 @@ class DropboxConnector(BaseConnector):
 
                             if url_match:
                                 preview_url = url_match.group(1)
-                                self.logger.info("Successfully extracted URL from error: %s", preview_url)
+                                self.logger.debug("Successfully extracted URL from error: %s", preview_url)
                             else:
                                 self.logger.error("Could not extract URL from second error string")
                                 self.logger.debug("Error string: %s", second_error_str[:500])  # Log first 500 chars
                         else:
                             self.logger.error("Unexpected error on second call (not shared_link_already_exists)")
                 else:
-                    self.logger.error("Unexpected error type on first call (not shared_link_already_exists)")
+                    self.logger.error("Unexpected error type on first call (not shared_link_already_exists): %s", error_str)
 
-            # Final check
+            # Final check - fall back to a direct Dropbox web link if we couldn't
+            # create/retrieve a shared link (e.g. access_denied on nested shared
+            # folders with a restrictive shared_link_policy, or path/not_found
+            # for content whose path doesn't resolve in this namespace context).
             if preview_url is None:
-                self.logger.error("Failed to retrieve preview URL for %s", entry.path_lower)
+                preview_url = f"https://www.dropbox.com/home{entry.path_display}"
+                self.logger.warning(
+                    "Falling back to home URL for %s: %s", entry.path_lower, preview_url
+                )
             else:
-                self.logger.info("Final preview_url: %s", preview_url)
+                self.logger.debug("Final preview_url: %s", preview_url)
 
             # 6. Get parent record ID
             parent_path = None
@@ -581,10 +585,18 @@ class DropboxConnector(BaseConnector):
                 )
 
                 is_shared = False
-                if new_permissions is not None and len(new_permissions) > 1:
-                    is_shared = True
-                if new_permissions is not None and len(new_permissions) == 1:
-                    is_shared = new_permissions[0].type == PermissionType.GROUP
+                if new_permissions:
+                    has_group_permissions = any(
+                        perm.entity_type == EntityType.GROUP for perm in new_permissions
+                    )
+                    user_permissions = [
+                        perm for perm in new_permissions if perm.entity_type == EntityType.USER
+                    ]
+                    is_shared = (
+                        has_group_permissions
+                        or len(user_permissions) > 1
+                        or (len(user_permissions) == 1 and user_permissions[0].email != user_email)
+                    )
 
                 file_record.is_shared = is_shared
 
@@ -1356,6 +1368,8 @@ class DropboxConnector(BaseConnector):
             self.logger.info("Syncing users...")
             users = await self.data_source.team_members_list()
             app_users = self.get_app_users(users)
+
+            self.logger.debug("App users: %s", app_users)
 
             # Step 1.5: Initialize cursor for member events
             member_sync_key = generate_record_sync_point_key("member_events", "team_events", "global")
