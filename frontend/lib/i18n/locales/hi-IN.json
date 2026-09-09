@@ -3197,11 +3197,11 @@
     "submit": "जमा करें"
   },
   "feedback": {
-    "menuLabel": "Send feedback",
-    "title": "Send feedback",
+    "menuLabel": "Send feedback / Feature request",
+    "title": "Send feedback / Feature request",
     "subtitle": "Tell us about a problem or how we can improve the platform.",
-    "kindIssue": "Issue",
-    "kindFeedback": "Feedback",
+    "kindIssue": "Feedback",
+    "kindFeedback": "Feature request",
     "descriptionPlaceholder": "What happened, or what should we improve?",
     "addFiles": "Add files",
     "removeFile": "Remove",

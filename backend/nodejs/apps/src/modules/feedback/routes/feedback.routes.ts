@@ -5,6 +5,7 @@ import { ValidationMiddleware } from '../../../libs/middlewares/validation.middl
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 import { Logger } from '../../../libs/services/logger.service';
+import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import {
   MAX_FEEDBACK_ATTACHMENTS,
@@ -12,13 +13,24 @@ import {
 } from '../schema/feedback.schema';
 import { createFeedbackSchema } from '../validators/feedback.validators';
 import { FeedbackService } from '../service/feedback.service';
-import { createFeedback } from '../controllers/feedback.controller';
+import { createFeedback, getSmtpStatus } from '../controllers/feedback.controller';
 
 export function createFeedbackRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const logger = container.get<Logger>('Logger');
   const auth = authMiddleware.authenticate.bind(authMiddleware);
+
+  const feedbackService = () =>
+    new FeedbackService(
+      container.get<AppConfig>('AppConfig'),
+      logger,
+      container.get<KeyValueStoreService>('KeyValueStoreService'),
+    );
+
+  router.get('/smtp-status', auth, (req, res, next) => {
+    return getSmtpStatus(req, res, next, feedbackService());
+  });
 
   router.post(
     '/',
@@ -58,11 +70,7 @@ export function createFeedbackRouter(container: Container): Router {
     }).getMiddleware,
     ValidationMiddleware.validate(createFeedbackSchema),
     (req, res, next) => {
-      const service = new FeedbackService(
-        container.get<AppConfig>('AppConfig'),
-        logger,
-      );
-      return createFeedback(req, res, next, service);
+      return createFeedback(req, res, next, feedbackService());
     },
   );
 

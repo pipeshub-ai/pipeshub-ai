@@ -4,6 +4,11 @@ import type { CreateFeedbackResponse, FeedbackKind } from './types';
 const BASE_URL = '/api/v1/feedback';
 
 export const FeedbackApi = {
+  async getSmtpStatus(): Promise<{ configured: boolean }> {
+    const { data } = await apiClient.get<{ configured: boolean }>(`${BASE_URL}/smtp-status`);
+    return data;
+  },
+
   async submit(payload: {
     kind: FeedbackKind;
     description: string;
