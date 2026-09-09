@@ -21,20 +21,23 @@ default branch, so concurrent runs share it and only a path namespace keeps them
   order 3  TC-GH-USER-001         — AppUsers, USER_APP_RELATION, team→app gate edge
   order 4  TC-GH-ISSUE-001        — reference issue TICKET properties
   order 5  TC-GH-ISSUE-002        — hierarchy + BLOCKS relation + entity relations
-  order 6  TC-GH-ISSUE-BLOCKS-001 — streamed issue blocks snapshot + attachment record
-  order 7  TC-GH-PR-001           — merged PR PULL_REQUEST properties
-  order 8  TC-GH-PR-BLOCKS-001    — streamed PR blocks snapshot
-  order 9  TC-GH-CODE-001         — code file + folder record properties
-  order 10 TC-GH-CODE-HIER-001    — folder PARENT_CHILD chain + folder inventory
-  order 11 TC-GH-CODE-TS-001      — code/folder source timestamps (polled)
-  order 12 TC-GH-PERM-001         — private repo ACL, role mapping, 2-hop inheritance
-  order 13 TC-GH-PERM-002         — public repo ORG grant placement
-  order 14 TC-GH-IDX-001          — indexing reaches COMPLETED / AUTO_INDEX_OFF
-  order 15 TC-INCR-ISSUE-001      — new issue + sub-issue, then title/comment update
-  order 16 TC-INCR-PR-001         — PR update-only: no new record, version += 1
-  order 17 TC-INCR-CODE-001       — new/update/rename/move/delete in one commit set
-  order 18 TC-FILTER-001          — REPO_IDS scoping: unlisted repos do not sync
-  order 19 TC-FILTER-002          — Index Code Files off: records exist, AUTO_INDEX_OFF
+  order 6  TC-GH-ATTACH-001       — issue AND PR body attachments exist after base sync
+  order 7  TC-GH-ATTACH-002       — those attachment records index to COMPLETED
+  order 8  TC-GH-ISSUE-BLOCKS-001 — streamed issue blocks snapshot
+  order 9  TC-GH-PR-001           — merged PR PULL_REQUEST properties
+  order 10 TC-GH-PR-BLOCKS-001    — streamed PR blocks snapshot
+  order 11 TC-GH-CODE-001         — code file + folder record properties
+  order 12 TC-GH-CODE-HIER-001    — folder PARENT_CHILD chain + folder inventory
+  order 13 TC-GH-CODE-TS-001      — code/folder source timestamps (polled)
+  order 14 TC-GH-PERM-001         — private repo ACL, role mapping, 2-hop inheritance
+  order 15 TC-GH-PERM-002         — public repo ORG grant placement
+  order 16 TC-GH-IDX-001          — indexing reaches COMPLETED / AUTO_INDEX_OFF
+  order 17 TC-INCR-ISSUE-001      — new issue + sub-issue, then title/comment update
+  order 18 TC-INCR-PR-001         — PR update-only: no new record, version += 1
+  order 19 TC-INCR-CODE-001       — new/update/rename/move/delete in one commit set
+  order 20 TC-FILTER-001          — REPO_IDS scoping: unlisted repos do not sync
+  order 21 TC-FILTER-002          — Index Code Files off: records exist, AUTO_INDEX_OFF
+  order 22 TC-GH-FILTEROPT-001    — org/repo picker options, search ranking, paging
 """
 
 import logging
@@ -52,6 +55,7 @@ if str(_ROOT) not in sys.path:
 
 from app.config.constants.arangodb import (  # type: ignore[import-not-found]  # noqa: E402
     CollectionNames,
+    MimeTypes,
     ProgressStatus,
 )
 from app.models.entities import RecordType  # type: ignore[import-not-found]  # noqa: E402
@@ -600,22 +604,23 @@ class TestGitHubTeamsIssues:
             pytest.skip("None of the three relation shapes exist in the fixture repo")
         logger.info("TC-GH-ISSUE-002 passed: %d relation shape(s)", checked)
 
-    @pytest.mark.order(6)
-    async def test_tc_gh_issue_blocks_001_streamed_blocks_and_attachment(
+    @pytest.mark.order(8)
+    async def test_tc_gh_issue_blocks_001_streamed_blocks(
         self,
         github_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
         pipeshub_client: PipeshubClient,
     ) -> None:
-        """TC-GH-ISSUE-BLOCKS-001: streamed issue blocks vs snapshot, plus the
-        attachment FileRecord.
+        """TC-GH-ISSUE-BLOCKS-001: streamed issue blocks vs snapshot.
 
         Comment blocks must be present. The "Index Comments" filter was deleted because
         it stripped every comment from manually-indexed tickets — a regression that
         reinstates that gating would show up here and nowhere else.
 
-        Note this case streams a ticket, which persists newly-discovered attachment
-        records as a side effect. It is ordered before anything that counts records.
+        Attachment records are TC-GH-ATTACH-001's job, and it runs first precisely
+        because streaming a ticket persists newly-discovered attachment records as a
+        side effect: asserting them after this ran could never tell a record the base
+        sync built from one this stream created.
         """
         connector_id = github_connector["connector_id"]
         repo_id = github_connector["primary_repo"]["id"]
@@ -643,42 +648,205 @@ class TestGitHubTeamsIssues:
             f"issue was edited, regenerate with {ENV_BLOCKS_BOOTSTRAP}=1 and review."
         )
 
-        # Attachment FileRecord — non-image only. Images are inlined as base64 and
-        # deliberately produce no record.
-        attachment_issue = github_connector["attachment_issue"]
-        attachment_url = github_connector["attachment_url"]
-        if not (attachment_issue and attachment_url):
-            logger.info("TC-GH-ISSUE-BLOCKS-001: no non-image attachment — record check skipped")
-            logger.info("TC-GH-ISSUE-BLOCKS-001 passed (blocks only)")
-            return
+        logger.info("TC-GH-ISSUE-BLOCKS-001 passed: issue #%s blocks validated", number)
 
-        parent_external = f"{repo_id}/issues/{attachment_issue['number']}"
-        parent_record = await graph_provider.get_record_by_external_id(
-            connector_id, parent_external,
-        )
-        assert parent_record is not None, f"attachment parent missing ({parent_external})"
 
-        if parent_external != external_id:
-            # The attachment hangs off a different issue; stream it so the record exists.
-            other = pipeshub_client.stream_record(parent_record.id)
-            assert other.status_code == 200
+# =============================================================================
+# TestGitHubTeamsAttachments
+# =============================================================================
 
-        attachment = await graph_provider.get_typed_record_by_external_id(
-            connector_id, attachment_url,
+
+class TestGitHubTeamsAttachments:
+    """Attachment FileRecords the BASE SYNC builds, for issues and PRs alike.
+
+    Ordered ahead of every streaming case on purpose. Streaming a ticket or PR
+    persists newly-discovered attachment records as a side effect, so once any stream
+    has run there is no telling a record the sync built from one a stream created —
+    and the sync path is the one that matters, because it is what populates
+    attachments for records nobody has opened yet.
+    """
+
+    @staticmethod
+    def _body_attachment_cases(state: dict[str, Any]) -> list[tuple[str, str, str]]:
+        """``(label, parent external id, attachment url)`` for issue and PR.
+
+        A kind that has no usable fixture is dropped with a loud warning rather than
+        skipping the whole case: the other kind is still worth asserting, and a silent
+        skip would read as coverage that does not exist.
+        """
+        repo_id = state["primary_repo"]["id"]
+        cases: list[tuple[str, str, str]] = []
+
+        issue_pair = state.get("issue_body_attachment")
+        if issue_pair:
+            issue, url = issue_pair
+            cases.append(("issue", f"{repo_id}/issues/{issue['number']}", url))
+
+        pr_pair = state.get("pr_body_attachment")
+        issue_url = cases[0][2] if cases else None
+        if pr_pair and pr_pair[1] != issue_url:
+            pull, url = pr_pair
+            # Singular "pull", asymmetric with the plural "issues" above.
+            cases.append(("pull request", f"{repo_id}/pull/{pull['number']}", url))
+        elif pr_pair:
+            # An attachment record is keyed by the attachment URL alone, so one upload
+            # referenced from two places collapses into a single record owned by
+            # whichever parent the sync reached first. Asserting the PR against a shared
+            # URL would only re-check the issue's record.
+            logger.warning(
+                "PR ATTACHMENT COVERAGE INACTIVE: the fixture PR reuses the issue's "
+                "attachment URL (%s), and attachment records are keyed by that URL "
+                "alone, so the two collapse into one record owned by the issue. Upload "
+                "a DIFFERENT non-image file into the PR description via the GitHub UI "
+                "(drag-and-drop; there is no attachment upload API) to activate it.",
+                issue_url,
+            )
+        else:
+            logger.warning(
+                "PR ATTACHMENT COVERAGE INACTIVE: no PR in the primary repo carries a "
+                "non-image BODY attachment."
+            )
+
+        if not cases:
+            pytest.fail(
+                "No issue or PR in the primary repo carries a non-image BODY "
+                "attachment. Attach one via the GitHub UI — a comment attachment will "
+                "not do, because only body attachments are built during the base sync."
+            )
+        return cases
+
+    @pytest.mark.order(6)
+    async def test_tc_gh_attach_001_base_sync_attachment_records(
+        self,
+        github_connector: dict[str, Any],
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-GH-ATTACH-001: issue and PR body attachments become FileRecords.
+
+        Both sides are asserted because they come from two separate call sites —
+        ``issues.py:266`` and ``pull_requests.py:180`` — that merely happen to look
+        alike today. A change to one and not the other is exactly the drift that
+        leaves PR attachments silently unsearchable.
+        """
+        connector_id = github_connector["connector_id"]
+        cases = self._body_attachment_cases(github_connector)
+
+        for label, parent_external_id, attachment_url in cases:
+            # Polled, not read once: the fixture's sync wait returns when the record
+            # count settles, which a batched sync can satisfy mid-flight. Nothing
+            # streams between here and the sync, so a record that turns up during the
+            # poll still came from the base sync.
+            parent = await wait_for_record_by_external_id(
+                graph_provider, connector_id, parent_external_id,
+                timeout=GH_SYNC_WAIT_SEC,
+                description=f"{label} parent record",
+            )
+            await wait_for_record_by_external_id(
+                graph_provider, connector_id, attachment_url,
+                timeout=GH_SYNC_WAIT_SEC,
+                description=(
+                    f"the {label} body attachment FileRecord, keyed by the raw "
+                    f"attachment URL verbatim ({attachment_url!r}) and built by the "
+                    "base sync"
+                ),
+            )
+            attachment = await graph_provider.get_typed_record_by_external_id(
+                connector_id, attachment_url,
+            )
+            assert attachment is not None, (
+                f"the {label} attachment exists as a record but has no typed FileRecord"
+            )
+
+            assert getattr(attachment.record_type, 'value', attachment.record_type) == RecordType.FILE.value
+            assert attachment.is_file is True
+            assert attachment.external_record_id == attachment_url
+            assert attachment.parent_external_record_id == parent_external_id
+            assert attachment.external_record_group_id == parent.external_record_group_id, (
+                f"the {label} attachment must sit in its parent's record group, so it "
+                "resolves through the same ACL"
+            )
+            # Chat citation enrichment reads these two off the record doc rather than
+            # the PARENT_CHILD edge, so a wrong parent_node_id dangles silently.
+            assert attachment.is_dependent_node is True
+            assert str(attachment.parent_node_id) == str(parent.id), (
+                f"{label} attachment parent_node_id must be the parent's true DB id"
+            )
+            assert attachment.weburl == parent.weburl, (
+                "weburl is the user-facing parent page; the raw download URL stays in "
+                "external_record_id, which is what content streaming reads"
+            )
+
+            extension = attachment_url.rsplit(".", 1)[-1].lower()
+            assert attachment.extension == extension
+            assert attachment.mime_type == getattr(
+                MimeTypes, extension.upper(), MimeTypes.UNKNOWN
+            ).value
+            assert attachment.preview_renderable is True
+            logger.info("TC-GH-ATTACH-001: %s attachment (.%s) validated", label, extension)
+
+        logger.info(
+            "TC-GH-ATTACH-001 passed: base sync built %s attachment(s)",
+            " + ".join(label for label, _, _ in cases),
         )
-        assert attachment is not None, (
-            f"attachment FileRecord missing. Its external id is the raw attachment URL "
-            f"verbatim ({attachment_url!r}), not a derived id."
+
+    @pytest.mark.order(7)
+    async def test_tc_gh_attach_002_attachment_indexing(
+        self,
+        github_connector: dict[str, Any],
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-GH-ATTACH-002: both attachment records reach COMPLETED.
+
+        An attachment that is created but never handed to the pipeline is invisible to
+        search while looking perfectly healthy in the graph, which is why the terminal
+        state is asserted and not merely the record's existence.
+
+        Settle-then-assert rather than poll-for-COMPLETED: a FAILED attachment reports
+        itself immediately instead of burning the whole timeout and then blaming it.
+        """
+        connector_id = github_connector["connector_id"]
+        terminal = {
+            ProgressStatus.COMPLETED.value,
+            ProgressStatus.FAILED.value,
+            ProgressStatus.AUTO_INDEX_OFF.value,
+        }
+
+        cases = self._body_attachment_cases(github_connector)
+
+        for label, _parent_external_id, attachment_url in cases:
+            async def _settled(url: str = attachment_url) -> bool:
+                record = await graph_provider.get_record_by_external_id(connector_id, url)
+                return bool(record) and str(
+                    getattr(record, "indexing_status", "")
+                ) in terminal
+
+            await wait_until_graph_condition(
+                connector_id,
+                check=_settled,
+                timeout=GH_INDEXING_WAIT_SEC,
+                description=f"indexing to settle on the {label} attachment",
+            )
+
+            record = await graph_provider.get_record_by_external_id(
+                connector_id, attachment_url,
+            )
+            status = str(record.indexing_status)
+            assert status != ProgressStatus.AUTO_INDEX_OFF.value, (
+                f"the {label} attachment is AUTO_INDEX_OFF under default filters. "
+                "Attachments inherit their parent's indexing filter "
+                "(comments.py::_attachments_indexing_enabled), so either that filter is "
+                "off or enable_manual_sync is set — the latter disables every indexing "
+                "filter at once."
+            )
+            assert status == ProgressStatus.COMPLETED.value, (
+                f"the {label} attachment settled at {status!r}, not COMPLETED"
+            )
+            logger.info("TC-GH-ATTACH-002: %s attachment -> %s", label, status)
+
+        logger.info(
+            "TC-GH-ATTACH-002 passed: %s attachment(s) indexed",
+            " + ".join(label for label, _, _ in cases),
         )
-        assert attachment.is_dependent_node is True, "attachment must be a dependent node"
-        assert str(attachment.parent_node_id) == str(parent_record.id), (
-            "parent_node_id must be the parent issue's true DB id"
-        )
-        assert attachment.weburl == parent_record.weburl, (
-            "attachment weburl must point at the parent issue page (previewable), while "
-            "the raw download URL lives in external_record_id"
-        )
-        logger.info("TC-GH-ISSUE-BLOCKS-001 passed: blocks + attachment validated")
 
 
 # =============================================================================
@@ -688,7 +856,7 @@ class TestGitHubTeamsIssues:
 
 class TestGitHubTeamsPullRequests:
 
-    @pytest.mark.order(7)
+    @pytest.mark.order(9)
     async def test_tc_gh_pr_001_pull_request_properties(
         self,
         github_connector: dict[str, Any],
@@ -722,7 +890,7 @@ class TestGitHubTeamsPullRequests:
 
         logger.info("TC-GH-PR-001 passed: PR #%s validated", pr["number"])
 
-    @pytest.mark.order(8)
+    @pytest.mark.order(10)
     async def test_tc_gh_pr_blocks_001_streamed_blocks(
         self,
         github_connector: dict[str, Any],
@@ -768,7 +936,7 @@ class TestGitHubTeamsPullRequests:
 
 class TestGitHubTeamsCodeFiles:
 
-    @pytest.mark.order(9)
+    @pytest.mark.order(11)
     async def test_tc_gh_code_001_code_and_folder_properties(
         self,
         github_connector: dict[str, Any],
@@ -825,7 +993,7 @@ class TestGitHubTeamsCodeFiles:
             )
         logger.info("TC-GH-CODE-001 passed: %s + parent folder validated", path)
 
-    @pytest.mark.order(10)
+    @pytest.mark.order(12)
     async def test_tc_gh_code_hier_001_folder_hierarchy(
         self,
         github_connector: dict[str, Any],
@@ -879,7 +1047,7 @@ class TestGitHubTeamsCodeFiles:
             ), f"folder record missing for directory {directory!r}"
         logger.info("TC-GH-CODE-HIER-001 passed: %d directories", len(expected_dirs))
 
-    @pytest.mark.order(11)
+    @pytest.mark.order(13)
     async def test_tc_gh_code_ts_001_source_timestamps(
         self,
         github_connector: dict[str, Any],
@@ -942,7 +1110,7 @@ class TestGitHubTeamsCodeFiles:
 
 class TestGitHubTeamsPermissions:
 
-    @pytest.mark.order(12)
+    @pytest.mark.order(14)
     async def test_tc_gh_perm_001_private_repo_acl(
         self,
         github_connector: dict[str, Any],
@@ -1042,7 +1210,7 @@ class TestGitHubTeamsPermissions:
             repo_group_perms, checked_roles,
         )
 
-    @pytest.mark.order(13)
+    @pytest.mark.order(15)
     async def test_tc_gh_perm_002_public_repo_org_grant(
         self,
         github_connector: dict[str, Any],
@@ -1135,7 +1303,7 @@ class TestGitHubTeamsPermissions:
 
 class TestGitHubTeamsIndexing:
 
-    @pytest.mark.order(14)
+    @pytest.mark.order(16)
     async def test_tc_gh_idx_001_indexing_terminal_state(
         self,
         github_connector: dict[str, Any],
@@ -1195,7 +1363,7 @@ class TestGitHubTeamsIndexing:
 class TestGitHubTeamsIncremental:
     """Mutation cases. Each owns its connector and asserts only by external id."""
 
-    @pytest.mark.order(15)
+    @pytest.mark.order(17)
     async def test_tc_incr_issue_001_new_issue_and_update(
         self,
         github_connector: dict[str, Any],
@@ -1293,7 +1461,7 @@ class TestGitHubTeamsIncremental:
                     if number:
                         await delete_issue(github_rest, org, repo_name, number)
 
-    @pytest.mark.order(16)
+    @pytest.mark.order(18)
     async def test_tc_incr_pr_001_update_only(
         self,
         github_connector: dict[str, Any],
@@ -1427,7 +1595,7 @@ class TestGitHubTeamsIncremental:
                 if comment_id:
                     await delete_issue_comment(github_rest, org, repo_name, comment_id)
 
-    @pytest.mark.order(17)
+    @pytest.mark.order(19)
     async def test_tc_incr_code_001_all_deltas(
         self,
         github_connector: dict[str, Any],
@@ -1624,7 +1792,7 @@ class TestGitHubTeamsFilters:
     """Filter behaviour. Both cases build their own connector over repos nothing
     writes to, so they are the most parallel-safe tests in the suite."""
 
-    @pytest.mark.order(18)
+    @pytest.mark.order(20)
     async def test_tc_filter_001_repo_scoping(
         self,
         github_connector: dict[str, Any],
@@ -1683,7 +1851,7 @@ class TestGitHubTeamsFilters:
                 public["full_name"], total,
             )
 
-    @pytest.mark.order(19)
+    @pytest.mark.order(21)
     async def test_tc_filter_002_code_files_indexing_off(
         self,
         github_connector: dict[str, Any],
@@ -1758,3 +1926,112 @@ class TestGitHubTeamsFilters:
                 "%d ticket(s) unaffected",
                 len(code_files), len(folders), len(tickets),
             )
+
+    @pytest.mark.order(22)
+    async def test_tc_gh_filteropt_001_dynamic_filter_options(
+        self,
+        github_connector: dict[str, Any],
+        pipeshub_client: PipeshubClient,
+    ) -> None:
+        """TC-GH-FILTEROPT-001: the ORG_IDS and REPO_IDS pickers.
+
+        These are what an admin actually picks from when scoping a connector, and the
+        ids they return are fed straight back as sync-filter values — so an id in a
+        different shape than the filter expects produces a connector that syncs
+        nothing, with no error anywhere.
+
+        Search deliberately reaches past the token's orgs into public GitHub
+        (``_search_scoped_repos``), so this pins the *ranking* rather than exclusion:
+        in-scope repos must come first, or an admin typing their own repo's name gets
+        a stranger's repo at the top of the list.
+        """
+        connector_id = github_connector["connector_id"]
+        org = github_connector["org"]
+        primary_full = github_connector["primary_repo"]["full_name"]
+        public_full = github_connector["public_repo"]["full_name"]
+        mutation_full = github_connector["mutation_repo"]["full_name"]
+
+        def options(filter_key: str, **params: Any) -> dict[str, Any]:
+            resp = pipeshub_client.request(
+                "GET",
+                f"/api/v1/connectors/{connector_id}/filters/{filter_key}/options",
+                params={"page": 1, "limit": 20, **params},
+            )
+            assert resp.status_code == 200, (
+                f"{filter_key} options HTTP {resp.status_code}: {resp.text[:200]}"
+            )
+            body = resp.json()
+            assert body.get("success") is True, f"{filter_key} options: {body!r}"
+            return body
+
+        # --- ORG_IDS: the token's orgs, keyed by login. ---
+        org_body = options("org_ids")
+        org_ids = [o["id"] for o in org_body["options"]]
+        assert org in org_ids, (
+            f"the fixture org {org!r} is missing from the org picker ({org_ids}); the "
+            "connector could not be scoped to it through the UI at all"
+        )
+        for option in org_body["options"]:
+            assert option["id"], "an org option with a blank id cannot be selected"
+            assert option["label"], "an org option with a blank label renders empty"
+
+        # --- REPO_IDS: full names, which is exactly what the sync filter consumes. ---
+        repo_body = options("repo_ids", limit=100)
+        repo_ids = [o["id"] for o in repo_body["options"]]
+        for full_name in (primary_full, public_full, mutation_full):
+            assert full_name in repo_ids, (
+                f"{full_name} is missing from the repo picker. The picker feeds "
+                "REPO_IDS, and TC-FILTER-001 proves the sync filter matches on this "
+                "exact owner/repo form, so a repo absent here is unselectable."
+            )
+        assert all("/" in rid for rid in repo_ids), (
+            f"every repo option id must be owner/repo — the shape REPO_IDS matches on; "
+            f"got {[r for r in repo_ids if '/' not in r][:3]}"
+        )
+        # Without a search term the picker must stay inside the token's orgs.
+        assert all(rid.split("/", 1)[0] == org for rid in repo_ids), (
+            "the unsearched repo picker leaked a repo outside the token's orgs: "
+            f"{[r for r in repo_ids if r.split('/', 1)[0] != org][:3]}"
+        )
+
+        # --- Search: in-scope repos rank ahead of public ones. ---
+        needle = primary_full.split("/", 1)[1]
+        search_ids = [o["id"] for o in options("repo_ids", search=needle)["options"]]
+        assert primary_full in search_ids, (
+            f"searching the repo picker for {needle!r} did not return {primary_full}"
+        )
+        in_scope = [i for i, rid in enumerate(search_ids) if rid.split("/", 1)[0] == org]
+        out_scope = [i for i, rid in enumerate(search_ids) if rid.split("/", 1)[0] != org]
+        if in_scope and out_scope:
+            assert max(in_scope) < min(out_scope), (
+                "public search hits are interleaved with the token's own repos "
+                f"({search_ids[:6]}). The scoped pass runs first precisely so an "
+                "admin's own repository outranks a same-named public one."
+            )
+
+        # --- Paging: a truncated page must advertise that more exist. ---
+        page_one = options("repo_ids", limit=1)
+        assert len(page_one["options"]) == 1, (
+            f"limit=1 returned {len(page_one['options'])} option(s)"
+        )
+        assert page_one["hasMore"] is True, (
+            "hasMore must be True while repos remain, or the picker stops paging and "
+            "silently hides every repo after the first"
+        )
+
+        # --- A non-dynamic filter must refuse, not return an empty list. ---
+        refused = pipeshub_client.request(
+            "GET",
+            f"/api/v1/connectors/{connector_id}/filters/issues/options",
+            params={"page": 1, "limit": 20},
+        )
+        assert refused.status_code == 400, (
+            "'issues' is a BOOLEAN indexing filter with no dynamic options, so the "
+            f"endpoint must refuse it; got HTTP {refused.status_code}. Returning an "
+            "empty option list instead would look like 'no repos found'."
+        )
+
+        logger.info(
+            "TC-GH-FILTEROPT-001 passed: %d org(s), %d repo(s), search + paging verified",
+            len(org_ids), len(repo_ids),
+        )

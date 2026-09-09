@@ -377,6 +377,25 @@ async def discover_non_image_attachment_issue(
     return None
 
 
+def discover_body_attachment(
+    items: list[dict[str, Any]],
+) -> Optional[tuple[dict[str, Any], str]]:
+    """First (issue-or-PR, attachment url) whose **body** carries a non-image attachment.
+
+    Body-only on purpose. Only body attachments are built during the base sync — the
+    issue and PR listings carry bodies, so ``_build_issue_records`` and
+    ``_build_pr_records`` construct their FileRecords while paging. Comment
+    attachments are discovered only at stream time, because no listing returns
+    comment bodies. Seeding this from a comment would let the base-sync assertion
+    pass for entirely the wrong reason.
+    """
+    for item in items:
+        url = _first_non_image_attachment_url(item.get("body") or "")
+        if url:
+            return item, url
+    return None
+
+
 def _first_non_image_attachment_url(body: str) -> Optional[str]:
     """A GitHub user-attachments URL that becomes a FileRecord, or None.
 

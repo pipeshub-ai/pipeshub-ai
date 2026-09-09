@@ -49,6 +49,7 @@ from connectors.github_teams.github_test_utils import (  # type: ignore[import-n
     create_github_connector,
     deepest_blob_path,
     discover_blocking_issue,
+    discover_body_attachment,
     discover_merged_pr,
     discover_multi_assignee_issue,
     discover_non_image_attachment_issue,
@@ -202,6 +203,9 @@ async def github_connector(
         "extensionless_code_path": extensionless_blob_path(tree),
         "attachment_issue": attachment[0] if attachment else None,
         "attachment_url": attachment[1] if attachment else None,
+        # Body-sourced attachments, which are the only ones the base sync builds.
+        "issue_body_attachment": discover_body_attachment(issues),
+        "pr_body_attachment": discover_body_attachment(pulls),
         "blocks_issue_number": GH_BLOCKS_ISSUE_NUMBER,
         "blocks_pr_number": GH_BLOCKS_PR_NUMBER,
     })
@@ -290,6 +294,8 @@ def _log_discovery(state: dict[str, Any]) -> None:
         ("attachment_issue", lambda v: f"#{v['number']}"),
         ("nested_code_path", str),
         ("extensionless_code_path", str),
+        ("issue_body_attachment", lambda v: f"#{v[0]['number']} -> {v[1].rsplit('/', 1)[-1]}"),
+        ("pr_body_attachment", lambda v: f"#{v[0]['number']} -> {v[1].rsplit('/', 1)[-1]}"),
     ):
         value = state.get(key)
         logger.info(

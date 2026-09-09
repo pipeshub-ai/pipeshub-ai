@@ -114,22 +114,26 @@ def owns_path(path: str) -> bool:
 # JSON, so their source must not move. These are the only fixtures pinned by number:
 # everything else the conftest discovers, so a re-provisioned org needs no code edit.
 #
+# ``or`` rather than a getenv default: a CI job that wires one of these to a secret
+# that does not exist passes an EMPTY string, and int("") raises at import time —
+# surfacing as a collection error rather than as the misconfiguration it is.
+#
 # The primary repo issue whose body + comments + non-image attachment back
 # fixtures/github_issue_blocks.expected.json. It must carry a NON-image attachment:
 # CommentsHelper._attachment_file_update returns None for type == "image" (images
 # are inlined as base64), so an image produces no FileRecord to assert on.
-GH_BLOCKS_ISSUE_NUMBER = int(os.getenv("GH_TEAMS_BLOCKS_ISSUE_NUMBER", "1"))
+GH_BLOCKS_ISSUE_NUMBER = int(os.getenv("GH_TEAMS_BLOCKS_ISSUE_NUMBER") or "1")
 
 # The primary repo PR backing fixtures/github_pr_blocks.expected.json. Needs at
 # least one changed file, one inline review comment and one conversation comment.
-GH_BLOCKS_PR_NUMBER = int(os.getenv("GH_TEAMS_BLOCKS_PR_NUMBER", "2"))
+GH_BLOCKS_PR_NUMBER = int(os.getenv("GH_TEAMS_BLOCKS_PR_NUMBER") or "8")
 
 # The long-lived PR that TC-INCR-PR-001 *updates* every run, in the MUTATION repo.
 # It is never created or closed by the suite: GitHub has no API to delete a pull
 # request, so a per-run PR made the repo's PR list grow forever. Its title sits
 # outside GH_IT_ARTIFACT_RE and its branch outside the ``it/`` prefix, so neither
 # sweep can reclaim it.
-GH_INCR_PR_NUMBER = int(os.getenv("GH_TEAMS_INCR_PR_NUMBER", "28"))
+GH_INCR_PR_NUMBER = int(os.getenv("GH_TEAMS_INCR_PR_NUMBER") or "28")
 
 # Set to "1" to regenerate both snapshots in place, then hand-review and commit.
 ENV_BLOCKS_BOOTSTRAP = "GH_TEAMS_BLOCKS_BOOTSTRAP"
