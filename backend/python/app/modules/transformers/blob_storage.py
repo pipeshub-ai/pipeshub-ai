@@ -848,24 +848,24 @@ class BlobStorage(Transformer):
             buffer_url = f"{nodejs_endpoint}{Routes.STORAGE_BUFFER.value.format(documentId=document_id)}"
             self.logger.info("📤 Overriding record buffer for document: %s", document_id)
 
-            async with aiohttp.ClientSession() as session:
-                form_data = aiohttp.FormData()
-                form_data.add_field(
-                    "file",
-                    json_bytes,
-                    filename=f"record_{virtual_record_id}.json",
-                    content_type="application/json",
-                )
-                async with session.put(buffer_url, data=form_data, headers=headers) as resp:
-                    if resp.status != HttpStatusCode.SUCCESS.value:
-                        error_text = await resp.text()
-                        self.logger.error(
-                            "❌ Failed to update buffer for document %s. Status: %d, Response: %s",
-                            document_id, resp.status, error_text[:200],
-                        )
-                        raise Exception(
-                            f"Failed to update buffer: {resp.status} {error_text[:200]}"
-                        )
+            session = get_shared_session()
+            form_data = aiohttp.FormData()
+            form_data.add_field(
+                "file",
+                json_bytes,
+                filename=f"record_{virtual_record_id}.json",
+                content_type="application/json",
+            )
+            async with session.put(buffer_url, data=form_data, headers=headers) as resp:
+                if resp.status != HttpStatusCode.SUCCESS.value:
+                    error_text = await resp.text()
+                    self.logger.error(
+                        "❌ Failed to update buffer for document %s. Status: %d, Response: %s",
+                        document_id, resp.status, error_text[:200],
+                    )
+                    raise Exception(
+                        f"Failed to update buffer: {resp.status} {error_text[:200]}"
+                    )
 
             self.logger.info("✅ Successfully overrode buffer for document: %s", document_id)
             return document_id, file_size_bytes
@@ -1938,24 +1938,24 @@ class BlobStorage(Transformer):
             buffer_url = f"{nodejs_endpoint}{Routes.STORAGE_BUFFER.value.format(documentId=document_id)}"
             self.logger.info("📤 Overriding metadata buffer for document: %s", document_id)
 
-            async with aiohttp.ClientSession() as session:
-                form_data = aiohttp.FormData()
-                form_data.add_field(
-                    "file",
-                    json_bytes,
-                    filename=f"metadata_{virtual_record_id}.json",
-                    content_type="application/json",
-                )
-                async with session.put(buffer_url, data=form_data, headers=headers) as resp:
-                    if resp.status != HttpStatusCode.SUCCESS.value:
-                        error_text = await resp.text()
-                        self.logger.error(
-                            "❌ Failed to update metadata buffer for document %s. Status: %d, Response: %s",
-                            document_id, resp.status, error_text[:200],
-                        )
-                        raise Exception(
-                            f"Failed to update metadata buffer: {resp.status} {error_text[:200]}"
-                        )
+            session = get_shared_session()
+            form_data = aiohttp.FormData()
+            form_data.add_field(
+                "file",
+                json_bytes,
+                filename=f"metadata_{virtual_record_id}.json",
+                content_type="application/json",
+            )
+            async with session.put(buffer_url, data=form_data, headers=headers) as resp:
+                if resp.status != HttpStatusCode.SUCCESS.value:
+                    error_text = await resp.text()
+                    self.logger.error(
+                        "❌ Failed to update metadata buffer for document %s. Status: %d, Response: %s",
+                        document_id, resp.status, error_text[:200],
+                    )
+                    raise Exception(
+                        f"Failed to update metadata buffer: {resp.status} {error_text[:200]}"
+                    )
 
             self.logger.info("✅ Successfully overrode metadata buffer for document: %s", document_id)
             return document_id, file_size_bytes

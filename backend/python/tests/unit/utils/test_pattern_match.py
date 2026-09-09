@@ -166,7 +166,7 @@ class TestResolveConnectorIds:
         result = await resolve_connector_ids_for_search(
             graph_provider, "org-1", filters
         )
-        assert result == []
+        assert result == ["rg-1", "rg-2"]
 
     @pytest.mark.asyncio
     async def test_apps_empty_list_gets_all_org_apps(self):
@@ -385,7 +385,10 @@ class TestRunPatternMatch:
             )
         assert len(result) == 1
         assert result[0]["virtual_record_id"] == "vr-1"
-        logger.debug.assert_called_once()
+        assert any(
+            args[0] == "Pattern match connector %d error: %s" and args[1] == 1
+            for args, _ in logger.info.call_args_list
+        )
 
 
 # ===========================================================================
