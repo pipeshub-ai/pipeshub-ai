@@ -16,6 +16,19 @@ describe('feedback/utils/create-zip', () => {
     expect(zip.includes(Buffer.from('hello'))).to.equal(true);
   });
 
+  it('writes a readable central directory with the file name length at offset 28', () => {
+    const zip = createZipBuffer([{ name: 'shot.png', data: Buffer.from('png-bytes') }]);
+    const eocdOffset = zip.length - 22;
+    expect(zip.readUInt32LE(eocdOffset)).to.equal(0x06054b50);
+    expect(zip.readUInt16LE(eocdOffset + 8)).to.equal(1);
+    const centralOffset = zip.readUInt32LE(eocdOffset + 16);
+    expect(zip.readUInt32LE(centralOffset)).to.equal(0x02014b50);
+    expect(zip.readUInt16LE(centralOffset + 28)).to.equal(Buffer.byteLength('shot.png', 'utf8'));
+    expect(zip.subarray(centralOffset + 46, centralOffset + 46 + 8).toString('utf8')).to.equal(
+      'shot.png',
+    );
+  });
+
   it('strips path separators from file names', () => {
     const zip = createZipBuffer([
       { name: '../secret/../shot.png', data: Buffer.from('x') },

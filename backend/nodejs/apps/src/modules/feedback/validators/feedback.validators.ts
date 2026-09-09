@@ -7,19 +7,28 @@ import {
   MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES,
 } from '../schema/feedback.schema';
 
-const fileBufferSchema = z.object({
-  buffer: z.any(),
-  originalname: z.string().min(1),
-  mimetype: z
-    .string()
-    .transform((value) => (value === 'image/jpg' ? 'image/jpeg' : value))
-    .pipe(z.enum(feedbackMimeTypes)),
-  size: z
-    .number()
-    .int()
-    .min(1)
-    .max(MAX_FEEDBACK_ATTACHMENT_BYTES),
-});
+const fileBufferSchema = z
+  .object({
+    buffer: z.instanceof(Buffer),
+    originalname: z.string().min(1),
+    mimetype: z
+      .string()
+      .transform((value) => (value === 'image/jpg' ? 'image/jpeg' : value))
+      .pipe(z.enum(feedbackMimeTypes)),
+  })
+  .transform((file) => ({
+    ...file,
+    size: file.buffer.length,
+  }))
+  .superRefine((file, ctx) => {
+    if (file.size < 1 || file.size > MAX_FEEDBACK_ATTACHMENT_BYTES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Attachment exceeds the per-file size limit',
+        path: ['buffer'],
+      });
+    }
+  });
 
 export const createFeedbackSchema = z.object({
   body: z

@@ -1,3 +1,5 @@
+'use client';
+
 import { apiClient } from '@/lib/api';
 import type { CreateFeedbackResponse, FeedbackKind } from './types';
 
