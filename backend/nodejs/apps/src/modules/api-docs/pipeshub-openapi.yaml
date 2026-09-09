@@ -7507,6 +7507,10 @@ components:
         hideWeburl:
           type: boolean
           nullable: true
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
         categories:
           type: array
           nullable: true
