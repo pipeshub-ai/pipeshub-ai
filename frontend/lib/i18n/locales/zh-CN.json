@@ -3431,5 +3431,24 @@
     "skip": "跳过",
     "next": "下一步",
     "submit": "提交"
+  },
+  "feedback": {
+    "menuLabel": "Send feedback",
+    "title": "Send feedback",
+    "subtitle": "Tell us about a problem or how we can improve the platform.",
+    "kindIssue": "Issue",
+    "kindFeedback": "Feedback",
+    "descriptionPlaceholder": "What happened, or what should we improve?",
+    "addFiles": "Add files",
+    "removeFile": "Remove",
+    "fileHint": "Optional. Up to 5 files, 5 MB each. Images, PDF, text, or CSV.",
+    "cancel": "Cancel",
+    "submit": "Submit",
+    "success": "Thanks, we received your feedback.",
+    "submitError": "Could not submit. Please try again.",
+    "descriptionTooShort": "Please add a bit more detail (at least 10 characters).",
+    "invalidType": "That file type is not supported.",
+    "fileTooLarge": "Each file must be 5 MB or smaller.",
+    "tooManyFiles": "You can attach up to 5 files."
   }
 }

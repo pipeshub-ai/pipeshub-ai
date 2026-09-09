@@ -55,6 +55,7 @@ export { createWorkspaceAuthRouter } from './modules/auth/routes/workspaceAuth.r
 export { createFeatureFlagRouter } from './modules/user_management/routes/featureFlag.routes';
 export { createOrgConfigRouter } from './modules/user_management/routes/orgConfig.routes';
 export { createRequestRouter } from './modules/user_management/routes/request.routes';
+export { createFeedbackRouter } from './modules/feedback/routes/feedback.routes';
 
 // --- OAuth Apps ---
 export { OAuthAppsContainer } from './modules/oauth_apps/container/oauth_apps.container';

@@ -13,6 +13,7 @@ import { CollapsibleSection } from './collapsible-section';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { useFeatureFlagsStore, selectMcpEnabled, selectActionsEnabled } from '@/lib/store/feature-flags-store';
 import { YourConnectorsIcon } from '@/app/components/ui/your-connectors-icon';
+import { useFeedbackDialogStore } from '@/app/(main)/feedback/store';
 
 // ========================================
 // Route constants (labels resolved at render via i18n)
@@ -92,6 +93,7 @@ export default function WorkspaceSidebar() {
   const isAdmin = useUserStore(selectIsAdmin);
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
+  const openFeedback = useFeedbackDialogStore((s) => s.open);
 
   // Normalize trailing slash (trailingSlash: true in next.config)
   const pathname = rawPathname.endsWith('/') && rawPathname !== '/'
@@ -229,6 +231,11 @@ export default function WorkspaceSidebar() {
               isActive={isActive(item.route)}
             />
           ))}
+          <WorkspaceSidebarItem
+            icon={<MaterialIcon name="feedback" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+            label={t('feedback.menuLabel')}
+            onClick={openFeedback}
+          />
         </Flex>
       </Flex>
     </SidebarBase>

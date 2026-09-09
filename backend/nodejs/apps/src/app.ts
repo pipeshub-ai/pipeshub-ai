@@ -57,6 +57,7 @@ import {
   createFeatureFlagRouter,
   createOrgConfigRouter,
   createRequestRouter,
+  createFeedbackRouter,
   OAuthAppsContainer,
   createOAuthAppsRouter,
 } from './config';
@@ -573,6 +574,11 @@ export class Application {
     this.app.use(
       '/api/v1/notifications',
       createNotificationRouter(this.entityManagerContainer),
+    );
+
+    this.app.use(
+      '/api/v1/feedback',
+      createFeedbackRouter(this.entityManagerContainer),
     );
 
     // configuration manager routes
