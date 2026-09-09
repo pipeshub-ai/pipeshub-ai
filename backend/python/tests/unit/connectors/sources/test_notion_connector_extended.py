@@ -40,6 +40,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
+
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.notion.connector import NotionConnector
@@ -161,6 +163,9 @@ class TestTestConnectionAndAccess:
         ds = _make_datasource_mock()
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         ds.retrieve_bot_user = AsyncMock(return_value=_make_api_response(True, {"id": "bot"}))
+        ds.search = AsyncMock(return_value=_make_api_response(True, {"results": [{"id": "page-1"}]}))
+        ds.retrieve_page = AsyncMock(return_value=_make_api_response(True, {"id": "page-1"}))
+        ds.retrieve_comments = AsyncMock(return_value=_make_api_response(True, {"results": []}))
         result = await c.test_connection_and_access()
         assert result is True
 
@@ -172,14 +177,11 @@ class TestTestConnectionAndAccess:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_api_failure(self):
+    async def test_api_token_skips_capability_check(self):
         c = _make_connector()
         c.notion_client = MagicMock()
-        ds = _make_datasource_mock()
-        c._get_fresh_datasource = AsyncMock(return_value=ds)
-        ds.retrieve_bot_user = AsyncMock(return_value=_make_api_response(False, error="unauthorized"))
-        result = await c.test_connection_and_access()
-        assert result is False
+        c._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+        assert await c.test_connection_and_access() is True
 
     @pytest.mark.asyncio
     async def test_exception(self):
@@ -200,6 +202,8 @@ class TestRunSync:
         c = _make_connector()
         with patch("app.connectors.sources.notion.connector.load_connector_filters", new_callable=AsyncMock) as mock_load:
             mock_load.return_value = (FilterCollection(), FilterCollection())
+            c._get_fresh_datasource = AsyncMock()
+            c._assert_required_capabilities = AsyncMock()
             c._sync_users = AsyncMock()
             c._sync_objects_by_type = AsyncMock()
             await c.run_sync()
@@ -211,6 +215,8 @@ class TestRunSync:
         c = _make_connector()
         with patch("app.connectors.sources.notion.connector.load_connector_filters", new_callable=AsyncMock) as mock_load:
             mock_load.return_value = (FilterCollection(), FilterCollection())
+            c._get_fresh_datasource = AsyncMock()
+            c._assert_required_capabilities = AsyncMock()
             c._sync_users = AsyncMock(side_effect=Exception("fail"))
             with pytest.raises(Exception, match="fail"):
                 await c.run_sync()

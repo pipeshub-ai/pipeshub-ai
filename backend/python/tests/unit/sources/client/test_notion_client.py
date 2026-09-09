@@ -199,6 +199,46 @@ class TestNotionRESTClientViaOAuth:
             result = await client.refresh_token("rt")
             assert result is None
 
+    @pytest.mark.asyncio
+    async def test_introspect_access_token_success(self):
+        client = NotionRESTClientViaOAuth("cid", "csec", "http://redirect")
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.json.return_value = {
+            "active": True,
+            "scope": "read_content read_comments",
+        }
+
+        mock_http = AsyncMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+        mock_http.execute = AsyncMock(return_value=mock_response)
+
+        with patch("app.sources.client.notion.notion.HTTPClient", return_value=mock_http):
+            payload = await client.introspect_access_token("tok")
+        assert payload["active"] is True
+        assert "read_comments" in payload["scope"]
+        request = mock_http.execute.await_args.args[0]
+        assert request.url.endswith("/introspect")
+        assert request.body == {"token": "tok"}
+        assert request.headers["Authorization"].startswith("Basic ")
+
+    @pytest.mark.asyncio
+    async def test_introspect_access_token_failure(self):
+        client = NotionRESTClientViaOAuth("cid", "csec", "http://redirect")
+        mock_response = MagicMock()
+        mock_response.status = 401
+        mock_response.text.return_value = "Unauthorized"
+
+        mock_http = AsyncMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+        mock_http.execute = AsyncMock(return_value=mock_response)
+
+        with patch("app.sources.client.notion.notion.HTTPClient", return_value=mock_http):
+            with pytest.raises(Exception, match="Token introspect failed"):
+                await client.introspect_access_token("tok")
+
 
 # ---------------------------------------------------------------------------
 # NotionRESTClientViaToken
@@ -377,6 +417,45 @@ class TestBuildFromServices:
         mock_config_service.get_config = AsyncMock(side_effect=fake_get_config)
         nc = await NotionClient.build_from_services(logger, mock_config_service, "inst-1")
         assert isinstance(nc.get_client(), NotionRESTClientViaOAuth)
+
+    @pytest.mark.asyncio
+    async def test_oauth_shared_config_uses_inherited_org(self, logger, mock_config_service):
+        """Child-org instances must resolve the admin org's OAuth app."""
+        mock_config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {
+                    "authType": "OAUTH",
+                    "oauthConfigId": "oauth-123",
+                    "inheritedFromOrgId": "admin-org",
+                },
+                "credentials": {"access_token": "at"},
+            }
+        )
+        shared = {
+            "_id": "oauth-123",
+            "config": {
+                "clientId": "admin-cid",
+                "clientSecret": "admin-csec",
+                "redirectUri": "https://app.example/callback",
+            },
+        }
+        with patch(
+            "app.edition_config.fetch_oauth_config_by_id",
+            new_callable=AsyncMock,
+            return_value=shared,
+        ) as fetch:
+            nc = await NotionClient.build_from_services(logger, mock_config_service, "inst-1")
+
+        client = nc.get_client()
+        assert isinstance(client, NotionRESTClientViaOAuth)
+        assert client.client_id == "admin-cid"
+        assert client.client_secret == "admin-csec"
+        assert client.redirect_uri == "https://app.example/callback"
+        fetch.assert_awaited_once()
+        kwargs = fetch.await_args.kwargs
+        assert kwargs["oauth_config_id"] == "oauth-123"
+        assert kwargs["org_id"] == "admin-org"
+        assert kwargs["connector_type"] == "notion"
 
     @pytest.mark.asyncio
     async def test_oauth_shared_config_not_found(self, logger, mock_config_service):

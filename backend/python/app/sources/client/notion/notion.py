@@ -212,6 +212,32 @@ class NotionRESTClientViaOAuth(HTTPClient):
 
         return token_data.get("access_token") if token_data.get("access_token") else None
 
+    async def introspect_access_token(self, access_token: str) -> Dict[str, Any]:
+        """Return Notion's introspection payload for this OAuth access token.
+
+        Uses client-id/secret Basic auth, not the user Bearer token.
+        """
+        credentials = f"{self.client_id}:{self.client_secret}"
+        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+        request = HTTPRequest(
+            method="POST",
+            url=f"{self.oauth_base_url}/introspect",
+            headers={
+                "Authorization": f"Basic {encoded_credentials}",
+                "Content-Type": "application/json",
+                "Notion-Version": self.version,
+            },
+            body={"token": access_token},
+        )
+        async with HTTPClient(token="") as client:
+            response = await client.execute(request)
+        if response.status >= HttpStatusCode.BAD_REQUEST.value:
+            raise Exception(
+                f"Token introspect failed with status {response.status}: {response.text()}"
+            )
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
 
 class NotionRESTClientViaToken(HTTPClient):
     """Notion REST client via Internal Integration token
@@ -326,26 +352,24 @@ class NotionClient(IClient):
                 client_secret = auth_config.get("clientSecret", "")
                 redirect_uri = auth_config.get("redirectUri", "")
 
-                # If credentials are missing, try fetching from shared OAuth config
+                # Shared OAuth apps live on the owning org; inheritedFromOrgId
+                # re-scopes the read so a child org can use an admin-configured app.
                 oauth_config_id = auth_config.get("oauthConfigId")
                 needs_shared_config = oauth_config_id and not (client_id and client_secret)
 
                 if needs_shared_config:
                     try:
-                        oauth_config_path = f"/services/oauth/{connector_type}"
-                        oauth_configs = await config_service.get_config(oauth_config_path, default=[])
+                        from app.edition_config import fetch_oauth_config_by_id
 
-                        # Find the matching shared config by ID
-                        matching_config = None
-                        if isinstance(oauth_configs, list):
-                            matching_config = next(
-                                (cfg for cfg in oauth_configs if cfg.get("_id") == oauth_config_id),
-                                None
-                            )
-
-                        # Extract credentials from shared config if found
+                        matching_config = await fetch_oauth_config_by_id(
+                            oauth_config_id=oauth_config_id,
+                            connector_type=connector_type,
+                            config_service=config_service,
+                            logger=logger,
+                            org_id=auth_config.get("inheritedFromOrgId"),
+                        )
                         if matching_config:
-                            shared_config = matching_config.get("config", {})
+                            shared_config = matching_config.get("config", {}) or {}
                             client_id = shared_config.get("clientId") or shared_config.get("client_id") or client_id
                             client_secret = shared_config.get("clientSecret") or shared_config.get("client_secret") or client_secret
                             if not redirect_uri:
