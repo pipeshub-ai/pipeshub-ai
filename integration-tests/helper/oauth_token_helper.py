@@ -19,12 +19,14 @@ Required env vars (in .env.local or .env.refresh_tokens):
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional
+from typing import Any, Coroutine, Optional
 
 import requests
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -395,6 +397,23 @@ async def authenticate_connector_with_refresh_token(
     )
 
 
+def _run_blocking(coro: Coroutine[Any, Any, None]) -> None:
+    """Drive an async KV write from a synchronous caller.
+
+    ``asyncio.run`` alone is not enough: the connector-setup helpers that call
+    ``inject_access_token`` are synchronous but run inside pytest-asyncio's session
+    loop, where ``asyncio.run`` raises "cannot be called from a running event loop".
+    A worker thread with its own loop works from either context.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(coro)
+        return
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(asyncio.run, coro).result()
+
+
 def inject_access_token(connector_id: str, access_token: str) -> None:
     """Inject a bare access token into the backend KV store, with no token exchange.
 
@@ -419,5 +438,7 @@ def inject_access_token(connector_id: str, access_token: str) -> None:
             "SECRET_KEY is not set; it must match the backend's value to write "
             "connector credentials into the KV store."
         )
-    _write_credentials_to_kv(connector_id, access_token, "", _derive_key(secret_key))
+    _run_blocking(
+        _write_credentials_to_kv(connector_id, access_token, "", _derive_key(secret_key))
+    )
     logger.info("Injected access token for connector %s", connector_id)
