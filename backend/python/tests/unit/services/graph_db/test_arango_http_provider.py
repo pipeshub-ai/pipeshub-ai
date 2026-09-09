@@ -15656,8 +15656,14 @@ class TestDeleteMainRecord:
     @pytest.mark.asyncio
     async def test_success(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        connected_provider.delete_blocks_for_records = AsyncMock(return_value=0)
         await connected_provider._delete_main_record("r1", transaction="txn1")
         connected_provider.http_client.execute_aql.assert_called_once()
+        # Every connector-specific delete executor ends here, so this is where a
+        # code file's blocks go with it.
+        connected_provider.delete_blocks_for_records.assert_awaited_once_with(
+            ["r1"], transaction="txn1"
+        )
 
 
 # ---------------------------------------------------------------------------

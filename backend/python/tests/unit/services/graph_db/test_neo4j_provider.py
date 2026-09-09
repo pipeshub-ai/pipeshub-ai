@@ -12,6 +12,29 @@ def neo4j_provider() -> Neo4jProvider:
     return provider
 
 
+class TestDeleteBlocksForRecords:
+    @pytest.mark.asyncio
+    async def test_empty_record_ids_is_a_noop(self, neo4j_provider) -> None:
+        assert await neo4j_provider.delete_blocks_for_records([]) == 0
+        neo4j_provider.client.execute_query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_detaches_blocks_by_record_id(self, neo4j_provider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"deleted": 3}])
+
+        removed = await neo4j_provider.delete_blocks_for_records(["r1"], transaction="txn1")
+
+        assert removed == 3
+        query = neo4j_provider.client.execute_query.call_args.args[0]
+        # DETACH so the cross-file CALLS/IMPORTS edges other files point in with
+        # go too -- those name a block, never its record.
+        assert "DETACH DELETE block" in query
+        assert "block.recordId IN $record_ids" in query
+        assert neo4j_provider.client.execute_query.call_args.kwargs["parameters"] == {
+            "record_ids": ["r1"]
+        }
+
+
 class TestConnectionManagement:
     @pytest.mark.asyncio
     async def test_connect_success_uses_env_values(self):

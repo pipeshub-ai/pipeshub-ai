@@ -358,6 +358,7 @@ class TestAbstractMethodInventory:
         "remove_user_access_to_record",
         "delete_records_recursive",
         "delete_single_record",
+        "delete_blocks_for_records",
         "delete_connector_instance",
         "get_key_by_external_file_id",
         "organization_exists",

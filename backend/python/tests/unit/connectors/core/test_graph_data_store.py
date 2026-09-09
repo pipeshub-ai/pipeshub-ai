@@ -53,6 +53,7 @@ def mock_graph_provider():
     provider.get_record_owner_source_user_email = AsyncMock(return_value=None)
     provider.get_user_by_user_id = AsyncMock(return_value=None)
     provider.delete_nodes = AsyncMock()
+    provider.delete_blocks_for_records = AsyncMock(return_value=0)
     provider.delete_record_by_external_id = AsyncMock()
     provider.remove_user_access_to_record = AsyncMock()
     provider.delete_record_group_by_external_id = AsyncMock()
@@ -173,6 +174,11 @@ class TestGraphTransactionStore:
     async def test_delete_record_by_key(self, tx_store, mock_graph_provider) -> None:
         await tx_store.delete_record_by_key("key1")
         mock_graph_provider.delete_nodes.assert_awaited_once()
+        # The record's code blocks are only reachable by recordId, so they have to
+        # go with it rather than survive as an orphaned symbol projection.
+        mock_graph_provider.delete_blocks_for_records.assert_awaited_once_with(
+            ["key1"], transaction="txn-123"
+        )
 
     @pytest.mark.asyncio
     async def test_delete_edge(self, tx_store, mock_graph_provider) -> None:

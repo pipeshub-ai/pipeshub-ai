@@ -7357,6 +7357,10 @@ class Neo4jProvider(IGraphDBProvider):
             # In Neo4j, DETACH DELETE removes node and all relationships
             record_label = collection_to_label(CollectionNames.RECORDS.value)
 
+            # Blocks join the record by property, not by an edge, so the DETACH
+            # DELETE below does not take them with it.
+            await self.delete_blocks_for_records([record_key], transaction=transaction)
+
             query = f"""
             MATCH (r:{record_label} {{id: $record_key}})
             DETACH DELETE r
@@ -7970,6 +7974,7 @@ class Neo4jProvider(IGraphDBProvider):
                 CollectionNames.LINKS.value,
                 CollectionNames.PROJECTS.value,
                 CollectionNames.APPS.value,
+                CollectionNames.BLOCKS.value,
             ]
 
             if transaction is None:
@@ -8027,6 +8032,10 @@ class Neo4jProvider(IGraphDBProvider):
                 if not sync_success:
                     raise Exception("CRITICAL: Failed to delete sync points.")
 
+                # Blocks join their record by property, so the record delete above
+                # leaves them behind.
+                deleted_blocks = await self.delete_blocks_by_connector_id(connector_id, transaction)
+
                 # Step 7: Delete the app itself
                 deleted_app, _ = await self._delete_nodes_by_keys(
                     transaction,
@@ -8046,7 +8055,7 @@ class Neo4jProvider(IGraphDBProvider):
                     f"✅ Connector instance {connector_id} deleted successfully. "
                     f"Records: {deleted_records}, RecordGroups: {deleted_rg}, "
                     f"Roles: {deleted_roles}, Groups: {deleted_groups}, "
-                    f"isOfType targets: {deleted_isoftype}"
+                    f"Blocks: {deleted_blocks}, isOfType targets: {deleted_isoftype}"
                 )
 
                 return {
@@ -8055,6 +8064,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "deleted_record_groups_count": deleted_rg,
                     "deleted_roles_count": deleted_roles,
                     "deleted_groups_count": deleted_groups,
+                    "deleted_blocks_count": deleted_blocks,
                     "virtual_record_ids": collected["virtual_record_ids"],
                     "connector_id": connector_id,
                     "connector_name": connector.get("type"),
@@ -10846,6 +10856,69 @@ class Neo4jProvider(IGraphDBProvider):
             return None
 
 
+    async def _delete_blocks_where(
+        self,
+        condition: str,
+        parameters: dict[str, Any],
+        transaction: str | None,
+    ) -> int:
+        """Delete every block matching a Cypher ``condition`` on ``block``.
+
+        ``DETACH DELETE`` takes the structural CONTAINS/METHOD/DEFINES edges and
+        the cross-file CALLS/IMPORTS edges other files' blocks point in with, in
+        one pass -- those name a block, never its record, so a record-scoped
+        sweep never sees them.
+        """
+        label = collection_to_label(CollectionNames.BLOCKS.value)
+        query = f"""
+        MATCH (block:{label})
+        WHERE {condition}
+        DETACH DELETE block
+        RETURN count(block) AS deleted
+        """
+        try:
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            deleted = int(rows[0].get("deleted", 0)) if rows else 0
+            if deleted:
+                self.logger.debug(f"🗑️ Deleted {deleted} block(s)")
+            return deleted
+        except Exception as e:
+            self.logger.error(f"❌ Delete blocks failed: {str(e)}")
+            raise
+
+    async def delete_blocks_for_records(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the blocks projected from the given records, and their edges.
+
+        Blocks are reached by their ``recordId`` property rather than by
+        traversal, so this stays correct whether it runs before or after the
+        record node goes.
+        """
+        if not record_ids:
+            return 0
+        return await self._delete_blocks_where(
+            "block.recordId IN $record_ids", {"record_ids": record_ids}, transaction
+        )
+
+    async def delete_blocks_by_connector_id(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete every block a connector produced. The whole-connector form of
+        ``delete_blocks_for_records``, which would otherwise have to carry a
+        repo's worth of record ids in a parameter."""
+        if not connector_id:
+            return 0
+        return await self._delete_blocks_where(
+            "block.connectorId = $connector_id", {"connector_id": connector_id}, transaction
+        )
+
     async def delete_records_recursive(
         self,
         record_ids: list[str],
@@ -10873,7 +10946,12 @@ class Neo4jProvider(IGraphDBProvider):
                     "total_requested": 0, "successfully_deleted": 0, "failed_count": 0,
                     "eventData": None,
                 }
-            node_collections = [CollectionNames.RECORDS.value] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
+            node_collections = [
+                CollectionNames.RECORDS.value,
+                # blocks is not an isOfType target, so it is absent from the type
+                # mapping, but a code record's blocks are deleted with it.
+                CollectionNames.BLOCKS.value,
+            ] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
             txn_id = transaction
             if transaction is None:
                 txn_id = await self.begin_transaction(
@@ -10965,6 +11043,7 @@ class Neo4jProvider(IGraphDBProvider):
                         "MATCH (r:Record)-[:IS_OF_TYPE]->(t) WHERE r.id IN $record_ids DETACH DELETE t",
                         parameters={"record_ids": record_keys}, txn_id=txn_id,
                     )
+                    await self.delete_blocks_for_records(record_keys, transaction=txn_id)
                     await self.client.execute_query(
                         "MATCH (r:Record) WHERE r.id IN $record_ids DETACH DELETE r",
                         parameters={"record_ids": record_keys}, txn_id=txn_id,
@@ -11026,7 +11105,12 @@ class Neo4jProvider(IGraphDBProvider):
                     "total_requested": 0, "successfully_deleted": 0, "failed_count": 0,
                     "eventData": None,
                 }
-            node_collections = [CollectionNames.RECORDS.value] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
+            node_collections = [
+                CollectionNames.RECORDS.value,
+                # blocks is not an isOfType target, so it is absent from the type
+                # mapping, but a code record's blocks are deleted with it.
+                CollectionNames.BLOCKS.value,
+            ] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
             txn_id = transaction
             if transaction is None:
                 txn_id = await self.begin_transaction(
@@ -11072,6 +11156,7 @@ class Neo4jProvider(IGraphDBProvider):
                         "MATCH (r:Record)-[:IS_OF_TYPE]->(t) WHERE r.id IN $record_ids DETACH DELETE t",
                         parameters={"record_ids": record_keys}, txn_id=txn_id,
                     )
+                    await self.delete_blocks_for_records(record_keys, transaction=txn_id)
                     await self.client.execute_query(
                         "MATCH (r:Record) WHERE r.id IN $record_ids DETACH DELETE r",
                         parameters={"record_ids": record_keys}, txn_id=txn_id,

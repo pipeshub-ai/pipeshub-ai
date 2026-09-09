@@ -223,6 +223,9 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.get_user_by_user_id(user_id)
 
     async def delete_record_by_key(self, key: str) -> None:
+        # A code file's blocks hang off it by recordId, not by an edge, so removing
+        # the record vertex alone strands the whole file's symbol projection.
+        await self.graph_provider.delete_blocks_for_records([key], transaction=self.txn)
         # Delete the record node from the records collection
         return await self.graph_provider.delete_nodes([key], CollectionNames.RECORDS.value, transaction=self.txn)
 

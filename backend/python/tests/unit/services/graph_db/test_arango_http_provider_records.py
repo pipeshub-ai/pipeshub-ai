@@ -3857,6 +3857,33 @@ class TestCheckConnectorNameExists:
 
 
 # ===================================================================
+# delete_blocks_for_records
+# ===================================================================
+
+class TestDeleteBlocksForRecords:
+    async def test_empty_record_ids_is_a_noop(self, connected_provider):
+        assert await connected_provider.delete_blocks_for_records([]) == 0
+        connected_provider.http_client.execute_aql.assert_not_called()
+
+    async def test_deletes_edges_before_blocks(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[[1, 1, 1], [1, 1]]
+        )
+
+        removed = await connected_provider.delete_blocks_for_records(["r1", "r2"], transaction="txn1")
+
+        assert removed == 2
+        edge_call, node_call = connected_provider.http_client.execute_aql.call_args_list
+        # Edges first: dropping the block documents first would strand every
+        # CONTAINS/CALLS edge pointing at them.
+        assert "recordRelations" in edge_call.args[0]
+        assert "REMOVE block IN blocks" in node_call.args[0]
+        for call in (edge_call, node_call):
+            assert call.kwargs["bind_vars"] == {"record_ids": ["r1", "r2"]}
+            assert call.kwargs["txn_id"] == "txn1"
+
+
+# ===================================================================
 # delete_records_recursive  (lines 11953-12092)
 # ===================================================================
 
@@ -3891,6 +3918,7 @@ class TestDeleteRecordsRecursive:
             return_value=(1, [])
         )
         connected_provider._delete_nodes_by_keys = AsyncMock(return_value=(1, 0))
+        connected_provider.delete_blocks_for_records = AsyncMock(return_value=0)
         connected_provider.commit_transaction = AsyncMock()
         connected_provider._create_deleted_record_event_payload = AsyncMock(
             return_value={"virtualRecordId": "vr1"}
@@ -3900,6 +3928,11 @@ class TestDeleteRecordsRecursive:
         assert result["successfully_deleted"] == 1
         assert len(result["deleted_records"]) == 1
         connected_provider.commit_transaction.assert_called_once_with("txn1")
+        # A code file's blocks are joined to it by recordId, so nothing in the
+        # edge/type-doc sweep above reaches them.
+        connected_provider.delete_blocks_for_records.assert_awaited_once_with(
+            ["r1"], transaction="txn1"
+        )
 
     async def test_invalid_record_ids_marked_failed(self, connected_provider):
         connected_provider._get_all_edge_collections = AsyncMock(

@@ -8153,7 +8153,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         f"⚠️ Could not delete edges from {edge_collection} for node {node_key}: {str(e)}"
                     )
 
-            # Step 2: Delete node from `records`, `files`, and `mails` collections
+            # Step 2: Drop the record's projected code blocks. They are joined to the
+            # record by field, not by an edge, so the sweep above never reaches them.
+            await self.delete_blocks_for_records([node_key], transaction=transaction)
+
+            # Step 3: Delete node from `records`, `files`, and `mails` collections
             delete_query = f"""
             LET removed_record = (
                 FOR doc IN {CollectionNames.RECORDS.value}
@@ -8984,6 +8988,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 CollectionNames.PROJECTS.value,
                 CollectionNames.PULLREQUESTS.value,
                 CollectionNames.CODE_FILES.value,
+                CollectionNames.BLOCKS.value,
                 CollectionNames.ARTIFACTS.value,
                 CollectionNames.SQL_TABLES.value,
                 CollectionNames.SQL_VIEWS.value,
@@ -9108,6 +9113,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "CRITICAL: Failed to delete sync points. Transaction will be rolled back."
                     )
 
+                # Blocks join their record by field, and their structural and
+                # cross-file edges carry no connectorId, so neither the record
+                # sweep nor the connector-scoped edge sweep above reaches them.
+                deleted_blocks = await self.delete_blocks_by_connector_id(connector_id, transaction)
+
                 # Step 13: Delete the app itself (CRITICAL - must succeed completely)
                 deleted_app, failed_app_batches = await self._delete_nodes_by_keys(
                     transaction,
@@ -9136,6 +9146,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     f"Roles: {deleted_roles}/{len(collected['role_keys'])}, "
                     f"Groups: {deleted_groups}/{len(collected['group_keys'])}, "
                     f"Edges: {deleted_edges}, "
+                    f"Blocks: {deleted_blocks}, "
                     f"isOfType targets: {deleted_isoftype}"
                 )
 
@@ -9146,6 +9157,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "deleted_roles_count": deleted_roles,
                     "deleted_groups_count": deleted_groups,
                     "deleted_edges_count": deleted_edges,
+                    "deleted_blocks_count": deleted_blocks,
                     "deleted_isoftype_targets_count": deleted_isoftype,
                     "virtual_record_ids": collected["virtual_record_ids"],
                     "connector_id": connector_id,
@@ -12644,6 +12656,84 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return False
 
 
+    async def _delete_blocks_where(
+        self,
+        condition: str,
+        bind_vars: dict[str, Any],
+        transaction: str | None,
+    ) -> int:
+        """Delete every block matching an AQL ``condition`` on ``block``, edges first.
+
+        Edges before nodes, the order ``block_projection`` uses when it replaces a
+        file: dropping the nodes on their own leaves every CONTAINS, CALLS and
+        IMPORTS edge pointing at a key that no longer resolves. Both statements
+        re-derive the block set from *condition* so no block key list crosses the
+        wire on a repo-sized delete.
+        """
+        blocks = CollectionNames.BLOCKS.value
+        edges = CollectionNames.RECORD_RELATIONS.value
+        try:
+            edge_query = f"""
+            LET block_ids = (
+                FOR block IN {blocks}
+                    FILTER {condition}
+                    RETURN block._id
+            )
+            FOR edge IN {edges}
+                FILTER edge._from IN block_ids OR edge._to IN block_ids
+                REMOVE edge IN {edges} OPTIONS {{ ignoreErrors: true }}
+                RETURN 1
+            """
+            await self.http_client.execute_aql(
+                edge_query, bind_vars=bind_vars, txn_id=transaction
+            )
+            node_query = f"""
+            FOR block IN {blocks}
+                FILTER {condition}
+                REMOVE block IN {blocks} OPTIONS {{ ignoreErrors: true }}
+                RETURN 1
+            """
+            rows = await self.http_client.execute_aql(
+                node_query, bind_vars=bind_vars, txn_id=transaction
+            ) or []
+            if rows:
+                self.logger.debug(f"🗑️ Deleted {len(rows)} block(s) from {blocks}")
+            return len(rows)
+        except Exception as e:
+            self.logger.error(f"❌ Delete blocks failed: {str(e)}")
+            raise
+
+    async def delete_blocks_for_records(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the blocks projected from the given records, and their edges.
+
+        Blocks are reached by their ``recordId`` field rather than by traversal,
+        so this stays correct whether it runs before or after the record vertex
+        goes.
+        """
+        if not record_ids:
+            return 0
+        return await self._delete_blocks_where(
+            "block.recordId IN @record_ids", {"record_ids": record_ids}, transaction
+        )
+
+    async def delete_blocks_by_connector_id(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete every block a connector produced. The whole-connector form of
+        ``delete_blocks_for_records``, which would otherwise have to carry a
+        repo's worth of record ids in a bind parameter."""
+        if not connector_id:
+            return 0
+        return await self._delete_blocks_where(
+            "block.connectorId == @connector_id", {"connector_id": connector_id}, transaction
+        )
+
     async def delete_records_recursive(
         self,
         record_ids: list[str],
@@ -12672,7 +12762,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "eventData": None,
                 }
             edge_collections = await self._get_all_edge_collections()
-            node_collections = [CollectionNames.RECORDS.value] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
+            node_collections = [
+                CollectionNames.RECORDS.value,
+                # blocks is not an isOfType target, so it is absent from the type
+                # mapping, but a code record's blocks are deleted with it.
+                CollectionNames.BLOCKS.value,
+            ] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
             txn_id = transaction
             if transaction is None:
                 txn_id = await self.begin_transaction(
@@ -12782,6 +12877,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     # partial failure so the transaction rolls back.
                     await self._delete_isoftype_targets_from_collected(txn_id, type_targets, edge_collections)
                 if record_keys:
+                    await self.delete_blocks_for_records(record_keys, transaction=txn_id)
                     await self._delete_nodes_by_keys(txn_id, record_keys, CollectionNames.RECORDS.value)
                 if transaction is None and txn_id:
                     await self.commit_transaction(txn_id)
@@ -12842,7 +12938,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "eventData": None,
                 }
             edge_collections = await self._get_all_edge_collections()
-            node_collections = [CollectionNames.RECORDS.value] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
+            node_collections = [
+                CollectionNames.RECORDS.value,
+                # blocks is not an isOfType target, so it is absent from the type
+                # mapping, but a code record's blocks are deleted with it.
+                CollectionNames.BLOCKS.value,
+            ] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
             txn_id = transaction
             if transaction is None:
                 txn_id = await self.begin_transaction(
@@ -12885,6 +12986,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if type_targets:
                     await self._delete_isoftype_targets_from_collected(txn_id, type_targets, edge_collections)
                 if record_keys:
+                    await self.delete_blocks_for_records(record_keys, transaction=txn_id)
                     await self._delete_nodes_by_keys(txn_id, record_keys, CollectionNames.RECORDS.value)
                 if transaction is None and txn_id:
                     await self.commit_transaction(txn_id)
@@ -14050,6 +14152,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None
     ) -> None:
         """Delete main record from records collection."""
+        # The shared tail of every connector-specific delete executor, and the only
+        # one of them that knows the record is going -- so the record's code blocks
+        # come out here rather than in each executor.
+        await self.delete_blocks_for_records([record_id], transaction=transaction)
+
         record_deletion_query = """
         REMOVE @record_id IN @@records_collection
         RETURN OLD

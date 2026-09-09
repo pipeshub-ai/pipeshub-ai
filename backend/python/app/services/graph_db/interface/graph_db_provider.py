@@ -3534,6 +3534,23 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def delete_blocks_for_records(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the blocks projected from the given records, and their edges.
+
+        Blocks hang off their record by ``recordId`` alone, so a record vertex
+        can be removed without any of them going with it. Cross-file code edges
+        point straight at a block, never at its record, and outlive the record
+        sweep too -- both halves have to be removed here.
+
+        Returns the number of block nodes removed.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def delete_connector_instance(
         self,
         connector_id: str,
