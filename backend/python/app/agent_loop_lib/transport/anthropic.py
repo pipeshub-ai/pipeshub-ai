@@ -354,6 +354,11 @@ class AnthropicTransport(LLMTransport):
         _MIN = 300  # chars — don't bother caching tiny results
         for fmsg in reversed(formatted[:-2]):
             content = fmsg.get("content")
+            if isinstance(content, str):
+                if len(content) >= _MIN:
+                    fmsg["content"] = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+                    return  # one breakpoint is enough
+                continue
             if not isinstance(content, list):
                 continue
             for block in content:
