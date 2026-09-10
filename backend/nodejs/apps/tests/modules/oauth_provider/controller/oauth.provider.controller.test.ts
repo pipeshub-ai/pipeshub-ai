@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { Request } from 'express'
 import { OAuthProviderController } from '../../../../src/modules/oauth_provider/controller/oauth.provider.controller'
 import {
   InvalidClientError,
@@ -259,7 +260,7 @@ describe('OAuthProviderController', () => {
       mockOAuthTokenService.revokeToken.resolves(true)
       const req = {
         body: { token: 'tok', client_id: 'public_cid' },
-      } as any
+      } as unknown as Request
 
       await controller.revoke(req, mockRes, mockNext)
       expect(mockOAuthAppService.verifyClientCredentials.calledWith('public_cid', undefined)).to.be.true
