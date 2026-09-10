@@ -44,6 +44,13 @@ from tests.unit.services.messaging.governor_test_helpers import make_test_govern
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
+def _fill_gate_waiters(consumer, count: int, tier: ParseTier = ParseTier.HEAVY) -> None:
+    """Stand in for `count` spawned tasks still queued for an index gate."""
+    for _ in range(count):
+        consumer.gate_waiters.add(tier)
+
+
 @pytest.fixture
 def logger():
     return logging.getLogger("test_indexing_cov")
@@ -189,8 +196,7 @@ class TestApplyBackpressure:
         consumer.consumer.paused.return_value = set()
 
         # Simulate reaching capacity via gate waiters
-        with consumer._futures_lock:
-            consumer._gate_waiters = messaging_env.max_pending_indexing_tasks
+        _fill_gate_waiters(consumer, messaging_env.max_pending_indexing_tasks)
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.pause.assert_called_once()
@@ -1940,7 +1946,7 @@ class TestApplyBackpressureFullCoverage:
         assigned = {MagicMock(), MagicMock()}
         consumer.consumer.assignment.return_value = assigned
         consumer.consumer.paused.return_value = set()
-        consumer._gate_waiters = messaging_env.max_pending_indexing_tasks + 1
+        _fill_gate_waiters(consumer, messaging_env.max_pending_indexing_tasks + 1)
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.pause.assert_called()
         assert consumer._backpressure_logged is True
@@ -2180,8 +2186,7 @@ class TestConsumeLoop:
 
         mock_consumer.getmany = mock_getmany
         consumer.consumer = mock_consumer
-        with consumer._futures_lock:
-            consumer._gate_waiters = 39
+        _fill_gate_waiters(consumer, 39)
 
         with (
             patch.object(

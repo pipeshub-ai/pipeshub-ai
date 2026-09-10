@@ -2635,7 +2635,9 @@
         "redis": {
           "label": "Redis",
           "descriptionWithKvStore": "캐싱, 속도 제한 및 구성",
-          "description": "캐싱 및 속도 제한"
+          "description": "캐싱 및 속도 제한",
+          "modeCluster": "클러스터",
+          "modeMemorydb": "MemoryDB"
         },
         "mongodb": {
           "label": "MongoDB",

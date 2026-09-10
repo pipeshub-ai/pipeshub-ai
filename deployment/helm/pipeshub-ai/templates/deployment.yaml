@@ -246,6 +246,8 @@ spec:
               value: "6379"
             - name: REDIS_CLUSTER_ENDPOINTS
               value: {{ .Values.redis.external.clusterEndpoints | quote }}
+            - name: REDIS_CLUSTER_NAT_MAP
+              value: {{ .Values.redis.external.natMap | default "" | quote }}
             {{- else }}
             - name: REDIS_HOST
               value: "{{ .Release.Name }}-redis-master"

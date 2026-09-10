@@ -2404,7 +2404,9 @@
         "redis": {
           "label": "Redis",
           "descriptionWithKvStore": "Caching, rate limiting, and configuration",
-          "description": "Caching and rate limiting"
+          "description": "Caching and rate limiting",
+          "modeCluster": "Cluster",
+          "modeMemorydb": "MemoryDB"
         },
         "mongodb": {
           "label": "MongoDB",

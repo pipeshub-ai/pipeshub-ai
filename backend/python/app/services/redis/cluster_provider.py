@@ -76,7 +76,25 @@ class ClusterRedisProvider(IRedisConnectionProvider):
             kwargs["ssl_cert_reqs"] = "required" if self._config.tls_reject_unauthorized else None
             if self._config.tls_ca_path:
                 kwargs["ssl_ca_certs"] = self._config.tls_ca_path
+        if self._config.nat_map:
+            kwargs["address_remap"] = self._make_address_remap(self._config.nat_map)
         return kwargs
+
+    @staticmethod
+    def _make_address_remap(
+        nat_map: dict[str, tuple[str, int]],
+    ) -> "Any":
+        """Adapt the ``{"internalHost:port": (externalHost, port)}`` map (F3) into
+        the ``Callable[[tuple[str, int]], tuple[str, int]]`` redis-py 5.x
+        ``RedisCluster(address_remap=...)`` expects. Addresses with no entry pass
+        through unchanged rather than raising -- a NAT map only needs to cover the
+        subset of nodes that are actually unreachable at their advertised address.
+        """
+        def _remap(address: tuple[str, int]) -> tuple[str, int]:
+            key = f"{address[0]}:{address[1]}"
+            return nat_map.get(key, address)
+
+        return _remap
 
     def _track(self, client: RedisCluster) -> RedisCluster:
         with self._created_lock:
@@ -131,6 +149,7 @@ class ClusterRedisProvider(IRedisConnectionProvider):
         kwargs.pop("read_from_replicas", None)
         kwargs.pop("require_full_coverage", None)
         kwargs.pop("max_connections", None)
+        kwargs.pop("address_remap", None)
         client = Redis(host=host, port=port, **kwargs)
         with self._created_lock:
             self._pubsub_clients.append(client)

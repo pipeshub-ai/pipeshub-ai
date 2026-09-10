@@ -64,15 +64,15 @@ def _kafka_message(offset: int, connector_id: str = "c1", extension: str = "txt"
     return msg
 
 
-def _redis_fields(index: int, connector_id: str = "c1"):
+def _redis_fields(index: int, connector_id: str = "c1", extension: str = "txt"):
     envelope = {
         "eventType": "newRecord",
         "payload": {
             "recordId": f"r-{index}",
             "orgId": "org-1",
             "connectorId": connector_id,
-            "extension": "txt",
-            "mimeType": "text/plain",
+            "extension": extension,
+            "mimeType": "application/pdf" if extension == "pdf" else "text/plain",
         },
     }
     return {"value": json.dumps(envelope)}
@@ -100,12 +100,24 @@ def _kafka_consumer(logger, **fair_overrides):
     consumer.consumer.commit = AsyncMock()
     consumer.running = True
     # The real __start_processing_task registers a GateWaiterToken
-    # synchronously, which is what bounds a dispatch pass. Model that.
-    started: list = []
-    mock = AsyncMock(side_effect=lambda *a, **k: started.append(1))
-    consumer._IndexingKafkaConsumer__start_processing_task = mock
-    consumer._get_gate_waiter_count = lambda: len(started)
+    # synchronously, which is what bounds a dispatch pass. Model that with
+    # a real token in the message's tier, never admitted: every started
+    # record stays a waiter, as if its index gate were full.
+    consumer._IndexingKafkaConsumer__start_processing_task = _never_admitted(
+        consumer, lambda a, k: a[1]
+    )
     return consumer
+
+
+def _never_admitted(consumer, parsed_of):
+    """An AsyncMock stand-in for start-processing that leaves a gate-waiter
+    token behind, in the tier ``dispatch_tier`` gives the parsed message."""
+
+    def start(*a, **k):
+        parsed = parsed_of(a, k)
+        concurrency.GateWaiterToken(consumer, concurrency.dispatch_tier(consumer, parsed))
+
+    return AsyncMock(side_effect=start)
 
 
 def _redis_consumer(logger, topics=("record-events",), **fair_overrides):
@@ -118,10 +130,9 @@ def _redis_consumer(logger, topics=("record-events",), **fair_overrides):
     )
     consumer.redis = AsyncMock()
     consumer.running = True
-    started: list = []
-    mock = AsyncMock(side_effect=lambda *a, **k: started.append(1))
-    consumer._start_processing_task = mock
-    consumer._get_gate_waiter_count = lambda: len(started)
+    consumer._start_processing_task = _never_admitted(
+        consumer, lambda a, k: a[3] if len(a) > 3 else k.get("parsed_message")
+    )
     return consumer
 
 
@@ -386,3 +397,298 @@ class TestLanesDoNotMultiplyLimits:
             consumer._scheduler.pending_count + len(consumer._deferred_messages)
         )
         assert held <= 10, f"held {held} against a total budget of 10"
+
+
+def _fill(consumer, tier: ParseTier, count: int) -> list:
+    """`count` spawned tasks of `tier` still queued for their index gate."""
+    return [concurrency.GateWaiterToken(consumer, tier) for _ in range(count)]
+
+
+class TestDispatchIsBoundedPerTier:
+    """Heavy waiters park for the length of the heavy-parse queue; they must
+    never take the read-ahead that light records turn over in milliseconds.
+    The governor here is the 4-CPU test one: index_heavy warm-starts at 4,
+    so heavy may queue 2 x 4 = 8 tasks; light is bounded by the total."""
+
+    async def test_redis_heavy_backlog_does_not_starve_light(self, logger):
+        consumer = _redis_consumer(logger)
+        consumer.governor = make_test_governor()
+        for index in range(100):
+            await consumer._IndexingRedisStreamsConsumer__enqueue_message(
+                "record-events", f"h{index}-0", _redis_fields(index, "confluence", "pdf")
+            )
+        for index in range(100):
+            await consumer._IndexingRedisStreamsConsumer__enqueue_message(
+                "record-events", f"l{index}-0", _redis_fields(200 + index, "confluence")
+            )
+
+        await consumer._IndexingRedisStreamsConsumer__dispatch_phase()
+
+        budget = concurrency.dispatch_budget(consumer)
+        assert consumer.gate_waiters.count(ParseTier.HEAVY) == budget.tiers[ParseTier.HEAVY].ceiling == 8
+        assert consumer.gate_waiters.count(ParseTier.LIGHT) == 56
+        assert consumer.gate_waiters.count() == budget.total_ceiling == 64
+        assert consumer._scheduler.pending_count_for(("org-1", "confluence", "light")) == 44
+
+    async def test_kafka_heavy_backlog_does_not_starve_light(self, logger):
+        consumer = _kafka_consumer(logger, parallel_partitions=True)
+        consumer.governor = make_test_governor()
+        tp = TopicPartition("record-events", 0)
+        for offset in range(100):
+            await consumer._IndexingKafkaConsumer__enqueue_message(
+                tp, _kafka_message(offset, connector_id="confluence", extension="pdf")
+            )
+        for offset in range(100, 200):
+            await consumer._IndexingKafkaConsumer__enqueue_message(
+                tp, _kafka_message(offset, connector_id="confluence", extension="txt")
+            )
+
+        await consumer._IndexingKafkaConsumer__dispatch_phase()
+
+        assert consumer.gate_waiters.count(ParseTier.HEAVY) == 8
+        assert consumer.gate_waiters.count(ParseTier.LIGHT) == 56
+
+    async def test_light_only_connector_is_not_stalled_by_another_connectors_attachments(self, logger):
+        consumer = _redis_consumer(logger)
+        consumer.governor = make_test_governor()
+        for index in range(100):
+            await consumer._IndexingRedisStreamsConsumer__enqueue_message(
+                "record-events", f"h{index}-0", _redis_fields(index, "confluence", "pdf")
+            )
+        for index in range(30):
+            await consumer._IndexingRedisStreamsConsumer__enqueue_message(
+                "record-events", f"j{index}-0", _redis_fields(200 + index, "jira")
+            )
+
+        await consumer._IndexingRedisStreamsConsumer__dispatch_phase()
+
+        assert consumer._scheduler.pending_count_for(("org-1", "jira")) == 0
+        assert consumer.gate_waiters.count(ParseTier.LIGHT) == 30
+        assert consumer.gate_waiters.count(ParseTier.HEAVY) == 8
+
+    async def test_heavy_waiters_are_capped_even_with_nothing_else_queued(self, logger):
+        consumer = _redis_consumer(logger)
+        consumer.governor = make_test_governor()
+        for index in range(50):
+            await consumer._IndexingRedisStreamsConsumer__enqueue_message(
+                "record-events", f"{index}-0", _redis_fields(index, "confluence", "pdf")
+            )
+
+        await consumer._IndexingRedisStreamsConsumer__dispatch_phase()
+
+        assert consumer._start_processing_task.await_count == 8
+
+    async def test_heavy_ceiling_tracks_the_governors_current_limit(self, logger):
+        consumer = _redis_consumer(logger)
+        consumer.governor = make_test_governor()
+        consumer.governor._registry.set(Pool.INDEX_HEAVY, 1)  # braked to the floor
+        for index in range(50):
+            await consumer._IndexingRedisStreamsConsumer__enqueue_message(
+                "record-events", f"{index}-0", _redis_fields(index, "confluence", "pdf")
+            )
+
+        await consumer._IndexingRedisStreamsConsumer__dispatch_phase()
+
+        # 2 x 1 would be 2; the per-tier floor keeps the gate fed.
+        assert consumer._start_processing_task.await_count == 8
+
+    async def test_both_tiers_at_their_ceilings_stops_dispatch(self, logger):
+        consumer = _redis_consumer(logger)
+        consumer.governor = make_test_governor()
+        tokens = _fill(consumer, ParseTier.HEAVY, 8) + _fill(consumer, ParseTier.LIGHT, 56)
+        assert concurrency.dispatch_budget(consumer).blocked
+        for index in range(5):
+            await consumer._IndexingRedisStreamsConsumer__enqueue_message(
+                "record-events", f"{index}-0", _redis_fields(index)
+            )
+
+        await consumer._IndexingRedisStreamsConsumer__dispatch_phase()
+
+        consumer._start_processing_task.assert_not_awaited()
+        for token in tokens:
+            token.release()
+
+    async def test_collapsed_light_tier_uses_one_ceiling(self, logger):
+        """MAX_CONCURRENT_INDEXING=1: no light budget, every record is heavy,
+        and the single tier gets the whole total rather than 2 x 1."""
+        consumer = _redis_consumer(logger)
+        consumer.governor = make_test_governor(env_index=1)
+        assert consumer.governor.ceilings.index_light == 0
+        for index in range(100):
+            await consumer._IndexingRedisStreamsConsumer__enqueue_message(
+                "record-events", f"{index}-0", _redis_fields(index)
+            )
+
+        await consumer._IndexingRedisStreamsConsumer__dispatch_phase()
+
+        budget = concurrency.dispatch_budget(consumer)
+        assert set(budget.tiers) == {ParseTier.HEAVY}
+        assert consumer._start_processing_task.await_count == budget.total_ceiling
+        assert consumer.gate_waiters.count(ParseTier.LIGHT) == 0
+
+    async def test_without_a_governor_the_shared_ceiling_is_unchanged(self, logger):
+        consumer = _redis_consumer(logger)
+        for index in range(100):
+            await consumer._IndexingRedisStreamsConsumer__enqueue_message(
+                "record-events", f"{index}-0", _redis_fields(index, extension="pdf" if index % 2 else "txt")
+            )
+
+        await consumer._IndexingRedisStreamsConsumer__dispatch_phase()
+
+        assert consumer._start_processing_task.await_count == concurrency.pending_task_ceiling(consumer)
+
+    async def test_explicit_pending_cap_is_the_total(self, logger, monkeypatch):
+        monkeypatch.setenv("MAX_PENDING_INDEXING_TASKS", "20")
+        consumer = _redis_consumer(logger)
+        consumer.governor = make_test_governor()
+        for index in range(100):
+            await consumer._IndexingRedisStreamsConsumer__enqueue_message(
+                "record-events", f"h{index}-0", _redis_fields(index, "confluence", "pdf")
+            )
+        for index in range(100):
+            await consumer._IndexingRedisStreamsConsumer__enqueue_message(
+                "record-events", f"l{index}-0", _redis_fields(200 + index, "confluence")
+            )
+
+        await consumer._IndexingRedisStreamsConsumer__dispatch_phase()
+
+        assert consumer.gate_waiters.count() == 20
+        assert consumer.gate_waiters.count(ParseTier.HEAVY) == 8
+        assert consumer.gate_waiters.count(ParseTier.LIGHT) == 12
+
+
+class TestBackpressureSignalsArePerTier:
+    async def test_kafka_pauses_partitions_only_when_every_tier_is_blocked(self, logger):
+        consumer = _kafka_consumer(logger)
+        consumer.governor = make_test_governor()
+        tp = TopicPartition("record-events", 0)
+        consumer.consumer.assignment.return_value = {tp}
+        consumer.consumer.paused.return_value = set()
+
+        tokens = _fill(consumer, ParseTier.HEAVY, 8)
+        consumer._IndexingKafkaConsumer__apply_backpressure()
+        consumer.consumer.pause.assert_not_called()
+
+        tokens += _fill(consumer, ParseTier.LIGHT, 56)
+        consumer._IndexingKafkaConsumer__apply_backpressure()
+        consumer.consumer.pause.assert_called_once_with(tp)
+        for token in tokens:
+            token.release()
+
+    async def test_kafka_backpressure_log_names_each_tier(self, logger, caplog):
+        consumer = _kafka_consumer(logger)
+        consumer.governor = make_test_governor()
+        consumer.consumer.assignment.return_value = {TopicPartition("record-events", 0)}
+        consumer.consumer.paused.return_value = set()
+        tokens = _fill(consumer, ParseTier.HEAVY, 8) + _fill(consumer, ParseTier.LIGHT, 56)
+
+        with caplog.at_level(logging.WARNING, logger=logger.name):
+            consumer._IndexingKafkaConsumer__apply_backpressure()
+
+        assert "heavy 8/8, light 56/64, total 64/64" in caplog.text
+        for token in tokens:
+            token.release()
+
+    async def test_kafka_finished_partition_resumes_while_a_tier_has_room(self, logger):
+        consumer = _kafka_consumer(logger)
+        consumer.governor = make_test_governor()
+        tokens = _fill(consumer, ParseTier.HEAVY, 8)
+        message = _kafka_message(0)
+        tp = TopicPartition(message.topic, message.partition)
+        consumer._in_flight_partitions.add(tp)
+
+        consumer._IndexingKafkaConsumer__finish_partition(message, retry_current=False)
+
+        consumer.consumer.resume.assert_called_once_with(tp)
+        for token in tokens:
+            token.release()
+
+    async def test_kafka_lane_is_blocked_by_its_entity_not_by_a_tier_leaf(self, logger):
+        consumer = _kafka_consumer(logger, max_per_entity_messages=1)
+        tp = TopicPartition("record-events", 0)
+        await consumer._IndexingKafkaConsumer__enqueue_message(tp, _kafka_message(0, extension="pdf"))
+        outcome, blocked_key = await consumer._IndexingKafkaConsumer__enqueue_message(
+            tp, _kafka_message(1, extension="txt")
+        )
+
+        assert outcome != "buffered"
+        assert blocked_key == ("org-1", "c1")
+
+    async def test_redis_read_phase_backpressure_only_when_every_tier_is_blocked(self, logger):
+        consumer = _redis_consumer(logger)
+        consumer.governor = make_test_governor()
+        consumer.redis.xreadgroup = AsyncMock(return_value=[])
+        tokens = _fill(consumer, ParseTier.HEAVY, 8)
+
+        await consumer._IndexingRedisStreamsConsumer__read_phase()
+        assert consumer.redis.xreadgroup.await_count == 1
+        assert consumer._backpressure_active is False
+
+        tokens += _fill(consumer, ParseTier.LIGHT, 56)
+        await consumer._IndexingRedisStreamsConsumer__read_phase()
+        assert consumer.redis.xreadgroup.await_count == 1
+        assert consumer._backpressure_active is True
+        for token in tokens:
+            token.release()
+
+    async def test_redis_pel_recovery_claims_from_the_total_remaining(self, logger):
+        """Recovered entries go through the scheduler, so the claim is sized
+        by the total, not stopped because one tier is at its ceiling."""
+        consumer = _redis_consumer(logger)
+        consumer.governor = make_test_governor()
+        consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        consumer.redis.xpending_range = AsyncMock(return_value=[])
+        tokens = _fill(consumer, ParseTier.HEAVY, 8)
+
+        await consumer._drain_pending()
+
+        kwargs = consumer.redis.xautoclaim.await_args.kwargs
+        assert kwargs["count"] == 10  # min(10, 56 remaining, buffer room)
+        for token in tokens:
+            token.release()
+
+
+class TestWaitersSurviveNothingPastShutdown:
+    async def test_kafka_stop_resets_the_counters(self, logger):
+        consumer = _kafka_consumer(logger)
+        _fill(consumer, ParseTier.HEAVY, 3)
+        consumer._IndexingKafkaConsumer__stop_worker_thread()
+        assert consumer.gate_waiters.count() == 0
+
+    async def test_redis_stop_resets_the_counters(self, logger):
+        consumer = _redis_consumer(logger)
+        _fill(consumer, ParseTier.LIGHT, 3)
+        consumer._stop_worker_thread()
+        assert consumer.gate_waiters.count() == 0
+
+    async def test_tokens_released_on_cancelled_futures_never_go_negative(self, logger):
+        consumer = _redis_consumer(logger)
+        tokens = _fill(consumer, ParseTier.HEAVY, 2)
+        for token in tokens:
+            token.release()
+            token.release()
+        assert consumer.gate_waiters.snapshot() == {ParseTier.HEAVY: 0, ParseTier.LIGHT: 0}
+
+
+class TestRevocationCoversBothTiers:
+    async def test_kafka_revoked_partition_drops_its_heavy_and_light_leaves(self, logger):
+        consumer = _kafka_consumer(logger)
+        consumer.governor = make_test_governor()
+        tp0 = TopicPartition("record-events", 0)
+        tp1 = TopicPartition("record-events", 1)
+        for offset, (tp, extension) in enumerate(
+            [(tp0, "pdf"), (tp0, "txt"), (tp1, "pdf"), (tp1, "txt")]
+        ):
+            message = _kafka_message(offset, connector_id="c1", extension=extension)
+            message.partition = tp.partition
+            await consumer._IndexingKafkaConsumer__enqueue_message(tp, message)
+        assert consumer._scheduler.pending_count == 4
+
+        await consumer._on_partitions_revoked([tp0])
+
+        assert consumer._scheduler.pending_count == 2
+        assert consumer._scheduler.pending_count_for(("org-1", "c1", "heavy")) == 1
+        assert consumer._scheduler.pending_count_for(("org-1", "c1", "light")) == 1
+        # Spawned tasks are not touched by revocation: their tokens are
+        # released by the futures' done callbacks, never by the rebalance.
+        assert consumer.gate_waiters.count() == 0

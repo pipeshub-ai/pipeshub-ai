@@ -63,6 +63,35 @@ class TestCreateClient:
         assert c1 is not c2
 
 
+class TestNatMap:
+    """`nat_map` (F3, `REDIS_CLUSTER_NAT_MAP`) must reach `RedisCluster` as
+    the `address_remap` callable redis-py 5.x expects -- Kubernetes-fronted
+    self-hosted clusters and MemoryDB's private-VPC addressing both need
+    this, not just MemoryDB."""
+
+    def test_address_remap_is_forwarded_when_nat_map_is_set(self, mock_cluster_cls):
+        nat_map = {"10.0.0.1:6379": ("public.example.com", 6379)}
+        provider = ClusterRedisProvider(_config(nat_map=nat_map))
+        provider.create_client()
+
+        remap = mock_cluster_cls.call_args.kwargs["address_remap"]
+        assert remap(("10.0.0.1", 6379)) == ("public.example.com", 6379)
+
+    def test_address_remap_passes_through_unmapped_addresses(self, mock_cluster_cls):
+        nat_map = {"10.0.0.1:6379": ("public.example.com", 6379)}
+        provider = ClusterRedisProvider(_config(nat_map=nat_map))
+        provider.create_client()
+
+        remap = mock_cluster_cls.call_args.kwargs["address_remap"]
+        assert remap(("10.0.0.2", 6379)) == ("10.0.0.2", 6379)
+
+    def test_address_remap_is_absent_when_nat_map_is_unset(self, mock_cluster_cls):
+        provider = ClusterRedisProvider(_config())
+        provider.create_client()
+
+        assert "address_remap" not in mock_cluster_cls.call_args.kwargs
+
+
 class TestGetClientCaching:
     def test_same_thread_returns_cached_client(self, mock_cluster_cls):
         provider = ClusterRedisProvider(_config())

@@ -50,6 +50,7 @@ describe('RedisService', () => {
         return mockClient;
       }),
       createPubSubClient: sinon.stub().returns(mockClient),
+      prepare: sinon.stub().resolves(),
       keySlot: sinon.stub().returns(0),
       loadScript: sinon.stub().resolves('fakesha'),
       connectionUrl: sinon.stub().returns('redis://fake:6379/0'),

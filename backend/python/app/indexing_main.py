@@ -1437,6 +1437,21 @@ async def health_check(request: Request) -> JSONResponse:
                 # Observability failure must not fail the liveness probe —
                 # the service itself is still healthy.
                 content["resource_governor"] = {"error": str(stats_error)}
+        # Per-tier dispatch admission: a heavy tier pinned at its ceiling with
+        # light idle is attachments queueing on heavy parse, which is fine as
+        # long as light keeps moving; both pinned means the node is full.
+        dispatch: dict[str, Any] = {}
+        for entry in getattr(container, "kafka_consumers", None) or []:
+            consumer = entry[1] if len(entry) > 1 else None
+            stats = getattr(consumer, "dispatch_stats", None)
+            if not callable(stats):
+                continue
+            try:
+                dispatch[str(entry[0])] = stats()
+            except Exception as stats_error:
+                dispatch[str(entry[0])] = {"error": str(stats_error)}
+        if dispatch:
+            content["dispatch"] = dispatch
         return JSONResponse(
             status_code=200,
             content=content,

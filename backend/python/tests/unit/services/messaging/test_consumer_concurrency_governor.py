@@ -142,7 +142,7 @@ class TestPendingTaskCeiling:
 
 
 def _waiter_host() -> SimpleNamespace:
-    return SimpleNamespace(_futures_lock=threading.Lock(), _gate_waiters=0)
+    return SimpleNamespace(gate_waiters=concurrency.GateWaiters())
 
 
 class TestGateWaiterToken:
@@ -152,14 +152,14 @@ class TestGateWaiterToken:
 
     def test_counts_from_construction_until_admit(self) -> None:
         host = _waiter_host()
-        token = concurrency.GateWaiterToken(host)
+        token = concurrency.GateWaiterToken(host, ParseTier.LIGHT)
         assert concurrency.get_gate_waiter_count(host) == 1
         token.admit()
         assert concurrency.get_gate_waiter_count(host) == 0
 
     def test_release_after_admit_is_a_noop(self) -> None:
         host = _waiter_host()
-        token = concurrency.GateWaiterToken(host)
+        token = concurrency.GateWaiterToken(host, ParseTier.LIGHT)
         token.admit()
         token.release()
         assert concurrency.get_gate_waiter_count(host) == 0
@@ -169,7 +169,7 @@ class TestGateWaiterToken:
         the gate must still stop counting as a waiter, and calling
         release() more than once must not double-decrement."""
         host = _waiter_host()
-        token = concurrency.GateWaiterToken(host)
+        token = concurrency.GateWaiterToken(host, ParseTier.HEAVY)
         token.release()
         token.release()
         assert concurrency.get_gate_waiter_count(host) == 0
@@ -180,14 +180,18 @@ class TestGateWaiterToken:
         host = _waiter_host()
         ceiling = 3
 
-        admitted_tokens = [concurrency.GateWaiterToken(host) for _ in range(ceiling)]
+        admitted_tokens = [
+            concurrency.GateWaiterToken(host, ParseTier.HEAVY) for _ in range(ceiling)
+        ]
         for token in admitted_tokens:
             token.admit()
 
-        waiting_tokens = [concurrency.GateWaiterToken(host) for _ in range(ceiling - 1)]
+        waiting_tokens = [
+            concurrency.GateWaiterToken(host, ParseTier.HEAVY) for _ in range(ceiling - 1)
+        ]
         assert concurrency.get_gate_waiter_count(host) < ceiling
 
-        extra_waiter = concurrency.GateWaiterToken(host)
+        extra_waiter = concurrency.GateWaiterToken(host, ParseTier.HEAVY)
         assert concurrency.get_gate_waiter_count(host) >= ceiling
 
         for token in waiting_tokens:
