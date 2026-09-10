@@ -4,13 +4,16 @@ from typing import TYPE_CHECKING, Any, Optional
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
 from app.edition_config import resolve_llm_for_search
-from app.modules.retrieval.retrieval_service import RetrievalService
+from app.modules.retrieval.retrieval_service import (
+    MAX_SEARCH_LIMIT,
+    RetrievalService,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
@@ -25,19 +28,19 @@ router = APIRouter()
 # Pydantic models
 class SearchQuery(BaseModel):
     query: str
-    limit: Optional[int] = 5
+    limit: Optional[int] = Field(default=5, ge=1, le=MAX_SEARCH_LIMIT)
     filters: Optional[dict[str, Any]] = {}
 
 
 class SimilarDocumentQuery(BaseModel):
     document_id: str
-    limit: Optional[int] = 5
+    limit: Optional[int] = Field(default=5, ge=1, le=MAX_SEARCH_LIMIT)
     filters: Optional[dict[str, Any]] = None
 
 
 class SearchRequest(BaseModel):
     query: str
-    topK: int = 20
+    topK: int = Field(default=20, ge=1, le=MAX_SEARCH_LIMIT)
     filtersV1: list[dict[str, list[str]]]
 
 

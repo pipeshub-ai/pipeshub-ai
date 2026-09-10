@@ -53,8 +53,18 @@ class SinkOrchestrator(Transformer):
         row_blocks = [b for b in original_blocks if b.type == BlockType.TABLE_ROW]
 
         if len(row_blocks) <= limit:
-            return block_containers 
-        limited_blocks =  row_blocks[:limit]
+            return block_containers
+
+        # Cap the rows, keep everything else. `is_sql` in `index()` is true when
+        # *any* block group is a SQL table or view, so filtering down to
+        # `row_blocks[:limit]` would drop a record's prose, headings and
+        # non-SQL tables from blob storage -- and blob storage is what
+        # `fetch_record` serves back as citation and preview content.
+        kept_row_indices = {b.index for b in row_blocks[:limit]}
+        limited_blocks = [
+            b for b in original_blocks
+            if b.type != BlockType.TABLE_ROW or b.index in kept_row_indices
+        ]
 
         kept_indices = {b.index for b in limited_blocks}
 
