@@ -50,14 +50,6 @@ async def resolve_instance_owner_config_service(
     return config_service
 
 
-async def build_mcp_fallback_config_services(
-    instance: dict[str, Any],  # noqa: ARG001
-    config_service: ConfigurationService,  # noqa: ARG001
-) -> list | None:
-    """Pre-resolve fallback config services."""
-    return None
-
-
 def build_schedule_refresh_kwargs(org_id: Optional[str]) -> dict[str, Any]:
     """Extra kwargs for schedule_token_refresh."""
     return {}
