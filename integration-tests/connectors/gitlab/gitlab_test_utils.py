@@ -71,7 +71,19 @@ def enc(path: str) -> str:
 class GitLabRestClient:
     """Thin httpx wrapper over the GitLab REST API."""
 
+    # Loopback is exempt from the HTTPS rule: a GitLab in Docker for local development
+    # is legitimately http://localhost, and there is no network to observe there.
+    _CLEARTEXT_OK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
     def __init__(self, token: str, instance_url: str) -> None:
+        parsed = urllib.parse.urlparse(instance_url)
+        if parsed.scheme != "https" and (parsed.hostname or "") not in self._CLEARTEXT_OK_HOSTS:
+            raise ValueError(
+                f"refusing to talk to {instance_url!r} over {parsed.scheme or 'no'} scheme: "
+                "every request carries the PAT in a PRIVATE-TOKEN header, so a non-HTTPS "
+                "instance hands the token to anyone on the path. Use https:// (loopback "
+                "hosts are exempt)."
+            )
         self._token = token
         self._base = instance_url.rstrip("/") + "/api/v4"
         self._client: httpx.AsyncClient | None = None
@@ -599,6 +611,30 @@ async def reap_own_artifacts(rest: GitLabRestClient, project: str, branch: str) 
         logger.warning("TEARDOWN: could not reap artifacts for %s: %s", GL_IT_RUN_ID, e)
 
 
+async def _namespace_last_commit_epoch(
+    rest: GitLabRestClient, project: str, namespace: str,
+) -> Optional[float]:
+    """Epoch of the newest commit touching ``namespace``, or None when unknown.
+
+    None means "cannot prove it is stale", and every caller treats that as
+    do-not-delete: losing a live run's files is far worse than leaving a dead run's
+    behind for the next sweep.
+    """
+    try:
+        rows = await gl_call(
+            rest.get_json, f"/projects/{enc(project)}/repository/commits",
+            {"path": namespace, "per_page": 1},
+            context=f"last commit for {namespace}",
+        )
+    except Exception as e:
+        logger.warning("SETUP: could not date %s (%s); leaving it alone", namespace, e)
+        return None
+    if not rows:
+        return None
+    row = rows[0]
+    return _parse_iso8601(row.get("committed_date") or row.get("created_at") or "")
+
+
 async def sweep_stale_artifacts(rest: GitLabRestClient, project: str, branch: str) -> None:
     """Reclaim artifacts left by runs that died before their cleanup ran."""
     cutoff = time.time() - GL_IT_STALE_ARTIFACT_AGE_SEC
@@ -615,10 +651,32 @@ async def sweep_stale_artifacts(rest: GitLabRestClient, project: str, branch: st
     try:
         tree = await get_tree(rest, project, branch)
         prefix = f"{GL_IT_PATH_ROOT}/"
-        stale = [
+        foreign = [
             p for p in blob_paths(tree)
             if p.startswith(prefix) and not owns_path(p)
         ]
+        # Age-gate per namespace, not per path. A git tree entry carries no timestamp,
+        # so "when did this run last touch its namespace" comes from the newest commit
+        # against that prefix — which is exactly the right signal: a live run has just
+        # committed, a dead one has not. Without this the sweep deletes the files of
+        # any concurrently running leg, which is the very thing it claims to protect.
+        stale: list[str] = []
+        checked: dict[str, bool] = {}
+        for path in foreign:
+            namespace = "/".join(path.split("/")[:2])
+            if namespace not in checked:
+                touched = await _namespace_last_commit_epoch(rest, project, namespace)
+                checked[namespace] = touched is not None and touched < cutoff
+                if not checked[namespace]:
+                    logger.info(
+                        "SETUP: leaving %s alone — last touched %s, inside the %ss "
+                        "window, so another run may still be using it",
+                        namespace,
+                        "never" if touched is None else f"{time.time() - touched:.0f}s ago",
+                        GL_IT_STALE_ARTIFACT_AGE_SEC,
+                    )
+            if checked[namespace]:
+                stale.append(path)
         if stale:
             logger.info("SETUP: sweeping %s leaked code path(s)", len(stale))
             await gl_call(
@@ -642,7 +700,12 @@ async def sweep_pinned_mr_comments(rest: GitLabRestClient, project: str, iid: in
     cutoff = time.time() - GL_IT_STALE_ARTIFACT_AGE_SEC
     try:
         for note in await list_notes(rest, project, "merge_requests", iid):
-            if PINNED_MR_COMMENT_MARKER not in (note.get("body") or ""):
+            body = note.get("body") or ""
+            if PINNED_MR_COMMENT_MARKER not in body:
+                continue
+            # Ownership before age, mirroring _is_stale_artifact: the age gate alone
+            # would reap a concurrent run's comment once that run outlived the window.
+            if GL_IT_RUN_ID in body:
                 continue
             created = _parse_iso8601(note.get("created_at") or "")
             if created is not None and created < cutoff:
