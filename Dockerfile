@@ -51,12 +51,12 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     echo "Building for architecture: $ARCH"; \
     if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then \
         echo "Detected ARM architecture"; \
-        npm ci --ignore-scripts && \
+        npm install --ignore-scripts && \
         npm uninstall jpeg-recompress-bin mozjpeg imagemin-mozjpeg 2>/dev/null || true && \
         npm install sharp --save || true; \
     else \
         echo "Detected x86 architecture"; \
-        npm ci; \
+        npm install; \
     fi
 
 COPY backend/nodejs/apps/src ./src
@@ -77,7 +77,7 @@ COPY frontend/package*.json ./
 
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm config set legacy-peer-deps true && \
-    npm ci
+    npm install
 
 COPY frontend/ ./
 
