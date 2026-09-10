@@ -1770,29 +1770,39 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return
 
         self._mark_in_flight(message_id)
-        if parsed_message is None:
-            # The broker-order path spawns from raw fields; the tier has to
-            # be known before the token exists. The wrapper reuses this parse.
-            parsed_message = await self._parse_message(message_id, fields)
-        waiter_token = concurrency.GateWaiterToken(
-            self, concurrency.dispatch_tier(self, parsed_message)
-        )
-        processing_coro = self._process_message_wrapper(
-            stream_name,
-            message_id,
-            dict(fields),
-            waiter_token,
-            parsed_message,
-        )
+        # Everything from the mark to the hand-off is guarded, not just the
+        # scheduling call. `__already_held` reads an id in the in-flight set as
+        # this consumer's live work, so a stranded id makes the read and
+        # dispatch phases skip that entry forever and keeps the recovery scan
+        # from ever reclaiming or dead-lettering it. The record it carries
+        # would then never be indexed, with nothing logged to say so.
+        waiter_token: "concurrency.GateWaiterToken | None" = None
+        processing_coro = None
         try:
+            if parsed_message is None:
+                # The broker-order path spawns from raw fields; the tier has to
+                # be known before the token exists. The wrapper reuses this parse.
+                parsed_message = await self._parse_message(message_id, fields)
+            waiter_token = concurrency.GateWaiterToken(
+                self, concurrency.dispatch_tier(self, parsed_message)
+            )
+            processing_coro = self._process_message_wrapper(
+                stream_name,
+                message_id,
+                dict(fields),
+                waiter_token,
+                parsed_message,
+            )
             future = asyncio.run_coroutine_threadsafe(
                 processing_coro,
                 self.worker_loop,
             )
         except BaseException:
-            processing_coro.close()
+            if processing_coro is not None:
+                processing_coro.close()
             self._unmark_in_flight(message_id)
-            waiter_token.release()
+            if waiter_token is not None:
+                waiter_token.release()
             raise
         with self._futures_lock:
             self._active_futures.add(future)

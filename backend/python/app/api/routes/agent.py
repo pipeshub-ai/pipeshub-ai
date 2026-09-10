@@ -3523,25 +3523,24 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     import asyncio as _asyncio  # noqa: F401 — may not have run yet if named_toolsets was empty above
 
                     from app.agents.mcp import service as mcp_service
-                    from app.edition_config import build_mcp_fallback_config_services, get_mcp_instance_resolved
+                    from app.edition_config import get_mcp_instance_resolved
 
                     async def _fetch_mcp_server_config(
                         mcp_server: dict,
-                    ) -> tuple[dict, dict[str, Any] | None, dict[str, Any] | None, list | None]:
-                        """Return (mcp_server, instance_or_None, effective_auth, fallback_config_services) without raising."""
+                    ) -> tuple[dict, dict[str, Any] | None, dict[str, Any] | None]:
+                        """Return (mcp_server, instance_or_None, effective_auth) without raising."""
                         instance_id = mcp_server["instanceId"]
                         try:
                             instance = await get_mcp_instance_resolved(instance_id, services["config_service"])
                             if not instance:
-                                return mcp_server, None, None, None
+                                return mcp_server, None, None
                             effective_auth = await mcp_service.resolve_effective_user_auth(
                                 instance, credential_lookup_id, services["config_service"],
                             )
-                            fallbacks = await build_mcp_fallback_config_services(instance, services["config_service"])
-                            return mcp_server, instance, effective_auth, fallbacks
+                            return mcp_server, instance, effective_auth
                         except Exception as exc:
                             logger.warning(f"Failed to load MCP server config for instance '{instance_id}': {exc}")
-                            return mcp_server, None, None, None
+                            return mcp_server, None, None
 
                     mcp_fetch_results = await _asyncio.gather(*[_fetch_mcp_server_config(m) for m in named_mcp_servers])
 
@@ -3549,7 +3548,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     missing_mcp_server_display_names: list[str] = []          # instance no longer exists
                     unauthenticated_mcp_server_display_names: list[str] = []  # instance exists, auth incomplete
 
-                    for mcp_server, instance, effective_auth, fallbacks in mcp_fetch_results:
+                    for mcp_server, instance, effective_auth in mcp_fetch_results:
                         instance_id = mcp_server["instanceId"]
                         display_name = mcp_server.get("displayName") or mcp_server.get("name") or instance_id
 
@@ -3561,7 +3560,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         if mcp_service.is_effective_auth_authenticated(effective_auth):
                             mcp_server_configs[instance_id] = {
                                 "instance": instance, "auth": effective_auth or {}, "ownerId": credential_lookup_id,
-                                "fallbackConfigServices": fallbacks,
                             }
                             configured_mcp_servers.append(mcp_server)
                         else:
