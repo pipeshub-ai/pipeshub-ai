@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from app.services.graph_db.neo4j.neo4j_provider import BLOCK_DELETE_BATCH_SIZE, Neo4jProvider
 
 
 @pytest.fixture
@@ -30,9 +30,29 @@ class TestDeleteBlocksForRecords:
         # go too -- those name a block, never its record.
         assert "DETACH DELETE block" in query
         assert "block.recordId IN $record_ids" in query
+        assert "LIMIT $limit" in query
         assert neo4j_provider.client.execute_query.call_args.kwargs["parameters"] == {
-            "record_ids": ["r1"]
+            "record_ids": ["r1"],
+            "limit": BLOCK_DELETE_BATCH_SIZE,
         }
+
+    @pytest.mark.asyncio
+    async def test_pages_until_a_short_batch(self, neo4j_provider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"deleted": BLOCK_DELETE_BATCH_SIZE}],
+                [{"deleted": BLOCK_DELETE_BATCH_SIZE}],
+                [{"deleted": 12}],
+            ]
+        )
+
+        removed = await neo4j_provider.delete_blocks_by_connector_id("c1")
+
+        assert removed == BLOCK_DELETE_BATCH_SIZE * 2 + 12
+        assert neo4j_provider.client.execute_query.await_count == 3
+        assert "block.connectorId = $connector_id" in (
+            neo4j_provider.client.execute_query.call_args_list[0].args[0]
+        )
 
 
 class TestConnectionManagement:

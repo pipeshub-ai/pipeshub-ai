@@ -100,6 +100,9 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # Constants
 MAX_REINDEX_DEPTH = 100  # Maximum depth for reindexing records (unlimited depth is capped at this value)
 EDGE_DELETE_BATCH_SIZE = 2000  # Batch size for edge deletion to avoid huge single-query transactions
+# DETACH DELETE holds every touched node/rel in txn state; a mid-size code repo
+# is 100k+ blocks and blows dbms.memory.transaction.total.max (~70% of heap).
+BLOCK_DELETE_BATCH_SIZE = 500
 
 
 class Neo4jProvider(IGraphDBProvider):
@@ -597,6 +600,13 @@ class Neo4jProvider(IGraphDBProvider):
         indexes.append(
             "CREATE INDEX block_record_source IF NOT EXISTS "
             "FOR (n:Block) ON (n.recordId, n.source)"
+        )
+
+        # SINGLE: connectorId — connector-instance deletion pages by this alone.
+        # Without it every batch is a full Block label scan.
+        indexes.append(
+            "CREATE INDEX block_connector_id IF NOT EXISTS "
+            "FOR (n:Block) ON (n.connectorId)"
         )
 
         return indexes
@@ -7958,6 +7968,13 @@ class Neo4jProvider(IGraphDBProvider):
                 f"Groups: {len(collected['group_keys'])}, TypeNodes: {len(isoftype_targets)}"
             )
 
+            # Blocks are the bulk of a code connector. DETACH DELETE of the whole
+            # set inside the write txn below hits dbms.memory.transaction.total.max
+            # (~1.4 GiB on a 2G heap). Auto-committed batches free that memory
+            # before the rest of the delete opens; a later rollback leaves the
+            # connector intact so a retry finishes the leftover blocks.
+            deleted_blocks = await self.delete_blocks_by_connector_id(connector_id)
+
             # Phase 2: Delete within a single transaction
             node_collections = [
                 CollectionNames.RECORDS.value,
@@ -8031,10 +8048,6 @@ class Neo4jProvider(IGraphDBProvider):
                 )
                 if not sync_success:
                     raise Exception("CRITICAL: Failed to delete sync points.")
-
-                # Blocks join their record by property, so the record delete above
-                # leaves them behind.
-                deleted_blocks = await self.delete_blocks_by_connector_id(connector_id, transaction)
 
                 # Step 7: Delete the app itself
                 deleted_app, _ = await self._delete_nodes_by_keys(
@@ -10868,22 +10881,37 @@ class Neo4jProvider(IGraphDBProvider):
         the cross-file CALLS/IMPORTS edges other files' blocks point in with, in
         one pass -- those name a block, never its record, so a record-scoped
         sweep never sees them.
+
+        Deletes page in batches of ``BLOCK_DELETE_BATCH_SIZE``. A single unbounded
+        DETACH DELETE on a code connector holds the whole subgraph in Neo4j txn
+        state and trips ``dbms.memory.transaction.total.max``. When ``transaction``
+        is None each page auto-commits and frees that state; when a txn is open
+        paging still caps the per-statement working set.
         """
         label = collection_to_label(CollectionNames.BLOCKS.value)
         query = f"""
         MATCH (block:{label})
         WHERE {condition}
+        WITH block
+        LIMIT $limit
         DETACH DELETE block
-        RETURN count(block) AS deleted
+        RETURN count(*) AS deleted
         """
+        total_deleted = 0
         try:
-            rows = await self.client.execute_query(
-                query, parameters=parameters, txn_id=transaction
-            )
-            deleted = int(rows[0].get("deleted", 0)) if rows else 0
-            if deleted:
-                self.logger.debug(f"🗑️ Deleted {deleted} block(s)")
-            return deleted
+            while True:
+                rows = await self.client.execute_query(
+                    query,
+                    parameters={**parameters, "limit": BLOCK_DELETE_BATCH_SIZE},
+                    txn_id=transaction,
+                )
+                deleted = int(rows[0].get("deleted", 0)) if rows else 0
+                total_deleted += deleted
+                if deleted < BLOCK_DELETE_BATCH_SIZE:
+                    break
+            if total_deleted:
+                self.logger.debug(f"🗑️ Deleted {total_deleted} block(s)")
+            return total_deleted
         except Exception as e:
             self.logger.error(f"❌ Delete blocks failed: {str(e)}")
             raise

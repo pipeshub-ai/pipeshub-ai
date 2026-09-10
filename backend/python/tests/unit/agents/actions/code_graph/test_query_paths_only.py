@@ -167,3 +167,69 @@ async def test_edge_parameters_are_gone() -> None:
     caller still passing them should fail loudly rather than have them ignored."""
     with pytest.raises(TypeError):
         await query_code_graph_impl(**CTX, select="a/b.py", depth=2, relations=["CALLS"])
+
+
+class TestCappedGlobSteersToTheDirectory:
+    """A glob that hit the scan cap returns a slice that reads like an answer.
+
+    Across the traces this was written from, globs were 46.7% of all selects and
+    11 of 14 came back capped or empty, while the exact directory listing was
+    used once in thirty calls. The `next` line is where that gets corrected.
+    """
+
+    @pytest.mark.asyncio
+    async def test_next_names_the_directory_and_says_the_result_is_a_sample(
+        self, monkeypatch
+    ) -> None:
+        from app.agents.actions.code_graph import query as q
+
+        monkeypatch.setattr(q, "_SELECT_SCAN_LIMIT", 1)
+        r = await query_code_graph_impl(
+            **{**CTX, "graph_provider": _CappedGraph()}, select="app/events/**"
+        )
+        assert r["scan_capped"] is True
+        assert "SAMPLE" in r["next"]
+        assert "'app/events/'" in r["next"], "must name the exact select to run"
+
+    @pytest.mark.parametrize("select,parent", [
+        ("backend/python/app/**", "backend/python/app/"),
+        ("backend/**/router.py", "backend/"),
+        ("backend/py*/app", "backend/"),
+        ("**", "**"),
+    ])
+    def test_the_named_directory_is_the_globs_own_root(self, select, parent) -> None:
+        from app.agents.actions.code_graph.query import _glob_parent
+
+        assert _glob_parent(select) == parent
+
+
+class _CappedGraph:
+    """Two files where the scan only looks at one."""
+
+    async def get_nodes_by_field_prefix(self, collection, field_name, prefix,
+                                        filters=None, limit=None):
+        if collection != CollectionNames.CODE_FILES.value:
+            return []
+        return [{"_key": f"rec-{i}", "filePath": f"app/events/e{i}.py",
+                 "fileRole": "source"} for i in range(2)][:limit]
+
+    async def get_nodes_by_field_in(self, collection, field_name, field_values,
+                                    return_fields=None):
+        return [{
+            "_key": "b1", "id": "b1", "orgId": "org-1", "connectorId": "conn-1",
+            "recordId": "rec-0", "qualifiedName": "function:handle",
+            "kind": "function", "name": "handle", "startLine": 1, "endLine": 9,
+        }]
+
+    async def get_neighbors_for_nodes_by_relationship_types(self, **kwargs):
+        return []
+
+    async def get_accessible_record_ids(self, *a, **k):
+        return None
+
+    async def check_record_access_with_details(self, *a, **k):
+        return {"record": {"_key": "rec-0"}}
+
+    async def get_nodes_by_filters(self, collection, filters, return_fields=None,
+                                   transaction=None):
+        return []

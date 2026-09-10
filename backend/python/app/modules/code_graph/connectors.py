@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "CODE_CONNECTOR_TYPES",
     "agent_knowledge_has_code_connector",
+    "connector_instances_have_code",
     "has_code_connector_configured",
 ]
 
@@ -55,14 +56,27 @@ def _normalized(value: object) -> str:
 _NORMALIZED_CODE_TYPES = frozenset(_normalized(t) for t in CODE_CONNECTOR_TYPES)
 
 
+def connector_instances_have_code(instances: list[dict[str, Any]] | None) -> bool:
+    """Repo check over an already-fetched connector-instance list.
+
+    The org-level half of the pair. Both stream entry points already hold the
+    list from `fetch_user_connector_instances`, so this reads it instead of
+    issuing the same query a third time — see
+    :func:`app.utils.execute_query.connector_instances_have_sql`.
+    """
+    return any(
+        _normalized(i.get("type")) in _NORMALIZED_CODE_TYPES and bool(i.get("isConfigured"))
+        for i in (instances or [])
+    )
+
+
 async def has_code_connector_configured(
     graph_provider: "IGraphDBProvider",
     user_id: str,
     org_id: str,
 ) -> bool:
-    """Whether the user/org has any configured repo connector instance.
+    """`connector_instances_have_code` for a caller holding no instance list.
 
-    The org-level half of the pair, mirroring `has_slack_connector_configured`.
     Attached knowledge is a stored list, so an agent can still name a connector
     that has since been deleted; this is what catches that. Failure is reported
     as absence, not raised — a tool that quietly does not appear beats a request
@@ -71,16 +85,14 @@ async def has_code_connector_configured(
     from app.connectors.core.registry.connector_builder import ConnectorScope
 
     try:
-        instances = await graph_provider.get_user_connector_instances(
-            collection=CollectionNames.APPS.value,
-            user_id=user_id,
-            org_id=org_id,
-            team_scope=ConnectorScope.TEAM.value,
-            personal_scope=ConnectorScope.PERSONAL.value,
-        )
-        return any(
-            _normalized(i.get("type")) in _NORMALIZED_CODE_TYPES and bool(i.get("isConfigured"))
-            for i in (instances or [])
+        return connector_instances_have_code(
+            await graph_provider.get_user_connector_instances(
+                collection=CollectionNames.APPS.value,
+                user_id=user_id,
+                org_id=org_id,
+                team_scope=ConnectorScope.TEAM.value,
+                personal_scope=ConnectorScope.PERSONAL.value,
+            )
         )
     except Exception as exc:
         logger.warning("Code connector check failed: %s", exc)

@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import deque
+from collections import Counter, deque
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations
+from app.modules.parsers.code_parser.models import FILLER_KINDS
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -43,8 +44,9 @@ __all__ = [
 
 TEST_ROLE = "test"
 
-# Written at parse time, both endpoints inside one file. These describe how a
-# file is put together, which is `list_code`'s question, not a dependency.
+# Written at parse time, both endpoints inside one file. METHOD/CONTAINS are
+# how a method names its class and a class names its members — without them a
+# walk from a method cannot see the type it lives on.
 STRUCTURAL_RELATIONS = [
     RecordRelations.CONTAINS.value,
     RecordRelations.DEFINES.value,
@@ -52,8 +54,7 @@ STRUCTURAL_RELATIONS = [
 ]
 
 # Written by the edge-resolution pass once a repo is indexed: one symbol
-# reaching another. `get_neighbour` defaults to these -- including METHOD would
-# make "what calls this class" answer with the class's own methods.
+# reaching another across files (calls, imports, heritage).
 CROSS_FILE_RELATIONS = [
     RecordRelations.CALLS.value,
     RecordRelations.IMPORTS.value,
@@ -62,11 +63,21 @@ CROSS_FILE_RELATIONS = [
     RecordRelations.EXPORTS.value,
     RecordRelations.INHERITS.value,
     RecordRelations.EXTENDS.value,
+    RecordRelations.IMPLEMENTS.value,
 ]
 
-# Everything the code parser emits. `find_symbol_path` walks all of it: two
-# methods of the same class are connected only through their container, so
-# dropping the structural edges there breaks the search (see `_bfs_edges`).
+# Heritage subset of CROSS_FILE — what a type is built on. Named for callers
+# that want only that slice; `get_neighbour` defaults to CODE_RELATIONS below.
+HERITAGE_RELATIONS = frozenset({
+    RecordRelations.INHERITS.value,
+    RecordRelations.EXTENDS.value,
+    RecordRelations.IMPLEMENTS.value,
+})
+
+# Everything the code graph emits. `get_neighbour` and `find_symbol_path`
+# default to this full set so one hop from a method returns its class
+# (METHOD/CONTAINS) and its callers/callees (CALLS), and the next hop on that
+# class returns heritage and usages — no special-case path for overrides.
 CODE_RELATIONS = [*STRUCTURAL_RELATIONS, *CROSS_FILE_RELATIONS]
 
 DEFAULT_NEIGHBOR_LIMIT = 25
@@ -77,6 +88,11 @@ MAX_NEIGHBOUR_DEPTH = 3
 # Frontier width per hop while walking past the first. The caller's `limit`
 # bounds what comes back; this bounds what is traversed to find it.
 _NEIGHBOUR_FANOUT = 200
+# Degree is counted for at most this many candidates, over at most this many
+# edge rows. Both caps are reported rather than applied silently: a truncated
+# count ranks the wrong symbol first, which is worse than no ranking at all.
+_DEGREE_CANDIDATES = 400
+_DEGREE_ROW_LIMIT = 50000
 # Default ceiling on a whole-file read. Enough for ~95% of files outright, and
 # it is the hub files an architecture question lands on that overrun it -- which
 # is exactly where an uncapped read costs thousands of tokens of context.
@@ -311,6 +327,69 @@ async def attach_file_paths(
         block["filePath"] = paths.get(block.get("recordId"))
 
 
+def _key_of(block: dict) -> str:
+    return block.get("_key") or block.get("id") or ""
+
+
+async def _degrees(
+    graph_provider: Any, blocks: list[dict], relations: list[str]
+) -> tuple[dict[str, int], bool]:
+    """How many edges touch each block, in one batched call.
+
+    Counted undirected, and only over ``relations`` -- degree answers "how
+    central is this, for the relationship I asked about", so a CALLS-only query
+    should not rank by import count.
+
+    A symbol forty places call and one that calls forty are both hubs, and
+    either is worth surfacing first.
+
+    Returns ``(counts, capped)``. When the row cap bites the counts are
+    truncated in scan order, which ranks the wrong symbol first -- so the
+    caller reports it rather than presenting a skewed order as a ranking.
+    """
+    keys = [k for k in (_key_of(b) for b in blocks[:_DEGREE_CANDIDATES]) if k]
+    if len(keys) < 2:
+        return {}, False
+    try:
+        rows = await graph_provider.get_neighbors_for_nodes_by_relationship_types(
+            node_keys=keys,
+            node_collection=_BLOCKS,
+            relationship_types=relations,
+            direction="any",
+            limit=_DEGREE_ROW_LIMIT,
+        )
+    except Exception as exc:
+        logger.warning("Degree lookup failed: %s", exc)
+        return {}, False
+    counts: Counter = Counter()
+    for row in rows or []:
+        anchor = row.get("anchorKey")
+        if anchor:
+            counts[anchor] += 1
+    capped = len(rows or []) >= _DEGREE_ROW_LIMIT or len(blocks) > _DEGREE_CANDIDATES
+    return dict(counts), capped
+
+
+async def path_for_record(
+    graph_provider: Any, org_id: str, record_id: str
+) -> str | None:
+    """The repo-relative path of a code record, for callers holding only its id.
+
+    A knowledge search hands back a ``Record ID`` and a basename; every tool
+    here addresses files by repo-relative path. Resolving here means the id is
+    swapped for a path before any lookup, so connector scoping and the ACL
+    check run on the path exactly as they do for a caller who typed one.
+    """
+    try:
+        paths = await graph_provider.get_file_paths_for_records(
+            org_id=org_id, record_ids=[record_id]
+        )
+    except Exception as exc:
+        logger.warning("Path lookup failed for record %s: %s", record_id, exc)
+        return None
+    return (paths or {}).get(record_id)
+
+
 async def get_record_roles(
     graph_provider: Any, org_id: str, record_ids: set[str] | list[str]
 ) -> dict[str, str]:
@@ -364,6 +443,68 @@ async def get_accessible_record_ids(
 # Tool 1 — callers / callees
 # ---------------------------------------------------------------------------
 
+async def _resolve_anchors(
+    graph_provider: Any,
+    org_id: str,
+    file_path: str,
+    qualified_name: str | None,
+    connector_id: str,
+) -> list[dict[str, Any]]:
+    """The symbols a walk starts from: one named symbol, or the whole file.
+
+    Whole-file is the shape a caller has right after a search or a listing —
+    a path, and no symbol yet. Without it, "what does this file talk to" costs
+    one call per symbol, and the cheap substitute is a capped glob that returns
+    a ranked sample of a subtree instead of the file's actual edges.
+
+    Filler spans are ordered last rather than dropped, so the fan-out cap sheds
+    a comment before a definition. They stay in because the imports block is one
+    of them and it owns the file's IMPORTS_FROM edges -- dropping it would make
+    "what does this file depend on" unanswerable at file scope.
+    """
+    if qualified_name:
+        anchor = await resolve_symbol(
+            graph_provider, org_id, file_path, qualified_name, connector_id
+        )
+        return [anchor] if anchor else []
+
+    record_ids = await _records_for_path(graph_provider, org_id, file_path)
+    if not record_ids:
+        return []
+    rows = await graph_provider.get_nodes_by_field_in(
+        collection=_BLOCKS, field_name="recordId", field_values=record_ids
+    )
+    mine = [row for row in (rows or [])
+            if row.get("orgId") == org_id and row.get("connectorId") == connector_id]
+    mine.sort(key=lambda row: (
+        (row.get("kind") or "").lower() in FILLER_KINDS, row.get("startLine") or 0,
+    ))
+    return mine[:_NEIGHBOUR_FANOUT]
+
+
+# Neighbours worth walking next (class of a method, heritage). CALLS rows are
+# for read_code(lines=...); these are for another get_neighbour.
+_CHAIN_RELATIONS = frozenset({*STRUCTURAL_RELATIONS, *HERITAGE_RELATIONS})
+
+
+def _chain_targets(neighbors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str | None, str | None]] = set()
+    for n in neighbors:
+        if n.get("relation") not in _CHAIN_RELATIONS:
+            continue
+        key = (n.get("file_path"), n.get("qualified_name"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "file_path": n.get("file_path"),
+            "qualified_name": n.get("qualified_name"),
+            "relation": n.get("relation"),
+        })
+    return out
+
+
 async def get_neighbour_impl(
     *,
     graph_provider: Any,
@@ -371,7 +512,7 @@ async def get_neighbour_impl(
     org_id: str,
     user_id: str,
     file_path: str,
-    qualified_name: str,
+    qualified_name: str | None = None,
     direction: str = "any",
     edge_types: list[str] | None = None,
     depth: int = 1,
@@ -389,27 +530,42 @@ async def get_neighbour_impl(
         return {"error": (
             f"unknown edge_types {unknown}. Valid: {', '.join(CODE_RELATIONS)}"
         )}
-    relations = list(edge_types) if edge_types else list(CROSS_FILE_RELATIONS)
+    relations = list(edge_types) if edge_types else list(CODE_RELATIONS)
     depth = max(1, min(int(depth or 1), MAX_NEIGHBOUR_DEPTH))
 
-    anchor, accessible = await asyncio.gather(
-        resolve_symbol(graph_provider, org_id, file_path, qualified_name, connector_id),
+    anchors, accessible = await asyncio.gather(
+        _resolve_anchors(graph_provider, org_id, file_path, qualified_name, connector_id),
         get_accessible_record_ids(graph_provider, org_id, user_id),
     )
-    if anchor is None:
-        return {"error": f"No symbol {qualified_name!r} in {file_path!r}"}
+    if not anchors:
+        return {"error": (
+            f"No symbol {qualified_name!r} in {file_path!r}" if qualified_name
+            else f"No indexed symbols in {file_path!r}"
+        )}
 
-    anchor_rid = anchor.get("recordId")
-    empty = {"symbol": None, "direction": direction, "neighbors": []}
+    empty = {
+        **({"symbol": None} if qualified_name else {"file_path": file_path}),
+        "direction": direction, "neighbors": [],
+    }
+    anchor_rids = {rid for a in anchors if (rid := a.get("recordId"))}
     if accessible is not None:
-        if anchor_rid not in accessible:
-            return empty
-    elif not await _user_can_read(graph_provider, user_id, org_id, anchor_rid):
+        readable = anchor_rids & accessible
+    else:
+        readable = {rid for rid in anchor_rids
+                    if await _user_can_read(graph_provider, user_id, org_id, rid)}
+    anchors = [a for a in anchors if a.get("recordId") in readable]
+    if not anchors:
         return empty
 
-    anchor_key = anchor.get("_key") or anchor.get("id")
-    visited = {anchor_key}
-    frontier = [anchor_key]
+    anchor_names = {k: a.get("qualifiedName") for a in anchors
+                    if (k := a.get("_key") or a.get("id"))}
+    anchor_keys = list(anchor_names)
+    anchor_order = {k: i for i, k in enumerate(anchor_keys)}
+    # Every row is attributed to the anchor its chain started from, not to the
+    # node one hop back, so a whole-file walk can say which symbol reaches what.
+    origin_of = {k: k for k in anchor_keys}
+    visited = set(anchor_keys)
+    frontier = list(anchor_keys)
     rows: list[dict[str, Any]] = []
     for hop in range(1, depth + 1):
         if not frontier:
@@ -431,10 +587,14 @@ async def get_neighbour_impl(
             key = row.get("key")
             if not key:
                 continue
+            back = row.get("anchorKey")
+            origin = origin_of.get(back, back)
             row["hop"] = hop
+            row["_origin"] = origin
             rows.append(row)
             if row.get("collection") == _BLOCKS and key not in visited:
                 visited.add(key)
+                origin_of[key] = origin
                 next_frontier.append(key)
         frontier = next_frontier
 
@@ -448,18 +608,31 @@ async def get_neighbour_impl(
         blocks = {k: b for k, b in blocks.items()
                   if roles.get(b.get("recordId")) != TEST_ROLE}
 
-    neighbors: list[dict[str, Any]] = []
-    for row in rows:
-        # `limit` bounds what is returned, and rows arrive breadth-first, so a
-        # truncated walk keeps the nearest neighbours rather than an arbitrary
-        # slice of the far ones.
-        if len(neighbors) >= limit:
-            break
+    # Rank each row among its own anchor's, then take rank 0 from every anchor
+    # before rank 1 from any: a whole-file walk otherwise spends the entire
+    # budget on the first hub symbol and reports the rest of the file as having
+    # no edges. With one anchor the ranks are already row order, so a
+    # single-symbol walk still returns its nearest neighbours first.
+    ranked: list[tuple[int, int, int, dict[str, Any], dict[str, Any]]] = []
+    per_origin: dict[str, int] = {}
+    for order, row in enumerate(rows):
         block = blocks.get(row.get("key"))
         if block is None:
             continue
+        origin = row.get("_origin")
+        rank = per_origin.get(origin, 0)
+        per_origin[origin] = rank + 1
+        ranked.append((rank, row.get("hop", 1), order, row, block))
+    ranked.sort(key=lambda item: item[:3])
+    kept = ranked[:limit]
+    kept.sort(key=lambda item: (anchor_order.get(item[3].get("_origin"), 0), *item[:3]))
+
+    neighbors: list[dict[str, Any]] = []
+    for _rank, _hop, _order, row, block in kept:
         ref = SymbolRef.from_block(block)
         ref["relation"] = row.get("relationshipType")
+        if not qualified_name:
+            ref["from"] = anchor_names.get(row.get("_origin"))
         if depth > 1:
             ref["hop"] = row.get("hop")
         if row.get("line") is not None:
@@ -468,8 +641,10 @@ async def get_neighbour_impl(
             ref["confidence"] = row.get("confidence")
         neighbors.append(ref)
 
-    return {
-        "symbol": SymbolRef.from_block(anchor),
+    anchored = ({"symbol": SymbolRef.from_block(anchors[0])} if qualified_name
+                else {"file_path": file_path, "symbols_walked": len(anchor_keys)})
+    result: dict[str, Any] = {
+        **anchored,
         "connector_id": connector_id,
         "direction": direction,
         "edge_types": relations,
@@ -477,8 +652,24 @@ async def get_neighbour_impl(
         "neighbors": neighbors,
         # Silence reads as absence: a model that thinks it saw every neighbour
         # will state a wrong conclusion confidently.
-        "truncated": len(neighbors) >= limit,
+        "truncated": len(ranked) > limit,
     }
+    chain = _chain_targets(neighbors)
+    if chain:
+        result["chain"] = chain
+        result["note"] = (
+            "Call get_neighbour on each `chain` entry next (omit edge_types) "
+            "before read_code — that is how you keep traversing."
+        )
+    elif edge_types is not None and set(relations) <= {
+        RecordRelations.CALLS.value,
+    }:
+        result["note"] = (
+            "edge_types was CALLS-only, so METHOD/INHERITS were never returned. "
+            "Omit edge_types on the next get_neighbour to learn the node's class "
+            "and heritage, then walk those neighbours."
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------

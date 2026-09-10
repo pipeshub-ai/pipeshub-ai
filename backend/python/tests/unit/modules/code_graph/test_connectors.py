@@ -100,3 +100,26 @@ def test_gitlab_is_covered_because_it_is_the_only_producer_today() -> None:
     happened and the gate is now shut on every agent."""
     assert Connectors.GITLAB.value in CODE_CONNECTOR_TYPES
     assert Connectors.GITLAB_PERSONAL.value in CODE_CONNECTOR_TYPES
+
+
+class TestSharedFetchPredicate:
+    """`connector_instances_have_code` over a list the caller already holds.
+
+    Both stream bridges fetch the instance list once to answer the SQL and
+    Slack questions; the code question is the third read of that same list, not
+    a third query.
+    """
+
+    @pytest.mark.parametrize("instances,expected", [
+        ([{"type": "GitLab", "isConfigured": True}], True),
+        ([{"type": "GitLab", "isConfigured": False}], False),
+        ([{"type": "Slack", "isConfigured": True}], False),
+        ([{"type": "Slack", "isConfigured": True},
+          {"type": "gitlab_personal", "isConfigured": True}], True),
+        ([], False),
+        (None, False),
+    ])
+    def test_matches_the_org_level_check(self, instances, expected) -> None:
+        from app.modules.code_graph.connectors import connector_instances_have_code
+
+        assert connector_instances_have_code(instances) is expected

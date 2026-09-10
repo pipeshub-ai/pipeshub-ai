@@ -2,8 +2,8 @@
 
 Four tools over the blocks + recordRelations graph the indexing pipeline builds:
 
-  query_code_graph    — find symbols, relationships, module structure
-  get_neighbour       — what a symbol reaches, or what reaches it
+  query_code_graph    — module structure, and the symbols a directory or file holds
+  get_neighbour       — what reaches a file or symbol, and what it reaches
   read_code           — source for a symbol, a line range, or a whole file
   find_symbol_path    — how two same-language symbols are connected
 
@@ -35,13 +35,13 @@ from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCat
 
 from .ops import (
     CODE_RELATIONS,
-    CROSS_FILE_RELATIONS,
     DEFAULT_MAX_DEPTH,
     DEFAULT_MAX_LINES,
     DEFAULT_NEIGHBOR_LIMIT,
     MAX_NEIGHBOUR_DEPTH,
     find_symbol_path_impl,
     get_neighbour_impl,
+    path_for_record,
     read_code_impl,
 )
 from .query import (
@@ -131,6 +131,37 @@ class CodeGraph:
             self._log.exception("codegraph %s failed", name)
             return {"error": f"{failure}: {exc}"}
 
+    async def _anchor_path(
+        self, connector_id: str, file_path: str | None, record_id: str | None
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """Resolve the file a call starts from, given a path OR a `Record ID`.
+
+        Returns ``(path, error)``. Search results carry a Record ID and no path,
+        so accepting one removes the listing step that used to be the only way
+        to turn a search hit into an argument these tools accept.
+
+        Scope is checked before the id is resolved -- this runs ahead of
+        ``_run``, and looking a record up first would answer "does this exist"
+        for a connector the caller cannot read.
+        """
+        if file_path:
+            return file_path, None
+        denied = self._in_scope(connector_id or "")
+        if denied:
+            return None, denied
+        if not record_id:
+            return None, {"error": (
+                "Give either `file_path` (repo-relative) or `record_id` (the "
+                "`Record ID` from a knowledge-search result)."
+            )}
+        resolved = await path_for_record(self._graph_provider, self._org_id, record_id)
+        if not resolved:
+            return None, {"error": (
+                f"record_id {record_id!r} is not an indexed code file. Code files "
+                "show `Type: CODE_FILE` and a `Path:` in search results."
+            )}
+        return resolved, None
+
     def _in_scope(self, connector_id: str) -> dict[str, Any] | None:
         if self._allowed_connector_ids and connector_id not in self._allowed_connector_ids:
             return {"error": (
@@ -145,32 +176,33 @@ class CodeGraph:
 
     @tool(
         path="/tools/codegraph/query_code_graph",
-        short_description=(
-            "List what a directory contains, or the symbols a file defines"
-        ),
+        short_description="Explore the code graph: what a directory holds, what a file defines",
         description=(
-            "List what a directory contains, or the symbols a file defines.\n\n"
-            "Search the knowledge base FIRST — this needs a `connector_id` and a "
-            "path, and the only place to get either is your search results: the "
-            "`Connector ID` shown on a record, and that record's own path. Several "
-            "repositories can be indexed at once and their paths are repo-relative, "
-            "so without the connector `src/main.py` is ambiguous.\n\n"
-            "`select` takes exactly two shapes:\n"
-            "  - a directory ('backend/python/app/agents/') — its files and "
-            "subdirectories, each with a `select` value to drill into.\n"
-            "  - a file or glob ('.../router.py', 'backend/python/app/**') — every "
-            "symbol defined under it, addressed as 'path#qualified_name'.\n\n"
-            "It does NOT take a symbol. Naming one has only two possible answers and "
-            "neither is this tool's: `read_code` reads a symbol, and `get_neighbour` "
-            "walks what it reaches or what reaches it. Free text is not accepted "
-            "either — search the knowledge base to turn a description into a path.\n\n"
-            "Symbols come back ranked by `degree`, how many code edges touch them. A "
-            "path carries no name to match on, so degree is the only thing separating "
-            "an entry point from a helper: read the top of the list rather than "
-            "sampling it, and quote the number when you call something central.\n\n"
-            "Widen or narrow across calls — 'backend/**' for the layers inside "
-            "backend, 'backend/python/app/**' for the modules inside app — then use "
-            "read_code on the highest-degree symbols to understand the design."
+            "Explore the code graph: the module structure, and the symbols a directory "
+            "or file holds.\n\n"
+            "Search the knowledge base FIRST — this needs a `connector_id`, and the "
+            "only place to get one is the `Connector ID` on a search result. Paths are "
+            "repo-relative and several repos can be indexed at once, so without it "
+            "`src/main.py` is ambiguous.\n\n"
+            "Call it repeatedly, narrowing as you go — one call rarely answers a broad "
+            "question.\n\n"
+            "`select` takes a directory ('backend/python/app/agents/'), listing its "
+            "children exactly, each with its own `select`; it looks only downward, so "
+            "select the parent to reach a sibling tree. Or a path/glob "
+            "('backend/python/app/**'), returning every symbol under it as "
+            "'path/to/file.py#function:main'. A glob may cap and set `scan_capped` — "
+            "treat that as a sample.\n\n"
+            "It does not take a symbol, and it does not take free text. Use it for a "
+            "directory's shape or a file's symbols, not to turn a search hit into a "
+            "path: a hit already carries `Path:` and `Record ID`, and read_code takes "
+            "either.\n\n"
+            "Results are ranked by `degree`, the edges touching a symbol — what "
+            "separates an entry point from a helper, so read the top of the list rather "
+            "than sampling it.\n\n"
+            "Treat the result as a worklist, not an answer: get_neighbour the top few "
+            "before you describe them, read_code the ones you need to quote. This tool "
+            "cannot show an edge, so a connection asserted from a listing alone is a "
+            "guess."
         ),
         parameters=[
             ToolParameter(
@@ -181,9 +213,10 @@ class CodeGraph:
                 name="select", type=ParameterType.STRING,
                 description=(
                     "A directory or a file path, nothing else. A directory "
-                    "('backend/python/app/agents/') lists its files and "
-                    "subdirectories; a file ('.../router.py') lists the symbols it "
-                    "defines; a glob ('backend/python/app/**') spans a subtree. "
+                    "('backend/python/app/agents/') lists its children exactly — "
+                    "select the PARENT to see sibling trees; a file "
+                    "('.../router.py') lists the symbols it defines; a glob "
+                    "('backend/python/app/**') spans a subtree and may cap. "
                     "A symbol ('.../router.py#function:main') is rejected — read_code "
                     "reads it and get_neighbour walks its edges. So is free text: "
                     "search the knowledge base to turn a description into a path."
@@ -232,42 +265,31 @@ class CodeGraph:
 
     @tool(
         path="/tools/codegraph/get_neighbour",
-        short_description=(
-            "Trace a flow: resolve what a symbol reaches or what reaches it, as "
-            "addresses you can read. The only way to find callers"
-        ),
+        short_description="What calls, imports or extends this — the only tool that sees inbound edges, which reads and listings cannot",
         description=(
-            "Resolve what a symbol connects to — the step reading the code cannot do.\n\n"
-            "Call this whenever you are following something THROUGH the codebase: "
-            "tracing a flow end to end, finding every caller before changing a "
-            "signature, asking where a thing is used, or working out which layers "
-            "touch a module. Two trigger thoughts, and they need opposite "
-            "directions: \"and then what happens?\" is outbound; \"who uses this, "
-            "and is that all of them?\" is inbound.\n\n"
-            "Reading a symbol shows you `self.orchestrator.index(ctx)` — an "
-            "expression, not an address. It does not tell you WHICH file that lands "
-            "in, and you cannot read a symbol you cannot address. This returns the "
-            "resolved `(file_path, qualified_name)` for each neighbour, ready to "
-            "pass straight to read_code. Guessing the file from the call name and "
-            "listing it costs three calls, only works when the name happens to match "
-            "a filename, and does not work at all for imports, inheritance or "
-            "exports, which never appear in the body you read.\n\n"
-            "`direction='inbound'` — what reaches this symbol. There is NO other way "
-            "to get this: callers leave no trace in the code you are reading, and a "
-            "knowledge search cannot find them because nothing names them. An "
-            "outbound-only walk shows what a symbol uses and never who depends on "
-            "it, so it cannot tell you whether you have seen a whole flow — you "
-            "will map one branch and believe it is the system.\n\n"
-            "`direction='outbound'` — what this symbol reaches.\n\n"
-            "`direction='any'` — both at once. The default, and the right choice "
-            "when you are mapping a flow rather than chasing one specific edge.\n\n"
-            "`edge_types` picks the relationships: ['CALLS'] for callers and callees, "
-            "['INHERITS','EXTENDS'] for a type hierarchy, ['IMPORTS_FROM'] for module "
-            "dependencies. Omit it for every cross-file relation at once.\n\n"
-            "`depth` follows the chain further in one call — depth=2 answers \"what "
-            "does this reach, and what do those reach\" without a round trip per hop.\n\n"
-            "Each neighbour carries the `line` of the reference, so pair it with "
-            "read_code(lines=...) to see the call site itself."
+            "Find the neighbours of a file or symbol: what reaches it and what it "
+            "reaches — which class a method lives under (METHOD/CONTAINS), who calls it "
+            "(CALLS), what a class inherits (INHERITS/EXTENDS).\n\n"
+            "This is how you traverse the graph, not a one-shot callee lookup. First "
+            "call: omit `edge_types`, direction 'any', so you see the nature of the "
+            "node. When a result shows a `chain` entry or a METHOD/CONTAINS/INHERITS "
+            "neighbour, call get_neighbour again on that address, still without "
+            "`edge_types`. Do not stop after one hop and guess the rest from a read. "
+            "read_code is for a body you already addressed; edges stay on this tool.\n\n"
+            "Do not open with `edge_types=['CALLS']`. That filter hides the class a "
+            "method lives under and every heritage edge, leaving nothing to walk. "
+            "Narrow to CALLS after a full walk.\n\n"
+            "Give it something you already hold — a `record_id` from a search hit, a "
+            "`file_path` on its own, or `(file_path, qualified_name)` from a code block "
+            "header — plus a direction: 'inbound' for what reaches it, 'outbound' for "
+            "what it reaches, 'any' for both. Every neighbour is an address for the "
+            "next get_neighbour or for read_code(lines=...) on a call site.\n\n"
+            "Omit `qualified_name` to walk every symbol the file defines at once.\n\n"
+            "'inbound' is the direction with no substitute: callers leave no trace in "
+            "the code you are reading, and a knowledge search cannot find them because "
+            "nothing names them.\n\n"
+            "Prefer another get_neighbour on a returned neighbour over raising `depth`; "
+            "depth multiplies noise."
         ),
         parameters=[
             ToolParameter(
@@ -275,15 +297,35 @@ class CodeGraph:
                 description=_CONNECTOR_ID_DESC,
             ),
             ToolParameter(
-                name="file_path", type=ParameterType.STRING,
-                description="Repo-relative path of the file holding the symbol",
+                name="file_path", type=ParameterType.STRING, required=False,
+                default=None,
+                description=(
+                    "Repo-relative path of the file to walk from, or of the file "
+                    "holding `qualified_name` — the `Path:` line of a search hit. "
+                    "Give this or `record_id`."
+                ),
             ),
             ToolParameter(
-                name="qualified_name", type=ParameterType.STRING,
+                name="record_id", type=ParameterType.STRING, required=False,
+                default=None,
+                description=(
+                    "The `Record ID` of a code file, copied from a knowledge-search "
+                    "result. Use it when you have a search hit and no path — it "
+                    "resolves to the same file, so a search result is walkable "
+                    "without a listing step in between. Ignored when `file_path` "
+                    "is given."
+                ),
+            ),
+            ToolParameter(
+                name="qualified_name", type=ParameterType.STRING, required=False,
+                default=None,
                 description=(
                     "Qualified name, as shown after '#' in a code block header — e.g. "
                     "'function:parse_config' or 'method:Client.fetch'. Case-sensitive, "
-                    "though a differently-cased spelling still resolves."
+                    "though a differently-cased spelling still resolves. OMIT IT to "
+                    "walk every symbol the file defines at once, which is what you "
+                    "want when a search just handed you the path and you do not know "
+                    "yet which symbol matters."
                 ),
             ),
             ToolParameter(
@@ -297,11 +339,11 @@ class CodeGraph:
             ToolParameter(
                 name="edge_types", type=ParameterType.ARRAY, required=False, default=None,
                 description=(
-                    "Relationships to follow, e.g. ['CALLS'] for callers/callees only, "
-                    "['INHERITS','EXTENDS'] for a type hierarchy. Omit for every "
-                    f"cross-file relation ({', '.join(CROSS_FILE_RELATIONS)}). Also "
-                    f"accepts {', '.join(CODE_RELATIONS[:3])}, though those describe how "
-                    "one file is built and `list_code` shows them better."
+                    "Leave unset on the first walk. Setting ['CALLS'] alone hides "
+                    "METHOD/CONTAINS/INHERITS so you cannot chain. Narrow only "
+                    "after a full walk, e.g. ['CALLS'] for call sites, "
+                    "['INHERITS','EXTENDS','IMPLEMENTS'] for heritage. Full set "
+                    f"when omitted: {', '.join(CODE_RELATIONS)}."
                 ),
                 items={"type": "string"},
             ),
@@ -327,21 +369,25 @@ class CodeGraph:
     async def get_neighbour(
         self,
         connector_id: str,
-        file_path: str,
-        qualified_name: str,
+        file_path: str | None = None,
+        record_id: str | None = None,
+        qualified_name: str | None = None,
         direction: str = "any",
         edge_types: list[str] | None = None,
         depth: int = 1,
         limit: int = DEFAULT_NEIGHBOR_LIMIT,
         include_tests: bool = False,
     ) -> tuple[bool, str]:
+        path, error = await self._anchor_path(connector_id, file_path, record_id)
+        if error is not None:
+            return self._to_output(error)
         result = await self._run(
             "get_neighbour",
             connector_id,
             lambda: get_neighbour_impl(
                 graph_provider=self._graph_provider, org_id=self._org_id,
                 user_id=self._user_id, connector_id=connector_id,
-                file_path=file_path, qualified_name=qualified_name,
+                file_path=path, qualified_name=qualified_name,
                 direction=direction, edge_types=edge_types, depth=depth,
                 limit=limit, include_tests=include_tests,
             ),
@@ -353,18 +399,27 @@ class CodeGraph:
         path="/tools/codegraph/read_code",
         short_description="Read source: one symbol, one line range, or a whole file",
         description=(
-            "Read source: one symbol, one line range, or a whole file. "
-            "Do NOT use fetch_full_record for code files — use this tool "
-            "instead.\n\n"
-            "Give `qualified_name` for a single symbol, `lines` for a range "
-            "you already know (e.g. a call-site line from get_neighbour), or "
-            "neither to read the whole file in source order.\n\n"
-            "Prefer `qualified_name` when you need one definition, a whole-file "
-            "read when you need the file's structure, and `lines` only for an "
-            "exact range. Whole-file reads are bounded by `max_lines` and tell "
-            "you where they stopped.\n\n"
-            "This does NOT resolve where calls go. Use get_neighbour to follow "
-            "the flow instead of guessing filenames."
+            "Read source: one symbol, one line range, or a whole file. Do NOT use "
+            "fetch_full_record for code files.\n\n"
+            "Give `qualified_name` for one symbol, `lines` for a window you have a "
+            "reason to want ('380-420'), or neither to read the whole file as its "
+            "symbols in source order. A whole-file read is bounded by `max_lines` and "
+            "says where it stopped, and a bare path is enough — you never need to list "
+            "a file before reading it.\n\n"
+            "Cost trade-offs: one file read beats five symbol reads, but a whole file "
+            "also fills context fast. Prefer `qualified_name` for a single definition, "
+            "a whole-file read to understand structure, `lines` only when you know the "
+            "range (e.g. a call-site line from get_neighbour).\n\n"
+            "This does not resolve where calls go: the identifiers in a body are "
+            "expressions, not addresses. Use get_neighbour to follow the flow instead "
+            "of guessing filenames.\n\n"
+            "A read is never the last step for a question about how something works. "
+            "The moment you mean to describe this symbol as calling, importing, "
+            "depending on or inheriting from anything, get_neighbour that same "
+            "`(file_path, qualified_name)` first — 'inbound' for what reaches it, "
+            "'outbound' for what it reaches. A read shows a body; only an edge walk "
+            "shows what that body is wired to, and four reads in a row still show "
+            "none of it."
         ),
         parameters=[
             ToolParameter(
@@ -372,8 +427,19 @@ class CodeGraph:
                 description=_CONNECTOR_ID_DESC,
             ),
             ToolParameter(
-                name="file_path", type=ParameterType.STRING,
-                description="Repo-relative path of the file to read",
+                name="file_path", type=ParameterType.STRING, required=False, default=None,
+                description=(
+                    "Repo-relative path of the file to read — the `Path:` line of a "
+                    "search hit. Give this or `record_id`."
+                ),
+            ),
+            ToolParameter(
+                name="record_id", type=ParameterType.STRING, required=False, default=None,
+                description=(
+                    "The `Record ID` of a code file, copied from a knowledge-search "
+                    "result. Use it when you have a search hit and no path. Ignored "
+                    "when `file_path` is given."
+                ),
             ),
             ToolParameter(
                 name="qualified_name", type=ParameterType.STRING, required=False, default=None,
@@ -408,19 +474,23 @@ class CodeGraph:
     async def read_code(
         self,
         connector_id: str,
-        file_path: str,
+        file_path: str | None = None,
+        record_id: str | None = None,
         qualified_name: str | None = None,
         lines: str | None = None,
         max_lines: int | None = None,
         include_tests: bool = False,
     ) -> tuple[bool, str]:
+        path, error = await self._anchor_path(connector_id, file_path, record_id)
+        if error is not None:
+            return self._to_output(error)
         result = await self._run(
             "read_code",
             connector_id,
             lambda: read_code_impl(
                 graph_provider=self._graph_provider, org_id=self._org_id,
                 user_id=self._user_id, connector_id=connector_id,
-                blob_store=self._blob_store, file_path=file_path,
+                blob_store=self._blob_store, file_path=path,
                 qualified_name=qualified_name, lines=lines,
                 max_lines=max_lines, include_tests=include_tests,
             ),
@@ -441,14 +511,17 @@ class CodeGraph:
         short_description="Trace how two symbols in the same language are connected",
         description=(
             "Trace how two symbols in the same language are connected.\n\n"
-            "Searches undirected across every relationship the code graph holds — not "
-            "just calls — and returns each hop with its relation type and direction, "
-            "so you can see whether two parts of the codebase are related through "
-            "calls, imports, inheritance, or containment.\n\n"
-            "Only edges the parser could prove exist, which means only edges within "
-            "one language and one repository. Two layers that talk over HTTP — a "
-            "frontend calling a backend endpoint — have no path here, and a query "
-            "for one returns nothing. Read the route handler instead."
+            "Searches undirected across every edge the code graph holds — not just "
+            "calls — returning each hop with its type and direction, so you can see "
+            "whether two parts are related through calls, imports, inheritance, or "
+            "containment.\n\n"
+            "Only edges the parser could prove, which means one language and one "
+            "repository. Two layers talking over HTTP — a frontend calling a backend "
+            "endpoint — have no path here, and a query for one returns nothing. Read "
+            "the route handler instead.\n\n"
+            "Needs both ends addressed. Holding only one, get_neighbour walks outward "
+            "from it, and repeating that from the far end usually finds the same "
+            "connection with less setup."
         ),
         parameters=[
             ToolParameter(

@@ -2556,6 +2556,22 @@ class CodeFileRecord(Record):
     # reads it instead of re-deriving "is this a test?" from the path.
     file_role: str | None = None
 
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
+        """Adds the repo-relative path the code-graph tools address files by.
+
+        `Name` is a bare basename and `External ID` is a connector-specific URL,
+        so without this line a search hit carries no argument `get_neighbour`/
+        `read_code` accept — the only way left to obtain one is a
+        `query_code_graph` listing, which is why traces show every traversal
+        preceded by one.
+        """
+        base = super().to_llm_context(
+            frontend_url=frontend_url, include_full_semantic=include_full_semantic,
+        )
+        if not self.file_path:
+            return base
+        return f"{base}\nPath: {self.file_path}"
+
     def to_kafka_record(self) -> dict:
         return {
             "recordId": self.id,

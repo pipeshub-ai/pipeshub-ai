@@ -47,13 +47,15 @@ def _stream_agent(result: Any) -> MagicMock:
     return agent
 
 
-def _patch_connectors(has_sql: bool = False, has_slack: bool = False):
+def _patch_connectors(
+    has_sql: bool = False, has_slack: bool = False, has_code: bool = False
+):
     """Stub the single connector-instance query `run_chat_stream` issues, and
     the connector prefetch beside it.
 
     Returns instance dicts rather than booleans so the real
-    `connector_instances_have_sql`/`_have_slack` predicates run over them —
-    the two flags used to come from two separate queries, and this is what
+    `connector_instances_have_sql`/`_have_slack`/`_have_code` predicates run
+    over them — the flags used to come from one query each, and this is what
     pins them to one.
     """
     instances = []
@@ -61,6 +63,8 @@ def _patch_connectors(has_sql: bool = False, has_slack: bool = False):
         instances.append({"type": Connectors.POSTGRESQL.value, "isConfigured": True})
     if has_slack:
         instances.append({"type": Connectors.SLACK.value, "isConfigured": True})
+    if has_code:
+        instances.append({"type": Connectors.GITLAB.value, "isConfigured": True})
     return (
         patch(
             "app.agents.chat_modes.bridge.fetch_user_connector_instances",
@@ -868,3 +872,66 @@ class TestRunChatStreamNoToolsDegradation:
         event_names = [chunk.split("\n", 1)[0] for chunk in events]
         assert "event: status" in event_names
         assert event_names[-1] == "event: complete"
+
+
+class TestConnectorFlagsReachChatState:
+    """Every flag the tool gates read must actually be PASSED to
+    `build_initial_state`, not just computed.
+
+    `has_code_connector` was a keyword-only parameter with a `False` default
+    that no caller ever supplied, so `tool_loader`'s
+    `has_code_connector and has_code_knowledge` gate was `False and ...` on
+    every request and the code-graph toolset never loaded — for an org with an
+    indexed GitLab repo and the tools plainly configured. The gate's own tests
+    passed throughout: they built the context with `has_code_connector=True`
+    by hand, which is the half that was never true in production.
+    """
+
+    @staticmethod
+    def _kwargs() -> dict[str, Any]:
+        config_service = AsyncMock()
+        config_service.get_config.return_value = {"providers": []}
+        return {
+            "query_info": {"query": "hello", "chatMode": "agent", "filters": {}},
+            "user_info": {"userId": "user-1", "orgId": "org-1"},
+            "llm": MagicMock(),
+            "policy": AGENT_POLICY,
+            "log": MagicMock(),
+            "retrieval_service": AsyncMock(),
+            "graph_provider": MagicMock(),
+            "reranker_service": MagicMock(),
+            "config_service": config_service,
+        }
+
+    async def _captured_kwargs(self, **connectors) -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+
+        def _capture(*args, **kwargs):
+            seen.update(kwargs)
+            raise RuntimeError("stop here — the call is what is under test")
+
+        instances_patch, prefetch_patch = _patch_connectors(**connectors)
+        with (
+            patch("app.modules.agents.qna.chat_state.build_initial_state", new=_capture),
+            instances_patch,
+            prefetch_patch,
+        ):
+            [_ async for _ in run_chat_stream(**self._kwargs())]
+        return seen
+
+    async def test_a_configured_repo_connector_reaches_build_initial_state(self) -> None:
+        seen = await self._captured_kwargs(has_code=True)
+        assert seen["has_code_connector"] is True
+
+    async def test_no_repo_connector_leaves_the_flag_off(self) -> None:
+        seen = await self._captured_kwargs(has_sql=True, has_slack=True)
+        assert seen["has_code_connector"] is False
+        assert seen["has_sql_connector"] is True, "the other flags still work"
+        assert seen["has_slack_connector"] is True
+
+    async def test_all_three_flags_come_from_the_one_instance_query(self) -> None:
+        """Three predicates, one round trip — adding the code flag must not
+        reintroduce a per-flag lookup on the pre-first-token path."""
+        seen = await self._captured_kwargs(has_sql=True, has_slack=True, has_code=True)
+        assert (seen["has_sql_connector"], seen["has_slack_connector"],
+                seen["has_code_connector"]) == (True, True, True)

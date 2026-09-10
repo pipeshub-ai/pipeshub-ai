@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import logging
-from collections import Counter
 from typing import Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations
@@ -28,6 +27,8 @@ from app.modules.parsers.code_parser.models import FILLER_KINDS
 from .ops import (
     TEST_ROLE,
     SymbolRef,
+    _degrees,
+    _key_of,
     _readable_blocks,
     _user_can_read,
     get_accessible_record_ids,
@@ -74,12 +75,6 @@ _SELECT_SCAN_LIMIT = 400
 _PATH_FANOUT_FILES = 60
 # Files a directory listing may scan before it reports itself truncated.
 _LIST_SCAN_LIMIT = 2000
-# Degree is counted for at most this many candidates, over at most this many
-# edge rows. Both caps are reported rather than applied silently: a truncated
-# count ranks the wrong symbol first, which is worse than no ranking at all.
-_DEGREE_CANDIDATES = 400
-_DEGREE_ROW_LIMIT = 50000
-
 _CODE_EXTENSIONS = (".py", ".ts", ".tsx", ".js", ".jsx")
 
 
@@ -247,49 +242,6 @@ def _rank_by_degree(blocks: list[dict], degrees: dict[str, int]) -> list[dict]:
     return sorted(blocks, key=score)
 
 
-def _key_of(block: dict) -> str:
-    return block.get("_key") or block.get("id") or ""
-
-
-async def _degrees(
-    graph_provider: Any, blocks: list[dict], relations: list[str]
-) -> tuple[dict[str, int], bool]:
-    """How many edges touch each block, in one batched call.
-
-    Counted undirected, and only over ``relations`` -- degree answers "how
-    central is this, for the relationship I asked about", so a CALLS-only query
-    should not rank by import count.
-
-    A symbol forty places call and one that calls forty are both hubs, and
-    either is worth surfacing first.
-
-    Returns ``(counts, capped)``. When the row cap bites the counts are
-    truncated in scan order, which ranks the wrong symbol first -- so the
-    caller reports it rather than presenting a skewed order as a ranking.
-    """
-    keys = [k for k in (_key_of(b) for b in blocks[:_DEGREE_CANDIDATES]) if k]
-    if len(keys) < 2:
-        return {}, False
-    try:
-        rows = await graph_provider.get_neighbors_for_nodes_by_relationship_types(
-            node_keys=keys,
-            node_collection=_BLOCKS,
-            relationship_types=relations,
-            direction="any",
-            limit=_DEGREE_ROW_LIMIT,
-        )
-    except Exception as exc:
-        logger.warning("Degree lookup failed: %s", exc)
-        return {}, False
-    counts: Counter = Counter()
-    for row in rows or []:
-        anchor = row.get("anchorKey")
-        if anchor:
-            counts[anchor] += 1
-    capped = len(rows or []) >= _DEGREE_ROW_LIMIT or len(blocks) > _DEGREE_CANDIDATES
-    return dict(counts), capped
-
-
 # ---------------------------------------------------------------------------
 # Expansion
 # ---------------------------------------------------------------------------
@@ -438,10 +390,28 @@ async def query_code_graph_impl(
     if nodes:
         result["next"] = (
             "These are addresses, not relationships. `read_code` reads one; "
-            "`get_neighbour` walks what it reaches or what reaches it. Rank by "
-            "`degree` to pick which."
+            "`get_neighbour` walks what it reaches or what reaches it — it also "
+            "takes a bare file path, with no symbol. Rank by `degree` to pick which."
         )
+        if scan_capped:
+            # A capped glob looks like an answer and is a sample: the model
+            # reads the top of an arbitrary slice as if it were the subtree.
+            # Naming the directory listing is the only way it learns there is
+            # an exact alternative.
+            result["next"] = (
+                "This is a SAMPLE, not the subtree — the scan stopped early, so "
+                "files past the cap were never looked at. To see what is really "
+                f"there, select {_glob_parent(select)!r} and drill down one level "
+                "at a time: a directory listing is exact and drops nothing. "
+            ) + result["next"]
     return result
+
+
+def _glob_parent(select: str) -> str:
+    """The directory a glob was reaching into, as a `select` value."""
+    head = select.split("*", 1)[0]
+    parent = head.rstrip("/") if head.endswith("/") else head.rpartition("/")[0]
+    return f"{parent}/" if parent else "**"
 
 
 def _miss_hint(select: str, how: str) -> str:
