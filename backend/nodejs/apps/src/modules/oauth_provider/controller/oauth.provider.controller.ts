@@ -474,6 +474,10 @@ export class OAuthProviderController {
       clientSecret,
     )
 
+    if (!app.isConfidential) {
+      throw new InvalidClientError('client_credentials grant requires a confidential client')
+    }
+
     // Verify grant type is allowed
     if (!this.oauthAppService.isGrantTypeAllowed(app, 'client_credentials')) {
       throw new UnsupportedGrantTypeError(
