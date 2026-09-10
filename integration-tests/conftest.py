@@ -15,7 +15,10 @@ import pytest_asyncio
 from dotenv import load_dotenv
 
 if TYPE_CHECKING:
+    from helper.blob_store import BlobStoreProbe
     from helper.graph_provider import GraphProviderProtocol
+    from helper.mongo_store import MongoStoreProbe
+    from helper.vector_store import VectorStoreProbe
 
 _THIS_DIR = Path(__file__).resolve().parent
 _HELPER_DIR = _THIS_DIR / "helper"
