@@ -512,6 +512,73 @@ class TestExecuteParallelSearches:
         assert len(results) == 1  # deduplicated
 
     @pytest.mark.asyncio
+    async def test_same_block_under_two_point_ids_is_collapsed(
+        self, retrieval_service, mock_vector_db_service
+    ) -> None:
+        """Point ids are freshly minted uuid4s per write, so the same block
+        indexed under two connectors carries two of them -- see
+        `result_merging.result_identity`. Deduplicating the cross-query pass on
+        the raw id let one block occupy several of the caller's slots and
+        several citations in the answer.
+        """
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+
+        def _point(point_id: str, score: float) -> MagicMock:
+            point = MagicMock()
+            point.id = point_id
+            point.payload = {
+                "page_content": "the same paragraph",
+                "metadata": {"virtualRecordId": "vr-1", "blockId": "b-7"},
+            }
+            point.score = score
+            return point
+
+        # One batch per expanded query; the same block, written twice.
+        mock_vector_db_service.query_nearest_points.return_value = [
+            [_point("uuid-written-under-drive", 0.91)],
+            [_point("uuid-written-under-slack", 0.88)],
+        ]
+
+        results = await retrieval_service._execute_parallel_searches(
+            ["query one", "query two"], models.Filter(must=[]), 10, "org-1"
+        )
+
+        assert len(results) == 1
+        assert results[0]["content"] == "the same paragraph"
+
+    @pytest.mark.asyncio
+    async def test_distinct_blocks_of_one_record_are_both_kept(
+        self, retrieval_service, mock_vector_db_service
+    ) -> None:
+        """Identity is (virtualRecordId, blockId): collapsing on the record
+        alone would keep one chunk per document and gut recall."""
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+
+        def _point(point_id: str, block_id: str) -> MagicMock:
+            point = MagicMock()
+            point.id = point_id
+            point.payload = {
+                "page_content": f"chunk {block_id}",
+                "metadata": {"virtualRecordId": "vr-1", "blockId": block_id},
+            }
+            point.score = 0.9
+            return point
+
+        mock_vector_db_service.query_nearest_points.return_value = [
+            [_point("p1", "b-1"), _point("p2", "b-2")]
+        ]
+
+        results = await retrieval_service._execute_parallel_searches(
+            ["query"], models.Filter(must=[]), 10, "org-1"
+        )
+
+        assert len(results) == 2
+
+    @pytest.mark.asyncio
     async def test_fans_out_and_merges_across_multiple_collections(
         self, retrieval_service, mock_vector_db_service
     ):
