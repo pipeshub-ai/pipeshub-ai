@@ -93,6 +93,12 @@ async def test_scheduling_failure_releases_the_message(monkeypatch) -> None:
         await consumer._start_processing_task("record-events.0", MESSAGE_ID, {})
 
     assert not consumer._is_in_flight(MESSAGE_ID)
+    # The token exists by this point, so it is the other resource the handler
+    # has to get right. A leaked waiter keeps counting against its tier's
+    # dispatch budget for the life of the process, shrinking read-ahead.
+    assert consumer.gate_waiters.count() == 0, (
+        "the gate-waiter token survived a scheduling failure"
+    )
 
 
 @pytest.mark.asyncio

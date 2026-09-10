@@ -1771,11 +1771,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         self._mark_in_flight(message_id)
         # Everything from the mark to the hand-off is guarded, not just the
-        # scheduling call. A message id left in the in-flight set is never
-        # retried and never dead-lettered: `_is_in_flight` makes the read and
-        # dispatch phases skip it forever, and `_is_entry_active` counts it as
-        # live so the stranded-entry sweep leaves it alone. The record it
-        # carries would then never be indexed, with nothing logged to say so.
+        # scheduling call. `__already_held` reads an id in the in-flight set as
+        # this consumer's live work, so a stranded id makes the read and
+        # dispatch phases skip that entry forever and keeps the recovery scan
+        # from ever reclaiming or dead-lettering it. The record it carries
+        # would then never be indexed, with nothing logged to say so.
         waiter_token: "concurrency.GateWaiterToken | None" = None
         processing_coro = None
         try:
