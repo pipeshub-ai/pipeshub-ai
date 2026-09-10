@@ -424,7 +424,7 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
         # exception anywhere in the app ends up here: log it with its
         # traceback, otherwise the only trace of a crashing route is a
         # generic 500 and nothing in the server logs.
-        logger.exception(
+        logging.getLogger(__name__).exception(
             "Unhandled exception while processing %s %s",
             request.method,
             request.url.path,
