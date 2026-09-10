@@ -435,14 +435,17 @@ class RetrievalService:
             # graph does not grant cannot reach the embedding store at all.
             # The enrichment loop below already drops such hits, but only
             # after their chunk text has been read out of the index.
-            if virtual_record_ids_from_tool:
+            # `is not None`, not truthiness: a tool that resolved zero records
+            # asked to search nothing, and falling through to the else branch
+            # would answer it with the user's entire corpus.
+            if virtual_record_ids_from_tool is not None:
                 scoped_virtual_record_ids = [
                     vid for vid in virtual_record_ids_from_tool
                     if vid in accessible_virtual_id_to_record_id
                 ]
                 if not scoped_virtual_record_ids:
                     self.logger.warning(
-                        "None of the %d tool-supplied virtualRecordIds are accessible to user %s",
+                        "Tool supplied %d virtualRecordId(s), none accessible to user %s",
                         len(virtual_record_ids_from_tool), user_id,
                     )
                     return self._create_empty_response(

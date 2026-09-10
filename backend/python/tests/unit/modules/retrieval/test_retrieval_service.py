@@ -1071,6 +1071,26 @@ class TestSearchWithFilters:
         retrieval_service._execute_parallel_searches.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_empty_tool_list_searches_nothing_not_everything(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        """A tool that resolved zero records asked to search nothing. Falling
+        through to the unscoped branch would answer it with the user's whole
+        corpus."""
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[])
+
+        result = await retrieval_service.search_with_filters(
+            queries=["test"],
+            user_id="u1",
+            org_id="o1",
+            virtual_record_ids_from_tool=[],
+        )
+
+        assert result["status"] == Status.ACCESSIBLE_RECORDS_NOT_FOUND.value
+        retrieval_service._execute_parallel_searches.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_returns_empty_when_no_search_results(
         self, retrieval_service, mock_graph_provider
     ):
