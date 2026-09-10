@@ -52,8 +52,8 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then \
         echo "Detected ARM architecture"; \
         npm ci --ignore-scripts --legacy-peer-deps && \
-        npm uninstall jpeg-recompress-bin mozjpeg imagemin-mozjpeg 2>/dev/null || true && \
-        npm install sharp --save || true; \
+        (npm uninstall jpeg-recompress-bin mozjpeg imagemin-mozjpeg 2>/dev/null || true) && \
+        npm install sharp --legacy-peer-deps --save; \
     else \
         echo "Detected x86 architecture"; \
         npm ci --ignore-scripts --legacy-peer-deps; \
