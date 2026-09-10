@@ -104,7 +104,7 @@ class TestNotionPersonalIdentity:
         build = AsyncMock(return_value=MagicMock())
         with patch(
             "app.connectors.sources.notion.connector.NotionClient.build_from_services", build
-        ), patch("app.connectors.sources.notion.connector.NotionDataSource"), patch.object(
+        ), patch("app.connectors.sources.notion.connector.NotionDataSource"        ), patch.object(
             NotionPersonalConnector, "_load_creator_email", new=AsyncMock()
         ):
             assert await connector.init() is True
@@ -237,6 +237,8 @@ class TestNotionPersonalPermissions:
             side_effect=lambda: calls.append("ensure_group")
         )
         connector._sync_users = AsyncMock(side_effect=lambda: calls.append("sync_users"))
+        connector._get_fresh_datasource = AsyncMock()
+        connector._assert_required_capabilities = AsyncMock()
         connector._sync_objects_by_type = AsyncMock(
             side_effect=lambda kind: calls.append(f"sync_{kind}")
         )
@@ -258,6 +260,8 @@ class TestNotionPersonalPermissions:
         connector = _make_connector()
         connector.creator_email = None
         connector._load_creator_email = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock()
+        connector._assert_required_capabilities = AsyncMock()
         connector.ensure_connector_group_permission = AsyncMock()
         connector._sync_users = AsyncMock()
         connector._sync_objects_by_type = AsyncMock()
