@@ -13,5 +13,5 @@ npx -y concurrently \
   "cd backend/python && . venv/bin/activate && python -m app.embedding_main" \
   "cd backend/python && . venv/bin/activate && python -m app.docling_main" \
   "cd backend/python && . venv/bin/activate && python -m app.connectors_main" \
-  "cd backend/python && . venv/bin/activate && (for i in {1..30}; do curl -s http://127.0.0.1:8002/health >/dev/null && break || sleep 1; done); python -m app.indexing_main" \
-  "cd backend/python && . venv/bin/activate && (for i in {1..30}; do curl -s http://127.0.0.1:8002/health >/dev/null && break || sleep 1; done); python -m app.query_main"
+  "cd backend/python && . venv/bin/activate && (i=0; while [ \$i -lt 30 ]; do curl -s http://127.0.0.1:8088/health >/dev/null && exit 0; sleep 1; i=\$((i+1)); done; echo \"Error: Connector service failed to start on port 8088\"; exit 1) && python -m app.indexing_main" \
+  "cd backend/python && . venv/bin/activate && (i=0; while [ \$i -lt 30 ]; do curl -s http://127.0.0.1:8088/health >/dev/null && exit 0; sleep 1; i=\$((i+1)); done; echo \"Error: Connector service failed to start on port 8088\"; exit 1) && python -m app.query_main"
