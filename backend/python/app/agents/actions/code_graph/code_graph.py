@@ -302,7 +302,12 @@ class CodeGraph:
 
     @tool(
         path="/tools/codegraph/get_neighbour",
-        short_description="What calls, imports or extends this — the only tool that sees inbound edges, which reads and listings cannot",
+        short_description=(
+            "Walk a symbol's edges: CALLS (callers and callees), METHOD/CONTAINS "
+            "(its class), INHERITS/EXTENDS/IMPLEMENTS (heritage), OVERRIDES (the "
+            "contract it implements), IMPORTS_FROM (dependencies). A read shows "
+            "none of these — call it before describing how anything connects."
+        ),
         description=(
             "Find the neighbours of a file or symbol: what reaches it and what it "
             "reaches — which class a method lives under (METHOD/CONTAINS), who calls it "
