@@ -173,8 +173,11 @@ class TestInit:
     async def test_test_connection_api_token_skips_capability_check(self):
         conn = _make_connector()
         conn.notion_client = MagicMock()
-        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+        ds = MagicMock()
+        ds.retrieve_bot_user = AsyncMock(return_value=_api_resp(True, {"object": "user"}))
+        conn._get_fresh_datasource = AsyncMock(return_value=ds)
         assert await conn.test_connection_and_access() is True
+        ds.retrieve_bot_user.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_test_connection_exception(self):

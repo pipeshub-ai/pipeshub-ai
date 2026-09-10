@@ -713,8 +713,26 @@ class TestNotionConnector:
     async def test_test_connection_api_token_skips_capability_check(self):
         connector = _make_connector()
         connector.notion_client = MagicMock()
-        connector._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+        ds = MagicMock()
+        ds.retrieve_bot_user = AsyncMock(
+            return_value=_make_api_response(success=True, data={"bot": {}})
+        )
+        ds.retrieve_comments = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
         assert await connector.test_connection_and_access() is True
+        ds.retrieve_bot_user.assert_awaited_once()
+        ds.retrieve_comments.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_api_token_invalid_bot_user_fails(self):
+        connector = _make_connector()
+        connector.notion_client = MagicMock()
+        ds = MagicMock()
+        ds.retrieve_bot_user = AsyncMock(
+            return_value=_make_api_response(success=False, error="HTTP 401")
+        )
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        assert await connector.test_connection_and_access() is False
 
     @pytest.mark.asyncio
     async def test_test_connection_exception(self):
@@ -2442,8 +2460,11 @@ class TestInit:
     async def test_test_connection_api_token_skips_capability_check(self):
         conn = _make_connector_fullcov()
         conn.notion_client = MagicMock()
-        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+        ds = MagicMock()
+        ds.retrieve_bot_user = AsyncMock(return_value=_api_resp(True, {"object": "user"}))
+        conn._get_fresh_datasource = AsyncMock(return_value=ds)
         assert await conn.test_connection_and_access() is True
+        ds.retrieve_bot_user.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_test_connection_exception(self):

@@ -396,6 +396,17 @@ class NotionConnector(BaseConnector):
             datasource = await self._get_fresh_datasource()
             await self._assert_required_capabilities(datasource)
 
+            # API tokens have no introspect payload — only confirm Notion accepts them.
+            client = self.notion_client.get_client() if self.notion_client else None
+            if not isinstance(client, NotionRESTClientViaOAuth):
+                response = await datasource.retrieve_bot_user()
+                if not response or not response.success:
+                    self.logger.error(
+                        "Connection test failed: %s",
+                        response.error if response else "No response",
+                    )
+                    return False
+
             self.logger.info("✅ Notion connector connection test passed")
             return True
 
