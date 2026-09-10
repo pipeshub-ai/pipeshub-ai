@@ -80,7 +80,15 @@ async def _indexed_record(
         try:
             kb_client.delete_kb(kb_id)
         except Exception as exc:  # noqa: BLE001 - teardown must not mask a failure
-            logger.warning("Could not delete knowledge base %s: %s", kb_id, exc)
+            # A 404 means the test deleted it, which several of them do on
+            # purpose. Anything else is worth seeing.
+            already_gone = "404" in str(exc)
+            logger.log(
+                logging.DEBUG if already_gone else logging.WARNING,
+                "Could not delete knowledge base %s: %s",
+                kb_id,
+                exc,
+            )
 
 
 @pytest_asyncio.fixture(loop_scope="session")
