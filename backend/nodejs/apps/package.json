@@ -99,7 +99,7 @@
     "mongoose": "^8.9.2",
     "morgan": "^1.12.0",
     "multer": "^2.2.0",
-    "nodemailer": "^8.0.5",
+    "nodemailer": "^9.1.1",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "prom-client": "^15.1.3",
