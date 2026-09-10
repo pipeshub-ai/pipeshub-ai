@@ -7060,6 +7060,15 @@ async def _build_and_store_connector(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
                     detail=error_msg
                 )
+        except ConnectorInitError as init_error:
+            error_msg = str(init_error)
+            logger.error(f"❌ {error_msg}")
+            with contextlib.suppress(Exception):
+                await connector.cleanup()
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=error_msg
+            ) from init_error
         except HTTPException:
             raise
         except Exception as test_error:
