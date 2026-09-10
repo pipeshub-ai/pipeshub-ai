@@ -363,7 +363,10 @@ class NotionConnector(BaseConnector):
             payload = await client.introspect_access_token(client.access_token)
         except Exception as e:
             self.logger.warning("Notion OAuth introspect failed: %s", e)
-            return
+            raise ConnectorInitError(
+                "Could not validate Notion OAuth token capabilities. "
+                "Re-authorize this connector."
+            ) from e
 
         if payload.get("active") is False:
             raise ConnectorInitError(

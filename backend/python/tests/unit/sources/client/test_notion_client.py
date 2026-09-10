@@ -214,8 +214,9 @@ class TestNotionRESTClientViaOAuth:
         mock_http.__aexit__ = AsyncMock(return_value=False)
         mock_http.execute = AsyncMock(return_value=mock_response)
 
-        with patch("app.sources.client.notion.notion.HTTPClient", return_value=mock_http):
+        with patch("app.sources.client.notion.notion.HTTPClient", return_value=mock_http) as mock_cls:
             payload = await client.introspect_access_token("tok")
+        mock_cls.assert_called_once_with(token="", resilience=client.resilience)
         assert payload["active"] is True
         assert "read_comments" in payload["scope"]
         request = mock_http.execute.await_args.args[0]

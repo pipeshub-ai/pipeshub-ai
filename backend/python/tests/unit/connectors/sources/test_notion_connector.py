@@ -669,6 +669,21 @@ class TestNotionConnector:
             await connector.test_connection_and_access()
 
     @pytest.mark.asyncio
+    async def test_oauth_introspect_failure_raises(self):
+        connector = _make_connector()
+        oauth_client = NotionRESTClientViaOAuth(
+            "cid", "csec", "http://cb", access_token="tok"
+        )
+        oauth_client.introspect_access_token = AsyncMock(
+            side_effect=Exception("Token introspect failed with status 500")
+        )
+        connector.notion_client = MagicMock()
+        connector.notion_client.get_client.return_value = oauth_client
+        connector._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+        with pytest.raises(ConnectorInitError, match="Could not validate"):
+            await connector.test_connection_and_access()
+
+    @pytest.mark.asyncio
     async def test_test_connection_no_client(self):
         connector = _make_connector()
         connector.notion_client = None

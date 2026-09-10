@@ -229,7 +229,7 @@ class NotionRESTClientViaOAuth(HTTPClient):
             },
             body={"token": access_token},
         )
-        async with HTTPClient(token="") as client:
+        async with HTTPClient(token="", resilience=self.resilience) as client:
             response = await client.execute(request)
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
             raise Exception(
