@@ -70,6 +70,23 @@ describe('ClusterRedisProvider', () => {
     });
   });
 
+  describe('natMap (F3)', () => {
+    it('is forwarded to the Cluster options unchanged', () => {
+      const natMap = { '10.0.0.1:6379': { host: 'public.example.com', port: 6379 } };
+      const provider = new ClusterRedisProvider(config({ natMap }));
+      provider.createClient();
+      const [, clusterOptions] = capture.capturedClusterArgs[0];
+      expect(clusterOptions.natMap).to.deep.equal(natMap);
+    });
+
+    it('is undefined on the Cluster options when unset', () => {
+      const provider = new ClusterRedisProvider(config());
+      provider.createClient();
+      const [, clusterOptions] = capture.capturedClusterArgs[0];
+      expect(clusterOptions.natMap).to.equal(undefined);
+    });
+  });
+
   describe('getClient caching', () => {
     it('returns the same client instance across calls', () => {
       const provider = new ClusterRedisProvider(config());
@@ -92,6 +109,23 @@ describe('ClusterRedisProvider', () => {
       // cluster client's own node connections would break the cluster client.
       expect(clusterClient.nodes('master')).to.not.include(node);
       expect(capture.capturedRedisArgs.length).to.equal(1);
+    });
+
+    it('falls back to the first configured startup node before any master is discovered (F4)', () => {
+      // `nodes('master')` is empty until ioredis has loaded the slot map;
+      // the Python provider already falls back to the first startup node
+      // in that window instead of throwing.
+      const provider = new ClusterRedisProvider(
+        config({ clusterEndpoints: ['n1:7000', 'n2:7001'] }),
+      );
+      const clusterClient = provider.getClient() as any;
+      clusterClient.nodes = () => [];
+
+      provider.createPubSubClient();
+
+      const [redisOptions] = capture.capturedRedisArgs[0];
+      expect(redisOptions.host).to.equal('n1');
+      expect(redisOptions.port).to.equal(7000);
     });
   });
 

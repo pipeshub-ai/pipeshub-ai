@@ -630,12 +630,8 @@ class TestClose:
             resume.wait(timeout=5.0)
             return None
 
-        redis_client = MagicMock()
-        redis_client.get = slow_get
-
         underlying_store = MagicMock()
-        underlying_store.client = redis_client
-        underlying_store.key_prefix = "pipeshub:kv:"
+        underlying_store.get_key = slow_get
 
         store = MagicMock()
         store.store = underlying_store
@@ -871,12 +867,8 @@ class TestStartWatch:
     def test_migration_flag_true_clears_cache_before_subscribe(self):
         """When the etcd->Redis migration flag is set, the cache is cleared
         an extra time before the subscription is even registered."""
-        redis_client = AsyncMock()
-        redis_client.get = AsyncMock(return_value=b"true")
-
         underlying_store = MagicMock()
-        underlying_store.client = redis_client
-        underlying_store.key_prefix = "pipeshub:kv:"
+        underlying_store.get_key = AsyncMock(return_value=True)
 
         store = AsyncMock()
         store.store = underlying_store
@@ -889,12 +881,8 @@ class TestStartWatch:
         assert svc.clear_cache.call_count >= 2
 
     def test_migration_flag_false_clears_cache_once(self):
-        redis_client = AsyncMock()
-        redis_client.get = AsyncMock(return_value=b"false")
-
         underlying_store = MagicMock()
-        underlying_store.client = redis_client
-        underlying_store.key_prefix = "pipeshub:kv:"
+        underlying_store.get_key = AsyncMock(return_value=False)
 
         store = AsyncMock()
         store.store = underlying_store
@@ -907,12 +895,8 @@ class TestStartWatch:
         assert svc.clear_cache.call_count == 1
 
     def test_migration_check_exception_does_not_block_subscribe(self):
-        redis_client = AsyncMock()
-        redis_client.get = AsyncMock(side_effect=RuntimeError("redis down"))
-
         underlying_store = MagicMock()
-        underlying_store.client = redis_client
-        underlying_store.key_prefix = "pipeshub:kv:"
+        underlying_store.get_key = AsyncMock(side_effect=RuntimeError("redis down"))
 
         store = AsyncMock()
         store.store = underlying_store
@@ -1038,7 +1022,13 @@ class TestCloseSubscriptionHandles:
 
 
 class TestWatchWorkerMigrationFlag:
-    """The Redis-only migration-flag probe inside the watch worker."""
+    """The migration-flag probe inside the watch worker (R15, F8).
+
+    Reads through ``KeyValueStore.get_key()`` rather than a
+    backend-specific client, so it runs unconditionally regardless of
+    ``KV_STORE_TYPE`` -- an etcd deployment's ``get_key()`` simply returns
+    ``None`` for a flag it never wrote.
+    """
 
     def _run_watch_sync(self, svc, timeout: float = 1.0) -> None:
         svc._start_watch()
@@ -1047,11 +1037,8 @@ class TestWatchWorkerMigrationFlag:
     def test_a_completed_migration_flag_clears_the_cache_on_startup(self):
         """Handles the race where the etcd->Redis migration finishes before
         this process subscribes, so it never sees the invalidation publish."""
-        redis_client = AsyncMock()
-        redis_client.get = AsyncMock(return_value=b"true")
         underlying = MagicMock()
-        underlying.client = redis_client
-        underlying.key_prefix = "pipeshub:kv:"
+        underlying.get_key = AsyncMock(return_value=True)
 
         store = AsyncMock()
         store.store = underlying
@@ -1061,16 +1048,13 @@ class TestWatchWorkerMigrationFlag:
 
         self._run_watch_sync(svc)
 
-        redis_client.get.assert_awaited_with("pipeshub:kv:/migrations/etcd_to_redis")
+        underlying.get_key.assert_awaited_with("/migrations/etcd_to_redis")
         # Once for the migration flag, once after the subscription is live.
         assert svc.clear_cache.call_count == 2
 
     def test_an_unset_migration_flag_only_clears_after_subscribing(self):
-        redis_client = AsyncMock()
-        redis_client.get = AsyncMock(return_value=None)
         underlying = MagicMock()
-        underlying.client = redis_client
-        underlying.key_prefix = "pipeshub:kv:"
+        underlying.get_key = AsyncMock(return_value=None)
 
         store = AsyncMock()
         store.store = underlying
@@ -1083,11 +1067,8 @@ class TestWatchWorkerMigrationFlag:
         assert svc.clear_cache.call_count == 1
 
     def test_a_failing_migration_probe_does_not_stop_the_subscription(self):
-        redis_client = AsyncMock()
-        redis_client.get = AsyncMock(side_effect=RuntimeError("redis down"))
         underlying = MagicMock()
-        underlying.client = redis_client
-        underlying.key_prefix = "pipeshub:kv:"
+        underlying.get_key = AsyncMock(side_effect=RuntimeError("redis down"))
 
         store = AsyncMock()
         store.store = underlying
@@ -1098,18 +1079,21 @@ class TestWatchWorkerMigrationFlag:
 
         store.subscribe_changes.assert_awaited_once()
 
-    def test_etcd_skips_the_migration_probe_entirely(self):
-        """The flag is written by the Node.js etcd->Redis migration; an etcd
-        deployment never ran it, so the probe must not fire."""
-        redis_client = AsyncMock()
+    def test_etcd_flag_absent_clears_cache_once(self):
+        """The flag is written by the Node.js etcd->Redis migration; an
+        etcd deployment's own store never wrote it, so ``get_key()`` returns
+        ``None`` and the probe is a no-op rather than clearing the cache
+        twice."""
         underlying = MagicMock()
-        underlying.client = redis_client
+        underlying.get_key = AsyncMock(return_value=None)
 
         store = AsyncMock()
         store.store = underlying
         store.subscribe_changes = AsyncMock(return_value=99)
         svc = _build_service(store, kv_store_type="etcd")
+        svc.clear_cache = MagicMock()
 
         self._run_watch_sync(svc)
 
-        redis_client.get.assert_not_awaited()
+        underlying.get_key.assert_awaited_once_with("/migrations/etcd_to_redis")
+        assert svc.clear_cache.call_count == 1

@@ -135,6 +135,10 @@ export class StandaloneRedisProvider implements IRedisConnectionProvider {
     return this.createClient({ blocking: true });
   }
 
+  async prepare(): Promise<void> {
+    // No rotating credentials in OSS; an EE provider overrides this.
+  }
+
   async *scanKeys(pattern: string, count = 100): AsyncIterable<string> {
     const client = this.getClient();
     let cursor = '0';

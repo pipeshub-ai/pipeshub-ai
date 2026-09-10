@@ -8,7 +8,6 @@ import dotenv
 from cachetools import LRUCache
 
 from app.config.constants.service import (
-    KVStoreType,
     RedisDefaults,
     RedisEnv,
     config_node_constants,
@@ -51,10 +50,6 @@ class ConfigurationService:
         self.logger.debug("📦 Initialized LRU cache with max size 1000")
 
         self.store = key_value_store
-
-        # Determine store type from environment
-        self._kv_store_type = os.getenv(RedisEnv.KV_STORE_TYPE, KVStoreType.REDIS).lower()
-        self.logger.debug("📋 KV store type: %s", self._kv_store_type)
 
         # Event loop the watch thread runs on (any backend).
         self._pubsub_loop: asyncio.AbstractEventLoop | None = None
@@ -216,23 +211,13 @@ class ConfigurationService:
         """
 
         # Migration flag key (same as in Node.js kvStoreMigration.service.ts).
-        # Stored as plain text by Node.js, so it is read directly from Redis
-        # rather than through EncryptedKeyValueStore. Redis-only: etcd
-        # deployments never ran the etcd->Redis migration.
+        # Stored as plain text ("true"/"false") by Node.js, not through
+        # EncryptedKeyValueStore -- but still read through the ordinary
+        # KeyValueStore.get_key() (R15, F8) rather than reaching for a
+        # `.client`/`key_prefix` pair, so this never branches on
+        # KV_STORE_TYPE. A no-op for etcd deployments: they never ran the
+        # etcd->Redis migration, so the key is simply absent there.
         migration_flag_key = "/migrations/etcd_to_redis"
-
-        async def check_migration_flag_direct(redis_client, key_prefix: str) -> bool:
-            try:
-                full_key = f"{key_prefix}{migration_flag_key}"
-                value = await redis_client.get(full_key)
-                if value is not None:
-                    if isinstance(value, bytes):
-                        value = value.decode("utf-8")
-                    return value == "true"
-                return False
-            except Exception as e:
-                self.logger.debug("Could not check migration flag directly: %s", str(e))
-                return False
 
         def watch_worker() -> None:
             loop = asyncio.new_event_loop()
@@ -240,24 +225,22 @@ class ConfigurationService:
             self._pubsub_loop = loop
 
             try:
-                if self._kv_store_type == KVStoreType.REDIS:
-                    # Handles the race where migration completes before this
-                    # service starts and subscribes to the invalidation channel.
-                    try:
-                        underlying_store = getattr(self.store, 'store', None)
-                        redis_client = getattr(underlying_store, 'client', None) if underlying_store else None
-                        if redis_client:
-                            key_prefix = getattr(underlying_store, 'key_prefix', 'pipeshub:kv:')
-                            migration_completed = loop.run_until_complete(
-                                check_migration_flag_direct(redis_client, key_prefix)
-                            )
-                            if migration_completed:
-                                self.clear_cache()
-                                self._log_safe(
-                                    "📦 Cache cleared on startup - migration from etcd to Redis was completed"
-                                )
-                    except Exception as e:
-                        self._log_safe("Could not check migration flag: %s" % str(e), level="debug")
+                # Handles the race where migration completes before this
+                # service starts and subscribes to the invalidation channel.
+                try:
+                    underlying_store = getattr(self.store, "store", self.store)
+                    migration_completed = loop.run_until_complete(
+                        underlying_store.get_key(migration_flag_key)
+                    )
+                    # The deserializer parses the plain-text "true"/"false"
+                    # as JSON, yielding a Python bool -- not the string.
+                    if migration_completed is True:
+                        self.clear_cache()
+                        self._log_safe(
+                            "📦 Cache cleared on startup - migration from etcd to Redis was completed"
+                        )
+                except Exception as e:
+                    self._log_safe("Could not check migration flag: %s" % str(e), level="debug")
 
                 # Guarded by the same lock close() uses to check/cancel the
                 # subscription, so a shutdown starting during the

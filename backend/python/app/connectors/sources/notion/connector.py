@@ -28,7 +28,10 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -90,7 +93,7 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
-from app.sources.client.notion.notion import NotionClient
+from app.sources.client.notion.notion import NotionClient, NotionRESTClientViaOAuth
 from app.sources.external.notion.notion import NotionDataSource
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.image_utils import get_extension_from_mimetype
@@ -114,6 +117,10 @@ _PERMANENT_IMAGE_STATUSES = frozenset({404, 410, 415})
 # integration" — the two are indistinguishable over the API, which is why a 404 never
 # deletes a record that already has content. It only stops us re-queueing it forever.
 _NOT_FOUND_STATUS = 404
+_OAUTH_REQUIRED_SCOPES = (
+    ("read_content", "Read content"),
+    ("read_comment", "Read comments"),
+)
 
 
 class _RecordGone:
@@ -343,6 +350,42 @@ class NotionConnector(BaseConnector):
             self.logger.error(f"❌ Failed to initialize Notion connector: {e}", exc_info=True)
             return False
 
+    async def _assert_required_capabilities(self, _datasource: NotionDataSource) -> None:
+        """OAuth only: require ``read_content`` and ``read_comment`` from introspect.
+
+        Internal API tokens have no scope list; they are not gated here.
+        """
+        client = self.notion_client.get_client() if self.notion_client else None
+        if not isinstance(client, NotionRESTClientViaOAuth) or not client.access_token:
+            return
+
+        try:
+            payload = await client.introspect_access_token(client.access_token)
+        except Exception as e:
+            self.logger.warning("Notion OAuth introspect failed: %s", e)
+            raise ConnectorInitError(
+                "Could not validate Notion OAuth token capabilities. "
+                "Re-authorize this connector."
+            ) from e
+
+        if payload.get("active") is False:
+            raise ConnectorInitError(
+                "Notion OAuth token is no longer active. Re-authorize this connector."
+            )
+        scopes = str(payload.get("scope") or "").split()
+        missing = [
+            label
+            for scope, label in _OAUTH_REQUIRED_SCOPES
+            if scope not in scopes
+        ]
+        if missing:
+            names = " and ".join(missing)
+            noun = "capability" if len(missing) == 1 else "capabilities"
+            raise ConnectorInitError(
+                f"Notion token is missing the {names} {noun}. "
+                f"Enable {names} on the integration and re-authorize this connector."
+            )
+
     async def test_connection_and_access(self) -> bool:
         """Test connection and access to Notion API."""
         try:
@@ -351,15 +394,24 @@ class NotionConnector(BaseConnector):
                 return False
 
             datasource = await self._get_fresh_datasource()
-            response = await datasource.retrieve_bot_user()
+            await self._assert_required_capabilities(datasource)
 
-            if not response or not response.success:
-                self.logger.error(f"Connection test failed: {response.error if response else 'No response'}")
-                return False
+            # API tokens have no introspect payload — only confirm Notion accepts them.
+            client = self.notion_client.get_client() if self.notion_client else None
+            if not isinstance(client, NotionRESTClientViaOAuth):
+                response = await datasource.retrieve_bot_user()
+                if not response or not response.success:
+                    self.logger.error(
+                        "Connection test failed: %s",
+                        response.error if response else "No response",
+                    )
+                    return False
 
             self.logger.info("✅ Notion connector connection test passed")
             return True
 
+        except ConnectorInitError:
+            raise
         except Exception as e:
             self.logger.error(f"Connection test failed: {e}", exc_info=True)
             return False
@@ -381,6 +433,9 @@ class NotionConnector(BaseConnector):
         try:
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Notion sync for org: {org_id}")
+
+            datasource = await self._get_fresh_datasource()
+            await self._assert_required_capabilities(datasource)
 
             # Load filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -1884,18 +1939,19 @@ class NotionConnector(BaseConnector):
                     page_size=page_size
                 )
 
-                # Check if response.data exists before trying to parse
-                if response.data:
-                    try:
-                        response_data = response.data.json()
-                        if isinstance(response_data, dict) and response_data.get("object") == "error":
-                            self.logger.error(f"Notion API error for block {block_id}: {response_data}")
-                    except Exception as parse_error:
-                        self.logger.error(f"Failed to parse response.data: {parse_error}")
-
                 if not response.success:
-                    error_msg = response.error if response else "No response"
-                    self.logger.warning(f"API call failed for block {block_id}: {error_msg}")
+                    # 404 is Notion's answer for both "deleted" and "not shared with
+                    # this integration". Comments are optional; skip and continue.
+                    if self._is_definitive_not_found(response):
+                        self.logger.debug(
+                            "Comments unavailable for block %s (not shared or deleted); skipping",
+                            block_id,
+                        )
+                    else:
+                        error_msg = response.error if response else "No response"
+                        self.logger.warning(
+                            "API call failed for block %s: %s", block_id, error_msg
+                        )
                     break
 
                 # Only try to parse JSON if response is successful
@@ -1909,11 +1965,21 @@ class NotionConnector(BaseConnector):
                 else:
                     break
 
-                # Check if the response is an error object
                 if isinstance(data, dict) and data.get("object") == "error":
-                    error_msg = data.get("message", "Unknown error")
                     error_code = data.get("code", "unknown")
-                    self.logger.error(f"Notion API returned error for block {block_id}: [{error_code}] {error_msg}")
+                    if error_code == "object_not_found":
+                        self.logger.debug(
+                            "Comments unavailable for block %s (not shared or deleted); skipping",
+                            block_id,
+                        )
+                    else:
+                        error_msg = data.get("message", "Unknown error")
+                        self.logger.warning(
+                            "Notion API returned error for block %s: [%s] %s",
+                            block_id,
+                            error_code,
+                            error_msg,
+                        )
                     break
 
                 if not isinstance(data, dict):

@@ -99,6 +99,7 @@ import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 import {
   RedisConnectionProviderFactory,
   closeAllRedisProviders,
+  getPreparedRedisProvider,
 } from './libs/services/redis/connectionProviderFactory';
 
 const loggerConfig = {
@@ -147,6 +148,15 @@ export class Application {
       // `memorydb` module that self-registers on import is otherwise never
       // loaded, since nothing else in this process imports it.
       await RedisConnectionProviderFactory.ensureProviderModuleLoaded();
+
+      // Resolve rotating credentials (F1) -- e.g. an EE MemoryDB provider's
+      // IAM token -- before `loadConfigurationManagerConfig()` below builds
+      // the bootstrap KV store's Redis client. Node ends up with two
+      // fingerprints (env config for the KV store, KV-stored config for
+      // services), so `prepare()` on the EE provider must prime a
+      // process-level credential cache rather than per-instance state for
+      // one call to cover both.
+      await getPreparedRedisProvider();
 
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();

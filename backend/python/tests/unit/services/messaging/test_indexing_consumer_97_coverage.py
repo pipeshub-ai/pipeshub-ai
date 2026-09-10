@@ -29,10 +29,18 @@ from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
 )
+from app.services.resource_governor.models import ParseTier
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+def _fill_gate_waiters(consumer, count: int, tier: ParseTier = ParseTier.HEAVY) -> None:
+    """Stand in for `count` spawned tasks still queued for an index gate."""
+    for _ in range(count):
+        consumer.gate_waiters.add(tier)
+
 
 @pytest.fixture
 def logger():
@@ -643,8 +651,7 @@ class TestBackpressureAlreadyLogged:
         consumer._backpressure_logged = True
 
         # Simulate reaching capacity via gate waiters
-        with consumer._futures_lock:
-            consumer._gate_waiters = messaging_env.max_pending_indexing_tasks + 1
+        _fill_gate_waiters(consumer, messaging_env.max_pending_indexing_tasks + 1)
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         # Pause not called because assigned - paused = empty set

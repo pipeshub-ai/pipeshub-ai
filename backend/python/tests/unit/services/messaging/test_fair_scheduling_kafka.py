@@ -125,7 +125,10 @@ class TestMultiOrgInterleaving:
 
         # Quantum 1 for both keys: strict alternation, not "all of org-a's
         # backlog first" -- the exact failure mode this feature fixes.
-        assert order == [("org-a", "conn-1"), ("org-b", "conn-1")] * 5
+        # Compared at entity depth: the tier level below is not what this
+        # test is about.
+        entities = [consumer._scheduler.entity_key(key) for key in order]
+        assert entities == [("org-a", "conn-1"), ("org-b", "conn-1")] * 5
 
 
 class TestWatermarkCommitOrdering:
@@ -1195,7 +1198,7 @@ class TestRebalancePurge:
 
         assert consumer._scheduler.pending_count == 1
         remaining_key, _item = consumer._scheduler.dequeue()
-        assert remaining_key == ("org-b", "conn-1")
+        assert consumer._scheduler.entity_key(remaining_key) == ("org-b", "conn-1")
 
         # tp1's tracker state was dropped too: tracking a fresh offset on it
         # behaves exactly as if it had never been seen (see

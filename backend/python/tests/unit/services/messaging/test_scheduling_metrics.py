@@ -182,3 +182,29 @@ class TestMissingKeyIsVisible:
             'pipeshub_indexing_scheduler_missing_key_total{broker="kafka",field="connectorId"}'
             in _series()
         )
+
+
+class TestGateWaitersAreVisible:
+    def test_gauge_is_labelled_by_tier_only(self):
+        """Two series per broker, never one per connector or record."""
+        metrics.record_gate_waiters("kafka", "heavy", 8)
+        metrics.record_gate_waiters("kafka", "light", 0)
+        series = _series()
+        assert 'pipeshub_indexing_gate_waiters{broker="kafka",tier="heavy"} 8.0' in series
+        assert 'pipeshub_indexing_gate_waiters{broker="kafka",tier="light"} 0.0' in series
+
+    def test_consumer_publishes_its_current_waiters(self, logger, kafka_config):
+        from app.services.messaging import consumer_concurrency as concurrency
+        from app.services.resource_governor.models import ParseTier
+
+        consumer = _consumer(logger, kafka_config)
+        tokens = [concurrency.GateWaiterToken(consumer, ParseTier.HEAVY) for _ in range(3)]
+        tokens.append(concurrency.GateWaiterToken(consumer, ParseTier.LIGHT))
+
+        consumer._IndexingKafkaConsumer__publish_scheduler_metrics()
+
+        series = _series()
+        assert 'pipeshub_indexing_gate_waiters{broker="kafka",tier="heavy"} 3.0' in series
+        assert 'pipeshub_indexing_gate_waiters{broker="kafka",tier="light"} 1.0' in series
+        for token in tokens:
+            token.release()

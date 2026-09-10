@@ -16,6 +16,14 @@ import {
   resetRedisProviderRegistry,
 } from '../../../../src/libs/services/redis/connectionProviderFactory';
 
+// Intentionally not a static `import` of `fakeRedisProviderModule` -- this
+// suite tests that `ensureProviderModuleLoaded()` itself is what triggers
+// the module's registration side effect; statically importing it here would
+// run that side effect at file-load time and make the test pass even if
+// `ensureProviderModuleLoaded()` were a no-op. Must match `FIXTURE_MODE` in
+// `tests/fixtures/fakeRedisProviderModule.ts`.
+const FIXTURE_MODE = 'fake-fixture';
+
 function config(overrides: Partial<RedisConnectionConfig> = {}): RedisConnectionConfig {
   return { ...redisConnectionConfigFromEnv(), host: 'h', db: 0, ...overrides };
 }
@@ -34,6 +42,7 @@ class FakeProvider implements IRedisConnectionProvider {
   getClient(): RedisClient { return {} as RedisClient; }
   createClient(): RedisClient { return {} as RedisClient; }
   createPubSubClient(): Redis { return {} as Redis; }
+  async prepare(): Promise<void> {}
   release(): void { /* no-op */ }
   async *scanKeys(): AsyncIterable<string> { /* empty */ }
   async loadScript(): Promise<string> { return 'sha'; }
@@ -157,7 +166,7 @@ describe('RedisConnectionProviderFactory', () => {
       } else {
         process.env.REDIS_PROVIDER_MODULE = originalEnv;
       }
-      RedisConnectionProviderFactory.resetForTests(['fake']);
+      RedisConnectionProviderFactory.resetForTests(['fake', FIXTURE_MODE]);
     });
 
     it('is a no-op when REDIS_PROVIDER_MODULE is unset', async () => {
@@ -179,6 +188,25 @@ describe('RedisConnectionProviderFactory', () => {
       await RedisConnectionProviderFactory.ensureProviderModuleLoaded();
       // Second call returns immediately via the discovered-modules guard;
       // no separate assertion point since both calls resolve without throwing.
+    });
+
+    it('makes a mode registered by the imported module resolvable via REDIS_MODE (T1)', async () => {
+      // Node's counterpart to Python's
+      // `test_module_registering_a_mode_makes_it_available`: importing a
+      // real module (not a mock) must be enough for its `register()` side
+      // effect to land in the shared registry, exactly as an EE
+      // `REDIS_PROVIDER_MODULE=@pipeshub-ee/redis-memorydb-provider` would.
+      process.env.REDIS_PROVIDER_MODULE = require.resolve(
+        '../../../fixtures/fakeRedisProviderModule',
+      );
+
+      await RedisConnectionProviderFactory.ensureProviderModuleLoaded();
+
+      const provider = RedisConnectionProviderFactory.create(
+        config(),
+        FIXTURE_MODE,
+      );
+      expect(provider.mode).to.equal(FIXTURE_MODE);
     });
   });
 });
