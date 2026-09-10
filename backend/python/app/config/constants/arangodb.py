@@ -612,6 +612,10 @@ class RecordRelations(Enum):
     DEPENDS_ON = "DEPENDS_ON"
     CLONES = "CLONES"
     IMPLEMENTS = "IMPLEMENTS"
+    # A concrete method and the interface/abstract method it satisfies. Written
+    # by the code-graph edge pass, never by the parser: at parse time a base is
+    # only a name, and whether it is an interface is known once it resolves.
+    OVERRIDES = "OVERRIDES"
     REVIEWS = "REVIEWS"
     CAUSES = "CAUSES"
     RELATED = "RELATED"

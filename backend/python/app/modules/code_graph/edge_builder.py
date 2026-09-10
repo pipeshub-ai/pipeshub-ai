@@ -44,6 +44,16 @@ _TYPE_RELATIONS = {
     RecordRelations.IMPLEMENTS.value,
 }
 
+# Kinds a grammar spells out as a contract rather than an implementation.
+# `trait` is Rust's, `protocol` Swift's; both behave like an interface here.
+_INTERFACE_KINDS = frozenset({"interface", "trait", "protocol"})
+
+# Python has no interface keyword -- `class Foo(ABC)` is the idiom, and the
+# heritage fact naming the base is already on the class block, so no new
+# indexed field is needed to recognise it. `@abstractmethod` would be the
+# sharper signal but decorators are not projected onto block nodes.
+_ABSTRACT_BASE_NAMES = frozenset({"ABC", "ABCMeta", "Protocol"})
+
 logger = logging.getLogger(__name__)
 
 
@@ -144,6 +154,7 @@ class _Builder:
         self.module_imports: dict[str, set[str]] = {}
         self.re_exports: dict[str, list[str]] = {}
         self.imports = ImportResolution(set(index.record_by_file.keys()))
+        self._interface_memo: dict[str, bool] = {}
 
     # -- emit -----------------------------------------------------------
 
@@ -315,9 +326,79 @@ class _Builder:
             if not target:
                 continue
             self._add_edge(
-                self._source_key(block_id, fact), self._block_key(target), relation,
+                self._source_key(block_id, fact), self._block_key(target),
+                self._heritage_relation(relation, target),
                 confidence=confidence, line=fact.get("line"),
             )
+
+    def _heritage_relation(self, relation: str, target: str) -> str:
+        """`INHERITS` becomes `IMPLEMENTS` when the base turns out to be a contract.
+
+        Only decidable here. The parser sees `class Foo(ABC)` and can emit the
+        base's NAME; whether that name is an interface is known once it
+        resolves to a block. A base that resolves to nothing stays `INHERITS` --
+        a third-party class we cannot inspect is not evidence of a contract.
+        """
+        if relation != RecordRelations.INHERITS.value:
+            return relation
+        return (RecordRelations.IMPLEMENTS.value if self._is_interface(target)
+                else relation)
+
+    def _is_interface(self, block_id: str) -> bool:
+        """Whether a resolved type block is an interface or an abstract base."""
+        cached = self._interface_memo.get(block_id)
+        if cached is not None:
+            return cached
+        row = self.index.rows.get(block_id)
+        verdict = bool(row) and (
+            (row.kind or "").lower() in _INTERFACE_KINDS
+            or any(
+                fact.get("relation") in _TYPE_RELATIONS
+                and (fact.get("toName") or "") in _ABSTRACT_BASE_NAMES
+                for fact in row.pending_edges
+            )
+        )
+        self._interface_memo[block_id] = verdict
+        return verdict
+
+    # -- step 7b: overrides ---------------------------------------------
+
+    def link_overrides(self) -> None:
+        """``C.m --OVERRIDES--> B.m`` where C's base B is an interface.
+
+        Without this rung a polymorphic call site is a dead end. The router
+        holds `connector_obj: BaseConnector` and calls `.stream_record()`, so
+        `_resolve_member_call` binds the edge to the ABSTRACT method -- and an
+        inbound walk from any of the ~40 concrete `stream_record`s returns
+        nothing, because nothing connects them to the base they satisfy.
+
+        Runs after `resolve_rest`, over the heritage edges it just wrote. The
+        subclass's heritage fact and its methods live in the same record, so an
+        incremental run that re-resolves a subclass re-derives its overrides in
+        the same pass.
+        """
+        methods_by_owner: dict[str, list[tuple[str, str]]] = {}
+        for (owner, method_name), block_id in self.index.method_index.items():
+            methods_by_owner.setdefault(owner, []).append((method_name, block_id))
+
+        for from_key, to_key, relation in list(self.edges):
+            if relation not in _TYPE_RELATIONS:
+                continue
+            base = to_key.rpartition("/")[2]
+            if not self._is_interface(base):
+                continue
+            child = from_key.rpartition("/")[2]
+            for method_name, block_id in methods_by_owner.get(child, ()):
+                base_method = self.index.method_index.get((base, method_name))
+                if not base_method:
+                    continue
+                self._add_edge(
+                    self._block_key(block_id), self._block_key(base_method),
+                    RecordRelations.OVERRIDES.value,
+                    # Proven, not guessed: a heritage edge the parser extracted
+                    # plus an exact name match on the base's own members.
+                    confidence=CONFIDENCE_EXTRACTED, line=None,
+                )
 
     def _resolve_within_record(self, record_id: str, name: str) -> str | None:
         for block_id in self.index.blocks_by_record.get(record_id, ()):
@@ -506,6 +587,7 @@ async def build_code_graph_edges(
 
     builder.resolve_imports(work)
     builder.resolve_rest(work)
+    builder.link_overrides()
     edges = builder.prune_dangling()
 
     if not dry_run:

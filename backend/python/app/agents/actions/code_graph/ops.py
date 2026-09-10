@@ -64,6 +64,10 @@ CROSS_FILE_RELATIONS = [
     RecordRelations.INHERITS.value,
     RecordRelations.EXTENDS.value,
     RecordRelations.IMPLEMENTS.value,
+    # The polymorphic hop. A call site typed to an interface binds to the
+    # abstract method, so without this an inbound walk from a concrete
+    # implementation finds no callers at all.
+    RecordRelations.OVERRIDES.value,
 ]
 
 # Heritage subset of CROSS_FILE — what a type is built on. Named for callers
@@ -72,6 +76,7 @@ HERITAGE_RELATIONS = frozenset({
     RecordRelations.INHERITS.value,
     RecordRelations.EXTENDS.value,
     RecordRelations.IMPLEMENTS.value,
+    RecordRelations.OVERRIDES.value,
 })
 
 # Everything the code graph emits. `get_neighbour` and `find_symbol_path`

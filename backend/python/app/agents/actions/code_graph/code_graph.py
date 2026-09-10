@@ -16,7 +16,7 @@ Every tool is scoped to the caller's organisation *and* checked against the
 caller's access to the owning record. A denial is returned as an empty result,
 never as an error: an error would tell the agent that a record it may not read
 exists.
-
+fetch record 
 Registered as an internal class-based toolset so it participates in lazy tool
 disclosure alongside connector toolsets. The toolset is only loaded when both
 ``has_code_connector`` and ``has_code_knowledge`` are true — see the gate in
@@ -76,6 +76,43 @@ _CONNECTOR_ID_DESC = (
 _INCLUDE_TESTS_DESC = "Include test files and test symbols in results. False by default."
 
 _TAGS = [Tag(key="category", value="code_graph"), Tag(key="type", value="action")]
+
+# `search_tools` scores by keyword overlap over name + short_description +
+# tags (`tools/index.py::_tool_haystack`), normalised by QUERY length — so
+# extra vocabulary here can only raise a match, never dilute one. It is
+# needed because the descriptions are phrased structurally ("directory",
+# "symbol", "edges") while the questions these tools answer are phrased
+# behaviourally ("what happens when", "what breaks if"), sharing no tokens.
+_BEHAVIOUR = Tag(
+    key="answers",
+    value="what happens happen behaves behaviour at runtime when running, from indexed repository source code",
+)
+
+_QUERY_TAGS = [*_TAGS, _BEHAVIOUR, Tag(
+    key="finds",
+    value="module structure layout contents which classes functions a directory or file defines",
+)]
+
+_NEIGHBOUR_TAGS = [*_TAGS, _BEHAVIOUR, Tag(
+    key="answers",
+    value="who what calls call uses use imports import references reference depends depend on this, and what breaks break affects affect impact if it changes change",
+), Tag(
+    key="finds",
+    value="caller callers callee callees usage usages reference references dependency dependencies impact blast radius wiring edges",
+)]
+
+_READ_TAGS = [*_TAGS, _BEHAVIOUR, Tag(
+    key="finds",
+    value="source body definition implementation of a symbol or file",
+)]
+
+_PATH_TAGS = [*_TAGS, _BEHAVIOUR, Tag(
+    key="answers",
+    value="how one part reach reaches another, what sits between them, how something propagates propagate flows flow travels through the code",
+), Tag(
+    key="finds",
+    value="path chain route connection connects between through two symbols end to end",
+)]
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +278,7 @@ class CodeGraph:
                 default=False, description=_INCLUDE_TESTS_DESC,
             ),
         ],
-        tags=_TAGS,
+        tags=_QUERY_TAGS,
     )
     async def query_code_graph(
         self,
@@ -364,7 +401,7 @@ class CodeGraph:
                 default=False, description=_INCLUDE_TESTS_DESC,
             ),
         ],
-        tags=_TAGS,
+        tags=_NEIGHBOUR_TAGS,
     )
     async def get_neighbour(
         self,
@@ -469,7 +506,7 @@ class CodeGraph:
                 default=False, description=_INCLUDE_TESTS_DESC,
             ),
         ],
-        tags=_TAGS,
+        tags=_READ_TAGS,
     )
     async def read_code(
         self,
@@ -563,7 +600,7 @@ class CodeGraph:
                 default=False, description=_INCLUDE_TESTS_DESC,
             ),
         ],
-        tags=_TAGS,
+        tags=_PATH_TAGS,
     )
     async def find_symbol_path(
         self,
