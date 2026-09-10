@@ -35,9 +35,9 @@ Telemetry transmitters are capital items and require sign-off.
 Jesses and swivels are consumable and need no approval.
 """
 
-# Deliberately different content. Identical content is given one virtual record
-# id shared between both records, which is a different scenario — and would
-# make the survivor vanish with the deleted record for reasons that are correct.
+# Deliberately different content, so the two records are unmistakably distinct
+# in every store and a survivor assertion cannot be satisfied by the other
+# record's data.
 HUSBANDRY = b"""# Ferret Husbandry Notes
 
 Bedding is replaced weekly and charged to the field budget.

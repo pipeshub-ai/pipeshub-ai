@@ -172,19 +172,18 @@ async def assert_fully_deleted(
         )
 
 
-async def assert_shared_content_survives(
+async def assert_another_records_data_survives(
     footprint: RecordFootprint,
     vector: "VectorStoreProbe",
     blob: "BlobStoreProbe",
     *,
     storage_vendor: str = "local",
 ) -> None:
-    """The duplicate rule, from the other side.
+    """Deleting one record must leave a different record's data alone.
 
-    When two records share content they share one virtual record id, and
-    deleting either must leave the content alone. Over-deletion is the quieter
-    of the two failures: the surviving record stays in the graph and simply
-    stops being findable, so nothing looks broken until someone searches for it.
+    Over-deletion is the quieter of the two failures. The surviving record stays
+    in the graph and simply stops being findable, so nothing looks broken until
+    someone searches for it and it is not there.
     """
     await vector.assert_embeddings_survive(footprint.virtual_record_id)
     await blob.assert_blobs_survive(footprint.storage_prefix, storage_vendor)

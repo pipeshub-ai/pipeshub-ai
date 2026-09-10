@@ -8,10 +8,11 @@ Two things about the payload shape drive this module's API, both confirmed
 against a running instance rather than read off the write path:
 
 * Points carry no record id. The only record-ish key is
-  ``metadata.virtualRecordId``, which is the *deduplication* key — two records
-  with identical content share one. That is why "delete the embedding only when
-  no duplicate still refers to it" is a rule at all, and it is why the counting
-  helpers below are keyed on the virtual id.
+  ``metadata.virtualRecordId``, the id a record keeps across updates that do
+  not change its content — the graph explicitly carries it forward so that
+  points keyed by it are not orphaned. Blob paths and storage documents are
+  filed under the same id, which is what lets one lookup answer for three
+  stores, so the counting helpers below are keyed on it.
 * ``connectorIds`` is a top-level array, so connector-wide deletion is
   answerable directly.
 
@@ -222,17 +223,15 @@ class VectorStoreProbe:
     async def assert_embeddings_survive(
         self, virtual_record_id: str, expected_min: int = 1
     ) -> None:
-        """The other half of the duplicate rule.
+        """A different record's embeddings must outlive this delete.
 
-        Deleting one of two records that share content must leave the shared
-        embedding alone. Over-deletion is the quieter failure of the two: the
-        surviving record stays in the graph and simply stops being findable.
+        Over-deletion is the quieter failure of the two: the surviving record
+        stays in the graph and simply stops being findable.
         """
         count = await self.count_for_virtual_record(virtual_record_id)
         assert count >= expected_min, (
             f"Expected at least {expected_min} embedding(s) to survive for "
-            f"virtual record {virtual_record_id}, found {count}. A duplicate "
-            "still refers to this content, so its embeddings must not be "
-            "removed — the surviving record would stay in the graph but "
-            "silently stop being searchable."
+            f"virtual record {virtual_record_id}, found {count}. Deleting one "
+            "record removed another record's embeddings — that record stays in "
+            "the graph but silently stops being searchable."
         )
