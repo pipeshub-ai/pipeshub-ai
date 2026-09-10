@@ -38,20 +38,20 @@ DEFAULT_INSTANCE_URL = "https://gitlab.com"
 # Generous: the connector runs GitLab calls through an executor with a 300s
 # per-op budget and python-gitlab retries transient 5xx internally, so a
 # throttled sync legitimately takes minutes.
-GL_SYNC_WAIT_SEC = int(os.getenv("GITLAB_TEST_SYNC_WAIT_SEC", "300"))
+GL_SYNC_WAIT_SEC = int(os.getenv("GITLAB_TEST_SYNC_WAIT_SEC") or "300")
 
 # Blocks payloads are built on demand at stream time. The first stream of a session
 # also pays the parser/processor warm-up, which alone can exceed the client's 60s
 # default; subsequent ones return in seconds.
-GL_STREAM_WAIT_SEC = int(os.getenv("GITLAB_TEST_STREAM_WAIT_SEC", "180"))
+GL_STREAM_WAIT_SEC = int(os.getenv("GITLAB_TEST_STREAM_WAIT_SEC") or "180")
 
 # Poll timeout for ``Record.indexing_status == COMPLETED``.
-GL_INDEXING_WAIT_SEC = int(os.getenv("GITLAB_TEST_INDEXING_WAIT_SEC", "180"))
+GL_INDEXING_WAIT_SEC = int(os.getenv("GITLAB_TEST_INDEXING_WAIT_SEC") or "180")
 
 # Code-file timestamps are filled by a backfill task scheduled after run_sync
 # returns, so they arrive some time AFTER the sync reports finished. Poll for
 # their arrival; never assert their absence.
-GL_TIMESTAMP_WAIT_SEC = int(os.getenv("GITLAB_TEST_TIMESTAMP_WAIT_SEC", "240"))
+GL_TIMESTAMP_WAIT_SEC = int(os.getenv("GITLAB_TEST_TIMESTAMP_WAIT_SEC") or "240")
 
 # ---------------------------------------------------------------------------
 # Run identity / artifact naming
@@ -102,15 +102,21 @@ def owns_path(path: str) -> bool:
 # Pinned fixtures
 # ---------------------------------------------------------------------------
 
+# ``or`` rather than a getenv default throughout this file: a CI job that wires one of
+# these to a secret that does not exist passes an EMPTY string, and int("") raises at
+# import time — surfacing as a collection error rather than as the misconfiguration it
+# is. Moving to a self-managed host makes this likely, because the fixture iids there
+# will not match these defaults.
+#
 # The frozen issue and MR whose streamed blocks back the committed snapshots. Their
 # bodies and comments must not change or the snapshots are invalidated.
-GL_BLOCKS_ISSUE_IID = int(os.getenv("GITLAB_TEST_BLOCKS_ISSUE_IID", "1"))
-GL_BLOCKS_MR_IID = int(os.getenv("GITLAB_TEST_BLOCKS_MR_IID", "1"))
+GL_BLOCKS_ISSUE_IID = int(os.getenv("GITLAB_TEST_BLOCKS_ISSUE_IID") or "1")
+GL_BLOCKS_MR_IID = int(os.getenv("GITLAB_TEST_BLOCKS_MR_IID") or "1")
 
 # The long-lived MR that TC-INCR-MR-001 *updates* every run. It is never created or
 # closed by the suite: a per-run MR would accumulate, and its title sits outside
 # GL_IT_ARTIFACT_RE so the stale sweep can never touch it.
-GL_INCR_MR_IID = int(os.getenv("GITLAB_TEST_INCR_MR_IID", "1"))
+GL_INCR_MR_IID = int(os.getenv("GITLAB_TEST_INCR_MR_IID") or "1")
 
 # The one file on the pinned MR's branch, rewritten in place each run so the branch
 # never accumulates files.

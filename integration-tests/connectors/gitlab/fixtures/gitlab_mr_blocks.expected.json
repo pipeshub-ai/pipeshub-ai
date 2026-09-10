@@ -1,7 +1,7 @@
 {
   "_meta": {
     "iid": 1,
-    "source_updated_ms": 1788435423000
+    "source_updated_ms": 1788977872000
   },
   "block_groups": [
     {
@@ -107,7 +107,7 @@
       "children": {
         "block_group_ranges": [
           {
-            "end": 6,
+            "end": 7,
             "start": 4
           }
         ],
@@ -207,7 +207,7 @@
         "block_group_ranges": [],
         "block_ranges": [
           {
-            "end": 15,
+            "end": 14,
             "start": 14
           }
         ]
@@ -237,8 +237,8 @@
         "block_group_ranges": [],
         "block_ranges": [
           {
-            "end": 16,
-            "start": 16
+            "end": 17,
+            "start": 15
           }
         ]
       },
@@ -250,6 +250,36 @@
       "file_metadata": null,
       "format": null,
       "index": 7,
+      "link_metadata": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_index": 3,
+      "requires_processing": false,
+      "semantic_metadata": null,
+      "sub_type": null,
+      "table_cell_metadata": null,
+      "table_metadata": null,
+      "table_row_metadata": null,
+      "type": "list"
+    },
+    {
+      "children": {
+        "block_group_ranges": [],
+        "block_ranges": [
+          {
+            "end": 18,
+            "start": 18
+          }
+        ]
+      },
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": null,
+      "file_metadata": null,
+      "format": null,
+      "index": 8,
       "link_metadata": null,
       "list_metadata": null,
       "media_metadata": null,
@@ -369,7 +399,7 @@
       "citation_metadata": null,
       "code_metadata": null,
       "comments": [],
-      "data": "mentioned in commit f51aa045394e38bae7edec03ee7ecd6d2b4c3a22",
+      "data": "mentioned in commit a5f8e6aeeb3c800019025e81e9a9ec2b3481f701",
       "file_metadata": null,
       "format": "markdown",
       "image_metadata": null,
@@ -643,7 +673,7 @@
       "citation_metadata": null,
       "code_metadata": null,
       "comments": [],
-      "data": "if not isinstance(payload, dict):",
+      "data": "return {\"ok\": True, \"echo\": payload}",
       "file_metadata": null,
       "format": "markdown",
       "image_metadata": null,
@@ -668,7 +698,7 @@
       "citation_metadata": null,
       "code_metadata": null,
       "comments": [],
-      "data": "raise TypeError(\"payload must be a dict\")\n         return {\"ok\": True, \"echo\": payload, \"env\": self.settings.env}",
+      "data": "if not isinstance(payload, dict):",
       "file_metadata": null,
       "format": "markdown",
       "image_metadata": null,
@@ -678,7 +708,57 @@
       "list_metadata": null,
       "media_metadata": null,
       "parent_block_index": null,
-      "parent_index": 6,
+      "parent_index": 7,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "semantic_metadata": null,
+      "source_type": null,
+      "sub_type": "list_item",
+      "table_cell_metadata": null,
+      "table_row_metadata": null,
+      "type": "text"
+    },
+    {
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": "raise TypeError(\"payload must be a dict\")",
+      "file_metadata": null,
+      "format": "markdown",
+      "image_metadata": null,
+      "index": 16,
+      "link_metadata": null,
+      "links": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_block_index": null,
+      "parent_index": 7,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "semantic_metadata": null,
+      "source_type": null,
+      "sub_type": "list_item",
+      "table_cell_metadata": null,
+      "table_row_metadata": null,
+      "type": "text"
+    },
+    {
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": "return {\"ok\": True, \"echo\": payload, \"env\": self.settings.env}",
+      "file_metadata": null,
+      "format": "markdown",
+      "image_metadata": null,
+      "index": 17,
+      "link_metadata": null,
+      "links": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_block_index": null,
+      "parent_index": 7,
       "public_data_link": null,
       "public_data_link_expiration_epoch_time_in_ms": null,
       "semantic_metadata": null,
@@ -697,13 +777,13 @@
       "file_metadata": null,
       "format": "markdown",
       "image_metadata": null,
-      "index": 16,
+      "index": 18,
       "link_metadata": null,
       "links": null,
       "list_metadata": null,
       "media_metadata": null,
       "parent_block_index": null,
-      "parent_index": 7,
+      "parent_index": 8,
       "public_data_link": null,
       "public_data_link_expiration_epoch_time_in_ms": null,
       "semantic_metadata": null,

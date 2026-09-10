@@ -688,58 +688,145 @@ class TestGitLabIssues:
             issue["iid"], len(comment_bodies),
         )
 
+    @staticmethod
+    def _description_attachment_cases(
+        state: dict[str, Any],
+    ) -> list[tuple[str, str, str]]:
+        """``(label, parent external id, attachment external id)`` for issue and MR.
+
+        A kind with no usable fixture is dropped with a loud warning rather than
+        skipping the whole case: the other kind is still worth asserting, and a silent
+        skip reads as coverage that does not exist.
+        """
+        project_id = state["primary"]["id"]
+        instance = state["instance_url"].rstrip("/")
+        cases: list[tuple[str, str, str]] = []
+
+        for label, key, id_field in (
+            ("issue", "issue_body_attachment", "id"),
+            ("merge request", "mr_body_attachment", "id"),
+        ):
+            pair = state.get(key)
+            if not pair:
+                logger.warning(
+                    "%s ATTACHMENT COVERAGE INACTIVE: no %s in the primary project "
+                    "carries a non-image upload in its description.", label.upper(), label,
+                )
+                continue
+            parent, href = pair
+            # The API upload URL, not the browser one the markdown carries: only the
+            # API form is fetchable by the streaming path.
+            cases.append((
+                label,
+                str(parent[id_field]),
+                f"{instance}/api/v4/projects/{project_id}{href}",
+            ))
+
+        if not cases:
+            pytest.fail(
+                "Neither a fixture issue nor a fixture MR carries a non-image upload in "
+                "its description. Re-run the fixture seed, which uploads a .csv into "
+                "both."
+            )
+        return cases
+
     @pytest.mark.order(9)
-    async def test_tc_gl_attach_001_attachment_file_record(
+    async def test_tc_gl_attach_001_attachment_file_records(
         self, gitlab_connector: dict[str, Any], graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-GL-ATTACH-001: a non-image upload becomes its own FileRecord.
+        """TC-GL-ATTACH-001: issue and MR description uploads become FileRecords.
 
         Non-image on purpose: an image is inlined into the parent's blocks as a base64
-        data URI and produces no record at all, so an image fixture would make this
-        test pass for the wrong reason.
+        data URI and produces no record at all, so an image fixture would pass for the
+        wrong reason.
 
-        The external id is the **API** upload URL, not the browser one the markdown
-        carries — the record has to be fetchable by the streaming path, and only the
-        API form is.
+        Both sides are asserted because they come from two separate call sites —
+        ``issues.py:130`` and ``merge_requests.py:134`` — that only happen to look
+        alike today.
         """
         connector_id = gitlab_connector["connector_id"]
-        issue = gitlab_connector["attachment_issue"]
-        href = gitlab_connector["attachment_href"]
-        if not (issue and href):
-            pytest.skip(
-                "No non-image upload found on any fixture issue — re-run the fixture "
-                "seed, which uploads a .csv into the blocks issue body."
+
+        for label, parent_external_id, attachment_id in self._description_attachment_cases(
+            gitlab_connector
+        ):
+            parent = await wait_for_record_by_external_id(
+                graph_provider, connector_id, parent_external_id,
+                timeout=GL_SYNC_WAIT_SEC, description=f"{label} parent record",
             )
+            await wait_for_record_by_external_id(
+                graph_provider, connector_id, attachment_id,
+                timeout=GL_SYNC_WAIT_SEC,
+                description=(
+                    f"the {label} description attachment, keyed by the API upload URL "
+                    f"({attachment_id!r}) and built by the base sync"
+                ),
+            )
+            record = await graph_provider.get_typed_record_by_external_id(
+                connector_id, attachment_id,
+            )
+            assert record is not None, f"{label} attachment has no typed FileRecord"
 
-        project_id = gitlab_connector["primary"]["id"]
-        instance = gitlab_connector["instance_url"].rstrip("/")
-        external_id = f"{instance}/api/v4/projects/{project_id}{href}"
+            assert record.is_file is True
+            # Unlike GitHub, weburl is the raw API upload URL rather than the parent
+            # page — there is no browser-facing page for a GitLab upload.
+            assert record.weburl == attachment_id
+            assert record.parent_external_record_id == parent_external_id, (
+                f"the {label} attachment must hang off its parent; without the link it "
+                "is an orphan file carrying the parent's ACL and no context"
+            )
+            assert record.external_record_group_id == parent.external_record_group_id, (
+                f"the {label} attachment must sit in its parent's record group"
+            )
+            assert record.extension == attachment_id.rsplit(".", 1)[-1].lower()
+            assert record.mime_type != MimeTypes.FOLDER.value
 
-        record = await graph_provider.get_typed_record_by_external_id(
-            connector_id, external_id,
-        )
-        assert record is not None, (
-            f"attachment FileRecord missing for {external_id}. The connector builds the "
-            "id from the API base plus the /uploads/ href; a mismatch here means the "
-            "record exists under an id nothing can fetch."
-        )
-        assert record.is_file is True
-        assert record.weburl == external_id
-        assert record.parent_external_record_id == str(issue["id"]), (
-            "an attachment hangs off its parent issue; without the parent link it is an "
-            "orphan file with the issue's ACL and no context"
-        )
-        assert record.extension == href.rsplit(".", 1)[-1].lower()
-        assert record.mime_type != MimeTypes.FOLDER.value
+            parent_edge = await graph_provider.get_record_parent_external_id(
+                connector_id, attachment_id,
+            )
+            assert parent_edge == parent_external_id, (
+                f"{label} attachment PARENT_CHILD points at {parent_edge!r}, expected "
+                f"{parent_external_id!r}"
+            )
+            logger.info("TC-GL-ATTACH-001: %s attachment validated", label)
 
-        parent_relations = await graph_provider.get_record_parent_external_id(
-            connector_id, external_id,
+        logger.info("TC-GL-ATTACH-001 passed")
+
+    @pytest.mark.order(10)
+    async def test_tc_gl_attach_002_attachment_indexing(
+        self, gitlab_connector: dict[str, Any], graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-GL-ATTACH-002: both attachment records reach COMPLETED.
+
+        An attachment created but never handed to the pipeline is invisible to search
+        while looking perfectly healthy in the graph, so the terminal state is asserted
+        and not merely the record's existence.
+
+        Settle-then-assert rather than poll-for-COMPLETED: a FAILED attachment reports
+        itself immediately instead of burning the whole timeout and then blaming it.
+        """
+        connector_id = gitlab_connector["connector_id"]
+        cases = self._description_attachment_cases(gitlab_connector)
+
+        for label, _parent_external_id, attachment_id in cases:
+            status = await _await_indexing_terminal(
+                graph_provider, connector_id, attachment_id,
+                label=f"{label} attachment",
+            )
+            assert status != ProgressStatus.AUTO_INDEX_OFF.value, (
+                f"the {label} attachment is AUTO_INDEX_OFF under default filters. "
+                "Attachments carry their parent's indexing flag, so either that filter "
+                "is off or enable_manual_sync is set — the latter disables every "
+                "indexing filter at once."
+            )
+            assert status == ProgressStatus.COMPLETED.value, (
+                f"the {label} attachment settled at {status!r}, not COMPLETED"
+            )
+            logger.info("TC-GL-ATTACH-002: %s attachment -> %s", label, status)
+
+        logger.info(
+            "TC-GL-ATTACH-002 passed: %s attachment(s) indexed",
+            " + ".join(label for label, _, _ in cases),
         )
-        assert parent_relations == str(issue["id"]), (
-            f"attachment PARENT_CHILD points at {parent_relations!r}, expected the "
-            f"issue {issue['id']}"
-        )
-        logger.info("TC-GL-ATTACH-001 passed: %s", external_id)
 
 
 # =============================================================================
@@ -749,7 +836,7 @@ class TestGitLabIssues:
 
 class TestGitLabMergeRequests:
 
-    @pytest.mark.order(10)
+    @pytest.mark.order(11)
     async def test_tc_gl_mr_001_pull_request_properties(
         self, gitlab_connector: dict[str, Any], graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -785,7 +872,7 @@ class TestGitLabMergeRequests:
         )
         logger.info("TC-GL-MR-001 passed: MR !%s validated", full["iid"])
 
-    @pytest.mark.order(11)
+    @pytest.mark.order(12)
     async def test_tc_gl_mr_blocks_001_streamed_blocks(
         self, gitlab_connector: dict[str, Any], graph_provider: GraphProviderProtocol,
         pipeshub_client: PipeshubClient,
@@ -832,7 +919,7 @@ class TestGitLabMergeRequests:
 
 class TestGitLabCodeFiles:
 
-    @pytest.mark.order(12)
+    @pytest.mark.order(13)
     async def test_tc_gl_code_001_code_file_properties(
         self, gitlab_connector: dict[str, Any], graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -892,6 +979,10 @@ class TestGitLabCodeFiles:
             ext_record = await graph_provider.get_typed_record_by_external_id(
                 connector_id, str(ext_row["externalRecordId"]),
             )
+            assert ext_record is not None, (
+                f"no typed CODE_FILE record for the extension-less blob {ext_path}; "
+                "the raw record exists, so its IS_OF_TYPE edge is missing"
+            )
             assert ext_record.extension is None, (
                 f"{ext_path} has no extension, so extension must be None, not "
                 f"{ext_record.extension!r} — splitting on '.' would hand back the "
@@ -900,7 +991,7 @@ class TestGitLabCodeFiles:
             assert ext_record.mime_type == MimeTypes.PLAIN_TEXT.value
         logger.info("TC-GL-CODE-001 passed: %s validated", path)
 
-    @pytest.mark.order(13)
+    @pytest.mark.order(14)
     async def test_tc_gl_code_002_folders_and_hierarchy(
         self, gitlab_connector: dict[str, Any], graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -990,7 +1081,7 @@ class TestGitLabCodeFiles:
             len(folders), len(dotfiles),
         )
 
-    @pytest.mark.order(14)
+    @pytest.mark.order(15)
     async def test_tc_gl_code_ts_001_source_timestamps(
         self, gitlab_connector: dict[str, Any], graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -1037,7 +1128,7 @@ class TestGitLabCodeFiles:
 
 class TestGitLabPermissions:
 
-    @pytest.mark.order(15)
+    @pytest.mark.order(16)
     async def test_tc_gl_perm_001_four_way_acl_split(
         self, gitlab_connector: dict[str, Any], graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -1086,7 +1177,7 @@ class TestGitLabPermissions:
             project_perms, expected_child_counts,
         )
 
-    @pytest.mark.order(16)
+    @pytest.mark.order(17)
     async def test_tc_gl_perm_002_permission_type_and_resolution(
         self, gitlab_connector: dict[str, Any], graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -1164,7 +1255,7 @@ class TestGitLabPermissions:
 
 class TestGitLabCheckpointsAndIndexing:
 
-    @pytest.mark.order(17)
+    @pytest.mark.order(18)
     async def test_tc_gl_ckpt_001_sync_points(
         self, gitlab_connector: dict[str, Any], graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -1202,7 +1293,7 @@ class TestGitLabCheckpointsAndIndexing:
         )
         logger.info("TC-GL-CKPT-001 passed: 3 checkpoints, code at %s", head[:8])
 
-    @pytest.mark.order(18)
+    @pytest.mark.order(19)
     async def test_tc_gl_idx_001_indexing_reaches_terminal_state(
         self, gitlab_connector: dict[str, Any], graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -1247,7 +1338,7 @@ class TestGitLabCheckpointsAndIndexing:
 
 class TestGitLabIncremental:
 
-    @pytest.mark.order(19)
+    @pytest.mark.order(20)
     async def test_tc_incr_issue_001_create_then_update(
         self, gitlab_connector: dict[str, Any], gitlab_rest: GitLabRestClient,
         pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
@@ -1315,7 +1406,7 @@ class TestGitLabIncremental:
                     await delete_issue(gitlab_rest, project, created["iid"])
         logger.info("TC-INCR-ISSUE-001 passed")
 
-    @pytest.mark.order(20)
+    @pytest.mark.order(21)
     async def test_tc_incr_mr_001_update_only(
         self, gitlab_connector: dict[str, Any], gitlab_rest: GitLabRestClient,
         pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
@@ -1403,7 +1494,7 @@ class TestGitLabIncremental:
                     )
         logger.info("TC-INCR-MR-001 passed")
 
-    @pytest.mark.order(21)
+    @pytest.mark.order(22)
     async def test_tc_incr_code_001_five_deltas(
         self, gitlab_connector: dict[str, Any], gitlab_rest: GitLabRestClient,
         pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
@@ -1471,6 +1562,20 @@ class TestGitLabIncremental:
                 ],
             )
             await _resync(pipeshub_client, graph_provider, connector_id)
+
+            # Poll before snapshotting: the sync wait returns when the record count
+            # settles, which a batched code sync can satisfy while its last flush is
+            # still in flight. The connector applies deletes, then renames, then
+            # upserts — so the newly added file is the LAST thing written, and its
+            # arrival means every other delta below has already landed.
+            async def _added_present() -> bool:
+                rows = await _code_records(graph_provider, connector_id)
+                return find_code_record(rows, added) is not None
+
+            await wait_until_graph_condition(
+                connector_id, check=_added_present, timeout=GL_SYNC_WAIT_SEC,
+                description=f"the incremental code delta to land ({added})",
+            )
             after = await _code_records(graph_provider, connector_id)
 
             # (a) new file, in a directory that did not exist before
@@ -1551,7 +1656,7 @@ class TestGitLabIncremental:
 
 class TestGitLabFilters:
 
-    @pytest.mark.order(22)
+    @pytest.mark.order(23)
     async def test_tc_filter_001_group_scope(
         self, gitlab_connector: dict[str, Any],
         pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
@@ -1611,7 +1716,7 @@ class TestGitLabFilters:
             )
         logger.info("TC-FILTER-001 passed: %s expanded, siblings excluded", subgroup)
 
-    @pytest.mark.order(23)
+    @pytest.mark.order(24)
     async def test_tc_filter_002_code_files_indexing_off(
         self, gitlab_connector: dict[str, Any],
         pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
@@ -1663,6 +1768,127 @@ class TestGitLabFilters:
             len(code),
         )
 
+
+    @pytest.mark.order(25)
+    async def test_tc_gl_filteropt_001_dynamic_filter_options(
+        self, gitlab_connector: dict[str, Any], pipeshub_client: PipeshubClient,
+    ) -> None:
+        """TC-GL-FILTEROPT-001: the GROUP_IDS and PROJECT_IDS pickers.
+
+        These are what an admin picks from when scoping a connector, and the ids come
+        straight back as sync-filter values — a group id that is not a namespace path,
+        or a project id that is not ``path_with_namespace``, yields a connector that
+        syncs nothing with no error anywhere. TC-FILTER-001 pins the consuming end of
+        that contract; this pins the producing end.
+
+        The two pickers behave differently on purpose, which is the main thing worth
+        protecting: groups enumerate eagerly, while projects refuse to until the admin
+        narrows by group or search. On a self-managed instance an unscoped project
+        listing would walk every repository on the server.
+        """
+        connector_id = gitlab_connector["connector_id"]
+        group_path = gitlab_connector["group_path"]
+        subgroup_path = gitlab_connector["subgroup_path"]
+        primary_path = gitlab_connector["primary_path"]
+        mutation_path = gitlab_connector["mutation_path"]
+
+        def options(filter_key: str, **params: Any) -> dict[str, Any]:
+            resp = pipeshub_client.request(
+                "GET",
+                f"/api/v1/connectors/{connector_id}/filters/{filter_key}/options",
+                params={"page": 1, "limit": 100, **params},
+            )
+            assert resp.status_code == 200, (
+                f"{filter_key} options HTTP {resp.status_code}: {resp.text[:200]}"
+            )
+            body = resp.json()
+            assert body.get("success") is True, f"{filter_key} options: {body!r}"
+            return body
+
+        # --- GROUP_IDS enumerates, keyed by namespace path. ---
+        group_body = options("group_ids")
+        group_ids = [o["id"] for o in group_body["options"]]
+        assert group_path in group_ids, (
+            f"the fixture group {group_path!r} is missing from the group picker "
+            f"({group_ids[:10]}); it could not be selected in the UI at all"
+        )
+        if subgroup_path:
+            assert subgroup_path in group_ids, (
+                f"the subgroup {subgroup_path!r} is missing from the picker, so the "
+                "subgroup scoping TC-FILTER-001 covers is unreachable from the UI"
+            )
+        for option in group_body["options"]:
+            assert option["id"], "a group option with a blank id cannot be selected"
+            assert option["label"], "a group option with a blank label renders empty"
+
+        # Paging is asserted on groups because they are the picker that enumerates.
+        if len(group_ids) > 1:
+            page_one = options("group_ids", limit=1)
+            assert len(page_one["options"]) == 1, (
+                f"limit=1 returned {len(page_one['options'])} group option(s)"
+            )
+            assert page_one["hasMore"] is True, (
+                "hasMore must be True while groups remain, or the picker stops paging "
+                "and silently hides every group after the first"
+            )
+
+        # --- PROJECT_IDS refuses to enumerate unprompted. ---
+        bare = options("project_ids")
+        assert bare["options"] == [], (
+            "the project picker must not enumerate without a group context or a search "
+            f"term — on a self-managed instance that walks every repo on the server; got "
+            f"{[o['id'] for o in bare['options']][:5]}"
+        )
+        assert bare.get("message"), (
+            "an empty project picker must carry the guidance message, or the UI shows a "
+            "bare empty list that reads as 'no repositories found'"
+        )
+
+        # --- Search reaches the project and returns a usable id. ---
+        needle = primary_path.rsplit("/", 1)[-1]
+        search_ids = [o["id"] for o in options("project_ids", search=needle)["options"]]
+        assert primary_path in search_ids, (
+            f"searching the project picker for {needle!r} did not return {primary_path} "
+            f"(got {search_ids[:5]})"
+        )
+        assert all("/" in pid for pid in search_ids), (
+            "every project option id must be path_with_namespace — the shape "
+            f"PROJECT_IDS matches on; got {[p for p in search_ids if '/' not in p][:3]}"
+        )
+
+        # --- A group context narrows to that group's projects only. ---
+        if subgroup_path:
+            scoped_ids = [
+                o["id"] for o in
+                options("project_ids", contextGroupPath=subgroup_path)["options"]
+            ]
+            assert primary_path in scoped_ids, (
+                f"{primary_path} is under {subgroup_path} but the group-scoped picker "
+                f"did not offer it (got {scoped_ids[:5]})"
+            )
+            assert mutation_path not in scoped_ids, (
+                f"{mutation_path} sits outside {subgroup_path}, so a picker scoped to "
+                "that subgroup must not offer it — the same boundary TC-FILTER-001 "
+                "asserts on the sync side"
+            )
+
+        # --- A non-dynamic filter must refuse, not return an empty list. ---
+        refused = pipeshub_client.request(
+            "GET",
+            f"/api/v1/connectors/{connector_id}/filters/code_files/options",
+            params={"page": 1, "limit": 20},
+        )
+        assert refused.status_code == 400, (
+            "'code_files' is a BOOLEAN indexing filter with no dynamic options, so the "
+            f"endpoint must refuse it; got HTTP {refused.status_code}. An empty option "
+            "list instead would be indistinguishable from the project picker's "
+            "legitimate 'type to search' empty response."
+        )
+
+        logger.info(
+            "TC-GL-FILTEROPT-001 passed: %d group(s) enumerated, project picker "
+            "search + group-context verified", len(group_ids),
+        )
 
 # =============================================================================
 # Small shared utilities used above

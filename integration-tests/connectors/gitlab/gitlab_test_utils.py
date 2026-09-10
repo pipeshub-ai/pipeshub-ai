@@ -395,6 +395,23 @@ def first_attachment_href(body: str) -> Optional[str]:
     return None
 
 
+def discover_body_attachment(
+    items: list[dict[str, Any]],
+) -> Optional[tuple[dict[str, Any], str]]:
+    """First (issue-or-MR, upload href) whose **description** carries a non-image upload.
+
+    Description-only, unlike ``discover_attachment``: the description is on the listing
+    payload, so ``_build_issue_records`` / ``_build_mr_records`` construct those
+    FileRecords while paging. Note attachments are built too, but from a per-item notes
+    call, so a note-sourced fixture would not prove the description path works.
+    """
+    for item in items:
+        href = first_attachment_href(item.get("description") or "")
+        if href:
+            return item, href
+    return None
+
+
 async def discover_attachment(
     rest: GitLabRestClient, project: str, items: list[dict[str, Any]], kind: str,
 ) -> Optional[tuple[dict[str, Any], str]]:

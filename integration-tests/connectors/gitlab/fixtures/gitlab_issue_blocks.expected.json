@@ -1,7 +1,7 @@
 {
   "_meta": {
     "iid": 1,
-    "source_updated_ms": 1788435474000
+    "source_updated_ms": 1788977824000
   },
   "block_groups": [
     {
@@ -12,7 +12,7 @@
             "start": 1
           },
           {
-            "end": 6,
+            "end": 5,
             "start": 4
           }
         ],
@@ -207,36 +207,6 @@
       "file_metadata": null,
       "format": "markdown",
       "index": 5,
-      "link_metadata": null,
-      "list_metadata": null,
-      "media_metadata": null,
-      "parent_index": 0,
-      "requires_processing": false,
-      "semantic_metadata": null,
-      "sub_type": "comment",
-      "table_cell_metadata": null,
-      "table_metadata": null,
-      "table_row_metadata": null,
-      "type": "text_section"
-    },
-    {
-      "children": {
-        "block_group_ranges": [],
-        "block_ranges": [
-          {
-            "end": 13,
-            "start": 13
-          }
-        ]
-      },
-      "children_records": [],
-      "citation_metadata": null,
-      "code_metadata": null,
-      "comments": [],
-      "data": null,
-      "file_metadata": null,
-      "format": "markdown",
-      "index": 6,
       "link_metadata": null,
       "list_metadata": null,
       "media_metadata": null,
@@ -593,31 +563,6 @@
       "media_metadata": null,
       "parent_block_index": null,
       "parent_index": 5,
-      "public_data_link": null,
-      "public_data_link_expiration_epoch_time_in_ms": null,
-      "semantic_metadata": null,
-      "source_type": null,
-      "sub_type": "paragraph",
-      "table_cell_metadata": null,
-      "table_row_metadata": null,
-      "type": "text"
-    },
-    {
-      "children_records": null,
-      "citation_metadata": null,
-      "code_metadata": null,
-      "comments": [],
-      "data": "set status to **To do**",
-      "file_metadata": null,
-      "format": "markdown",
-      "image_metadata": null,
-      "index": 13,
-      "link_metadata": null,
-      "links": null,
-      "list_metadata": null,
-      "media_metadata": null,
-      "parent_block_index": null,
-      "parent_index": 6,
       "public_data_link": null,
       "public_data_link_expiration_epoch_time_in_ms": null,
       "semantic_metadata": null,

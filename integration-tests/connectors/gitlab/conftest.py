@@ -50,7 +50,7 @@ from connectors.gitlab.gitlab_test_utils import (  # type: ignore[import-not-fou
     GitLabRestClient,
     create_gitlab_connector,
     deepest_blob_path,
-    discover_attachment,
+    discover_body_attachment,
     discover_issue_of_type,
     discover_merged_mr,
     discover_reference_issue,
@@ -199,9 +199,6 @@ async def gitlab_connector(
             "running this suite."
         )
 
-    issue_attachment = await discover_attachment(
-        gitlab_rest, primary_path, issues, "issues",
-    )
     state.update({
         "reference_issue": discover_reference_issue(issues),
         "incident_issue": discover_issue_of_type(issues, "incident"),
@@ -209,8 +206,9 @@ async def gitlab_connector(
         "merged_mr": discover_merged_mr(mrs),
         "nested_code_path": deepest_blob_path(tree),
         "extensionless_code_path": extensionless_blob_path(tree),
-        "attachment_issue": issue_attachment[0] if issue_attachment else None,
-        "attachment_href": issue_attachment[1] if issue_attachment else None,
+        # Description-sourced uploads, which the batch sync builds directly.
+        "issue_body_attachment": discover_body_attachment(issues),
+        "mr_body_attachment": discover_body_attachment(mrs),
     })
 
     # The pinned blocks fixtures are addressed by iid because their content is
@@ -300,11 +298,11 @@ def _log_discovery(state: dict[str, Any]) -> None:
         ("incident_issue", lambda v: f"#{v['iid']}"),
         ("task_issue", lambda v: f"#{v['iid']}"),
         ("merged_mr", lambda v: f"!{v['iid']}"),
-        ("attachment_issue", lambda v: f"#{v['iid']}"),
-        ("attachment_href", str),
         ("nested_code_path", str),
         ("extensionless_code_path", str),
         ("primary_namespace_path", str),
+        ("issue_body_attachment", lambda v: f"#{v[0]['iid']} -> {v[1].rsplit('/', 1)[-1]}"),
+        ("mr_body_attachment", lambda v: f"!{v[0]['iid']} -> {v[1].rsplit('/', 1)[-1]}"),
     ):
         value = state.get(key)
         logger.info(
