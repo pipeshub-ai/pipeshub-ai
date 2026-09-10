@@ -415,9 +415,17 @@ export class OAuthAppService {
    */
   async verifyClientCredentials(
     clientId: string,
-    clientSecret: string,
+    clientSecret?: string,
   ): Promise<IOAuthApp> {
     const app = await this.getAppByClientId(clientId)
+
+    if (!app.isConfidential) {
+      return app
+    }
+
+    if (!clientSecret) {
+      throw new InvalidClientError('client_secret required for confidential clients')
+    }
 
     const storedSecret = this.encryptionService.decrypt(
       app.clientSecretEncrypted,

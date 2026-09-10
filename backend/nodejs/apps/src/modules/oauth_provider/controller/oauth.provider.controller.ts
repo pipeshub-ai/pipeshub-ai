@@ -399,13 +399,8 @@ export class OAuthProviderController {
       )
     }
 
-    // Confidential clients must provide client_secret
-    if (app.isConfidential) {
-      if (!clientSecret) {
-        throw new InvalidClientError('client_secret required for confidential clients')
-      }
-      await this.oauthAppService.verifyClientCredentials(clientId, clientSecret)
-    }
+    // Verify client credentials (public clients will skip secret check)
+    await this.oauthAppService.verifyClientCredentials(clientId, clientSecret)
 
     // Exchange code for tokens
     const codeResult = await this.authorizationCodeService.exchangeCode(
@@ -571,13 +566,8 @@ export class OAuthProviderController {
       )
     }
 
-    // RFC 6749 Section 6: Confidential clients MUST authenticate
-    if (app.isConfidential) {
-      if (!clientSecret) {
-        throw new InvalidClientError('client_secret required for confidential clients')
-      }
-      await this.oauthAppService.verifyClientCredentials(clientId, clientSecret)
-    }
+    // Verify client credentials (public clients will skip secret check)
+    await this.oauthAppService.verifyClientCredentials(clientId, clientSecret)
 
     // RFC 9700: For public clients, refresh tokens MUST be sender-constrained
     // or use rotation. We implement rotation in oauthTokenService.refreshTokens()

@@ -527,6 +527,7 @@ describe('OAuthProviderController', () => {
       }
       mockOAuthAppService.getAppByClientId.resolves(mockApp)
       mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockOAuthAppService.verifyClientCredentials.rejects(new InvalidClientError('client_secret required for confidential clients'))
 
       const req = {
         body: {
@@ -617,6 +618,7 @@ describe('OAuthProviderController', () => {
 
       mockOAuthAppService.getAppByClientId.resolves({ isConfidential: true })
       mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockOAuthAppService.verifyClientCredentials.rejects(new InvalidClientError('client_secret required for confidential clients'))
 
       await controller.token(req, mockRes, mockNext)
       expect(mockRes.status.calledWith(401)).to.be.true
