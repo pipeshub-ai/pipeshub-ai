@@ -254,6 +254,19 @@ describe('OAuthProviderController', () => {
       expect(mockRes.status.calledWith(200)).to.be.true
     })
 
+    it('should revoke successfully for a public client without a client_secret', async () => {
+      mockOAuthAppService.verifyClientCredentials.resolves({ isConfidential: false })
+      mockOAuthTokenService.revokeToken.resolves(true)
+      const req = {
+        body: { token: 'tok', client_id: 'public_cid' },
+      } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthAppService.verifyClientCredentials.calledWith('public_cid', undefined)).to.be.true
+      expect(mockOAuthTokenService.revokeToken.called).to.be.true
+      expect(mockRes.status.calledWith(200)).to.be.true
+    })
+
     it('should return 401 for invalid client credentials', async () => {
       mockOAuthAppService.verifyClientCredentials.rejects(new InvalidClientError('bad'))
       const req = {
