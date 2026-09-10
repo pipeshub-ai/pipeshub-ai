@@ -45,6 +45,19 @@ Vaccination records are retained for three years.
 """
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _cleanup_indexing_models_configured(ai_models_configured) -> None:
+    """Seed the org LLM and embedding before anything here uploads.
+
+    Without them indexing fails outright — it does not fall back to the local
+    embedder — and every fixture below would wait out its timeout and report a
+    missing model as a cleanup failure. `connectors/conftest.py` does the same
+    for the same reason; this suite runs earlier in testpaths, so it cannot
+    rely on that one having run.
+    """
+    del ai_models_configured  # fixture ordering only — the seed is the effect
+
+
 @pytest.fixture(scope="module")
 def kb_client(pipeshub_client) -> KBClient:
     return KBClient(pipeshub_client)
@@ -53,6 +66,7 @@ def kb_client(pipeshub_client) -> KBClient:
 async def _indexed_record(
     kb_client: KBClient,
     vector_store,
+    mongo_store,
     test_org_id: str,
     body: bytes,
     label: str,
@@ -69,12 +83,18 @@ async def _indexed_record(
         virtual_record_id = await _wait_for_virtual_id(kb_client, record_id)
         await _wait_for_embeddings(vector_store, virtual_record_id, record_id)
 
+        prefix = f"{test_org_id}/PipesHub/records/{virtual_record_id}"
+        # Read the vendor rather than assume it: on a stack configured for S3
+        # or Azure the blob probe must say it cannot inspect that backend, not
+        # look in an empty local directory and call the record cleaned up.
+        vendor = await mongo_store.storage_vendor_under_path(prefix) or "local"
         yield {
             "kb_id": kb_id,
             "record_id": record_id,
             "record_name": name,
             "virtual_record_id": virtual_record_id,
-            "storage_prefix": f"{test_org_id}/PipesHub/records/{virtual_record_id}",
+            "storage_prefix": prefix,
+            "storage_vendor": vendor,
         }
     finally:
         try:
@@ -93,22 +113,22 @@ async def _indexed_record(
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def indexed_record(
-    kb_client: KBClient, vector_store, test_org_id: str
+    kb_client: KBClient, vector_store, mongo_store, test_org_id: str
 ) -> AsyncGenerator[dict[str, Any], None]:
     """A knowledge-base record that has finished indexing."""
     async for record in _indexed_record(
-        kb_client, vector_store, test_org_id, POLICY, "policy"
+        kb_client, vector_store, mongo_store, test_org_id, POLICY, "policy"
     ):
         yield record
 
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def second_indexed_record(
-    kb_client: KBClient, vector_store, test_org_id: str
+    kb_client: KBClient, vector_store, mongo_store, test_org_id: str
 ) -> AsyncGenerator[dict[str, Any], None]:
     """An independent second record, for checking a delete did not overreach."""
     async for record in _indexed_record(
-        kb_client, vector_store, test_org_id, HUSBANDRY, "survivor"
+        kb_client, vector_store, mongo_store, test_org_id, HUSBANDRY, "survivor"
     ):
         yield record
 

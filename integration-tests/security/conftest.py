@@ -32,10 +32,11 @@ def fresh_user(pipeshub_client) -> Iterator[SecondUser]:
     try:
         yield user
     finally:
-        try:
-            delete_second_user(pipeshub_client, user)
-        except Exception as exc:  # noqa: BLE001 - teardown must not mask a failure
-            logger.warning("Could not delete %s: %s", user.email, exc)
+        # Raised, not logged. These accounts are real logins in a shared
+        # environment, and one that silently outlives its test is a credential
+        # nobody knows exists. A teardown error is reported alongside any test
+        # failure rather than replacing it, so nothing is hidden either way.
+        delete_second_user(pipeshub_client, user)
 
 
 @pytest.fixture

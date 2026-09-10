@@ -172,23 +172,6 @@ async def assert_fully_deleted(
         )
 
 
-async def assert_another_records_data_survives(
-    footprint: RecordFootprint,
-    vector: "VectorStoreProbe",
-    blob: "BlobStoreProbe",
-    *,
-    storage_vendor: str = "local",
-) -> None:
-    """Deleting one record must leave a different record's data alone.
-
-    Over-deletion is the quieter of the two failures. The surviving record stays
-    in the graph and simply stops being findable, so nothing looks broken until
-    someone searches for it and it is not there.
-    """
-    await vector.assert_embeddings_survive(footprint.virtual_record_id)
-    await blob.assert_blobs_survive(footprint.storage_prefix, storage_vendor)
-
-
 def _virtual_id_of(record: Any) -> str | None:
     """Read the virtual record id off whatever shape the provider returned."""
     if isinstance(record, dict):

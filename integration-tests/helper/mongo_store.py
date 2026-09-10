@@ -91,6 +91,24 @@ class MongoStoreProbe:
 
         return await asyncio.to_thread(_count)
 
+    async def storage_vendor_under_path(self, path_prefix: str) -> str | None:
+        """Which backend holds this record's bytes, per its storage document.
+
+        The blob probe dispatches on this. Reading it rather than assuming
+        "local" means a stack configured for S3 or Azure gets an explicit
+        "no probe for this vendor" instead of a silent pass from looking in a
+        directory that was never going to hold anything.
+        """
+
+        def _find() -> str | None:
+            doc = self._documents().find_one(
+                {"documentPath": {"$regex": f"^{_escape(path_prefix)}"}},
+                {"storageVendor": 1},
+            )
+            return None if doc is None else doc.get("storageVendor")
+
+        return await asyncio.to_thread(_find)
+
     async def is_soft_deleted(self, document_id: str) -> bool | None:
         """``True`` / ``False`` for a document that exists, ``None`` if it does not.
 

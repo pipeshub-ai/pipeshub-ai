@@ -40,9 +40,30 @@ logger = logging.getLogger("vector-store-probe")
 _DEFAULT_TIMEOUT = 120
 _POLL_INTERVAL = 2.0
 
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+class VectorProbeUnavailable(RuntimeError):
+    """The probe could not inspect the store, so it has no answer to give."""
+
 
 def _env(key: str, default: str) -> str:
     return os.getenv(key, default).strip() or default
+
+
+def _is_local(host: str) -> bool:
+    return host.strip().lower() in _LOCAL_HOSTS
+
+
+def _is_missing_collection(exc: Exception) -> bool:
+    """Whether the failure is "that collection is not there" and nothing worse.
+
+    Matched on the message because the client raises the same exception type
+    for a missing collection and for a transport failure, and only the first is
+    a legitimate empty answer.
+    """
+    text = str(exc).lower()
+    return "not found" in text or "doesn't exist" in text or "does not exist" in text
 
 
 class VectorStoreProbe:
@@ -53,11 +74,26 @@ class VectorStoreProbe:
         host: str | None = None,
         port: int | None = None,
         api_key: str | None = None,
+        use_https: bool | None = None,
     ) -> None:
         self._host = host or _env("QDRANT_HOST", "localhost")
         self._port = port or int(_env("QDRANT_PORT", "6333"))
         self._api_key = api_key if api_key is not None else os.getenv("QDRANT_API_KEY")
+        if use_https is None:
+            use_https = _env("QDRANT_USE_HTTPS", "").lower() in ("1", "true", "yes")
+        self._use_https = use_https
         self._client: AsyncQdrantClient | None = None
+
+        # The integration stack publishes Qdrant on loopback with no TLS, which
+        # is fine. Sending an api key in the clear to anything else is not, and
+        # is far more likely to be a misconfigured host than a deliberate
+        # choice — so it has to be asked for explicitly.
+        if self._api_key and not self._use_https and not _is_local(self._host):
+            raise ValueError(
+                f"Refusing to send a Qdrant api key in cleartext to {self._host!r}. "
+                "Set QDRANT_USE_HTTPS=true, or clear QDRANT_API_KEY if the host "
+                "genuinely needs no authentication."
+            )
 
     async def _conn(self) -> AsyncQdrantClient:
         if self._client is None:
@@ -72,7 +108,7 @@ class VectorStoreProbe:
                     host=self._host,
                     port=self._port,
                     api_key=self._api_key or None,
-                    https=False,
+                    https=self._use_https,
                 )
         return self._client
 
@@ -102,10 +138,17 @@ class VectorStoreProbe:
                     exact=True,
                 )
             except Exception as exc:
-                # A collection dropped mid-scan holds nothing, which is the
-                # answer the caller wanted. Anything else is worth surfacing.
-                logger.debug("Could not count in collection %s: %s", name, exc)
-                continue
+                # A collection dropped between listing and counting holds
+                # nothing, which is the answer the caller wanted. Every other
+                # failure means the store was not inspected, and returning zero
+                # would report it as clean — the pass condition for
+                # assert_embeddings_gone.
+                if _is_missing_collection(exc):
+                    logger.debug("Collection %s disappeared mid-scan", name)
+                    continue
+                raise VectorProbeUnavailable(
+                    f"Could not count points in collection {name!r}: {exc}"
+                ) from exc
             total += result.count
         return total
 

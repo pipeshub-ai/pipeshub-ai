@@ -58,19 +58,20 @@ class TestDeletingOneRecord:
 
         await vector_store.assert_embeddings_gone(virtual_id, timeout=120)
 
-    @pytest.mark.xfail(strict=True, reason=BLOB_ISSUE)
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BLOB_ISSUE)
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_files_are_removed_from_blob_storage(
         self, indexed_record, kb_client, blob_store
     ) -> None:
         prefix = indexed_record["storage_prefix"]
-        await blob_store.assert_blobs_present(prefix)
+        vendor = indexed_record["storage_vendor"]
+        await blob_store.assert_blobs_present(prefix, vendor)
 
         kb_client.delete_record(indexed_record["record_id"])
 
-        await blob_store.assert_blobs_gone(prefix, timeout=120)
+        await blob_store.assert_blobs_gone(prefix, vendor, timeout=120)
 
-    @pytest.mark.xfail(strict=True, reason=MONGO_ISSUE)
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=MONGO_ISSUE)
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_storage_documents_are_removed_from_mongodb(
         self, indexed_record, kb_client, mongo_store

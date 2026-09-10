@@ -130,7 +130,7 @@ class TestPasswordChange:
 class TestBlockingAnAccount:
     """The test list's 'User Blocked → JWT token shouldn't work'."""
 
-    @pytest.mark.xfail(strict=True, reason=BLOCK_ISSUE)
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BLOCK_ISSUE)
     def test_a_token_issued_before_the_block_is_rejected(
         self, fresh_user, block_account
     ) -> None:

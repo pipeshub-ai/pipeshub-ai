@@ -40,19 +40,20 @@ class TestDeletingACollection:
 
         await vector_store.assert_embeddings_gone(virtual_id, timeout=120)
 
-    @pytest.mark.xfail(strict=True, reason=f"Collection delete: {SHARED_CAUSE}")
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=f"Collection delete: {SHARED_CAUSE}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_files_are_removed_from_blob_storage(
         self, indexed_record, kb_client, blob_store
     ) -> None:
         prefix = indexed_record["storage_prefix"]
-        await blob_store.assert_blobs_present(prefix)
+        vendor = indexed_record["storage_vendor"]
+        await blob_store.assert_blobs_present(prefix, vendor)
 
         kb_client.delete_kb(indexed_record["kb_id"])
 
-        await blob_store.assert_blobs_gone(prefix, timeout=120)
+        await blob_store.assert_blobs_gone(prefix, vendor, timeout=120)
 
-    @pytest.mark.xfail(strict=True, reason=f"Collection delete: {SHARED_CAUSE}")
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=f"Collection delete: {SHARED_CAUSE}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_storage_documents_are_removed_from_mongodb(
         self, indexed_record, kb_client, mongo_store
