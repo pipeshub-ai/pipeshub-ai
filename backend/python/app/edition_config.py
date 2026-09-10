@@ -16,7 +16,6 @@ from app.api.routes.toolset_resolvers import (
     resolve_inherited_from_org_id,
 )
 from app.api.routes.mcp_resolvers import (
-    build_mcp_fallback_config_services,
     build_schedule_refresh_kwargs,
     forbid_inherited_mcp_mutation,
     get_mcp_instance as get_mcp_instance_resolved,
