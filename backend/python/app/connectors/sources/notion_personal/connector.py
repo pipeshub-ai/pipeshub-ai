@@ -244,6 +244,9 @@ class NotionPersonalConnector(NotionConnector):
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Notion Personal sync for org: {org_id}")
 
+            datasource = await self._get_fresh_datasource()
+            await self._assert_required_capabilities(datasource)
+
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "notionpersonal", self.connector_id, self.logger
             )
