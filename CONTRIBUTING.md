@@ -263,6 +263,18 @@ npm run dev
 
 Then open your browser to the displayed URL (typically `http://localhost:3001` when using `PORT=3001`; Next.js defaults to port 3000 if `PORT` is unset).
 
+### Running All Services at Once (Recommended for Daily Dev)
+
+Instead of opening 7 different terminal windows manually, you can run the entire stack in a single terminal using the provided helper script. It uses `concurrently` to multiplex the logs.
+
+```bash
+# Make sure you are in the project root
+./scripts/start_dev.sh
+```
+
+This will automatically boot up the Next.js frontend, the Node.js backend, and the 5 core Python microservices side-by-side. To stop everything, just press `Ctrl+C` in that terminal.
+
+
 ### Verifying Setup and Debugging
 
 If you encounter generic connection errors or the UI fails to load, it is likely that one of the many background microservices failed to start correctly. 
