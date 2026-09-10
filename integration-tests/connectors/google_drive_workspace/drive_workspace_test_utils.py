@@ -498,8 +498,15 @@ async def create_shared_drive_folder_filter_fixtures(
               child.txt
           out_of_scope/
             sibling.txt
+          {root-seed}/
+            root-child.txt
         Drive B/
           ignored.txt
+
+    The root-seed pair is asserted on by tc_sd_ff_004, which builds its own connector
+    minutes later. It is created here, with the rest of the tree, because a drive-wide
+    files.list can omit an item created seconds earlier and a first sync reads nothing
+    else — see ``wait_until_shared_drive_files_listed``.
     """
     seed_id = await create_drive_folder(drive, "seed", parent_id=drive_a_id)
     nested_id = await create_drive_folder(drive, "nested", parent_id=seed_id)
@@ -519,6 +526,16 @@ async def create_shared_drive_folder_filter_fixtures(
         parent_id=drive_b_id,
         content="drive B ignored by drive_ids\n",
     )
+    root_folder_name = f"root-seed-{uuid.uuid4().hex[:6]}"
+    root_folder_id = await create_drive_folder(
+        drive, root_folder_name, parent_id=drive_a_id
+    )
+    root_file_id = await create_drive_text_file(
+        drive,
+        "root-child.txt",
+        parent_id=root_folder_id,
+        content="shared drive root seed it\n",
+    )
 
     fixtures = {
         "drive_a_id": drive_a_id,
@@ -535,6 +552,10 @@ async def create_shared_drive_folder_filter_fixtures(
         "oos_file_name": "sibling.txt",
         "drive_b_ignored_file_id": ignored_id,
         "drive_b_ignored_file_name": "ignored.txt",
+        "root_folder_id": root_folder_id,
+        "root_folder_name": root_folder_name,
+        "root_file_id": root_file_id,
+        "root_file_name": "root-child.txt",
     }
     logger.info("Created Shared Drive folder-filter fixtures: %s", fixtures)
     return fixtures
