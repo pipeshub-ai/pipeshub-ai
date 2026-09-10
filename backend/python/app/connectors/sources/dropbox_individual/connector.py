@@ -1,6 +1,7 @@
 import asyncio
 import mimetypes
 import re
+import urllib.parse
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
@@ -555,7 +556,8 @@ class DropboxIndividualConnector(BaseConnector):
             # folders with a restrictive shared_link_policy, or path/not_found
             # for content whose path doesn't resolve in this namespace context).
             if preview_url is None:
-                preview_url = f"https://www.dropbox.com/home{entry.path_display}"
+                encoded_path = urllib.parse.quote(entry.path_display, safe="/")
+                preview_url = f"https://www.dropbox.com/home{encoded_path}"
                 self.logger.warning(
                     "Falling back to home URL for %s: %s", entry.path_lower, preview_url
                 )

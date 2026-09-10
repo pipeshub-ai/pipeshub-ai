@@ -607,6 +607,18 @@ class TestProcessDropboxEntry:
         assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     @pytest.mark.asyncio
+    async def test_fallback_url_encodes_special_characters(self):
+        c, _, _ = _make_connector()
+        entry = _make_file_entry(path="/folder/a#b?c.pdf")
+        _mock_temp_link(c)
+        c.data_source.sharing_create_shared_link_with_settings = AsyncMock(
+            return_value=_make_response(False, error="access_denied")
+        )
+
+        result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/a%23b%3Fc.pdf"
+
+    @pytest.mark.asyncio
     async def test_parent_metadata_lookup(self):
         c, _, _ = _make_connector()
         entry = _make_file_entry(path="/parent/child.pdf")

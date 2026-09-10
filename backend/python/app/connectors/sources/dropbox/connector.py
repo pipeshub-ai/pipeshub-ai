@@ -1,6 +1,7 @@
 import asyncio
 import mimetypes
 import re
+import urllib.parse
 import uuid
 
 # from datetime import datetime
@@ -515,7 +516,8 @@ class DropboxConnector(BaseConnector):
             # folders with a restrictive shared_link_policy, or path/not_found
             # for content whose path doesn't resolve in this namespace context).
             if preview_url is None:
-                preview_url = f"https://www.dropbox.com/home{entry.path_display}"
+                encoded_path = urllib.parse.quote(entry.path_display, safe="/")
+                preview_url = f"https://www.dropbox.com/home{encoded_path}"
                 self.logger.warning(
                     "Falling back to home URL for %s: %s", entry.path_lower, preview_url
                 )
@@ -1368,8 +1370,6 @@ class DropboxConnector(BaseConnector):
             self.logger.info("Syncing users...")
             users = await self.data_source.team_members_list()
             app_users = self.get_app_users(users)
-
-            self.logger.debug("App users: %s", app_users)
 
             # Step 1.5: Initialize cursor for member events
             member_sync_key = generate_record_sync_point_key("member_events", "team_events", "global")
