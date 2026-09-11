@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 
 from retrieval.corpus import UNIQUE_TOKEN
-from retrieval.ranking import describe, ranked_slugs
+from retrieval.ranking import describe, ranked_slugs, top, virtual_id_of
 
 logger = logging.getLogger("retrieval-quality")
 
@@ -56,8 +56,8 @@ class TestFindingAnExactTerm:
         )
 
         ranked = ranked_slugs(hits, indexed_corpus.slug_of)
-        assert ranked[0] == "servers", (
-            f"Searching for {UNIQUE_TOKEN!r} ranked {ranked[0]!r} first. That "
+        assert top(ranked) == "servers", (
+            f"Searching for {UNIQUE_TOKEN!r} ranked {top(ranked)!r} first. That "
             "token appears in the servers document and nowhere else.\n"
             f"{describe(hits, indexed_corpus.slug_of)}"
         )
@@ -103,7 +103,7 @@ class TestFindingSomethingDescribedDifferently:
         ranked = ranked_slugs(hits, indexed_corpus.slug_of)
 
         assert ranked and ranked[0] == "birds", (
-            f"A question about bird transmitters ranked {ranked[0]!r} first, "
+            f"A question about bird transmitters ranked {top(ranked)!r} first, "
             f"with the order {ranked[:3]}.\n{describe(hits, indexed_corpus.slug_of)}"
         )
 
@@ -130,7 +130,7 @@ class TestWhatComesBack:
             f"{describe(hits, indexed_corpus.slug_of)}"
         )
 
-        untraceable = [h for h in hits if not h.get("virtual_record_id")]
+        untraceable = [h for h in hits if virtual_id_of(h) is None]
         assert not untraceable, (
             f"{len(untraceable)} of {len(hits)} hits had no virtual_record_id, "
             "so nothing can say which document they came from.\n"

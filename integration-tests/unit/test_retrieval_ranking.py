@@ -8,7 +8,14 @@ from __future__ import annotations
 
 import pytest
 
-from retrieval.ranking import NOT_IN_CORPUS, describe, ranked_slugs
+from retrieval.ranking import (
+    NOT_IN_CORPUS,
+    NO_VIRTUAL_ID,
+    describe,
+    ranked_slugs,
+    top,
+    virtual_id_of,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -58,7 +65,66 @@ def test_hits_from_outside_the_corpus_are_labelled_not_absorbed() -> None:
 
 
 def test_a_hit_with_no_virtual_id_is_visible() -> None:
-    assert ranked_slugs([_hit(None)], _slug_of) == ["<no virtual id>"]
+    assert ranked_slugs([_hit(None)], _slug_of) == [NO_VIRTUAL_ID]
+
+
+def test_two_different_foreign_documents_keep_two_positions() -> None:
+    """They share a label but are not the same document.
+
+    Folding on the label would turn two foreign hits into one position, so a
+    corpus document ranked third would appear second and a "top two" assertion
+    would pass on a result that failed.
+    """
+    hits = [_hit("v-foreign-a"), _hit("v-foreign-b"), _hit("v-exp")]
+    ranked = ranked_slugs(hits, _slug_of)
+
+    assert ranked == [NOT_IN_CORPUS, NOT_IN_CORPUS, "expenses"]
+    assert "expenses" not in ranked[:2], (
+        "The corpus document ranked third and must not appear in the top two."
+    )
+
+
+def test_repeated_hits_on_one_foreign_document_still_collapse() -> None:
+    """Same id, same document — the dedup rule applies to foreign hits too."""
+    hits = [_hit("v-foreign-a"), _hit("v-foreign-a"), _hit("v-exp")]
+    assert ranked_slugs(hits, _slug_of) == [NOT_IN_CORPUS, "expenses"]
+
+
+def test_untraceable_hits_each_keep_a_position() -> None:
+    """Nothing says two hits with no id came from the same document.
+
+    Giving each its own slot makes a ranking assertion stricter rather than
+    more forgiving, which is the safe direction for a test.
+    """
+    hits = [_hit(None), _hit(None), _hit("v-exp")]
+    assert ranked_slugs(hits, _slug_of) == [NO_VIRTUAL_ID, NO_VIRTUAL_ID, "expenses"]
+
+
+def test_a_raw_vector_store_hit_is_still_traceable() -> None:
+    """Unflattened hits keep the id at metadata.virtualRecordId.
+
+    Reading only the top-level field would label these untraceable and drop
+    them out of every ranking.
+    """
+    raw = {"metadata": {"virtualRecordId": "v-exp"}, "content": "text"}
+    assert virtual_id_of(raw) == "v-exp"
+    assert ranked_slugs([raw], _slug_of) == ["expenses"]
+
+
+def test_the_flattened_field_wins_when_both_are_present() -> None:
+    hit = {"virtual_record_id": "v-exp", "metadata": {"virtualRecordId": "v-srv"}}
+    assert virtual_id_of(hit) == "v-exp"
+
+
+def test_a_malformed_metadata_value_does_not_crash() -> None:
+    assert virtual_id_of({"metadata": "not a dict"}) is None
+
+
+def test_top_of_an_empty_ranking_is_a_marker_not_an_error() -> None:
+    """Failure messages index the top result; on no results that used to raise
+    IndexError and replace the real problem — search returned nothing."""
+    assert top([]) == "<no results>"
+    assert top(["expenses"]) == "expenses"
 
 
 def test_no_hits_is_an_empty_ranking() -> None:

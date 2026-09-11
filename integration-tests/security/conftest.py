@@ -36,7 +36,7 @@ def fresh_user(pipeshub_client) -> Iterator[SecondUser]:
         # environment, and one that silently outlives its test is a credential
         # nobody knows exists. A teardown error is reported alongside any test
         # failure rather than replacing it, so nothing is hidden either way.
-        delete_second_user(pipeshub_client, user)
+        delete_second_user(pipeshub_client, user, strict=True)
 
 
 @pytest.fixture
