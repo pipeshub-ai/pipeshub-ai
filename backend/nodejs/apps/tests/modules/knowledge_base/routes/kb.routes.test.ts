@@ -193,11 +193,8 @@ describe('Knowledge Base Routes', () => {
     });
 
     it('should wire createFolderSchema validation before the createFolder handler', () => {
-      const routes = getRegisteredRoutes();
-      const folderRoute = routes.find(
-        (route) => route.path === '/:kbId/folder' && route.methods.post,
-      )!;
-      const handlers = folderRoute.stack;
+      const handlers = findRouteStack('/:kbId/folder', 'post');
+
       expect(handlers).to.have.lengthOf(4);
       expect(handlers[0]).to.be.a('function'); // authenticate
       expect(handlers[1]).to.be.a('function'); // scope middleware
@@ -210,9 +207,9 @@ describe('Knowledge Base Routes', () => {
       const subfolderRoute = routes.find(
         (route) => route.path === '/:kbId/folder/:folderId/subfolder' && route.methods.post,
       );
-
       expect(subfolderRoute).to.exist;
-      const handlers = subfolderRoute.stack;
+
+      const handlers = findRouteStack('/:kbId/folder/:folderId/subfolder', 'post');
       expect(handlers).to.have.lengthOf(4);
       expect(handlers[0]).to.be.a('function'); // authenticate
       expect(handlers[1]).to.be.a('function'); // scope middleware
