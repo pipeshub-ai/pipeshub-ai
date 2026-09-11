@@ -20,7 +20,7 @@ import {
   LocalFsFetchContentPayload,
   LocalFsPullRequestPayload,
   LocalFsPullResult,
-} from '../types/local-fs-pull.types';
+} from '../types/local-fs.types';
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };

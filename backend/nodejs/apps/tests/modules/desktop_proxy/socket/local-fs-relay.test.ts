@@ -101,6 +101,17 @@ describe('LocalFsRelay', () => {
       expect(again.accepted).to.deep.equal(['conn-1'])
       expect(again.rejected).to.deep.equal([])
     })
+
+    it('claims nothing for a machine that does not identify itself', () => {
+      const socket = makeSocket()
+      const ack = relay.register(asRelaySocket(socket), ['conn-1'], '  ')
+
+      expect(ack.accepted).to.deep.equal([])
+      expect(ack.rejected).to.deep.equal([
+        { connectorId: 'conn-1', reason: 'MISSING_DEVICE_ID' },
+      ])
+      expect(relay.hasDesktop('org-1', 'user-1', 'conn-1')).to.equal(false)
+    })
   })
 
   describe('requestFileEvents', () => {
@@ -153,6 +164,50 @@ describe('LocalFsRelay', () => {
         PULL_PAYLOAD,
       )
       expect(result.deviceId).to.equal('dev-a')
+    })
+
+    it('refuses a page answered by a device other than the registered one', async () => {
+      const socket = makeSocket()
+      relay.register(asRelaySocket(socket), ['conn-1'], 'dev-a')
+      socket.emitWithAck.resolves({
+        ok: true,
+        connectorId: 'conn-1',
+        runId: 'run-1',
+        batchIndex: 0,
+        deviceId: 'dev-b',
+        hasMore: false,
+        events: [],
+      })
+
+      const error = await rejection(
+        relay.requestFileEvents('org-1', 'user-1', 'conn-1', PULL_PAYLOAD),
+      )
+      expect(error).to.be.instanceOf(DesktopRemoteError)
+      expect((error as DesktopRemoteError).code).to.equal('DEVICE_ID_MISMATCH')
+      expect((error as DesktopRemoteError).retryable).to.equal(false)
+    })
+
+    it('refuses a page when neither the claim nor the ack names a device', async () => {
+      const socket = makeSocket()
+      relay.register(asRelaySocket(socket), ['conn-1'], 'dev-a')
+      // register() makes this unreachable; the pull must still refuse rather
+      // than hand the connector back as unowned.
+      delete socket.data.deviceId
+      socket.emitWithAck.resolves({
+        ok: true,
+        connectorId: 'conn-1',
+        runId: 'run-1',
+        batchIndex: 0,
+        hasMore: false,
+        events: [],
+      })
+
+      const error = await rejection(
+        relay.requestFileEvents('org-1', 'user-1', 'conn-1', PULL_PAYLOAD),
+      )
+      expect(error).to.be.instanceOf(DesktopRemoteError)
+      expect((error as DesktopRemoteError).code).to.equal('MISSING_DEVICE_ID')
+      expect((error as DesktopRemoteError).retryable).to.equal(false)
     })
 
     it('throws DesktopOfflineError when no desktop registered the connector', async () => {
@@ -353,7 +408,7 @@ describe('LocalFsRelay.hasDesktop', () => {
   it('is true once the socket has claimed the connector', () => {
     const relay = new LocalFsRelay()
     const socket = makeSocket()
-    relay.register(asRelaySocket(socket), ['conn-1'])
+    relay.register(asRelaySocket(socket), ['conn-1'], 'dev-a')
     expect(relay.hasDesktop('org-1', 'user-1', 'conn-1')).to.equal(true)
   })
 
@@ -365,7 +420,7 @@ describe('LocalFsRelay.hasDesktop', () => {
   it('is false once the claiming socket is no longer connected', () => {
     const relay = new LocalFsRelay()
     const socket = makeSocket()
-    relay.register(asRelaySocket(socket), ['conn-1'])
+    relay.register(asRelaySocket(socket), ['conn-1'], 'dev-a')
     socket.connected = false
     expect(relay.hasDesktop('org-1', 'user-1', 'conn-1')).to.equal(false)
   })
@@ -373,14 +428,14 @@ describe('LocalFsRelay.hasDesktop', () => {
   it('is false after the socket disconnects', () => {
     const relay = new LocalFsRelay()
     const socket = makeSocket()
-    relay.register(asRelaySocket(socket), ['conn-1'])
+    relay.register(asRelaySocket(socket), ['conn-1'], 'dev-a')
     relay.handleDisconnect(asRelaySocket(socket))
     expect(relay.hasDesktop('org-1', 'user-1', 'conn-1')).to.equal(false)
   })
 
   it('does not answer for a different user of the same org', () => {
     const relay = new LocalFsRelay()
-    relay.register(asRelaySocket(makeSocket('org-1', 'user-1')), ['conn-1'])
+    relay.register(asRelaySocket(makeSocket('org-1', 'user-1')), ['conn-1'], 'dev-a')
     expect(relay.hasDesktop('org-1', 'user-2', 'conn-1')).to.equal(false)
   })
 })

@@ -1,5 +1,3 @@
-import { z } from 'zod';
-
 /**
  * Contract for the server-driven Local FS sync. The connector service asks
  * for one page at a time; this route relays the ask to the user's desktop and
@@ -8,27 +6,6 @@ import { z } from 'zod';
  * `orgId`/`userId` are deliberately absent from the body — they come from the
  * scoped token, so a caller cannot address another tenant's desktop.
  */
-export const LocalFsPullEventsSchema = z.object({
-  body: z.object({
-    connectorId: z.string().min(1),
-    runId: z.string().min(1),
-    batchIndex: z.number().int().min(0),
-    mode: z.enum(['FULL', 'INCREMENTAL']),
-    cursor: z.string().nullable().optional(),
-    maxEvents: z.number().int().min(1).max(1000),
-    timeoutMs: z.number().int().min(1000).max(300_000),
-  }),
-});
-
-export const LocalFsFetchContentSchema = z.object({
-  body: z.object({
-    connectorId: z.string().min(1),
-    relPath: z.string().min(1),
-    externalRecordId: z.string().min(1),
-    sha256: z.string().nullable().optional(),
-    timeoutMs: z.number().int().min(1000).max(300_000),
-  }),
-});
 
 export interface LocalFsPullRequestPayload {
   connectorId: string;

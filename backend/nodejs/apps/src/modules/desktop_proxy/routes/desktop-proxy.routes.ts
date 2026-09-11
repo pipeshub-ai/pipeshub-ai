@@ -10,7 +10,7 @@ import {
 import {
   LocalFsFetchContentSchema,
   LocalFsPullEventsSchema,
-} from '../types/local-fs-pull.types';
+} from '../validators/local-fs.validators';
 
 /**
  * Service-to-service routes the connector service calls to reach a user's

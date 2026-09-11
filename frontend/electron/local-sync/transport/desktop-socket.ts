@@ -181,8 +181,8 @@ export class DesktopSocketClient {
         (ack: DesktopRegisterAck | undefined) => {
           if (ack?.rejected?.length) {
             this.log(
-              `registration rejected for ${ack.rejected.map((r) => r.connectorId).join(', ')} ` +
-              '— another machine already syncs those folders',
+              'registration rejected for ' +
+              ack.rejected.map((r) => `${r.connectorId} (${r.reason})`).join(', '),
             );
           }
           if (ack) this.deps.onRegistration?.(ack);
