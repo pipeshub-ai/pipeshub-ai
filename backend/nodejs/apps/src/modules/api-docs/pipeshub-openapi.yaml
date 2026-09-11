@@ -14175,8 +14175,10 @@ paths:
         CSV. Each file may be at most 5 MiB; all files together may be at most
         12 MiB. The text submission is stored in Mongo. File bytes go to the
         workspace storage backend; Mongo keeps only the document IDs. If SMTP
-        and `FEEDBACK_SUPPORT_EMAIL` are configured, those documents are read
-        back and emailed as a zip. Missing SMTP does not fail the request.
+        is configured, those documents are read back and emailed as a zip to
+        `FEEDBACK_SUPPORT_EMAIL` (defaults to support@pipeshub.com,
+        rishabh@pipeshub.com, abhishek@pipeshub.com, shekhar@pipeshub.com).
+        Missing SMTP does not fail the request.
       operationId: createFeedback
       security:
         - bearerAuth: []

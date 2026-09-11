@@ -15,6 +15,7 @@ import {
   feedbackMimeTypes,
   IFeedbackAttachment,
 } from '../schema/feedback.schema';
+import { getInitializedStorageAdapter } from '../../storage/utils/create-storage-adapter';
 import { createZipBuffer } from '../utils/create-zip';
 import {
   readFeedbackAttachmentBuffer,
@@ -22,6 +23,8 @@ import {
 } from '../utils/feedback-storage';
 
 const SUPPORT_EMAIL_ENV = 'FEEDBACK_SUPPORT_EMAIL';
+const DEFAULT_FEEDBACK_SUPPORT_EMAIL =
+  'support@pipeshub.com,rishabh@pipeshub.com,abhishek@pipeshub.com,shekhar@pipeshub.com';
 
 function normalizeMimeType(mimeType: string): FeedbackMimeType | null {
   if (mimeType === 'image/jpg') {
@@ -44,11 +47,16 @@ function isSmtpReady(smtp: AppConfig['smtp']): smtp is NonNullable<AppConfig['sm
   );
 }
 
-function supportEmails(): string[] {
-  return (process.env[SUPPORT_EMAIL_ENV] ?? '')
+function parseEmailList(value: string): string[] {
+  return value
     .split(',')
     .map((email) => email.trim())
     .filter((email) => email.length > 0);
+}
+
+function supportEmails(): string[] {
+  const fromEnv = parseEmailList(process.env[SUPPORT_EMAIL_ENV] ?? '');
+  return fromEnv.length > 0 ? fromEnv : parseEmailList(DEFAULT_FEEDBACK_SUPPORT_EMAIL);
 }
 
 export class FeedbackService {
@@ -70,6 +78,10 @@ export class FeedbackService {
     files: FileBufferInfo[];
   }): Promise<{ id: string }> {
     const feedbackId = new mongoose.Types.ObjectId();
+    const { adapter, storageVendor } = await getInitializedStorageAdapter(
+      this.kvStore,
+      this.appConfig.storage,
+    );
     const attachments: IFeedbackAttachment[] = [];
 
     for (const file of input.files) {
@@ -80,6 +92,8 @@ export class FeedbackService {
       const stored = await uploadFeedbackAttachment({
         kvStore: this.kvStore,
         appConfig: this.appConfig,
+        adapter,
+        storageVendor,
         orgId: input.orgId,
         userId: input.userId,
         feedbackId: String(feedbackId),
@@ -150,11 +164,14 @@ export class FeedbackService {
     const kindLabel = input.kind === 'issue' ? 'Feedback' : 'Feature request';
     const snippet = input.description.replace(/\s+/g, ' ').slice(0, 80);
 
+    const { adapter } = await getInitializedStorageAdapter(
+      this.kvStore,
+      this.appConfig.storage,
+    );
     const zipEntries: { name: string; data: Buffer }[] = [];
     for (const attachment of input.attachments) {
       const data = await readFeedbackAttachmentBuffer({
-        kvStore: this.kvStore,
-        appConfig: this.appConfig,
+        adapter,
         orgId: input.orgId,
         documentId: String(attachment.documentId),
       });
@@ -173,7 +190,7 @@ export class FeedbackService {
         ? [
             {
               filename: `feedback-${input.feedbackId}.zip`,
-              content: createZipBuffer(zipEntries),
+              content: await createZipBuffer(zipEntries),
               contentType: 'application/zip',
             },
           ]

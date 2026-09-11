@@ -14,6 +14,33 @@ export const feedbackMimeTypes = [
 ] as const;
 export type FeedbackMimeType = (typeof feedbackMimeTypes)[number];
 
+/** Browsers may send image/jpg; store and validate as image/jpeg. */
+export const feedbackUploadMimeTypes: string[] = [...feedbackMimeTypes, 'image/jpg'];
+
+export const feedbackAllowedExtensions = [
+  'jpg',
+  'jpeg',
+  'png',
+  'webp',
+  'gif',
+  'pdf',
+  'txt',
+  'log',
+  'csv',
+] as const;
+
+export const feedbackMimeTypeByExtension: Record<string, FeedbackMimeType> = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  pdf: 'application/pdf',
+  txt: 'text/plain',
+  log: 'text/plain',
+  csv: 'text/csv',
+};
+
 export const MAX_FEEDBACK_ATTACHMENTS = 5;
 export const MAX_FEEDBACK_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 export const MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES = 12 * 1024 * 1024;

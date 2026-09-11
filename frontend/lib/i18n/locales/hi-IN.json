@@ -3213,6 +3213,10 @@
     "descriptionTooShort": "कृपया थोड़ा और विवरण लिखें (कम से कम 10 अक्षर)।",
     "invalidType": "यह फ़ाइल प्रकार समर्थित नहीं है।",
     "fileTooLarge": "प्रत्येक फ़ाइल 5 MB या उससे छोटी होनी चाहिए।",
-    "tooManyFiles": "आप अधिकतम 5 फ़ाइलें संलग्न कर सकते हैं।"
+    "tooManyFiles": "आप अधिकतम 5 फ़ाइलें संलग्न कर सकते हैं।",
+    "smtpNotConfigured": "SMTP कॉन्फ़िगर नहीं है",
+    "smtpNotConfiguredAdmin": "पहले SMTP कॉन्फ़िगर करें, फिर फ़ीडबैक भेजें।",
+    "smtpConfigureAction": "SMTP कॉन्फ़िगर करें",
+    "smtpNotConfiguredMember": "अपने एडमिन से पहले SMTP कॉन्फ़िगर करने को कहें, फिर फिर से कोशिश करें।"
   }
 }

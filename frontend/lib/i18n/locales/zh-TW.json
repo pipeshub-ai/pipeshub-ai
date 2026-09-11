@@ -3449,6 +3449,10 @@
     "descriptionTooShort": "請再補充一些細節（至少 10 個字元）。",
     "invalidType": "不支援該檔案類型。",
     "fileTooLarge": "每個檔案不得超過 5 MB。",
-    "tooManyFiles": "最多只能附加 5 個檔案。"
+    "tooManyFiles": "最多只能附加 5 個檔案。",
+    "smtpNotConfigured": "尚未設定 SMTP",
+    "smtpNotConfiguredAdmin": "請先設定 SMTP，然後再傳送回饋。",
+    "smtpConfigureAction": "設定 SMTP",
+    "smtpNotConfiguredMember": "請讓管理員先設定 SMTP，然後再試一次。"
   }
 }

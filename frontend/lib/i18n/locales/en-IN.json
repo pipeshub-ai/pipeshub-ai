@@ -3213,6 +3213,10 @@
     "descriptionTooShort": "Please add a bit more detail (at least 10 characters).",
     "invalidType": "That file type is not supported.",
     "fileTooLarge": "Each file must be 5 MB or smaller.",
-    "tooManyFiles": "You can attach up to 5 files."
+    "tooManyFiles": "You can attach up to 5 files.",
+    "smtpNotConfigured": "SMTP is not configured",
+    "smtpNotConfiguredAdmin": "Configure SMTP first, then send feedback.",
+    "smtpConfigureAction": "Configure SMTP",
+    "smtpNotConfiguredMember": "Ask your admin to configure SMTP first, then try again."
   }
 }

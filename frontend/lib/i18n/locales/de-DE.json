@@ -3216,6 +3216,10 @@
     "descriptionTooShort": "Bitte etwas mehr Details (mindestens 10 Zeichen).",
     "invalidType": "Dieser Dateityp wird nicht unterstützt.",
     "fileTooLarge": "Jede Datei darf höchstens 5 MB groß sein.",
-    "tooManyFiles": "Sie können höchstens 5 Dateien anhängen."
+    "tooManyFiles": "Sie können höchstens 5 Dateien anhängen.",
+    "smtpNotConfigured": "SMTP ist nicht konfiguriert",
+    "smtpNotConfiguredAdmin": "Konfigurieren Sie zuerst SMTP und senden Sie dann Feedback.",
+    "smtpConfigureAction": "SMTP konfigurieren",
+    "smtpNotConfiguredMember": "Bitten Sie Ihren Administrator, zuerst SMTP zu konfigurieren, und versuchen Sie es erneut."
   }
 }

@@ -3449,6 +3449,10 @@
     "descriptionTooShort": "조금 더 자세히 적어 주세요(최소 10자).",
     "invalidType": "지원하지 않는 파일 형식입니다.",
     "fileTooLarge": "각 파일은 5MB 이하여야 합니다.",
-    "tooManyFiles": "파일은 최대 5개까지 첨부할 수 있습니다."
+    "tooManyFiles": "파일은 최대 5개까지 첨부할 수 있습니다.",
+    "smtpNotConfigured": "SMTP가 구성되어 있지 않습니다",
+    "smtpNotConfiguredAdmin": "먼저 SMTP를 구성한 다음 피드백을 보내 주세요.",
+    "smtpConfigureAction": "SMTP 구성",
+    "smtpNotConfiguredMember": "관리자에게 SMTP를 먼저 구성해 달라고 요청한 다음 다시 시도해 주세요."
   }
 }
