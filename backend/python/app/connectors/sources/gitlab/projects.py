@@ -450,6 +450,7 @@ class ProjectsSync:
 
         permission_project_level: list[Permission] = []
         permission_work_items_level: list[Permission] = []
+        permission_confidential_level: list[Permission] = []
         permission_code_repo_level: list[Permission] = []
         permission_merge_requests_level: list[Permission] = []
 
@@ -465,6 +466,7 @@ class ProjectsSync:
                 permission_work_items_level.append(permission)
             elif level >= 15:
                 permission_work_items_level.append(permission)
+                permission_confidential_level.append(permission)
                 permission_merge_requests_level.append(permission)
                 permission_code_repo_level.append(permission)
             else:
@@ -472,9 +474,23 @@ class ProjectsSync:
                     "Member %s has unrecognized access level %s, skipping", member.name, level
                 )
 
+        # Visibility-derived readers, who appear in no member listing. Deliberately
+        # NOT added to the confidential group: confidentiality is a membership rule
+        # (>= Planner), so it survives the project being public.
+        permission_work_items_level.extend(
+            self._visibility_permission(project, "issues_access_level")
+        )
+        permission_merge_requests_level.extend(
+            self._visibility_permission(project, "merge_requests_access_level")
+        )
+        permission_code_repo_level.extend(
+            self._visibility_permission(project, "repository_access_level")
+        )
+
         (
             project_record_group,
             work_items_record_group,
+            confidential_record_group,
             merge_requests_record_group,
             code_repo_record_group,
         ) = self._build_project_record_groups(project)
@@ -482,18 +498,55 @@ class ProjectsSync:
             [
                 (project_record_group, permission_project_level),
                 (work_items_record_group, permission_work_items_level),
+                (confidential_record_group, permission_confidential_level),
                 (code_repo_record_group, permission_code_repo_level),
                 (merge_requests_record_group, permission_merge_requests_level),
             ]
         )
 
+    def _visibility_permission(self, project: Project, feature_attr: str) -> list[Permission]:
+        """An ORG grant when GitLab lets non-members read this feature.
+
+        GitLab's own wording for the ``enabled`` setting is "non-project members have
+        only read access", and that audience appears in no member listing — a public
+        project does not enumerate the instance as members — so it can only be derived
+        from the visibility value itself.
+
+        Both halves are required. A public project may still hold a single feature at
+        ``private`` (members only), and granting on visibility alone would leak it.
+        The two settings are independent, and a feature left at ``private`` while the
+        project was private stays that way when the project is later opened up.
+
+        ``disabled`` needs no branch: GitLab returns an empty listing to every caller,
+        the connector's Owner token included, so nothing is synced to grant.
+
+        ORG is the closest available principal for both ``internal`` (any signed-in
+        user on this instance) and ``public``. The platform narrows it further on its
+        own — every connector record is gated on the reader being linked to this
+        connector's app — so the effective audience is org members who hold GitLab
+        access, which is the intended set.
+        """
+        visibility = (getattr(project, "visibility", None) or "").lower()
+        if visibility not in ("internal", "public"):
+            return []
+        if (getattr(project, feature_attr, None) or "").lower() != "enabled":
+            return []
+        return [Permission(type=PermissionType.READ, entity_type=EntityType.ORG)]
+
     def _build_project_record_groups(
         self, project: Project
-    ) -> tuple[RecordGroup, RecordGroup, RecordGroup, RecordGroup]:
-        """Return ``(project, work_items, merge_requests, code_repo)`` record groups.
+    ) -> tuple[RecordGroup, RecordGroup, RecordGroup, RecordGroup, RecordGroup]:
+        """Return ``(project, work_items, confidential_work_items, merge_requests,
+        code_repo)`` record groups.
 
-        Single source of truth for the four-RG shape to keep the creator-fallback
+        Single source of truth for the five-RG shape to keep the creator-fallback
         path and the normal member-sync path in sync.
+
+        Confidential work items are a separate group rather than a per-record ACL:
+        the platform resolves access as a union with no deny, so a confidential issue
+        left inheriting from the ordinary work-items group would still be reachable
+        by every Guest holding it. A narrower group keeps the restriction while
+        membership changes continue to propagate on their own.
         """
         c = self.c
         parent_for_project_rg: str | None = None
@@ -524,6 +577,15 @@ class ProjectsSync:
             ),
             RecordGroup(
                 org_id=c.data_entities_processor.org_id,
+                name="Confidential work items",
+                group_type=RecordGroupType.PROJECT.value,
+                connector_name=c.connector_name,
+                connector_id=c.connector_id,
+                external_group_id=f"{project.id}-confidential-work-items",
+                parent_external_group_id=str(project.id),
+            ),
+            RecordGroup(
+                org_id=c.data_entities_processor.org_id,
                 name="Merge requests",
                 group_type=RecordGroupType.PROJECT.value,
                 connector_name=c.connector_name,
@@ -543,7 +605,7 @@ class ProjectsSync:
         )
 
     async def _apply_creator_fallback_for_project(self, project: Project) -> None:
-        """Create the four project ``RecordGroup`` nodes with creator-only ACLs.
+        """Create the five project ``RecordGroup`` nodes with creator-only ACLs.
 
         Called when ``list_project_members_all`` fails or returns empty.
         """
@@ -559,6 +621,7 @@ class ProjectsSync:
         (
             project_record_group,
             work_items_record_group,
+            confidential_record_group,
             merge_requests_record_group,
             code_repo_record_group,
         ) = self._build_project_record_groups(project)
@@ -567,6 +630,7 @@ class ProjectsSync:
             [
                 (project_record_group, perms),
                 (work_items_record_group, perms),
+                (confidential_record_group, perms),
                 (code_repo_record_group, perms),
                 (merge_requests_record_group, perms),
             ]

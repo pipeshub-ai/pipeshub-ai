@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.connectors.sources.gitlab.issues import IssuesSync
+from app.models.entities import RecordType
+from app.models.permission import EntityType, Permission, PermissionType
 
 from .conftest import make_mock_connector, failed_res
 
@@ -27,6 +29,9 @@ def _make_issue(
     state: str = "opened",
     project_id: int = 42,
     web_url: str = "https://gitlab.com/ns/proj/-/issues/1",
+    confidential: bool = False,
+    author_id: int | None = None,
+    assignee_ids: list[int] | None = None,
 ) -> MagicMock:
     issue = MagicMock()
     issue.id = iid
@@ -40,6 +45,11 @@ def _make_issue(
     issue.labels = []
     issue.updated_at = "2024-01-01T00:00:00Z"
     issue.created_at = "2024-01-01T00:00:00Z"
+    # Set explicitly: an unset attribute on a MagicMock reads back truthy, which
+    # would route every issue in this file down the confidential branch.
+    issue.confidential = confidential
+    issue.author = {"id": author_id} if author_id is not None else {}
+    issue.assignees = [{"id": uid} for uid in (assignee_ids or [])]
     return issue
 
 
@@ -627,3 +637,101 @@ class TestBuildTicketBlocks:
         parent_children = data["block_groups"][0].get("children") or {}
         group_ranges = parent_children.get("block_group_ranges") or []
         assert group_ranges == [{"start": 1, "end": 1}]
+
+
+# ===========================================================================
+# Confidential work items
+# ===========================================================================
+
+
+class TestConfidentialIssueRouting:
+    """GitLab hides confidential issues from Guests.
+
+    The connector reads as the token owner and receives them regardless, so the
+    restriction is re-imposed by placing them in a record group whose ACL stops at
+    ``access_level >= 15`` instead of the Guest-readable work-items group.
+    """
+
+    async def _ticket_for(self, issue: MagicMock) -> object:
+        c = make_mock_connector()
+        tx_store = MagicMock()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=None)
+        c.data_store_provider = MagicMock()
+        c.data_store_provider.transaction = MagicMock(return_value=ctx)
+        c.projects = MagicMock()
+        c.projects._create_permission_from_principal = AsyncMock(
+            side_effect=lambda _t, pid, _p, **_k: Permission(
+                email=f"user{pid}@example.com",
+                type=PermissionType.OWNER.value,
+                entity_type=EntityType.USER,
+            )
+        )
+        return await IssuesSync(c)._process_issue_incident_task_to_ticket(issue)
+
+    async def test_ordinary_issue_stays_in_work_items(self) -> None:
+        result = await self._ticket_for(_make_issue(confidential=False))
+        assert result.record.external_record_group_id == "42-work-items"
+        assert result.new_permissions == []
+
+    async def test_confidential_issue_moves_to_restricted_group(self) -> None:
+        result = await self._ticket_for(_make_issue(confidential=True))
+        assert result.record.external_record_group_id == "42-confidential-work-items"
+
+    async def test_author_and_assignees_keep_access(self) -> None:
+        """Additive grants: the union-with-no-deny model can widen but not narrow."""
+        result = await self._ticket_for(
+            _make_issue(confidential=True, author_id=7, assignee_ids=[8, 9])
+        )
+        emails = sorted(p.email for p in result.new_permissions)
+        assert emails == ["user7@example.com", "user8@example.com", "user9@example.com"]
+        assert result.permissions_changed is True
+
+    async def test_author_who_is_also_assignee_is_granted_once(self) -> None:
+        result = await self._ticket_for(
+            _make_issue(confidential=True, author_id=7, assignee_ids=[7])
+        )
+        assert len(result.new_permissions) == 1
+
+    async def test_ordinary_issue_gets_no_exception_grants(self) -> None:
+        """An author only matters when the issue is restricted."""
+        result = await self._ticket_for(
+            _make_issue(confidential=False, author_id=7, assignee_ids=[8])
+        )
+        assert result.new_permissions == []
+        assert result.permissions_changed is False
+
+
+class TestConfidentialWatermark:
+    """The ACL split must not split the sync cursor.
+
+    Both kinds of issue arrive on one ``updated asc`` listing, and the checkpoint is
+    only ever read back under the work-items key — so a confidential issue has to
+    advance that key rather than a parallel one nothing reads.
+    """
+
+    async def _run(self, group_id: str) -> dict:
+        c = make_mock_connector()
+        record = MagicMock()
+        record.record_type = RecordType.TICKET.value
+        record.source_updated_at = 1700000000000
+        record.external_record_group_id = group_id
+        ru = MagicMock(record=record, new_permissions=[])
+        watermarks: dict[str, int] = {}
+        await IssuesSync(c).process_new_records([ru], watermarks)
+        return watermarks
+
+    async def test_ordinary_issue_advances_work_items_key(self) -> None:
+        assert list(await self._run("42-work-items")) == ["42-work-items"]
+
+    async def test_confidential_issue_advances_the_same_key(self) -> None:
+        watermarks = await self._run("42-confidential-work-items")
+        assert list(watermarks) == ["42-work-items"], (
+            "a confidential issue must advance the checkpoint the reader actually "
+            "consults, or the cursor stalls whenever the newest issue is confidential"
+        )
+
+    async def test_merge_request_group_is_untouched(self) -> None:
+        assert list(await self._run("42-merge-requests")) == ["42-merge-requests"]

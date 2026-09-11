@@ -512,8 +512,8 @@ class TestGroupPermissionsFromChildProjects:
 
 
 class TestSyncProjectMembersAsPseudo:
-    async def test_tiered_access_creates_four_record_groups(self) -> None:
-        """Members with various access levels produce 4 RecordGroups."""
+    async def test_tiered_access_creates_five_record_groups(self) -> None:
+        """Members with various access levels produce 5 RecordGroups."""
         c = make_mock_connector()
         c.data_source = MagicMock()
         c._gitlab_included_group_paths = None
@@ -539,9 +539,97 @@ class TestSyncProjectMembersAsPseudo:
         await projects_sync._sync_project_members_as_pseudo(project)
 
         c.data_entities_processor.on_new_record_groups.assert_called_once()
-        # 4 record groups passed
         call_args = c.data_entities_processor.on_new_record_groups.call_args[0][0]
-        assert len(call_args) == 4
+        acl = {group.external_group_id: perms for group, perms in call_args}
+        assert set(acl) == {
+            "1",
+            "1-work-items",
+            "1-confidential-work-items",
+            "1-merge-requests",
+            "1-code-repository",
+        }
+        # Developer (30) clears the >= 15 bar, so every group grants them.
+        assert all(len(perms) == 1 for perms in acl.values())
+
+    async def test_guest_is_excluded_from_confidential_work_items(self) -> None:
+        """Guest (10) reads ordinary issues but not confidential ones, nor code/MRs."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        c._gitlab_included_group_paths = None
+
+        project = _project(1, "eng/proj")
+        project.name = "proj"
+        member = _member(uid=1, access_level=10)
+        member.id = 1
+        c.runtime.ds_call = AsyncMock(
+            return_value=MagicMock(success=True, data=[member], error=None)
+        )
+
+        from app.models.permission import EntityType, Permission, PermissionType
+        perm = Permission(
+            email="guest@example.com",
+            type=PermissionType.OWNER.value,
+            entity_type=EntityType.USER,
+        )
+        c.users = MagicMock()
+        c.users._inject_creator_member_into = MagicMock()
+
+        projects_sync = ProjectsSync(c)
+        projects_sync._transform_restrictions_to_permissions = AsyncMock(return_value=perm)
+        await projects_sync._sync_project_members_as_pseudo(project)
+
+        call_args = c.data_entities_processor.on_new_record_groups.call_args[0][0]
+        acl = {group.external_group_id: perms for group, perms in call_args}
+        assert acl["1-work-items"] == [perm]
+        assert acl["1-confidential-work-items"] == []
+        assert acl["1-merge-requests"] == []
+        assert acl["1-code-repository"] == []
+
+
+class TestVisibilityPermission:
+    """Grants implied by project visibility, which appear in no member listing."""
+
+    @staticmethod
+    def _project_with(visibility: str, **features: str) -> MagicMock:
+        project = _project(1, "eng/proj")
+        project.visibility = visibility
+        for name, value in features.items():
+            setattr(project, name, value)
+        return project
+
+    def _grant(self, visibility: str, feature_value: str) -> list:
+        project = self._project_with(visibility, issues_access_level=feature_value)
+        return ProjectsSync(make_mock_connector())._visibility_permission(
+            project, "issues_access_level"
+        )
+
+    def test_private_project_never_grants(self) -> None:
+        for level in ("enabled", "private", "disabled"):
+            assert self._grant("private", level) == []
+
+    def test_internal_and_public_grant_org_when_feature_enabled(self) -> None:
+        for visibility in ("internal", "public"):
+            grants = self._grant(visibility, "enabled")
+            assert len(grants) == 1
+            assert grants[0].entity_type.value == "ORG"
+
+    def test_members_only_feature_is_not_widened(self) -> None:
+        """A public project may still hold one feature at members-only."""
+        for visibility in ("internal", "public"):
+            assert self._grant(visibility, "private") == []
+            assert self._grant(visibility, "disabled") == []
+
+    def test_features_are_evaluated_independently(self) -> None:
+        project = self._project_with(
+            "internal",
+            issues_access_level="enabled",
+            repository_access_level="private",
+            merge_requests_access_level="private",
+        )
+        sync = ProjectsSync(make_mock_connector())
+        assert len(sync._visibility_permission(project, "issues_access_level")) == 1
+        assert sync._visibility_permission(project, "repository_access_level") == []
+        assert sync._visibility_permission(project, "merge_requests_access_level") == []
 
     async def test_member_listing_failure_calls_creator_fallback(self) -> None:
         """Listing failure → _apply_creator_fallback_for_project called."""
